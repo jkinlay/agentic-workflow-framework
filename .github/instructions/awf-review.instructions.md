@@ -17,4 +17,3 @@ Perform an adversarial review. Flag as blocking:
 
 Do not approve, implement fixes, or infer permission. Identify the file and
 line, explain the failure mode, and propose a bounded remediation.
-

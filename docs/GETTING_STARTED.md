@@ -12,7 +12,7 @@ Use this guide for the sequence of actions. Use the
 components fit together, and the root [ARCHITECTURE.md](../ARCHITECTURE.md) for
 authoritative architectural decisions and invariants.
 
-AWF v0.1.0 uses a manual, reviewable bootstrap. There is no supported command
+AWF v0.1.1 uses a manual, reviewable bootstrap. There is no supported command
 that safely installs or upgrades every project automatically. The distribution
 manifest, project scaffolds, provider assets, and checks are the installation
 inputs; a human-reviewed pull request is the installation mechanism.

@@ -13,9 +13,9 @@ name: AWF independent review gate
 #              `awf-review-status: no_findings|findings` marker written by the
 #              deterministic publisher, so an error report can never pass.
 # The engine must be qualified: every flag under review.qualification must be
-# true (and the three baseline flags must be present), as docs/REVIEW_POLICY.md
-# requires, or the gate fails closed. A repository without a policy file fails
-# closed too: availability is never inferred, so there is no default engine.
+# true (and the three baseline flags must be present), as the protected review
+# policy requires, or the gate fails closed. A repository without a policy file
+# fails closed too: availability is never inferred, so there is no default engine.
 
 on:
   pull_request_target:

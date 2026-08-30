@@ -1,7 +1,7 @@
 schema_version: 1
 framework:
   name: agentic-workflow-framework
-  version: 0.1.0
+  version: 0.1.1
 
 ownership_classes:
   managed: framework updates through a reviewable project change

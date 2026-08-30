@@ -62,6 +62,6 @@ The canonical distribution policy is
 
 ## Current status
 
-Version `0.1.0` is a documentation-first scaffold. Bootstrap and upgrade are
+Version `0.1.1` is a documentation-first scaffold. Bootstrap and upgrade are
 manual, reviewable procedures until their contracts have been piloted and are
 stable enough to automate.
