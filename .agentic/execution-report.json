@@ -13,7 +13,7 @@
   ],
   "verification": [
     {"command": "python -m unittest discover -s tests -p 'test_*.py' -v", "result": "passed"},
-    {"command": "python -m unittest discover -s .agentic/review/claude/tests -p 'test_*.py' -v", "result": "34 passed with 2 environment-dependent skips"},
+    {"command": "python -m unittest discover -s .agentic/review/claude/tests -p 'test_*.py' -v", "result": "34 completed: 32 passed and 2 environment-dependent skips"},
     {"command": "git diff origin/main...HEAD --check", "result": "passed"}
   ],
   "limitations": [
