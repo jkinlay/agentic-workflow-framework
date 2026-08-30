@@ -173,14 +173,18 @@ conditions.
 | AWF-021 | Add manifest/project/lock schemas and provenance hash validation | P0 |
 | AWF-022 | Add upstream CI, secret scanning, and review benchmark fixtures | P0 |
 
-AWF-020 status at `24ecd82`: the scaffold implementation is merged, but live
-qualification remains pending. Before activation, retain the task at P1 and
-remediate the stateless claims-phase context, make the gate reject every false
-qualification flag (including future flags), make the offline suite portable to
-Windows, and remove or explicitly constrain the missing-policy Copilot fallback
-before making `awf/review` required. Then run the same-repository permission
-demonstration and seeded benchmark. Completion means the resulting evidence
-supports all qualification flags; merged code alone is not completion.
+AWF-020 status: the scaffold implementation is merged at `24ecd82`, and the
+defects found by its verification are remediated in the follow-up change
+(claims phase continues the blind conversation with the diff and files in
+context; the gate rejects any false flag under `review.qualification`,
+including future flags, and fails closed when `.agentic/project.yaml` is
+absent; the model's forced-tool answer is validated against its own schema so
+a malformed answer is an error rather than `no_findings`; the offline suite is
+Windows-portable with path-traversal coverage independent of symlinks). Live
+qualification remains pending: keep the task at P1 until the same-repository
+permission demonstration and the seeded benchmark have run and their evidence
+supports every qualification flag. Merged code alone is not completion, and
+`awf/review` must not be required before that evidence exists.
 
 ## Success measures
 

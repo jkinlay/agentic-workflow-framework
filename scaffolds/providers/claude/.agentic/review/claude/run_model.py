@@ -31,7 +31,7 @@ import time
 import urllib.error
 import urllib.request
 
-from awf_review_common import AdapterError, is_hex40, validate_report
+from awf_review_common import AdapterError, is_hex40, validate_instance, validate_report
 
 ENGINE = "claude"
 VENDOR = "anthropic"
@@ -72,9 +72,9 @@ FINDING_SCHEMA = {
     "required": ["severity", "title", "description", "file", "blocking"],
     "properties": {
         "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
-        "title": {"type": "string"},
-        "description": {"type": "string", "description": "What is wrong, the evidence in the diff, and the fix."},
-        "file": {"type": "string", "description": "Exact path from the changed-file list."},
+        "title": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1, "description": "What is wrong, the evidence in the diff, and the fix."},
+        "file": {"type": "string", "minLength": 1, "description": "Exact path from the changed-file list."},
         "line": {"type": "integer", "minimum": 1},
         "side": {"type": "string", "enum": ["LEFT", "RIGHT"]},
         "blocking": {"type": "boolean"},
@@ -112,9 +112,9 @@ ASSESS_CLAIMS_TOOL = {
                     "additionalProperties": False,
                     "required": ["claim_id", "status", "evidence"],
                     "properties": {
-                        "claim_id": {"type": "string", "description": "Short stable id you assign, e.g. C1."},
+                        "claim_id": {"type": "string", "minLength": 1, "description": "Short stable id you assign, e.g. C1."},
                         "status": {"type": "string", "enum": ["verified", "unverified", "contradicted"]},
-                        "evidence": {"type": "string"},
+                        "evidence": {"type": "string", "minLength": 1},
                     },
                 },
             },
@@ -206,6 +206,17 @@ def call_tool(base_url: str, model: str, max_tokens: int, timeout: int,
             payload = block.get("input")
             if not isinstance(payload, dict):
                 raise AdapterError("model tool input was not an object")
+            # The model's answer is untrusted output: it must satisfy the tool's own input schema
+            # before anything is normalised from it. An empty or malformed answer is an error,
+            # never an implicit "no findings".
+            problems = validate_instance(payload, tool["input_schema"])
+            if problems:
+                raise AdapterError(f"model {tool['name']} input failed its schema: " + "; ".join(problems[:5]))
+            if tool["name"] == SUBMIT_REVIEW_TOOL["name"]:
+                declared, count = payload.get("status"), len(payload.get("findings", []))
+                if (declared == "no_findings") != (count == 0):
+                    raise AdapterError(f"model declared status {declared!r} with {count} findings")
+            payload = dict(payload)
             payload["_usage"] = response.get("usage", {})
             payload["_stop_reason"] = response.get("stop_reason")
             payload["_tool_use_id"] = block.get("id")

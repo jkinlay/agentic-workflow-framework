@@ -25,7 +25,7 @@ distribution manifest to the same relative targets in a project:
 | `.agentic/review/claude/run_model.py` | Anthropic Messages API with a forced schema-shaped tool call; blind phase, then a claims phase that continues the same conversation; error reports fail closed |
 | `.agentic/review/claude/publish.py` | Non-model publisher: revalidates, binds to live head, posts one COMMENT review; APPROVE unreachable |
 | `.agentic/review/claude/verify.py` | `model-negative`, `publisher-negative`, `app-permissions` (JWT via openssl), `unit`, `hashes`, `record` |
-| `.agentic/review/claude/tests/` | 28 offline tests, including the gate script extracted from the workflow file |
+| `.agentic/review/claude/tests/` | 32 offline tests, including the gate script extracted from the workflow file |
 
 Changed framework files:
 
@@ -124,11 +124,23 @@ in this revision:
    It now fails closed with an explicit message; a repository must carry a
    protected policy before any engine can satisfy `awf/review`.
 
-Also fixed: the offline tests no longer error on Windows where symbolic links
-need elevated privileges (the fixture tolerates a failed symlink; the
-path-escape limitation is still asserted). The openssl-dependent JWT test is
-skipped where openssl is absent; the demonstration workflow runs on
-ubuntu-latest where it is present.
+The review of the remediation itself found a fourth defect, also fixed here:
+
+4. The model's forced-tool answer was accepted whenever it was a JSON object,
+   so `submit_review: {}` normalised to zero findings and reported
+   `no_findings` with exit 0. The tool input is now validated against the
+   tool's own input schema before anything is normalised from it, and a
+   declared status that contradicts the findings count is rejected. Both
+   cases produce an `error` report and exit 1, so the publisher never runs.
+   Negative tests cover an empty answer, missing and unknown fields, an
+   invalid severity, contradictory status, and a malformed claims answer.
+
+Also fixed: path-escape coverage no longer depends on symbolic links. A
+platform-independent test asserts that `../outside.txt` and an absolute path
+are refused and that a real file outside the checkout is never read; symlink
+coverage is a separate test that skips where symlinks need privileges. The
+openssl-dependent JWT test is skipped where openssl is absent; the
+demonstration workflow runs on ubuntu-latest where it is present.
 
 ## What this change does not do
 
@@ -143,7 +155,7 @@ ubuntu-latest where it is present.
 
 ## Local validation performed
 
-`python3 -m py_compile` on every module; 26 offline tests passing with
+`python3 -m py_compile` on every module; 32 offline tests passing with
 resource warnings treated as errors; YAML parse of all four workflows, the
 manifest and the template; every `uses:` reference matches
 `owner/repo@<40-hex>`; an end-to-end dry run of build_input, run_model and

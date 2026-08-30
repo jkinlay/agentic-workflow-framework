@@ -44,6 +44,20 @@ The first six rows justify describing the adapter as implemented. The remaining
 rows prevent describing it as qualified, available, or ready to be a required
 engine.
 
+### Remediation status (PR #2, `claude-adapter-remediation`)
+
+| Verified defect | Remediation in PR #2 | Status |
+|---|---|---|
+| Qualification enforcement checked three named flags | Gate requires every flag under `review.qualification` to be true and the three baseline flags to be present; a false `seeded_benchmark_verified` now fails | Remediated; re-verify on the PR head |
+| Missing policy defaulted to Copilot | HTTP 404 for `.agentic/project.yaml` fails closed with an explicit message; no default engine | Remediated; re-verify on the PR head |
+| Claims phase lacked the diff and file contents | The claims call continues the blind conversation (blind prompt, the model's tool call as an assistant turn, tool result plus the untrusted claims), so the material stays in context | Remediated; re-verify on the PR head |
+| Offline suite not Windows-portable | Symlink coverage is a separate test that skips where symlinks need privileges; path-traversal and absolute-path rejection are asserted platform-independently against a real file outside the checkout | Remediated; re-verify on Windows |
+| Malformed forced-tool answer became `no_findings` (found in the PR #2 review) | The model's tool input is validated against the tool's own input schema before normalisation, and a declared status that contradicts the findings count is an error; both yield an `error` report and exit 1 | Remediated; re-verify on the PR head |
+
+Live qualification (App, secrets, same-repository demonstration, stale-head
+run, protected-path proof, seeded benchmark) remains pending and is unaffected
+by these code changes.
+
 ## Structural validation of `main`
 
 | Check | Result |

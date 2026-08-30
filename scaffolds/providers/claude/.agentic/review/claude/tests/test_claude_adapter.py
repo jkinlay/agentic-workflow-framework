@@ -156,30 +156,65 @@ class BuildInputTests(unittest.TestCase):
             handle.write(head + "\n")
         with open(os.path.join(pr_dir, "src", "a.py"), "w") as handle:
             handle.write("print('hello')\n" * 50)
-        try:
-            os.symlink("/etc/hostname", os.path.join(pr_dir, "escape.txt"))
-        except (OSError, NotImplementedError):
-            pass  # Windows without symlink privilege: the missing file still yields a limitation
+        # A real file OUTSIDE the checkout that a traversal path would reach if the guard failed.
+        with open(os.path.join(tmp, "outside.txt"), "w") as handle:
+            handle.write("SECRET-OUTSIDE-CHECKOUT\n")
         return pr_dir
+
+    def build_with(self, tmp, files, extra_args=()):
+        with mock.patch.object(build_input, "github_paginate", return_value=files):
+            pr_dir = self.make_checkout(tmp)
+            args = build_input.parse_args(["--repo", "o/r", "--pr", "7", "--base-sha", SHA_B, "--head-sha", SHA_A,
+                                           "--pr-dir", pr_dir, "--out", "x", *extra_args])
+            return build_input.build(args, "token")
 
     def test_build_excludes_pr_text_and_records_limitations(self):
         files = [{"filename": "src/a.py", "status": "modified", "additions": 1, "deletions": 0, "patch": "@@ -1 +1 @@\n-x\n+y"},
-                 {"filename": "escape.txt", "status": "added", "additions": 1, "deletions": 0, "patch": None},
-                 {"filename": "gone.py", "status": "removed", "additions": 0, "deletions": 3, "patch": "@@ -1,3 +0,0 @@\n-a\n-b\n-c"}]
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(build_input, "github_paginate", return_value=files):
-            pr_dir = self.make_checkout(tmp)
-            args = build_input.parse_args(["--repo", "o/r", "--pr", "7", "--base-sha", SHA_B, "--head-sha", SHA_A,
-                                           "--pr-dir", pr_dir, "--out", "x", "--max-file-bytes", "100"])
-            payload = build_input.build(args, "token")
+                 {"filename": "gone.py", "status": "removed", "additions": 0, "deletions": 3, "patch": "@@ -1,3 +0,0 @@\n-a\n-b\n-c"},
+                 {"filename": "missing.txt", "status": "added", "additions": 1, "deletions": 0, "patch": None}]
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.build_with(tmp, files, ("--max-file-bytes", "100"))
         self.assertNotIn("title", payload)
         self.assertIn("pull request body", payload["excluded_by_design"])
         self.assertEqual([f["path"] for f in payload["files"]], ["src/a.py"])
         self.assertTrue(payload["files"][0]["truncated"])
         joined = " ".join(payload["limitations"])
-        self.assertIn("escape.txt", joined)
+        self.assertIn("missing.txt", joined)
         self.assertIn("No task contract", joined)
         self.assertIn("claims phase was skipped", joined)
         self.assertIn("No textual patch", joined)
+
+    def test_path_traversal_and_absolute_paths_are_rejected(self):
+        """Platform-independent: '../outside.txt' and an absolute path must never be read."""
+        with tempfile.TemporaryDirectory() as tmp:
+            absolute_outside = os.path.join(tmp, "outside.txt")
+            files = [{"filename": "../outside.txt", "status": "added", "additions": 1, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+x"},
+                     {"filename": absolute_outside, "status": "added", "additions": 1, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+x"},
+                     {"filename": "src/a.py", "status": "modified", "additions": 1, "deletions": 0, "patch": "@@ -1 +1 @@\n-x\n+y"}]
+            payload = self.build_with(tmp, files)
+        self.assertEqual([f["path"] for f in payload["files"]], ["src/a.py"])
+        self.assertNotIn("SECRET-OUTSIDE-CHECKOUT", json.dumps(payload))
+        joined = " ".join(payload["limitations"])
+        self.assertIn("../outside.txt", joined)
+        self.assertIn("not readable from the checkout", joined)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unsupported on this platform")
+    def test_symlink_escape_is_rejected(self):
+        """Symlink coverage, separate from traversal: skipped where symlinks need privileges."""
+        with tempfile.TemporaryDirectory() as tmp:
+            pr_dir = self.make_checkout(tmp)
+            try:
+                os.symlink(os.path.join(tmp, "outside.txt"), os.path.join(pr_dir, "escape.txt"))
+            except (OSError, NotImplementedError) as err:
+                self.skipTest(f"cannot create symlinks here: {err}")
+            files = [{"filename": "escape.txt", "status": "added", "additions": 1, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+x"}]
+            with mock.patch.object(build_input, "github_paginate", return_value=files):
+                args = build_input.parse_args(["--repo", "o/r", "--pr", "7", "--base-sha", SHA_B, "--head-sha", SHA_A,
+                                               "--pr-dir", pr_dir, "--out", "x"])
+                payload = build_input.build(args, "token")
+        self.assertEqual(payload["files"], [])
+        self.assertNotIn("SECRET-OUTSIDE-CHECKOUT", json.dumps(payload))
+        self.assertIn("escape.txt", " ".join(payload["limitations"]))
 
     def test_head_mismatch_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(build_input, "github_paginate", return_value=[]):
@@ -267,6 +302,37 @@ class RunModelTests(unittest.TestCase):
             rep, _, code = run_model.run(args)
         self.assertEqual((code, rep["status"]), (1, "error"))
         self.assertEqual(common.validate_report(rep, SCHEMA), [])
+
+    def test_malformed_tool_input_is_an_error_not_no_findings(self):
+        cases = {
+            "empty object": {},
+            "missing findings": {"status": "no_findings", "limitations": []},
+            "unknown field": {"status": "no_findings", "findings": [], "limitations": [], "verdict": "approve"},
+            "bad severity": {"status": "findings", "limitations": [],
+                             "findings": [{"severity": "urgent", "title": "t", "description": "d", "file": "f", "blocking": True}]},
+            "status contradicts findings": {"status": "no_findings", "limitations": [],
+                                            "findings": [{"severity": "high", "title": "t", "description": "d", "file": "f", "blocking": True}]},
+            "findings status with none": {"status": "findings", "findings": [], "limitations": []},
+        }
+        for label, answer in cases.items():
+            fake, _ = self.fake_api({"submit_review": answer})
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(run_model, "anthropic_request", fake):
+                args = run_model.parse_args(["--in", self.make_input(tmp, False), "--schema", SCHEMA_PATH, "--out", "r",
+                                             "--model", "m", "--reviewer-identity", IDENTITY])
+                rep, _, code = run_model.run(args)
+            self.assertEqual((code, rep["status"]), (1, "error"), label)
+            self.assertEqual(common.validate_report(rep, SCHEMA), [], label)
+
+    def test_malformed_claims_answer_is_an_error(self):
+        responses = {"submit_review": {"status": "no_findings", "findings": [], "limitations": []},
+                     "assess_claims": {"claim_assessments": [{"claim_id": "C1", "status": "maybe", "evidence": "?"}],
+                                       "additional_findings": []}}
+        fake, _ = self.fake_api(responses)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(run_model, "anthropic_request", fake):
+            args = run_model.parse_args(["--in", self.make_input(tmp, True), "--schema", SCHEMA_PATH, "--out", "r",
+                                         "--model", "m", "--reviewer-identity", IDENTITY])
+            rep, _, code = run_model.run(args)
+        self.assertEqual((code, rep["status"]), (1, "error"))
 
     def test_wrong_tool_is_an_error(self):
         def wrong(base_url, body, timeout):

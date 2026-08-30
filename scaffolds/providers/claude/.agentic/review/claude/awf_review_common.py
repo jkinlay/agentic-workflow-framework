@@ -156,11 +156,16 @@ def _check(value: Any, schema: dict[str, Any], path: str, errors: list[str]) -> 
             _check(value, schema["else"], path, errors)
 
 
-def validate_report(report: Any, schema: dict[str, Any]) -> list[str]:
-    """Return a list of validation errors (empty means valid)."""
+def validate_instance(value: Any, schema: dict[str, Any]) -> list[str]:
+    """Validate any value against a schema in the supported subset; empty list means valid."""
     errors: list[str] = []
-    _check(report, schema, "$", errors)
+    _check(value, schema, "$", errors)
     return errors
+
+
+def validate_report(report: Any, schema: dict[str, Any]) -> list[str]:
+    """Return a list of validation errors for a review report (empty means valid)."""
+    return validate_instance(report, schema)
 
 
 # ---------------------------------------------------------------------------

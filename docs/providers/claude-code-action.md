@@ -48,9 +48,11 @@ that a fork can never trigger it with the repository's credential.
   the claims phase as a continuation of the same conversation, so the diff,
   files and task contract remain in the model's context and every claim is
   assessed against them. The model answers only through a forced tool call
-  whose input schema mirrors `schemas/review-report.schema.json`. Blind-phase
-  findings cannot be withdrawn; the claims phase may only add findings and
-  claim assessments. Any failure yields a schema-valid `error` report and a
+  whose input schema mirrors `schemas/review-report.schema.json`; the answer
+  is validated against that tool schema before anything is normalised from
+  it, and a malformed or self-contradictory answer is an error, never an
+  implicit `no_findings`. Blind-phase findings cannot be withdrawn; the
+  claims phase may only add findings and claim assessments. Any failure yields a schema-valid `error` report and a
   non-zero exit, so the publisher never runs and the gate fails closed.
 - The report is uploaded as an artifact even when the job fails.
 
@@ -101,7 +103,7 @@ Claude cannot be selected as required until bootstrap records:
    drift checks;
 4. hashes of protected adapter code and schema (`verify.py hashes`);
 5. successful schema, invalid-event, invalid-location, stale-SHA, and gate
-   tests (`verify.py unit`, 28 offline tests including the gate script);
+   tests (`verify.py unit`, 32 offline tests including the gate script);
 6. approved vendor/data-egress route and domain-scoped credential (human);
 7. seeded-defect benchmark results (human-run fixtures);
 8. correct behavior for developer-App-authored pull requests (the workflow
