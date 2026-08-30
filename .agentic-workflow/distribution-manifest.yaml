@@ -1,0 +1,89 @@
+schema_version: 1
+framework:
+  name: agentic-workflow-framework
+  version: 0.1.0
+
+ownership_classes:
+  managed: framework updates through a reviewable project change
+  seed_once: framework creates the initial file and the project then owns it
+  merge_assisted: framework proposes changes but never overwrites the project
+  local_only: project creates and owns the file; framework never collects it
+  generated: installer derives the file deterministically and records hashes
+
+protected_targets:
+  - AGENTS.md
+  - "**/AGENTS.md"
+  - "**/AGENTS.override.md"
+  - .agentic/**
+  - .awf/**
+  - .agents/**
+  - .codex/**
+  - .claude/**
+  - CLAUDE.md
+  - "**/CLAUDE.md"
+  - .github/**
+  - CODEOWNERS
+
+never_collect:
+  - credentials
+  - environment_dumps
+  - raw_agent_or_tool_logs
+  - proprietary_project_content
+  - local_absolute_paths
+
+artifacts:
+  - source: scaffolds/project/AGENTS.md.template
+    target: AGENTS.md
+    policy: merge_assisted
+  - source: scaffolds/project/ARCHITECTURE.md.template
+    target: ARCHITECTURE.md
+    policy: seed_once
+  - source: scaffolds/project/.agentic/project.yaml.template
+    target: .agentic/project.yaml
+    policy: seed_once
+  - source: generated
+    target: .agentic/workflow.lock.yaml
+    policy: generated
+    contents: framework version, selected adapters, ownership policies, and installed content hashes
+  - source: docs/providers/codex.md
+    target: docs/agent-runtime/codex.md
+    policy: managed
+    requires: runtime_adapters contains codex
+  - source: docs/REVIEW_POLICY.md
+    target: docs/agent-runtime/review-policy.md
+    policy: managed
+  - source: docs/THREAT_MODEL.md
+    target: docs/agent-runtime/threat-model.md
+    policy: managed
+  - source: docs/IDENTITY_AND_AUDIT.md
+    target: docs/agent-runtime/identity-and-audit.md
+    policy: managed
+  - source: docs/INCIDENT_RESPONSE.md
+    target: docs/agent-runtime/incident-response.md
+    policy: managed
+  - source: schemas/review-report.schema.json
+    target: .agentic/schemas/review-report.schema.json
+    policy: managed
+  - source: docs/providers/copilot.md
+    target: docs/agent-runtime/copilot-review.md
+    policy: managed
+    requires: review.required_external_engine equals copilot
+  - source: scaffolds/providers/copilot/.github/copilot-instructions.md
+    target: .github/copilot-instructions.md
+    policy: merge_assisted
+    requires: review.required_external_engine equals copilot
+  - source: scaffolds/providers/copilot/.github/instructions/awf-review.instructions.md
+    target: .github/instructions/awf-review.instructions.md
+    policy: managed
+    requires: review.required_external_engine equals copilot
+  - source: scaffolds/providers/copilot/.github/workflows/awf-review-gate.yml
+    target: .github/workflows/awf-review-gate.yml
+    policy: managed
+    requires: review.required_external_engine equals copilot
+  - source: docs/providers/claude-code-action.md
+    target: docs/agent-runtime/claude-code-action-review.md
+    policy: managed
+    requires: review.required_external_engine equals claude
+  - source: scaffolds/project/CODEOWNERS.fragment
+    target: .github/CODEOWNERS
+    policy: merge_assisted

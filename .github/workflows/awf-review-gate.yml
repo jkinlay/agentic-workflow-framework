@@ -1,0 +1,50 @@
+name: AWF independent review gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  review:
+    name: awf/review
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify Copilot reviewed the current head
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEWER_LOGIN: copilot-pull-request-reviewer[bot]
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $base = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
+          $pr = Invoke-RestMethod -Headers $headers -Uri "$base/pulls/$env:PR_NUMBER"
+          $matching = @()
+          $page = 1
+
+          do {
+            $reviews = @(Invoke-RestMethod -Headers $headers -Uri "$base/pulls/$env:PR_NUMBER/reviews?per_page=100&page=$page")
+            $matching += @($reviews | Where-Object {
+              $_.user.login -ieq $env:REVIEWER_LOGIN -and
+              $_.commit_id -eq $pr.head.sha -and
+              $_.state -ne 'DISMISSED'
+            })
+            $page++
+          } while ($reviews.Count -eq 100 -and $page -le 10)
+
+          if ($matching.Count -eq 0) {
+            throw "No review by $env:REVIEWER_LOGIN covers current head $($pr.head.sha)."
+          }
+          "reviewer=$env:REVIEWER_LOGIN head_sha=$($pr.head.sha) reviews=$($matching.Count)"

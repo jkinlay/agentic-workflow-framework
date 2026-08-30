@@ -1,0 +1,16 @@
+# Merge this fragment into the project's canonical CODEOWNERS file and replace
+# the placeholder with one or more human owners. Agent identities must not be
+# included.
+
+AGENTS.md                              __AWF_HUMAN_CODEOWNERS__
+**/AGENTS.md                           __AWF_HUMAN_CODEOWNERS__
+**/AGENTS.override.md                  __AWF_HUMAN_CODEOWNERS__
+.agentic/**                            __AWF_HUMAN_CODEOWNERS__
+.awf/**                                __AWF_HUMAN_CODEOWNERS__
+.agents/**                             __AWF_HUMAN_CODEOWNERS__
+.codex/**                              __AWF_HUMAN_CODEOWNERS__
+.claude/**                             __AWF_HUMAN_CODEOWNERS__
+CLAUDE.md                              __AWF_HUMAN_CODEOWNERS__
+**/CLAUDE.md                           __AWF_HUMAN_CODEOWNERS__
+.github/**                             __AWF_HUMAN_CODEOWNERS__
+CODEOWNERS                             __AWF_HUMAN_CODEOWNERS__

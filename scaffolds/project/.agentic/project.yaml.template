@@ -1,0 +1,56 @@
+schema_version: 1
+project:
+  id: "__AWF_PROJECT_ID__"
+  name: "__AWF_PROJECT_NAME__"
+  confidentiality_domain: "__AWF_CONFIDENTIALITY_DOMAIN__"
+
+systems_of_record:
+  repository: "__AWF_REPOSITORY_REFERENCE__"
+  issue_tracker: "__AWF_ISSUE_TRACKER_REFERENCE__"
+  ci: "__AWF_CI_REFERENCE__"
+  artifacts: "__AWF_ARTIFACT_REFERENCE__"
+
+runtime_adapters:
+  - codex
+
+autonomy:
+  maximum_level: A1
+  human_merge_required: true
+  human_release_required: true
+  human_promotion_required: true
+
+identity_and_audit:
+  developer_principal: "__AWF_DEVELOPER_PRINCIPAL__"
+  human_approvers: "__AWF_HUMAN_APPROVERS__"
+  audit_retention_days: __AWF_AUDIT_RETENTION_DAYS__
+  incident_stop_authority: "__AWF_INCIDENT_STOP_AUTHORITY__"
+
+protected_paths:
+  - AGENTS.md
+  - "**/AGENTS.md"
+  - "**/AGENTS.override.md"
+  - .agentic/**
+  - .awf/**
+  - .agents/**
+  - .codex/**
+  - .claude/**
+  - CLAUDE.md
+  - "**/CLAUDE.md"
+  - .github/**
+  - CODEOWNERS
+  - __AWF_PROJECT_GATE_PATHS__
+
+review:
+  required_external_engine: "__AWF_REVIEW_ENGINE__"
+  optional_engines: []
+  reviewer_identities:
+    copilot: copilot-pull-request-reviewer[bot]
+    claude: "__AWF_CLAUDE_REVIEWER_LOGIN__"
+  qualification:
+    effective_permissions_verified: false
+    instruction_paths_protected: false
+    head_binding_verified: false
+  required_check: awf/review
+  fail_closed: true
+  outage_exception: "__AWF_REVIEW_OUTAGE_BYPASS__"
+  human_approval_required: true

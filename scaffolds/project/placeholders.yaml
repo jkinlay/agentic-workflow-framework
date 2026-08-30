@@ -1,0 +1,27 @@
+schema_version: 1
+tokens:
+  __AWF_PROJECT_ID__: Stable machine-readable project ID
+  __AWF_PROJECT_NAME__: Human-readable project name
+  __AWF_PROJECT_PURPOSE__: Concise project purpose and boundary
+  __AWF_CONFIDENTIALITY_DOMAIN__: Approved confidentiality domain
+  __AWF_REPOSITORY_REFERENCE__: Canonical repository reference
+  __AWF_ISSUE_TRACKER_REFERENCE__: Canonical issue-tracker reference
+  __AWF_CI_REFERENCE__: Canonical CI reference
+  __AWF_ARTIFACT_REFERENCE__: Canonical artifact-store reference
+  __AWF_SETUP_COMMAND__: Reproducible setup command
+  __AWF_TEST_COMMAND__: Reproducible test command
+  __AWF_STATIC_CHECK_COMMAND__: Reproducible lint or static-check command
+  __AWF_ADDITIONAL_GATES__: Project-specific required checks
+  __AWF_PROJECT_GATE_PATHS__: Additional protected gate/configuration paths
+  __AWF_REVIEW_ENGINE__: One qualified engine ID, currently copilot; claude only after split-adapter qualification
+  __AWF_CLAUDE_REVIEWER_LOGIN__: Dedicated custom reviewer App login, or disabled when Claude is unused
+  __AWF_REVIEW_OUTAGE_BYPASS__: Named non-agent ruleset bypass actor and incident procedure
+  __AWF_HUMAN_CODEOWNERS__: One or more non-agent human CODEOWNERS
+  __AWF_DEVELOPER_PRINCIPAL__: Dedicated developer App or service identity
+  __AWF_HUMAN_APPROVERS__: Human identities or protected team references
+  __AWF_AUDIT_RETENTION_DAYS__: Positive project-approved audit retention period
+  __AWF_INCIDENT_STOP_AUTHORITY__: Human role authorized to stop execution and revoke access
+
+validation:
+  unresolved_token_pattern: "__AWF_[A-Z0-9_]+__"
+  fail_if_any_token_remains: true

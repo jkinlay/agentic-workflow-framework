@@ -1,0 +1,37 @@
+# __AWF_PROJECT_NAME__ Architecture
+
+## Purpose
+
+__AWF_PROJECT_PURPOSE__
+
+## System context
+
+Describe users, upstream systems, downstream systems, and trust boundaries.
+
+## Components and ownership
+
+List components, their responsibilities, and their authoritative repositories
+or data stores.
+
+## Data and artifact flow
+
+Document inputs, transformations, persisted artifacts, lineage, retention, and
+point-in-time semantics where applicable.
+
+## Execution and deployment
+
+Document local, CI, managed-runtime, release, rollback, and recovery paths.
+
+## Security and approvals
+
+Document secrets, permissions, connector scopes, human gates, protected paths,
+and forbidden actions.
+
+## Architectural invariants
+
+List the rules that no implementation may weaken without an approved decision
+record.
+
+## Decisions and open questions
+
+Link approved ADRs and identify unresolved decisions with owners.

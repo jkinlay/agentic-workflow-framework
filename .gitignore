@@ -1,0 +1,15 @@
+# Local machine and connector configuration
+.local/
+.agentic-workflow/local/
+*.local.yaml
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Temporary validation output
+.tmp/
+tmp/
+
