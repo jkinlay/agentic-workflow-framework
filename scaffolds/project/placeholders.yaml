@@ -13,8 +13,9 @@ tokens:
   __AWF_STATIC_CHECK_COMMAND__: Reproducible lint or static-check command
   __AWF_ADDITIONAL_GATES__: Project-specific required checks
   __AWF_PROJECT_GATE_PATHS__: Additional protected gate/configuration paths
-  __AWF_REVIEW_ENGINE__: One qualified engine ID, currently copilot; claude only after split-adapter qualification
-  __AWF_CLAUDE_REVIEWER_LOGIN__: Dedicated custom reviewer App login, or disabled when Claude is unused
+  __AWF_REVIEW_ENGINE__: One qualified engine ID (copilot or claude); claude only after its demonstration record sets review.qualification
+  __AWF_CLAUDE_REVIEWER_LOGIN__: Dedicated AWF Reviewer App login (app-slug[bot]), or disabled when Claude is unused
+  __AWF_CLAUDE_MODEL__: Pinned Anthropic model id for the Claude review adapter, or disabled when Claude is unused
   __AWF_REVIEW_OUTAGE_BYPASS__: Named non-agent ruleset bypass actor and incident procedure
   __AWF_HUMAN_CODEOWNERS__: One or more non-agent human CODEOWNERS
   __AWF_DEVELOPER_PRINCIPAL__: Dedicated developer App or service identity

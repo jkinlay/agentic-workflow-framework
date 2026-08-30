@@ -46,6 +46,11 @@ review:
   reviewer_identities:
     copilot: copilot-pull-request-reviewer[bot]
     claude: "__AWF_CLAUDE_REVIEWER_LOGIN__"
+  claude:
+    model: "__AWF_CLAUDE_MODEL__"
+    base_url: https://api.anthropic.com
+    task_contract_path: .agentic/task-contract.yaml
+    execution_report_path: .agentic/execution-report.json
   qualification:
     effective_permissions_verified: false
     instruction_paths_protected: false

@@ -79,11 +79,51 @@ artifacts:
   - source: scaffolds/providers/copilot/.github/workflows/awf-review-gate.yml
     target: .github/workflows/awf-review-gate.yml
     policy: managed
-    requires: review.required_external_engine equals copilot
+    note: engine-aware gate; verifies whichever engine review.required_external_engine names
   - source: docs/providers/claude-code-action.md
     target: docs/agent-runtime/claude-code-action-review.md
     policy: managed
-    requires: review.required_external_engine equals claude
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
+  - source: scaffolds/providers/claude/.github/workflows/awf-review-claude.yml
+    target: .github/workflows/awf-review-claude.yml
+    policy: managed
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
+  - source: scaffolds/providers/claude/.github/workflows/awf-review-claude-demonstrate.yml
+    target: .github/workflows/awf-review-claude-demonstrate.yml
+    policy: managed
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
+  - source: scaffolds/providers/claude/.agentic/review/claude/awf_review_common.py
+    target: .agentic/review/claude/awf_review_common.py
+    policy: managed
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
+  - source: scaffolds/providers/claude/.agentic/review/claude/policy.py
+    target: .agentic/review/claude/policy.py
+    policy: managed
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
+  - source: scaffolds/providers/claude/.agentic/review/claude/build_input.py
+    target: .agentic/review/claude/build_input.py
+    policy: managed
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
+  - source: scaffolds/providers/claude/.agentic/review/claude/run_model.py
+    target: .agentic/review/claude/run_model.py
+    policy: managed
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
+  - source: scaffolds/providers/claude/.agentic/review/claude/publish.py
+    target: .agentic/review/claude/publish.py
+    policy: managed
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
+  - source: scaffolds/providers/claude/.agentic/review/claude/verify.py
+    target: .agentic/review/claude/verify.py
+    policy: managed
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
+  - source: scaffolds/providers/claude/.agentic/review/claude/tests/__init__.py
+    target: .agentic/review/claude/tests/__init__.py
+    policy: managed
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
+  - source: scaffolds/providers/claude/.agentic/review/claude/tests/test_claude_adapter.py
+    target: .agentic/review/claude/tests/test_claude_adapter.py
+    policy: managed
+    requires: review.required_external_engine equals claude or review.optional_engines contains claude
   - source: scaffolds/project/CODEOWNERS.fragment
     target: .github/CODEOWNERS
     policy: merge_assisted
