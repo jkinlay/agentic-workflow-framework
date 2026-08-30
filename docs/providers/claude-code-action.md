@@ -51,9 +51,11 @@ that a fork can never trigger it with the repository's credential.
   whose input schema mirrors `schemas/review-report.schema.json`; the answer
   is validated against that tool schema before anything is normalised from
   it, and a malformed or self-contradictory answer is an error, never an
-  implicit `no_findings`. Blind-phase findings cannot be withdrawn; the
-  claims phase may only add findings and claim assessments. Any failure yields a schema-valid `error` report and a
-  non-zero exit, so the publisher never runs and the gate fails closed.
+  implicit `no_findings`. Requests omit non-default sampling parameters, which
+  Claude Opus 5 rejects. Blind-phase findings cannot be withdrawn; the
+  claims phase may only add findings and claim assessments. Any failure yields
+  a schema-valid `error` report and a non-zero exit, so the publisher never
+  runs and the gate fails closed.
 - The report is uploaded as an artifact even when the job fails.
 
 ### Publisher job

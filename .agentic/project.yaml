@@ -1,0 +1,61 @@
+schema_version: 1
+project:
+  id: agentic-workflow-framework
+  name: Agentic Workflow Framework
+  confidentiality_domain: public
+
+systems_of_record:
+  repository: github:jkinlay/agentic-workflow-framework
+  issue_tracker: github:jkinlay/agentic-workflow-framework/issues
+  ci: github-actions
+  artifacts: github-actions-artifacts
+
+runtime_adapters:
+  - codex
+
+autonomy:
+  maximum_level: A1
+  human_merge_required: true
+  human_release_required: true
+  human_promotion_required: true
+
+identity_and_audit:
+  developer_principal: not-configured
+  human_approvers: github:jkinlay
+  audit_retention_days: 90
+  incident_stop_authority: github:jkinlay
+
+protected_paths:
+  - AGENTS.md
+  - "**/AGENTS.md"
+  - "**/AGENTS.override.md"
+  - .agentic/**
+  - .awf/**
+  - .agents/**
+  - .codex/**
+  - .claude/**
+  - CLAUDE.md
+  - "**/CLAUDE.md"
+  - .github/**
+  - CODEOWNERS
+
+review:
+  required_external_engine: copilot
+  optional_engines:
+    - claude
+  reviewer_identities:
+    copilot: copilot-pull-request-reviewer[bot]
+    claude: awf-reviewer[bot]
+  claude:
+    model: claude-opus-5
+    base_url: https://api.anthropic.com
+    task_contract_path: .agentic/task-contract.yaml
+    execution_report_path: .agentic/execution-report.json
+  qualification:
+    effective_permissions_verified: false
+    instruction_paths_protected: false
+    head_binding_verified: false
+  required_check: awf/review
+  fail_closed: true
+  outage_exception: "github:jkinlay; incident record required"
+  human_approval_required: true

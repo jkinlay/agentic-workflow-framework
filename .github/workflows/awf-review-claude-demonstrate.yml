@@ -1,0 +1,151 @@
+name: AWF Claude adapter demonstration
+
+# Produces the qualification evidence required before Claude can be the
+# project's required external engine (docs/providers/claude-code-action.md,
+# "Qualification evidence"). Run it manually against a same-repository
+# demonstration pull request after the AWF Reviewer App is installed and the
+# credentials below exist. Attach the resulting demonstration.json to the
+# bootstrap report and set review.qualification flags from it by hand.
+#
+# Required configuration:
+#   vars.AWF_REVIEWER_APP_ID              numeric App id of the dedicated reviewer App
+#   secrets.AWF_REVIEWER_APP_PRIVATE_KEY  the App's private key (PEM)
+#   (no model credential is needed for this workflow)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Same-repository demonstration pull request number"
+        required: true
+        type: string
+      head_binding_evidence:
+        description: "URL of an awf/review run that failed after a push made an earlier review stale (optional)"
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+env:
+  AWF_REVIEW_DIR: .agentic/review/claude
+  AWF_SCHEMA: .agentic/schemas/review-report.schema.json
+
+jobs:
+  model-negative:
+    name: model job cannot write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Attempt writes with the model job's token (all must be refused)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 "$AWF_REVIEW_DIR/verify.py" model-negative
+          --repo "${{ github.repository }}" --pr "${{ inputs.pr_number }}" --out demo-model-negative.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: demo-model-negative
+          path: demo-model-negative.json
+
+  publisher-negative:
+    name: reviewer App is review-only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: reviewer-app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.AWF_REVIEWER_APP_ID }}
+          private-key: ${{ secrets.AWF_REVIEWER_APP_PRIVATE_KEY }}
+          permission-pull-requests: write
+      - name: Attempt writes outside pull-request reviews with the App token (all must be refused)
+        env:
+          GH_TOKEN: ${{ steps.reviewer-app.outputs.token }}
+        run: >-
+          python3 "$AWF_REVIEW_DIR/verify.py" publisher-negative
+          --repo "${{ github.repository }}" --pr "${{ inputs.pr_number }}" --out demo-publisher-negative.json
+      - name: "Read the App installation's declared permissions (must be exactly pull_requests write, metadata read)"
+        env:
+          AWF_REVIEWER_APP_ID: ${{ vars.AWF_REVIEWER_APP_ID }}
+          AWF_REVIEWER_APP_PRIVATE_KEY: ${{ secrets.AWF_REVIEWER_APP_PRIVATE_KEY }}
+        run: >-
+          python3 "$AWF_REVIEW_DIR/verify.py" app-permissions
+          --repo "${{ github.repository }}" --out demo-app-permissions.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: demo-publisher
+          path: |
+            demo-publisher-negative.json
+            demo-app-permissions.json
+
+  unit-and-hashes:
+    name: offline tests and protected-code hashes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 "$AWF_REVIEW_DIR/verify.py" unit --out demo-unit.json
+      - run: python3 "$AWF_REVIEW_DIR/verify.py" hashes --schema "$AWF_SCHEMA" --out demo-hashes.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: demo-unit
+          path: |
+            demo-unit.json
+            demo-hashes.json
+
+  record:
+    name: demonstration record
+    needs: [model-negative, publisher-negative, unit-and-hashes]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: demo-*
+          merge-multiple: true
+      - name: Merge fragments into demonstration.json
+        run: >-
+          python3 "$AWF_REVIEW_DIR/verify.py" record
+          --inputs demo-model-negative.json demo-publisher-negative.json demo-app-permissions.json demo-unit.json demo-hashes.json
+          --head-binding-evidence "${{ inputs.head_binding_evidence }}"
+          --out demonstration.json
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## AWF Claude adapter demonstration'
+            echo
+            echo '```json'
+            cat demonstration.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: demonstration
+          path: demonstration.json

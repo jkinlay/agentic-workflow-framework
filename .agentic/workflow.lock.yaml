@@ -1,0 +1,115 @@
+schema_version: 1
+framework:
+  name: agentic-workflow-framework
+  version: 0.1.0
+  source_repository: github:jkinlay/agentic-workflow-framework
+  source_base_commit: 2c7fe134f50393c7727bcf1de6e5bb694dfa24fa
+  source_tree_without_lock: 047d3fa961553f1c5149f1a92d8945daeb26767c
+  git_object_format: sha1
+manifest:
+  path: .agentic-workflow/distribution-manifest.yaml
+  git_blob_oid: 86d895eeeb41c225a70040381653ae6fde157abe
+  sha256: 680fb68a207c5f946fdc3ed317eba10a1684e99bdc4d472000f9ea35ad8cc5d0
+bootstrap:
+  target_repository: github:jkinlay/agentic-workflow-framework
+  base_commit: 2c7fe134f50393c7727bcf1de6e5bb694dfa24fa
+selected:
+  runtime_adapters:
+    - codex
+  review:
+    required_external_engine: copilot
+    optional_engines:
+      - claude
+artifacts:
+  - target: .agentic/project.yaml
+    source: scaffolds/project/.agentic/project.yaml.template
+    policy: seed_once
+    source_git_blob_oid: 84ad6af527020fb9a4eabdba858bc016686761a3
+    installed_git_blob_oid: f678b0d139410ceb7ad9cb0c470a3cfcd0a48458
+    source_sha256: 6f99e15a7bb42f80752de04a0bba788935f89b21220a3fb7e2781da4f8bccd50
+    installed_sha256: cedcede21165e48ac0f29bd80b989b72c7ed6a9cdd111950190bf2f27de7d36d
+  - target: .agentic/review/claude/awf_review_common.py
+    source: scaffolds/providers/claude/.agentic/review/claude/awf_review_common.py
+    policy: managed
+    source_git_blob_oid: 97e1c7feef928d2508a36f820ef55e95176fa75a
+    installed_git_blob_oid: 97e1c7feef928d2508a36f820ef55e95176fa75a
+    source_sha256: caff6e201a4113b33f62f5851cb5fe3cc3e0c603d8f386374f473612d9b77e82
+    installed_sha256: caff6e201a4113b33f62f5851cb5fe3cc3e0c603d8f386374f473612d9b77e82
+  - target: .agentic/review/claude/build_input.py
+    source: scaffolds/providers/claude/.agentic/review/claude/build_input.py
+    policy: managed
+    source_git_blob_oid: 6ad90d3e668f2f5393cc548bcbf52578c40f3ea5
+    installed_git_blob_oid: 6ad90d3e668f2f5393cc548bcbf52578c40f3ea5
+    source_sha256: 8979ec5ecd78c898f6bede93a92d769753c2ee54e53d54167b09db6a18913205
+    installed_sha256: 8979ec5ecd78c898f6bede93a92d769753c2ee54e53d54167b09db6a18913205
+  - target: .agentic/review/claude/policy.py
+    source: scaffolds/providers/claude/.agentic/review/claude/policy.py
+    policy: managed
+    source_git_blob_oid: 6a33f45007376ee4dd7c1b75ccb303937d794766
+    installed_git_blob_oid: 6a33f45007376ee4dd7c1b75ccb303937d794766
+    source_sha256: b95ea01b005985f57e925260eb9acbc7e225b91f719eddf33219a10c8cb04b00
+    installed_sha256: b95ea01b005985f57e925260eb9acbc7e225b91f719eddf33219a10c8cb04b00
+  - target: .agentic/review/claude/publish.py
+    source: scaffolds/providers/claude/.agentic/review/claude/publish.py
+    policy: managed
+    source_git_blob_oid: 6c65a238e124cf3299c7655a1c60b12c51334d78
+    installed_git_blob_oid: 6c65a238e124cf3299c7655a1c60b12c51334d78
+    source_sha256: 8ff8f6f42679eef1221668aef84d2ef5116245c6c7d32692910037bc563d1a74
+    installed_sha256: 8ff8f6f42679eef1221668aef84d2ef5116245c6c7d32692910037bc563d1a74
+  - target: .agentic/review/claude/run_model.py
+    source: scaffolds/providers/claude/.agentic/review/claude/run_model.py
+    policy: managed
+    source_git_blob_oid: ea448d8fab65ece633fa39b7e9196a2ce329aedb
+    installed_git_blob_oid: ea448d8fab65ece633fa39b7e9196a2ce329aedb
+    source_sha256: 7cb986fb0d5ed1d5ed5a71c00b370865c2ca10e60dd263664a190d10ca3722c1
+    installed_sha256: 7cb986fb0d5ed1d5ed5a71c00b370865c2ca10e60dd263664a190d10ca3722c1
+  - target: .agentic/review/claude/tests/__init__.py
+    source: scaffolds/providers/claude/.agentic/review/claude/tests/__init__.py
+    policy: managed
+    source_git_blob_oid: f0b5e6b2e97fa25be3ab55e872b3bc2e52b36fb8
+    installed_git_blob_oid: f0b5e6b2e97fa25be3ab55e872b3bc2e52b36fb8
+    source_sha256: 3dc1b47e9ef3f7e8d25c01d3a9ecc90b84f5cb6096d95fecbbb59a8396c8147b
+    installed_sha256: 3dc1b47e9ef3f7e8d25c01d3a9ecc90b84f5cb6096d95fecbbb59a8396c8147b
+  - target: .agentic/review/claude/tests/test_claude_adapter.py
+    source: scaffolds/providers/claude/.agentic/review/claude/tests/test_claude_adapter.py
+    policy: managed
+    source_git_blob_oid: ddd096fd0f52db2521913c48ddd7225ff6ca247c
+    installed_git_blob_oid: ddd096fd0f52db2521913c48ddd7225ff6ca247c
+    source_sha256: fd0ebae68de6eed30d62e7d104153281e704f8ec5b909f68298da367e4476450
+    installed_sha256: fd0ebae68de6eed30d62e7d104153281e704f8ec5b909f68298da367e4476450
+  - target: .agentic/review/claude/verify.py
+    source: scaffolds/providers/claude/.agentic/review/claude/verify.py
+    policy: managed
+    source_git_blob_oid: d3f323efa1dc347ddb0eea518e28779dc82909e9
+    installed_git_blob_oid: d3f323efa1dc347ddb0eea518e28779dc82909e9
+    source_sha256: a0d8e1dac09a940f208273ab1e449f555ba31187d8a9bd28d6eedf747588000d
+    installed_sha256: a0d8e1dac09a940f208273ab1e449f555ba31187d8a9bd28d6eedf747588000d
+  - target: .agentic/schemas/review-report.schema.json
+    source: schemas/review-report.schema.json
+    policy: managed
+    source_git_blob_oid: e10608225c357f7318b580789d79ad02627cf84d
+    installed_git_blob_oid: e10608225c357f7318b580789d79ad02627cf84d
+    source_sha256: 13353c7482f57099e3f9ff19a4d80ef8eaa47b147f993737fecb6ed0c6fd07ae
+    installed_sha256: 13353c7482f57099e3f9ff19a4d80ef8eaa47b147f993737fecb6ed0c6fd07ae
+  - target: .github/workflows/awf-review-claude.yml
+    source: scaffolds/providers/claude/.github/workflows/awf-review-claude.yml
+    policy: managed
+    source_git_blob_oid: a5395f7cab43930fbb9ea06dbdaf386d6139e497
+    installed_git_blob_oid: a5395f7cab43930fbb9ea06dbdaf386d6139e497
+    source_sha256: b30d51900b94b28eb63cceb0326d663f6b974dd6faeea98bc98a78300160dff1
+    installed_sha256: b30d51900b94b28eb63cceb0326d663f6b974dd6faeea98bc98a78300160dff1
+  - target: .github/workflows/awf-review-claude-demonstrate.yml
+    source: scaffolds/providers/claude/.github/workflows/awf-review-claude-demonstrate.yml
+    policy: managed
+    source_git_blob_oid: 34986ac0c5c16db117f13615ca96442eeec56bc8
+    installed_git_blob_oid: 34986ac0c5c16db117f13615ca96442eeec56bc8
+    source_sha256: cc7a440a1114ba70ea38e7105e80d0d50546b2e85449f2a451e24bf879c57c6d
+    installed_sha256: cc7a440a1114ba70ea38e7105e80d0d50546b2e85449f2a451e24bf879c57c6d
+  - target: .github/workflows/awf-review-gate.yml
+    source: scaffolds/providers/copilot/.github/workflows/awf-review-gate.yml
+    policy: managed
+    source_git_blob_oid: f582fa0900ca1d39bc3740d0b7831686bc80d376
+    installed_git_blob_oid: f582fa0900ca1d39bc3740d0b7831686bc80d376
+    source_sha256: 47c5990f9fad72c6e6607113db53e305347222176dae571c29f418e132cc6b92
+    installed_sha256: 47c5990f9fad72c6e6607113db53e305347222176dae571c29f418e132cc6b92
+lock_self_hash_excluded: true
