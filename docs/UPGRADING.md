@@ -23,15 +23,16 @@ Projects upgrading from 0.1.0 should:
    immutable 0.1.1 source commit; and
 5. run normal project CI and independent review.
 
-The owner-authorized [issue #6](https://github.com/jkinlay/agentic-workflow-framework/issues/6)
-defines four cosmetic defect fixes: the installed schema path, the gate's
+[Issue #6](https://github.com/jkinlay/agentic-workflow-framework/issues/6)
+defines four defect fixes: the installed schema path, the gate's
 source/installed policy-path comment, and one terminal blank-line removal in
-each of the two Copilot instruction sources. None changes reviewer-instruction
-content, so this is not a material engine/instruction change under the
-measurement rule in `docs/REVIEW_POLICY.md` and existing qualification evidence
-may be retained. The upgrade itself still requires a current-head review and
-normal human approval. Any later reviewer-instruction content change requires
-the seeded benchmark and affected qualification evidence to be rerun.
+each of the two Copilot instruction sources. The project owner must decide and
+record whether those instruction-file byte changes are material under the
+measurement rule in `docs/REVIEW_POLICY.md`; this upgrade note does not retain
+or invalidate qualification evidence by itself. The upgrade requires a
+current-head review and normal human approval. Any reviewer-instruction content
+change beyond terminal whitespace requires the seeded benchmark and affected
+qualification evidence to be rerun.
 
 ## Upgrade procedure
 

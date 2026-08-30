@@ -29,6 +29,20 @@ EXPECTED_DOGFOOD_TARGETS = {
     ".github/workflows/awf-review-claude-demonstrate.yml",
     ".github/workflows/awf-review-gate.yml",
 }
+EXPECTED_DOGFOOD_OMISSIONS = {
+    "AGENTS.md",
+    "ARCHITECTURE.md",
+    "docs/agent-runtime/codex.md",
+    "docs/agent-runtime/review-policy.md",
+    "docs/agent-runtime/threat-model.md",
+    "docs/agent-runtime/identity-and-audit.md",
+    "docs/agent-runtime/incident-response.md",
+    "docs/agent-runtime/copilot-review.md",
+    ".github/copilot-instructions.md",
+    ".github/instructions/awf-review.instructions.md",
+    "docs/agent-runtime/claude-code-action-review.md",
+    ".github/CODEOWNERS",
+}
 EXPECTED_COPILOT_MAPPINGS = {
     ("scaffolds/project/AGENTS.md.template", "AGENTS.md"),
     ("scaffolds/project/ARCHITECTURE.md.template", "ARCHITECTURE.md"),
@@ -94,10 +108,12 @@ def blobs_match(left, right):
     return left == right
 
 
-def executable_yaml(content):
-    return b"\n".join(
-        line for line in content.splitlines() if line.strip() and not line.lstrip().startswith(b"#")
-    )
+def workflow_from_trigger(content):
+    marker = b"\non:\n"
+    position = content.find(marker)
+    if position < 0:
+        raise AssertionError("workflow trigger not found")
+    return content[position + 1 :]
 
 
 def manifest_artifacts(text):
@@ -117,6 +133,9 @@ def manifest_artifacts(text):
                 "requires": requires.group(1) if requires else "",
             }
         )
+    declared = len(re.findall(r"(?m)^  - source: ", text))
+    if len(artifacts) != declared:
+        raise AssertionError(f"parsed {len(artifacts)} of {declared} manifest artifacts")
     return artifacts
 
 
@@ -151,12 +170,17 @@ class DistributionTests(unittest.TestCase):
             (ROOT / "README.md", r"Version `([0-9]+\.[0-9]+\.[0-9]+)`"),
             (ROOT / "docs" / "GETTING_STARTED.md", r"AWF v([0-9]+\.[0-9]+\.[0-9]+) uses"),
             (ROOT / "docs" / "SYSTEM_ARCHITECTURE.md", r"AWF v([0-9]+\.[0-9]+\.[0-9]+) remains"),
+            (ROOT / "docs" / "UPGRADING.md", r"Version ([0-9]+\.[0-9]+\.[0-9]+) upgrade note"),
         )
         for path, pattern in statements:
             with self.subTest(path=path):
                 match = re.search(pattern, path.read_text(encoding="utf-8"))
                 self.assertIsNotNone(match)
                 self.assertEqual(match.group(1), expected)
+        lock = (ROOT / ".agentic" / "workflow.lock.yaml").read_text(encoding="utf-8")
+        lock_version = re.search(r"(?m)^  version: ([0-9]+\.[0-9]+\.[0-9]+)$", lock)
+        self.assertIsNotNone(lock_version)
+        self.assertEqual(lock_version.group(1), expected)
 
     def test_managed_references_use_installed_layout(self):
         policy = (ROOT / "docs" / "REVIEW_POLICY.md").read_text(encoding="utf-8")
@@ -191,7 +215,7 @@ class DistributionTests(unittest.TestCase):
             text=False,
         )
         self.assertEqual(base.returncode, 0, base.stderr)
-        self.assertEqual(executable_yaml(current), executable_yaml(base.stdout))
+        self.assertEqual(workflow_from_trigger(current), workflow_from_trigger(base.stdout))
 
     def test_copilot_instruction_changes_have_one_terminal_newline(self):
         paths = (
@@ -242,6 +266,13 @@ class DistributionTests(unittest.TestCase):
         source_commit = lock_value(lock, r"^  source_base_commit: ([0-9a-f]+)$")
         expected_tree = lock_value(lock, r"^  source_tree_without_lock: ([0-9a-f]+)$")
         bootstrap_commit = lock_value(lock, r"^  base_commit: ([0-9a-f]+)$")
+        shallow = run_git(ROOT, "rev-parse", "--is-shallow-repository")
+        self.assertEqual(shallow.returncode, 0, shallow.stderr)
+        self.assertEqual(
+            shallow.stdout.strip(),
+            "false",
+            "distribution provenance requires a full clone; fetch complete history",
+        )
         bootstrap_ancestor = run_git(
             ROOT, "merge-base", "--is-ancestor", bootstrap_commit, source_commit
         )
@@ -305,6 +336,23 @@ class DistributionTests(unittest.TestCase):
             )
         )
         self.assertEqual({block.group("target") for block in blocks}, EXPECTED_DOGFOOD_TARGETS)
+        omitted_section = re.search(
+            r"(?ms)^  omitted_selected_targets:\n(?P<body>(?:    - [^\n]+\n)+)",
+            lock,
+        )
+        self.assertIsNotNone(omitted_section)
+        omitted = set(re.findall(r"(?m)^    - ([^\n]+)$", omitted_section.group("body")))
+        self.assertEqual(omitted, EXPECTED_DOGFOOD_OMISSIONS)
+        manifest_text = (ROOT / ".agentic-workflow" / "distribution-manifest.yaml").read_text(
+            encoding="utf-8"
+        )
+        selected_targets = {
+            artifact["target"]
+            for artifact in manifest_artifacts(manifest_text)
+            if artifact["source"] != "generated"
+        }
+        self.assertFalse(EXPECTED_DOGFOOD_TARGETS & omitted)
+        self.assertEqual(EXPECTED_DOGFOOD_TARGETS | omitted, selected_targets)
         for block in blocks:
             source_spec = f"{source_commit}:{block.group('source')}"
             target_spec = f"{source_commit}:{block.group('target')}"
@@ -326,6 +374,22 @@ class DistributionTests(unittest.TestCase):
             )
             if block.group("policy") == "managed":
                 self.assertTrue(blobs_match(source_bytes, installed_bytes))
+
+            current_source = run_git(
+                ROOT, "cat-file", "blob", f"HEAD:{block.group('source')}", text=False
+            )
+            current_installed = run_git(
+                ROOT, "cat-file", "blob", f"HEAD:{block.group('target')}", text=False
+            )
+            self.assertEqual(current_source.returncode, 0, current_source.stderr)
+            self.assertEqual(current_installed.returncode, 0, current_installed.stderr)
+            self.assertEqual(
+                hashlib.sha256(current_source.stdout).hexdigest(), block.group("source_sha")
+            )
+            self.assertEqual(
+                hashlib.sha256(current_installed.stdout).hexdigest(),
+                block.group("installed_sha"),
+            )
 
 
 if __name__ == "__main__":

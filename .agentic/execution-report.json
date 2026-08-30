@@ -6,7 +6,7 @@
   "acceptance_criteria": [
     {"id": "AC1", "status": "met", "evidence": ["tests/test_distribution.py::test_managed_references_use_installed_layout"]},
     {"id": "AC2", "status": "met", "evidence": ["tests/test_distribution.py::test_copilot_instruction_changes_have_one_terminal_newline"]},
-    {"id": "AC3", "status": "met", "evidence": ["tests/test_distribution.py::test_dogfood_lock_reproduces"]},
+    {"id": "AC3", "status": "met", "evidence": ["tests/test_distribution.py::test_dogfood_lock_reproduces, including current-head blob checks and selected-target omission accounting"]},
     {"id": "AC4", "status": "met", "evidence": ["tests/test_distribution.py::test_clean_copilot_bootstrap_passes_diff_check"]},
     {"id": "AC5", "status": "met", "evidence": ["docs/UPGRADING.md version 0.1.1 upgrade note"]},
     {"id": "AC6", "status": "met", "evidence": ["tests/test_distribution.py::test_gate_behavior_unchanged_from_task_base and 34 existing adapter/gate tests"]}
@@ -18,7 +18,8 @@
   ],
   "limitations": [
     "Upstream CI remains tracked by AWF-022; the distribution suite is a documented manual gate in 0.1.1.",
-    "The two skipped adapter tests require symlink privilege and openssl in the current Windows environment."
+    "The two skipped adapter tests require symlink privilege and openssl in the current Windows environment; the unchanged adapter suite previously passed all 34 tests in the Linux permission-demonstration run 33316442455.",
+    "This repository's dogfood bootstrap was a partial activation; the lock now inventories every selected target that was not installed."
   ],
   "files_changed": [
     ".agentic-workflow/distribution-manifest.yaml",

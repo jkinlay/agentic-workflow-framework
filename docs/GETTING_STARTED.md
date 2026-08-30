@@ -180,6 +180,18 @@ the current lock contents. `bootstrap.base_commit` remains the immutable source
 used for the project's original bootstrap, so later upgrades retain their
 three-way comparison point; it is not advanced on each upgrade.
 
+`source_tree_without_lock` is the tree of that immutable current source commit
+with the lock removed. The source commit must immediately precede a lock-only
+commit and remain reachable after merge; it is an installation snapshot, not a
+claim that every later repository commit has the same whole-tree hash. Lock
+verification must separately compare each recorded source and installed target
+with the current head so later managed-artifact drift still fails.
+
+`selected` records configured adapters. `artifacts` records targets actually
+installed by that activation. A partial activation must set an explicit scope,
+list every selected but uninstalled target, and give one reviewable omission
+reason; silent omissions are invalid.
+
 ### 4. Configure the reviewer outside Git
 
 Credentials and live repository settings are owner actions. Never put their

@@ -13,6 +13,21 @@ manifest:
 bootstrap:
   target_repository: github:jkinlay/agentic-workflow-framework
   base_commit: 2c7fe134f50393c7727bcf1de6e5bb694dfa24fa
+  installation_scope: partial_dogfood_activation
+  omitted_selected_targets:
+    - AGENTS.md
+    - ARCHITECTURE.md
+    - docs/agent-runtime/codex.md
+    - docs/agent-runtime/review-policy.md
+    - docs/agent-runtime/threat-model.md
+    - docs/agent-runtime/identity-and-audit.md
+    - docs/agent-runtime/incident-response.md
+    - docs/agent-runtime/copilot-review.md
+    - .github/copilot-instructions.md
+    - .github/instructions/awf-review.instructions.md
+    - docs/agent-runtime/claude-code-action-review.md
+    - .github/CODEOWNERS
+  omission_reason: Pre-existing project files and source-layout documentation were not installed during the partial activation; a future full dogfood bootstrap must reconcile them explicitly.
 selected:
   runtime_adapters:
     - codex
