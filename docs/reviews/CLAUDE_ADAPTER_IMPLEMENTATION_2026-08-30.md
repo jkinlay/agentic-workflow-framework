@@ -22,10 +22,10 @@ distribution manifest to the same relative targets in a project:
 | `.agentic/review/claude/awf_review_common.py` | Stdlib HTTP client, JSON-schema subset validator, minimal YAML reader for policy |
 | `.agentic/review/claude/policy.py` | Reads engine, identity, pinned model and paths from protected policy; refuses placeholders |
 | `.agentic/review/claude/build_input.py` | Diff via API, changed files as data, task contract, execution report; excludes PR title/body/comments |
-| `.agentic/review/claude/run_model.py` | Anthropic Messages API with a forced schema-shaped tool call; blind phase then claims phase; error reports fail closed |
+| `.agentic/review/claude/run_model.py` | Anthropic Messages API with a forced schema-shaped tool call; blind phase, then a claims phase that continues the same conversation; error reports fail closed |
 | `.agentic/review/claude/publish.py` | Non-model publisher: revalidates, binds to live head, posts one COMMENT review; APPROVE unreachable |
 | `.agentic/review/claude/verify.py` | `model-negative`, `publisher-negative`, `app-permissions` (JWT via openssl), `unit`, `hashes`, `record` |
-| `.agentic/review/claude/tests/` | 27 offline tests, including the gate script extracted from the workflow file |
+| `.agentic/review/claude/tests/` | 32 offline tests, including the gate script extracted from the workflow file |
 
 Changed framework files:
 
@@ -35,11 +35,12 @@ Changed framework files:
   keeps the Copilot constant for `copilot`, requires the publisher's
   `awf-review-status` marker for `claude`, and still binds to the live head,
   excludes dismissed reviews, paginates, and re-evaluates on push and review
-  events. It also enforces the review policy's rule that every
-  `review.qualification` flag must be true for the required engine, failing
-  closed otherwise, so a half-configured engine cannot pass. A repository
-  without a policy file falls back to Copilot and says so. The gate token
-  gains `contents: read` for the policy read.
+  events. It also enforces the review policy's rule that every flag under
+  `review.qualification` must be true (with the three baseline flags present)
+  for the required engine, failing closed otherwise, so a half-configured
+  engine cannot pass. A repository without a policy file fails closed: no
+  engine is assumed. The gate token gains `contents: read` for the policy
+  read.
 - `.agentic-workflow/distribution-manifest.yaml`: Claude artifacts added with
   `requires: review.required_external_engine equals claude or
   review.optional_engines contains claude`; the gate entry is unconditional.
@@ -104,6 +105,43 @@ To take Claude to "available" for a project (or for this repository itself):
    closed for the required engine (or verifies Copilot if Copilot is required
    and its own flags are already true).
 
+## Remediation after the owner's verification (30 August 2026)
+
+The owner's verification of the merged change (docs/reviews/
+IMPLEMENTATION_VERIFICATION_2026-08-30.md) found three blockers. All are fixed
+in this revision:
+
+1. The claims phase was a separate stateless call that did not receive the
+   diff or file contents, so claims could not be checked against the material.
+   The claims phase now continues the blind-phase conversation (blind prompt,
+   the model's own blind answer as an assistant turn with its tool call, then a
+   tool result plus the untrusted claims), so the diff, files and task contract
+   remain in context. The test asserts the continuation structure.
+2. The gate checked three named flags only. It now requires every flag under
+   `review.qualification` to be true and the three baseline flags to be
+   present; any additional project flag that is false blocks.
+3. A missing `.agentic/project.yaml` silently defaulted the gate to Copilot.
+   It now fails closed with an explicit message; a repository must carry a
+   protected policy before any engine can satisfy `awf/review`.
+
+The review of the remediation itself found a fourth defect, also fixed here:
+
+4. The model's forced-tool answer was accepted whenever it was a JSON object,
+   so `submit_review: {}` normalised to zero findings and reported
+   `no_findings` with exit 0. The tool input is now validated against the
+   tool's own input schema before anything is normalised from it, and a
+   declared status that contradicts the findings count is rejected. Both
+   cases produce an `error` report and exit 1, so the publisher never runs.
+   Negative tests cover an empty answer, missing and unknown fields, an
+   invalid severity, contradictory status, and a malformed claims answer.
+
+Also fixed: path-escape coverage no longer depends on symbolic links. A
+platform-independent test asserts that `../outside.txt` and an absolute path
+are refused and that a real file outside the checkout is never read; symlink
+coverage is a separate test that skips where symlinks need privileges. The
+openssl-dependent JWT test is skipped where openssl is absent; the
+demonstration workflow runs on ubuntu-latest where it is present.
+
 ## What this change does not do
 
 - It does not run the demonstration; that needs the App, the credentials and
@@ -117,7 +155,7 @@ To take Claude to "available" for a project (or for this repository itself):
 
 ## Local validation performed
 
-`python3 -m py_compile` on every module; 26 offline tests passing with
+`python3 -m py_compile` on every module; 32 offline tests passing with
 resource warnings treated as errors; YAML parse of all four workflows, the
 manifest and the template; every `uses:` reference matches
 `owner/repo@<40-hex>`; an end-to-end dry run of build_input, run_model and

@@ -45,8 +45,8 @@ Keep issue-tracker updates manual during the first pilots.
 
 Before any developer identity receives push access, configure server-enforced
 protected paths and keep agent-authored CI secret-less. Select and benchmark one
-external reviewer (Copilot or Claude Code Action) and make absence, failure, or
-staleness a blocking check.
+external reviewer (Copilot or the split Claude model/publisher adapter) and make
+absence, failure, or staleness a blocking check.
 
 Exit criteria:
 
@@ -75,8 +75,10 @@ Add read-only tracker and source-control adapters first. Verify authentication,
 repository allowlists, field mappings, rate limits, audit logs, and untrusted-
 content handling.
 
-The reviewer adapter is also read-only and must not share a resumed developer
-session. Provider availability and permission evidence are explicit project
+The reviewer model process is read-only and must not share a resumed developer
+session. If a provider needs a write-capable publisher, it must be a separate,
+deterministic non-model process with the minimum credential that the provider
+supports. Provider availability and permission evidence are explicit project
 configuration, not auto-detected secrets.
 
 Exit criteria:
@@ -170,6 +172,19 @@ conditions.
 | AWF-020 | Implement and permission-test the split Claude model/publisher adapter | P1 |
 | AWF-021 | Add manifest/project/lock schemas and provenance hash validation | P0 |
 | AWF-022 | Add upstream CI, secret scanning, and review benchmark fixtures | P0 |
+
+AWF-020 status: the scaffold implementation is merged at `24ecd82`, and the
+defects found by its verification are remediated in the follow-up change
+(claims phase continues the blind conversation with the diff and files in
+context; the gate rejects any false flag under `review.qualification`,
+including future flags, and fails closed when `.agentic/project.yaml` is
+absent; the model's forced-tool answer is validated against its own schema so
+a malformed answer is an error rather than `no_findings`; the offline suite is
+Windows-portable with path-traversal coverage independent of symlinks). Live
+qualification remains pending: keep the task at P1 until the same-repository
+permission demonstration and the seeded benchmark have run and their evidence
+supports every qualification flag. Merged code alone is not completion, and
+`awf/review` must not be required before that evidence exists.
 
 ## Success measures
 

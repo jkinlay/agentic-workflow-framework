@@ -156,27 +156,65 @@ class BuildInputTests(unittest.TestCase):
             handle.write(head + "\n")
         with open(os.path.join(pr_dir, "src", "a.py"), "w") as handle:
             handle.write("print('hello')\n" * 50)
-        os.symlink("/etc/hostname", os.path.join(pr_dir, "escape.txt"))
+        # A real file OUTSIDE the checkout that a traversal path would reach if the guard failed.
+        with open(os.path.join(tmp, "outside.txt"), "w") as handle:
+            handle.write("SECRET-OUTSIDE-CHECKOUT\n")
         return pr_dir
+
+    def build_with(self, tmp, files, extra_args=()):
+        with mock.patch.object(build_input, "github_paginate", return_value=files):
+            pr_dir = self.make_checkout(tmp)
+            args = build_input.parse_args(["--repo", "o/r", "--pr", "7", "--base-sha", SHA_B, "--head-sha", SHA_A,
+                                           "--pr-dir", pr_dir, "--out", "x", *extra_args])
+            return build_input.build(args, "token")
 
     def test_build_excludes_pr_text_and_records_limitations(self):
         files = [{"filename": "src/a.py", "status": "modified", "additions": 1, "deletions": 0, "patch": "@@ -1 +1 @@\n-x\n+y"},
-                 {"filename": "escape.txt", "status": "added", "additions": 1, "deletions": 0, "patch": None},
-                 {"filename": "gone.py", "status": "removed", "additions": 0, "deletions": 3, "patch": "@@ -1,3 +0,0 @@\n-a\n-b\n-c"}]
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(build_input, "github_paginate", return_value=files):
-            pr_dir = self.make_checkout(tmp)
-            args = build_input.parse_args(["--repo", "o/r", "--pr", "7", "--base-sha", SHA_B, "--head-sha", SHA_A,
-                                           "--pr-dir", pr_dir, "--out", "x", "--max-file-bytes", "100"])
-            payload = build_input.build(args, "token")
+                 {"filename": "gone.py", "status": "removed", "additions": 0, "deletions": 3, "patch": "@@ -1,3 +0,0 @@\n-a\n-b\n-c"},
+                 {"filename": "missing.txt", "status": "added", "additions": 1, "deletions": 0, "patch": None}]
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.build_with(tmp, files, ("--max-file-bytes", "100"))
         self.assertNotIn("title", payload)
         self.assertIn("pull request body", payload["excluded_by_design"])
         self.assertEqual([f["path"] for f in payload["files"]], ["src/a.py"])
         self.assertTrue(payload["files"][0]["truncated"])
         joined = " ".join(payload["limitations"])
-        self.assertIn("escape.txt", joined)
+        self.assertIn("missing.txt", joined)
         self.assertIn("No task contract", joined)
         self.assertIn("claims phase was skipped", joined)
         self.assertIn("No textual patch", joined)
+
+    def test_path_traversal_and_absolute_paths_are_rejected(self):
+        """Platform-independent: '../outside.txt' and an absolute path must never be read."""
+        with tempfile.TemporaryDirectory() as tmp:
+            absolute_outside = os.path.join(tmp, "outside.txt")
+            files = [{"filename": "../outside.txt", "status": "added", "additions": 1, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+x"},
+                     {"filename": absolute_outside, "status": "added", "additions": 1, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+x"},
+                     {"filename": "src/a.py", "status": "modified", "additions": 1, "deletions": 0, "patch": "@@ -1 +1 @@\n-x\n+y"}]
+            payload = self.build_with(tmp, files)
+        self.assertEqual([f["path"] for f in payload["files"]], ["src/a.py"])
+        self.assertNotIn("SECRET-OUTSIDE-CHECKOUT", json.dumps(payload))
+        joined = " ".join(payload["limitations"])
+        self.assertIn("../outside.txt", joined)
+        self.assertIn("not readable from the checkout", joined)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks unsupported on this platform")
+    def test_symlink_escape_is_rejected(self):
+        """Symlink coverage, separate from traversal: skipped where symlinks need privileges."""
+        with tempfile.TemporaryDirectory() as tmp:
+            pr_dir = self.make_checkout(tmp)
+            try:
+                os.symlink(os.path.join(tmp, "outside.txt"), os.path.join(pr_dir, "escape.txt"))
+            except (OSError, NotImplementedError) as err:
+                self.skipTest(f"cannot create symlinks here: {err}")
+            files = [{"filename": "escape.txt", "status": "added", "additions": 1, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+x"}]
+            with mock.patch.object(build_input, "github_paginate", return_value=files):
+                args = build_input.parse_args(["--repo", "o/r", "--pr", "7", "--base-sha", SHA_B, "--head-sha", SHA_A,
+                                               "--pr-dir", pr_dir, "--out", "x"])
+                payload = build_input.build(args, "token")
+        self.assertEqual(payload["files"], [])
+        self.assertNotIn("SECRET-OUTSIDE-CHECKOUT", json.dumps(payload))
+        self.assertIn("escape.txt", " ".join(payload["limitations"]))
 
     def test_head_mismatch_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(build_input, "github_paginate", return_value=[]):
@@ -205,7 +243,7 @@ class RunModelTests(unittest.TestCase):
         def _fake(base_url, body, timeout):
             calls.append(body)
             tool = body["tool_choice"]["name"]
-            return {"content": [{"type": "tool_use", "name": tool, "input": responses[tool]}],
+            return {"content": [{"type": "tool_use", "id": f"toolu_{tool}", "name": tool, "input": responses[tool]}],
                     "usage": {"input_tokens": 1, "output_tokens": 1}, "stop_reason": "tool_use"}
         return _fake, calls
 
@@ -231,8 +269,21 @@ class RunModelTests(unittest.TestCase):
         self.assertEqual(rep["claim_assessments"][0]["status"], "contradicted")
         self.assertIn("did not see tests", rep["limitations"])
         self.assertEqual(len(calls), 2)
-        self.assertIn("UNTRUSTED CLAIMS", calls[1]["messages"][0]["content"])
-        self.assertNotIn("UNTRUSTED CLAIMS", calls[0]["messages"][0]["content"])
+        blind_messages, claims_messages = calls[0]["messages"], calls[1]["messages"]
+        self.assertEqual(len(blind_messages), 1)
+        self.assertNotIn("UNTRUSTED CLAIMS", blind_messages[0]["content"])
+        # The claims phase continues the blind conversation: same diff/contract turn, the model's
+        # own blind answer, then a tool_result plus the untrusted claims.
+        self.assertEqual([m["role"] for m in claims_messages], ["user", "assistant", "user"])
+        self.assertEqual(claims_messages[0]["content"], blind_messages[0]["content"])
+        self.assertIn("@@ -1 +1 @@", claims_messages[0]["content"])
+        self.assertEqual(claims_messages[1]["content"][0]["name"], "submit_review")
+        final_turn = claims_messages[2]["content"]
+        self.assertEqual(final_turn[0]["type"], "tool_result")
+        self.assertEqual(final_turn[0]["tool_use_id"], "toolu_submit_review")
+        self.assertIn("UNTRUSTED CLAIMS", final_turn[1]["text"])
+        self.assertEqual({t["name"] for t in calls[1]["tools"]}, {"submit_review", "assess_claims"})
+        self.assertEqual(calls[1]["tool_choice"]["name"], "assess_claims")
 
     def test_no_report_means_single_blind_phase(self):
         fake, calls = self.fake_api({"submit_review": {"status": "no_findings", "findings": [], "limitations": []}})
@@ -251,6 +302,37 @@ class RunModelTests(unittest.TestCase):
             rep, _, code = run_model.run(args)
         self.assertEqual((code, rep["status"]), (1, "error"))
         self.assertEqual(common.validate_report(rep, SCHEMA), [])
+
+    def test_malformed_tool_input_is_an_error_not_no_findings(self):
+        cases = {
+            "empty object": {},
+            "missing findings": {"status": "no_findings", "limitations": []},
+            "unknown field": {"status": "no_findings", "findings": [], "limitations": [], "verdict": "approve"},
+            "bad severity": {"status": "findings", "limitations": [],
+                             "findings": [{"severity": "urgent", "title": "t", "description": "d", "file": "f", "blocking": True}]},
+            "status contradicts findings": {"status": "no_findings", "limitations": [],
+                                            "findings": [{"severity": "high", "title": "t", "description": "d", "file": "f", "blocking": True}]},
+            "findings status with none": {"status": "findings", "findings": [], "limitations": []},
+        }
+        for label, answer in cases.items():
+            fake, _ = self.fake_api({"submit_review": answer})
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(run_model, "anthropic_request", fake):
+                args = run_model.parse_args(["--in", self.make_input(tmp, False), "--schema", SCHEMA_PATH, "--out", "r",
+                                             "--model", "m", "--reviewer-identity", IDENTITY])
+                rep, _, code = run_model.run(args)
+            self.assertEqual((code, rep["status"]), (1, "error"), label)
+            self.assertEqual(common.validate_report(rep, SCHEMA), [], label)
+
+    def test_malformed_claims_answer_is_an_error(self):
+        responses = {"submit_review": {"status": "no_findings", "findings": [], "limitations": []},
+                     "assess_claims": {"claim_assessments": [{"claim_id": "C1", "status": "maybe", "evidence": "?"}],
+                                       "additional_findings": []}}
+        fake, _ = self.fake_api(responses)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(run_model, "anthropic_request", fake):
+            args = run_model.parse_args(["--in", self.make_input(tmp, True), "--schema", SCHEMA_PATH, "--out", "r",
+                                         "--model", "m", "--reviewer-identity", IDENTITY])
+            rep, _, code = run_model.run(args)
+        self.assertEqual((code, rep["status"]), (1, "error"))
 
     def test_wrong_tool_is_an_error(self):
         def wrong(base_url, body, timeout):
@@ -430,14 +512,25 @@ class GateTests(unittest.TestCase):
                            "body": "awf-review-status: findings"}]
         self.assertEqual(self.run_gate(POLICY_TEXT, wrong_identity)[0], 1, "optional engine must not satisfy the gate")
 
-    def test_copilot_engine_and_missing_policy_default(self):
+    def test_copilot_engine_and_missing_policy_fails_closed(self):
         copilot_policy = POLICY_TEXT.replace("required_external_engine: claude", "required_external_engine: copilot")
         native = [{"user": {"login": "copilot-pull-request-reviewer[bot]"}, "commit_id": SHA_A, "state": "COMMENTED", "body": ""}]
         self.assertEqual(self.run_gate(copilot_policy, native)[0], 0)
-        self.assertEqual(self.run_gate(copilot_policy, [], policy_status=404)[0], 1)
         code, out = self.run_gate("", native, policy_status=404)
-        self.assertEqual(code, 0)
-        self.assertIn("defaulting to engine copilot", out)
+        self.assertEqual(code, 1, "no policy file must never default to an engine")
+        self.assertIn("fail closed", out)
+
+    def test_every_qualification_flag_must_be_true(self):
+        extra_false = POLICY_TEXT.replace("head_binding_verified: true",
+                                          "head_binding_verified: true\n    benchmark_passed: false")
+        good = [{"user": {"login": IDENTITY}, "commit_id": SHA_A, "state": "COMMENTED", "body": "awf-review-status: findings"}]
+        code, out = self.run_gate(extra_false, good)
+        self.assertEqual(code, 1)
+        self.assertIn("benchmark_passed", out)
+        no_baseline = POLICY_TEXT.replace("    instruction_paths_protected: true\n", "")
+        code, out = self.run_gate(no_baseline, good)
+        self.assertEqual(code, 1)
+        self.assertIn("baseline", out)
 
     def test_unqualified_engine_fails_closed(self):
         unqualified = POLICY_TEXT.replace("head_binding_verified: true", "head_binding_verified: false")
