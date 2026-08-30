@@ -376,6 +376,7 @@ CI, benchmark fixtures, and controlled integrations, is tracked in
 
 | Question | Authoritative or detailed document |
 |---|---|
+| How do I adopt AWF in a new or existing repository? | [GETTING_STARTED.md](GETTING_STARTED.md) |
 | What are the architectural decisions and invariants? | [ARCHITECTURE.md](../ARCHITECTURE.md) |
 | How does work move between states and autonomy levels? | [OPERATING_MODEL.md](OPERATING_MODEL.md) |
 | How does Codex map the provider-neutral contracts? | [providers/codex.md](providers/codex.md) |
