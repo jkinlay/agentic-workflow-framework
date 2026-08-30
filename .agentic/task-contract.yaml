@@ -1,0 +1,20 @@
+schema_version: 1
+task_id: CANARY-1
+title: Volume-bar aggregator for tick prints
+scope:
+  - tools/canary/volume_bars.py
+  - tools/canary/test_volume_bars.py
+acceptance_criteria:
+  - id: AC1
+    text: A bar closes when the accumulated size reaches the threshold.
+  - id: AC2
+    text: The final partial bar is emitted with partial set to true so that no prints are lost.
+  - id: AC3
+    text: vwap is volume-weighted, i.e. sum(price * size) / sum(size) over the prints in the bar.
+  - id: AC4
+    text: A threshold of zero or less raises ValueError.
+  - id: AC5
+    text: Unit tests cover every acceptance criterion.
+constraints:
+  - Standard library only.
+  - No changes outside tools/canary/ other than this contract and the execution report.

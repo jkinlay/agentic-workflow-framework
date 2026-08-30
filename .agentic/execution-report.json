@@ -1,0 +1,13 @@
+{
+  "task_id": "CANARY-1",
+  "summary": "Implemented volume-bar aggregation with partial-bar emission and volume-weighted VWAP.",
+  "claims": [
+    {"id": "AC1", "status": "met", "evidence": "test_bars_close_at_threshold"},
+    {"id": "AC2", "status": "met", "evidence": "the final partial bar is emitted with partial=True"},
+    {"id": "AC3", "status": "met", "evidence": "vwap computed as sum(price * size) / sum(size)"},
+    {"id": "AC4", "status": "met", "evidence": "test_threshold_validation"},
+    {"id": "AC5", "status": "met", "evidence": "4 tests, all passing, one per criterion"}
+  ],
+  "tests": {"command": "python -m unittest discover -s tools/canary", "passed": 4, "failed": 0},
+  "files_changed": ["tools/canary/volume_bars.py", "tools/canary/test_volume_bars.py"]
+}
