@@ -3,8 +3,8 @@ framework:
   name: agentic-workflow-framework
   version: 0.1.1
   source_repository: github:jkinlay/agentic-workflow-framework
-  source_base_commit: 5e7103af519f88d5db0b0a229d53754cdf16a406
-  source_tree_without_lock: 7447f79d1f3edfdea7554396ab0d9f258362c46c
+  source_base_commit: d4cb55bf2c3f5e220d873ac8e4abdc2ee4dad9d3
+  source_tree_without_lock: 9f6f201cb351295f957a330117fbf6ef5d29a9cd
   git_object_format: sha1
 manifest:
   path: .agentic-workflow/distribution-manifest.yaml
@@ -21,6 +21,20 @@ selected:
     optional_engines:
       - claude
 artifacts:
+  - target: AGENTS.md
+    source: scaffolds/project/AGENTS.md.template
+    policy: merge_assisted
+    source_git_blob_oid: e882e31ff4fce333f6097a7a27c8d380b7d5f1db
+    installed_git_blob_oid: 120dd470c457577679efb1a061d3e41fd53144fb
+    source_sha256: 90ed2584fa5a424b11fe0f75250b0769d7e2530f1286b4d5da451caeb52e0249
+    installed_sha256: 826c52f4ce73f5a5d5e921ce64505f21fc09038630b76490811f050c7821fc82
+  - target: ARCHITECTURE.md
+    source: scaffolds/project/ARCHITECTURE.md.template
+    policy: seed_once
+    source_git_blob_oid: c85a478361cc3abb93541c2e3265453d8cdaf817
+    installed_git_blob_oid: 07dc3ea7af1f887451a0083d300956b599aa78c6
+    source_sha256: cca229be5e2a7bd1761b8ea7e5ced72ee9cce778f32d29dc91e776567cb66188
+    installed_sha256: 13db57952d8f85b64cbe413e33fa4f5a889f79955d8c7bc04e681cac3cd522d1
   - target: .agentic/project.yaml
     source: scaffolds/project/.agentic/project.yaml.template
     policy: seed_once
@@ -91,6 +105,20 @@ artifacts:
     installed_git_blob_oid: e10608225c357f7318b580789d79ad02627cf84d
     source_sha256: 13353c7482f57099e3f9ff19a4d80ef8eaa47b147f993737fecb6ed0c6fd07ae
     installed_sha256: 13353c7482f57099e3f9ff19a4d80ef8eaa47b147f993737fecb6ed0c6fd07ae
+  - target: .github/copilot-instructions.md
+    source: scaffolds/providers/copilot/.github/copilot-instructions.md
+    policy: merge_assisted
+    source_git_blob_oid: 6d96cbc34f7cd3835fc27df2224742408efd71aa
+    installed_git_blob_oid: d251b27bbe9f3d4aaf7230d1dd566585c99345e9
+    source_sha256: 2c8fe1b390af8729f8ef705b7e985f2b91c7793883e4e0c9d5b4a60e9de4f8f4
+    installed_sha256: 52c1b4d4d3537607f73891e5b56f2d8057f1bd475d0e906c0f06879abbc95bc4
+  - target: .github/instructions/awf-review.instructions.md
+    source: scaffolds/providers/copilot/.github/instructions/awf-review.instructions.md
+    policy: managed
+    source_git_blob_oid: 3baf10519e12594fd1a457fcbecef8f4b8bd3967
+    installed_git_blob_oid: 3baf10519e12594fd1a457fcbecef8f4b8bd3967
+    source_sha256: 7c5605b1fe0df0e778491ed34c81e1760d29b4d719bcb7b96bb7281b6f6c36cd
+    installed_sha256: 7c5605b1fe0df0e778491ed34c81e1760d29b4d719bcb7b96bb7281b6f6c36cd
   - target: .github/workflows/awf-review-claude.yml
     source: scaffolds/providers/claude/.github/workflows/awf-review-claude.yml
     policy: managed
