@@ -11,11 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 COPILOT_SCAFFOLD = ROOT / "scaffolds" / "providers" / "copilot"
 GIT = shutil.which("git")
-UPSTREAM_POLICY_PATH = re.compile(r"(?:^|[\s`'\"])docs/REVIEW_POLICY\.md(?:$|[\s`'\"])")
+SOURCE_POLICY_PATH = "docs/REVIEW_POLICY.md"
+INSTALLED_POLICY_PATH = "docs/agent-runtime/review-policy.md"
 
 EXPECTED_DOGFOOD_TARGETS = {
-    "AGENTS.md",
-    "ARCHITECTURE.md",
     ".agentic/project.yaml",
     ".agentic/review/claude/awf_review_common.py",
     ".agentic/review/claude/build_input.py",
@@ -26,8 +25,6 @@ EXPECTED_DOGFOOD_TARGETS = {
     ".agentic/review/claude/tests/test_claude_adapter.py",
     ".agentic/review/claude/verify.py",
     ".agentic/schemas/review-report.schema.json",
-    ".github/copilot-instructions.md",
-    ".github/instructions/awf-review.instructions.md",
     ".github/workflows/awf-review-claude.yml",
     ".github/workflows/awf-review-claude-demonstrate.yml",
     ".github/workflows/awf-review-gate.yml",
@@ -72,8 +69,33 @@ def blobs_match(left, right):
     return left == right
 
 
-def references_upstream_policy_path(text):
-    return UPSTREAM_POLICY_PATH.search(text) is not None
+def manifest_artifacts(text):
+    artifacts = []
+    for block in re.split(r"(?m)^  - source: ", text)[1:]:
+        source = block.splitlines()[0]
+        target = re.search(r"(?m)^    target: (.+)$", block)
+        policy = re.search(r"(?m)^    policy: (.+)$", block)
+        requires = re.search(r"(?m)^    requires: (.+)$", block)
+        if target is None or policy is None:
+            raise AssertionError(f"incomplete manifest artifact: {source}")
+        artifacts.append(
+            {
+                "source": source,
+                "target": target.group(1),
+                "policy": policy.group(1),
+                "requires": requires.group(1) if requires else "",
+            }
+        )
+    return artifacts
+
+
+def selected_copilot_mappings(text):
+    mappings = []
+    for artifact in manifest_artifacts(text):
+        if artifact["source"] == "generated" or "claude" in artifact["requires"]:
+            continue
+        mappings.append((ROOT / artifact["source"], Path(artifact["target"])))
+    return mappings
 
 
 def lock_value(text, pattern):
@@ -85,8 +107,7 @@ def lock_value(text, pattern):
 
 class DistributionTests(unittest.TestCase):
     def require_git(self):
-        if GIT is None:
-            self.skipTest("git is not installed")
+        self.assertIsNotNone(GIT, "Git is required for distribution provenance tests")
 
     def test_current_version_is_consistent(self):
         manifest = (ROOT / ".agentic-workflow" / "distribution-manifest.yaml").read_text(
@@ -116,9 +137,9 @@ class DistributionTests(unittest.TestCase):
             COPILOT_SCAFFOLD / ".github" / "workflows" / "awf-review-gate.yml",
         ):
             with self.subTest(path=gate):
-                self.assertFalse(
-                    references_upstream_policy_path(gate.read_text(encoding="utf-8"))
-                )
+                text = gate.read_text(encoding="utf-8")
+                self.assertIn(SOURCE_POLICY_PATH, text)
+                self.assertIn(INSTALLED_POLICY_PATH, text)
 
     def test_gate_source_and_dogfood_target_are_identical(self):
         source = COPILOT_SCAFFOLD / ".github" / "workflows" / "awf-review-gate.yml"
@@ -137,28 +158,17 @@ class DistributionTests(unittest.TestCase):
     def test_guard_helpers_reject_regressions(self):
         self.assertFalse(has_one_terminal_newline(b"text\n\n"))
         self.assertFalse(blobs_match(b"left\n", b"right\n"))
-        self.assertTrue(references_upstream_policy_path("See docs/REVIEW_POLICY.md now"))
+        malformed_manifest = "  - source: missing.txt\n    policy: managed\n"
+        with self.assertRaises(AssertionError):
+            manifest_artifacts(malformed_manifest)
 
     def test_clean_copilot_bootstrap_passes_diff_check(self):
         self.require_git()
-        mappings = (
-            (
-                ROOT / "docs" / "REVIEW_POLICY.md",
-                Path("docs/agent-runtime/review-policy.md"),
-            ),
-            (
-                COPILOT_SCAFFOLD / ".github" / "copilot-instructions.md",
-                Path(".github/copilot-instructions.md"),
-            ),
-            (
-                COPILOT_SCAFFOLD / ".github" / "instructions" / "awf-review.instructions.md",
-                Path(".github/instructions/awf-review.instructions.md"),
-            ),
-            (
-                COPILOT_SCAFFOLD / ".github" / "workflows" / "awf-review-gate.yml",
-                Path(".github/workflows/awf-review-gate.yml"),
-            ),
+        manifest = (ROOT / ".agentic-workflow" / "distribution-manifest.yaml").read_text(
+            encoding="utf-8"
         )
+        mappings = selected_copilot_mappings(manifest)
+        self.assertGreater(len(mappings), 4)
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
             init = run_git(repo, "init", "--quiet")
@@ -179,7 +189,12 @@ class DistributionTests(unittest.TestCase):
         source_commit = lock_value(lock, r"^  source_base_commit: ([0-9a-f]+)$")
         expected_tree = lock_value(lock, r"^  source_tree_without_lock: ([0-9a-f]+)$")
         ancestor = run_git(ROOT, "merge-base", "--is-ancestor", source_commit, "HEAD")
-        self.assertEqual(ancestor.returncode, 0, ancestor.stderr)
+        self.assertEqual(
+            ancestor.returncode,
+            0,
+            "the lock source commit must exist in a full clone and be an ancestor of HEAD: "
+            + ancestor.stderr,
+        )
 
         manifest = re.search(
             r"(?ms)^manifest:\n  path: (?P<path>[^\n]+)\n"
@@ -193,6 +208,7 @@ class DistributionTests(unittest.TestCase):
         )
         self.assertEqual(source_manifest.returncode, 0, source_manifest.stderr)
         manifest_blob = run_git(ROOT, "rev-parse", f"{source_commit}:{manifest_path}")
+        self.assertEqual(manifest_blob.returncode, 0, manifest_blob.stderr)
         self.assertEqual(manifest_blob.stdout.strip(), manifest.group("blob"))
         self.assertEqual(hashlib.sha256(source_manifest.stdout).hexdigest(), manifest.group("sha"))
 
@@ -231,10 +247,16 @@ class DistributionTests(unittest.TestCase):
             target_spec = f"HEAD:{block.group('target')}"
             source_blob = run_git(ROOT, "rev-parse", source_spec)
             installed_blob = run_git(ROOT, "rev-parse", target_spec)
+            self.assertEqual(source_blob.returncode, 0, source_blob.stderr)
+            self.assertEqual(installed_blob.returncode, 0, installed_blob.stderr)
             self.assertEqual(source_blob.stdout.strip(), block.group("source_blob"))
             self.assertEqual(installed_blob.stdout.strip(), block.group("installed_blob"))
-            source_bytes = run_git(ROOT, "cat-file", "blob", source_spec, text=False).stdout
-            installed_bytes = run_git(ROOT, "cat-file", "blob", target_spec, text=False).stdout
+            source_content = run_git(ROOT, "cat-file", "blob", source_spec, text=False)
+            installed_content = run_git(ROOT, "cat-file", "blob", target_spec, text=False)
+            self.assertEqual(source_content.returncode, 0, source_content.stderr)
+            self.assertEqual(installed_content.returncode, 0, installed_content.stderr)
+            source_bytes = source_content.stdout
+            installed_bytes = installed_content.stdout
             self.assertEqual(hashlib.sha256(source_bytes).hexdigest(), block.group("source_sha"))
             self.assertEqual(
                 hashlib.sha256(installed_bytes).hexdigest(), block.group("installed_sha")

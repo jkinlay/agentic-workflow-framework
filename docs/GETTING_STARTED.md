@@ -240,6 +240,9 @@ until AWF-022 adds upstream CI:
 python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
+Run it from a full Git clone: provenance checks deliberately fail when Git or
+the lock's recorded source history is unavailable.
+
 Also verify:
 
 - policy resolves the intended engine, identity, model, base URL, and evidence
