@@ -23,9 +23,12 @@ Projects upgrading from 0.1.0 should:
    immutable 0.1.1 source commit; and
 5. run normal project CI and independent review.
 
-The changes do not invalidate existing reviewer-qualification evidence. A
-project may retain that evidence, but the upgrade itself still requires a
-current-head review and normal human approval.
+The four 0.1.1 changes enumerated above are limited to path wording, workflow
+comments, and terminal whitespace, so they do not invalidate existing
+reviewer-qualification evidence. A project may retain that evidence, but the
+upgrade itself still requires a current-head review and normal human approval.
+Any later change to reviewer instruction content beyond terminal whitespace
+requires the seeded benchmark and affected qualification evidence to be rerun.
 
 ## Upgrade procedure
 

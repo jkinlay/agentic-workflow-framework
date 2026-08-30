@@ -233,6 +233,13 @@ Claude adapter, the offline suite can be run with:
 python -m unittest discover -s .agentic/review/claude/tests -v
 ```
 
+Framework maintainers also run the distribution regression suite manually
+until AWF-022 adds upstream CI:
+
+```text
+python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
 Also verify:
 
 - policy resolves the intended engine, identity, model, base URL, and evidence
