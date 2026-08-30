@@ -45,8 +45,10 @@ that a fork can never trigger it with the repository's credential.
   report. It never includes the pull-request title, body, or comments, and
   records every truncation as a limitation.
 - `run_model.py` runs the blind phase, then, when an execution report exists,
-  the claims phase. The model answers only through a forced tool call whose
-  input schema mirrors `schemas/review-report.schema.json`. Blind-phase
+  the claims phase as a continuation of the same conversation, so the diff,
+  files and task contract remain in the model's context and every claim is
+  assessed against them. The model answers only through a forced tool call
+  whose input schema mirrors `schemas/review-report.schema.json`. Blind-phase
   findings cannot be withdrawn; the claims phase may only add findings and
   claim assessments. Any failure yields a schema-valid `error` report and a
   non-zero exit, so the publisher never runs and the gate fails closed.
@@ -78,9 +80,11 @@ credential is comment-only.
 and `review.reviewer_identities.claude` from the base-branch policy through the
 API, requires a non-dismissed review by that identity whose `commit_id` equals
 the live head and whose body carries the status marker, and re-evaluates on
-every push and review event. It fails closed unless every
-`review.qualification` flag for the required engine is true. Only the required
-engine satisfies the gate; optional engines produce evidence.
+every push and review event. It fails closed unless every flag under
+`review.qualification` is true and the three baseline flags are present, and
+it fails closed when the policy file is absent: no engine is ever assumed.
+Only the required engine satisfies the gate; optional engines produce
+evidence.
 
 ## Qualification evidence
 
@@ -97,7 +101,7 @@ Claude cannot be selected as required until bootstrap records:
    drift checks;
 4. hashes of protected adapter code and schema (`verify.py hashes`);
 5. successful schema, invalid-event, invalid-location, stale-SHA, and gate
-   tests (`verify.py unit`, 27 offline tests including the gate script);
+   tests (`verify.py unit`, 28 offline tests including the gate script);
 6. approved vendor/data-egress route and domain-scoped credential (human);
 7. seeded-defect benchmark results (human-run fixtures);
 8. correct behavior for developer-App-authored pull requests (the workflow

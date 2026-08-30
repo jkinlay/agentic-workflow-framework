@@ -12,10 +12,10 @@ name: AWF independent review gate
 #              AWF Reviewer App); its COMMENT review must carry the
 #              `awf-review-status: no_findings|findings` marker written by the
 #              deterministic publisher, so an error report can never pass.
-# The engine must be qualified: every review.qualification flag must be true,
-# as docs/REVIEW_POLICY.md requires, or the gate fails closed.
-# A repository without a policy file (for example this framework repository
-# itself) falls back to the Copilot constant and says so in the log.
+# The engine must be qualified: every flag under review.qualification must be
+# true (and the three baseline flags must be present), as docs/REVIEW_POLICY.md
+# requires, or the gate fails closed. A repository without a policy file fails
+# closed too: availability is never inferred, so there is no default engine.
 
 on:
   pull_request_target:
@@ -131,17 +131,19 @@ jobs:
           # --- resolve engine and identity from protected policy on the base branch ---
           status, policy_doc, _ = get(f"{API}/repos/{REPO}/contents/{urllib.parse.quote(POLICY_PATH)}?ref={urllib.parse.quote(BASE_REF)}")
           if status == 404:
-              engine, identity = "copilot", COPILOT_IDENTITY
-              print(f"::warning::{POLICY_PATH} not found on {BASE_REF}; defaulting to engine copilot")
+              fail(f"{POLICY_PATH} not found on {BASE_REF}: no protected review policy, so no engine is qualified (fail closed)")
           elif status == 200 and isinstance(policy_doc, dict) and policy_doc.get("encoding") == "base64":
               policy = load_yaml_lite(base64.b64decode(policy_doc.get("content", "")).decode("utf-8"))
               review = policy.get("review") if isinstance(policy, dict) else None
               if not isinstance(review, dict): fail("policy has no review block")
               engine = str(review.get("required_external_engine") or "")
               if PLACEHOLDER.search(engine) or not engine: fail("review.required_external_engine is unset or a placeholder")
-              flags = review.get("qualification") or {}
-              required_flags = ("effective_permissions_verified", "instruction_paths_protected", "head_binding_verified")
-              unmet = [f for f in required_flags if not (isinstance(flags, dict) and flags.get(f) is True)]
+              flags = review.get("qualification")
+              baseline = ("effective_permissions_verified", "instruction_paths_protected", "head_binding_verified")
+              if not isinstance(flags, dict) or not flags: fail("review.qualification is missing or empty")
+              missing = [f for f in baseline if f not in flags]
+              if missing: fail(f"review.qualification lacks baseline flags: {', '.join(missing)}")
+              unmet = [k for k, v in flags.items() if v is not True]
               if unmet: fail(f"required engine {engine} is not qualified; review.qualification flags not true: {', '.join(unmet)}")
               if engine == "copilot":
                   identity = COPILOT_IDENTITY

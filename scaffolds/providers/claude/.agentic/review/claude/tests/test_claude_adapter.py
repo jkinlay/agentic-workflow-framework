@@ -156,7 +156,10 @@ class BuildInputTests(unittest.TestCase):
             handle.write(head + "\n")
         with open(os.path.join(pr_dir, "src", "a.py"), "w") as handle:
             handle.write("print('hello')\n" * 50)
-        os.symlink("/etc/hostname", os.path.join(pr_dir, "escape.txt"))
+        try:
+            os.symlink("/etc/hostname", os.path.join(pr_dir, "escape.txt"))
+        except (OSError, NotImplementedError):
+            pass  # Windows without symlink privilege: the missing file still yields a limitation
         return pr_dir
 
     def test_build_excludes_pr_text_and_records_limitations(self):
@@ -205,7 +208,7 @@ class RunModelTests(unittest.TestCase):
         def _fake(base_url, body, timeout):
             calls.append(body)
             tool = body["tool_choice"]["name"]
-            return {"content": [{"type": "tool_use", "name": tool, "input": responses[tool]}],
+            return {"content": [{"type": "tool_use", "id": f"toolu_{tool}", "name": tool, "input": responses[tool]}],
                     "usage": {"input_tokens": 1, "output_tokens": 1}, "stop_reason": "tool_use"}
         return _fake, calls
 
@@ -231,8 +234,21 @@ class RunModelTests(unittest.TestCase):
         self.assertEqual(rep["claim_assessments"][0]["status"], "contradicted")
         self.assertIn("did not see tests", rep["limitations"])
         self.assertEqual(len(calls), 2)
-        self.assertIn("UNTRUSTED CLAIMS", calls[1]["messages"][0]["content"])
-        self.assertNotIn("UNTRUSTED CLAIMS", calls[0]["messages"][0]["content"])
+        blind_messages, claims_messages = calls[0]["messages"], calls[1]["messages"]
+        self.assertEqual(len(blind_messages), 1)
+        self.assertNotIn("UNTRUSTED CLAIMS", blind_messages[0]["content"])
+        # The claims phase continues the blind conversation: same diff/contract turn, the model's
+        # own blind answer, then a tool_result plus the untrusted claims.
+        self.assertEqual([m["role"] for m in claims_messages], ["user", "assistant", "user"])
+        self.assertEqual(claims_messages[0]["content"], blind_messages[0]["content"])
+        self.assertIn("@@ -1 +1 @@", claims_messages[0]["content"])
+        self.assertEqual(claims_messages[1]["content"][0]["name"], "submit_review")
+        final_turn = claims_messages[2]["content"]
+        self.assertEqual(final_turn[0]["type"], "tool_result")
+        self.assertEqual(final_turn[0]["tool_use_id"], "toolu_submit_review")
+        self.assertIn("UNTRUSTED CLAIMS", final_turn[1]["text"])
+        self.assertEqual({t["name"] for t in calls[1]["tools"]}, {"submit_review", "assess_claims"})
+        self.assertEqual(calls[1]["tool_choice"]["name"], "assess_claims")
 
     def test_no_report_means_single_blind_phase(self):
         fake, calls = self.fake_api({"submit_review": {"status": "no_findings", "findings": [], "limitations": []}})
@@ -430,14 +446,25 @@ class GateTests(unittest.TestCase):
                            "body": "awf-review-status: findings"}]
         self.assertEqual(self.run_gate(POLICY_TEXT, wrong_identity)[0], 1, "optional engine must not satisfy the gate")
 
-    def test_copilot_engine_and_missing_policy_default(self):
+    def test_copilot_engine_and_missing_policy_fails_closed(self):
         copilot_policy = POLICY_TEXT.replace("required_external_engine: claude", "required_external_engine: copilot")
         native = [{"user": {"login": "copilot-pull-request-reviewer[bot]"}, "commit_id": SHA_A, "state": "COMMENTED", "body": ""}]
         self.assertEqual(self.run_gate(copilot_policy, native)[0], 0)
-        self.assertEqual(self.run_gate(copilot_policy, [], policy_status=404)[0], 1)
         code, out = self.run_gate("", native, policy_status=404)
-        self.assertEqual(code, 0)
-        self.assertIn("defaulting to engine copilot", out)
+        self.assertEqual(code, 1, "no policy file must never default to an engine")
+        self.assertIn("fail closed", out)
+
+    def test_every_qualification_flag_must_be_true(self):
+        extra_false = POLICY_TEXT.replace("head_binding_verified: true",
+                                          "head_binding_verified: true\n    benchmark_passed: false")
+        good = [{"user": {"login": IDENTITY}, "commit_id": SHA_A, "state": "COMMENTED", "body": "awf-review-status: findings"}]
+        code, out = self.run_gate(extra_false, good)
+        self.assertEqual(code, 1)
+        self.assertIn("benchmark_passed", out)
+        no_baseline = POLICY_TEXT.replace("    instruction_paths_protected: true\n", "")
+        code, out = self.run_gate(no_baseline, good)
+        self.assertEqual(code, 1)
+        self.assertIn("baseline", out)
 
     def test_unqualified_engine_fails_closed(self):
         unqualified = POLICY_TEXT.replace("head_binding_verified: true", "head_binding_verified: false")
