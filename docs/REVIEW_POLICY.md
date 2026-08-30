@@ -12,10 +12,11 @@ binding, and no developer-task lineage. Model and vendor diversity are preferred
 and recorded when known, but are not claimed when a provider does not disclose
 them.
 
-The shipped scaffold supports GitHub Copilot. A split Claude architecture is
-specified as a future adapter, but is unavailable until its non-model publisher,
-permission tests, schema validation, and current-head gate have been implemented
-and demonstrated.
+The shipped scaffolds support GitHub Copilot and a split Claude
+model/publisher adapter. Copilot is available on licensing. Claude's adapter,
+tests, and demonstration workflow are implemented, but Claude remains
+unavailable to a project until the demonstration has been run against that
+project's repository and its record sets every `review.qualification` flag.
 
 ## Selection and qualification
 
@@ -32,8 +33,9 @@ engine qualifies, the project remains at A1 and external writes are disabled.
 Reviewer identities are adapter-owned values in protected project policy:
 
 - Copilot: `copilot-pull-request-reviewer[bot]`;
-- Claude: the dedicated custom AWF Reviewer App login established during its
-  future activation.
+- Claude: the dedicated AWF Reviewer App login (`app-slug[bot]`) recorded in
+  `review.reviewer_identities.claude` during activation; its review must carry
+  the publisher's `awf-review-status` marker.
 
 A free-form repository variable must not select the reviewer identity.
 

@@ -13,3 +13,7 @@ Thumbs.db
 .tmp/
 tmp/
 
+
+# Python bytecode from adapter tests
+__pycache__/
+*.pyc

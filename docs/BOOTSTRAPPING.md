@@ -30,7 +30,9 @@ Use this mode for established repositories.
     paths from the developer identity before granting A2 push access.
 11. Verify the external reviewer's identity, effective read-only permissions,
     current-head behavior, structured result, fail-closed gate, and seeded
-    benchmark. Availability must be explicitly approved, not inferred.
+    benchmark. For Claude, run the demonstration workflow against a
+    same-repository pull request and attach `demonstration.json`. Availability
+    must be explicitly approved, not inferred.
 12. Record the dedicated developer/reviewer principals, audit location and
     retention, incident stop authority, token-revocation owners, and ruleset
     bypass actor. The expected source of `awf/review` is GitHub Actions for the
