@@ -4,7 +4,7 @@ framework:
   version: 0.1.0
   source_repository: github:jkinlay/agentic-workflow-framework
   source_base_commit: 2c7fe134f50393c7727bcf1de6e5bb694dfa24fa
-  source_tree_without_lock: 047d3fa961553f1c5149f1a92d8945daeb26767c
+  source_tree_without_lock: b762a6ce02a6f583cc74edd4bbcc3e526cdaf200
   git_object_format: sha1
 manifest:
   path: .agentic-workflow/distribution-manifest.yaml
@@ -73,10 +73,10 @@ artifacts:
   - target: .agentic/review/claude/tests/test_claude_adapter.py
     source: scaffolds/providers/claude/.agentic/review/claude/tests/test_claude_adapter.py
     policy: managed
-    source_git_blob_oid: ddd096fd0f52db2521913c48ddd7225ff6ca247c
-    installed_git_blob_oid: ddd096fd0f52db2521913c48ddd7225ff6ca247c
-    source_sha256: fd0ebae68de6eed30d62e7d104153281e704f8ec5b909f68298da367e4476450
-    installed_sha256: fd0ebae68de6eed30d62e7d104153281e704f8ec5b909f68298da367e4476450
+    source_git_blob_oid: 8fff300b2f6a43b1b9c90a0e07d830e4fa8688cd
+    installed_git_blob_oid: 8fff300b2f6a43b1b9c90a0e07d830e4fa8688cd
+    source_sha256: 8b42889d509f18eba071fa8ba0661b511d8d4457231a84490626ef7466f8aff9
+    installed_sha256: 8b42889d509f18eba071fa8ba0661b511d8d4457231a84490626ef7466f8aff9
   - target: .agentic/review/claude/verify.py
     source: scaffolds/providers/claude/.agentic/review/claude/verify.py
     policy: managed
@@ -94,10 +94,10 @@ artifacts:
   - target: .github/workflows/awf-review-claude.yml
     source: scaffolds/providers/claude/.github/workflows/awf-review-claude.yml
     policy: managed
-    source_git_blob_oid: a5395f7cab43930fbb9ea06dbdaf386d6139e497
-    installed_git_blob_oid: a5395f7cab43930fbb9ea06dbdaf386d6139e497
-    source_sha256: b30d51900b94b28eb63cceb0326d663f6b974dd6faeea98bc98a78300160dff1
-    installed_sha256: b30d51900b94b28eb63cceb0326d663f6b974dd6faeea98bc98a78300160dff1
+    source_git_blob_oid: 73a8d89ea4ada7cedbf55ecd0e9823cc43d04ef4
+    installed_git_blob_oid: 73a8d89ea4ada7cedbf55ecd0e9823cc43d04ef4
+    source_sha256: 280be7ddc1b13ae11ec3fd0a4ff0660c1b4730fc2b5926b5947963a3b074dcaf
+    installed_sha256: 280be7ddc1b13ae11ec3fd0a4ff0660c1b4730fc2b5926b5947963a3b074dcaf
   - target: .github/workflows/awf-review-claude-demonstrate.yml
     source: scaffolds/providers/claude/.github/workflows/awf-review-claude-demonstrate.yml
     policy: managed

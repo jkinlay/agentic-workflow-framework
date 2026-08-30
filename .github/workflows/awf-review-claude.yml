@@ -36,7 +36,7 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: read
@@ -85,6 +85,8 @@ jobs:
           --in input.json
           --schema "$AWF_SCHEMA"
           --model "${{ steps.policy.outputs.model }}"
+          --max-tokens 20000
+          --timeout 540
           --reviewer-identity "${{ steps.policy.outputs.reviewer_identity }}"
           --out report.json
           --meta-out report-meta.json

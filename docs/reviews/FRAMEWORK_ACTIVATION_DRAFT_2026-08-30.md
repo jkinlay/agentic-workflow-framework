@@ -71,7 +71,7 @@ that deterministic generation; a hand-written or stale lock is not acceptable.
 | Installed files match their scaffold sources | Staged Git blob-ID comparison |
 | No credential or local path is tracked | Secret and absolute-path scans |
 | Project remains fail-closed | All qualification flags false |
-| Adapter remains executable after installation | Project-local 32-test offline suite |
+| Adapter remains executable after installation | Project-local 34-test offline suite |
 | Common gate is unchanged and synchronized | Root/scaffold gate hash comparison |
 | GitHub activation is not implied | No App/settings/secret evidence and this draft status |
 

@@ -285,9 +285,16 @@ class RunModelTests(unittest.TestCase):
         self.assertEqual({t["name"] for t in calls[1]["tools"]}, {"submit_review", "assess_claims"})
         self.assertEqual(calls[1]["tool_choice"]["name"], "assess_claims")
         for call in calls:
-            self.assertNotIn("temperature", call, "current models reject non-default sampling parameters")
+            self.assertNotIn("temperature", call, "Claude Opus 5 rejects non-default sampling parameters")
             self.assertNotIn("top_p", call)
             self.assertNotIn("top_k", call)
+
+    def test_active_workflow_sets_opus5_runtime_bounds(self):
+        with open(find_upwards(".github/workflows/awf-review-claude.yml"), encoding="utf-8") as handle:
+            model_job = handle.read().split("  publish:", 1)[0]
+        self.assertRegex(model_job, r"(?m)^    timeout-minutes: 30$")
+        self.assertRegex(model_job, r"(?m)^          --max-tokens 20000$")
+        self.assertRegex(model_job, r"(?m)^          --timeout 540$")
 
     def test_no_report_means_single_blind_phase(self):
         fake, calls = self.fake_api({"submit_review": {"status": "no_findings", "findings": [], "limitations": []}})
@@ -346,6 +353,22 @@ class RunModelTests(unittest.TestCase):
                                          "--model", "m", "--reviewer-identity", IDENTITY])
             rep, _, code = run_model.run(args)
         self.assertEqual((code, rep["status"]), (1, "error"))
+
+    def test_max_tokens_without_tool_use_is_an_error_not_no_findings(self):
+        def exhausted(base_url, body, timeout):
+            return {
+                "content": [{"type": "thinking", "thinking": "Review still in progress."}],
+                "usage": {"input_tokens": 1, "output_tokens": body["max_tokens"]},
+                "stop_reason": "max_tokens",
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(run_model, "anthropic_request", exhausted):
+            args = run_model.parse_args(["--in", self.make_input(tmp, False), "--schema", SCHEMA_PATH, "--out", "r",
+                                         "--model", "m", "--reviewer-identity", IDENTITY])
+            rep, _, code = run_model.run(args)
+        self.assertEqual((code, rep["status"]), (1, "error"))
+        self.assertIn("stop_reason=max_tokens", rep["error"])
+        self.assertEqual(common.validate_report(rep, SCHEMA), [])
 
 
 class PublishTests(unittest.TestCase):
