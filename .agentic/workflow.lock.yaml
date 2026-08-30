@@ -3,8 +3,8 @@ framework:
   name: agentic-workflow-framework
   version: 0.1.1
   source_repository: github:jkinlay/agentic-workflow-framework
-  source_base_commit: a2c2d555a249e5b4d9a5ffee52536220a07cb982
-  source_tree_without_lock: 24beac418e0cb454fba67f9e0e295b3641001a10
+  source_base_commit: 801edea0f59a4cf1e023914f8a8eeeb0a47ebcea
+  source_tree_without_lock: 14db83639d48f6b431a5eb4c1e4b0132cc6a9799
   git_object_format: sha1
 manifest:
   path: .agentic-workflow/distribution-manifest.yaml
