@@ -1,0 +1,53 @@
+task_id: github:jkinlay/agentic-workflow-framework#6
+objective: Correct downstream paths and EOF whitespace in managed Copilot artifacts.
+repository: github:jkinlay/agentic-workflow-framework
+base_ref: 5d814fbb9c5d34de67d53b088cdf16b337383f61
+authorization:
+  principal: github:jkinlay
+  evidence: Direct repository-owner instruction to implement issue #6.
+allowed_paths:
+  - .agentic-workflow/distribution-manifest.yaml
+  - .agentic/task-contract.yaml
+  - .agentic/execution-report.json
+  - .agentic/workflow.lock.yaml
+  - .github/copilot-instructions.md
+  - .github/instructions/awf-review.instructions.md
+  - .github/workflows/awf-review-gate.yml
+  - README.md
+  - docs/GETTING_STARTED.md
+  - docs/REVIEW_POLICY.md
+  - docs/SYSTEM_ARCHITECTURE.md
+  - docs/UPGRADING.md
+  - scaffolds/providers/copilot/.github/copilot-instructions.md
+  - scaffolds/providers/copilot/.github/instructions/awf-review.instructions.md
+  - scaffolds/providers/copilot/.github/workflows/awf-review-gate.yml
+  - tests/test_distribution.py
+forbidden_paths:
+  - all paths not listed in allowed_paths
+dependencies: []
+acceptance_criteria:
+  - AC1: Managed policy and gate wording resolves in both source and downstream layouts.
+  - AC2: Copilot instruction sources and the affected dogfood instruction target have exactly one terminal newline.
+  - AC3: The dogfood lock updates the issue-affected installed gate, reproduces every recorded artifact, and accounts for every selected target omitted by its partial activation.
+  - AC4: A clean downstream Copilot bootstrap passes git diff --check.
+  - AC5: The 0.1.0 to 0.1.1 upgrade impact and qualification boundary are documented.
+  - AC6: Existing gate execution, permissions, identity, schema, and qualification behavior are unchanged.
+required_checks:
+  - python -m unittest discover -s tests -p 'test_*.py' -v
+  - python -m unittest discover -s .agentic/review/claude/tests -p 'test_*.py' -v
+  - git diff origin/main...HEAD --check
+required_context:
+  - AGENTS.md
+  - ARCHITECTURE.md
+  - .agentic-workflow/distribution-manifest.yaml
+  - docs/REVIEW_POLICY.md
+  - docs/UPGRADING.md
+approval_points:
+  - Human review before merge.
+budget:
+  currency: owner-configured-provider-limit
+  maximum: inherited
+deliverables:
+  - AWF 0.1.1 issue #6 pull request
+  - deterministic distribution and lock regression tests
+  - downstream upgrade note

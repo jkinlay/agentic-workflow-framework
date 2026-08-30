@@ -1,18 +1,33 @@
 schema_version: 1
 framework:
   name: agentic-workflow-framework
-  version: 0.1.0
+  version: 0.1.1
   source_repository: github:jkinlay/agentic-workflow-framework
-  source_base_commit: 2c7fe134f50393c7727bcf1de6e5bb694dfa24fa
-  source_tree_without_lock: b762a6ce02a6f583cc74edd4bbcc3e526cdaf200
+  source_base_commit: 801edea0f59a4cf1e023914f8a8eeeb0a47ebcea
+  source_tree_without_lock: 14db83639d48f6b431a5eb4c1e4b0132cc6a9799
   git_object_format: sha1
 manifest:
   path: .agentic-workflow/distribution-manifest.yaml
-  git_blob_oid: 86d895eeeb41c225a70040381653ae6fde157abe
-  sha256: 680fb68a207c5f946fdc3ed317eba10a1684e99bdc4d472000f9ea35ad8cc5d0
+  git_blob_oid: 901cbeab8971aa5634556ed6c3aa0a52f3fd8a35
+  sha256: 4d56fc5e8685f1bf965867ccc9837ec466a90fc897b10c9a154269186ae05b1c
 bootstrap:
   target_repository: github:jkinlay/agentic-workflow-framework
   base_commit: 2c7fe134f50393c7727bcf1de6e5bb694dfa24fa
+  installation_scope: partial_dogfood_activation
+  omitted_selected_targets:
+    - AGENTS.md
+    - ARCHITECTURE.md
+    - docs/agent-runtime/codex.md
+    - docs/agent-runtime/review-policy.md
+    - docs/agent-runtime/threat-model.md
+    - docs/agent-runtime/identity-and-audit.md
+    - docs/agent-runtime/incident-response.md
+    - docs/agent-runtime/copilot-review.md
+    - .github/copilot-instructions.md
+    - .github/instructions/awf-review.instructions.md
+    - docs/agent-runtime/claude-code-action-review.md
+    - .github/CODEOWNERS
+  omission_reason: Pre-existing project files and source-layout documentation were not installed during the partial activation; a future full dogfood bootstrap must reconcile them explicitly.
 selected:
   runtime_adapters:
     - codex
@@ -108,8 +123,8 @@ artifacts:
   - target: .github/workflows/awf-review-gate.yml
     source: scaffolds/providers/copilot/.github/workflows/awf-review-gate.yml
     policy: managed
-    source_git_blob_oid: f582fa0900ca1d39bc3740d0b7831686bc80d376
-    installed_git_blob_oid: f582fa0900ca1d39bc3740d0b7831686bc80d376
-    source_sha256: 47c5990f9fad72c6e6607113db53e305347222176dae571c29f418e132cc6b92
-    installed_sha256: 47c5990f9fad72c6e6607113db53e305347222176dae571c29f418e132cc6b92
+    source_git_blob_oid: 96780d8d8c697c3c37bf3c31f53fe6ba021b7b72
+    installed_git_blob_oid: 96780d8d8c697c3c37bf3c31f53fe6ba021b7b72
+    source_sha256: 475c7bc466e24a0cc96df4be452398f1cc272684832808663cd0744b50bc15d4
+    installed_sha256: 475c7bc466e24a0cc96df4be452398f1cc272684832808663cd0744b50bc15d4
 lock_self_hash_excluded: true

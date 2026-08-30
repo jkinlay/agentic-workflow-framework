@@ -12,7 +12,7 @@ Use this guide for the sequence of actions. Use the
 components fit together, and the root [ARCHITECTURE.md](../ARCHITECTURE.md) for
 authoritative architectural decisions and invariants.
 
-AWF v0.1.0 uses a manual, reviewable bootstrap. There is no supported command
+AWF v0.1.1 uses a manual, reviewable bootstrap. There is no supported command
 that safely installs or upgrades every project automatically. The distribution
 manifest, project scaffolds, provider assets, and checks are the installation
 inputs; a human-reviewed pull request is the installation mechanism.
@@ -163,8 +163,8 @@ tree do not matter when the staged Git blob IDs are equal.
 Generate `.agentic/workflow.lock.yaml` only after the installation diff is
 final. Record:
 
-- framework repository, version, immutable source/base commit, and Git object
-  format;
+- framework repository, version, immutable current source commit, original
+  bootstrap source commit, and Git object format;
 - manifest Git blob ID and content hash;
 - selected runtime and review adapters;
 - every installed target, source, ownership policy, source and installed Git
@@ -174,6 +174,23 @@ final. Record:
 
 Never copy a static lock template. Recompute the lock whenever a managed source
 or installed target changes.
+
+`framework.source_base_commit` identifies the immutable framework source for
+the current lock contents. `bootstrap.base_commit` remains the immutable source
+used for the project's original bootstrap, so later upgrades retain their
+three-way comparison point; it is not advanced on each upgrade.
+
+`source_tree_without_lock` is the tree of that immutable current source commit
+with the lock removed. The source commit must immediately precede a lock-only
+commit and remain reachable after merge; it is an installation snapshot, not a
+claim that every later repository commit has the same whole-tree hash. Lock
+verification must separately compare each recorded source and installed target
+with the current head so later managed-artifact drift still fails.
+
+`selected` records configured adapters. `artifacts` records targets actually
+installed by that activation. A partial activation must set an explicit scope,
+list every selected but uninstalled target, and give one reviewable omission
+reason; silent omissions are invalid.
 
 ### 4. Configure the reviewer outside Git
 
@@ -232,6 +249,16 @@ Claude adapter, the offline suite can be run with:
 ```text
 python -m unittest discover -s .agentic/review/claude/tests -v
 ```
+
+Framework maintainers also run the distribution regression suite manually
+until AWF-022 adds upstream CI:
+
+```text
+python -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+Run it from a full Git clone: provenance checks deliberately fail when Git or
+the lock's recorded source history is unavailable.
 
 Also verify:
 

@@ -358,7 +358,7 @@ the approved autonomy level and task contract.
 
 ## Current implementation status and deliberate limits
 
-AWF v0.1.0 remains a documentation-first framework with manual bootstrap and
+AWF v0.1.1 remains a documentation-first framework with manual bootstrap and
 upgrade. The provider-neutral architecture, ownership manifest, project
 scaffolds, operating and security contracts, review-report schema, engine-aware
 gate, Copilot scaffold, and split Claude adapter with offline tests and a live

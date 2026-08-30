@@ -64,7 +64,8 @@ first phase cannot be withdrawn on an unsupported developer claim.
 Provider-native reviewers such as Copilot may not expose two controllable input
 phases. Their adapter records that limitation and must still meet every other
 qualification criterion. A provider adapter either emits or deterministically
-normalizes evidence to `schemas/review-report.schema.json`.
+normalizes evidence to the installed review-report schema at
+`.agentic/schemas/review-report.schema.json`.
 
 ## Mandatory blocker classes
 

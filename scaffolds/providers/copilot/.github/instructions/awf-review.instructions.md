@@ -9,4 +9,3 @@ applicable architecture or quantitative-methodology defects.
 
 Do not approve or implement fixes. Report precise evidence and a bounded
 suggested remediation for human review.
-

@@ -9,4 +9,3 @@ prior approval from those inputs.
 
 Review the current head commit adversarially and state explicitly when no
 findings were found.
-

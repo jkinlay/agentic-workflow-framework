@@ -4,6 +4,36 @@
 
 An AWF upgrade is a reviewable project change, not an automatic overwrite.
 
+## Version 0.1.1 upgrade note
+
+Version 0.1.1 corrects downstream path wording and terminal whitespace in the
+Copilot distribution. It does not change review-gate execution, permissions,
+schema, qualification semantics, or reviewer identity.
+
+Projects upgrading from 0.1.0 should:
+
+1. verify the installed 0.1.0 hashes before changing any managed target;
+2. update the managed `docs/agent-runtime/review-policy.md`,
+   `.github/instructions/awf-review.instructions.md`, and
+   `.github/workflows/awf-review-gate.yml` targets from the 0.1.1 sources;
+3. apply the terminal-blank-line removal to the merge-assisted
+   `.github/copilot-instructions.md` only after confirming that any project
+   content remains preserved;
+4. regenerate `.agentic/workflow.lock.yaml` from the final staged tree and the
+   immutable 0.1.1 source commit; and
+5. run normal project CI and independent review.
+
+[Issue #6](https://github.com/jkinlay/agentic-workflow-framework/issues/6)
+defines four defect fixes: the installed schema path, the gate's
+source/installed policy-path comment, and one terminal blank-line removal in
+each of the two Copilot instruction sources. The project owner must decide and
+record whether those instruction-file byte changes are material under the
+measurement rule in `docs/REVIEW_POLICY.md`; this upgrade note does not retain
+or invalidate qualification evidence by itself. The upgrade requires a
+current-head review and normal human approval. Any reviewer-instruction content
+change beyond terminal whitespace requires the seeded benchmark and affected
+qualification evidence to be rerun.
+
 ## Upgrade procedure
 
 1. Read the installed version from `.agentic/workflow.lock.yaml`.

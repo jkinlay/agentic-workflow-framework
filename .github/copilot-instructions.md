@@ -11,4 +11,3 @@ Report findings for changes that weaken protected paths, tests, checks,
 ownership, review policy, distribution integrity, confidentiality boundaries,
 or human approval requirements. State explicitly when no findings were found
 for the current head commit.
-
