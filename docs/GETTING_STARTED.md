@@ -163,8 +163,8 @@ tree do not matter when the staged Git blob IDs are equal.
 Generate `.agentic/workflow.lock.yaml` only after the installation diff is
 final. Record:
 
-- framework repository, version, immutable source/base commit, and Git object
-  format;
+- framework repository, version, immutable current source commit, original
+  bootstrap source commit, and Git object format;
 - manifest Git blob ID and content hash;
 - selected runtime and review adapters;
 - every installed target, source, ownership policy, source and installed Git
@@ -174,6 +174,11 @@ final. Record:
 
 Never copy a static lock template. Recompute the lock whenever a managed source
 or installed target changes.
+
+`framework.source_base_commit` identifies the immutable framework source for
+the current lock contents. `bootstrap.base_commit` remains the immutable source
+used for the project's original bootstrap, so later upgrades retain their
+three-way comparison point; it is not advanced on each upgrade.
 
 ### 4. Configure the reviewer outside Git
 

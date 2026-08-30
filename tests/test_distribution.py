@@ -29,6 +29,31 @@ EXPECTED_DOGFOOD_TARGETS = {
     ".github/workflows/awf-review-claude-demonstrate.yml",
     ".github/workflows/awf-review-gate.yml",
 }
+EXPECTED_COPILOT_MAPPINGS = {
+    ("scaffolds/project/AGENTS.md.template", "AGENTS.md"),
+    ("scaffolds/project/ARCHITECTURE.md.template", "ARCHITECTURE.md"),
+    ("scaffolds/project/.agentic/project.yaml.template", ".agentic/project.yaml"),
+    ("docs/providers/codex.md", "docs/agent-runtime/codex.md"),
+    ("docs/REVIEW_POLICY.md", "docs/agent-runtime/review-policy.md"),
+    ("docs/THREAT_MODEL.md", "docs/agent-runtime/threat-model.md"),
+    ("docs/IDENTITY_AND_AUDIT.md", "docs/agent-runtime/identity-and-audit.md"),
+    ("docs/INCIDENT_RESPONSE.md", "docs/agent-runtime/incident-response.md"),
+    ("schemas/review-report.schema.json", ".agentic/schemas/review-report.schema.json"),
+    ("docs/providers/copilot.md", "docs/agent-runtime/copilot-review.md"),
+    (
+        "scaffolds/providers/copilot/.github/copilot-instructions.md",
+        ".github/copilot-instructions.md",
+    ),
+    (
+        "scaffolds/providers/copilot/.github/instructions/awf-review.instructions.md",
+        ".github/instructions/awf-review.instructions.md",
+    ),
+    (
+        "scaffolds/providers/copilot/.github/workflows/awf-review-gate.yml",
+        ".github/workflows/awf-review-gate.yml",
+    ),
+    ("scaffolds/project/CODEOWNERS.fragment", ".github/CODEOWNERS"),
+}
 
 
 def isolated_git_env(index_file=None):
@@ -67,6 +92,12 @@ def has_one_terminal_newline(content):
 
 def blobs_match(left, right):
     return left == right
+
+
+def executable_yaml(content):
+    return b"\n".join(
+        line for line in content.splitlines() if line.strip() and not line.lstrip().startswith(b"#")
+    )
 
 
 def manifest_artifacts(text):
@@ -146,10 +177,27 @@ class DistributionTests(unittest.TestCase):
         installed = ROOT / ".github" / "workflows" / "awf-review-gate.yml"
         self.assertTrue(blobs_match(source.read_bytes(), installed.read_bytes()))
 
-    def test_copilot_instruction_sources_have_one_terminal_newline(self):
+    def test_gate_behavior_unchanged_from_task_base(self):
+        self.require_git()
+        contract = (ROOT / ".agentic" / "task-contract.yaml").read_text(encoding="utf-8")
+        base_ref = re.search(r"(?m)^base_ref: ([0-9a-f]+)$", contract)
+        self.assertIsNotNone(base_ref)
+        current = (ROOT / ".github" / "workflows" / "awf-review-gate.yml").read_bytes()
+        base = run_git(
+            ROOT,
+            "cat-file",
+            "blob",
+            f"{base_ref.group(1)}:.github/workflows/awf-review-gate.yml",
+            text=False,
+        )
+        self.assertEqual(base.returncode, 0, base.stderr)
+        self.assertEqual(executable_yaml(current), executable_yaml(base.stdout))
+
+    def test_copilot_instruction_changes_have_one_terminal_newline(self):
         paths = (
             COPILOT_SCAFFOLD / ".github" / "copilot-instructions.md",
             COPILOT_SCAFFOLD / ".github" / "instructions" / "awf-review.instructions.md",
+            ROOT / ".github" / "copilot-instructions.md",
         )
         for path in paths:
             with self.subTest(path=path):
@@ -168,13 +216,18 @@ class DistributionTests(unittest.TestCase):
             encoding="utf-8"
         )
         mappings = selected_copilot_mappings(manifest)
-        self.assertGreater(len(mappings), 4)
+        actual_mappings = {
+            (source.relative_to(ROOT).as_posix(), target.as_posix())
+            for source, target in mappings
+        }
+        self.assertEqual(actual_mappings, EXPECTED_COPILOT_MAPPINGS)
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
             init = run_git(repo, "init", "--quiet")
             self.assertEqual(init.returncode, 0, init.stderr)
-            (repo / ".gitattributes").write_text("* text=auto eol=lf\n", encoding="utf-8")
             for source, target in mappings:
+                self.assertTrue(source.is_file(), f"manifest source is missing: {source}")
+                self.assertNotIn(b"\r", source.read_bytes(), f"non-LF source: {source}")
                 destination = repo / target
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, destination)
@@ -188,6 +241,16 @@ class DistributionTests(unittest.TestCase):
         lock = (ROOT / ".agentic" / "workflow.lock.yaml").read_text(encoding="utf-8")
         source_commit = lock_value(lock, r"^  source_base_commit: ([0-9a-f]+)$")
         expected_tree = lock_value(lock, r"^  source_tree_without_lock: ([0-9a-f]+)$")
+        bootstrap_commit = lock_value(lock, r"^  base_commit: ([0-9a-f]+)$")
+        bootstrap_ancestor = run_git(
+            ROOT, "merge-base", "--is-ancestor", bootstrap_commit, source_commit
+        )
+        self.assertEqual(
+            bootstrap_ancestor.returncode,
+            0,
+            "bootstrap.base_commit must remain the original ancestor of the current source: "
+            + bootstrap_ancestor.stderr,
+        )
         ancestor = run_git(ROOT, "merge-base", "--is-ancestor", source_commit, "HEAD")
         self.assertEqual(
             ancestor.returncode,
@@ -214,7 +277,7 @@ class DistributionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             index_file = Path(directory) / "index"
-            read_tree = run_git(ROOT, "read-tree", "HEAD", index_file=index_file)
+            read_tree = run_git(ROOT, "read-tree", source_commit, index_file=index_file)
             self.assertEqual(read_tree.returncode, 0, read_tree.stderr)
             removed = run_git(
                 ROOT,
@@ -244,7 +307,7 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual({block.group("target") for block in blocks}, EXPECTED_DOGFOOD_TARGETS)
         for block in blocks:
             source_spec = f"{source_commit}:{block.group('source')}"
-            target_spec = f"HEAD:{block.group('target')}"
+            target_spec = f"{source_commit}:{block.group('target')}"
             source_blob = run_git(ROOT, "rev-parse", source_spec)
             installed_blob = run_git(ROOT, "rev-parse", target_spec)
             self.assertEqual(source_blob.returncode, 0, source_blob.stderr)

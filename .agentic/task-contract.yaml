@@ -27,7 +27,7 @@ forbidden_paths:
 dependencies: []
 acceptance_criteria:
   - AC1: Managed policy and gate wording resolves in both source and downstream layouts.
-  - AC2: Copilot instruction sources have exactly one terminal newline.
+  - AC2: Copilot instruction sources and the affected dogfood instruction target have exactly one terminal newline.
   - AC3: The dogfood lock updates the issue-affected installed gate and reproduces every recorded artifact exactly.
   - AC4: A clean downstream Copilot bootstrap passes git diff --check.
   - AC5: The 0.1.0 to 0.1.1 upgrade impact and qualification boundary are documented.

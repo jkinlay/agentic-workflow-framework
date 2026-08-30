@@ -5,11 +5,11 @@
   "summary": "Implemented AWF 0.1.1 path, EOF, distribution-test, upgrade-note, and dogfood-provenance corrections.",
   "acceptance_criteria": [
     {"id": "AC1", "status": "met", "evidence": ["tests/test_distribution.py::test_managed_references_use_installed_layout"]},
-    {"id": "AC2", "status": "met", "evidence": ["tests/test_distribution.py::test_copilot_instruction_sources_have_one_terminal_newline"]},
+    {"id": "AC2", "status": "met", "evidence": ["tests/test_distribution.py::test_copilot_instruction_changes_have_one_terminal_newline"]},
     {"id": "AC3", "status": "met", "evidence": ["tests/test_distribution.py::test_dogfood_lock_reproduces"]},
     {"id": "AC4", "status": "met", "evidence": ["tests/test_distribution.py::test_clean_copilot_bootstrap_passes_diff_check"]},
     {"id": "AC5", "status": "met", "evidence": ["docs/UPGRADING.md version 0.1.1 upgrade note"]},
-    {"id": "AC6", "status": "met", "evidence": ["root/scaffold gate blob parity and 34 existing adapter/gate tests"]}
+    {"id": "AC6", "status": "met", "evidence": ["tests/test_distribution.py::test_gate_behavior_unchanged_from_task_base and 34 existing adapter/gate tests"]}
   ],
   "verification": [
     {"command": "python -m unittest discover -s tests -p 'test_*.py' -v", "result": "passed"},
@@ -26,7 +26,6 @@
     ".agentic/execution-report.json",
     ".agentic/workflow.lock.yaml",
     ".github/copilot-instructions.md",
-    ".github/instructions/awf-review.instructions.md",
     ".github/workflows/awf-review-gate.yml",
     "README.md",
     "docs/GETTING_STARTED.md",
