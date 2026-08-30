@@ -21,7 +21,7 @@ input and does not claim that local scaffolds are active server-side controls.
 | Expected status source | Policy says GitHub Actions | Configuration pending remote |
 | Protected workflow | `.github/**` is in scaffold, manifest, and CODEOWNERS floor | Server enforcement pending remote |
 | Copilot automatic review | Adapter requires `Review new pushes` | Activation pending remote/licence |
-| Claude review | Split model/publisher scaffold, deterministic COMMENT publisher, tests, and demonstration workflow | Implemented; qualification pending and remediation required before activation |
+| Claude review | Split model/publisher scaffold, deterministic COMMENT publisher, tests, and demonstration workflow | Implemented; live qualification pending |
 
 ## Claude adapter verification
 
