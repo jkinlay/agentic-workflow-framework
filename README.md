@@ -30,14 +30,16 @@ avoid depending on one model vendor or agent host.
 
 ## Start here
 
-1. Read [ARCHITECTURE.md](ARCHITECTURE.md).
-2. Read [docs/OPERATING_MODEL.md](docs/OPERATING_MODEL.md).
-3. Read [docs/REVIEW_POLICY.md](docs/REVIEW_POLICY.md).
-4. Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
-5. Read [docs/BOOTSTRAPPING.md](docs/BOOTSTRAPPING.md).
-6. Use [docs/PROJECT_ONBOARDING.md](docs/PROJECT_ONBOARDING.md) to assess a
+1. Read the integrated system description and diagrams in
+   [docs/SYSTEM_ARCHITECTURE.md](docs/SYSTEM_ARCHITECTURE.md).
+2. Read the authoritative decisions in [ARCHITECTURE.md](ARCHITECTURE.md).
+3. Read [docs/OPERATING_MODEL.md](docs/OPERATING_MODEL.md).
+4. Read [docs/REVIEW_POLICY.md](docs/REVIEW_POLICY.md).
+5. Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+6. Read [docs/BOOTSTRAPPING.md](docs/BOOTSTRAPPING.md).
+7. Use [docs/PROJECT_ONBOARDING.md](docs/PROJECT_ONBOARDING.md) to assess a
    target repository.
-7. Review provider-specific requirements under `docs/providers/`.
+8. Review provider-specific requirements under `docs/providers/`.
 
 Before A2, also establish the identity/audit and incident-response contracts in
 [docs/IDENTITY_AND_AUDIT.md](docs/IDENTITY_AND_AUDIT.md) and

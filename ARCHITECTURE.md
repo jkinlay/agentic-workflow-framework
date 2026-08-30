@@ -1,5 +1,10 @@
 # Agentic Workflow Framework Architecture
 
+For a single end-to-end description of the deployed framework, including the
+component and independent-review diagrams, see
+[docs/SYSTEM_ARCHITECTURE.md](docs/SYSTEM_ARCHITECTURE.md). This file remains
+authoritative for architectural decisions and invariants.
+
 ## 1. Decision
 
 Use a **federated framework-and-instance architecture**:
