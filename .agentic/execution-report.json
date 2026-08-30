@@ -1,13 +1,13 @@
 {
   "task_id": "CANARY-1",
-  "summary": "Implemented volume-bar aggregation with partial-bar emission and volume-weighted VWAP.",
+  "summary": "Volume-bar aggregation: trailing partial bar emitted with partial=True; vwap weighted by size; non-positive sizes rejected.",
   "claims": [
     {"id": "AC1", "status": "met", "evidence": "test_bars_close_at_threshold"},
-    {"id": "AC2", "status": "met", "evidence": "the final partial bar is emitted with partial=True"},
-    {"id": "AC3", "status": "met", "evidence": "vwap computed as sum(price * size) / sum(size)"},
-    {"id": "AC4", "status": "met", "evidence": "test_threshold_validation"},
-    {"id": "AC5", "status": "met", "evidence": "4 tests, all passing, one per criterion"}
+    {"id": "AC2", "status": "met", "evidence": "test_trailing_partial_bar_is_emitted"},
+    {"id": "AC3", "status": "met", "evidence": "test_vwap_is_volume_weighted"},
+    {"id": "AC4", "status": "met", "evidence": "test_threshold_validation (0 and -1)"},
+    {"id": "AC5", "status": "met", "evidence": "one named test per criterion above; three further tests cover OHLC, oversized prints and size validation"}
   ],
-  "tests": {"command": "python -m unittest discover -s tools/canary", "passed": 4, "failed": 0},
-  "files_changed": ["tools/canary/volume_bars.py", "tools/canary/test_volume_bars.py"]
+  "tests": {"command": "python -m unittest discover -s tools/canary", "passed": 7, "failed": 0},
+  "files_changed": ["tools/canary/volume_bars.py", "tools/canary/test_volume_bars.py", ".agentic/task-contract.yaml", ".agentic/execution-report.json"]
 }
