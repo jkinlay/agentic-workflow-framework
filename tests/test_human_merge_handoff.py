@@ -32,6 +32,11 @@ class HumanMergeHandoffContractTests(unittest.TestCase):
         self.assertLess(browser, email)
         self.assertIn("external browser rather than an embedded or in-app browser", self.contract)
 
+    def test_false_readiness_never_opens_browser(self):
+        self.assertIn("When the predicate is false", self.contract)
+        self.assertIn("must not call either terminal", self.contract)
+        self.assertIn("open it in any browser", self.contract)
+
     def test_email_has_required_human_context(self):
         self.assertIn("Full authoritative Epic or Ticket title", self.contract)
         self.assertRegex(

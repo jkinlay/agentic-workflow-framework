@@ -28,6 +28,11 @@ Pending, missing, stale, cancelled, skipped, or failing evidence makes the
 predicate false. A new commit invalidates the prior predicate and any prior
 handoff for merge-readiness purposes.
 
+When the predicate is false, the coordinator must not call either terminal
+adapter, describe the pull request as ready to merge, or open it in any browser
+as a merge handoff. It reports the concrete blockers and continues or awaits
+the authorized remediation instead.
+
 ## Handoff event
 
 The coordinator constructs a bounded event from trusted source-control and
