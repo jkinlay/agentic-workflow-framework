@@ -20,6 +20,7 @@ tokens:
   __AWF_HUMAN_CODEOWNERS__: One or more non-agent human CODEOWNERS
   __AWF_DEVELOPER_PRINCIPAL__: Dedicated developer App or service identity
   __AWF_HUMAN_APPROVERS__: Human identities or protected team references
+  __AWF_HUMAN_MERGE_GITHUB_LOGIN__: GitHub login to mention exactly once when a PR becomes ready for human merge
   __AWF_AUDIT_RETENTION_DAYS__: Positive project-approved audit retention period
   __AWF_INCIDENT_STOP_AUTHORITY__: Human role authorized to stop execution and revoke access
 

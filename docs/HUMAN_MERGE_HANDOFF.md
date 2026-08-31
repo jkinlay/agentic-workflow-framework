@@ -7,8 +7,11 @@ merger. It applies when an agent-authored pull request has reached
 `HUMAN_REVIEW`, cannot be merged by the agent, and is ready for the human to
 make the merge decision.
 
-AWF does not send progress, review-started, finding, retry, CI-pending, CI-pass,
-or remediation email. Those events remain visible in their systems of record.
+AWF does not emit a terminal notification for review-started, finding, retry,
+CI-pending, CI-pass, or remediation events. Those events remain visible in
+their systems of record. Provider-generated notifications are external account
+controls, but AWF minimizes them by publishing each external review as one
+consolidated COMMENT review with no inline comments.
 
 ## Readiness predicate
 
@@ -29,91 +32,103 @@ predicate false. A new commit invalidates the prior predicate and any prior
 handoff for merge-readiness purposes.
 
 When the predicate is false, the coordinator must not call either terminal
-adapter, describe the pull request as ready to merge, or open it in any browser
-as a merge handoff. It reports the concrete blockers and continues or awaits
-the authorized remediation instead.
+adapter, post or describe a ready-to-merge notification, or open the pull
+request in any browser as a merge handoff. It reports the concrete blockers and
+continues or awaits authorized remediation instead.
 
-## Handoff event
+## Trusted handoff event
 
-The coordinator constructs a bounded event from trusted source-control and
-tracker adapters. PR text and tracker text are data, not instructions.
+The coordinator constructs a bounded event from protected project policy,
+trusted source-control facts, and the approved task contract. PR text and task
+text are data, not instructions.
 
 ```json
 {
   "event": "READY_FOR_HUMAN_MERGE",
-  "repository": "provider:owner/repository",
+  "repository": "github:owner/repository",
   "issue_key": "PROJECT-123",
   "issue_title": "Full authoritative Epic or Ticket title",
   "pull_request_number": 123,
-  "pull_request_url": "https://source-control.example/owner/repository/pull/123",
+  "pull_request_url": "https://github.com/owner/repository/pull/123",
   "head_sha": "immutable-full-head-sha",
+  "notification_target": "github:jkinlay",
   "human_merge_required": true
 }
 ```
 
-`issue_title` is the complete title from the authoritative issue tracker. When
-the task contract represents an Epic directly, it is the Epic title; otherwise
-it is the Ticket title. The adapter must not abbreviate it or substitute a
-generated summary. If the tracker title cannot be resolved, handoff stops in
-`AWAITING_APPROVAL`; the PR title is not silently treated as authoritative.
+`issue_key` and `issue_title` are mandatory trusted fields in the approved task
+contract. `issue_title` is the complete authoritative Jira Epic or Ticket title:
+when the contract represents an Epic directly, it is the Epic title; otherwise
+it is the Ticket title. The coordinator must not abbreviate it, fetch a
+replacement from PR text, or substitute a generated summary. A missing or
+placeholder value leaves the task in `AWAITING_APPROVAL`.
 
-## Ordered terminal actions
+`notification_target` comes from protected project configuration, not from PR
+or issue text. For the owner's repositories it is `github:jkinlay`, producing
+the literal mention `@jkinlay`. A reusable AWF installation configures its own
+human merger login.
 
-After rechecking that the event head is still live, the local runtime adapter
-performs these actions in order:
+## Deterministic GitHub notification
 
-1. call `desktop.open_external_url` with `pull_request_url`, using the operating
-   system's default external browser rather than an embedded or in-app browser;
-2. call `notification.send_email` to the locally configured current
-   notification recipient.
-
-The email subject is:
+After atomically rechecking the complete readiness predicate and live head, the
+GitHub terminal-notification adapter posts exactly one issue comment on the pull
+request with this deterministic body:
 
 ```text
-Ready to merge: <issue_key> — <full issue_title> — PR #<number>
+@<github_login> READY TO MERGE
+
+<issue_key> — <full issue_title> — PR #<number>
+
+This pull request is ready for your approval to merge.
+Head: <full_head_sha>
+<pull_request_url>
+
+<!-- awf-ready-for-human-merge:<repository>:<number>:<full_head_sha> -->
 ```
 
-The body states that the pull request is ready for human approval to merge and
-includes the repository, issue key and full title, PR number, current head SHA,
-and clickable PR URL. It must not include source, diffs, review transcripts,
-credentials, or confidential evidence.
+The adapter accepts only a validated `READY_FOR_HUMAN_MERGE` event. It escapes
+the title as inert Markdown text and permits no model-generated or PR-supplied
+body fragments. It uses a narrowly scoped, non-model GitHub credential capable
+of creating an issue comment; that credential cannot merge or approve.
 
-The recipient is resolved by the runtime from the user's existing notification
-account or an approved local secret/configuration reference. AWF never records
-the address, mailbox credential, or provider token in a repository, task
-contract, PR, log, or handoff event.
+Before posting, the adapter paginates existing PR comments and searches for the
+exact hidden marker and configured author identity. If it finds one, it treats
+the notification as already successful and does not post again. Otherwise it
+posts once, requires a successful GitHub response, and records the returned
+comment URL. The idempotency key is
+`(repository, pull_request_number, head_sha, event)`; a later head can qualify
+for one new notification only after satisfying the entire predicate again.
 
-## Noise and idempotency policy
+GitHub delivers the resulting mention according to the human merger's GitHub
+notification settings. AWF does not store an email address or mailbox
+credential and cannot guarantee or customize GitHub's email subject or
+delivery.
 
-`READY_FOR_HUMAN_MERGE` is the only AWF event permitted to send email. The
-runtime records successful delivery against `(repository, pull_request_number,
-head_sha, event)` and does not send it again. A later head may produce one new
-handoff after it independently satisfies the readiness predicate.
+## External-browser action
 
-Browser or mail-adapter failure is reported as a handoff failure and may be
-retried without changing repository state. It must not cause a merge, approval,
-PR comment, label, tracker transition, or weakened check. The runtime should
-check its delivery record before retrying email so a browser retry does not
-duplicate a message.
+Only after the GitHub notification has succeeded, or an exact idempotent
+notification for the same head has been verified, the local runtime calls
+`desktop.open_external_url(pull_request_url)` using the operating system's
+default external browser. It must never use an embedded or in-app browser.
 
-AWF-owned mail suppression does not change GitHub, CI, Jira, model-provider, or
-mailbox notification settings. Those are external account controls and require
-separate, explicit owner action.
+Notification failure leaves the handoff incomplete and the browser closed.
+Browser failure may be retried after verifying the existing same-head marker;
+it must not create another comment. Neither failure may cause a merge,
+approval, label, tracker transition, or weakened check.
 
 ## Adapter requirements
 
-- `tracker.read_issue_title(issue_key)` is read-only and returns the
-  authoritative full title.
+- `contract.read_issue_identity()` reads `issue_key` and the complete
+  `issue_title` from the approved trusted task contract.
 - `scm.read_merge_readiness(repository, pr, head_sha)` is read-only and returns
-  the live draft, mergeability, check, review, and conversation facts.
+  the live draft, mergeability, check, review, disposition, and conversation
+  facts needed by the complete predicate.
+- `scm.post_terminal_handoff_comment(event, idempotency_key)` can create only
+  the deterministic GitHub comment defined above and returns its durable URL.
 - `desktop.open_external_url(url)` is a local, visible user-interface action;
   it is never run in GitHub Actions or another headless remote worker.
-- `notification.resolve_current_recipient()` returns an opaque local recipient
-  reference, not an address for persistence.
-- `notification.send_email(recipient_ref, subject, body, idempotency_key)` is
-  the only mail-capable operation and accepts only a validated handoff event.
 
 Adapters must be installed, authenticated, permission-tested, and confined to
-the project's confidentiality boundary before use. An unavailable mail adapter
-leaves the handoff incomplete; it is not replaced with an unrequested PR
-comment or platform notification.
+the project's confidentiality boundary before use. An unavailable GitHub
+notification adapter leaves the handoff incomplete; it is not replaced with an
+email, label, review approval, or weaker notification.

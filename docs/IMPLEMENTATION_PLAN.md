@@ -172,7 +172,7 @@ conditions.
 | AWF-020 | Implement and permission-test the split Claude model/publisher adapter | P1 |
 | AWF-021 | Add manifest/project/lock schemas and provenance hash validation | P0 |
 | AWF-022 | Add upstream CI, secret scanning, and review benchmark fixtures | P0 |
-| AWF-023 | Implement the terminal-only human merge handoff adapter contract | P1 |
+| AWF-023 | Implement the terminal GitHub merge notification and external-browser handoff contract | P1 |
 
 AWF-020 status: the scaffold implementation is merged at `24ecd82`, and the
 defects found by its verification are remediated in the follow-up change

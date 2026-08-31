@@ -144,9 +144,11 @@ their native states to these identifiers without changing the actors.
 `MERGED`, `RELEASED`, `PROMOTED`, `FAILED`, and `CANCELLED` are terminal for that
 task execution. A new attempt receives a new task/execution identifier.
 
-Entry to `HUMAN_REVIEW` uses the ordered, terminal-only browser and email
-actions in [HUMAN_MERGE_HANDOFF.md](HUMAN_MERGE_HANDOFF.md). Intermediate
-states never send AWF email. A new head returns the task to the applicable
+Entry to `HUMAN_REVIEW` uses the ordered, terminal-only GitHub notification and
+external-browser actions in
+[HUMAN_MERGE_HANDOFF.md](HUMAN_MERGE_HANDOFF.md). The browser opens only after
+the same-head notification succeeds. Intermediate states never emit the
+terminal notification. A new head returns the task to the applicable
 review/check state and must independently qualify before another handoff.
 
 ## 6. Failure and recovery

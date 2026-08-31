@@ -25,6 +25,10 @@ identity_and_audit:
   audit_retention_days: 90
   incident_stop_authority: github:jkinlay
 
+human_merge_handoff:
+  notification_target: github:jkinlay
+  notification_mode: github_mention
+
 protected_paths:
   - AGENTS.md
   - "**/AGENTS.md"

@@ -12,7 +12,7 @@ Use this guide for the sequence of actions. Use the
 components fit together, and the root [ARCHITECTURE.md](../ARCHITECTURE.md) for
 authoritative architectural decisions and invariants.
 
-AWF v0.1.1 uses a manual, reviewable bootstrap. There is no supported command
+AWF v0.1.2 uses a manual, reviewable bootstrap. There is no supported command
 that safely installs or upgrades every project automatically. The distribution
 manifest, project scaffolds, provider assets, and checks are the installation
 inputs; a human-reviewed pull request is the installation mechanism.
@@ -376,10 +376,11 @@ implementation task without external side effects.
 8. When the live head is mergeable and every required check, current-head
    review, human finding disposition, conversation requirement, and evidence
    requirement is satisfied, perform the
-   [human merge handoff](HUMAN_MERGE_HANDOFF.md): open the PR in the operating
-   system's external browser, then send the single merge-ready email containing
-   the authoritative full Epic or Ticket title and PR number. Do not send AWF
-   email for intermediate states.
+   [human merge handoff](HUMAN_MERGE_HANDOFF.md): post one deterministic GitHub
+   `@mention` containing the complete title from the trusted task contract and
+   the PR number, then open the PR in the operating system's external browser
+   only after the notification succeeds. Do not emit a terminal AWF
+   notification for intermediate states.
 9. A non-author human inspects the diff, findings, and evidence and decides on
    merge. Release, publication, deployment, and research promotion are separate
    human decisions.

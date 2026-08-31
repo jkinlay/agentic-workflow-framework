@@ -48,7 +48,7 @@ flowchart TB
     O["Coordinator<br/>approved task contract and routing"]
     D["Developer agent<br/>one writer and one worktree"]
     Q["QA and evidence<br/>clean project-owned checks"]
-    MH["Terminal merge handoff<br/>external browser plus one email"]
+    MH["Terminal merge handoff<br/>one GitHub mention, then external browser"]
   end
 
   subgraph X["Independent external review"]
@@ -187,9 +187,10 @@ The full state machine and actor permissions are defined in
 6. Project CI and QA execute authoritative checks from clean state.
 7. `awf/review` verifies that the configured required engine reviewed the live
    head and that every qualification flag is true.
-8. The local runtime opens the PR in the external browser and sends one
-   merge-ready email with the authoritative full Epic or Ticket title and PR
-   number. No intermediate AWF state sends email.
+8. The local runtime posts one deterministic, idempotent GitHub `@mention` with
+   the trusted task contract's complete Epic or Ticket title and PR number,
+   then opens the PR in the external browser only after notification succeeds.
+   No intermediate AWF state emits the terminal notification.
 9. A non-author human inspects the diff, findings, and evidence and decides
    whether to merge.
 10. A human with the relevant authority separately decides release, publication,
@@ -363,7 +364,7 @@ the approved autonomy level and task contract.
 
 ## Current implementation status and deliberate limits
 
-AWF v0.1.1 remains a documentation-first framework with manual bootstrap and
+AWF v0.1.2 remains a documentation-first framework with manual bootstrap and
 upgrade. The provider-neutral architecture, ownership manifest, project
 scaffolds, operating and security contracts, review-report schema, engine-aware
 gate, Copilot scaffold, and split Claude adapter with offline tests and a live

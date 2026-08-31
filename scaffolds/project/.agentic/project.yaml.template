@@ -25,6 +25,10 @@ identity_and_audit:
   audit_retention_days: __AWF_AUDIT_RETENTION_DAYS__
   incident_stop_authority: "__AWF_INCIDENT_STOP_AUTHORITY__"
 
+human_merge_handoff:
+  notification_target: "github:__AWF_HUMAN_MERGE_GITHUB_LOGIN__"
+  notification_mode: github_mention
+
 protected_paths:
   - AGENTS.md
   - "**/AGENTS.md"
