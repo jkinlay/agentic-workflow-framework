@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 
 from awf_review_common import (
@@ -41,7 +40,6 @@ EVENT_COMMENT = "COMMENT"          # the only event this publisher can ever send
 FORBIDDEN_EVENTS = ("APPROVE", "REQUEST_CHANGES")
 MAX_BODY_CHARS = 60_000
 MAX_COMMENT_CHARS = 8_000
-HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 EXIT_OK = 0
 EXIT_INVALID = 1
@@ -58,7 +56,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--expected-head", required=True, help="head SHA the workflow event carried")
     parser.add_argument("--reviewer-identity", required=True, help="e.g. awf-reviewer[bot]")
     parser.add_argument("--policy", default=None, help="optional .agentic/project.yaml from the base checkout")
-    parser.add_argument("--max-inline", type=int, default=50)
     parser.add_argument("--dry-run", action="store_true", help="build the payload but do not POST")
     parser.add_argument("--api", default=os.environ.get("GITHUB_API_URL", GITHUB_API_DEFAULT))
     return parser.parse_args(argv)
@@ -96,43 +93,6 @@ def load_and_check_report(args: argparse.Namespace) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Diff positions
-# ---------------------------------------------------------------------------
-
-def valid_locations(patch: str | None) -> set[tuple[str, int]]:
-    """Return the set of (side, line) pairs a review comment may attach to."""
-    locations: set[tuple[str, int]] = set()
-    if not patch:
-        return locations
-    old_line = new_line = 0
-    for raw in patch.splitlines():
-        header = HUNK_HEADER.match(raw)
-        if header:
-            old_line = int(header.group(1))
-            new_line = int(header.group(3))
-            continue
-        if raw.startswith("\\"):
-            continue
-        if raw.startswith("+"):
-            locations.add(("RIGHT", new_line))
-            new_line += 1
-        elif raw.startswith("-"):
-            locations.add(("LEFT", old_line))
-            old_line += 1
-        else:
-            locations.add(("RIGHT", new_line))
-            locations.add(("LEFT", old_line))
-            new_line += 1
-            old_line += 1
-    return locations
-
-
-def location_map(api: str, repo: str, pr: int, token: str) -> dict[str, set[tuple[str, int]]]:
-    files = github_paginate(f"{api}/repos/{repo}/pulls/{pr}/files?per_page=100", token, max_pages=30)
-    return {entry.get("filename", ""): valid_locations(entry.get("patch")) for entry in files}
-
-
-# ---------------------------------------------------------------------------
 # Payload
 # ---------------------------------------------------------------------------
 
@@ -147,21 +107,13 @@ def finding_text(finding: dict) -> str:
             f"{finding['description']}\n\n_AWF finding {finding['id']}, phase {phase}_")
 
 
-def build_payload(report: dict, locations: dict[str, set[tuple[str, int]]], max_inline: int) -> dict:
-    inline: list[dict] = []
-    in_body: list[str] = []
+def build_payload(report: dict) -> dict:
+    findings: list[str] = []
     for finding in report["findings"]:
         path = finding["file"]
         line = finding.get("line")
-        side = finding.get("side", "RIGHT")
-        placeable = (line is not None and path in locations and (side, line) in locations[path])
-        if placeable and len(inline) < max_inline:
-            inline.append({"path": path, "line": line, "side": side,
-                           "body": clip(finding_text(finding), MAX_COMMENT_CHARS)})
-        else:
-            where = f"{path}:{line}" if line else path
-            note = "" if placeable else " (location not in diff)"
-            in_body.append(f"- {where}{note} - " + clip(finding_text(finding), MAX_COMMENT_CHARS).replace("\n", "\n  "))
+        where = f"{path}:{line}" if line else path
+        findings.append(f"- {where} - " + clip(finding_text(finding), MAX_COMMENT_CHARS).replace("\n", "\n  "))
 
     blockers = sum(1 for f in report["findings"] if f.get("blocking"))
     lines = [
@@ -173,14 +125,15 @@ def build_payload(report: dict, locations: dict[str, set[tuple[str, int]]], max_
         f"vendor: {report.get('vendor') or 'unknown'})",
         "",
         f"Findings: {len(report['findings'])} (blocking: {blockers}). "
-        f"Inline comments: {len(inline)}. This is a COMMENT review; it is evidence for the awf/review "
-        "check and the human merge decision, never an approval.",
+        "All findings are consolidated in this review body to minimize notifications. "
+        "This is a COMMENT review; it is evidence for the awf/review check and the human merge decision, "
+        "never an approval.",
     ]
     if report["status"] == "no_findings":
         lines.append("")
         lines.append(f"No findings for head {report['head_sha']}. Limitations below state what was not examined.")
-    if in_body:
-        lines += ["", "### Findings not placed inline", ""] + in_body
+    if findings:
+        lines += ["", "### Findings", ""] + findings
     if report.get("claim_assessments"):
         lines += ["", "### Developer claim assessments (claims treated as untrusted)", ""]
         lines += [f"- {c['claim_id']}: **{c['status']}** - {clip(c['evidence'], 1000)}" for c in report["claim_assessments"]]
@@ -188,7 +141,7 @@ def build_payload(report: dict, locations: dict[str, set[tuple[str, int]]], max_
         lines += ["", "### Limitations", ""] + [f"- {clip(l, 500)}" for l in report["limitations"]]
     body = clip("\n".join(lines), MAX_BODY_CHARS)
 
-    payload = {"commit_id": report["head_sha"], "event": EVENT_COMMENT, "body": body, "comments": inline}
+    payload = {"commit_id": report["head_sha"], "event": EVENT_COMMENT, "body": body, "comments": []}
     assert payload["event"] == EVENT_COMMENT and payload["event"] not in FORBIDDEN_EVENTS
     return payload
 
@@ -219,14 +172,6 @@ def post_review(api: str, repo: str, pr: int, token: str, payload: dict) -> dict
         raise AdapterError("refusing to send a non-COMMENT review event")
     url = f"{api}/repos/{repo}/pulls/{pr}/reviews"
     status, data, _ = http_json("POST", url, token, payload)
-    if status == 422 and payload.get("comments"):
-        # An inline position GitHub rejected: keep the evidence, move findings into the body.
-        moved = "\n".join(f"- {c['path']}:{c['line']} ({c['side']}) - " + c["body"].replace("\n", "\n  ")
-                          for c in payload["comments"])
-        fallback = {"commit_id": payload["commit_id"], "event": EVENT_COMMENT,
-                    "body": clip(payload["body"] + "\n\n### Findings (inline placement rejected)\n\n" + moved, MAX_BODY_CHARS),
-                    "comments": []}
-        status, data, _ = http_json("POST", url, token, fallback)
     if status not in (200, 201) or not isinstance(data, dict):
         raise AdapterError(f"review creation failed: HTTP {status}: {str(data)[:300]}")
     if data.get("state") not in ("COMMENTED", None):
@@ -257,10 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             if already_published(args.api, args.repo, args.pr, token, args.reviewer_identity, head):
                 print("publish: a review by this identity already covers the head SHA; nothing to do")
                 return EXIT_OK
-            locations = location_map(args.api, args.repo, args.pr, token)
-        else:
-            locations = {}
-        payload = build_payload(report, locations, args.max_inline)
+        payload = build_payload(report)
         if args.dry_run:
             print(json.dumps(payload, indent=1))
             return EXIT_OK

@@ -374,23 +374,18 @@ class RunModelTests(unittest.TestCase):
 class PublishTests(unittest.TestCase):
     PATCH = "@@ -10,3 +10,4 @@\n context\n-old\n+new\n+added\n context2"
 
-    def test_valid_locations_from_patch(self):
-        locations = publish.valid_locations(self.PATCH)
-        self.assertIn(("RIGHT", 11), locations)   # "+new"
-        self.assertIn(("RIGHT", 12), locations)   # "+added"
-        self.assertIn(("LEFT", 11), locations)    # "-old"
-        self.assertIn(("RIGHT", 10), locations)   # context
-        self.assertNotIn(("RIGHT", 99), locations)
-
-    def test_payload_places_inline_or_in_body_and_is_comment_only(self):
+    def test_payload_consolidates_all_findings_and_is_comment_only(self):
         rep = report()
         rep["findings"].append({"id": "F2", "severity": "low", "title": "Elsewhere", "description": "not in diff",
                                 "file": "src/a.py", "line": 99, "side": "RIGHT", "phase": "blind", "blocking": False})
-        payload = publish.build_payload(rep, {"src/a.py": publish.valid_locations(self.PATCH)}, 50)
+        payload = publish.build_payload(rep)
         self.assertEqual(payload["event"], "COMMENT")
         self.assertEqual(payload["commit_id"], SHA_A)
-        self.assertEqual([c["line"] for c in payload["comments"]], [12])
-        self.assertIn("location not in diff", payload["body"])
+        self.assertEqual(payload["comments"], [])
+        self.assertIn("### Findings", payload["body"])
+        self.assertIn("src/a.py:12", payload["body"])
+        self.assertIn("src/a.py:99", payload["body"])
+        self.assertIn("All findings are consolidated", payload["body"])
         self.assertIn("awf-review-status: findings", payload["body"])
         self.assertNotIn("APPROVE", payload["event"])
 
@@ -412,7 +407,7 @@ class PublishTests(unittest.TestCase):
                 return 200, [{"filename": "src/a.py", "patch": self.PATCH}], {}
             if method == "POST" and url.endswith("/pulls/7/reviews"):
                 posted.append(body)
-                if post_status == 422 and body.get("comments"):
+                if post_status == 422:
                     return 422, {"message": "Unprocessable"}, {}
                 return 201, {"id": 1, "state": "COMMENTED", "html_url": "u"}, {}
             raise AssertionError(f"unexpected call {method} {url}")
@@ -456,14 +451,12 @@ class PublishTests(unittest.TestCase):
             code, posted = self.run_main(tmp, report(), existing=existing)
         self.assertEqual((code, posted), (publish.EXIT_OK, []))
 
-    def test_422_moves_inline_findings_into_body(self):
+    def test_github_rejection_fails_closed_without_second_post(self):
         with tempfile.TemporaryDirectory() as tmp:
             code, posted = self.run_main(tmp, report(), post_status=422)
-        self.assertEqual(code, publish.EXIT_OK)
-        self.assertEqual(len(posted), 2)
-        self.assertEqual(posted[1]["comments"], [])
-        self.assertIn("inline placement rejected", posted[1]["body"])
-        self.assertEqual(posted[1]["event"], "COMMENT")
+        self.assertEqual(code, publish.EXIT_INVALID)
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(posted[0]["comments"], [])
 
     def test_policy_identity_cross_check(self):
         with tempfile.TemporaryDirectory() as tmp:

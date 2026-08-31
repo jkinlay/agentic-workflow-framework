@@ -4,6 +4,34 @@
 
 An AWF upgrade is a reviewable project change, not an automatic overwrite.
 
+## Version 0.1.2 upgrade note
+
+Version 0.1.2 replaces the proposed local email handoff with a deterministic
+GitHub terminal notification and changes the Claude publisher to put every
+finding in one consolidated COMMENT review body with `comments: []`.
+
+Projects upgrading from 0.1.1 should:
+
+1. add `issue_key` and the complete authoritative `issue_title` to every
+   approved task contract;
+2. add `human_merge_handoff.notification_target` with the protected GitHub
+   human-merger identity to project policy;
+3. update the managed Claude `publish.py`, adapter tests, and provider
+   documentation when Claude is selected;
+4. retain the existing reviewer App permissions: the consolidated publisher
+   still creates one COMMENT review and can never approve or merge;
+5. regenerate the workflow lock from the immutable 0.1.2 source commit; and
+6. run normal project CI and independent review.
+
+The publisher's identity, credential separation, report validation, COMMENT
+event, idempotency, and live-head binding are unchanged. The placement of
+findings changes from inline comments to one review body, so existing Claude
+demonstration hashes no longer match. Refresh the publisher hashes and adapter
+unit evidence before setting qualification flags true. The model prompt and
+review-report schema are unchanged, so this notification-only presentation
+change does not by itself require repeating the seeded-defect recall benchmark;
+projects record that materiality decision under `docs/REVIEW_POLICY.md`.
+
 ## Version 0.1.1 upgrade note
 
 Version 0.1.1 corrects downstream path wording and terminal whitespace in the

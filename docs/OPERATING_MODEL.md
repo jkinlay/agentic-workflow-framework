@@ -132,7 +132,7 @@ their native states to these identifiers without changing the actors.
 | `EXTERNAL_REVIEW` | `IN_IMPLEMENTATION` | Coordinator | External findings require remediation |
 | `EXTERNAL_REVIEW` | `CI_QA` | Coordinator | Required engine reviewed current SHA; blocking findings resolved by a human |
 | `CI_QA` | `IN_IMPLEMENTATION` | Coordinator | Failed authoritative check with evidence |
-| `CI_QA` | `HUMAN_REVIEW` | Coordinator | Required checks pass; evidence map complete and immutable |
+| `CI_QA` | `HUMAN_REVIEW` | Coordinator | Required checks pass for the live head; current-head external review and human dispositions satisfy policy; evidence map complete and immutable; emit the terminal handoff once |
 | `HUMAN_REVIEW` | `IN_IMPLEMENTATION` | Human reviewer | Changes requested |
 | `HUMAN_REVIEW` | `MERGED` | Human merger only | Non-author approval and protected-branch rules satisfied |
 | `MERGED` | `RELEASED` or `PROMOTED` | Human release/promote authority only | Project release or promotion gate |
@@ -143,6 +143,13 @@ their native states to these identifiers without changing the actors.
 
 `MERGED`, `RELEASED`, `PROMOTED`, `FAILED`, and `CANCELLED` are terminal for that
 task execution. A new attempt receives a new task/execution identifier.
+
+Entry to `HUMAN_REVIEW` uses the ordered, terminal-only GitHub notification and
+external-browser actions in
+[HUMAN_MERGE_HANDOFF.md](HUMAN_MERGE_HANDOFF.md). The browser opens only after
+the same-head notification succeeds. Intermediate states never emit the
+terminal notification. A new head returns the task to the applicable
+review/check state and must independently qualify before another handoff.
 
 ## 6. Failure and recovery
 

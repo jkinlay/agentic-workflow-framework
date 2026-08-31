@@ -73,8 +73,9 @@ that a fork can never trigger it with the repository's credential.
   nothing when a marked review by this identity already covers the head.
 - Posts exactly one review with the constant event `COMMENT` and `commit_id`
   equal to the reviewed head. `APPROVE` and `REQUEST_CHANGES` are unreachable
-  in code. Findings whose location is not in the diff are placed in the review
-  body rather than dropped; a rejected inline position falls back to the body.
+  in code. Every finding, including its file and line when present, is placed in
+  one consolidated review body; the payload always has `comments: []`. This
+  preserves review evidence while avoiding one notification per inline finding.
 - The review body carries `awf-review-status: no_findings|findings` and
   `awf-review-head: <sha>`, which the common gate requires for this engine.
 

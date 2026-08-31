@@ -155,6 +155,15 @@ Every worker returns:
 
 Free-form completion messages are not evidence.
 
+When a pull request first satisfies the complete `HUMAN_REVIEW` readiness
+predicate for its live head, the local runtime performs the terminal human
+merge handoff defined in
+[docs/HUMAN_MERGE_HANDOFF.md](docs/HUMAN_MERGE_HANDOFF.md): post one
+deterministic, idempotent GitHub `@mention` containing the trusted task
+contract's complete Epic or Ticket title and PR number, then open the PR in the
+operating system's external browser only after notification succeeds. No
+earlier AWF state emits a terminal notification.
+
 ## 7. Canonical lifecycle
 
 The state machine, permitted actor for each transition, and required evidence
@@ -265,6 +274,8 @@ Define integrations behind narrow capabilities:
 - `research.resolve_registry`, `research.submit_job`,
   `research.read_manifest`;
 - `evidence.validate`, `evidence.publish_report`.
+- `desktop.open_external_url`;
+- `scm.post_terminal_handoff_comment`.
 
 Use authenticated connectors, MCP servers, or approved CLIs for private
 systems. Treat issue text, PR comments, retrieved documents, and external

@@ -36,12 +36,13 @@ avoid depending on one model vendor or agent host.
    [docs/SYSTEM_ARCHITECTURE.md](docs/SYSTEM_ARCHITECTURE.md).
 3. Read the authoritative decisions in [ARCHITECTURE.md](ARCHITECTURE.md).
 4. Read [docs/OPERATING_MODEL.md](docs/OPERATING_MODEL.md).
-5. Read [docs/REVIEW_POLICY.md](docs/REVIEW_POLICY.md).
-6. Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
-7. Read [docs/BOOTSTRAPPING.md](docs/BOOTSTRAPPING.md).
-8. Use [docs/PROJECT_ONBOARDING.md](docs/PROJECT_ONBOARDING.md) to assess a
+5. Read the terminal-only [human merge handoff](docs/HUMAN_MERGE_HANDOFF.md).
+6. Read [docs/REVIEW_POLICY.md](docs/REVIEW_POLICY.md).
+7. Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+8. Read [docs/BOOTSTRAPPING.md](docs/BOOTSTRAPPING.md).
+9. Use [docs/PROJECT_ONBOARDING.md](docs/PROJECT_ONBOARDING.md) to assess a
    target repository.
-9. Review provider-specific requirements under `docs/providers/`.
+10. Review provider-specific requirements under `docs/providers/`.
 
 Before A2, also establish the identity/audit and incident-response contracts in
 [docs/IDENTITY_AND_AUDIT.md](docs/IDENTITY_AND_AUDIT.md) and
@@ -62,6 +63,6 @@ The canonical distribution policy is
 
 ## Current status
 
-Version `0.1.1` is a documentation-first scaffold. Bootstrap and upgrade are
+Version `0.1.2` is a documentation-first scaffold. Bootstrap and upgrade are
 manual, reviewable procedures until their contracts have been piloted and are
 stable enough to automate.

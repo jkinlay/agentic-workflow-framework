@@ -1,41 +1,48 @@
 {
   "schema_version": 1,
-  "task_id": "github:jkinlay/agentic-workflow-framework#6",
+  "task_id": "github:jkinlay/agentic-workflow-framework#9",
   "status": "external_review",
-  "summary": "Implemented AWF 0.1.1 path, EOF, distribution-test, upgrade-note, and dogfood-provenance corrections.",
+  "summary": "Replaced the proposed email handoff with a terminal GitHub mention contract and consolidated Claude findings into one COMMENT review body.",
   "acceptance_criteria": [
-    {"id": "AC1", "status": "met", "evidence": ["tests/test_distribution.py::test_managed_references_use_installed_layout"]},
-    {"id": "AC2", "status": "met", "evidence": ["tests/test_distribution.py::test_copilot_instruction_changes_have_one_terminal_newline"]},
-    {"id": "AC3", "status": "met", "evidence": ["tests/test_distribution.py::test_dogfood_lock_reproduces, including current-head blob checks and selected-target omission accounting"]},
-    {"id": "AC4", "status": "met", "evidence": ["tests/test_distribution.py::test_clean_copilot_bootstrap_passes_diff_check"]},
-    {"id": "AC5", "status": "met", "evidence": ["docs/UPGRADING.md version 0.1.1 upgrade note"]},
-    {"id": "AC6", "status": "met", "evidence": ["tests/test_distribution.py::test_gate_behavior_unchanged_from_task_base and 34 existing adapter/gate tests"]}
+    {"id": "AC1", "status": "met", "evidence": ["tests/test_human_merge_handoff.py::test_complete_readiness_precedes_notification_and_browser", "tests/test_human_merge_handoff.py::test_false_readiness_never_notifies_or_opens_browser"]},
+    {"id": "AC2", "status": "met", "evidence": ["tests/test_human_merge_handoff.py::test_full_title_comes_only_from_trusted_task_contract"]},
+    {"id": "AC3", "status": "met", "evidence": ["tests/test_human_merge_handoff.py::test_comment_is_deterministic_and_mentions_configured_owner", "tests/test_human_merge_handoff.py::test_same_head_notification_is_idempotent"]},
+    {"id": "AC4", "status": "met", "evidence": ["tests/test_human_merge_handoff.py::test_complete_readiness_precedes_notification_and_browser"]},
+    {"id": "AC5", "status": "met", "evidence": ["tests/test_human_merge_handoff.py::test_email_adapter_is_absent"]},
+    {"id": "AC6", "status": "met", "evidence": ["PublishTests.test_payload_consolidates_all_findings_and_is_comment_only", "PublishTests.test_happy_path_posts_one_comment_review", "PublishTests.test_idempotent_when_head_already_reviewed"]},
+    {"id": "AC7", "status": "met", "evidence": ["DistributionTests.test_current_version_is_consistent", "DistributionTests.test_dogfood_lock_reproduces", "publisher and adapter-test scaffold/installed blob parity"]}
   ],
   "verification": [
-    {"command": "python -m unittest discover -s tests -p 'test_*.py' -v", "result": "passed"},
-    {"command": "python -m unittest discover -s .agentic/review/claude/tests -p 'test_*.py' -v", "result": "34 completed: 32 passed and 2 environment-dependent skips"},
-    {"command": "git diff origin/main...HEAD --check", "result": "passed"}
+    {"command": "python -m unittest discover -s tests -p 'test_*.py' -v", "result": "17 passed"},
+    {"command": "python -m unittest discover -s .agentic/review/claude/tests -p 'test_*.py' -v", "result": "31 passed; 2 environment-dependent skips"},
+    {"command": "git diff --check", "result": "passed"},
+    {"command": "git hash-object installed and scaffold publisher/test pairs", "result": "both pairs blob-identical"}
   ],
   "limitations": [
-    "Upstream CI remains tracked by AWF-022; the distribution suite is a documented manual gate in 0.1.1.",
-    "The two skipped adapter tests require symlink privilege and openssl in the current Windows environment; the unchanged adapter suite previously passed all 34 tests in the Linux permission-demonstration run 33316442455.",
-    "This repository's dogfood bootstrap was a partial activation; the lock now inventories every selected target that was not installed."
+    "GitHub mention-to-email delivery and subject formatting remain controlled by each user's GitHub notification settings.",
+    "AWF 0.1.2 defines the terminal adapter contract; the current Codex runtime performs the local browser action and GitHub operation through its approved adapters."
   ],
   "files_changed": [
     ".agentic-workflow/distribution-manifest.yaml",
-    ".agentic/task-contract.yaml",
     ".agentic/execution-report.json",
+    ".agentic/project.yaml",
+    ".agentic/review/claude/publish.py",
+    ".agentic/review/claude/tests/test_claude_adapter.py",
+    ".agentic/task-contract.yaml",
     ".agentic/workflow.lock.yaml",
-    ".github/copilot-instructions.md",
-    ".github/workflows/awf-review-gate.yml",
+    "ARCHITECTURE.md",
     "README.md",
     "docs/GETTING_STARTED.md",
-    "docs/REVIEW_POLICY.md",
+    "docs/HUMAN_MERGE_HANDOFF.md",
+    "docs/IMPLEMENTATION_PLAN.md",
+    "docs/OPERATING_MODEL.md",
     "docs/SYSTEM_ARCHITECTURE.md",
     "docs/UPGRADING.md",
-    "scaffolds/providers/copilot/.github/copilot-instructions.md",
-    "scaffolds/providers/copilot/.github/instructions/awf-review.instructions.md",
-    "scaffolds/providers/copilot/.github/workflows/awf-review-gate.yml",
-    "tests/test_distribution.py"
+    "docs/providers/claude-code-action.md",
+    "scaffolds/project/.agentic/project.yaml.template",
+    "scaffolds/project/placeholders.yaml",
+    "scaffolds/providers/claude/.agentic/review/claude/publish.py",
+    "scaffolds/providers/claude/.agentic/review/claude/tests/test_claude_adapter.py",
+    "tests/test_human_merge_handoff.py"
   ]
 }
