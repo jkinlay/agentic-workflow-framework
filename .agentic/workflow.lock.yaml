@@ -1,15 +1,15 @@
 schema_version: 1
 framework:
   name: agentic-workflow-framework
-  version: 0.1.1
+  version: 0.1.2
   source_repository: github:jkinlay/agentic-workflow-framework
-  source_base_commit: 801edea0f59a4cf1e023914f8a8eeeb0a47ebcea
-  source_tree_without_lock: 14db83639d48f6b431a5eb4c1e4b0132cc6a9799
+  source_base_commit: aacdc3430796b33c404ac241f0c4a910b056f8ac
+  source_tree_without_lock: fec7548e23a5231a13740c1e199fbff26f599596
   git_object_format: sha1
 manifest:
   path: .agentic-workflow/distribution-manifest.yaml
-  git_blob_oid: 901cbeab8971aa5634556ed6c3aa0a52f3fd8a35
-  sha256: 4d56fc5e8685f1bf965867ccc9837ec466a90fc897b10c9a154269186ae05b1c
+  git_blob_oid: 453003bd33dd2584259351baf01eb89b822d0693
+  sha256: d3ce695d4f443e3f697ed7e62338757dc7267c37615839daa2acf4af148c7fe0
 bootstrap:
   target_repository: github:jkinlay/agentic-workflow-framework
   base_commit: 2c7fe134f50393c7727bcf1de6e5bb694dfa24fa
@@ -39,10 +39,10 @@ artifacts:
   - target: .agentic/project.yaml
     source: scaffolds/project/.agentic/project.yaml.template
     policy: seed_once
-    source_git_blob_oid: 84ad6af527020fb9a4eabdba858bc016686761a3
-    installed_git_blob_oid: f678b0d139410ceb7ad9cb0c470a3cfcd0a48458
-    source_sha256: 6f99e15a7bb42f80752de04a0bba788935f89b21220a3fb7e2781da4f8bccd50
-    installed_sha256: cedcede21165e48ac0f29bd80b989b72c7ed6a9cdd111950190bf2f27de7d36d
+    source_git_blob_oid: 8892ad63d1ff80b0767c9d91f2b88f3100274aa2
+    installed_git_blob_oid: 8e2ea64a610fe8a9e65f6783e28b48aaa67a1a5e
+    source_sha256: 9ea0daa2efd5f5e1b53ff2af16d985db2f1b5871f2f3250491dd591f008b2648
+    installed_sha256: 900f9cd910e17b110d2662d44bb75471b82512ea6955108480237b7ad3c6e316
   - target: .agentic/review/claude/awf_review_common.py
     source: scaffolds/providers/claude/.agentic/review/claude/awf_review_common.py
     policy: managed
@@ -67,10 +67,10 @@ artifacts:
   - target: .agentic/review/claude/publish.py
     source: scaffolds/providers/claude/.agentic/review/claude/publish.py
     policy: managed
-    source_git_blob_oid: 6c65a238e124cf3299c7655a1c60b12c51334d78
-    installed_git_blob_oid: 6c65a238e124cf3299c7655a1c60b12c51334d78
-    source_sha256: 8ff8f6f42679eef1221668aef84d2ef5116245c6c7d32692910037bc563d1a74
-    installed_sha256: 8ff8f6f42679eef1221668aef84d2ef5116245c6c7d32692910037bc563d1a74
+    source_git_blob_oid: 47aeb8ba7e43ca0bb3c4a8e142660036e947f602
+    installed_git_blob_oid: 47aeb8ba7e43ca0bb3c4a8e142660036e947f602
+    source_sha256: c0297e3ddb8fac7b12bdbb138c876f1f056767985112e8f30513d1b3f1477cbd
+    installed_sha256: c0297e3ddb8fac7b12bdbb138c876f1f056767985112e8f30513d1b3f1477cbd
   - target: .agentic/review/claude/run_model.py
     source: scaffolds/providers/claude/.agentic/review/claude/run_model.py
     policy: managed
@@ -88,10 +88,10 @@ artifacts:
   - target: .agentic/review/claude/tests/test_claude_adapter.py
     source: scaffolds/providers/claude/.agentic/review/claude/tests/test_claude_adapter.py
     policy: managed
-    source_git_blob_oid: 8fff300b2f6a43b1b9c90a0e07d830e4fa8688cd
-    installed_git_blob_oid: 8fff300b2f6a43b1b9c90a0e07d830e4fa8688cd
-    source_sha256: 8b42889d509f18eba071fa8ba0661b511d8d4457231a84490626ef7466f8aff9
-    installed_sha256: 8b42889d509f18eba071fa8ba0661b511d8d4457231a84490626ef7466f8aff9
+    source_git_blob_oid: 9f2aec13da694ab28e395fbc660f3f2527590b99
+    installed_git_blob_oid: 9f2aec13da694ab28e395fbc660f3f2527590b99
+    source_sha256: 09d69dac842bd1642698c4af1a14b283ec8cb9b1e3459f7f706380339654c8a5
+    installed_sha256: 09d69dac842bd1642698c4af1a14b283ec8cb9b1e3459f7f706380339654c8a5
   - target: .agentic/review/claude/verify.py
     source: scaffolds/providers/claude/.agentic/review/claude/verify.py
     policy: managed
