@@ -48,6 +48,7 @@ flowchart TB
     O["Coordinator<br/>approved task contract and routing"]
     D["Developer agent<br/>one writer and one worktree"]
     Q["QA and evidence<br/>clean project-owned checks"]
+    MH["Terminal merge handoff<br/>external browser plus one email"]
   end
 
   subgraph X["Independent external review"]
@@ -87,7 +88,8 @@ flowchart TB
   Q --> G
   D --> Q
   O --> E
-  G -->|"required engine and all checks pass"| H
+  G -->|"current-head readiness predicate"| MH
+  MH -->|"human attention only"| H
   H -->|"human merge decision"| PR
   H -->|"human release or promotion"| E
 ```
@@ -185,9 +187,12 @@ The full state machine and actor permissions are defined in
 6. Project CI and QA execute authoritative checks from clean state.
 7. `awf/review` verifies that the configured required engine reviewed the live
    head and that every qualification flag is true.
-8. A non-author human inspects the diff, findings, and evidence and decides
+8. The local runtime opens the PR in the external browser and sends one
+   merge-ready email with the authoritative full Epic or Ticket title and PR
+   number. No intermediate AWF state sends email.
+9. A non-author human inspects the diff, findings, and evidence and decides
    whether to merge.
-9. A human with the relevant authority separately decides release, publication,
+10. A human with the relevant authority separately decides release, publication,
    deployment, or live-research promotion.
 
 Failure returns the task to implementation, `AWAITING_APPROVAL`, `BLOCKED`, or

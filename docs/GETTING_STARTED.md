@@ -373,7 +373,14 @@ implementation task without external side effects.
    commit invalidates the old head review.
 7. QA and CI run from clean state; the coordinator links rather than rewrites
    their evidence.
-8. A non-author human inspects the diff, findings, and evidence and decides on
+8. When the live head is mergeable and every required check, current-head
+   review, human finding disposition, conversation requirement, and evidence
+   requirement is satisfied, perform the
+   [human merge handoff](HUMAN_MERGE_HANDOFF.md): open the PR in the operating
+   system's external browser, then send the single merge-ready email containing
+   the authoritative full Epic or Ticket title and PR number. Do not send AWF
+   email for intermediate states.
+9. A non-author human inspects the diff, findings, and evidence and decides on
    merge. Release, publication, deployment, and research promotion are separate
    human decisions.
 
