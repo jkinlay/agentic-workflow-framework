@@ -1,0 +1,23 @@
+{
+  "template_for": "host-lease",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "lease_id": "00000000-0000-0000-0000-000000000000",
+    "project_id": "00000000-0000-0000-0000-000000000000",
+    "task_id": "00000000-0000-0000-0000-000000000000",
+    "fencing_token": 1,
+    "control_generation": 1,
+    "resource_class": "standard",
+    "worker_slots": 1,
+    "heavy_slots": 0,
+    "gpu_slots": 0,
+    "issued_at": "1970-01-01T00:00:00Z",
+    "expires_at": "1970-01-01T00:00:00Z",
+    "status": "ACTIVE",
+    "evidence": [
+      "urn:awf:UNFILLED"
+    ]
+  }
+}

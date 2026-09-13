@@ -1,0 +1,45 @@
+{
+  "version": 3,
+  "template_version": "1.7.0",
+  "status": "SPECIFICATION_ONLY",
+  "service_supplied": false,
+  "host": {
+    "broker_id": "CHANGE_ME_HOST_BROKER"
+  },
+  "limits": {
+    "max_workers": 6,
+    "max_heavy_jobs": 2,
+    "max_gpu_jobs": 1
+  },
+  "resource_classes": {
+    "standard": {
+      "workers": 1,
+      "heavy": 0,
+      "gpu": 0
+    },
+    "heavy": {
+      "workers": 1,
+      "heavy": 1,
+      "gpu": 0
+    },
+    "gpu": {
+      "workers": 1,
+      "heavy": 0,
+      "gpu": 1
+    }
+  },
+  "leases": {
+    "default_ttl_seconds": 1800,
+    "heartbeat_required": true,
+    "process_fencing_required": true,
+    "reconcile_before_reallocation": true
+  },
+  "fairness": {
+    "policy": "round_robin",
+    "per_project_max_workers": 4
+  },
+  "control": {
+    "enabled": false,
+    "generation": 1
+  }
+}

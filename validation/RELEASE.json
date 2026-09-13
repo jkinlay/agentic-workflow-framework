@@ -1,0 +1,23 @@
+{
+  "version": "1.7.0",
+  "publisher": "Jonathan Kinlay",
+  "license": "Apache-2.0",
+  "source_manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215",
+  "source_archive_sha256": "fc384c8209a760f11be033a94d577cfa279bec25d4d6af402a39ebc30ba29d93",
+  "skill_manifest_sha256": "d7853718c4deeb2286a1e39d9d4a7356e7c0389af32a771fd25c74da29f4dc05",
+  "skill_archive_sha256": "0aa43cdaf016c0d98e21b6a8f9e7970db8753d2177d429a887a8cea9eb38a61e",
+  "distribution_archive_sha256": "aa7d57e979ad50a0fd48057654135b368e6d73995cab7d076c53776aa891f1ce",
+  "documentation": {
+    "counting_rule": "Whitespace-separated words in source Markdown, excluding generated MANIFEST.md on both sides",
+    "baseline_version": "1.6.0",
+    "baseline_archive_sha256": "b6d9302f72feb0860d069fa23cf547b970c727fa84a3dc84f2f860c83e5836f2",
+    "baseline_words": 60021,
+    "current_words": 5866,
+    "reduction_percent": 90.23,
+    "source_word_budget": 6000,
+    "skill_markdown_words": 664,
+    "skill_word_budget": 1000
+  },
+  "cryptographic_signature": null,
+  "prior_public_lineage_commit": "6974271869257f8c33d796d3c85c529277c5691d"
+}

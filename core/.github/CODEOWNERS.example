@@ -1,0 +1,9 @@
+# Inert example. Replace HUMAN_OWNER with a real authorized GitHub user/team.
+# Merge into CODEOWNERS after human review and enable required owner review
+# plus suitable bypass restrictions. This file is not an active policy.
+/AGENTS.md HUMAN_OWNER
+/.agentic/ HUMAN_OWNER
+/.github/workflows/ HUMAN_OWNER
+/.github/CODEOWNERS HUMAN_OWNER
+/.codex/ HUMAN_OWNER
+/SECURITY.md HUMAN_OWNER

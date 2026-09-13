@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "name": "awf",
+  "version": "1.7.0",
+  "files": [
+    {
+      "path": "assets/agentic-workflow-template-v1.7.zip",
+      "sha256": "fc384c8209a760f11be033a94d577cfa279bec25d4d6af402a39ebc30ba29d93"
+    },
+    {
+      "path": "assets/release.json",
+      "sha256": "11d596d680dffa457e890338581fd1eac5b2d08f706f350986604bba76824d15"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "NOTICE",
+      "sha256": "fe352296163579d49a575f19d2a1a8f6a9870a740601da1c2e15c264423d4e6d"
+    },
+    {
+      "path": "references/model-routing.md",
+      "sha256": "e1e7d3c4aab52845717fa310459fed85a2d9a3079d2d3465f7da48a34a5f4060"
+    },
+    {
+      "path": "references/skill-installation.md",
+      "sha256": "a78af9984adbd87737e510d0f2ed34e3a2c8bb7053369b4245392b0a43cc34b9"
+    },
+    {
+      "path": "references/update-channel.example.json",
+      "sha256": "bf98973fda46023e0346de0c049e7e8141b7e64feb4b19308f7a44c1d9066198"
+    },
+    {
+      "path": "references/update-channel.md",
+      "sha256": "8263496e11b74569f14de018149d171a1438134079e34827162de0005cd3f4e9"
+    },
+    {
+      "path": "references/workflow.md",
+      "sha256": "467d3f347b8634d9765aa4d96c2cf92390d0ce555bd8d347de92b8f9fad91136"
+    },
+    {
+      "path": "scripts/awf.py",
+      "sha256": "1ab1323c58f0941920cf4dffd04b3c2c459e55031d35dbc17f776d2bacea1c13"
+    },
+    {
+      "path": "scripts/check_updates.py",
+      "sha256": "2290ea667a15eb97b223bbefdc692cdf7dce43db029b2aaa1cc7e754120e60bc"
+    },
+    {
+      "path": "scripts/install_skill.py",
+      "sha256": "ac4a27b3909bf13d434883dc8a12220c17a470afb3615714d493f6909a2e55dc"
+    },
+    {
+      "path": "scripts/prepare_release.py",
+      "sha256": "23fb697c6ce2ac9acfb06b751a693b02fbae5081c834ea1b315c7792280ab4be"
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "f68b8bde7c86b0ab8c21ea4b42dd5fa21f96bb11b94e97b6a83e4bc33507b8de"
+    },
+    {
+      "path": "tests/test_awf.py",
+      "sha256": "33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077"
+    },
+    {
+      "path": "tests/test_install_skill.py",
+      "sha256": "1e6c4a644072a444ea074a676e7fb32ccdb22eb01e22ea2fff9f86d0a3a048b3"
+    },
+    {
+      "path": "tests/test_prepare_release.py",
+      "sha256": "af65552e1674775e5a66c16be7ec2603b9fc2cf1759faf8d37518aa1daf3a1ef"
+    },
+    {
+      "path": "tests/test_updates.py",
+      "sha256": "194427f9bbbdfd2a715a6cfca18e26d1764746eb1968aed63c699050853d9c9f"
+    }
+  ]
+}

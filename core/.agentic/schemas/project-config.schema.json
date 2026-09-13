@@ -1,0 +1,974 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "template",
+    "project",
+    "jira",
+    "github",
+    "execution",
+    "validation",
+    "scope",
+    "critic",
+    "specialist_reviews",
+    "merge_gate",
+    "controller",
+    "audit",
+    "portfolio"
+  ],
+  "properties": {
+    "version": {
+      "const": 3
+    },
+    "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_workflow_version"
+      ],
+      "properties": {
+        "expected_workflow_version": {
+          "const": "1.7.0"
+        }
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "short_name"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "short_name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "jira": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "site",
+        "project_key",
+        "scope",
+        "status_map",
+        "dependency_direction",
+        "mutations_owner"
+      ],
+      "properties": {
+        "site": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
+        },
+        "project_key": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z][A-Z0-9]*$"
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allow_entire_project",
+            "selector_mode",
+            "included_epics",
+            "labels_any",
+            "components_any",
+            "additional_jql",
+            "ownership_required"
+          ],
+          "properties": {
+            "allow_entire_project": {
+              "type": "boolean"
+            },
+            "selector_mode": {
+              "enum": [
+                "all",
+                "any"
+              ]
+            },
+            "included_epics": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 0,
+              "uniqueItems": true
+            },
+            "labels_any": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 0,
+              "uniqueItems": true
+            },
+            "components_any": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 0,
+              "uniqueItems": true
+            },
+            "additional_jql": {
+              "const": ""
+            },
+            "ownership_required": {
+              "const": true
+            }
+          }
+        },
+        "status_map": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backlog",
+            "ready",
+            "in_progress",
+            "in_review",
+            "done"
+          ],
+          "properties": {
+            "backlog": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ready": {
+              "type": "string",
+              "minLength": 1
+            },
+            "in_progress": {
+              "type": "string",
+              "minLength": 1
+            },
+            "in_review": {
+              "type": "string",
+              "minLength": 1
+            },
+            "done": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "dependency_direction": {
+          "const": "requires"
+        },
+        "mutations_owner": {
+          "const": "controller"
+        }
+      }
+    },
+    "github": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "repository_id",
+        "repository",
+        "base_branch",
+        "branch_pattern",
+        "merge_method",
+        "draft_pr_first",
+        "one_repository_per_controller"
+      ],
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "base_branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "branch_pattern": {
+          "type": "string",
+          "minLength": 1
+        },
+        "merge_method": {
+          "enum": [
+            "merge",
+            "squash",
+            "rebase"
+          ]
+        },
+        "draft_pr_first": {
+          "const": true
+        },
+        "one_repository_per_controller": {
+          "const": true
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "max_parallel_tickets",
+        "native_streams",
+        "max_parallel_tickets_per_stream",
+        "max_agent_runs_per_ticket",
+        "max_spawn_depth",
+        "max_amendment_cycles",
+        "transient_retry_limit",
+        "max_run_seconds",
+        "max_tool_calls_per_run",
+        "max_tokens_per_ticket",
+        "max_cost_microusd_per_ticket",
+        "daily_project_cost_microusd",
+        "one_writer_per_ticket",
+        "roles",
+        "host_broker"
+      ],
+      "properties": {
+        "profile": {
+          "const": "manual_reference"
+        },
+        "max_parallel_tickets": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "native_streams": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "dispatch_policy"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "dispatch_policy": {
+              "const": "ready_independent"
+            }
+          }
+        },
+        "max_parallel_tickets_per_stream": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_agent_runs_per_ticket": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_spawn_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "max_amendment_cycles": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "transient_retry_limit": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "max_run_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_tool_calls_per_run": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_tokens_per_ticket": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_cost_microusd_per_ticket": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "daily_project_cost_microusd": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "one_writer_per_ticket": {
+          "const": true
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "controller",
+            "worker",
+            "critic",
+            "specialist"
+          ],
+          "properties": {
+            "controller": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort",
+                "fallback",
+                "approved_model_ids",
+                "permission_profile",
+                "network_allowlist"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "fallback": {
+                  "const": "deny"
+                },
+                "approved_model_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                },
+                "permission_profile": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "network_allowlist": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 0,
+                  "uniqueItems": true
+                }
+              }
+            },
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort",
+                "fallback",
+                "approved_model_ids",
+                "permission_profile",
+                "network_allowlist"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "fallback": {
+                  "const": "deny"
+                },
+                "approved_model_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                },
+                "permission_profile": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "network_allowlist": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 0,
+                  "uniqueItems": true
+                }
+              }
+            },
+            "critic": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort",
+                "fallback",
+                "approved_model_ids",
+                "permission_profile",
+                "network_allowlist"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "fallback": {
+                  "const": "deny"
+                },
+                "approved_model_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                },
+                "permission_profile": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "network_allowlist": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 0,
+                  "uniqueItems": true
+                }
+              }
+            },
+            "specialist": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort",
+                "fallback",
+                "approved_model_ids",
+                "permission_profile",
+                "network_allowlist"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "fallback": {
+                  "const": "deny"
+                },
+                "approved_model_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                },
+                "permission_profile": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "network_allowlist": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 0,
+                  "uniqueItems": true
+                }
+              }
+            }
+          }
+        },
+        "host_broker": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "broker_id",
+            "lease_before_dispatch",
+            "max_workers",
+            "max_heavy_jobs",
+            "max_gpu_jobs"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "broker_id": {
+              "type": "string",
+              "minLength": 0
+            },
+            "lease_before_dispatch": {
+              "const": true
+            },
+            "max_workers": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "max_heavy_jobs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max_gpu_jobs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "model_routing": {
+          "type": "object"
+        },
+        "independent_reviewers": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "count",
+            "allocation"
+          ],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "allocation": {
+              "const": "one_per_stream"
+            }
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commands",
+        "ci_candidate_policy",
+        "require_candidate_bound_ci_evidence",
+        "required_ci_checks",
+        "max_evidence_age_seconds",
+        "test_timeout_seconds"
+      ],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "ci_candidate_policy": {
+          "const": "synthetic_merge_required"
+        },
+        "require_candidate_bound_ci_evidence": {
+          "const": true
+        },
+        "required_ci_checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "app_id",
+              "workflow_path",
+              "workflow_sha",
+              "min_tests_executed"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "app_id": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "workflow_path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "workflow_sha": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "min_tests_executed": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              }
+            }
+          },
+          "minItems": 1
+        },
+        "max_evidence_age_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "test_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protected_paths",
+        "generated_paths",
+        "architecture_docs",
+        "product_docs"
+      ],
+      "properties": {
+        "protected_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "generated_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "architecture_docs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "product_docs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      }
+    },
+    "critic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "independent_context",
+        "blocking_severities",
+        "require_re_review_after_any_head_change",
+        "require_re_review_after_any_target_base_change",
+        "require_full_final_review"
+      ],
+      "properties": {
+        "required": {
+          "const": true
+        },
+        "independent_context": {
+          "const": true
+        },
+        "blocking_severities": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "BLOCKER",
+              "MAJOR",
+              "MINOR",
+              "NIT"
+            ]
+          },
+          "minItems": 2,
+          "uniqueItems": true
+        },
+        "require_re_review_after_any_head_change": {
+          "const": true
+        },
+        "require_re_review_after_any_target_base_change": {
+          "const": true
+        },
+        "require_full_final_review": {
+          "const": true
+        }
+      }
+    },
+    "specialist_reviews": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "required_when_triggered",
+          "paths",
+          "keywords",
+          "risk_flags",
+          "reviewer_identity"
+        ],
+        "properties": {
+          "required_when_triggered": {
+            "const": true
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "risk_flags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "reviewer_identity": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "merge_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "human_authorization_required",
+        "execution_after_authorization",
+        "automatic_merge_enabled",
+        "require_critic_approval_current_tuple",
+        "require_specialist_reviews_current_tuple",
+        "require_required_ci_green",
+        "require_zero_unresolved_blocking_threads",
+        "invalidate_on_head_change",
+        "invalidate_on_target_base_change",
+        "authorization_ttl_seconds",
+        "trusted_owner_ids",
+        "high_risk_owner_quorum"
+      ],
+      "properties": {
+        "human_authorization_required": {
+          "const": true
+        },
+        "execution_after_authorization": {
+          "const": "owner_manual"
+        },
+        "automatic_merge_enabled": {
+          "const": false
+        },
+        "require_critic_approval_current_tuple": {
+          "const": true
+        },
+        "require_specialist_reviews_current_tuple": {
+          "const": true
+        },
+        "require_required_ci_green": {
+          "const": true
+        },
+        "require_zero_unresolved_blocking_threads": {
+          "const": true
+        },
+        "invalidate_on_head_change": {
+          "const": true
+        },
+        "invalidate_on_target_base_change": {
+          "const": true
+        },
+        "authorization_ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "trusted_owner_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "high_risk_owner_quorum": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatch_enabled",
+        "auto_dispatch",
+        "auto_request_critic",
+        "auto_resume_amendments",
+        "auto_transition_jira"
+      ],
+      "properties": {
+        "dispatch_enabled": {
+          "const": false
+        },
+        "auto_dispatch": {
+          "const": false
+        },
+        "auto_request_critic": {
+          "const": false
+        },
+        "auto_resume_amendments": {
+          "const": false
+        },
+        "auto_transition_jira": {
+          "const": false
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store_must_be_outside_worktrees",
+        "retention_days",
+        "redact_secrets"
+      ],
+      "properties": {
+        "store_must_be_outside_worktrees": {
+          "const": true
+        },
+        "retention_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "redact_secrets": {
+          "const": true
+        }
+      }
+    },
+    "portfolio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "read_only",
+        "cross_project_dispatch"
+      ],
+      "properties": {
+        "read_only": {
+          "const": true
+        },
+        "cross_project_dispatch": {
+          "const": false
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:project-config",
+  "title": "Agentic Workflow 1.2 \u2014 project-config"
+}

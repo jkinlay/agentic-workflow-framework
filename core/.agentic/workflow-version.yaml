@@ -1,0 +1,14 @@
+{
+  "template": {
+    "name": "generic-agentic-development-workflow",
+    "version": "1.7.0",
+    "schema_revision": 3
+  },
+  "installation": {
+    "install_id": null,
+    "last_operation": null,
+    "operation_at": null,
+    "source_manifest_sha256": null,
+    "profile": "manual_reference"
+  }
+}

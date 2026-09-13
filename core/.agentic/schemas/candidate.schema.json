@@ -1,0 +1,97 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "host",
+    "repository_id",
+    "repository",
+    "pr_number",
+    "target_base_branch",
+    "head_sha",
+    "target_base_sha",
+    "merge_base_sha",
+    "head_tree_sha",
+    "integration_tree_sha",
+    "tested_merge_sha",
+    "diff_sha256",
+    "merge_method"
+  ],
+  "properties": {
+    "host": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uri"
+    },
+    "repository_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "pr_number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "target_base_branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "head_sha": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "target_base_sha": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "merge_base_sha": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "head_tree_sha": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "integration_tree_sha": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "tested_merge_sha": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diff_sha256": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "merge_method": {
+      "enum": [
+        "merge",
+        "squash",
+        "rebase"
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:candidate",
+  "title": "Agentic Workflow 1.2 \u2014 candidate"
+}

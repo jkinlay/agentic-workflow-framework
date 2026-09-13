@@ -1,0 +1,746 @@
+{
+  "template_version": "1.7.0",
+  "status": "PASS",
+  "archive": "agentic-workflow-template-v1.7.zip",
+  "archive_sha256": "fc384c8209a760f11be033a94d577cfa279bec25d4d6af402a39ebc30ba29d93",
+  "manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215",
+  "checks": [
+    {
+      "check": "Fresh ZIP extraction self-test",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Capabilities CLI",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Project status names next action owner and trigger",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Routine delegation continues without owner prompt",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Project cycle continues independent streams and PR review during authorization wait",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Synthetic inventory cannot enter live planning",
+      "status": "PASS",
+      "exit_code": 2
+    },
+    {
+      "check": "Create complete A B C Markdown and dispatch plan",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Refresh stream plan with pinned history and three observed writer slots",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Host review loop CLI entry point",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Unqualified host cannot launch",
+      "status": "PASS",
+      "exit_code": 2
+    },
+    {
+      "check": "Source integrity CLI",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Unconfigured project is rejected",
+      "status": "PASS",
+      "exit_code": 2
+    },
+    {
+      "check": "Fixture configuration CLI",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Offline evaluator CLI",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Stale fixture is rejected",
+      "status": "PASS",
+      "exit_code": 2
+    },
+    {
+      "check": "CLI conflict preflight",
+      "status": "PASS",
+      "exit_code": 2
+    },
+    {
+      "check": "Complete backed-up project installation",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Installed integrity CLI",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Complete installed self-test",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Installed project status Markdown CLI",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Installed whole-project continuation and authorization presentation",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Installed planner writes into project root",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Customized installed configuration",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Complete v1.7.0 upgrade",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Upgraded integrity CLI",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Configuration preserved after upgrade",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "External runtime honors the target project's explicit lower capacity",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Windows-compatible Git checkout byte preservation and negative controls",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Regenerate complete schemas",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Regenerate versioned role prompts",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Regenerate complete examples/forms/workflow",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Regenerate host loop schemas and default policy",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Regenerate complete synthetic interaction examples",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Generated files reproduce approved bytes",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Rebuild deterministic ZIP",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "ZIP byte-for-byte reproducibility",
+      "status": "PASS"
+    },
+    {
+      "check": "Local skill locates and verifies actual v1.7 files",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Local skill verifies target installation receipt without changing it",
+      "status": "PASS",
+      "exit_code": 0
+    },
+    {
+      "check": "Provisional PASS report cannot publish a catalog",
+      "status": "PASS",
+      "exit_code": 2
+    },
+    {
+      "check": "Wrong final archive identity preserves prior catalog",
+      "status": "PASS",
+      "exit_code": 2
+    },
+    {
+      "check": "Version request cannot silently substitute another release",
+      "status": "PASS",
+      "exit_code": 2
+    }
+  ],
+  "git_checkout": {
+    "validation": "git-autocrlf-checkout",
+    "status": "PASS",
+    "created_at": "2026-09-13T15:19:39.821464+00:00",
+    "expected_manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215",
+    "core_autocrlf": "true",
+    "network_used": false,
+    "user_git_configuration_modified": false,
+    "checks": [
+      {
+        "check": "Aliased in-source work/report paths reject before any writes",
+        "status": "PASS",
+        "negative_cases": 2
+      },
+      {
+        "check": "CLI rejects an aliased in-source workdir before creating fixtures",
+        "status": "PASS",
+        "exit_code": 2,
+        "duration_ms": 219
+      },
+      {
+        "check": "Rejected workdir creates no report file",
+        "status": "PASS"
+      },
+      {
+        "check": "CLI rejects an aliased in-source report before any write",
+        "status": "PASS",
+        "exit_code": 2,
+        "duration_ms": 170
+      },
+      {
+        "check": "Rejected report path creates neither report nor fixture directory",
+        "status": "PASS"
+      },
+      {
+        "check": "Rejected aliased CLI paths leave every source file unchanged",
+        "status": "PASS",
+        "files_checked": 205,
+        "differing_files": [],
+        "manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215"
+      },
+      {
+        "check": "Identify actual Git runtime",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 62
+      },
+      {
+        "check": "Approved source integrity before Git",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 5265
+      },
+      {
+        "check": "Root source: initialize isolated repository",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 77
+      },
+      {
+        "check": "Root source: stage complete fixture",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 890
+      },
+      {
+        "check": "Root source: commit with hooks and signing disabled",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 359
+      },
+      {
+        "check": "Root source: fresh local clone",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 609
+      },
+      {
+        "check": "Root source: checkout with core.autocrlf=true",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 342
+      },
+      {
+        "check": "Every root-checkout release file retains exact bytes",
+        "status": "PASS",
+        "files_checked": 205,
+        "differing_files": [],
+        "manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215"
+      },
+      {
+        "check": "Root checkout MANIFEST.json retains the approved hash",
+        "status": "PASS"
+      },
+      {
+        "check": "Root Git checkout integrity CLI passes",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 5202
+      },
+      {
+        "check": "Nested source: initialize isolated repository",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 125
+      },
+      {
+        "check": "Nested source: stage complete fixture",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 765
+      },
+      {
+        "check": "Nested source: commit with hooks and signing disabled",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 280
+      },
+      {
+        "check": "Nested source: fresh local clone",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 688
+      },
+      {
+        "check": "Nested source: checkout with core.autocrlf=true",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 375
+      },
+      {
+        "check": "Every nested-checkout release file retains exact bytes",
+        "status": "PASS",
+        "files_checked": 205,
+        "differing_files": [],
+        "manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215"
+      },
+      {
+        "check": "Nested checkout MANIFEST.json retains the approved hash",
+        "status": "PASS"
+      },
+      {
+        "check": "Nested source Git checkout integrity CLI passes",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 5640
+      },
+      {
+        "check": "No effective LF attributes negative control: fresh local clone",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 594
+      },
+      {
+        "check": "No effective LF attributes negative control: checkout with core.autocrlf=true",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 421
+      },
+      {
+        "check": "Negative control has no effective text or EOL attributes",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 109
+      },
+      {
+        "check": "Negative control disables both text and EOL policy",
+        "status": "PASS"
+      },
+      {
+        "check": "Without LF attributes autocrlf changes manifest and payload bytes",
+        "status": "PASS",
+        "differing_file_count": 205,
+        "manifest_sha256": "fcb6958093f023340695a94d399a9c99693566f62383c9d28b964889ff8b80d8",
+        "changed_examples": [
+          ".agentic/LICENSE",
+          ".agentic/NOTICE",
+          ".agentic/PROJECT_CONFIG.yaml",
+          ".agentic/SPECIFICATION.md",
+          ".agentic/docs/00-GOVERNANCE.md",
+          ".agentic/docs/01-ARCHITECTURE.md",
+          ".agentic/docs/02-CONTROLLER.md",
+          ".agentic/docs/03-WORKER.md"
+        ]
+      },
+      {
+        "check": "Negative manifest mismatch is actual CRLF conversion",
+        "status": "PASS"
+      },
+      {
+        "check": "No-LF checkout is rejected by the integrity CLI",
+        "status": "PASS",
+        "exit_code": 2,
+        "duration_ms": 452
+      },
+      {
+        "check": "Install into a project with existing gitattributes",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 10813
+      },
+      {
+        "check": "Installer preserves existing root gitattributes byte-for-byte",
+        "status": "PASS"
+      },
+      {
+        "check": "Installed merge example supplies every required scoped LF rule",
+        "status": "PASS"
+      },
+      {
+        "check": "Disposable manual merge retains the existing policy prefix",
+        "status": "PASS"
+      },
+      {
+        "check": "Installed fixture integrity passes before Git",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 3967
+      },
+      {
+        "check": "Installed project: initialize isolated repository",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 92
+      },
+      {
+        "check": "Installed project: stage complete fixture",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 579
+      },
+      {
+        "check": "Installed project: commit with hooks and signing disabled",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 327
+      },
+      {
+        "check": "Installed project: fresh local clone",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 592
+      },
+      {
+        "check": "Installed project: checkout with core.autocrlf=true",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 250
+      },
+      {
+        "check": "Every installed managed file survives autocrlf unchanged",
+        "status": "PASS",
+        "files_checked": 157,
+        "differing_files": [],
+        "installed_manifest_sha256": "4c9eb5e546befdf53e29a11a3ff88db70a57da9092eed1916b89a73a75537c79"
+      },
+      {
+        "check": "Existing batch policy remains effective",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 45
+      },
+      {
+        "check": "Existing batch file remains CRLF and retains its effective rule",
+        "status": "PASS"
+      },
+      {
+        "check": "Git retains all manually merged project attribute rules",
+        "status": "PASS"
+      },
+      {
+        "check": "Installed Git checkout integrity CLI passes",
+        "status": "PASS",
+        "exit_code": 0,
+        "duration_ms": 3954
+      },
+      {
+        "check": "Builder rejects noncanonical CRLF before writing manifests",
+        "status": "PASS",
+        "exit_code": 1,
+        "duration_ms": 7437
+      },
+      {
+        "check": "Builder rejection specifically identifies line endings",
+        "status": "PASS"
+      },
+      {
+        "check": "CRLF rejection leaves both existing manifests unchanged",
+        "status": "PASS"
+      },
+      {
+        "check": "Untracked non-Git source payload remains rejected",
+        "status": "PASS",
+        "exit_code": 2,
+        "duration_ms": 655
+      },
+      {
+        "check": "Nested Git metadata remains rejected",
+        "status": "PASS",
+        "exit_code": 2,
+        "duration_ms": 609
+      },
+      {
+        "check": "Original supplied release remains byte-identical after validation",
+        "status": "PASS",
+        "files_checked": 205,
+        "differing_files": [],
+        "manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215"
+      }
+    ],
+    "limitations": [
+      "Real Git local repositories and clones are tested on this host; remote hosting and other operating systems are not exercised.",
+      "Installed attributes are deliberately merged only inside the disposable test project. The installer must preserve the real project's policy.",
+      "No arbitrary third-party clean/smudge filters, custom working-tree encodings or higher-priority attribute overrides are qualified."
+    ],
+    "template_version": "1.7.0",
+    "release_files_checked": 205,
+    "release_inventory_sha256": "1306401d6b6ef33cbc9c34b7e6eb979de2fd0e7277aa207338bc99bb08d69142",
+    "git_version": "git version 2.55.0.windows.5"
+  },
+  "extracted_tests": {
+    "template_version": "1.7.0",
+    "profile": "manual_reference",
+    "execution_authority": false,
+    "tested_components": [
+      "offline_evidence",
+      "synthetic_host_review_loop",
+      "local_git_amendment",
+      "routine_autonomy_and_progress",
+      "synthetic_jira_stream_planning",
+      "native_writer_capacity",
+      "project_continuation",
+      "unsent_draft_adapter",
+      "balanced_model_routing",
+      "routing_budget_ledger",
+      "shadow_routing_evidence",
+      "local_release_discovery",
+      "local_catalog_publication"
+    ],
+    "created_at": "2026-09-13T15:10:59.972145+00:00",
+    "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "checks": {
+      "integrity": "PASS",
+      "schema_catalog_and_workflow": "PASS",
+      "host_loop_output_schemas": 2,
+      "default_automatic_policy_unqualified_until_enrolled": "PASS",
+      "complete_unfilled_forms": 26,
+      "python_syntax_files": 54,
+      "local_markdown_links": 91
+    },
+    "dependencies": {
+      "PyYAML": "6.0.3",
+      "jsonschema": "4.26.0",
+      "attrs": "26.1.0",
+      "jsonschema-specifications": "2025.9.1",
+      "referencing": "0.37.0",
+      "rpds-py": "2026.6.3",
+      "typing-extensions": "4.16.0"
+    },
+    "status": "PASS",
+    "source_manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215",
+    "code_sha256": {
+      ".agentic/lib/agentic/__init__.py": "0f407d3d047776f73eb83227f744deb86dda697519d374452b25d7ad2fd87390",
+      ".agentic/lib/agentic/authorization.py": "5f8765660c039a5df7774d39d425fabe8b8964672ae8f9fe80d022f7c09f6a62",
+      ".agentic/lib/agentic/canonical.py": "93677923594f97d186e525cc22cfbec4601ba189a95a271f6faa4095b93ef677",
+      ".agentic/lib/agentic/cli.py": "43228bf254a243bf55176924e701cf9878947daa494e55cae943ed058b34855f",
+      ".agentic/lib/agentic/continuation.py": "3eb3bb1d5a92b3ef0abdbce09dc143caecf0ee91553a24b67390a50a9c87d824",
+      ".agentic/lib/agentic/contracts.py": "ff67d1e65d6caafe53295236a728180d269f881d563d383e951511ef9505d550",
+      ".agentic/lib/agentic/gates.py": "0009e478810eab86d37ac829215351c3f21c5f51066f2523bb9b41dfe41193ec",
+      ".agentic/lib/agentic/installer.py": "fc7d7a197356a50dc604de4cd375e1c30b08b3097cb6bb4887bc81106900a536",
+      ".agentic/lib/agentic/interaction.py": "2a0d1998d75e087971ea0eeebfa260a5cec2fd8bdb66c1a0815585bf06e5c1ed",
+      ".agentic/lib/agentic/lifecycle.py": "7163e76529eb917e022198b9cf78690b35e6d66cb03b78247dd2b7eb70a26a8a",
+      ".agentic/lib/agentic/model_routing.py": "bda8503193ccd273e0cfd4d7b4cad66909456f15c4bcda7f701f53f0a3c19a18",
+      ".agentic/lib/agentic/policy.py": "57eae270565c04553df085147ab9efc4dfd592c9f9c588a32a044014c69e9493",
+      ".agentic/lib/agentic/review_host.py": "e7141d197506af1b702376fa9a3c023b06541e10c93cb6e6f98f23711380f34c",
+      ".agentic/lib/agentic/review_loop.py": "1c65039fee4c93f9a0960d1162b4b3e24f1ef60d9f9b3979476b8f1e648d3d62",
+      ".agentic/lib/agentic/safeio.py": "6fe844063e67e2e933d92cf31ce3eb72748c95b523ebb5e803a818851001e4bf",
+      ".agentic/lib/agentic/store.py": "b460f2fd14bd1d652e2b10faa292497f3cd008effd332374bffc2dfdb7d7312b",
+      ".agentic/lib/agentic/streams.py": "24e3d96caf318ff066a6af20e3882eee8e859bcb1223e40d81fad25bf0d02016",
+      ".agentic/scripts/plan_streams.py": "dfa77965b44d56789e8381c4ddeab0340fd0e587dfa812a228ac678a044a8eef",
+      ".agentic/scripts/project_status.py": "1af291b28d7737e210200a92eb15da923cabe945ee509173d3225cac08dc7e51",
+      ".agentic/scripts/review_loop.py": "14b2ccba460032aaa8c983ba3bd8084b9bad38825d4c22dfaea44f62508a22b0",
+      ".agentic/scripts/route_model.py": "3fd24e0e5591a70fcda5dacf9493b35e57593d7c134984889af2793688822120",
+      ".agentic/scripts/scheduled_tick.py": "28b03e85fdab54369701edc274434450c49db4ffe0d2c8d9fbfa6f24dcc776db",
+      ".agentic/scripts/self_test.py": "ec9d9f138a368ea1aa2de93e8f1525e8c7bfd923711f15a920183eab947b6a11",
+      ".agentic/scripts/validate_config.py": "527a8c219ec19f1c7b669476788a50dcc4bce829050c63eba297df6d74b86fc7",
+      ".agentic/scripts/workflow.py": "ef00f9354dabb0006cb0b39584858e6516e3864e3e075f0c8f6f0a6488d3c3b5",
+      ".agentic/tests/fixtures/fake_host_process.py": "3f990cc94e50e67d0f1d2b091cd01d31dfdb46e3a5d2d1be3bf9290c3c69b953",
+      ".agentic/tests/test_config_diagnostics.py": "0b29e404a75f6897a379d986d30792fc2f5061ed0f662e63980b56d763f07e15",
+      ".agentic/tests/test_continuation.py": "1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633",
+      ".agentic/tests/test_host_process.py": "ff4d1e73d01caca4772a16668db2f79a5bc58543c6bd85189efdf25ed871d680",
+      ".agentic/tests/test_interaction.py": "184d5faff4c18af704decfe2ea8e1a1aeae696cb1ae35149630ea4cca19da9aa",
+      ".agentic/tests/test_model_routing.py": "175de738eb0b3c02c534e414742cf0b850c12ab60889b18e7f162df0cb885a61",
+      ".agentic/tests/test_reference.py": "69aacc3d90be057e24c11339ebcc2c1973c3ef4485fd011e48c40369773b3f86",
+      ".agentic/tests/test_review_loop.py": "7a6549ceef29f5f748a012004dc8db1c8affb20d7b393f0bef2d1cee1019c152",
+      ".agentic/tests/test_routing_cli.py": "c62999b4a51b3154899faf76a5561913cecb686030498725ddbae73aa8479768",
+      ".agentic/tests/test_routing_integration.py": "fb4db3d4aac8f533964f85f2946632287cc0a8d11d04058239231efe6e46960b",
+      ".agentic/tests/test_store_regressions.py": "2cf43379f37928ead367f3fc60e4e282a7814a84194765b6cdd759a99dc42859",
+      ".agentic/tests/test_streams.py": "c76bd9b2ca12fc74c870eea5d043f0bd387ec286080a7596e9563fb6c48da32e",
+      "global/awf/scripts/awf.py": "5351976d562ee925bf5d55dd8ecea518b3f9f1efcbb76a68779a7acae1945df3",
+      "global/awf/tests/test_awf.py": "33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077",
+      "scripts/bootstrap_project.py": "1477d25f77d58e78e394616a45bad3f9a5a878b3bff96baa35be1557eb08d7f5",
+      "scripts/build_release.py": "3b0275dfa25cf59d1f7f0268e50ecfca43c68d8423cbfc89bfccb2277eea9286",
+      "scripts/build_skill_distribution.py": "609738614258a817c2d6ebd5c6a2e71b9d883dab22e9218cd9c2ab20c07d587a",
+      "scripts/generate_contracts.py": "5613e2c7753b9bad86ef3af09a11a784ac2a389232cce1bb872aa576cca5e747",
+      "scripts/generate_examples.py": "10fce358aa24fe90ea3113fec4290b1132719774fdf95e98f1dcd00fe17b05ac",
+      "scripts/generate_interaction.py": "5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb",
+      "scripts/generate_prompts.py": "27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f",
+      "scripts/generate_review_loop.py": "c5f6af8aace51eafb552697d1192261bc2129fa0ad5c4e0e0e77a38c1ffc7df7",
+      "scripts/publish_catalog.py": "293d4d7e81400ef7a27d57fc75cb7a2b76a1df8095c715e59e921197ad46208d",
+      "scripts/release_hygiene.py": "7da6fe105d507ca868f8627949ffc5ccedf1f1cb8dc2b64d808ecd314ea7cb0f",
+      "scripts/self_test.py": "b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496",
+      "scripts/tests/test_publish_catalog.py": "ee0ba96c0166d316edfcf0d0345dbccbab1d2db47f8a5e2f0389d6af51f47c6d",
+      "scripts/tests/test_release_hygiene.py": "c4a902184b0c87bfc3217f790ba7477ef0019e06b820f7366ca03b4dbaaff3aa",
+      "scripts/validate_archive.py": "f875928112eb35b4afd904fcaa3b0b5a412a92d124aeb63da45e19d5c1271115",
+      "scripts/validate_git_checkout.py": "28c0291daf686dca86cf5f29a631cd9a82a91f72e777fe3a204697b0a280b6a6"
+    },
+    "tests": {
+      "run": 338,
+      "failures": 0,
+      "errors": 0,
+      "skipped": [
+        {
+          "test": "test_symlink_rejected_when_platform_permits (test_reference.InstallerTests.test_symlink_rejected_when_platform_permits)",
+          "reason": "Windows symlink creation privilege unavailable (WinError 1314)."
+        }
+      ],
+      "successful": true
+    },
+    "elapsed_seconds": 203.219
+  },
+  "installed_tests": {
+    "template_version": "1.7.0",
+    "profile": "manual_reference",
+    "execution_authority": false,
+    "tested_components": [
+      "offline_evidence",
+      "synthetic_host_review_loop",
+      "local_git_amendment",
+      "routine_autonomy_and_progress",
+      "synthetic_jira_stream_planning",
+      "native_writer_capacity",
+      "project_continuation",
+      "unsent_draft_adapter",
+      "balanced_model_routing",
+      "routing_budget_ledger",
+      "shadow_routing_evidence"
+    ],
+    "created_at": "2026-09-13T15:15:55.301825+00:00",
+    "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "checks": {
+      "integrity": "PASS",
+      "schema_catalog_and_workflow": "PASS",
+      "host_loop_output_schemas": 2,
+      "default_automatic_policy_unqualified_until_enrolled": "PASS",
+      "complete_unfilled_forms": 26,
+      "python_syntax_files": 37,
+      "local_markdown_links": 62
+    },
+    "dependencies": {
+      "PyYAML": "6.0.3",
+      "jsonschema": "4.26.0",
+      "attrs": "26.1.0",
+      "jsonschema-specifications": "2025.9.1",
+      "referencing": "0.37.0",
+      "rpds-py": "2026.6.3",
+      "typing-extensions": "4.16.0"
+    },
+    "status": "PASS",
+    "source_manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215",
+    "code_sha256": {
+      ".agentic/lib/agentic/__init__.py": "0f407d3d047776f73eb83227f744deb86dda697519d374452b25d7ad2fd87390",
+      ".agentic/lib/agentic/authorization.py": "5f8765660c039a5df7774d39d425fabe8b8964672ae8f9fe80d022f7c09f6a62",
+      ".agentic/lib/agentic/canonical.py": "93677923594f97d186e525cc22cfbec4601ba189a95a271f6faa4095b93ef677",
+      ".agentic/lib/agentic/cli.py": "43228bf254a243bf55176924e701cf9878947daa494e55cae943ed058b34855f",
+      ".agentic/lib/agentic/continuation.py": "3eb3bb1d5a92b3ef0abdbce09dc143caecf0ee91553a24b67390a50a9c87d824",
+      ".agentic/lib/agentic/contracts.py": "ff67d1e65d6caafe53295236a728180d269f881d563d383e951511ef9505d550",
+      ".agentic/lib/agentic/gates.py": "0009e478810eab86d37ac829215351c3f21c5f51066f2523bb9b41dfe41193ec",
+      ".agentic/lib/agentic/installer.py": "fc7d7a197356a50dc604de4cd375e1c30b08b3097cb6bb4887bc81106900a536",
+      ".agentic/lib/agentic/interaction.py": "2a0d1998d75e087971ea0eeebfa260a5cec2fd8bdb66c1a0815585bf06e5c1ed",
+      ".agentic/lib/agentic/lifecycle.py": "7163e76529eb917e022198b9cf78690b35e6d66cb03b78247dd2b7eb70a26a8a",
+      ".agentic/lib/agentic/model_routing.py": "bda8503193ccd273e0cfd4d7b4cad66909456f15c4bcda7f701f53f0a3c19a18",
+      ".agentic/lib/agentic/policy.py": "57eae270565c04553df085147ab9efc4dfd592c9f9c588a32a044014c69e9493",
+      ".agentic/lib/agentic/review_host.py": "e7141d197506af1b702376fa9a3c023b06541e10c93cb6e6f98f23711380f34c",
+      ".agentic/lib/agentic/review_loop.py": "1c65039fee4c93f9a0960d1162b4b3e24f1ef60d9f9b3979476b8f1e648d3d62",
+      ".agentic/lib/agentic/safeio.py": "6fe844063e67e2e933d92cf31ce3eb72748c95b523ebb5e803a818851001e4bf",
+      ".agentic/lib/agentic/store.py": "b460f2fd14bd1d652e2b10faa292497f3cd008effd332374bffc2dfdb7d7312b",
+      ".agentic/lib/agentic/streams.py": "24e3d96caf318ff066a6af20e3882eee8e859bcb1223e40d81fad25bf0d02016",
+      ".agentic/scripts/plan_streams.py": "dfa77965b44d56789e8381c4ddeab0340fd0e587dfa812a228ac678a044a8eef",
+      ".agentic/scripts/project_status.py": "1af291b28d7737e210200a92eb15da923cabe945ee509173d3225cac08dc7e51",
+      ".agentic/scripts/review_loop.py": "14b2ccba460032aaa8c983ba3bd8084b9bad38825d4c22dfaea44f62508a22b0",
+      ".agentic/scripts/route_model.py": "3fd24e0e5591a70fcda5dacf9493b35e57593d7c134984889af2793688822120",
+      ".agentic/scripts/scheduled_tick.py": "28b03e85fdab54369701edc274434450c49db4ffe0d2c8d9fbfa6f24dcc776db",
+      ".agentic/scripts/self_test.py": "ec9d9f138a368ea1aa2de93e8f1525e8c7bfd923711f15a920183eab947b6a11",
+      ".agentic/scripts/validate_config.py": "527a8c219ec19f1c7b669476788a50dcc4bce829050c63eba297df6d74b86fc7",
+      ".agentic/scripts/workflow.py": "ef00f9354dabb0006cb0b39584858e6516e3864e3e075f0c8f6f0a6488d3c3b5",
+      ".agentic/tests/fixtures/fake_host_process.py": "3f990cc94e50e67d0f1d2b091cd01d31dfdb46e3a5d2d1be3bf9290c3c69b953",
+      ".agentic/tests/test_config_diagnostics.py": "0b29e404a75f6897a379d986d30792fc2f5061ed0f662e63980b56d763f07e15",
+      ".agentic/tests/test_continuation.py": "1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633",
+      ".agentic/tests/test_host_process.py": "ff4d1e73d01caca4772a16668db2f79a5bc58543c6bd85189efdf25ed871d680",
+      ".agentic/tests/test_interaction.py": "184d5faff4c18af704decfe2ea8e1a1aeae696cb1ae35149630ea4cca19da9aa",
+      ".agentic/tests/test_model_routing.py": "175de738eb0b3c02c534e414742cf0b850c12ab60889b18e7f162df0cb885a61",
+      ".agentic/tests/test_reference.py": "69aacc3d90be057e24c11339ebcc2c1973c3ef4485fd011e48c40369773b3f86",
+      ".agentic/tests/test_review_loop.py": "7a6549ceef29f5f748a012004dc8db1c8affb20d7b393f0bef2d1cee1019c152",
+      ".agentic/tests/test_routing_cli.py": "c62999b4a51b3154899faf76a5561913cecb686030498725ddbae73aa8479768",
+      ".agentic/tests/test_routing_integration.py": "fb4db3d4aac8f533964f85f2946632287cc0a8d11d04058239231efe6e46960b",
+      ".agentic/tests/test_store_regressions.py": "2cf43379f37928ead367f3fc60e4e282a7814a84194765b6cdd759a99dc42859",
+      ".agentic/tests/test_streams.py": "c76bd9b2ca12fc74c870eea5d043f0bd387ec286080a7596e9563fb6c48da32e"
+    },
+    "tests": {
+      "run": 305,
+      "failures": 0,
+      "errors": 0,
+      "skipped": [
+        {
+          "test": "test_symlink_rejected_when_platform_permits (test_reference.InstallerTests.test_symlink_rejected_when_platform_permits)",
+          "reason": "Windows symlink creation privilege unavailable (WinError 1314)."
+        }
+      ],
+      "successful": true
+    },
+    "elapsed_seconds": 167.125
+  },
+  "limitations": [
+    "Offline evidence, synthetic Jira planning and host review-loop validation; no live Jira mutation, native agent dispatch, model, remote amendment or scheduler qualification tested.",
+    "Other operating systems not exercised in this run."
+  ],
+  "validation_complete": true,
+  "publication_redactions": [
+    "Temporary Git fixture directory and local log references removed; original evidence retained locally."
+  ]
+}

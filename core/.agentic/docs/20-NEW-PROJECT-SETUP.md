@@ -1,0 +1,24 @@
+# Adoption guide
+
+Version 1.7.0. Applies to new and existing repositories. Read [the specification](../SPECIFICATION.md) and the target's project-owned instructions.
+
+1. Inspect the target's accepted AWF version, working changes, linked worktrees, owners and active PRs. Preserve partial work and historical evidence. Before Jira exists, use provisional local IDs; do not invent tickets or past approvals.
+2. Locate a requested exact/family release through the installed skill and owner channel/catalog. Verify external archive/manifest pins. If a verified bundle exists, prepare it in a separate cache; preserve any differing cache. A missing source folder is not a reason to accept unverified bytes.
+3. Work in an isolated adoption branch/worktree. Copy product-specific AGENTS rules into reviewed `PROJECT_INSTRUCTIONS.md`; keep installer-managed AGENTS byte-exact. No branch publication or project adoption is implied by merely installing a skill.
+4. Read the verified installer's preflight:
+```text
+python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 TRUSTED_SHA256 --dry-run
+python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 TRUSTED_SHA256 --on-conflict backup
+```
+Cross-version changes use backed-up `install` mode. `--mode upgrade` is only same-version maintenance. Preserve rollback records; an unfinished journal/activation marker requires recovery before use.
+5. Map the project's real Jira/repository/owner/CI/runtime identities, scope and validation commands. Set `template.expected_workflow_version` to `1.7.0`. Preserve deliberate model choices and execution limits. Adopt new routing/reviewer settings explicitly; the new-project reviewer pool is three total, one per stream. Cap increases need human direction.
+6. From the trusted release directory, validate the target explicitly:
+```text
+python -B .agentic/scripts/workflow.py --root TARGET validate-config
+python -B .agentic/scripts/workflow.py --root TARGET verify-installation
+```
+Default project placeholders intentionally fail with field paths. Do not replace unknown identities with plausible values.
+7. Merge only the supplied scoped installed-path Git attributes into existing product rules. Do not copy the source-wide `.gitattributes`, renormalize unrelated files or update hashes to conceal a mismatch. Verify effective LF attributes and fresh-checkout bytes. The archive validator exercises real source/installed Git round trips.
+8. Run project tests, independent governance review and candidate-bound human acceptance. After merge/checkout, verify the installed baseline before calling it active. Missing remote/review authority leaves a local prepared change, not an imaginary PR.
+
+Choose [native coordination](24-STREAM-STARTUP.md), [routing](27-MODEL-ROUTING.md), or [scheduled review](22-AUTOMATED-REVIEW-LOOP.md). Installation never enrolls a scheduler or silently upgrades other projects.

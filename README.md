@@ -1,67 +1,24 @@
-# Agentic Workflow Framework
+# AWF Core
 
-Agentic Workflow Framework (AWF) is a provider-neutral, human-governed toolkit
-for applying agentic planning, implementation, review, and evidence workflows
-to software and quantitative-research repositories.
+Agentic Workflow 1.7.0, published by Jonathan Kinlay under [Apache-2.0](LICENSE). See [NOTICE](NOTICE).
 
-AWF is an upstream distribution, not a product-code monorepo or execution
-database. Each onboarded product repository becomes a project-local workflow
-instance while retaining ownership of its code, architecture, instructions,
-tests, and release controls.
+## Install
 
-Codex is the first supported runtime adapter. The core contracts deliberately
-avoid depending on one model vendor or agent host.
+Download and extract [the portable distribution](dist/AWF-v1.7-distribution.zip). Verify its [SHA-256](dist/AWF-v1.7-distribution.zip.sha256), then run with Python 3.11+:
 
-## Operating model
+```text
+python -B install_awf.py --dry-run
+python -B install_awf.py
+```
 
-- The issue tracker owns priorities, dependencies, approvals, and business
-  status.
-- Each product repository owns its code, `ARCHITECTURE.md`, `AGENTS.md`, tests,
-  and CI configuration.
-- Source control owns branches, pull requests, review state, and merge history.
-- Runtime adapters perform bounded planning, implementation, review, and QA.
-- Humans approve each execution plan and all actions above the project's
-  configured autonomy ceiling. Humans always approve merges, releases, and
-  production or live-research promotion.
-- AWF owns shared contracts, scaffolds, schemas, provider adapters, and
-  sanitized reusable workflows.
-- Every agent-authored pull request receives an independent external-engine
-  review before human review; reviewer output never replaces human inspection.
+The installer upgrades the selected user-level `awf` skill, retains a complete external backup and preserves local settings. Do not uninstall the previous skill first. Other copies/plugins and existing project installations are unchanged. Refresh Codex skill discovery on the next turn or in a new task. A configured update channel, not installation alone, determines later release discovery.
 
-## Start here
+## Use and develop
 
-1. Follow [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) to adopt AWF in a
-   new or existing repository.
-2. Read the integrated system description and diagrams in
-   [docs/SYSTEM_ARCHITECTURE.md](docs/SYSTEM_ARCHITECTURE.md).
-3. Read the authoritative decisions in [ARCHITECTURE.md](ARCHITECTURE.md).
-4. Read [docs/OPERATING_MODEL.md](docs/OPERATING_MODEL.md).
-5. Read [docs/REVIEW_POLICY.md](docs/REVIEW_POLICY.md).
-6. Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
-7. Read [docs/BOOTSTRAPPING.md](docs/BOOTSTRAPPING.md).
-8. Use [docs/PROJECT_ONBOARDING.md](docs/PROJECT_ONBOARDING.md) to assess a
-   target repository.
-9. Review provider-specific requirements under `docs/providers/`.
+Start with the [core guide](core/README.md) and [specification](core/.agentic/SPECIFICATION.md). Defaults: three workstreams and three independent reviewers total, one per stream, within actual shared host capacity. Balanced model routing escalates inside project-owned limits; adaptation starts with evidence-backed recommendations.
 
-Before A2, also establish the identity/audit and incident-response contracts in
-[docs/IDENTITY_AND_AUDIT.md](docs/IDENTITY_AND_AUDIT.md) and
-[docs/INCIDENT_RESPONSE.md](docs/INCIDENT_RESPONSE.md).
+Source is in `core/`; the verified portable skill is in `.agents/skills/awf/`. Build outputs stay outside `core/`. See [validation](validation/ACCEPTANCE.md) for exact tested scope and limitations.
 
-## Distribution model
+This is one maintained lineage. The previous public scaffold remains in Git history at [6974271](https://github.com/jkinlay/agentic-workflow-framework/tree/6974271869257f8c33d796d3c85c529277c5691d). [The retirement decision](docs/decisions/0001-core-consolidation.md) records non-carried-forward features; it is not an automatic migration for old installations.
 
-AWF files have explicit ownership policies:
-
-- **managed**: AWF may update the file through a reviewable upgrade change;
-- **seed-once**: AWF creates the initial file and the project then owns it;
-- **merge-assisted**: AWF proposes amendments but never overwrites the project;
-- **local-only**: the project creates and owns the file; AWF never collects it;
-- **generated**: the installer derives the file and records installed hashes.
-
-The canonical distribution policy is
-[.agentic-workflow/distribution-manifest.yaml](.agentic-workflow/distribution-manifest.yaml).
-
-## Current status
-
-Version `0.1.1` is a documentation-first scaffold. Bootstrap and upgrade are
-manual, reviewable procedures until their contracts have been piloted and are
-stable enough to automate.
+See [architecture](ARCHITECTURE.md), [security](core/SECURITY.md) and [contribution rules](AGENTS.md). No publisher signature or live-provider qualification is claimed.

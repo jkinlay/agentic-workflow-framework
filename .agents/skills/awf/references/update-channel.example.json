@@ -1,0 +1,4 @@
+{
+  "format": "awf-update-location-1",
+  "channel": "https://YOUR_APPROVED_HOST/awf/AWF_RELEASE_CHANNEL.json"
+}
