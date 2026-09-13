@@ -1,10 +1,12 @@
 """Real local Python process coverage for the routing CLI; no live model calls."""
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from agentic.model_routing import MODELS, default_policy
 
@@ -132,6 +134,41 @@ class RoutingCLITests(unittest.TestCase):
                               "host_stopped": True, "remediation_verified": True})
         self.assertIn("disabled", self.ledger_command("reconcile", "--run-id", run["run_id"], "--observation", path, expected=2)["reason"])
         self.assertIn("outstanding", self.route("reserve", expected=2)["reason"])
+
+    def test_default_reconciled_retry_limit_returns_structured_admission_diagnostics(self):
+        # Deliberately omit the new optional field: older reviewed policy still
+        # gets a finite allowance without being rewritten on disk.
+        self.policy["reconciliation"] = {"enabled": True, "authorized_operator_ids": ["test-operator"]}
+        config_path = self.document("config.json", self.config)
+        original_bytes = config_path.read_bytes()
+        for index in range(3):
+            run = self.route("reserve")
+            self.assertFalse(run["escalated"])
+            observation = {"reconciliation_id": "hang-" + str(index), "operator_id": "test-operator",
+                           "authorization_ref": "grant-1", "reason": "Recorded stopped host and remediation assertions",
+                           "evidence_ref": "exit-1", "remediation_ref": "check-1", "host_stopped": True, "remediation_verified": True}
+            path = self.document("observation.json", observation)
+            closed = self.ledger_command("reconcile", "--run-id", run["run_id"], "--observation", path)
+            self.assertEqual(closed["charged_tokens"], 1000)
+        blocked = self.route("reserve", expected=2)
+        self.assertEqual(blocked["code"], "RECONCILED_INCIDENT_RETRY_LIMIT")
+        self.assertEqual((blocked["reconciled_incidents"], blocked["retry_limit"]), (3, 2))
+        self.assertEqual(config_path.read_bytes(), original_bytes)
+        self.policy["adaptive"]["min_reviewed_samples"] += 1
+        self.document("config.json", self.config)
+        self.assertEqual(self.route("reserve", expected=2)["code"], blocked["code"])
+        self.assertEqual(self.ledger_command("reconcile", "--run-id", run["run_id"], "--observation", path), closed)
+
+    def test_routing_cli_runs_from_installed_directory_layout(self):
+        installed = self.root / "installed"
+        shutil.copytree(ROOT / ".agentic/lib", installed / ".agentic/lib")
+        installed_script = installed / ".agentic/scripts/route_model.py"
+        installed_script.parent.mkdir()
+        shutil.copy2(CLI, installed_script)
+        with patch(__name__ + ".CLI", installed_script):
+            policy = self.invoke("defaults")
+            self.assertEqual(policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"], 2)
+            self.assertEqual(self.route()["model"], MODELS[1])
 
 
 if __name__ == "__main__":

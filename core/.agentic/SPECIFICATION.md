@@ -1,6 +1,6 @@
 # AWF specification
 
-Version 1.7.0. This is the normative human-readable contract. Schemas and code enforce local rules; host/provider controls remain external. Publisher: Jonathan Kinlay. AWF core and supporting distribution files are licensed under Apache-2.0; dependencies retain their own licences.
+Version 1.8.0. This is the normative human-readable contract. Schemas and code enforce local rules; host/provider controls remain external. Publisher: Jonathan Kinlay. AWF core and supporting distribution files are licensed under Apache-2.0; dependencies retain their own licences.
 
 ## Authority and modes
 
@@ -26,13 +26,13 @@ The [authorization implementation](lib/agentic/authorization.py) binds exact ord
 
 Use one protected durable ledger outside worker checkouts. Reserve before a model run, enforce bounds at the host and settle observed identity/usage/outcome. Unknown usage is not zero. Escalation preserves model/effort floors, pins, allowlists and ceilings. Shadow evidence proposes experiments; it cannot rewrite policy or prove an untried model's quality.
 
-Reconciliation is disabled until human-enabled operator policy. It needs authenticated operator evidence and verified host termination/remediation; the helper only validates supplied assertions. Preserve full orphan reservation charges, known overrun usage and append-only audit. Never reset state to recover capacity or retry an unknown external side effect blindly.
+Reconciliation is disabled until human-enabled operator policy. The helper records operator assertions; it cannot authenticate their source or prove host termination. The trusted host/operator must establish those facts before submission. Preserve full orphan reservation charges, known overrun usage and append-only audit. Ticket-wide reconciled-incident retries default to two across policy changes; exhaustion blocks admission, not safe closure. Never reset state to recover capacity or retry an unknown external side effect blindly.
 
 ## Integrity and operation
 
 Keep secrets, credentials and trusted state outside worker-visible content. Shared worktrees alone are not isolation. Verify pinned source/install membership and bytes; do not rehash corruption. Preserve scoped LF attributes. POSIX managed files default to 0600; shared accounts need a reviewed access policy.
 
-Repository owners must configure CODEOWNERS, required review and bypass restrictions; an example file is not enforcement. Digests are not publisher signatures.
+Repository owners must configure CODEOWNERS, required review and bypass restrictions; an example file is not enforcement. Digests are not publisher signatures. The optional [external-review component](docs/28-EXTERNAL-REVIEW.md) separates a read-only model job from a deterministic review publisher. It needs project-specific live qualification; offline native review and the scheduled Codex adapter do not satisfy that external-engine gate.
 
 Continue independent authorized work while decisions are pending. Report observed results, constraints and next actions. Background execution needs a requested supported scheduler. Finish only on completed scope, cancellation or no remaining authorized step, with the required event/decision identified.
 

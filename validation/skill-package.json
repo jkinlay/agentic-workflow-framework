@@ -1,12 +1,12 @@
 {
   "status": "PASS",
-  "version": "1.7.0",
-  "previous_version": "1.6.0",
-  "distribution_sha256": "aa7d57e979ad50a0fd48057654135b368e6d73995cab7d076c53776aa891f1ce",
+  "version": "1.8.0",
+  "previous_version": "1.7.0",
+  "distribution_sha256": "c87bbd60d6599fb87360445062e0ece8dddd50c0484a1b5b97979b86ae4964c0",
   "checks": [
     "outer digest, exact distribution inventory and legal notices",
-    "installed 1.6 payload upgrade preflight",
-    "installed 1.6 payload upgrade in isolated directory",
+    "installed 1.7 payload upgrade preflight",
+    "installed 1.7 payload upgrade in isolated directory",
     "complete byte-identical backup and local settings preserved",
     "idempotent verified rerun",
     "installed skill prepares verified bundled release",

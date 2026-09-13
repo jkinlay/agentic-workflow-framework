@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
   "name": "awf",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "files": [
     {
-      "path": "assets/agentic-workflow-template-v1.7.zip",
-      "sha256": "fc384c8209a760f11be033a94d577cfa279bec25d4d6af402a39ebc30ba29d93"
+      "path": "assets/agentic-workflow-template-v1.8.zip",
+      "sha256": "9994e76410d511d291108b16808d64f9053c400beb49e866b829e7aed4d390e3"
     },
     {
       "path": "assets/release.json",
-      "sha256": "11d596d680dffa457e890338581fd1eac5b2d08f706f350986604bba76824d15"
+      "sha256": "ee30360f9b2d3c2f4ee022055c3cf68d15b4164b9e8c1c381bdcd26a572d211d"
     },
     {
       "path": "LICENSE",
@@ -21,7 +21,7 @@
     },
     {
       "path": "references/model-routing.md",
-      "sha256": "e1e7d3c4aab52845717fa310459fed85a2d9a3079d2d3465f7da48a34a5f4060"
+      "sha256": "991895e8775682d8dabbf8323bd599d2ee8a57852420a46d2198cd0c8351efb7"
     },
     {
       "path": "references/skill-installation.md",
@@ -33,7 +33,7 @@
     },
     {
       "path": "references/update-channel.md",
-      "sha256": "8263496e11b74569f14de018149d171a1438134079e34827162de0005cd3f4e9"
+      "sha256": "b63eee8193342bd45c506421de3d77c3199af132aa50911611a2b936d13f60b1"
     },
     {
       "path": "references/workflow.md",
@@ -57,7 +57,7 @@
     },
     {
       "path": "SKILL.md",
-      "sha256": "f68b8bde7c86b0ab8c21ea4b42dd5fa21f96bb11b94e97b6a83e4bc33507b8de"
+      "sha256": "73a2afa8c701b746c79745dd775edcbf417b2464c7b373cf5815e642445bd789"
     },
     {
       "path": "tests/test_awf.py",
@@ -65,7 +65,7 @@
     },
     {
       "path": "tests/test_install_skill.py",
-      "sha256": "1e6c4a644072a444ea074a676e7fb32ccdb22eb01e22ea2fff9f86d0a3a048b3"
+      "sha256": "a5c0ebb6706a11120dfe53aa6b9c3f29f902a0aea421655cdc29e77c96b53f20"
     },
     {
       "path": "tests/test_prepare_release.py",
@@ -73,7 +73,7 @@
     },
     {
       "path": "tests/test_updates.py",
-      "sha256": "194427f9bbbdfd2a715a6cfca18e26d1764746eb1968aed63c699050853d9c9f"
+      "sha256": "f185a236ec1ff32184bb27590dfc4aa42e3c65249f4178585d9ccd570ea66686"
     }
   ]
 }

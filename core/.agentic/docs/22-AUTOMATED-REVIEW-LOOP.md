@@ -52,4 +52,4 @@ Disabling scheduling does not stop an active process. After timeout/crash/uncert
 python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json resume --reconciled-run EXACT_RETAINED_UUID_OR_none
 ```
 
-Resume starts full review; re-enable scheduling afterward. Retire/migrate manually with stopped processes and preserved state. [Validation](19-RELEASE-VALIDATION.md) distinguishes synthetic process tests from live host qualification.
+Resume starts full review; re-enable scheduling afterward. Retire/migrate manually with stopped processes and preserved state. Run the [adoption checks](20-NEW-PROJECT-SETUP.md) and relevant project tests. Offline process fixtures are not live host qualification; retain separate observed scheduler, credential and permission evidence.

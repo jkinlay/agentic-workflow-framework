@@ -49,8 +49,10 @@ def main():
     args = parser.parse_args()
     skill = args.skill_source.resolve(strict=True)
     skill_words = sum(len(p.read_text(encoding='utf-8').split()) for p in skill.rglob('*.md'))
-    if skill_words > 1000:
-        parser.error(f'Portable skill documentation exceeds 1000 words: {skill_words}')
+    for document in skill.rglob('*.md'):
+        limit = 600 if document.name == 'SKILL.md' else 800
+        if len(document.read_text(encoding='utf-8').split()) > limit:
+            parser.error(f'Portable skill document exceeds {limit} words: {document.relative_to(skill)}')
     output = args.output_dir.absolute()
     if output.is_relative_to(ROOT) or output.is_relative_to(skill) or output.exists():
         parser.error("Use a new output directory outside the release and skill sources")
@@ -107,7 +109,7 @@ python -B install_awf.py
 ```
 
 On Windows, `py -3 install_awf.py` is also supported. Use an absolute interpreter path if Python is not on PATH.
-The launcher contains the package pins and verifies the installer before executing it. Verify the outer ZIP SHA-256 against the trusted delivery record before running downloaded code.
+The launcher contains package pins and verifies the installer before executing it. Verify the outer ZIP SHA-256 against an independently obtained delivery pin before running downloaded code. This distribution is unsigned: bundled hashes detect byte changes but do not authenticate Jonathan Kinlay as their publisher.
 
 The installer reuses your user-level `awf` installation, stages and verifies the new package, retains the previous folder in an external backup and preserves local catalog/update-channel settings. Do not uninstall the prior skill first. Use `--dest ABSOLUTE_SKILLS_DIRECTORY/awf` to choose another installation. It does not remove other copies or plugins. See [installation and rollback](awf/references/skill-installation.md).
 

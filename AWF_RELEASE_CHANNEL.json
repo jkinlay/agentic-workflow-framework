@@ -2,10 +2,10 @@
   "format": "awf-update-channel-1",
   "releases": [
     {
-      "version": "1.7.0",
-      "archive": "dist/agentic-workflow-template-v1.7.zip",
-      "archive_sha256": "fc384c8209a760f11be033a94d577cfa279bec25d4d6af402a39ebc30ba29d93",
-      "manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215"
+      "version": "1.8.0",
+      "archive": "dist/agentic-workflow-template-v1.8.zip",
+      "archive_sha256": "9994e76410d511d291108b16808d64f9053c400beb49e866b829e7aed4d390e3",
+      "manifest_sha256": "24d4cfbccaf3acde397e7c912af34265f0fc79dd7875c72fa335f7b010fe37d3"
     }
   ]
 }

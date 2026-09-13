@@ -572,6 +572,82 @@ class ModelRoutingTests(unittest.TestCase):
         finally:
             legacy.close()
 
+    def test_repeated_hang_reconciliation_stops_admission_without_reasoning_escalation(self):
+        self.enable_reconciliation()
+        observations = []
+        runs = []
+        for index in range(3):
+            run = self.reserve()
+            self.assertEqual(run["status"], "reserved")
+            self.assertEqual(run["model"], MODELS[1])
+            self.assertFalse(run["escalated"])
+            observation = self.reconciliation_observation(reconciliation_id="hang-" + str(index))
+            closed = self.ledger.reconcile("project-1", self.policy, run["run_id"], observation)
+            self.assertEqual(closed["charged_tokens"], 1000)
+            self.assertFalse(closed["budgets_refunded"])
+            runs.append(run)
+            observations.append(observation)
+        blocked = self.reserve()
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["code"], "RECONCILED_INCIDENT_RETRY_LIMIT")
+        self.assertEqual((blocked["reconciled_incidents"], blocked["retry_limit"]), (3, 2))
+        self.assertNotIn("reasoning failure", blocked["reason"])
+        self.assertEqual(self.ledger.reconcile("project-1", self.policy, runs[-1]["run_id"], observations[-1])["status"], "reconciled")
+        self.assertEqual(len(self.ledger.reconciliation_history("project-1")["reconciliations"]), 3)
+        group = self.ledger.evidence("project-1", self.policy)["groups"][0]
+        self.assertEqual(group["charged_tokens"], 3000)
+        self.assertIsNone(group["actual_tokens"])
+
+    def test_reconciled_retry_cap_survives_policy_agent_phase_and_role_changes(self):
+        self.enable_reconciliation()
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 0
+        first = self.reserve()
+        self.ledger.reconcile("project-1", self.policy, first["run_id"], self.reconciliation_observation())
+        self.policy["adaptive"]["min_reviewed_samples"] += 1
+        reopened = RoutingLedger(self.path)
+        for changes in ({"agent_id": "replacement"}, {"phase": "renamed"},
+                        {"role": "critic", "worker_context_id": "independent-worker"}):
+            with self.subTest(changes=changes):
+                blocked = reopened.reserve("project-1", self.policy, request(**changes), capabilities())
+                self.assertEqual(blocked["code"], "RECONCILED_INCIDENT_RETRY_LIMIT")
+        self.assertEqual(self.reserve(ticket_id="independent-ticket")["status"], "reserved")
+
+    def test_reconciliation_allowance_never_prevents_closing_already_outstanding_runs(self):
+        self.enable_reconciliation()
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 0
+        first = self.reserve()
+        second = self.reserve(role="critic", worker_context_id="other-worker", phase="review")
+        for index, run in enumerate((first, second)):
+            result = self.ledger.reconcile("project-1", self.policy, run["run_id"],
+                                           self.reconciliation_observation(reconciliation_id="close-" + str(index)))
+            self.assertEqual(result["status"], "reconciled")
+        self.assertEqual(self.reserve()["reconciled_incidents"], 2)
+
+    def test_optional_retry_default_does_not_mutate_policy_or_evidence_hash(self):
+        self.enable_reconciliation()
+        original = deepcopy(self.policy)
+        original_bytes = json.dumps(original, sort_keys=True)
+        first = self.reserve(complexity="low")
+        self.ledger.settle(first["run_id"], outcome(first))
+        validate_policy(self.policy)
+        derived = policy_from_config({"execution": {"model_routing": self.policy}})
+        self.assertEqual(json.dumps(self.policy, sort_keys=True), original_bytes)
+        self.assertEqual(derived, original)
+        self.assertNotIn("max_reconciled_incident_retries_per_ticket", derived["reconciliation"])
+        prior_evidence = self.ledger.evidence("project-1", original)
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 2
+        current = self.ledger.evidence("project-1", self.policy)
+        self.assertNotEqual(current["policy_sha256"], prior_evidence["policy_sha256"])
+        self.assertEqual(current["groups"], [])
+        self.assertEqual(self.ledger.evidence("project-1", original), prior_evidence)
+
+    def test_reconciled_retry_limit_rejects_invalid_values(self):
+        for value in (True, None, -1, "2", [], 2**60):
+            policy = deepcopy(self.policy)
+            policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = value
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                validate_policy(policy)
+
     def test_cli_defaults_suggestion_and_worktree_ledger_rejection(self):
         root = Path(__file__).resolve().parents[2]
         spec = importlib.util.spec_from_file_location("awf_route_model_cli", root / ".agentic/scripts/route_model.py")

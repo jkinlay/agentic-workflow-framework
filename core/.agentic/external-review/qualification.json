@@ -1,0 +1,12 @@
+{
+  "format": "awf-external-review-qualification-1",
+  "status": "pending-project-qualification",
+  "origin_repository": "jkinlay/agentic-workflow-framework",
+  "origin_commit": "6974271869257f8c33d796d3c85c529277c5691d",
+  "historical_demonstrations": ["https://github.com/jkinlay/agentic-workflow-framework/pull/4", "https://github.com/jkinlay/agentic-workflow-framework/pull/5"],
+  "effective_permissions_verified": false,
+  "instruction_paths_protected": false,
+  "head_binding_verified": false,
+  "live_benchmark_verified": false,
+  "note": "Historical records do not qualify this relocated component, current candidate, host or credentials. Human-owned project evidence is required."
+}

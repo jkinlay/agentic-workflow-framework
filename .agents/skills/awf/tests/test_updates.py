@@ -170,7 +170,7 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual("1.6.0", self.run_check()["candidate"]["version"])
         self.assertEqual("1.5.10", self.run_check("1.5")["candidate"]["version"])
         self.assertEqual("1.5.0", self.run_check("1.5.0")["candidate"]["version"])
-        result = self.run_check("1.7")
+        result = self.run_check("1.8")
         self.assertEqual("REQUESTED_VERSION_UNAVAILABLE", result["status"])
         self.assertIsNone(result["candidate"])
         self.assertEqual(["1.5.0", "1.5.9", "1.5.10", "1.6.0"], result["channel"]["available_versions"])

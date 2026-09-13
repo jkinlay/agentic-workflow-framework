@@ -1,7 +1,7 @@
 {
   "version": 3,
   "template": {
-    "expected_workflow_version": "1.7.0"
+    "expected_workflow_version": "1.8.0"
   },
   "project": {
     "id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",

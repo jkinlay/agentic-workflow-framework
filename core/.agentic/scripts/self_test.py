@@ -17,6 +17,7 @@ from urllib.parse import unquote
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
+from agentic import VERSION
 
 
 def complete_form(value, schema, schemas):
@@ -42,10 +43,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report', type=Path)
     args = parser.parse_args(argv)
-    if args.report and args.report.absolute().is_relative_to(ROOT):
+    if args.report and args.report.resolve().is_relative_to(ROOT):
         parser.error('Write validation reports outside the source/installed root')
     started = time.monotonic()
-    report = {'template_version': '1.7.0', 'profile': 'manual_reference', 'execution_authority': False,
+    report = {'template_version': VERSION, 'profile': 'manual_reference', 'execution_authority': False,
         'tested_components': ['offline_evidence', 'synthetic_host_review_loop', 'local_git_amendment',
             'routine_autonomy_and_progress', 'synthetic_jira_stream_planning',
             'native_writer_capacity', 'project_continuation', 'unsent_draft_adapter',
@@ -119,7 +120,18 @@ def main(argv=None):
                     raise ValueError(f'Broken document link: {path.relative_to(ROOT)} -> {target}')
                 links += 1
         report['checks']['local_markdown_links'] = links
+        if (ROOT / 'MANIFEST.json').exists():
+            sys.path.insert(0, str(ROOT / 'scripts'))
+            from release_hygiene import check_release
+            report['checks']['source_release_hygiene'] = check_release(ROOT)
+            report['tested_components'].append('real_source_release_hygiene')
+        else:
+            report['checks']['source_release_hygiene'] = 'NOT_APPLICABLE: installed runtime has no source generators'
         suite = unittest.defaultTestLoader.discover(str(ROOT / '.agentic/tests'))
+        external_tests = ROOT / '.agentic/external-review/claude/tests'
+        if external_tests.is_dir():
+            suite.addTests(unittest.TestLoader().discover(str(external_tests)))
+            report['tested_components'].append('offline_external_review_adapter')
         if (ROOT / 'MANIFEST.json').exists() and (ROOT / 'global/awf/tests').is_dir():
             suite.addTests(unittest.TestLoader().discover(str(ROOT / 'global/awf/tests')))
             report['tested_components'].append('local_release_discovery')

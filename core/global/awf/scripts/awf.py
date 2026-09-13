@@ -259,7 +259,7 @@ def locate(catalog_path, requested_version=None):
     try:
         if requested_version is not None and (not isinstance(requested_version, str) or
                                               not SELECTOR.fullmatch(requested_version)):
-            fail("INVALID_VERSION_SELECTOR", "Use major.minor or exact major.minor.patch, for example 1.7")
+            fail("INVALID_VERSION_SELECTOR", "Use major.minor or exact major.minor.patch, for example 1.8")
         catalog_path = absolute_path(catalog_path, "Catalog")
         raw = read_file(catalog_path)
         proof.update(catalog_path=str(catalog_path), catalog_sha256=digest(raw))

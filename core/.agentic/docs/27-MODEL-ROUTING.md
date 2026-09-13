@@ -1,6 +1,6 @@
 # Balanced model routing
 
-Version 1.7.0. [SPECIFICATION](../SPECIFICATION.md) defines authority and capability boundaries. This router proposes choices and accounts for supplied observations; the host authenticates evidence, launches models and enforces runtime limits.
+Version 1.8.0. [SPECIFICATION](../SPECIFICATION.md) defines authority. The router proposes routes and records usage; the host authenticates evidence, launches models and enforces limits.
 
 ## Policy and escalation
 
@@ -32,15 +32,17 @@ Outstanding runs block duplicate ticket/role/phase admission and remain charged 
 
 ## Operator reconciliation and evidence
 
-Optional `reconciliation` defaults to disabled. Owner-reviewed enablement requires `authorized_operator_ids`. `reconcile` additionally requires authenticated operator authorization, termination evidence and verified remediation for the exact project/run. Required observation fields and executable fixtures are in [the CLI tests](../tests/test_routing_cli.py); validation is in [the implementation](../lib/agentic/model_routing.py).
+Optional `reconciliation` defaults to disabled; enablement requires `authorized_operator_ids`. `reconcile` records operator assertions about authorization, termination and remediation for the exact project/run; host authentication remains required. Fields/fixtures: [CLI tests](../tests/test_routing_cli.py); validation: [implementation](../lib/agentic/model_routing.py).
+
+`reconciliation.max_reconciled_incident_retries_per_ticket` defaults to 2 when absent, without rewriting policy hashes. After a third reconciled incident, further ticket admission stops; safe closure remains permitted. Counts span policies, roles and phases. Unknown hangs remain non-reasoning failures. Cap increases require human direction.
 
 Reconciliation closes one outstanding reservation or quarantine incident. It preserves known charges/outcomes and charges an orphan's full reservation while leaving actual usage unknown. Verified closure ends future daily carry; ticket charges remain. Other quarantines still block. The append-only audit retains prior state and authorization/evidence references. Exact operation-ID retries return the saved result; conflicting reuse fails. `reconciliation-history` reads the audit. Reconciled runs cannot supply positive evidence or receive later settlement refunds. Typed identities/booleans do not authenticate operators; host controls remain required.
 
-`evidence` is shadow-only: 20 distinct independently reviewed low-risk worker tickets, at least 95% accepted outcomes and no known escaped defects qualify an observed cohort for a reviewed experiment. It never automatically downgrades policy. `record-defect` appends later discoveries and invalidates recommendations.
+`evidence` is shadow-only: 20 independently reviewed low-risk tickets, 95% acceptance and no known escaped defects qualify an observed cohort for a reviewed experiment, never automatic downgrades. `record-defect` appends discoveries. Historical cohorts remain queryable with their original policies; different policy hashes are never merged.
 
 ## Commands
 
-Run from the release root. Replace uppercase paths and input files with the reviewed project and authenticated observations; create the protected ledger directory first.
+From the release root, substitute reviewed paths/observations and create the protected ledger directory:
 
 ```text
 python .agentic/scripts/route_model.py defaults

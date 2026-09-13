@@ -56,7 +56,8 @@ def default_policy():
                     "max_cost_microusd_per_project_day": None},
         "adaptive": {"mode": "shadow", "min_reviewed_samples": 20,
                      "min_success_rate_percent": 95},
-        "reconciliation": {"enabled": False, "authorized_operator_ids": []},
+        "reconciliation": {"enabled": False, "authorized_operator_ids": [],
+                           "max_reconciled_incident_retries_per_ticket": 2},
     }
 
 
@@ -155,7 +156,10 @@ def validate_policy(policy):
     _integer(adaptive["min_success_rate_percent"], "min_success_rate_percent", 1)
     _require(adaptive["min_success_rate_percent"] <= 100, "invalid min_success_rate_percent")
     reconciliation = policy.get("reconciliation", default_policy()["reconciliation"])
-    _require(isinstance(reconciliation, dict) and set(reconciliation) == {"enabled", "authorized_operator_ids"},
+    reconciliation_required = {"enabled", "authorized_operator_ids"}
+    reconciliation_optional = {"max_reconciled_incident_retries_per_ticket"}
+    _require(isinstance(reconciliation, dict) and reconciliation_required <= set(reconciliation)
+             <= reconciliation_required | reconciliation_optional,
              "invalid reconciliation settings")
     _require(type(reconciliation["enabled"]) is bool, "reconciliation.enabled must be boolean")
     operators = reconciliation["authorized_operator_ids"]
@@ -164,6 +168,8 @@ def validate_policy(policy):
         _name(operator, "reconciliation operator ID")
     _require(len(operators) == len(set(operators)), "reconciliation operator IDs must be unique")
     _require(not reconciliation["enabled"] or bool(operators), "enabled reconciliation requires an authorized operator")
+    _integer(reconciliation.get("max_reconciled_incident_retries_per_ticket", 2),
+             "reconciliation.max_reconciled_incident_retries_per_ticket")
     return policy
 
 
@@ -393,6 +399,17 @@ class RoutingLedger:
             _require(connection.execute("SELECT 1 FROM model_runs WHERE project_id=? AND status='quarantined' LIMIT 1", (project_id,)).fetchone() is None,
                      "project has a quarantined host mismatch or budget overrun; reconcile with authorized operator evidence")
             ticket_rows = list(connection.execute("SELECT * FROM model_runs WHERE project_id=? AND ticket_id=? ORDER BY rowid", (project_id, request["ticket_id"])))
+            # This allowance gates admission, never safe incident closure.
+            # Keep the count ticket-wide and independent of policy hash, role or
+            # phase so renaming a retry cannot reset a repeated-hang budget.
+            reconciled_incidents = sum(row["status"] == "reconciled" for row in ticket_rows)
+            retry_limit = policy.get("reconciliation", {}).get("max_reconciled_incident_retries_per_ticket", 2)
+            if reconciled_incidents > retry_limit:
+                return {"status": "blocked", "code": "RECONCILED_INCIDENT_RETRY_LIMIT",
+                        "reason": "ticket reconciled-incident retry allowance exhausted; closure is permitted but further runs require explicit human direction",
+                        "project_id": project_id, "ticket_id": request["ticket_id"],
+                        "reconciled_incidents": reconciled_incidents, "retry_limit": retry_limit,
+                        "policy_sha256": _fingerprint(policy), "dispatch_performed": False}
             phase_rows = [row for row in ticket_rows if row["role"] == request["role"] and row["phase"] == request["phase"]]
             _require(not any(row["status"] == "reserved" for row in phase_rows), "a run is still outstanding for this ticket/role/phase")
             enriched = deepcopy(request)

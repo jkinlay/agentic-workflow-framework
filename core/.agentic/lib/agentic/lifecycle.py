@@ -43,7 +43,7 @@ CONTROL_EVENTS = {"BLOCK", "FAIL", "RECOVER", "CANCEL", "SUPERSEDE", "MERGE_TIME
 
 
 def definition():
-    return {"version": 3, "template_version": "1.7.0", "live_side_effects_supported": False,
+    return {"version": 3, "template_version": "1.8.0", "live_side_effects_supported": False,
             "states": STATES, "terminal_states": sorted(TERMINAL), "resume_states": sorted(RESUME),
             "normal_transitions": [{"from": source, "event": event, "to": target, "actor": "controller", "requires": guards}
                                    for source, event, target, guards in NORMAL],

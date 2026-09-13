@@ -1,6 +1,6 @@
 # Native coordination runbook
 
-Version 1.7.0. This is coordinator guidance for a host with delegation tools. The planner does not launch agents or authenticate active-writer records.
+Version 1.8.0. This is coordinator guidance for a host with delegation tools. The planner does not launch agents or authenticate active-writer records.
 
 See [specification](../SPECIFICATION.md). `execution.independent_reviewers` defaults to three total, one per stream, not three approvals per PR. Reviewers and any separate coordinator consume shared host slots; no six-agent concurrency is implied.
 

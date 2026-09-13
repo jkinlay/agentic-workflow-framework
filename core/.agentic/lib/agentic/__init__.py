@@ -1,5 +1,5 @@
 """Agentic Workflow: native coordination, evidence and enrolled PR automation."""
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 SCHEMA_REVISION = 3
 
 

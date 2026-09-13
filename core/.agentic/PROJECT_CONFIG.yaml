@@ -1,7 +1,7 @@
 {
   "version": 3,
   "template": {
-    "expected_workflow_version": "1.7.0"
+    "expected_workflow_version": "1.8.0"
   },
   "project": {
     "id": "00000000-0000-0000-0000-000000000000",
@@ -263,7 +263,8 @@
       },
       "reconciliation": {
         "enabled": false,
-        "authorized_operator_ids": []
+        "authorized_operator_ids": [],
+        "max_reconciled_incident_retries_per_ticket": 2
       }
     }
   },

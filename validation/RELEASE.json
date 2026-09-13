@@ -1,23 +1,25 @@
 {
-  "version": "1.7.0",
+  "version": "1.8.0",
   "publisher": "Jonathan Kinlay",
   "license": "Apache-2.0",
-  "source_manifest_sha256": "73e20cff9127fe1af5b19c6438a99f0a71fcd9816eb4fd319cf42f0e53728215",
-  "source_archive_sha256": "fc384c8209a760f11be033a94d577cfa279bec25d4d6af402a39ebc30ba29d93",
-  "skill_manifest_sha256": "d7853718c4deeb2286a1e39d9d4a7356e7c0389af32a771fd25c74da29f4dc05",
-  "skill_archive_sha256": "0aa43cdaf016c0d98e21b6a8f9e7970db8753d2177d429a887a8cea9eb38a61e",
-  "distribution_archive_sha256": "aa7d57e979ad50a0fd48057654135b368e6d73995cab7d076c53776aa891f1ce",
+  "skill_documentation_words": 711,
+  "source_manifest_sha256": "24d4cfbccaf3acde397e7c912af34265f0fc79dd7875c72fa335f7b010fe37d3",
+  "source_archive_sha256": "9994e76410d511d291108b16808d64f9053c400beb49e866b829e7aed4d390e3",
+  "skill_manifest_sha256": "d87d7859f1605a1c9955b2502c83d23b72a9823cd9eeab3eba07a3059e5bec5e",
+  "skill_archive_sha256": "65d2a7e85bcb72eff0816b7330d6db27583b54e392d66200f00b9b9de5909450",
+  "distribution_archive_sha256": "c87bbd60d6599fb87360445062e0ece8dddd50c0484a1b5b97979b86ae4964c0",
   "documentation": {
-    "counting_rule": "Whitespace-separated words in source Markdown, excluding generated MANIFEST.md on both sides",
+    "baseline_words": 60021,
     "baseline_version": "1.6.0",
     "baseline_archive_sha256": "b6d9302f72feb0860d069fa23cf547b970c727fa84a3dc84f2f860c83e5836f2",
-    "baseline_words": 60021,
-    "current_words": 5866,
-    "reduction_percent": 90.23,
-    "source_word_budget": 6000,
-    "skill_markdown_words": 664,
-    "skill_word_budget": 1000
+    "current_words": 9462,
+    "markdown_total_words": 10491,
+    "generated_manifest_words": 1029,
+    "counting_rule": "Whitespace-separated Markdown words; generated manifest separately reported; prompt templates and generated copies both counted.",
+    "source_global_word_budget": null,
+    "per_file_limits": true
   },
   "cryptographic_signature": null,
+  "all_artifacts_reproducible": true,
   "prior_public_lineage_commit": "6974271869257f8c33d796d3c85c529277c5691d"
 }

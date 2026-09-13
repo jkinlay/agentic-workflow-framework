@@ -199,7 +199,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         assert_quiescent(existing_config)
         if mode == "upgrade":
             if _exists_read(dst, INSTALLED) is None or existing_config is None:
-                raise ValidationError("Upgrade requires a same-version v1.7.0 installation; migrate older versions through a reviewed install")
+                raise ValidationError("Upgrade requires a same-version v1.8.0 installation; migrate older versions through a reviewed install")
             verify_installed(destination)
             planned[CONFIG] = existing_config
         elif overrides:

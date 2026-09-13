@@ -97,7 +97,7 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.dest.exists())
 
     def test_modified_manifest_requires_external_pin(self):
-        self.manifest["version"] = "1.7.0"
+        self.manifest["version"] = "1.8.0"
         old_pin = self.pin
         self.pin_manifest()
         with self.assertRaisesRegex(installer.InstallError, "trust pin"):
@@ -120,7 +120,7 @@ class InstallerTests(unittest.TestCase):
             self.run_install()
 
     def test_downgrade_and_unknown_existing_version_fail(self):
-        self.old_skill("1.7.0")
+        self.old_skill("1.8.0")
         with self.assertRaisesRegex(installer.InstallError, "downgrade"):
             self.run_install()
         (self.dest / ".awf-skill-receipt.json").unlink()
@@ -237,7 +237,7 @@ class InstallerTests(unittest.TestCase):
         (self.dest / "owner.json").write_text('{"owner":"local"}', encoding="utf-8")
         self.run_install(preserve_relative=["owner.json"])
         self.assertEqual(self.run_install()["status"], "already-installed")
-        self.manifest["version"] = "1.7.0"
+        self.manifest["version"] = "1.8.0"
         self.pin_manifest()
         self.assertEqual(self.run_install()["status"], "upgraded")
         self.assertEqual((self.dest / "owner.json").read_text(encoding="utf-8"), '{"owner":"local"}')
@@ -259,7 +259,7 @@ class InstallerTests(unittest.TestCase):
         (self.dest / "owner.json").write_text("{}", encoding="utf-8")
         self.run_install(preserve_relative=["owner.json"])
         (self.source / "owner.json").write_text('{"new":"packaged"}', encoding="utf-8")
-        self.manifest["version"] = "1.7.0"
+        self.manifest["version"] = "1.8.0"
         self.manifest["files"].append({"path": "owner.json", "sha256": installer.digest(self.source / "owner.json")})
         self.pin_manifest()
         before = installer.inventory(self.dest)
@@ -270,7 +270,7 @@ class InstallerTests(unittest.TestCase):
     def test_conflicting_existing_versions_fail_without_mutation(self):
         self.old_skill()
         (self.dest / "assets").mkdir()
-        (self.dest / "assets" / "release.json").write_text('{"version":"1.7.0"}', encoding="utf-8")
+        (self.dest / "assets" / "release.json").write_text('{"version":"1.8.0"}', encoding="utf-8")
         (self.dest / installer.MANIFEST).write_text('{"version":"1.5.0"}', encoding="utf-8")
         before = installer.inventory(self.dest)
         with self.assertRaisesRegex(installer.InstallError, "Conflicting existing version"):

@@ -1,6 +1,6 @@
 # Adoption guide
 
-Version 1.7.0. Applies to new and existing repositories. Read [the specification](../SPECIFICATION.md) and the target's project-owned instructions.
+Version 1.8.0. Applies to new and existing repositories. Read [the specification](../SPECIFICATION.md) and the target's project-owned instructions.
 
 1. Inspect the target's accepted AWF version, working changes, linked worktrees, owners and active PRs. Preserve partial work and historical evidence. Before Jira exists, use provisional local IDs; do not invent tickets or past approvals.
 2. Locate a requested exact/family release through the installed skill and owner channel/catalog. Verify external archive/manifest pins. If a verified bundle exists, prepare it in a separate cache; preserve any differing cache. A missing source folder is not a reason to accept unverified bytes.
@@ -11,7 +11,7 @@ python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 
 python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 TRUSTED_SHA256 --on-conflict backup
 ```
 Cross-version changes use backed-up `install` mode. `--mode upgrade` is only same-version maintenance. Preserve rollback records; an unfinished journal/activation marker requires recovery before use.
-5. Map the project's real Jira/repository/owner/CI/runtime identities, scope and validation commands. Set `template.expected_workflow_version` to `1.7.0`. Preserve deliberate model choices and execution limits. Adopt new routing/reviewer settings explicitly; the new-project reviewer pool is three total, one per stream. Cap increases need human direction.
+5. Map the project's real Jira/repository/owner/CI/runtime identities, scope and validation commands. Set `template.expected_workflow_version` to `1.8.0`. Preserve deliberate model choices and execution limits. Adopt new routing/reviewer settings explicitly; the new-project reviewer pool is three total, one per stream. Cap increases need human direction.
 6. From the trusted release directory, validate the target explicitly:
 ```text
 python -B .agentic/scripts/workflow.py --root TARGET validate-config
