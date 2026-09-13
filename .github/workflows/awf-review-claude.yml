@@ -1,6 +1,7 @@
 name: AWF Claude independent review
 
-# Split model/publisher adapter (docs/providers/claude-code-action.md).
+# Split model/publisher adapter; see .agentic/docs/28-EXTERNAL-REVIEW.md.
+# Inert until an owner explicitly enables AWF_ENABLE_CLAUDE_REVIEW.
 #
 # - Runs from the BASE branch definition (pull_request_target); a pull request
 #   cannot change this file or the adapter code it runs.
@@ -25,14 +26,15 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  AWF_REVIEW_DIR: .agentic/review/claude
-  AWF_SCHEMA: .agentic/schemas/review-report.schema.json
+  AWF_REVIEW_DIR: core/.agentic/external-review/claude
+  AWF_SCHEMA: core/.agentic/external-review/review-report.schema.json
   AWF_POLICY: .agentic/project.yaml
 
 jobs:
   model:
     name: awf/review-claude-model
     if: >-
+      vars.AWF_ENABLE_CLAUDE_REVIEW == 'true' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest

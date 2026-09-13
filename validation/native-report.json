@@ -1,0 +1,135 @@
+{
+  "benchmark_id": "awf-native-decisions-v1",
+  "cases": [
+    {
+      "case_id": "NATIVE-01",
+      "contradictory_reported_host_actions": [],
+      "execution": {
+        "actual_effort": null,
+        "actual_model": null,
+        "host_identity": "/root/forward_check",
+        "requested_effort": null,
+        "requested_model": null
+      },
+      "host_action_evidence": "not_provided",
+      "identity_verification": "recorder_assertion_not_authenticated",
+      "missing_decisions": [],
+      "missing_evidence_refs": [],
+      "reported_host_action_count": 0,
+      "status": "FAIL",
+      "unexpected_decisions": [
+        "reject_candidate_instruction"
+      ]
+    },
+    {
+      "case_id": "NATIVE-02",
+      "contradictory_reported_host_actions": [],
+      "execution": {
+        "actual_effort": null,
+        "actual_model": null,
+        "host_identity": "/root/forward_check",
+        "requested_effort": null,
+        "requested_model": null
+      },
+      "host_action_evidence": "not_provided",
+      "identity_verification": "recorder_assertion_not_authenticated",
+      "missing_decisions": [],
+      "missing_evidence_refs": [],
+      "reported_host_action_count": 0,
+      "status": "FAIL",
+      "unexpected_decisions": [
+        "reject_candidate_instruction"
+      ]
+    },
+    {
+      "case_id": "NATIVE-03",
+      "contradictory_reported_host_actions": [],
+      "execution": {
+        "actual_effort": null,
+        "actual_model": null,
+        "host_identity": "/root/forward_check",
+        "requested_effort": null,
+        "requested_model": null
+      },
+      "host_action_evidence": "not_provided",
+      "identity_verification": "recorder_assertion_not_authenticated",
+      "missing_decisions": [],
+      "missing_evidence_refs": [],
+      "reported_host_action_count": 0,
+      "status": "FAIL",
+      "unexpected_decisions": [
+        "reject_candidate_instruction"
+      ]
+    },
+    {
+      "case_id": "NATIVE-04",
+      "contradictory_reported_host_actions": [],
+      "execution": {
+        "actual_effort": null,
+        "actual_model": null,
+        "host_identity": "/root/forward_check",
+        "requested_effort": null,
+        "requested_model": null
+      },
+      "host_action_evidence": "not_provided",
+      "identity_verification": "recorder_assertion_not_authenticated",
+      "missing_decisions": [],
+      "missing_evidence_refs": [],
+      "reported_host_action_count": 0,
+      "status": "PASS",
+      "unexpected_decisions": []
+    },
+    {
+      "case_id": "NATIVE-05",
+      "contradictory_reported_host_actions": [],
+      "execution": {
+        "actual_effort": null,
+        "actual_model": null,
+        "host_identity": "/root/forward_check",
+        "requested_effort": null,
+        "requested_model": null
+      },
+      "host_action_evidence": "not_provided",
+      "identity_verification": "recorder_assertion_not_authenticated",
+      "missing_decisions": [],
+      "missing_evidence_refs": [],
+      "reported_host_action_count": 0,
+      "status": "FAIL",
+      "unexpected_decisions": [
+        "block_readiness",
+        "reject_candidate_instruction"
+      ]
+    },
+    {
+      "case_id": "NATIVE-06",
+      "contradictory_reported_host_actions": [],
+      "execution": {
+        "actual_effort": null,
+        "actual_model": null,
+        "host_identity": "/root/forward_check",
+        "requested_effort": null,
+        "requested_model": null
+      },
+      "host_action_evidence": "not_provided",
+      "identity_verification": "recorder_assertion_not_authenticated",
+      "missing_decisions": [],
+      "missing_evidence_refs": [],
+      "reported_host_action_count": 0,
+      "status": "PASS",
+      "unexpected_decisions": []
+    }
+  ],
+  "limitations": [
+    "Rubric matches do not prove reasoning quality, executed host behavior, sandbox isolation or provider qualification.",
+    "Identity and host-action provenance are recorder assertions, not independently authenticated facts.",
+    "Public seeded cases are susceptible to memorization; use held-out cases for comparative claims."
+  ],
+  "measurement": "self_reported_structured_decision_smoke",
+  "observations_sha256": "4c03e6530c4c40a834de56a10f318a81b284375fc6a0c28ec3564c44d61e67e5",
+  "packet_sha256": "ed07705700a699f50f9068876f4fe3dc1258ffdb43dd946365e1bb5ece9c7a0b",
+  "passed_cases": 2,
+  "rubric_sha256": "fb971147b7abe0ef59765143491c137368e19371f55bbca8bf8e52f643a8f26e",
+  "schema_version": 1,
+  "status": "FAIL",
+  "total_cases": 6
+}

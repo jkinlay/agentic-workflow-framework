@@ -1,0 +1,25 @@
+{
+  "version": "1.8.0",
+  "publisher": "Jonathan Kinlay",
+  "license": "Apache-2.0",
+  "skill_documentation_words": 711,
+  "source_manifest_sha256": "24d4cfbccaf3acde397e7c912af34265f0fc79dd7875c72fa335f7b010fe37d3",
+  "source_archive_sha256": "9994e76410d511d291108b16808d64f9053c400beb49e866b829e7aed4d390e3",
+  "skill_manifest_sha256": "d87d7859f1605a1c9955b2502c83d23b72a9823cd9eeab3eba07a3059e5bec5e",
+  "skill_archive_sha256": "65d2a7e85bcb72eff0816b7330d6db27583b54e392d66200f00b9b9de5909450",
+  "distribution_archive_sha256": "c87bbd60d6599fb87360445062e0ece8dddd50c0484a1b5b97979b86ae4964c0",
+  "documentation": {
+    "baseline_words": 60021,
+    "baseline_version": "1.6.0",
+    "baseline_archive_sha256": "b6d9302f72feb0860d069fa23cf547b970c727fa84a3dc84f2f860c83e5836f2",
+    "current_words": 9462,
+    "markdown_total_words": 10491,
+    "generated_manifest_words": 1029,
+    "counting_rule": "Whitespace-separated Markdown words; generated manifest separately reported; prompt templates and generated copies both counted.",
+    "source_global_word_budget": null,
+    "per_file_limits": true
+  },
+  "cryptographic_signature": null,
+  "all_artifacts_reproducible": true,
+  "prior_public_lineage_commit": "6974271869257f8c33d796d3c85c529277c5691d"
+}

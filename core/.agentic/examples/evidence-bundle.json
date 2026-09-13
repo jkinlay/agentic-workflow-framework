@@ -1,0 +1,451 @@
+{
+  "schema_version": 3,
+  "candidate": {
+    "host": "https://github.com",
+    "repository_id": 101,
+    "repository": "fixture/example",
+    "pr_number": 7,
+    "target_base_branch": "main",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "target_base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "merge_base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "head_tree_sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "integration_tree_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "tested_merge_sha": "ffffffffffffffffffffffffffffffffffffffff",
+    "diff_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "merge_method": "squash"
+  },
+  "snapshot": {
+    "schema_version": 3,
+    "issue_id": "2001",
+    "project_key": "EX",
+    "summary": "Validate a label",
+    "description": "Offline illustrative fixture only.",
+    "acceptance_criteria": [
+      {
+        "id": "AC1",
+        "text": "Return the requested label.",
+        "validation": "Assert the output label."
+      },
+      {
+        "id": "AC2",
+        "text": "Reject empty input.",
+        "validation": "Assert empty input raises an error."
+      }
+    ],
+    "dependencies": [],
+    "linked_requirements": [],
+    "epic_ids": [],
+    "labels": [
+      "awf-fixture"
+    ],
+    "component_ids": []
+  },
+  "contract": {
+    "schema_version": 3,
+    "contract_id": "9cd18fb5-8aee-5e37-bbda-348cfc9a7cff",
+    "contract_version": 1,
+    "created_at": "2026-09-09T12:00:00Z",
+    "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+    "repository_id": 101,
+    "issue_id": "2001",
+    "ticket": "EX-1",
+    "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+    "policy_hash": "107ba171f9384952994ba46b011fe0fc6e4c98bd5015c1aeba35ae57b72f482d",
+    "objective": "Validate one label",
+    "acceptance_criteria": [
+      {
+        "id": "AC1",
+        "text": "Return the requested label.",
+        "validation": "Assert the output label."
+      },
+      {
+        "id": "AC2",
+        "text": "Reject empty input.",
+        "validation": "Assert empty input raises an error."
+      }
+    ],
+    "dependencies": [],
+    "branch_origin_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "target_base_branch": "main",
+    "scope": {
+      "expected_paths": [
+        "src/example.py"
+      ],
+      "allowed_adjacent_paths": [],
+      "protected_interfaces": [],
+      "forbidden_changes": [
+        "unrelated changes"
+      ],
+      "governance_change_authorization": null
+    },
+    "validation": {
+      "commands": [
+        "python -m unittest discover -s tests"
+      ],
+      "test_cases": [
+        "normal label",
+        "empty input"
+      ],
+      "tests_not_applicable_reason": null
+    },
+    "risk_flags": {
+      "security": false,
+      "schema_or_migration": false,
+      "public_api": false,
+      "data_loss": false,
+      "concurrency": false,
+      "production": false
+    },
+    "specialist_domains": [],
+    "disposition": "READY"
+  },
+  "dispatch": {
+    "schema_version": 3,
+    "record_id": "ed026ea5-c0a7-567c-89ec-39dcf62c9bea",
+    "created_at": "2026-09-09T12:00:00Z",
+    "producer_id": "fixture-controller",
+    "run_id": "0544646c-bcc8-5f67-a333-ad482bf06795",
+    "binding": {
+      "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+      "repository_id": 101,
+      "issue_id": "2001",
+      "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+      "contract_hash": "380c1cdbca24d9d9e09c28bae3407623122ea2c9ea073024a1cf906630382b99",
+      "policy_hash": "107ba171f9384952994ba46b011fe0fc6e4c98bd5015c1aeba35ae57b72f482d",
+      "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+    },
+    "contract_id": "9cd18fb5-8aee-5e37-bbda-348cfc9a7cff",
+    "contract_version": 1,
+    "role": "worker",
+    "branch": "codex/EX-1-label",
+    "worktree_id": "c5167da4-2c93-5787-b905-ca4d2965dcde",
+    "lease": {
+      "required": true,
+      "lease_id": "2e6e396b-2fe2-593a-93e8-c87856184143",
+      "fencing_token": 1,
+      "expires_at": "2026-09-09T12:15:00Z"
+    },
+    "collision_check": "PASS",
+    "collision_evidence": [
+      "urn:awf:fixture:example-evidence"
+    ],
+    "disposition": "PERMITTED",
+    "control_generation": 1
+  },
+  "worker": {
+    "schema_version": 3,
+    "record_id": "a3448c53-6117-53c6-8cb3-7f6e5295ec67",
+    "created_at": "2026-09-09T12:00:00Z",
+    "producer_id": "fixture-worker",
+    "run_id": "c31bb8d3-5974-5af0-9de8-706c9762e3a9",
+    "binding": {
+      "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+      "repository_id": 101,
+      "issue_id": "2001",
+      "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+      "contract_hash": "380c1cdbca24d9d9e09c28bae3407623122ea2c9ea073024a1cf906630382b99",
+      "policy_hash": "107ba171f9384952994ba46b011fe0fc6e4c98bd5015c1aeba35ae57b72f482d",
+      "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+    },
+    "status": "COMPLETE",
+    "dispatch_id": "ed026ea5-c0a7-567c-89ec-39dcf62c9bea",
+    "files_changed": [
+      "src/example.py"
+    ],
+    "acceptance_criteria": [
+      {
+        "id": "AC1",
+        "verdict": "PASS",
+        "evidence": [
+          "urn:awf:fixture:example-evidence"
+        ]
+      },
+      {
+        "id": "AC2",
+        "verdict": "PASS",
+        "evidence": [
+          "urn:awf:fixture:example-evidence"
+        ]
+      }
+    ],
+    "validation": [
+      {
+        "command": "python -m unittest discover -s tests",
+        "started_at": "2026-09-09T11:59:59Z",
+        "finished_at": "2026-09-09T12:00:00Z",
+        "exit_code": 0,
+        "tested_tree_sha": "dddddddddddddddddddddddddddddddddddddddd",
+        "clean_checkout": true,
+        "evidence": [
+          "urn:awf:fixture:example-evidence"
+        ]
+      }
+    ],
+    "self_review_complete": true,
+    "findings_addressed": [],
+    "blockers": []
+  },
+  "critic": {
+    "schema_version": 3,
+    "record_id": "6748e420-45e5-5339-b6a7-12c92e46f20a",
+    "created_at": "2026-09-09T12:00:00Z",
+    "producer_id": "fixture-critic",
+    "run_id": "7d8465fe-d08b-53de-9c80-c839f0dad8fe",
+    "binding": {
+      "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+      "repository_id": 101,
+      "issue_id": "2001",
+      "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+      "contract_hash": "380c1cdbca24d9d9e09c28bae3407623122ea2c9ea073024a1cf906630382b99",
+      "policy_hash": "107ba171f9384952994ba46b011fe0fc6e4c98bd5015c1aeba35ae57b72f482d",
+      "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+    },
+    "verdict": "APPROVE",
+    "acceptance_criteria": [
+      {
+        "id": "AC1",
+        "verdict": "PASS",
+        "evidence": [
+          "urn:awf:fixture:example-evidence"
+        ]
+      },
+      {
+        "id": "AC2",
+        "verdict": "PASS",
+        "evidence": [
+          "urn:awf:fixture:example-evidence"
+        ]
+      }
+    ],
+    "findings": [],
+    "prior_finding_ids": [],
+    "coverage": {
+      "complete": true,
+      "file_manifest_sha256": "9aaf357e38daea260442ed0c8a584bb38633dcfad5e3114bd2241195b24e2de4",
+      "reviewed_paths": [
+        "src/example.py"
+      ],
+      "omissions": []
+    },
+    "evidence_checked": [
+      "urn:awf:fixture:example-evidence"
+    ]
+  },
+  "specialists": [],
+  "ci": {
+    "schema_version": 3,
+    "record_id": "b8ba18ee-31ed-5d37-8176-1351e1ca6b72",
+    "created_at": "2026-09-09T12:00:00Z",
+    "producer_id": "fixture-collector",
+    "run_id": "8e9a288f-2dd8-5231-90ff-b338139b5de7",
+    "binding": {
+      "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+      "repository_id": 101,
+      "issue_id": "2001",
+      "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+      "contract_hash": "380c1cdbca24d9d9e09c28bae3407623122ea2c9ea073024a1cf906630382b99",
+      "policy_hash": "107ba171f9384952994ba46b011fe0fc6e4c98bd5015c1aeba35ae57b72f482d",
+      "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+    },
+    "retrieval_complete": true,
+    "candidate_type": "synthetic_merge",
+    "checks": [
+      {
+        "name": "unit-tests",
+        "check_id": "check-1",
+        "app_id": 42,
+        "workflow_path": ".github/workflows/test.yml",
+        "workflow_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "attempt": 1,
+        "event": "pull_request",
+        "conclusion": "success",
+        "tested_tree_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "tested_commit_sha": "ffffffffffffffffffffffffffffffffffffffff",
+        "tests_executed": 2,
+        "completed_at": "2026-09-09T12:00:00Z",
+        "evidence": [
+          "urn:awf:fixture:example-evidence"
+        ]
+      }
+    ],
+    "collector_attestation_id": "e56e2c39-2059-59ab-bd97-85d1a8f4e36f"
+  },
+  "pr": {
+    "schema_version": 3,
+    "record_id": "d19c6425-a86d-5a30-9c41-1b903b6d7120",
+    "created_at": "2026-09-09T12:00:00Z",
+    "producer_id": "fixture-collector",
+    "run_id": "8e9a288f-2dd8-5231-90ff-b338139b5de7",
+    "binding": {
+      "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+      "repository_id": 101,
+      "issue_id": "2001",
+      "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+      "contract_hash": "380c1cdbca24d9d9e09c28bae3407623122ea2c9ea073024a1cf906630382b99",
+      "policy_hash": "107ba171f9384952994ba46b011fe0fc6e4c98bd5015c1aeba35ae57b72f482d",
+      "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+    },
+    "state": "OPEN",
+    "draft": false,
+    "mergeable": true,
+    "retrieval_complete": true,
+    "file_manifest": [
+      {
+        "path": "src/example.py",
+        "blob_sha": "1111111111111111111111111111111111111111"
+      }
+    ],
+    "blocking_threads": [],
+    "scope_pass": true,
+    "dependency_compatibility_pass": true,
+    "ruleset_verified": true,
+    "specialist_domains": [],
+    "classification_complete": true,
+    "collector_attestation_id": "e56e2c39-2059-59ab-bd97-85d1a8f4e36f",
+    "evidence": [
+      "urn:awf:fixture:example-evidence"
+    ]
+  },
+  "runs": [
+    {
+      "schema_version": 3,
+      "record_id": "f7863f29-5e57-5982-86cb-3fafc7b42a34",
+      "created_at": "2026-09-09T12:00:00Z",
+      "producer_id": "fixture-controller",
+      "run_id": "0544646c-bcc8-5f67-a333-ad482bf06795",
+      "binding": {
+        "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+        "repository_id": 101,
+        "issue_id": "2001",
+        "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+        "contract_hash": "380c1cdbca24d9d9e09c28bae3407623122ea2c9ea073024a1cf906630382b99",
+        "policy_hash": "107ba171f9384952994ba46b011fe0fc6e4c98bd5015c1aeba35ae57b72f482d",
+        "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+      },
+      "role": "controller",
+      "context_id": "a9e896b6-e418-579d-91ec-3aee3e0c2e40",
+      "parent_run_id": null,
+      "model": "fixture-model",
+      "runtime_version": "fixture-runtime-1",
+      "instruction_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "permission_profile_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "capabilities": [
+        "propose_dispatch",
+        "propose_jira_transition",
+        "read_evidence",
+        "write_evidence"
+      ],
+      "status": "COMPLETE",
+      "attestation_evidence": [
+        "urn:awf:fixture:example-evidence"
+      ]
+    },
+    {
+      "schema_version": 3,
+      "record_id": "cce7a526-5b8c-5b81-9e7d-4d76750a0dc3",
+      "created_at": "2026-09-09T12:00:00Z",
+      "producer_id": "fixture-worker",
+      "run_id": "c31bb8d3-5974-5af0-9de8-706c9762e3a9",
+      "binding": {
+        "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+        "repository_id": 101,
+        "issue_id": "2001",
+        "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+        "contract_hash": "380c1cdbca24d9d9e09c28bae3407623122ea2c9ea073024a1cf906630382b99",
+        "policy_hash": "107ba171f9384952994ba46b011fe0fc6e4c98bd5015c1aeba35ae57b72f482d",
+        "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+      },
+      "role": "worker",
+      "context_id": "843010af-09c4-5910-b8f3-240047acfc4a",
+      "parent_run_id": null,
+      "model": "fixture-model",
+      "runtime_version": "fixture-runtime-1",
+      "instruction_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "permission_profile_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "capabilities": [
+        "read_evidence",
+        "run_isolated_tests",
+        "submit_worker_result",
+        "write_assigned_worktree"
+      ],
+      "status": "COMPLETE",
+      "attestation_evidence": [
+        "urn:awf:fixture:example-evidence"
+      ]
+    },
+    {
+      "schema_version": 3,
+      "record_id": "f4120b2d-e705-5234-b465-9994c90134bf",
+      "created_at": "2026-09-09T12:00:00Z",
+      "producer_id": "fixture-critic",
+      "run_id": "7d8465fe-d08b-53de-9c80-c839f0dad8fe",
+      "binding": {
+        "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+        "repository_id": 101,
+        "issue_id": "2001",
+        "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+        "contract_hash": "380c1cdbca24d9d9e09c28bae3407623122ea2c9ea073024a1cf906630382b99",
+        "policy_hash": "107ba171f9384952994ba46b011fe0fc6e4c98bd5015c1aeba35ae57b72f482d",
+        "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+      },
+      "role": "critic",
+      "context_id": "5d483b29-545c-5055-858d-5b6ab26b0853",
+      "parent_run_id": null,
+      "model": "fixture-model",
+      "runtime_version": "fixture-runtime-1",
+      "instruction_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "permission_profile_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "capabilities": [
+        "read_evidence",
+        "run_isolated_tests",
+        "submit_review"
+      ],
+      "status": "COMPLETE",
+      "attestation_evidence": [
+        "urn:awf:fixture:example-evidence"
+      ]
+    },
+    {
+      "schema_version": 3,
+      "record_id": "e56e2c39-2059-59ab-bd97-85d1a8f4e36f",
+      "created_at": "2026-09-09T12:00:00Z",
+      "producer_id": "fixture-collector",
+      "run_id": "8e9a288f-2dd8-5231-90ff-b338139b5de7",
+      "binding": {
+        "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+        "repository_id": 101,
+        "issue_id": "2001",
+        "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+        "contract_hash": "380c1cdbca24d9d9e09c28bae3407623122ea2c9ea073024a1cf906630382b99",
+        "policy_hash": "107ba171f9384952994ba46b011fe0fc6e4c98bd5015c1aeba35ae57b72f482d",
+        "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+      },
+      "role": "collector",
+      "context_id": "1b14cdf7-2e4f-5ec7-9d9a-072cc95ab34e",
+      "parent_run_id": null,
+      "model": "fixture-model",
+      "runtime_version": "fixture-runtime-1",
+      "instruction_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "permission_profile_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "capabilities": [
+        "read_external_state",
+        "write_evidence"
+      ],
+      "status": "COMPLETE",
+      "attestation_evidence": [
+        "urn:awf:fixture:example-evidence"
+      ]
+    }
+  ],
+  "prior_findings": [],
+  "evidence_registry": [
+    {
+      "uri": "urn:awf:fixture:example-evidence",
+      "sha256": "9701f32841a7f0e2a6c9496384a68061f61e01478768582917df9c7612f53e21",
+      "producer_id": "fixture-collector",
+      "retained_until": "2030-01-01T00:00:00Z"
+    }
+  ],
+  "provenance_mode": "offline_fixture"
+}

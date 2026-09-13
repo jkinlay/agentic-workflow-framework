@@ -1,19 +1,9 @@
-# Local machine and connector configuration
-.local/
-.agentic-workflow/local/
-*.local.yaml
-
-# Editor and operating-system files
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db
-
-# Temporary validation output
-.tmp/
-tmp/
-
-
-# Python bytecode from adapter tests
 __pycache__/
 *.pyc
+.venv/
+.pytest_cache/
+.awf-install-receipt.json
+.awf-install.lock
+catalog-location.json
+update-channel.json
+local-config.json

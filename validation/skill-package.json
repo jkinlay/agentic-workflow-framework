@@ -1,0 +1,18 @@
+{
+  "status": "PASS",
+  "version": "1.8.0",
+  "previous_version": "1.7.0",
+  "distribution_sha256": "c87bbd60d6599fb87360445062e0ece8dddd50c0484a1b5b97979b86ae4964c0",
+  "checks": [
+    "outer digest, exact distribution inventory and legal notices",
+    "installed 1.7 payload upgrade preflight",
+    "installed 1.7 payload upgrade in isolated directory",
+    "complete byte-identical backup and local settings preserved",
+    "idempotent verified rerun",
+    "installed skill prepares verified bundled release",
+    "installed skill locates verified source"
+  ],
+  "limitations": [
+    "Isolated Windows installation only; no live provider qualification."
+  ]
+}
