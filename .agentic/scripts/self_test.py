@@ -165,10 +165,6 @@ def main(argv=None):
         else:
             report['checks']['source_release_hygiene'] = 'NOT_APPLICABLE: installed runtime has no source generators'
         suite = unittest.defaultTestLoader.discover(str(ROOT / '.agentic/tests'))
-        external_tests = ROOT / '.agentic/external-review/claude/tests'
-        if external_tests.is_dir():
-            suite.addTests(unittest.TestLoader().discover(str(external_tests)))
-            report['tested_components'].append('offline_external_review_adapter')
         if (ROOT / 'MANIFEST.json').exists() and (ROOT / 'global/awf/tests').is_dir():
             suite.addTests(unittest.TestLoader().discover(str(ROOT / 'global/awf/tests')))
             report['tested_components'].append('local_release_discovery')

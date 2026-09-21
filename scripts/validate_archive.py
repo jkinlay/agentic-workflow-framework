@@ -151,7 +151,7 @@ def validate(argv=None):
                                       args.review_required_paths, args.expected_review_required_paths_sha256)
     except (ValidationError, OSError, ValueError, TypeError, RecursionError) as error:
         parser.error(str(error))
-    checks.append({'check':'Current external review covers verified source bytes','status':'PASS'})
+    checks.append({'check':'Current independent review covers verified source bytes','status':'PASS'})
     review_cli = review_arguments(args)
 
     def command(args, cwd=SOURCE, code=0, name=None, timeout=180, error_output=False):
@@ -206,12 +206,6 @@ def validate(argv=None):
     assert not (RUN/'missing-pins-report.json').exists()
     command(['scripts/self_test.py','--release','--report',RUN/'extracted-self-test.json',
              '--expected-manifest-sha256',MANIFEST,*review_cli], name='Fresh ZIP extraction self-test', timeout=selected_self_test_timeout)
-    external_verify = '.agentic/external-review/claude/verify.py'
-    command([external_verify,'unit','--out',RUN/'source-external-review-unit.json'],
-            name='Source external-review documented operator unit command',timeout=600)
-    source_external_unit = json.loads((RUN/'source-external-review-unit.json').read_text(encoding='utf-8'))
-    assert source_external_unit['pass'] is True and source_external_unit['tests_run'] > 0
-    assert source_external_unit['failures'] == [] and source_external_unit['errors'] == []
     workflow = '.agentic/scripts/workflow.py'
     capabilities = json.loads(command([workflow,'capabilities'],name='Capabilities CLI'))
     assert all(capabilities[k] is False for k in ['live_dispatch','live_jira_mutations','live_merge'])
@@ -349,11 +343,6 @@ def validate(argv=None):
     # the configured fixture; retain DEST's deliberate residue until mapping it
     # for the separate configuration/ownership/stream preservation upgrade.
     command(['.agentic/scripts/self_test.py','--report',RUN/'installed-self-test.json'],cwd=ADOPTION,name='Complete configured installed self-test',timeout=selected_self_test_timeout)
-    command([external_verify,'unit','--out',RUN/'installed-external-review-unit.json'],cwd=ADOPTION,
-            name='Installed external-review documented operator unit command',timeout=600)
-    installed_external_unit = json.loads((RUN/'installed-external-review-unit.json').read_text(encoding='utf-8'))
-    assert installed_external_unit['pass'] is True and installed_external_unit['tests_run'] == source_external_unit['tests_run']
-    assert installed_external_unit['failures'] == [] and installed_external_unit['errors'] == []
     command([status_cli,'report','.agentic/examples/project-status.json'],cwd=DEST,name='Installed project status Markdown CLI')
     cycle_markdown = command([status_cli,'cycle','.agentic/examples/project-cycle.json','--now','2026-09-11T10:00:00Z'],cwd=DEST,name='Installed whole-project continuation and authorization presentation')
     assert 'State: RUNNING' in cycle_markdown and 'Required decision:' in cycle_markdown and '\u2014' in cycle_markdown

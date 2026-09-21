@@ -56,4 +56,4 @@ ACTIVE requires independently trusted release bytes, observed adoption merge bou
 
 List unchanged project-owned instructions/CODEOWNERS, retained partial work/history, reviewed configuration changes, rollback location and remaining actions: TO_RECORD.
 
-Adoption does not enable Jira writes, enroll a PR, start a scheduler, qualify an external engine or grant merge authority. Live execution still needs configured CI/trusted owners, observed rules and the mode's qualification. Retain human merge acceptance and continue unrelated authorized streams while remaining actions are resolved.
+Adoption does not enable Jira writes, enroll a PR, start a scheduler, qualify a Codex review host or grant merge authority. Live execution still needs configured CI/trusted owners, observed rules and the mode's qualification. Retain human merge acceptance and continue unrelated authorized streams while remaining actions are resolved.

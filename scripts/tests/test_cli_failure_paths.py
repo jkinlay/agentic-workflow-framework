@@ -72,7 +72,7 @@ class CliFailurePathTests(unittest.TestCase):
 
     def archive_args(self, path, pin, work=None, report=None):
         return ['--archive', path, '--expected-zip-sha256', pin,
-                '--reviews',self.root/'external-review.json','--expected-reviews-sha256','0'*64,
+                '--reviews',self.root/'independent-review.json','--expected-reviews-sha256','0'*64,
                 '--workdir', work or self.root / 'unused-work', '--report', report or self.root / 'report.json']
 
     def test_each_entry_point_rejects_missing_required_arguments_without_writes(self):
@@ -282,24 +282,6 @@ class CliFailurePathTests(unittest.TestCase):
         self.assertEqual('PermissionError', report['report_write_error'])
         self.assertFalse((self.root / 'report.json').exists())
         self.assertTrue(Path(report['partial_log']).is_file())
-
-    def test_archive_custom_full_suite_timeout_does_not_extend_operator_stage(self):
-        archive, pin = self.archive()
-        args = self.archive_args(archive, pin) + ['--self-test-timeout-seconds', '1800']
-        def results(command, **kwargs):
-            if 'unit' in command:
-                raise subprocess.TimeoutExpired(command, 600, output=b'Partial unit evidence')
-            return self.synthetic_source_stage(command)
-        with mock.patch.object(validate_archive,'review_source',return_value={'status':'PASS','synthetic':True}), \
-                mock.patch.object(validate_archive.subprocess, 'run', side_effect=results) as run, \
-                redirect_stdout(io.StringIO()):
-            code = validate_archive.main(list(map(str,args)))
-        report = json.loads((self.root / 'report.json').read_bytes())
-        self.assertEqual((1, 'FAILED'), (code, report['status']))
-        self.assertEqual([1800, 180, 180, 1800, 600], [call.kwargs['timeout'] for call in run.call_args_list])
-        self.assertEqual('Source external-review documented operator unit command', report['stage'])
-        self.assertEqual(['PASS'] * 5 + ['FAILED'], [check['status'] for check in report['checks']])
-        self.assertFalse(report['validation_complete'])
 
     def synthetic_source_stage(self, command):
         """Advance non-target stages without recursive tests or acceptance writes."""

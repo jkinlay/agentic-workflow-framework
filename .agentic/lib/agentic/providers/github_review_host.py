@@ -104,7 +104,7 @@ class HostDriver:
         env = dict(os.environ)
         # Neither candidate Git overrides nor paid API auth is inherited.
         for key in list(env):
-            if key.startswith('GIT_') or key in {'CODEX_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY'}:
+            if key.startswith('GIT_') or key in {'CODEX_API_KEY','OPENAI_API_KEY'}:
                 env.pop(key)
         if name == 'codex':
             for key in ['GH_TOKEN','GITHUB_TOKEN']:

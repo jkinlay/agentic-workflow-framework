@@ -25,7 +25,7 @@ Read the [specification](.agentic/SPECIFICATION.md), then one guide:
 - [Follow a ticket from implementation to PR review and reconciliation](.agentic/docs/23-TICKET-LIFECYCLE.md).
 - [Route models and account for runs](.agentic/docs/27-MODEL-ROUTING.md).
 - [Operate the scheduled PR adapter](.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md).
-- [Qualify an external review engine](.agentic/docs/28-EXTERNAL-REVIEW.md).
+- [Run independent Codex reviews](.agentic/docs/28-EXTERNAL-REVIEW.md).
 
 Native defaults: three streams within ceiling six, one independent reviewer each; actual host capacity binds. [Operating configuration](.agentic/docs/29-OPERATING-CONFIGURATION.md) supports chat changes within governance. After CONFIGURED, show routes and offer keep, recommend from Epics, or custom. Recommendations require acceptance; caps require a PR. Running work retains reserved routes/hashes.
 
