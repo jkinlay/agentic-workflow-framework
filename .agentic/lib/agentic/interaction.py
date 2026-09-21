@@ -27,7 +27,7 @@ def publication_classification(target, publication=None, *, now=None):
     layer still enforces scope, platform permissions, secrets and mode gates.
     A copied/forged observation is not authenticated by this offline helper.
     """
-    from .repository_rules import assess_repository_rules, branch_name, repository_name
+    from .providers.github import assess_repository_rules, branch_name, repository_name
     result = {'classification': 'EXPLICIT', 'reason': 'No complete scoped publication observation supplied.',
               'execution_authority': False}
     if publication is None:

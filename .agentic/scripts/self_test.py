@@ -107,7 +107,7 @@ def main(argv=None):
             raise ValueError('Host loop must default to automation with explicit incomplete qualification')
         report['checks']['host_loop_output_schemas'] = 2
         report['checks']['default_automatic_policy_unqualified_until_enrolled'] = 'PASS'
-        from agentic.repository_rules import validate_ruleset_template
+        from agentic.providers.github import validate_ruleset_template
         validate_ruleset_template(load(ROOT / '.agentic/templates/awf-main-ruleset.json'))
         report['checks']['repository_ruleset_template'] = 'PASS'
         forms = list((ROOT / '.agentic/templates').glob('*.yaml')) + [

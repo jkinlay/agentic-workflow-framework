@@ -16,8 +16,10 @@ tests, CI, ownership, and release controls.
 - AWF records workflow evidence and validates policy; it does not become a
   replacement tracker, source-control system, release system, or secret store.
 - Provider-specific implementations—including GitHub, Jira, and external
-  review engines—remain behind explicit adapters. A disabled adapter performs
-  no external mutation.
+  review engines—remain behind explicit adapters. GitHub repository discovery
+  and rules observation live in `.agentic/lib/agentic/providers/github.py`;
+  the legacy module is an import-only compatibility facade. A disabled adapter
+  performs no external mutation.
 - A human retains authority for merge, release, publication, production or
   research promotion, changes that weaken governance, and cap increases.
 

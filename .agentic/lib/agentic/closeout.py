@@ -27,7 +27,7 @@ def git_environment():
 
 
 def git_command(repository, *args):
-    from .adoption_status import host_executable
+    from .providers.github_status import host_executable
     executable = host_executable("git", Path(repository))
     return [executable, "--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull,
             "-c", "core.quotePath=false", "-c", "protocol.file.allow=never", "-C", str(repository), *args]

@@ -8,23 +8,23 @@ from __future__ import annotations
 import copy
 import os
 from pathlib import Path
-import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
-from urllib.parse import urlsplit
 import uuid
 
 from . import ValidationError, VERSION
 from .canonical import loads, sha256
-from .repository_rules import validate_codeowner
+from .providers import github as github_provider
 from .safeio import Tree
 
 MAX_METADATA_BYTES = 1024 * 1024
-DISCOVERY_SECONDS = 15
-REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+\Z")
+validate_codeowner = github_provider.validate_codeowner
+repository_name = github_provider.repository_name
+origin_repository = github_provider.origin_repository
+_executable = github_provider._discovery_executable
+_read_command = github_provider._read_discovery_command
 
 
 def unresolved(value):
@@ -41,116 +41,10 @@ def project_uuid(value):
         return None
 
 
-def repository_name(value):
-    if not isinstance(value, str) or not REPOSITORY.fullmatch(value) or any(part in {".", ".."} for part in value.split("/")):
-        raise ValidationError("--github-repo must be one OWNER/REPOSITORY identity")
-    return value
-
-
-def origin_repository(value):
-    """Accept GitHub HTTPS or Git SSH forms without credential-bearing URLs."""
-    value = value.strip()
-    if value.startswith("git@github.com:"):
-        name = value.removeprefix("git@github.com:")
-    else:
-        parsed = urlsplit(value)
-        if parsed.hostname != "github.com" or parsed.query or parsed.fragment or parsed.password or parsed.port:
-            raise ValidationError("Origin is not a supported GitHub repository identity")
-        if not ((parsed.scheme == "https" and parsed.username is None) or
-                (parsed.scheme == "ssh" and parsed.username == "git")):
-            raise ValidationError("Origin is not a supported GitHub repository identity")
-        name = parsed.path.removeprefix("/")
-    return repository_name(name.removesuffix(".git"))
-
-
-def _executable(name, root):
-    found = shutil.which(name)
-    if not found:
-        return None
-    path = Path(found).resolve()
-    if path.is_relative_to(Path(root).resolve()) or path.suffix.lower() in {".cmd", ".bat", ".ps1"}:
-        return None
-    return str(path)
-
-
-def _read_command(command, root, deadline):
-    """Bound running-child time/output; startup remains an OS operation.
-
-    Never invoke a shell, project hook, pager, package manager or test command.
-    Raw command output/errors are not included in discovery failure reports.
-    """
-    if time.monotonic() >= deadline:
-        raise ValidationError("Metadata discovery deadline exhausted")
-    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
-    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0",
-               GIT_OPTIONAL_LOCKS="0", GH_PROMPT_DISABLED="1", GH_PAGER="cat")
-    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        process = subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL, stdout=out,
-                                   stderr=err, env=env, shell=False)
-        try:
-            while process.poll() is None:
-                if time.monotonic() >= deadline or max(os.fstat(out.fileno()).st_size, os.fstat(err.fileno()).st_size) > MAX_METADATA_BYTES:
-                    raise ValidationError("Metadata discovery exceeded its time or byte limit")
-                try:
-                    process.wait(timeout=min(.05, max(.001, deadline - time.monotonic())))
-                except subprocess.TimeoutExpired:
-                    pass
-            if process.returncode or time.monotonic() > deadline or os.fstat(err.fileno()).st_size > MAX_METADATA_BYTES:
-                raise ValidationError("Metadata discovery did not complete successfully")
-            out.seek(0)
-            raw = out.read(MAX_METADATA_BYTES + 1)
-            if len(raw) > MAX_METADATA_BYTES:
-                raise ValidationError("Metadata discovery exceeded its byte limit")
-            return raw.decode("utf-8", errors="strict").strip()
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=2)
-
-
 def discover_repository(root, repository=None):
-    result = {"repository": repository, "repository_id": None, "base_branch": None, "observations": [], "warnings": []}
-    root = Path(root)
-    if not root.is_dir():
-        return result
-    deadline = time.monotonic() + DISCOVERY_SECONDS
-    git = _executable("git", root)
-    if git:
-        def read_git(*args):
-            return _read_command([git, "-c", "core.hooksPath=" + os.devnull, "--no-pager", *args], root, deadline)
-        try:
-            top = read_git("rev-parse", "--show-toplevel")
-            if Path(top).resolve() != root.resolve():
-                raise ValidationError("Target is not the Git repository root; ancestor metadata is not target identity")
-            origin = origin_repository(read_git("remote", "get-url", "origin"))
-            if repository is None:
-                result["repository"] = origin
-                result["observations"].append("github.repository: git origin")
-            elif origin.casefold() != repository.casefold():
-                result["warnings"].append("Explicit/preserved repository differs from origin; origin branch metadata was not used")
-            if result["repository"].casefold() == origin.casefold():
-                branch = read_git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-                if branch.startswith("refs/remotes/origin/"):
-                    result["base_branch"] = branch.removeprefix("refs/remotes/origin/")
-                    result["observations"].append("github.base_branch: local origin/HEAD (may be stale)")
-        except (ValidationError, OSError, ValueError, UnicodeError, subprocess.SubprocessError):
-            result["warnings"].append("Git origin/default metadata unavailable; provide unresolved identity flags")
-    gh = _executable("gh", root)
-    if gh and result["repository"]:
-        try:
-            value = loads(_read_command([gh, "api", "--hostname", "github.com", "--method", "GET",
-                "repos/" + repository_name(result["repository"])], root, deadline))
-            if not isinstance(value, dict) or not isinstance(value.get("full_name"), str) or value["full_name"].casefold() != result["repository"].casefold():
-                raise ValidationError("Repository metadata identity mismatch")
-            if type(value.get("id")) is not int or value["id"] <= 0 or not isinstance(value.get("default_branch"), str) or not value["default_branch"].strip():
-                raise ValidationError("Repository metadata is incomplete")
-            result.update(repository_id=value["id"], base_branch=value["default_branch"])
-            result["observations"].append("github.repository_id/base_branch: read-only GitHub repository metadata")
-        except (ValidationError, OSError, ValueError, UnicodeError, subprocess.SubprocessError):
-            result["warnings"].append("GitHub metadata unavailable or inconsistent; no numeric repository identity was inferred")
-    elif result["repository"]:
-        result["warnings"].append("GitHub CLI unavailable; provide --repository-id if unresolved")
-    return result
+    """Compatibility entry point for the explicit GitHub discovery adapter."""
+    return github_provider.discover_repository(root, repository, executable=_executable,
+                                               read_command=_read_command)
 
 
 def detect_test_command(root):

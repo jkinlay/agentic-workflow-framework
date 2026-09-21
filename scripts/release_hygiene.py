@@ -13,6 +13,8 @@ from generate_prompts import render_prompts
 HISTORY = {'CHANGELOG.md', 'MANIFEST.md', 'MANIFEST.json',
            '17-RED-TEAM-DISPOSITION.md', '19-RELEASE-VALIDATION.md'}
 HISTORICAL_PILOT_DOCUMENTS = {
+    '.agentic/benchmarks/native/EVALUATION-v1.8.2.md',
+    '.agentic/benchmarks/native/EVALUATION-v1.8.3.md',
     '.agentic/benchmarks/native/EVALUATION-v1.8.4.md',
     '.agentic/benchmarks/native/RESULTS-v1.8.4.md',
     '.agentic/benchmarks/native/EVALUATION-v1.8.7.md',

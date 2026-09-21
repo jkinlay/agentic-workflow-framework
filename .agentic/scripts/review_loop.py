@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT / '.agentic/lib'))
 from agentic.installer import verify_installed
 from agentic.review_loop import LoopStore, enroll, pause, resume, tick, require
-from agentic.review_host import HostDriver, load_config
+from agentic.providers.github_review_host import HostDriver, load_config
 from agentic.interaction import loop_next_step, next_step, render_markdown, rejected_next_step
 
 

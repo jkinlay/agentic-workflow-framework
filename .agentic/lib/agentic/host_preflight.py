@@ -20,7 +20,7 @@ def row(check, status, detail, remedy=""):
 def run(args, cwd=None):
     """Trusted-host executables only: never a file inside the checkout or a script wrapper."""
     from . import ValidationError
-    from .adoption_status import host_executable
+    from .providers.github_status import host_executable
     try:
         executable = host_executable(args[0], Path(cwd or os.getcwd()))
         env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}

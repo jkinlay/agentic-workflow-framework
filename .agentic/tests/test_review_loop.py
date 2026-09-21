@@ -13,7 +13,7 @@ from unittest.mock import patch
 from agentic import ValidationError
 from agentic.canonical import sha256
 from agentic.review_loop import LoopStore, enroll, pause, resume, tick, validate_review
-from agentic.review_host import HostDriver, load_config, protected, safe_path
+from agentic.providers.github_review_host import HostDriver, load_config, protected, safe_path
 
 ROOT = Path(__file__).resolve().parents[2]
 CANDIDATE = {'repository_id':12,'pr':7,'head':'a'*40,'base':'b'*40,'head_ref':'codex/test','base_ref':'main'}

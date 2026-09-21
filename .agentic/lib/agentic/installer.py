@@ -11,7 +11,7 @@ import uuid
 from . import ValidationError, VERSION
 from .canonical import load_yaml, loads, now_text, sha256
 from .safeio import Tree, relative_parts
-from .repository_rules import load_observation_report, validate_codeowner
+from .providers.github import load_observation_report, validate_codeowner
 
 MANIFEST = "MANIFEST.json"
 LOCK = ".agentic-install/lock"

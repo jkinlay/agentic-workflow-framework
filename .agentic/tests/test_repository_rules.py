@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic import ValidationError
-from agentic import repository_rules as rules
+from agentic.providers import github as rules
 
 NOW = "2026-09-14T12:00:00Z"
 REPOSITORY = "fixture/project"

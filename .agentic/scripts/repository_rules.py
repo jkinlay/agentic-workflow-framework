@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic import ValidationError
 from agentic.canonical import sha256
 from agentic.installer import verify_installed
-from agentic.repository_rules import (MAX_TOTAL_BYTES, assess_repository_rules, load_observation_report,
+from agentic.providers.github import (MAX_TOTAL_BYTES, assess_repository_rules, load_observation_report,
                                       observe_repository_rules, synthetic_observation)
 from agentic.safeio import Tree
 

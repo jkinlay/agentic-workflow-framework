@@ -144,7 +144,7 @@ def main(argv=None, default_root=None):
             print(json.dumps({"digest_sha256": digest_sha256(body), "event_type": "evidence_comment", "execution_authority": False}, indent=2), file=sys.stderr)
             return 0
         elif args.command == "status":
-            from .adoption_status import project_status, render_status
+            from .providers.github_status import project_status, render_status
             output = project_status(root, adoption_pr=args.adoption_pr, gh=args.gh,
                                     release_source=args.release_source, expected_manifest_sha256=args.expected_manifest_sha256)
             print(json.dumps(output, indent=2, ensure_ascii=False) if args.json else render_status(output))

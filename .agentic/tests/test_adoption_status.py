@@ -18,7 +18,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION, ValidationError
-from agentic import adoption_status as status
+from agentic.providers import github_status as status
 from agentic.canonical import load, sha256
 from agentic.installer import CONFIG, INSTALLED, PROVENANCE, json_bytes
 from agentic.lifecycle import definition
