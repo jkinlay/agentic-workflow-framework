@@ -15,6 +15,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION
+from release_hygiene import word_budget
 LINE = VERSION.removesuffix('.0')
 
 
@@ -50,10 +51,14 @@ def main():
     skill = args.skill_source.resolve(strict=True)
     publisher = json.loads((ROOT / "PUBLISHER.json").read_text(encoding="utf-8"))
     publisher_name = publisher["name"]
-    skill_words = sum(len(p.read_text(encoding='utf-8').split()) for p in skill.rglob('*.md'))
-    for document in skill.rglob('*.md'):
-        limit = 600 if document.name == 'SKILL.md' else 800
-        if len(document.read_text(encoding='utf-8').split()) > limit:
+    # MANIFEST.md is generated checksum inventory, not portable prose.  Its
+    # length grows with the release and must not be subject to the user-facing
+    # documentation budget.
+    documents = [p for p in skill.rglob('*.md') if p.name != 'MANIFEST.md']
+    skill_words = sum(len(p.read_text(encoding='utf-8').split()) for p in documents)
+    for document in documents:
+        limit = 600 if document.name == 'SKILL.md' else word_budget(document.relative_to(skill))[0]
+        if limit is not None and len(document.read_text(encoding='utf-8').split()) > limit:
             parser.error(f'Portable skill document exceeds {limit} words: {document.relative_to(skill)}')
     output = args.output_dir.absolute()
     if output.is_relative_to(ROOT) or output.is_relative_to(skill) or output.exists():

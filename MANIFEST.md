@@ -2,7 +2,7 @@
 
 300 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `a67e6f6a652b461735b275eac79ab9b32c0934c4bd5454baac776af6e0671f75`
+MANIFEST.json SHA-256: `4d7e07df0bf24c133ffcf28207cae47ee44ef723ecec9719e07f9707438f463b`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -286,7 +286,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `requirements.txt` | `42f89dd8f1c14da4d2cf3ef52ac3513592bc0b21efa709eead6cf138ba4bd92d` |
 | `scripts/bootstrap_project.py` | `455ec16d7c8496e0ef62d42f709ffaff3a20c9a2818444926d60d26dd03f0046` |
 | `scripts/build_release.py` | `7350f69890fb0c5b18021fba4e8ac9639793dc00b4dfbb775754688211650153` |
-| `scripts/build_skill_distribution.py` | `d6603f727efe74c4ba70df7482fcd2f36af975a18abb5c245d4568ed8cd86e2d` |
+| `scripts/build_skill_distribution.py` | `9f844e1614fc74a26021af9b878f3e655322660e9023f484065e7d8fd4292fc3` |
 | `scripts/generate_contracts.py` | `cb00d9f14a688adbe1cc666900798f8b834ba6c33be7b20d0c8c405b9ae1e9fb` |
 | `scripts/generate_examples.py` | `c8087c2f203c9fa9561a5463903f6c133bdf35276772fddf5de3cde75fceb639` |
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
