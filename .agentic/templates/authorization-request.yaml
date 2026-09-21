@@ -1,0 +1,42 @@
+{
+  "template_for": "authorization-request",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "record_id": "00000000-0000-0000-0000-000000000000",
+    "created_at": "1970-01-01T00:00:00Z",
+    "producer_id": "UNFILLED",
+    "run_id": "00000000-0000-0000-0000-000000000000",
+    "binding": {
+      "project_id": "00000000-0000-0000-0000-000000000000",
+      "repository_id": 1,
+      "issue_id": "UNFILLED",
+      "requirements_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "candidate_id": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "request_id": "00000000-0000-0000-0000-000000000000",
+    "gate_id": "00000000-0000-0000-0000-000000000000",
+    "gate_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "candidate": {
+      "host": "urn:awf:UNFILLED",
+      "repository_id": 1,
+      "repository": "UNFILLED",
+      "pr_number": 1,
+      "target_base_branch": "UNFILLED",
+      "head_sha": "0000000000000000000000000000000000000000",
+      "target_base_sha": "0000000000000000000000000000000000000000",
+      "merge_base_sha": "0000000000000000000000000000000000000000",
+      "head_tree_sha": "0000000000000000000000000000000000000000",
+      "integration_tree_sha": "0000000000000000000000000000000000000000",
+      "tested_merge_sha": null,
+      "diff_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "merge_method": "merge"
+    },
+    "expires_at": "1970-01-01T00:00:00Z",
+    "expected_text": "UNFILLED",
+    "decision": "REQUEST_ONLY"
+  }
+}

@@ -1,0 +1,27 @@
+# Adopt 1.8.7 operating configuration and routine flow
+
+Preserve the accepted project, review/approval history, Jira state, ownership and accounting. Use the [adoption guide](.agentic/docs/20-NEW-PROJECT-SETUP.md) for independently verified release pins, an isolated adoption branch/worktree and backed-up cross-version installation. Same-version `--mode upgrade` remains maintenance only. Reconcile `template.expected_workflow_version` to the new runtime; do not reset protected state or silently replace project choices. No project is upgraded merely by installing the skill.
+
+Bootstrap must still run the actual installed `verify-installation` and `validate-config`, retaining exits, outputs and source/policy bindings. Report the installed `status` line/next action in the adoption PR. CONFIGURED/ACTIVE concern adopted files and accepted evidence, not agent dispatch or adapter enablement. Missing/unobserved rules, CI or trusted owners remain local-adoption warnings; applicable live prerequisites remain mandatory.
+
+## Resume the ordinary path
+
+Before dispatch, preserve existing root `OPERATING_CONFIG.yaml` or initialize the new Balanced three-stream default through bootstrap. The new template's protected writer ceiling is six; adopting projects retain their reviewed limits. A lower ceiling cannot silently clamp the default: resolve the exact operating refusal. New governance omits fixed `independent_reviewers.count`; an existing explicit count remains binding and must agree with operating count. Remove/update it only through the reviewed adoption PR. Preserve `allocation: one_per_stream`.
+
+Run installed `operating show`, paste its table into the PR, and offer keep, recommend from observed Epics, or custom. [The operating guide](.agentic/docs/29-OPERATING-CONFIGURATION.md) describes chat changes, pins, floors, verbatim audit and transactional recovery. Running reservations retain their route/hash; reductions drain surplus streams. Legacy absent hashes remain unobserved. An operating change leaves policy hash and accepted governance unchanged; ACTIVE still needs its existing independent acceptance proof.
+
+Read [TICKET-LIFECYCLE.md](.agentic/docs/23-TICKET-LIFECYCLE.md), now linked from the entrypoints/prompts. It renders the existing machine states rather than inventing Jira transitions.
+
+1. On worker COMPLETE, reconcile the actual branch/ownership, publish the scoped feature branch and open a draft PR against `github.base_branch` through the assigned publisher. Record `branch_pushed`, `pr_exists` and the observed candidate. Recover an existing PR instead of opening duplicates after uncertainty.
+2. Current validation and requirements permit mark-ready; observe `draft_cleared`, then dispatch the critic against the observed PR head. A worktree-only handoff is not READY_FOR_CRITIC. Amend the same PR, register the observed new head and re-review.
+3. READY_FOR_OWNER_AUTHORIZATION requires critic, applicable specialists and final gate. Review-ready and worker COMPLETE never mean human merge authorization.
+4. Confirm the actual merge/candidate before Jira reconciliation. Only an existing explicit authorization permits one ticket transition to `status_map.done`; never transition Epics or reserved non-done mappings. If already Done, retain the observation without another write.
+5. Read back every Jira write. On mismatch or unknown outcome, retain requested/observed status and actor/time only when observed (otherwise unknown), stop further Jira writes and report suspected external automation conflict. Never reissue; continue unaffected streams and read-only investigation. Do not change Jira automation/workflows as an inferred repair. Disabled Jira permits no writes or fabricated Done evidence.
+
+Conditional routine publication requires the accepted project configuration, exact repository/numeric-ID/default/feature-ref binding and fresh matching live APPLIED raw rules evidence. Only non-force/non-delete feature publication qualifies. The helper classifies presentation; it does not grant authority or bypass scope, platform permissions, secret-repository controls or existing adapter prerequisites. Retain actual authorization across turns; when missing, identify the concrete action/owner rather than repeatedly asking for routine permission. An APPLIED baseline does not authenticate reviewers or qualify a live engine.
+
+## Owners and evidence
+
+The requested `@maintainer` default is preserved. Supply `--codeowner '@handle'` or `'@organization/team'` for new ownership/specialist entries; existing accepted choices remain. Verify actual reviewer access, independence and eligible non-author review. A configured identity or CODEOWNERS file does not attest these properties, and this patch adds no runtime eligibility enforcement. Required codeowner approval can deadlock a sole-author repository; retain the documented owner policy.
+
+Historical protocols, responses and grades remain unchanged. Prospective routine-flow cases do not retrospectively improve prior measurements; offline regression results are not model or hosted-action evidence. New model execution needs fresh applicable authorization. Retain failed/incomplete release runs and current review pins. See [disposition](RED-TEAM-DISPOSITION-v1.8.7.md), external release validation, [native coordination](.agentic/docs/24-STREAM-STARTUP.md) and [scheduled review](.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md).

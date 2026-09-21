@@ -1,0 +1,20 @@
+{
+  "template_for": "project-state",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "project_id": "00000000-0000-0000-0000-000000000000",
+    "refreshed_at": "1970-01-01T00:00:00Z",
+    "sequence": 0,
+    "event_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "control_mode": "PAUSED",
+    "control_generation": 1,
+    "tickets": [],
+    "pending_operation_ids": [],
+    "unknown_operation_ids": [],
+    "active_lease_ids": [],
+    "owner_actions": [],
+    "authoritative": false
+  }
+}

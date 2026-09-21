@@ -1,0 +1,556 @@
+"""Offline metadata/configuration and installed-CLI bootstrap regressions."""
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+import uuid
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+from agentic import ValidationError, VERSION
+from agentic import adoption_config as adoption
+from agentic import installer
+from agentic.canonical import load, sha256
+from agentic.installer import CONFIG, INSTALLED, GITIGNORE, GITIGNORE_TEMPLATE, install, json_bytes, merge_operating_ignores, verify_installed
+from agentic.contracts import Contracts
+from agentic.policy import inspect_config
+
+
+def template():
+    # Installed PROJECT_CONFIG.yaml is project-owned and may already be mapped.
+    return load(ROOT / ".agentic/examples/unconfigured-project.yaml")
+
+
+def explicit():
+    return {"repository": "fixture/widget", "repository_id": 54321, "base_branch": "trunk", "test_command": "pytest"}
+
+
+class ConfigurationDerivationTests(unittest.TestCase):
+    def test_complete_new_configuration_has_real_uuid_no_invented_owners(self):
+        value = adoption.prepare_config(template(), overrides=explicit(), discover=False, codeowner="@custom")
+        config = value["config"]
+        self.assertEqual(uuid.UUID(config["project"]["id"]).version, 4)
+        self.assertEqual(config["project"]["name"], "widget")
+        self.assertEqual(config["project"]["short_name"], "widget")
+        self.assertEqual(config["jira"]["enabled"], False)
+        self.assertIsNone(config["jira"]["site"])
+        self.assertEqual(config["validation"]["required_ci_checks"], [])
+        self.assertEqual(config["merge_gate"]["trusted_owner_ids"], [])
+        self.assertEqual({v["reviewer_identity"] for v in config["specialist_reviews"].values()}, {"@custom"})
+        report = inspect_config(config, load(ROOT / ".agentic/workflow.yaml"), Contracts(ROOT / ".agentic/schemas"))
+        self.assertEqual(report["status"], "ACCEPTED", report)
+        self.assertEqual(report["ci_gate"], "NOT_CONFIGURED")
+
+    def test_new_projects_never_reuse_a_source_template_uuid(self):
+        source = template()
+        source_id = str(uuid.uuid4())
+        source["project"]["id"] = source_id
+        first = adoption.prepare_config(source, overrides=explicit(), discover=False)["project_id"]
+        second = adoption.prepare_config(source, overrides=explicit(), discover=False)["project_id"]
+        self.assertEqual(len({source_id, first, second}), 3)
+        self.assertEqual(uuid.UUID(first).version, 4)
+        self.assertEqual(uuid.UUID(second).version, 4)
+        self.assertEqual(source["project"]["id"], source_id)
+
+    def test_no_gh_leaves_only_repository_id_when_origin_head_and_tests_exist(self):
+        metadata = {"repository": "fixture/widget", "repository_id": None, "base_branch": "trunk"}
+        with patch.object(adoption, "discover_repository", return_value=metadata), patch.object(adoption, "detect_test_command", return_value="pytest"):
+            config = adoption.prepare_config(template(), project_root=ROOT)["config"]
+        report = inspect_config(config, load(ROOT / ".agentic/workflow.yaml"), Contracts(ROOT / ".agentic/schemas"))
+        self.assertEqual({item["path"] for item in report["unresolved"]}, {"$.github.repository_id"})
+        self.assertEqual(report["unresolved"][0]["flag"], "--repository-id")
+
+    def test_unknown_branch_is_not_assumed_main(self):
+        config = adoption.prepare_config(template(), overrides={"repository": "fixture/widget"}, discover=False)["config"]
+        self.assertIsNone(config["github"]["repository_id"])
+        self.assertIsNone(config["github"]["base_branch"])
+        self.assertEqual(config["validation"]["commands"], [])
+
+    def test_malformed_existing_policy_is_preserved_with_precise_residue(self):
+        original = template()
+        original["validation"] = None
+        value = adoption.prepare_config(template(), existing=original, discover=False)
+        self.assertEqual(value["config"], original)
+        report = inspect_config(value["config"], load(ROOT / ".agentic/workflow.yaml"), Contracts(ROOT / ".agentic/schemas"))
+        self.assertEqual(report["status"], "REJECTED")
+        self.assertIn("$.validation", {item["path"] for item in report["unresolved"]})
+
+    def test_unbound_legacy_source_example_repository_id_is_not_preserved(self):
+        original = template()
+        original["github"].update(repository="CHANGE_ME/CHANGE_ME", repository_id=101)
+        value = adoption.prepare_config(template(), existing=original, overrides={"repository": "fixture/widget"}, discover=False)
+        self.assertIsNone(value["config"]["github"]["repository_id"])
+
+    def test_existing_choices_scope_and_uuid_are_preserved(self):
+        original = adoption.prepare_config(template(), overrides=explicit(), discover=False)["config"]
+        original["jira"].update(enabled=True, site="https://fixture.atlassian.net", project_key="FIX")
+        original["jira"]["scope"]["labels_any"] = ["approved-subset"]
+        original["execution"]["max_parallel_tickets"] = 2
+        original["project"]["name"] = "Reviewed name"
+        with patch.object(adoption, "discover_repository", side_effect=AssertionError("accepted identities need no lookup")):
+            value = adoption.prepare_config(template(), existing=original, receipt_project_id=original["project"]["id"],
+                overrides={**explicit(), "name": "Other", "jira_key": "OTHER"}, project_root=ROOT)
+        self.assertEqual(value["config"], original)
+        self.assertTrue(value["warnings"])
+
+    def test_receipt_uuid_mismatch_rejected(self):
+        original = adoption.prepare_config(template(), overrides=explicit(), discover=False)["config"]
+        with self.assertRaisesRegex(ValidationError, "UUID disagrees"):
+            adoption.prepare_config(template(), existing=original, receipt_project_id=str(uuid.uuid4()))
+
+    def test_jira_partial_pair_reports_exact_missing_path_without_scope_broadening(self):
+        config = adoption.prepare_config(template(), overrides={**explicit(), "jira_site": "https://fixture.atlassian.net"}, discover=False)["config"]
+        self.assertTrue(config["jira"]["enabled"])
+        self.assertFalse(config["jira"]["scope"]["allow_entire_project"])
+        report = inspect_config(config, load(ROOT / ".agentic/workflow.yaml"), Contracts(ROOT / ".agentic/schemas"))
+        self.assertIn("$.jira.project_key", {item["path"] for item in report["unresolved"]})
+
+    def test_explicit_id_disagrees_with_observation(self):
+        with patch.object(adoption, "discover_repository", return_value={"repository_id": 99999, "base_branch": "trunk"}):
+            with self.assertRaisesRegex(ValidationError, "conflicts with observed"):
+                adoption.prepare_config(template(), project_root=ROOT, overrides={key: value for key, value in explicit().items() if key != "base_branch"})
+
+    def test_complete_explicit_metadata_does_not_query_network(self):
+        with patch.object(adoption, "discover_repository", side_effect=AssertionError("no discovery needed")):
+            value = adoption.prepare_config(template(), project_root=ROOT, overrides=explicit())
+        self.assertEqual(value["config"]["github"]["repository_id"], 54321)
+
+    def test_preserved_id_disagrees_with_later_metadata(self):
+        original = adoption.prepare_config(template(), overrides=explicit(), discover=False)["config"]
+        original["github"]["base_branch"] = None
+        with patch.object(adoption, "discover_repository", return_value={"repository_id": 99999, "base_branch": "trunk"}):
+            with self.assertRaisesRegex(ValidationError, "Preserved repository_id conflicts"):
+                adoption.prepare_config(template(), existing=original, project_root=ROOT)
+
+    def test_origin_url_guards(self):
+        for value in ("https://github.com/fixture/widget.git", "git@github.com:fixture/widget.git", "ssh://git@github.com/fixture/widget.git"):
+            self.assertEqual(adoption.origin_repository(value), "fixture/widget")
+        for value in ("https://secret@github.com/fixture/widget", "https://github.com/fixture/widget?token=secret", "https://evil.invalid/fixture/widget", "git@github.com:../widget"):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                adoption.origin_repository(value)
+
+    def test_metadata_commands_are_read_only_and_identity_bound(self):
+        calls = []
+        def command(argv, root, deadline):
+            calls.append(argv)
+            if "rev-parse" in argv:
+                return str(root)
+            if "get-url" in argv:
+                return "git@github.com:fixture/widget.git"
+            if "symbolic-ref" in argv:
+                return "refs/remotes/origin/trunk"
+            return '{"id":54321,"full_name":"fixture/widget","default_branch":"trunk"}'
+        with patch.object(adoption, "_executable", side_effect=lambda name, root: name), patch.object(adoption, "_read_command", side_effect=command):
+            observed = adoption.discover_repository(ROOT)
+        self.assertEqual(observed["repository_id"], 54321)
+        self.assertEqual(len(calls), 4)
+        self.assertIn("GET", calls[-1])
+        self.assertFalse(any("test" in call for call in calls))
+
+    def test_ancestor_repository_metadata_never_becomes_target_identity(self):
+        with patch.object(adoption, "_executable", side_effect=lambda name, root: name), patch.object(adoption, "_read_command", return_value=str(ROOT.parent)) as read:
+            observed = adoption.discover_repository(ROOT)
+        self.assertIsNone(observed["repository"])
+        self.assertIsNone(observed["repository_id"])
+        self.assertIsNone(observed["base_branch"])
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(read.call_args.args[0][-2:], ["rev-parse", "--show-toplevel"])
+
+    def test_wrong_gh_identity_is_not_assigned(self):
+        with patch.object(adoption, "_executable", side_effect=lambda name, root: "gh" if name == "gh" else None), patch.object(adoption, "_read_command", return_value='{"id":1,"full_name":"other/repo","default_branch":"main"}'):
+            observed = adoption.discover_repository(ROOT, "fixture/widget")
+        self.assertIsNone(observed["repository_id"])
+        self.assertTrue(observed["warnings"])
+
+    def test_static_test_detection_prefers_explicit_package_script(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "tests").mkdir()
+            (root / "package.json").write_text('{"scripts":{"test":"would-run-a-side-effect"}}')
+            with patch.object(subprocess, "Popen", side_effect=AssertionError("tests must not execute")):
+                self.assertEqual(adoption.detect_test_command(root), "npm test")
+                (root / "package.json").unlink()
+                self.assertEqual(adoption.detect_test_command(root), "pytest")
+
+
+class OperatingAdoptionProposalTests(unittest.TestCase):
+    def legacy(self):
+        config = adoption.prepare_config(template(), overrides=explicit(), discover=False)["config"]
+        config["execution"]["max_parallel_tickets"] = 3
+        config["execution"]["independent_reviewers"] = {"allocation": "one_per_stream", "count": 3}
+        return config
+
+    def test_ordinary_adoption_offers_exact_changes_without_applying(self):
+        original = self.legacy()
+        proposed, report = adoption.operating_capacity_proposal(original, existing=True)
+        self.assertEqual(proposed, original)
+        self.assertEqual(report["status"], "OFFERED")
+        self.assertEqual([(row["current"], row["proposed"]) for row in report["values"]],
+                         [(3, 6), (3, "derived: one per operating stream")])
+        self.assertFalse(report["staged_locally"])
+        self.assertFalse(report["execution_authority"])
+        self.assertIn("--propose-operating-capacity", report["adoption_pr_section"])
+
+    def test_explicit_choice_changes_only_two_governance_fields(self):
+        original = self.legacy()
+        proposed, report = adoption.operating_capacity_proposal(original, existing=True, requested=True)
+        self.assertEqual(report["status"], "STAGED_FOR_REVIEW")
+        self.assertEqual(proposed["execution"]["max_parallel_tickets"], 6)
+        self.assertNotIn("count", proposed["execution"]["independent_reviewers"])
+        proposed["execution"]["max_parallel_tickets"] = 3
+        proposed["execution"]["independent_reviewers"]["count"] = 3
+        self.assertEqual(proposed, original)
+
+    def test_higher_accepted_ceiling_and_other_policy_are_preserved(self):
+        original = self.legacy()
+        original["execution"]["max_parallel_tickets"] = 9
+        proposed, report = adoption.operating_capacity_proposal(original, existing=True, requested=True)
+        self.assertEqual(proposed["execution"]["max_parallel_tickets"], 9)
+        self.assertEqual(len(report["changes"]), 1)
+        self.assertEqual(report["changes"][0]["action"], "remove")
+
+    def test_current_default_needs_no_change_and_new_project_flag_refuses(self):
+        original = template()
+        proposed, report = adoption.operating_capacity_proposal(original, existing=True, requested=True)
+        self.assertEqual(proposed, original)
+        self.assertEqual(report["status"], "NOT_NEEDED")
+        self.assertFalse(report["staged_locally"])
+        with self.assertRaisesRegex(ValidationError, "existing project governance"):
+            adoption.operating_capacity_proposal(original, existing=False, requested=True)
+
+    def test_invalid_governance_is_not_repaired_by_proposal(self):
+        for changes in ({"max_parallel_tickets": True}, {"independent_reviewers": {"count": "3"}}):
+            original = self.legacy()
+            original["execution"].update(changes)
+            proposed, report = adoption.operating_capacity_proposal(original, existing=True)
+            self.assertEqual(proposed, original)
+            self.assertEqual(report["status"], "UNAVAILABLE")
+            with self.assertRaisesRegex(ValidationError, r"\$\.execution"):
+                adoption.operating_capacity_proposal(original, existing=True, requested=True)
+
+    def test_ignore_merge_preserves_raw_bytes_and_appends_after_negations(self):
+        block = (ROOT / GITIGNORE_TEMPLATE).read_bytes()
+        for original in (b"project-output/\r\n!*.tmp", b"# Owner policy\n", b""):
+            merged = merge_operating_ignores(original, block)
+            self.assertTrue(merged.startswith(original))
+            self.assertTrue(merged.endswith(block))
+            self.assertEqual(merge_operating_ignores(merged, block), merged)
+        self.assertEqual(merge_operating_ignores(None, block), block)
+        self.assertNotIn(b".agentic-state/\n", block)
+        self.assertNotIn(b".agentic-state/operating/changes/\n", block)
+
+
+class PostInstallCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.installation = {"status": "INSTALLED", "source_manifest_sha256": "a" * 64,
+                             "configuration": {"status": "ACCEPTED", "policy_sha256": "b" * 64},
+                             "operating": {"status": "ACCEPTED", "hash": "d" * 64}}
+        preflight = patch.object(adoption, "_verify_import_surface")
+        preflight.start()
+        self.addCleanup(preflight.stop)
+
+    def response(self, output, code=0):
+        return {"command": [], "exit_code": code, "output": output, "diagnostic": None}
+
+    def test_both_actual_command_vectors_and_policy_binding(self):
+        responses = [self.response({"integrity_valid": True, "source_manifest_sha256": "a" * 64}),
+                     self.response({"status": "ACCEPTED", "policy_sha256": "b" * 64, "unresolved": [],
+                                    "operating": {"status": "ACCEPTED", "hash": "d" * 64}})]
+        with patch.object(adoption, "_post_command", side_effect=responses) as run:
+            result = adoption.post_install_checks(ROOT, self.installation)
+        self.assertEqual(result["status"], "CONFIGURED")
+        self.assertEqual([item.args[0][-1] for item in run.call_args_list], ["verify-installation", "validate-config"])
+        for item in run.call_args_list:
+            self.assertEqual(item.args[0][:3], [sys.executable, "-B", "-I"])
+            self.assertTrue(Path(item.args[0][3]).is_absolute())
+        self.assertFalse(result["active"])
+
+    def test_missing_or_mismatched_operating_check_cannot_report_configured(self):
+        for operating in ({}, {"status": "REJECTED", "hash": "d" * 64},
+                          {"status": "ACCEPTED", "hash": "e" * 64}):
+            with self.subTest(operating=operating), patch.object(adoption, "_post_command", side_effect=[
+                    self.response({"integrity_valid": True, "source_manifest_sha256": "a" * 64}),
+                    self.response({"status": "ACCEPTED", "policy_sha256": "b" * 64, "unresolved": [], "operating": operating})]):
+                self.assertEqual(adoption.post_install_checks(ROOT, self.installation)["status"], "INSTALLED_UNCONFIGURED")
+
+    def test_exit_zero_wrong_integrity_and_hash_never_configured(self):
+        for output in ({"integrity_valid": "true"}, {"integrity_valid": True}, {"integrity_valid": True, "source_manifest_sha256": "c" * 64}, {}):
+            with self.subTest(output=output), patch.object(adoption, "_post_command", side_effect=[self.response(output), self.response({"status": "ACCEPTED", "policy_sha256": "b" * 64})]) as run:
+                result = adoption.post_install_checks(ROOT, self.installation)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(result["status"], "INSTALLATION_VERIFICATION_FAILED")
+            self.assertFalse(result["installed"])
+
+    def test_rejected_or_mismatched_policy_remains_installed_unconfigured(self):
+        for response in (self.response({"status": "REJECTED"}, 2), self.response({"status": "ACCEPTED", "policy_sha256": "c" * 64}), self.response({"status": "ACCEPTED"}, 1)):
+            with patch.object(adoption, "_post_command", side_effect=[self.response({"integrity_valid": True, "source_manifest_sha256": "a" * 64}), response]):
+                self.assertEqual(adoption.post_install_checks(ROOT, self.installation)["status"], "INSTALLED_UNCONFIGURED")
+
+    def test_actual_rejected_configuration_residue_replaces_stale_inspection(self):
+        rejected = {"status": "REJECTED", "unresolved": [{"path": "$.validation.commands", "reason": "missing", "flag": "--test-command"}], "policy_sha256": None}
+        with patch.object(adoption, "_post_command", side_effect=[self.response({"integrity_valid": True, "source_manifest_sha256": "a" * 64}), self.response(rejected, 2)]):
+            result = adoption.post_install_checks(ROOT, self.installation)
+        self.assertEqual(result["configuration"]["status"], "REJECTED")
+        self.assertEqual(result["configuration"]["unresolved"], rejected["unresolved"])
+        self.assertIn("$.validation.commands", result["next_action"])
+        self.assertEqual(result["pre_install_configuration"]["status"], "ACCEPTED")
+
+    def test_missing_child_output_names_runtime_correction_not_empty_paths(self):
+        with patch.object(adoption, "_post_command", side_effect=[self.response({"integrity_valid": True, "source_manifest_sha256": "a" * 64}), self.response(None, 3)]):
+            result = adoption.post_install_checks(ROOT, self.installation)
+        self.assertEqual(result["configuration"]["status"], "UNOBSERVED")
+        self.assertIn("runtime/dependencies", result["next_action"])
+
+    def test_real_child_json_and_rejection_stderr_are_parsed(self):
+        for text, code, stream in (("{\"status\":\"ACCEPTED\"}", 0, "stdout"), ("{\"status\":\"REJECTED\"}", 2, "stderr")):
+            script = "import sys; print(" + repr(text) + ",file=sys." + stream + ");sys.exit(" + str(code) + ")"
+            result = adoption._post_command([sys.executable, "-B", "-c", script], ROOT)
+            self.assertEqual(result["exit_code"], code)
+            self.assertEqual(result["output"]["status"], "ACCEPTED" if code == 0 else "REJECTED")
+            self.assertEqual(result["output_stream"], stream)
+
+    def test_malformed_duplicate_oversized_and_timeout_responses_are_bounded(self):
+        for script in ("print('not JSON')", "print('{\"a\":1,\"a\":2}')", "print('x'*1048578)", "import time;time.sleep(5)"):
+            result = adoption._post_command([sys.executable, "-B", "-c", script], ROOT, timeout=.2)
+            self.assertIsNone(result["output"])
+            self.assertIsNotNone(result["diagnostic"])
+
+
+class ConfiguredInstallerTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="awf-config-")
+        self.addCleanup(self.temporary.cleanup)
+        self.base = Path(self.temporary.name)
+        self.source, self.dest = self.base / "source", self.base / "project"
+        self.source.mkdir()
+        paths = [ROOT / "AGENTS.md", ROOT / ".agentic/workflow.yaml",
+                 ROOT / ".agentic/scripts/workflow.py"]
+        # Include package modules recursively: provider adapters are part of the
+        # installed runtime, not optional test-only dependencies.
+        paths += list((ROOT / ".agentic/lib/agentic").rglob("*.py"))
+        paths += list((ROOT / ".agentic/schemas").glob("*.json"))
+        self.files = {path.relative_to(ROOT).as_posix(): path.read_bytes() for path in paths}
+        self.files[CONFIG] = (ROOT / ".agentic/examples/unconfigured-project.yaml").read_bytes()
+        self.files[".github/CODEOWNERS"] = b"# Synthetic source ownership\n/.agentic/ @maintainer\n"
+        self.files[GITIGNORE_TEMPLATE] = (ROOT / GITIGNORE_TEMPLATE).read_bytes()
+        for name, raw in self.files.items():
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        manifest = json_bytes({"format": "awf-manifest-1", "template_version": VERSION,
+                              "files": {name: sha256(raw) for name, raw in self.files.items()}})
+        (self.source / "MANIFEST.json").write_bytes(manifest)
+        self.pin = sha256(manifest)
+
+    def perform(self, **kwargs):
+        return install(self.source, self.dest, self.pin, configure=True, discover=False, overrides=explicit(), **kwargs)
+
+    def test_receipt_project_uuid_and_raw_config_survive_upgrade(self):
+        first = self.perform()
+        config_path = self.dest / CONFIG
+        raw = config_path.read_bytes()
+        config_path.write_bytes(b"\n" + raw)
+        second = self.perform(mode="upgrade")
+        self.assertEqual(config_path.read_bytes(), b"\n" + raw)
+        receipt = json.loads((self.dest / INSTALLED).read_bytes())
+        self.assertEqual(receipt["project_id"], json.loads(raw)["project"]["id"])
+        self.assertEqual(first["install_id"], second["install_id"])
+        self.assertEqual(sha256(receipt["source_manifest_json"].encode()), self.pin)
+        self.assertEqual(verify_installed(self.dest), self.pin)
+
+    def test_legacy_upgrade_offer_dryrun_and_explicit_local_proposal(self):
+        self.perform()
+        path = self.dest / CONFIG
+        legacy = json.loads(path.read_bytes())
+        legacy["execution"]["max_parallel_tickets"] = 3
+        legacy["execution"]["independent_reviewers"]["count"] = 3
+        raw = b"\n" + json_bytes(legacy)
+        path.write_bytes(raw)
+        operating = (self.dest / "OPERATING_CONFIG.yaml").read_bytes()
+        ordinary = self.perform(mode="upgrade")
+        self.assertEqual(ordinary["governance_proposal"]["status"], "OFFERED")
+        self.assertEqual(path.read_bytes(), raw)
+        planned = self.perform(mode="upgrade", dry_run=True, propose_operating_capacity=True)
+        self.assertEqual(planned["governance_proposal"]["status"], "PLANNED_FOR_REVIEW")
+        self.assertFalse(planned["governance_proposal"]["staged_locally"])
+        self.assertEqual(path.read_bytes(), raw)
+        actual = self.perform(mode="upgrade", propose_operating_capacity=True)
+        self.assertEqual(actual["governance_proposal"]["status"], "STAGED_FOR_REVIEW")
+        self.assertEqual(actual["configuration"]["status"], "ACCEPTED")
+        current = json.loads(path.read_bytes())
+        self.assertEqual(current["execution"]["max_parallel_tickets"], 6)
+        self.assertNotIn("count", current["execution"]["independent_reviewers"])
+        current["execution"]["max_parallel_tickets"] = 3
+        current["execution"]["independent_reviewers"]["count"] = 3
+        self.assertEqual(current, legacy)
+        self.assertEqual((self.dest / "OPERATING_CONFIG.yaml").read_bytes(), operating)
+        self.assertEqual(verify_installed(self.dest), self.pin)
+
+    def test_ignore_install_merge_upgrade_and_mutable_receipt(self):
+        self.dest.mkdir()
+        path = self.dest / GITIGNORE
+        original = b"# Project rules\r\noutput/\r\n!*.tmp"
+        path.write_bytes(original)
+        result = self.perform()
+        merged = path.read_bytes()
+        self.assertTrue(merged.startswith(original))
+        self.assertTrue(merged.endswith(self.files[GITIGNORE_TEMPLATE]))
+        self.assertEqual(result["gitignore"]["status"], "MERGED")
+        receipt = json.loads((self.dest / INSTALLED).read_bytes())
+        self.assertNotIn(GITIGNORE, receipt["immutable_files"])
+        self.assertIn(GITIGNORE, receipt["mutable_paths"])
+        self.perform(mode="upgrade")
+        self.assertEqual(path.read_bytes(), merged)
+        path.write_bytes(merged + b"owner-added-output/\n")
+        self.assertEqual(verify_installed(self.dest), self.pin)
+
+    def test_ignore_rollback_restores_project_bytes(self):
+        self.dest.mkdir()
+        path = self.dest / GITIGNORE
+        original = b"owner-output/\r\n"
+        path.write_bytes(original)
+        planned = self.perform(dry_run=True)
+        failure_position = planned["managed_files"].index(GITIGNORE) + 1
+        with self.assertRaisesRegex(OSError, "Injected installation failure"):
+            self.perform(fail_after=failure_position)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertFalse((self.dest / "AGENTS.md").exists())
+
+    def test_ignore_edit_during_planning_is_preserved(self):
+        self.dest.mkdir()
+        path = self.dest / GITIGNORE
+        path.write_bytes(b"owner-output/\n")
+        concurrent = b"owner-added-during-plan/\n"
+        def merge_and_edit(existing, required):
+            path.write_bytes(concurrent)
+            return merge_operating_ignores(existing, required)
+        with patch.object(installer, "merge_operating_ignores", side_effect=merge_and_edit):
+            with self.assertRaisesRegex(ValidationError, "Destination changed while preparing adoption"):
+                self.perform()
+        self.assertEqual(path.read_bytes(), concurrent)
+        self.assertFalse((self.dest / "AGENTS.md").exists())
+
+    def test_governance_edit_during_proposal_is_preserved(self):
+        self.perform()
+        path = self.dest / CONFIG
+        original = path.read_bytes()
+        concurrent = original + b"\n"
+        proposal = adoption.operating_capacity_proposal
+        def propose_and_edit(config, **kwargs):
+            path.write_bytes(concurrent)
+            return proposal(config, **kwargs)
+        with patch.object(adoption, "operating_capacity_proposal", side_effect=propose_and_edit):
+            with self.assertRaisesRegex(ValidationError, "Destination changed while preparing adoption"):
+                self.perform(mode="upgrade", propose_operating_capacity=True)
+        self.assertEqual(path.read_bytes(), concurrent)
+
+    def test_receipt_cannot_remove_immutable_member(self):
+        self.perform()
+        path = self.dest / INSTALLED
+        receipt = json.loads(path.read_bytes())
+        del receipt["immutable_files"]["AGENTS.md"]
+        path.write_bytes(json_bytes(receipt))
+        with self.assertRaisesRegex(ValidationError, "membership"):
+            verify_installed(self.dest)
+
+    def test_current_receipt_cannot_downgrade_to_missing_source_manifest(self):
+        self.perform()
+        path = self.dest / INSTALLED
+        receipt = json.loads(path.read_bytes())
+        del receipt["source_manifest_json"]
+        del receipt["immutable_files"]["AGENTS.md"]
+        path.write_bytes(json_bytes(receipt))
+        (self.dest / "AGENTS.md").write_bytes(b"Unverified replacement governance\n")
+        with self.assertRaisesRegex(ValidationError, "requires source_manifest_json"):
+            verify_installed(self.dest)
+
+    def test_malformed_controller_rejects_before_managed_writes_with_path(self):
+        self.dest.mkdir()
+        path = self.dest / CONFIG
+        path.parent.mkdir()
+        original = template()
+        original["controller"] = None
+        raw = json_bytes(original)
+        path.write_bytes(raw)
+        with self.assertRaisesRegex(ValidationError, r"\$\.controller must be an object"):
+            self.perform()
+        self.assertEqual(path.read_bytes(), raw)
+        self.assertFalse((self.dest / "AGENTS.md").exists())
+
+    def test_dry_run_missing_destination_writes_nothing(self):
+        result = self.perform(dry_run=True)
+        self.assertEqual(result["status"], "PLAN")
+        self.assertFalse(result["installed"])
+        self.assertFalse(self.dest.exists())
+
+    def test_backed_up_reinstall_reuses_receipt_identity(self):
+        self.perform()
+        before = json.loads((self.dest / INSTALLED).read_bytes())
+        self.perform(conflict="backup")
+        after = json.loads((self.dest / INSTALLED).read_bytes())
+        self.assertEqual(before["project_id"], after["project_id"])
+        self.assertEqual(before["install_id"], after["install_id"])
+
+    def test_real_installed_commands_confirm_accepted_configuration(self):
+        result = self.perform()
+        checked = adoption.post_install_checks(self.dest, result)
+        self.assertEqual(checked["status"], "CONFIGURED", checked)
+        self.assertEqual([item["exit_code"] for item in checked["post_install_checks"]], [0, 0])
+
+    def test_real_installed_commands_report_unconfigured_residue(self):
+        result = install(self.source, self.dest, self.pin, configure=True, discover=False,
+                         overrides={key: value for key, value in explicit().items() if key != "repository_id"})
+        checked = adoption.post_install_checks(self.dest, result)
+        self.assertEqual(checked["status"], "INSTALLED_UNCONFIGURED", checked)
+        self.assertEqual([item["exit_code"] for item in checked["post_install_checks"]], [0, 2])
+        self.assertEqual({item["path"] for item in result["configuration"]["unresolved"]}, {"$.github.repository_id"})
+
+    def test_target_shadow_modules_and_caches_never_execute(self):
+        result = self.perform()
+        marker = self.base / "shadow-executed"
+        for relative in (".agentic/scripts/pathlib.py", ".agentic/lib/json.py", ".agentic/lib/__pycache__/json.cpython-312.pyc"):
+            with self.subTest(relative=relative):
+                path = self.dest / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                raw = ("open(" + repr(str(marker)) + ",'w').write('executed')\n").encode()
+                path.write_bytes(raw)
+                with patch.object(adoption, "_post_command", side_effect=AssertionError("untrusted imports must prevent any child")):
+                    checked = adoption.post_install_checks(self.dest, result)
+                self.assertEqual(checked["status"], "INSTALLATION_VERIFICATION_FAILED")
+                self.assertFalse(checked["installed"])
+                self.assertEqual([check["execution_status"] for check in checked["post_install_checks"]], ["NOT_RUN", "NOT_RUN"])
+                self.assertFalse(marker.exists())
+                self.assertEqual(path.read_bytes(), raw)
+                path.unlink()
+
+
+class BootstrapMainTests(unittest.TestCase):
+    @unittest.skipUnless((ROOT / "scripts/bootstrap_project.py").is_file(),
+                         "Source bootstrap entry point is not shipped in installed runtimes")
+    def test_normal_exit_states_and_dryrun_skip_postcheck(self):
+        spec = importlib.util.spec_from_file_location("test_bootstrap_entry", ROOT / "scripts/bootstrap_project.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for state, expected in (("CONFIGURED", 0), ("INSTALLED_UNCONFIGURED", 1), ("INSTALLATION_VERIFICATION_FAILED", 2)):
+            with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--github-repo", "fixture/repo"]), patch.object(module, "install", return_value={"status": "INSTALLED"}) as install_call, patch.object(module, "post_install_checks", return_value={"status": state}), patch("sys.stdout", new_callable=io.StringIO) as out:
+                self.assertEqual(module.main(), expected)
+                self.assertEqual(json.loads(out.getvalue())["status"], state)
+                self.assertTrue(install_call.call_args.kwargs["configure"])
+        with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--dry-run"]), patch.object(module, "install", return_value={"status": "PLAN"}), patch.object(module, "post_install_checks", side_effect=AssertionError("dryrun must not execute")), patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(module.main(), 0)
+        with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--mode", "upgrade", "--propose-operating-capacity", "--dry-run"]), patch.object(module, "install", return_value={"status": "PLAN"}) as install_call, patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(module.main(), 0)
+            self.assertTrue(install_call.call_args.kwargs["propose_operating_capacity"])
+        with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--recover", "--propose-operating-capacity"]), patch.object(module, "recover", side_effect=AssertionError("invalid combined flags")), patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(module.main(), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

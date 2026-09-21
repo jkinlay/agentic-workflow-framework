@@ -1,0 +1,4 @@
+# This directory is an all-text release, including its exact-byte manifests.
+# Keep checkout bytes stable on Windows even when core.autocrlf=true.
+# This broad source rule is NOT installed over a target project's attributes.
+* text eol=lf

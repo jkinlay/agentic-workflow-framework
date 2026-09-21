@@ -1,0 +1,419 @@
+{
+  "version": 3,
+  "template_version": "1.9.1",
+  "live_side_effects_supported": false,
+  "states": [
+    "BACKLOG",
+    "READY",
+    "DISPATCHED",
+    "IN_PROGRESS",
+    "PR_DRAFT",
+    "READY_FOR_CRITIC",
+    "CHANGES_REQUESTED",
+    "AMENDING",
+    "SPECIALIST_REVIEW",
+    "FINAL_REVIEW",
+    "READY_FOR_OWNER_AUTHORIZATION",
+    "OWNER_AUTHORIZED",
+    "MERGING",
+    "MERGE_UNKNOWN",
+    "MERGED",
+    "MERGED_PENDING_JIRA",
+    "DONE",
+    "BLOCKED",
+    "FAILED",
+    "CANCELLED",
+    "SUPERSEDED",
+    "REOPENED",
+    "REVIEW_CAP_REACHED",
+    "MERGED_PENDING_OWNER_CLOSURE"
+  ],
+  "terminal_states": [
+    "CANCELLED",
+    "DONE",
+    "SUPERSEDED"
+  ],
+  "resume_states": [
+    "CHANGES_REQUESTED",
+    "FINAL_REVIEW",
+    "IN_PROGRESS",
+    "MERGED_PENDING_JIRA",
+    "MERGED_PENDING_OWNER_CLOSURE",
+    "READY",
+    "READY_FOR_CRITIC",
+    "REVIEW_CAP_REACHED",
+    "SPECIALIST_REVIEW"
+  ],
+  "normal_transitions": [
+    {
+      "from": "BACKLOG",
+      "event": "TICKET_READY",
+      "to": "READY",
+      "actor": "controller",
+      "requires": [
+        "config_valid",
+        "scope_verified",
+        "ownership_claimed",
+        "dependencies_satisfied",
+        "contract_ready"
+      ]
+    },
+    {
+      "from": "READY",
+      "event": "DISPATCH_ACCEPTED",
+      "to": "DISPATCHED",
+      "actor": "controller",
+      "requires": [
+        "dispatch_permitted",
+        "lease_current",
+        "budget_reserved",
+        "ownership_current"
+      ]
+    },
+    {
+      "from": "DISPATCHED",
+      "event": "WORKER_STARTED",
+      "to": "IN_PROGRESS",
+      "actor": "controller",
+      "requires": [
+        "run_registered",
+        "worktree_verified"
+      ]
+    },
+    {
+      "from": "IN_PROGRESS",
+      "event": "WORKER_COMPLETED",
+      "to": "PR_DRAFT",
+      "actor": "controller",
+      "requires": [
+        "worker_result_valid",
+        "branch_pushed",
+        "pr_exists"
+      ]
+    },
+    {
+      "from": "PR_DRAFT",
+      "event": "PR_READY",
+      "to": "READY_FOR_CRITIC",
+      "actor": "controller",
+      "requires": [
+        "validation_current",
+        "draft_cleared",
+        "requirements_current"
+      ]
+    },
+    {
+      "from": "READY_FOR_CRITIC",
+      "event": "CRITIC_REJECTED",
+      "to": "CHANGES_REQUESTED",
+      "actor": "controller",
+      "requires": [
+        "review_current"
+      ]
+    },
+    {
+      "from": "CHANGES_REQUESTED",
+      "event": "AMENDMENT_ACCEPTED",
+      "to": "AMENDING",
+      "actor": "controller",
+      "requires": [
+        "dispatch_permitted",
+        "lease_current",
+        "budget_reserved",
+        "ownership_current",
+        "amendment_cycles_available"
+      ]
+    },
+    {
+      "from": "CHANGES_REQUESTED",
+      "event": "CAP_REACHED",
+      "to": "REVIEW_CAP_REACHED",
+      "actor": "controller",
+      "requires": [
+        "amendment_cycles_exhausted",
+        "open_findings_presented"
+      ]
+    },
+    {
+      "from": "REVIEW_CAP_REACHED",
+      "event": "CAP_MERGE_WITH_NOTES",
+      "to": "FINAL_REVIEW",
+      "actor": "controller",
+      "requires": [
+        "cap_disposition_verified",
+        "residual_risks_recorded",
+        "no_open_boundary_findings"
+      ]
+    },
+    {
+      "from": "REVIEW_CAP_REACHED",
+      "event": "CAP_PARK",
+      "to": "BLOCKED",
+      "actor": "controller",
+      "requires": [
+        "cap_disposition_verified",
+        "blocker_recorded"
+      ]
+    },
+    {
+      "from": "REVIEW_CAP_REACHED",
+      "event": "CAP_RESCOPE",
+      "to": "SUPERSEDED",
+      "actor": "controller",
+      "requires": [
+        "cap_disposition_verified",
+        "successor_recorded"
+      ]
+    },
+    {
+      "from": "REVIEW_CAP_REACHED",
+      "event": "CAP_EXTEND_ONE_CYCLE",
+      "to": "CHANGES_REQUESTED",
+      "actor": "controller",
+      "requires": [
+        "cap_disposition_verified",
+        "cap_extension_available"
+      ]
+    },
+    {
+      "from": "AMENDING",
+      "event": "AMENDMENT_COMPLETED",
+      "to": "READY_FOR_CRITIC",
+      "actor": "controller",
+      "requires": [
+        "worker_result_valid",
+        "validation_current",
+        "new_head_registered"
+      ]
+    },
+    {
+      "from": "READY_FOR_CRITIC",
+      "event": "CRITIC_APPROVED_SPECIALISTS",
+      "to": "SPECIALIST_REVIEW",
+      "actor": "controller",
+      "requires": [
+        "critic_current",
+        "specialists_required"
+      ]
+    },
+    {
+      "from": "READY_FOR_CRITIC",
+      "event": "CRITIC_APPROVED_FINAL",
+      "to": "FINAL_REVIEW",
+      "actor": "controller",
+      "requires": [
+        "critic_current",
+        "no_specialists_required"
+      ]
+    },
+    {
+      "from": "SPECIALIST_REVIEW",
+      "event": "SPECIALIST_REJECTED",
+      "to": "CHANGES_REQUESTED",
+      "actor": "controller",
+      "requires": [
+        "review_current"
+      ]
+    },
+    {
+      "from": "SPECIALIST_REVIEW",
+      "event": "SPECIALISTS_APPROVED",
+      "to": "FINAL_REVIEW",
+      "actor": "controller",
+      "requires": [
+        "specialists_current",
+        "critic_current"
+      ]
+    },
+    {
+      "from": "FINAL_REVIEW",
+      "event": "FINAL_GATE_PASSED",
+      "to": "READY_FOR_OWNER_AUTHORIZATION",
+      "actor": "controller",
+      "requires": [
+        "derived_gate_ready",
+        "requirements_current"
+      ]
+    },
+    {
+      "from": "READY_FOR_OWNER_AUTHORIZATION",
+      "event": "OWNER_AUTHORIZED",
+      "to": "OWNER_AUTHORIZED",
+      "actor": "controller",
+      "requires": [
+        "authorization_verified",
+        "request_unused",
+        "gate_current"
+      ]
+    },
+    {
+      "from": "OWNER_AUTHORIZED",
+      "event": "MERGE_STARTED",
+      "to": "MERGING",
+      "actor": "controller",
+      "requires": [
+        "executor_certified",
+        "atomic_candidate_protocol",
+        "permit_consumed",
+        "gate_current"
+      ]
+    },
+    {
+      "from": "MERGING",
+      "event": "MERGE_OBSERVED",
+      "to": "MERGED",
+      "actor": "controller",
+      "requires": [
+        "merge_confirmed",
+        "candidate_matched"
+      ]
+    },
+    {
+      "from": "MERGE_UNKNOWN",
+      "event": "MERGE_OBSERVED",
+      "to": "MERGED",
+      "actor": "controller",
+      "requires": [
+        "merge_confirmed",
+        "candidate_matched"
+      ]
+    },
+    {
+      "from": "MERGE_UNKNOWN",
+      "event": "NO_MERGE_CONFIRMED",
+      "to": "FINAL_REVIEW",
+      "actor": "controller",
+      "requires": [
+        "no_merge_confirmed",
+        "external_state_current",
+        "old_permit_revoked"
+      ]
+    },
+    {
+      "from": "MERGED",
+      "event": "JIRA_UNAVAILABLE",
+      "to": "MERGED_PENDING_JIRA",
+      "actor": "controller",
+      "requires": [
+        "merge_confirmed"
+      ]
+    },
+    {
+      "from": "MERGED",
+      "event": "OWNER_CLOSURE_REQUIRED",
+      "to": "MERGED_PENDING_OWNER_CLOSURE",
+      "actor": "controller",
+      "requires": [
+        "merge_confirmed",
+        "owner_closure_required"
+      ]
+    },
+    {
+      "from": "MERGED_PENDING_JIRA",
+      "event": "OWNER_CLOSURE_REQUIRED",
+      "to": "MERGED_PENDING_OWNER_CLOSURE",
+      "actor": "controller",
+      "requires": [
+        "merge_confirmed",
+        "owner_closure_required"
+      ]
+    },
+    {
+      "from": "MERGED",
+      "event": "JIRA_RECONCILED",
+      "to": "DONE",
+      "actor": "controller",
+      "requires": [
+        "merge_confirmed",
+        "closeout_valid",
+        "jira_done_confirmed",
+        "dependencies_refreshed",
+        "owner_closure_not_required"
+      ]
+    },
+    {
+      "from": "MERGED_PENDING_JIRA",
+      "event": "JIRA_RECONCILED",
+      "to": "DONE",
+      "actor": "controller",
+      "requires": [
+        "merge_confirmed",
+        "closeout_valid",
+        "jira_done_confirmed",
+        "dependencies_refreshed",
+        "owner_closure_not_required"
+      ]
+    },
+    {
+      "from": "MERGED_PENDING_OWNER_CLOSURE",
+      "event": "JIRA_RECONCILED",
+      "to": "DONE",
+      "actor": "controller",
+      "requires": [
+        "merge_confirmed",
+        "closeout_valid",
+        "jira_done_confirmed",
+        "dependencies_refreshed",
+        "owner_closure_verified"
+      ]
+    },
+    {
+      "from": "FAILED",
+      "event": "RECOVERABLE_FAILURE",
+      "to": "BLOCKED",
+      "actor": "controller",
+      "requires": [
+        "failure_recoverable",
+        "blocker_recorded"
+      ]
+    },
+    {
+      "from": "REOPENED",
+      "event": "REOPEN_DISPOSITION",
+      "to": "CANCELLED",
+      "actor": "controller",
+      "requires": [
+        "owner_disposition",
+        "successor_recorded"
+      ]
+    }
+  ],
+  "invalidation_events": [
+    "AUTHORIZATION_REVOKED",
+    "BASE_CHANGED",
+    "BASE_RETARGETED",
+    "BLOCKING_THREAD_REOPENED",
+    "CI_FAILED",
+    "CI_UNAVAILABLE",
+    "HEAD_CHANGED",
+    "MERGE_METHOD_CHANGED",
+    "POLICY_CHANGED",
+    "REQUIREMENTS_CHANGED"
+  ],
+  "control_events": [
+    "BLOCK",
+    "BRANCH_DELETED",
+    "CANCEL",
+    "FAIL",
+    "MANUAL_MERGE_OBSERVED",
+    "MERGE_TIMEOUT",
+    "OWNER_CHANGES_REQUESTED",
+    "POST_MERGE_FINDING",
+    "PR_CLOSED",
+    "RECOVER",
+    "REVERT_OBSERVED",
+    "REVIEW_DISMISSED",
+    "SUPERSEDE"
+  ],
+  "jira_writes": {
+    "HEAD_CHANGED": "in_progress",
+    "JIRA_RECONCILED": "done",
+    "OWNER_CHANGES_REQUESTED": "in_progress",
+    "PR_READY": "in_review",
+    "WORKER_STARTED": "in_progress"
+  },
+  "unspecified_event_policy": "reject",
+  "terminal_invalidation_policy": "audit_without_state_change",
+  "merge_uncertainty_policy": "reconcile_before_retry",
+  "implementation": ".agentic/lib/agentic/lifecycle.py"
+}

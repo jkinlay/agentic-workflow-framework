@@ -1,0 +1,127 @@
+{
+  "template_for": "final-gate",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "record_id": "00000000-0000-0000-0000-000000000000",
+    "created_at": "1970-01-01T00:00:00Z",
+    "producer_id": "UNFILLED",
+    "run_id": "00000000-0000-0000-0000-000000000000",
+    "binding": {
+      "project_id": "00000000-0000-0000-0000-000000000000",
+      "repository_id": 1,
+      "issue_id": "UNFILLED",
+      "requirements_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "candidate_id": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "candidate": {
+      "host": "urn:awf:UNFILLED",
+      "repository_id": 1,
+      "repository": "UNFILLED",
+      "pr_number": 1,
+      "target_base_branch": "UNFILLED",
+      "head_sha": "0000000000000000000000000000000000000000",
+      "target_base_sha": "0000000000000000000000000000000000000000",
+      "merge_base_sha": "0000000000000000000000000000000000000000",
+      "head_tree_sha": "0000000000000000000000000000000000000000",
+      "integration_tree_sha": "0000000000000000000000000000000000000000",
+      "tested_merge_sha": null,
+      "diff_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "merge_method": "merge"
+    },
+    "gates": {
+      "acceptance_criteria": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "scope": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "critic_current_tuple": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "specialist_reviews": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "required_ci": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "ci_candidate_binding": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "blocking_threads_zero": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "dependencies": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "merge_compatibility": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "ticket_snapshot_current": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "review_coverage": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "provenance": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
+      "local_ci_parity": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      }
+    },
+    "record_ids": [],
+    "required_specialist_domains": [],
+    "residual_risks": [],
+    "risk_tier": 1,
+    "tier_justification": "UNFILLED",
+    "closure_standard": "FULL",
+    "accepted_findings": [],
+    "conclusion": "NOT_READY",
+    "execution_authority": false,
+    "evaluation_mode": "offline_reference",
+    "expires_at": "1970-01-01T00:00:00Z"
+  }
+}

@@ -1,0 +1,314 @@
+"""GitHub adapter for read-only installed/configured/accepted-checkout state."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+import uuid
+from urllib.parse import quote
+
+from .. import ValidationError, VERSION
+from ..canonical import load_yaml, loads, now_text, sha256
+from ..configuration import inspect_config
+from ..contracts import Contracts
+from ..installer import CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed, verify_installed
+from .github import _gh_get, branch_name, repository_name
+from ..release_trust import approved_manifest
+from ..safeio import Tree, relative_parts
+
+MAX_BYTES = 1024 * 1024
+MAX_TOTAL = 8 * MAX_BYTES
+MAX_SECONDS = 60
+SHA = re.compile(r'[0-9a-f]{40}')
+
+
+def require(condition, message):
+    if not condition:
+        raise ValidationError(message)
+
+
+def blob_sha(raw):
+    return hashlib.sha1(b'blob ' + str(len(raw)).encode('ascii') + b'\0' + raw, usedforsecurity=False).hexdigest()
+
+
+def object_value(value):
+    require(isinstance(value, dict), 'Malformed acceptance observation: expected an object')
+    return value
+
+
+def host_executable(name, root):
+    resolved = shutil.which(name)
+    require(resolved is not None, 'Trusted host ' + name + ' executable is unavailable')
+    path = Path(resolved).resolve()
+    require(not path.is_relative_to(root.resolve()) and path.suffix.lower() not in ('.cmd', '.bat', '.ps1'),
+            'Host executable cannot be a project checkout file or shell script')
+    return str(path)
+
+
+class Observation:
+    def __init__(self, root, gh=None):
+        self.root = root
+        self.git_exe = host_executable('git', root)
+        self.gh = host_executable(gh or 'gh', root)
+        self.deadline = time.monotonic() + MAX_SECONDS
+        self.total = 0
+        self.requests = 0
+
+    def account(self, raw):
+        self.total += len(raw)
+        require(len(raw) <= MAX_BYTES and self.total <= MAX_TOTAL, 'Acceptance observation exceeds its byte limit')
+        return raw
+
+    def get(self, endpoint):
+        self.requests += 1
+        require(self.requests <= 20 and time.monotonic() < self.deadline, 'Acceptance observation exceeds its request/time limit')
+        value, count = _gh_get(endpoint, self.deadline, gh=self.gh)
+        self.total += count
+        require(self.total <= MAX_TOTAL, 'Acceptance observation exceeds aggregate byte limit')
+        return value
+
+    def git(self, *arguments):
+        env = {key: value for key, value in os.environ.items()
+               if not key.upper().startswith('GIT_') and key.upper() not in ('PYTHONPATH', 'PYTHONHOME')}
+        env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1',
+                   GIT_TERMINAL_PROMPT='0', GIT_OPTIONAL_LOCKS='0', GIT_NO_LAZY_FETCH='1')
+        command = [self.git_exe, '--no-replace-objects', '-c', 'core.fsmonitor=false',
+                   '-c', 'core.hooksPath=' + os.devnull, '-C', str(self.root), *arguments]
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env)
+            try:
+                while process.poll() is None:
+                    require(time.monotonic() < self.deadline, 'Git acceptance observation timed out')
+                    require(os.fstat(out.fileno()).st_size <= MAX_BYTES and os.fstat(err.fileno()).st_size <= MAX_BYTES, 'Git acceptance output exceeds limit')
+                    try:
+                        process.wait(timeout=0.05)
+                    except subprocess.TimeoutExpired:
+                        pass
+                require(time.monotonic() <= self.deadline and process.returncode == 0, 'Read-only Git check failed or timed out: ' + arguments[0])
+                require(os.fstat(out.fileno()).st_size <= MAX_BYTES and os.fstat(err.fileno()).st_size <= MAX_BYTES, 'Git acceptance output exceeds limit')
+                out.seek(0)
+                return self.account(out.read(MAX_BYTES + 1))
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=2)
+
+
+def installed_bytes(root):
+    verify_installed(root)
+    with Tree(root) as tree:
+        require(tree.inspect(INSTALLED) is not None, 'Release source is not an adopted project installation')
+        receipt_raw = tree.read(INSTALLED, maximum=MAX_BYTES)
+        receipt = loads(receipt_raw.decode('utf-8'))
+        value = {INSTALLED: receipt_raw, CONFIG: tree.read(CONFIG, maximum=MAX_BYTES),
+                 PROVENANCE: tree.read(PROVENANCE, maximum=MAX_BYTES)}
+        for path in receipt['immutable_files']:
+            value[path] = tree.read(path, maximum=MAX_BYTES)
+        # CODEOWNERS is project-owned, but if present it must also be accepted.
+        for path in (CODEOWNERS, 'CODEOWNERS', 'docs/CODEOWNERS'):
+            if tree.inspect(path) is not None:
+                value[path] = tree.read(path, maximum=MAX_BYTES)
+                break
+    return receipt, value
+
+
+def complete_receipt(receipt):
+    source = receipt.get('source_manifest_json')
+    require(isinstance(source, str) and sha256(source.encode('utf-8')) == receipt.get('source_manifest_sha256'),
+            'Receipt needs its verified complete source manifest; reinstall through the current adoption path')
+    manifest = loads(source)
+    require(set(manifest) == {'format', 'template_version', 'files'} and manifest['format'] == 'awf-manifest-1'
+            and manifest['template_version'] == VERSION and isinstance(manifest['files'], dict), 'Receipt source manifest is invalid')
+    expected = {path: digest for path, digest in manifest['files'].items()
+                if managed(path) and path not in (CONFIG, PROVENANCE, CODEOWNERS)}
+    require(expected == receipt['immutable_files'] and expected, 'Receipt does not cover the complete managed release')
+    for path in manifest['files']:
+        relative_parts(path)
+
+
+def tree_entries(value, prefix=''):
+    require(isinstance(value, dict) and value.get('truncated') is False and isinstance(value.get('tree'), list),
+            'GitHub tree observation is incomplete')
+    result = {}
+    for entry in value['tree']:
+        require(isinstance(entry, dict), 'Malformed GitHub tree entry')
+        path = entry.get('path')
+        relative_parts(path)
+        full = prefix + path
+        require(full not in result and isinstance(entry.get('sha'), str) and SHA.fullmatch(entry['sha']),
+                'Ambiguous GitHub tree entry')
+        result[full] = entry
+    return result
+
+
+def accepted_blobs(observation, repository, head, paths):
+    commit = object_value(observation.get(f'repos/{repository}/git/commits/{head}'))
+    require(commit.get('sha') == head and SHA.fullmatch(object_value(commit.get('tree')).get('sha', '')), 'Accepted commit identity mismatch')
+    tree = tree_entries(observation.get(f'repos/{repository}/git/trees/{commit["tree"]["sha"]}'))
+    groups = {path.split('/', 1)[0] for path in paths if '/' in path}
+    for group in sorted(groups):
+        entry = tree.get(group)
+        require(entry and entry.get('type') == 'tree', 'Accepted checkout lacks directory ' + group)
+        tree.update(tree_entries(observation.get(f'repos/{repository}/git/trees/{entry["sha"]}?recursive=1'), group + '/'))
+    for path, raw in paths.items():
+        entry = tree.get(path)
+        require(entry and entry.get('type') == 'blob' and entry.get('mode') in ('100644', '100755')
+                and entry['sha'] == blob_sha(raw), 'Accepted default checkout differs at ' + path)
+
+
+def receipt_changed(observation, repository, number, raw):
+    seen = set()
+    receipt = None
+    for page in range(1, 6):
+        entries = observation.get(f'repos/{repository}/pulls/{number}/files?per_page=100&page={page}')
+        require(isinstance(entries, list) and len(entries) <= 100, 'Malformed adoption PR file inventory')
+        for entry in entries:
+            entry = object_value(entry)
+            name = entry.get('filename')
+            relative_parts(name)
+            require(name not in seen, 'Duplicate adoption PR file inventory entry')
+            seen.add(name)
+            if name == INSTALLED:
+                receipt = entry
+        if len(entries) < 100:
+            break
+    else:
+        raise ValidationError('Adoption PR file inventory exceeds the complete observation limit')
+    require(receipt and receipt.get('status') in ('added', 'modified') and receipt.get('sha') == blob_sha(raw),
+            'Selected adoption PR did not add or modify this exact installation receipt')
+
+
+def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expected_manifest_sha256=None):
+    root = Path(root).absolute()
+    result = {'version': VERSION, 'project_state': None, 'integrity_valid': False,
+              'configuration': {'status': 'NOT_CHECKED', 'unresolved': []}, 'ci_gate': 'NOT_CONFIGURED',
+              'adoption': 'UNOBSERVED', 'accepted_checkout': 'UNOBSERVED', 'execution_authority': False,
+              'line': f'AWF {VERSION}: UNVERIFIED', 'next_action': 'Install or recover the verified AWF files.',
+              'decision_codes': ['report_installation_unverified'],
+              'observation_limit': 'Read-only trusted-host Git/GitHub observations; not a server-signed attestation or live automation qualification.'}
+    try:
+        receipt, files = installed_bytes(root)
+        result.update(project_state='INSTALLED', integrity_valid=True, line=f'AWF {VERSION}: INSTALLED')
+        with Tree(root) as tree:
+            workflow = load_yaml(tree.read('.agentic/workflow.yaml'))
+        config = load_yaml(files[CONFIG])
+        instructions = root / 'PROJECT_INSTRUCTIONS.md'
+        report = inspect_config(config, workflow, Contracts(root / '.agentic/schemas'),
+                                project_instructions=instructions.read_text(encoding='utf-8') if instructions.is_file() else None)
+        from ..operating_status import with_operating
+        report = with_operating(root, config, report)
+        from ..host_preflight import preflight
+        result['host_preflight'] = preflight(root)
+        result.update(configuration=report, ci_gate=report['ci_gate'], operating=report['operating'])
+        stream_suffix = (f" — streams {report['operating']['streams']}/{report['operating']['effective_ceiling']}"
+                         if report['operating']['status'] == 'ACCEPTED' else '')
+        result['line'] += stream_suffix
+        if report['status'] != 'ACCEPTED':
+            result['next_action'] = 'Configure ' + '; '.join(item['path'] + ' using ' + item['flag'] for item in report['unresolved'])
+            result['decision_codes'] = ['report_state_installed_unconfigured']
+            return result
+        result.update(project_state='CONFIGURED', line=f'AWF {VERSION}: CONFIGURED' + stream_suffix,
+                      decision_codes=['report_state_configured'], next_action='Merge the adoption PR, then verify its accepted default checkout.')
+        complete_receipt(receipt)
+        digest, trust_basis = approved_manifest(root, release_source=release_source,
+                                               expected_manifest_sha256=expected_manifest_sha256)
+        require(digest == receipt['source_manifest_sha256'], 'Installation differs from the independently approved release')
+        provenance = loads(files[PROVENANCE].decode('utf-8'))
+        require(isinstance(receipt.get('install_id'), str) and uuid.UUID(receipt['install_id']).int != 0,
+                'Reconcile the missing or invalid receipt installation UUID before acceptance')
+        require(receipt.get('project_id') == config['project']['id']
+                and receipt.get('install_id') == provenance.get('installation', {}).get('install_id'),
+                'Reconcile project/installation identity between configuration, receipt and provenance')
+        result['release_trust_basis'] = trust_basis
+        observation = Observation(root, gh)
+        require(Path(observation.git('rev-parse', '--show-toplevel').decode().strip()).resolve() == root.resolve(),
+                'Use the repository root for accepted-checkout verification')
+        graft = observation.git('rev-parse', '--git-path', 'info/grafts').decode().strip()
+        require(not (root / graft).exists(), 'Remove or reconcile local history grafts before acceptance verification')
+        repository = repository_name(config['github']['repository'])
+        from .github import origin_repository
+        require(origin_repository(observation.git('remote', 'get-url', 'origin').decode().strip()).casefold() == repository.casefold(),
+                'Git origin differs from the configured GitHub repository')
+        require(config['github']['host'] == 'https://github.com', 'This acceptance observer supports GitHub.com only')
+        meta = object_value(observation.get(f'repos/{repository}'))
+        default = branch_name(meta.get('default_branch'))
+        require(meta.get('id') == config['github']['repository_id'] and isinstance(meta.get('full_name'), str)
+                and meta['full_name'].casefold() == repository.casefold(),
+                'GitHub repository identity differs from configuration')
+        result.update(repository=repository, repository_id=meta['id'], default_branch=default)
+        require(config['github']['base_branch'] == default, 'Update $.github.base_branch to the observed default branch ' + default)
+        branch = object_value(observation.get(f'repos/{repository}/branches/{quote(default, safe="")}'))
+        head = object_value(branch.get('commit')).get('sha', '')
+        require(branch.get('name') == default and SHA.fullmatch(head), 'Invalid observed default tip')
+        local_branch = observation.git('symbolic-ref', '--quiet', '--short', 'HEAD').decode().strip()
+        local_head = observation.git('rev-parse', 'HEAD').decode().strip()
+        receipt_commit = observation.git('log', '-1', '--format=%H', '--', INSTALLED).decode().strip()
+        require(SHA.fullmatch(receipt_commit), 'Commit the installation receipt through the adoption PR')
+        associated = observation.get(f'repos/{repository}/commits/{receipt_commit}/pulls?per_page=100')
+        require(isinstance(associated, list) and len(associated) < 100, 'Associated adoption PR inventory is incomplete')
+        candidates = [item['number'] for item in associated if isinstance(item, dict)
+                      and object_value(object_value(item.get('base')).get('repo')).get('id') == meta['id']
+                      and object_value(item.get('base')).get('ref') == default and type(item.get('number')) is int]
+        if adoption_pr is None:
+            require(len(candidates) == 1, 'Prepare or identify the receipt-changing adoption PR; use status --adoption-pr NUMBER when ambiguous')
+            adoption_pr = candidates[0]
+        require(type(adoption_pr) is int and adoption_pr > 0, 'Use a positive adoption PR number')
+        require(adoption_pr in candidates, 'Selected PR did not introduce the receipt-changing commit; identify the actual adoption PR')
+        pr = object_value(observation.get(f'repos/{repository}/pulls/{adoption_pr}'))
+        require(pr.get('number') == adoption_pr and object_value(object_value(pr.get('base')).get('repo')).get('id') == meta['id']
+                and object_value(pr.get('base')).get('ref') == default, 'Adoption PR targets another repository/default branch')
+        result['adoption_pr'] = adoption_pr
+        if pr.get('merged') is not True:
+            action = 'Reopen or replace' if pr.get('state') == 'closed' else 'Merge'
+            result.update(adoption='NOT_MERGED', next_action=f'{action} adoption PR #{adoption_pr}, then verify its accepted default checkout.')
+            return result
+        require(local_branch == default and local_head == head, 'Check out the observed default branch ' + default + ' at ' + head)
+        receipt_changed(observation, repository, adoption_pr, files[INSTALLED])
+        merge = pr.get('merge_commit_sha', '')
+        require(SHA.fullmatch(merge), 'Merged adoption PR has no accepted commit identity')
+        observation.git('merge-base', '--is-ancestor', merge, head)
+        accepted_receipt = object_value(observation.get(f'repos/{repository}/contents/{INSTALLED}?ref={merge}'))
+        require(accepted_receipt.get('type') == 'file' and accepted_receipt.get('path') == INSTALLED
+                and accepted_receipt.get('sha') == blob_sha(files[INSTALLED])
+                and accepted_receipt.get('encoding') == 'base64' and isinstance(accepted_receipt.get('content'), str),
+                'Merged PR does not accept this installation receipt')
+        require(base64.b64decode(accepted_receipt.get('content', '').replace('\n', ''), validate=True) == files[INSTALLED],
+                'Merged adoption receipt bytes differ')
+        result['adoption'] = 'MERGED_VERIFIED'
+        accepted_blobs(observation, repository, head, files)
+        final_meta = object_value(observation.get(f'repos/{repository}'))
+        final_branch = object_value(observation.get(f'repos/{repository}/branches/{quote(default, safe="")}'))
+        require((final_meta.get('id'), final_meta.get('full_name'), final_meta.get('default_branch')) ==
+                (meta.get('id'), meta.get('full_name'), default)
+                and final_branch.get('name') == default and object_value(final_branch.get('commit')).get('sha') == head,
+                'Repository/default tip changed during observation; re-observe the accepted checkout')
+        require(observation.git('rev-parse', 'HEAD').decode().strip() == head
+                and observation.git('symbolic-ref', '--quiet', '--short', 'HEAD').decode().strip() == default,
+                'Local checkout changed during acceptance observation')
+        final_receipt, final_files = installed_bytes(root)
+        require(final_receipt == receipt and final_files == files, 'Installed files changed during acceptance observation')
+        from ..operating import inspect_operating
+        require(inspect_operating(root, config) == result['operating'],
+                'Operating configuration changed during observation; run status again for its current snapshot')
+        result.update(project_state='ACTIVE', line=f'AWF {VERSION}: ACTIVE' + stream_suffix, accepted_checkout='VERIFIED',
+                      accepted_head_sha=head, adoption_merge_sha=merge, observed_at=now_text(),
+                      next_action=None, decision_codes=['report_active'])
+    except (ValidationError, OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError, subprocess.SubprocessError) as exc:
+        remedy = (str(exc) if isinstance(exc, ValidationError) else
+                  'Restore access to valid local AWF files and trusted host tools')
+        result['next_action'] = remedy + '; run workflow.py status again after resolving this condition.'
+        result['observation_error'] = str(exc.__cause__ or exc)
+    preflight_next = (result.get('host_preflight') or {}).get('next_action')
+    if preflight_next:
+        result['next_action'] = ((result['next_action'] + ' ') if result.get('next_action') else '') + 'Host preflight WARN: ' + preflight_next
+    return result
+
+
+def render_status(report):
+    return report['line'] + (('\nNext: ' + report['next_action']) if report.get('next_action') else '')

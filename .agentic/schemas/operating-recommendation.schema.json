@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:operating-recommendation",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^R-[0-9a-f]{24}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
+    },
+    "operating_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "governance_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "epics": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "inventory": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "epics",
+        "inventory"
+      ],
+      "additionalProperties": false
+    },
+    "input_files": {
+      "type": "object",
+      "properties": {
+        "epics": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inventory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "epics",
+        "inventory"
+      ],
+      "additionalProperties": false
+    },
+    "input_content": {
+      "type": "object",
+      "properties": {
+        "epics": {
+          "type": "string",
+          "maxLength": 1048576
+        },
+        "inventory": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1048576
+        }
+      },
+      "required": [
+        "epics",
+        "inventory"
+      ],
+      "additionalProperties": false
+    },
+    "rows": {
+      "type": "array",
+      "maxItems": 14016,
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "current": {},
+          "recommended": {},
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "path",
+          "current",
+          "recommended",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "epic_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ticket_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "execution_authority": {
+      "const": false
+    },
+    "applied": {
+      "const": false
+    }
+  },
+  "required": [
+    "id",
+    "created_at",
+    "operating_hash",
+    "governance_hash",
+    "inputs",
+    "input_files",
+    "input_content",
+    "rows",
+    "epic_count",
+    "ticket_count",
+    "execution_authority",
+    "applied"
+  ],
+  "additionalProperties": false
+}
