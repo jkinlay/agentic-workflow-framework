@@ -1,0 +1,1832 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A practical 30-minute showcase of Agentic Workflow Framework 1.8.9.">
+  <title>AWF 1.8.9: Practical Showcase</title>
+  <style>
+    :root {
+      --ink: #f3f7fc;
+      --muted: #b9c9dd;
+      --muted-2: #91a7c2;
+      --navy-950: #061526;
+      --navy-900: #081d35;
+      --navy-800: #0d2d51;
+      --navy-700: #164778;
+      --line: rgba(187, 215, 242, 0.20);
+      --line-strong: rgba(187, 215, 242, 0.42);
+      --teal: #53d4d1;
+      --teal-soft: rgba(83, 212, 209, 0.13);
+      --blue: #87aaff;
+      --blue-soft: rgba(135, 170, 255, 0.14);
+      --amber: #f6c56e;
+      --amber-soft: rgba(246, 197, 110, 0.15);
+      --rose: #f591a0;
+      --rose-soft: rgba(245, 145, 160, 0.12);
+      --green: #81d8a7;
+      --green-soft: rgba(129, 216, 167, 0.13);
+      --shadow: 0 28px 80px rgba(0, 0, 0, 0.33);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      min-height: 100%;
+      margin: 0;
+      color: var(--ink);
+      background: #03101f;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    button, a { font: inherit; }
+    button { color: inherit; }
+
+    :focus-visible {
+      outline: 3px solid var(--amber);
+      outline-offset: 4px;
+    }
+
+    .skip-link {
+      position: fixed;
+      z-index: 50;
+      top: 12px;
+      left: 12px;
+      transform: translateY(-180%);
+      padding: 10px 14px;
+      color: var(--navy-950);
+      background: var(--amber);
+      border-radius: 8px;
+      font-weight: 800;
+      text-decoration: none;
+    }
+
+    .skip-link:focus { transform: translateY(0); }
+
+    .deck-shell {
+      position: relative;
+      width: min(100vw, 177.7778vh);
+      height: min(100vh, 56.25vw);
+      min-height: 560px;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 92% 8%, rgba(67, 143, 226, 0.19), transparent 29%),
+        radial-gradient(circle at 6% 96%, rgba(64, 197, 185, 0.12), transparent 32%),
+        linear-gradient(130deg, var(--navy-950) 0%, var(--navy-900) 50%, #0b2748 100%);
+      box-shadow: var(--shadow);
+      isolation: isolate;
+    }
+
+    .deck-shell::before,
+    .deck-shell::after {
+      position: absolute;
+      z-index: -1;
+      content: "";
+      pointer-events: none;
+      border: 1px solid rgba(130, 180, 238, 0.12);
+      border-radius: 50%;
+    }
+
+    .deck-shell::before {
+      top: -24%;
+      right: -8%;
+      width: 46%;
+      height: 86%;
+      transform: rotate(-19deg);
+    }
+
+    .deck-shell::after {
+      bottom: -36%;
+      left: 2%;
+      width: 56%;
+      height: 64%;
+      transform: rotate(10deg);
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: none;
+    }
+
+    .slide.active {
+      display: block;
+      animation: enter 300ms ease-out both;
+    }
+
+    @keyframes enter {
+      from { opacity: 0; transform: translateY(7px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .slide-inner {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      padding: 5% 6.15% 4.35%;
+    }
+
+    .topline,
+    .footerline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      flex: 0 0 auto;
+    }
+
+    .topline { min-height: 24px; }
+
+    .footerline {
+      margin-top: 1.55%;
+      padding-top: 1.28%;
+      border-top: 1px solid var(--line);
+      color: var(--muted-2);
+      font-size: clamp(10px, 0.88vw, 14px);
+      line-height: 1.35;
+    }
+
+    .footerline strong { color: var(--muted); }
+
+    .eyebrow {
+      margin: 0;
+      color: var(--teal);
+      font-size: clamp(11px, 1.02vw, 16px);
+      font-weight: 800;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+
+    .slide-index {
+      color: var(--muted-2);
+      font-size: clamp(11px, 1vw, 16px);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1 {
+      max-width: 870px;
+      margin: 0;
+      color: #f8fbff;
+      font-size: clamp(45px, 5.35vw, 86px);
+      line-height: 1.03;
+      letter-spacing: -0.05em;
+    }
+
+    .slide-title {
+      max-width: 1030px;
+      margin: 2.05% 0 1.4%;
+      color: #f8fbff;
+      font-size: clamp(30px, 3.36vw, 55px);
+      line-height: 1.08;
+      letter-spacing: -0.039em;
+    }
+
+    .lead {
+      max-width: 790px;
+      margin: 2.1% 0 0;
+      color: var(--muted);
+      font-size: clamp(17px, 1.53vw, 25px);
+      line-height: 1.44;
+    }
+
+    .body-copy {
+      color: var(--muted);
+      font-size: clamp(14px, 1.25vw, 20px);
+      line-height: 1.48;
+    }
+
+    .small-copy {
+      color: var(--muted);
+      font-size: clamp(12px, 1.02vw, 16px);
+      line-height: 1.45;
+    }
+
+    .content {
+      display: flex;
+      flex: 1 1 auto;
+      min-height: 0;
+      align-items: center;
+    }
+
+    .source-chip,
+    .label-chip,
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .source-chip {
+      padding: 7px 10px;
+      color: var(--muted);
+      background: rgba(6, 21, 38, 0.26);
+      font-size: clamp(9px, 0.8vw, 12px);
+    }
+
+    .label-chip {
+      padding: 7px 10px;
+      color: var(--teal);
+      background: var(--teal-soft);
+      border-color: rgba(83, 212, 209, 0.32);
+      font-size: clamp(9px, 0.83vw, 13px);
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .status-chip {
+      padding: 6px 9px;
+      color: var(--muted);
+      font-size: clamp(9px, 0.82vw, 13px);
+      font-weight: 750;
+    }
+
+    .status-chip.amber { color: var(--amber); border-color: rgba(246, 197, 110, 0.46); background: var(--amber-soft); }
+    .status-chip.green { color: var(--green); border-color: rgba(129, 216, 167, 0.40); background: var(--green-soft); }
+    .status-chip.blue { color: var(--blue); border-color: rgba(135, 170, 255, 0.42); background: var(--blue-soft); }
+    .status-chip.rose { color: var(--rose); border-color: rgba(245, 145, 160, 0.42); background: var(--rose-soft); }
+
+    .cover-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 4.5%;
+      align-items: center;
+      width: 100%;
+    }
+
+    .release-kicker {
+      margin: 0 0 18px;
+      color: var(--teal);
+      font-size: clamp(13px, 1.2vw, 19px);
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .cover-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 28px;
+    }
+
+    .cover-art {
+      position: relative;
+      display: grid;
+      min-height: 360px;
+      place-items: center;
+    }
+
+    .orbit {
+      position: absolute;
+      width: 70%;
+      aspect-ratio: 1;
+      border: 1px solid rgba(135, 170, 255, 0.33);
+      border-radius: 50%;
+    }
+
+    .orbit.one { width: 78%; border-color: rgba(83, 212, 209, 0.26); transform: rotate(26deg) scaleY(.67); }
+    .orbit.two { width: 58%; border-color: rgba(246, 197, 110, 0.36); transform: rotate(-32deg) scaleX(.69); }
+
+    .core-mark {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      width: 34%;
+      aspect-ratio: 1;
+      place-items: center;
+      border: 1px solid rgba(83, 212, 209, 0.7);
+      border-radius: 50%;
+      background: linear-gradient(145deg, rgba(13, 45, 81, .97), rgba(6, 21, 38, .96));
+      box-shadow: 0 0 0 16px rgba(83, 212, 209, 0.05), 0 0 70px rgba(83, 212, 209, .18);
+      color: var(--teal);
+      font-size: clamp(30px, 4vw, 66px);
+      font-weight: 850;
+      letter-spacing: -0.08em;
+    }
+
+    .orbit-label {
+      position: absolute;
+      z-index: 2;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(7, 27, 50, .88);
+      color: var(--muted);
+      font-size: clamp(10px, .98vw, 15px);
+      font-weight: 750;
+    }
+
+    .orbit-label.a { top: 10%; right: 0; }
+    .orbit-label.b { bottom: 17%; right: 2%; }
+    .orbit-label.c { bottom: 4%; left: 10%; }
+    .orbit-label.d { top: 22%; left: 0; }
+
+    .comparison {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4%;
+      width: 100%;
+    }
+
+    .comparison-side {
+      min-height: 316px;
+      padding: 26px 30px;
+      border-top: 2px solid var(--line-strong);
+      background: linear-gradient(140deg, rgba(12, 42, 76, .55), rgba(6, 21, 38, .12));
+    }
+
+    .comparison-side.problem { border-color: rgba(245, 145, 160, .68); }
+    .comparison-side.controlled { border-color: rgba(83, 212, 209, .74); }
+
+    .comparison-side h3 {
+      margin-bottom: 16px;
+      font-size: clamp(20px, 1.78vw, 28px);
+      letter-spacing: -0.025em;
+    }
+
+    .comparison-side p { margin-bottom: 10px; }
+
+    .plain-list {
+      display: grid;
+      gap: 11px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .plain-list li {
+      display: grid;
+      grid-template-columns: 13px 1fr;
+      gap: 10px;
+      color: var(--muted);
+      font-size: clamp(13px, 1.18vw, 18px);
+      line-height: 1.35;
+    }
+
+    .plain-list li::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      margin-top: .48em;
+      border-radius: 50%;
+      background: var(--muted-2);
+    }
+
+    .controlled .plain-list li::before { background: var(--teal); }
+    .problem .plain-list li::before { background: var(--rose); }
+
+    .terminal-layout {
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      gap: 4.1%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .terminal {
+      overflow: hidden;
+      border: 1px solid rgba(132, 168, 213, .34);
+      border-radius: 14px;
+      background: #04111e;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, .20);
+    }
+
+    .terminal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(132, 168, 213, .20);
+      color: var(--muted-2);
+      font-size: clamp(9px, .82vw, 13px);
+      letter-spacing: .02em;
+    }
+
+    .terminal-dots { display: flex; gap: 6px; }
+    .terminal-dots i { width: 7px; height: 7px; border-radius: 50%; background: #6e809b; }
+    .terminal-dots i:nth-child(1) { background: var(--rose); }
+    .terminal-dots i:nth-child(2) { background: var(--amber); }
+    .terminal-dots i:nth-child(3) { background: var(--green); }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      color: #d9e7fa;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: clamp(11px, .98vw, 15px);
+      line-height: 1.53;
+    }
+
+    .terminal pre { padding: 19px 20px 21px; }
+    .prompt { color: var(--muted-2); }
+    .command { color: #e9f4ff; }
+    .output-key { color: var(--teal); }
+    .output-value { color: var(--green); }
+    .output-warn { color: var(--amber); }
+
+    .facts {
+      display: grid;
+      gap: 17px;
+      align-content: center;
+    }
+
+    .fact {
+      display: grid;
+      grid-template-columns: 49px 1fr;
+      gap: 16px;
+      align-items: start;
+      padding-bottom: 15px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .fact:last-child { border-bottom: 0; }
+
+    .fact-number {
+      color: var(--teal);
+      font-size: clamp(20px, 2.15vw, 34px);
+      font-weight: 850;
+      letter-spacing: -0.05em;
+    }
+
+    .fact h3 { margin: 0 0 4px; font-size: clamp(16px, 1.3vw, 20px); }
+    .fact p { margin: 0; }
+
+    .mini-note {
+      padding: 14px 16px;
+      border-left: 2px solid var(--amber);
+      color: var(--muted);
+      background: linear-gradient(90deg, var(--amber-soft), transparent);
+      font-size: clamp(11px, 1.03vw, 16px);
+      line-height: 1.4;
+    }
+
+    .setup-flow {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .flow-steps {
+      display: grid;
+      gap: 0;
+    }
+
+    .flow-step {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      gap: 16px;
+      align-items: center;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .flow-step:first-child { border-top: 1px solid var(--line); }
+
+    .flow-number {
+      display: grid;
+      width: 36px;
+      height: 36px;
+      place-items: center;
+      border: 1px solid rgba(83, 212, 209, .58);
+      border-radius: 50%;
+      color: var(--teal);
+      font-size: clamp(13px, 1.07vw, 16px);
+      font-weight: 850;
+    }
+
+    .flow-step strong { display: block; margin-bottom: 4px; font-size: clamp(14px, 1.25vw, 19px); }
+    .flow-step span { color: var(--muted); font-size: clamp(11px, 1vw, 15px); line-height: 1.35; }
+
+    .capture-frame {
+      display: grid;
+      min-height: 260px;
+      place-items: center;
+      padding: 24px;
+      border: 1px dashed rgba(135, 170, 255, .70);
+      background: linear-gradient(135deg, rgba(135, 170, 255, .08), transparent 54%);
+      text-align: center;
+    }
+
+    .capture-frame strong {
+      display: block;
+      margin-bottom: 9px;
+      color: var(--blue);
+      font-size: clamp(18px, 1.62vw, 25px);
+    }
+
+    .capture-frame p { max-width: 350px; margin: 0; color: var(--muted); }
+
+    .capture-frame code,
+    code {
+      color: #d9e7fa;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: .92em;
+    }
+
+    .showcase-steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      width: 100%;
+    }
+
+    .showcase-step {
+      display: grid;
+      min-height: 232px;
+      align-content: start;
+      gap: 13px;
+      padding: 22px 21px;
+      border-top: 2px solid var(--teal);
+      background: linear-gradient(145deg, rgba(83, 212, 209, .12), rgba(8, 29, 53, .24));
+    }
+
+    .showcase-step:nth-child(2) { border-color: var(--blue); background: linear-gradient(145deg, var(--blue-soft), rgba(8, 29, 53, .24)); }
+    .showcase-step:nth-child(3) { border-color: var(--amber); background: linear-gradient(145deg, var(--amber-soft), rgba(8, 29, 53, .24)); }
+    .showcase-step h3 { margin: 0; font-size: clamp(18px, 1.62vw, 25px); letter-spacing: -0.025em; }
+    .showcase-step p { margin: 0; color: var(--muted); font-size: clamp(12px, 1.08vw, 16px); line-height: 1.4; }
+    .showcase-step .step-label { color: var(--teal); font-size: clamp(10px, .92vw, 14px); font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+    .showcase-step:nth-child(2) .step-label { color: var(--blue); }
+    .showcase-step:nth-child(3) .step-label { color: var(--amber); }
+
+    .receipt-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0 22px;
+      width: 100%;
+      border-top: 1px solid var(--line);
+    }
+
+    .receipt-grid div {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: clamp(11px, 1.0vw, 15px);
+    }
+
+    .receipt-grid b { color: var(--ink); font-weight: 750; text-align: right; }
+
+    .action-map {
+      display: grid;
+      gap: 12px;
+      width: 100%;
+    }
+
+    .action-map-row {
+      display: grid;
+      grid-template-columns: minmax(168px, .8fr) minmax(210px, 1fr) minmax(180px, .86fr);
+      gap: 18px;
+      align-items: center;
+      padding: 17px 18px;
+      border-left: 2px solid var(--teal);
+      background: rgba(8, 29, 53, .33);
+    }
+
+    .action-map-row.governed { border-left-color: var(--amber); }
+    .action-map-row .path { margin: 0; color: var(--teal); font-family: "SFMono-Regular", Consolas, monospace; font-size: clamp(11px, 1.02vw, 16px); }
+    .action-map-row.governed .path { color: var(--amber); }
+    .action-map-row strong { font-size: clamp(14px, 1.18vw, 18px); }
+    .action-map-row span { color: var(--muted); font-size: clamp(11px, 1.0vw, 15px); line-height: 1.35; }
+
+    .config-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4%;
+      width: 100%;
+      align-items: stretch;
+    }
+
+    .config-zone {
+      position: relative;
+      padding: 23px 26px 25px;
+      border-top: 2px solid var(--teal);
+      background: rgba(9, 33, 60, .42);
+    }
+
+    .config-zone.governance { border-color: var(--amber); }
+    .config-zone h3 { margin-bottom: 8px; font-size: clamp(20px, 1.85vw, 29px); letter-spacing: -0.03em; }
+    .config-zone .path { margin-bottom: 17px; color: var(--teal); font-family: "SFMono-Regular", Consolas, monospace; font-size: clamp(11px, 1.03vw, 16px); }
+    .config-zone.governance .path { color: var(--amber); }
+
+    .config-list {
+      display: grid;
+      gap: 11px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .config-list li { color: var(--muted); font-size: clamp(12px, 1.08vw, 16px); line-height: 1.36; }
+    .config-list strong { color: var(--ink); }
+
+    .state-layout {
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .state-rail {
+      display: grid;
+      gap: 10px;
+    }
+
+    .state {
+      display: grid;
+      grid-template-columns: 148px 1fr;
+      gap: 18px;
+      align-items: center;
+      padding: 15px 17px;
+      border-left: 2px solid var(--line-strong);
+      background: rgba(8, 29, 53, .32);
+    }
+
+    .state.active { border-color: var(--green); background: linear-gradient(90deg, var(--green-soft), transparent); }
+    .state.configured { border-color: var(--blue); background: linear-gradient(90deg, var(--blue-soft), transparent); }
+    .state.installed { border-color: var(--teal); background: linear-gradient(90deg, var(--teal-soft), transparent); }
+    .state.unverified { border-color: var(--rose); background: linear-gradient(90deg, var(--rose-soft), transparent); }
+    .state strong { font-size: clamp(14px, 1.3vw, 20px); letter-spacing: .055em; }
+    .state p { margin: 0; color: var(--muted); font-size: clamp(11px, 1.02vw, 15px); line-height: 1.34; }
+
+    .three-streams {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin: 16px 0 0;
+    }
+
+    .three-streams.four-streams { grid-template-columns: repeat(4, 1fr); }
+    .three-streams.four-streams .stream { min-height: 136px; padding: 14px; }
+    .three-streams.four-streams .stream h3 { margin-bottom: 10px; font-size: clamp(16px, 1.32vw, 21px); }
+
+    .stream {
+      min-height: 147px;
+      padding: 18px;
+      border-top: 2px solid var(--teal);
+      background: linear-gradient(150deg, rgba(83, 212, 209, .11), rgba(8, 29, 53, .18));
+    }
+
+    .stream h3 { margin-bottom: 13px; color: var(--teal); font-size: clamp(19px, 1.6vw, 25px); }
+    .stream p { margin: 5px 0; color: var(--muted); font-size: clamp(11px, .98vw, 15px); line-height: 1.3; }
+    .stream p strong { color: var(--ink); }
+    .stream.running { border-color: var(--green); background: linear-gradient(150deg, var(--green-soft), rgba(8, 29, 53, .18)); }
+    .stream.running h3 { color: var(--green); }
+
+    .artifact-board {
+      display: grid;
+      grid-template-columns: .85fr 1.15fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .ticket-card {
+      padding: 24px 26px;
+      border-left: 3px solid var(--teal);
+      background: linear-gradient(120deg, rgba(83, 212, 209, .16), rgba(8, 29, 53, .2));
+    }
+
+    .ticket-key { margin-bottom: 10px; color: var(--teal); font-size: clamp(12px, 1.1vw, 17px); font-weight: 850; letter-spacing: .08em; }
+    .ticket-card h3 { margin-bottom: 12px; font-size: clamp(21px, 1.93vw, 30px); letter-spacing: -0.032em; }
+    .ticket-card p { margin-bottom: 12px; }
+    .ticket-footer { display: flex; flex-wrap: wrap; gap: 8px; }
+
+    .contract-lines {
+      display: grid;
+      gap: 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .contract-line {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      gap: 18px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: clamp(11px, 1.02vw, 16px);
+      line-height: 1.35;
+    }
+
+    .contract-line strong { color: var(--ink); }
+
+    .route-layout {
+      display: grid;
+      grid-template-columns: 1.03fr .97fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .route-flow {
+      display: grid;
+      gap: 10px;
+    }
+
+    .route-row {
+      display: grid;
+      grid-template-columns: 44px 1fr auto;
+      gap: 14px;
+      align-items: center;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .route-row:first-child { border-top: 1px solid var(--line); }
+    .route-row .mark { color: var(--teal); font-size: clamp(18px, 1.65vw, 25px); font-weight: 850; }
+    .route-row strong { font-size: clamp(13px, 1.17vw, 18px); }
+    .route-row span { color: var(--muted); font-size: clamp(10px, .94vw, 14px); }
+
+    .lifecycle {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 7px;
+      width: 100%;
+    }
+
+    .life-step {
+      position: relative;
+      display: grid;
+      min-height: 152px;
+      align-content: start;
+      gap: 9px;
+      padding: 16px 13px;
+      border-top: 2px solid var(--line-strong);
+      background: rgba(8, 29, 53, .34);
+    }
+
+    .life-step:nth-child(2), .life-step:nth-child(3) { border-color: var(--teal); }
+    .life-step:nth-child(4), .life-step:nth-child(5) { border-color: var(--blue); }
+    .life-step:nth-child(6) { border-color: var(--amber); }
+    .life-step:nth-child(7) { border-color: var(--green); }
+    .life-step:not(:last-child)::after {
+      position: absolute;
+      top: 33px;
+      right: -7px;
+      z-index: 2;
+      width: 12px;
+      height: 12px;
+      content: "";
+      border-top: 1px solid var(--line-strong);
+      border-right: 1px solid var(--line-strong);
+      transform: rotate(45deg);
+    }
+
+    .life-step .no { color: var(--muted-2); font-size: clamp(9px, .76vw, 12px); font-weight: 800; letter-spacing: .08em; }
+    .life-step strong { font-size: clamp(11px, 1.07vw, 16px); line-height: 1.18; }
+    .life-step span { color: var(--muted); font-size: clamp(9px, .85vw, 13px); line-height: 1.32; }
+
+    .gate-layout {
+      display: grid;
+      grid-template-columns: .96fr 1.04fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .candidate-sheet {
+      padding: 24px 27px;
+      border-top: 2px solid var(--amber);
+      background: linear-gradient(140deg, var(--amber-soft), rgba(8, 29, 53, .22));
+    }
+
+    .candidate-sheet h3 { margin-bottom: 14px; font-size: clamp(20px, 1.75vw, 27px); }
+    .candidate-fields { display: grid; gap: 8px; }
+    .candidate-fields div { display: flex; justify-content: space-between; gap: 18px; padding-bottom: 8px; border-bottom: 1px solid rgba(246, 197, 110, .18); color: var(--muted); font-size: clamp(11px, 1.0vw, 15px); }
+    .candidate-fields b { color: var(--ink); font-weight: 750; text-align: right; }
+
+    .gate-steps {
+      display: grid;
+      gap: 14px;
+    }
+
+    .gate-step {
+      display: grid;
+      grid-template-columns: 40px 1fr;
+      gap: 14px;
+      align-items: start;
+      padding-bottom: 13px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .gate-step:last-child { border-bottom: 0; }
+    .gate-step .number { color: var(--amber); font-size: clamp(19px, 1.75vw, 27px); font-weight: 850; }
+    .gate-step h3 { margin: 0 0 3px; font-size: clamp(14px, 1.2vw, 19px); }
+    .gate-step p { margin: 0; }
+
+    .jira-layout {
+      display: grid;
+      grid-template-columns: 1.13fr .87fr;
+      gap: 4%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .jira-rail {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 9px;
+    }
+
+    .jira-step {
+      min-height: 178px;
+      padding: 18px 14px;
+      border-top: 2px solid var(--line-strong);
+      background: rgba(8, 29, 53, .32);
+    }
+
+    .jira-step:nth-child(2) { border-color: var(--amber); }
+    .jira-step:nth-child(3) { border-color: var(--teal); }
+    .jira-step:nth-child(4) { border-color: var(--green); }
+    .jira-step strong { display: block; margin-bottom: 11px; font-size: clamp(12px, 1.08vw, 17px); line-height: 1.2; }
+    .jira-step p { margin: 0; color: var(--muted); font-size: clamp(10px, .9vw, 14px); line-height: 1.34; }
+
+    .non-goal-list {
+      display: grid;
+      gap: 9px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .non-goal-list li {
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: clamp(12px, 1.05vw, 16px);
+      line-height: 1.36;
+      border-left: 2px solid var(--rose);
+    }
+
+    .pilot-layout {
+      display: grid;
+      grid-template-columns: 1.02fr .98fr;
+      gap: 4.2%;
+      width: 100%;
+      align-items: center;
+    }
+
+    .pilot-numbers {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .pilot-number { padding: 10px 0 13px; border-top: 2px solid var(--teal); }
+    .pilot-number:nth-child(2) { border-color: var(--blue); }
+    .pilot-number:nth-child(3) { border-color: var(--amber); }
+    .pilot-number b { display: block; margin-bottom: 4px; color: #f8fbff; font-size: clamp(31px, 3.35vw, 53px); line-height: .95; letter-spacing: -0.055em; }
+    .pilot-number span { color: var(--muted); font-size: clamp(10px, .92vw, 14px); line-height: 1.3; }
+
+    .measure-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 24px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .measure-list li { color: var(--muted); font-size: clamp(11px, .99vw, 15px); }
+    .measure-list li::before { content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 8px 2px 0; border-radius: 50%; background: var(--teal); }
+
+    .appendix-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4%;
+      width: 100%;
+      align-items: stretch;
+    }
+
+    .evidence-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: clamp(10px, .91vw, 14px);
+      line-height: 1.33;
+    }
+
+    .evidence-table th,
+    .evidence-table td { padding: 10px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .evidence-table th { color: var(--muted-2); font-size: .9em; font-weight: 750; letter-spacing: .055em; text-transform: uppercase; }
+    .evidence-table td { color: var(--muted); }
+    .evidence-table td:first-child { color: var(--ink); font-weight: 800; white-space: nowrap; }
+
+    .reference-list {
+      display: grid;
+      gap: 0;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border-top: 1px solid var(--line);
+    }
+
+    .reference-list li {
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: clamp(10px, .95vw, 14px);
+      line-height: 1.34;
+    }
+
+    .reference-list strong { display: block; margin-bottom: 3px; color: var(--ink); font-size: 1.02em; }
+
+    .controls {
+      position: absolute;
+      right: 22px;
+      bottom: 18px;
+      z-index: 20;
+      display: flex;
+      gap: 7px;
+    }
+
+    .control {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      padding: 0;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: var(--muted);
+      background: rgba(5, 19, 35, .72);
+      cursor: pointer;
+    }
+
+    .control:hover { color: var(--ink); border-color: var(--line-strong); }
+
+    .overlay {
+      position: absolute;
+      z-index: 40;
+      inset: 0;
+      display: none;
+      padding: 7% 9%;
+      background: rgba(3, 16, 31, .95);
+      overflow: auto;
+    }
+
+    .overlay.open { display: block; }
+
+    .overlay h2 { margin-bottom: 22px; font-size: clamp(30px, 3vw, 47px); letter-spacing: -0.04em; }
+    .overlay-close { position: absolute; top: 30px; right: 36px; width: 38px; height: 38px; padding: 0; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer; }
+
+    .toc-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px 30px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .toc-list button {
+      width: 100%;
+      padding: 11px 0;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .toc-list button:hover { color: var(--teal); }
+    .toc-list b { display: inline-block; min-width: 37px; color: var(--teal); }
+
+    .notes-panel {
+      position: absolute;
+      z-index: 30;
+      top: 0;
+      right: 0;
+      width: min(450px, 48%);
+      height: 100%;
+      display: none;
+      padding: 6.5% 5% 5%; 
+      border-left: 1px solid var(--line);
+      background: rgba(5, 20, 36, .97);
+      overflow: auto;
+    }
+
+    .notes-panel.open { display: block; }
+    .notes-panel h2 { margin-bottom: 16px; font-size: clamp(24px, 2.4vw, 36px); }
+    .notes-panel p { color: var(--muted); font-size: clamp(13px, 1.08vw, 16px); line-height: 1.48; }
+    .notes-panel .note-source { color: var(--muted-2); font-size: clamp(10px, .9vw, 13px); }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-aspect-ratio: 1.3/1) {
+      body { overflow: auto; }
+      .deck-shell { min-height: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
+
+    @media print {
+      html, body { width: 100%; height: auto; background: #03101f; overflow: visible; }
+      body { display: block; }
+      .deck-shell { width: 100%; height: auto; min-height: 0; box-shadow: none; overflow: visible; }
+      .slide { position: relative; display: block !important; width: 100%; height: 100vh; min-height: 0; break-after: page; page-break-after: always; }
+      .slide-inner { min-height: 100vh; }
+      .controls, .overlay, .notes-panel, .skip-link { display: none !important; }
+      .slide:last-of-type { break-after: auto; page-break-after: auto; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#slide-content">Skip to presentation</a>
+
+  <main class="deck-shell" aria-label="AWF 1.8.9 practical showcase presentation">
+    <div id="slide-status" class="sr-only" aria-live="polite"></div>
+
+    <section class="slide active" id="slide-1" data-core="true" data-title="AWF 1.8.9" aria-roledescription="slide" aria-label="Slide 1 of 14: AWF 1.8.9">
+      <div class="slide-inner" id="slide-content" tabindex="-1">
+        <div class="topline"><p class="eyebrow">Practical showcase</p><span class="slide-index">01 / 14</span></div>
+        <div class="content">
+          <div class="cover-grid">
+            <div>
+              <p class="release-kicker">Agentic Workflow Framework 1.8.9</p>
+              <h1>Governed AI-assisted software delivery</h1>
+              <p class="lead">A governed workflow for AI-assisted delivery: agents write, an independent critic reviews, and you merge. One practical walkthrough shows setup, adoption and a ticket through that handoff.</p>
+              <div class="cover-meta">
+                <span class="status-chip green">Verified supplied source</span>
+                <span class="status-chip blue">16 September 2026</span>
+                <span class="status-chip">Apache-2.0</span>
+                <span class="status-chip">jkinlay/agentic-workflow-framework</span>
+              </div>
+            </div>
+            <div class="cover-art" role="img" aria-label="AWF at the centre of four linked concerns: prepare, adopt, review and decide.">
+              <div class="orbit one"></div><div class="orbit two"></div><div class="orbit"></div>
+              <div class="core-mark">AWF</div>
+              <div class="orbit-label a">Prepare</div>
+              <div class="orbit-label b">Adopt</div>
+              <div class="orbit-label c">Review</div>
+              <div class="orbit-label d">Decide</div>
+            </div>
+          </div>
+        </div>
+        <div class="footerline"><span><strong>27-minute core</strong> with 3 minutes for discussion</span><span class="source-chip">Source: README.md · Release; PUBLISHER.json</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>Open with the release identity and the practical promise. The deck follows one ticket end to end rather than teaching governance as an abstract layer.</p>
+        <p class="note-source">Source: AWF 1.8.9 README.md — Release; PUBLISHER.json.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-2" data-core="true" data-title="A ticket, with and without AWF" aria-roledescription="slide" aria-label="Slide 2 of 14: A ticket, with and without AWF">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Why use it</p><span class="slide-index">02 / 14</span></div>
+        <h2 class="slide-title">A ticket, with and without AWF</h2>
+        <div class="content">
+          <div class="comparison" role="img" aria-label="Comparison of an unstructured AI-assisted ticket with the AWF workflow for the same ticket.">
+            <article class="comparison-side problem">
+              <span class="label-chip">Unstructured assistant</span>
+              <h3>One conversation, one person</h3>
+              <p class="ticket-key">Walkthrough ticket · &lt;TICKET-KEY&gt; — &lt;title&gt;</p>
+              <ul class="plain-list">
+                <li>Scope can drift while the code changes.</li>
+                <li>Review readiness can be mistaken for permission to merge.</li>
+                <li>Evidence of tests, findings and decisions stays fragmented.</li>
+                <li>Unknown external outcomes invite unsafe retries.</li>
+              </ul>
+            </article>
+            <article class="comparison-side controlled">
+              <span class="label-chip">AWF</span>
+              <h3>One ticket, explicit handoffs</h3>
+              <p class="ticket-key">Walkthrough ticket · &lt;TICKET-KEY&gt; — &lt;title&gt;</p>
+              <ul class="plain-list">
+                <li>A ticket contract fixes acceptance criteria, scope and risks.</li>
+                <li>Route and budget are reserved before a run starts.</li>
+                <li>A draft PR receives an independent critic on the observed head.</li>
+                <li>A human authorises and merges one exact candidate.</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+        <div class="footerline"><span>Purpose: reviewable, bounded, evidence-led delivery</span><span class="source-chip">Source: README.md · Start; .agentic/SPECIFICATION.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>The value proposition is control and observability. Do not claim an automatic productivity uplift. The pilot slide defines how to measure outcomes.</p>
+        <p class="note-source">Source: AWF 1.8.9 README.md — Start; .agentic/SPECIFICATION.md — Authority and modes.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-3" data-core="true" data-title="What you need" aria-roledescription="slide" aria-label="Slide 3 of 14: What you need">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 1: set it up</p><span class="slide-index">03 / 14</span></div>
+        <h2 class="slide-title">What you need</h2>
+        <div class="content">
+          <div class="terminal-layout">
+            <div class="terminal" aria-label="Captured AWF 1.8.9 distribution checksum comparison">
+              <div class="terminal-head"><span>distribution checksum</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
+              <pre><span class="prompt">$</span> <span class="command">sha256sum AWF-v1.8.9-distribution.zip</span>
+<span class="output-value">e8a5b4b2305c351a750c38abac2d98a9da90a96a934f311bf631cbb69c34719b</span>
+  AWF-v1.8.9-distribution.zip
+
+<span class="output-key">independent_pin</span>: <span class="output-value">e8a5b4b2…c34719b</span>
+<span class="output-key">comparison</span>: <span class="output-value">MATCH</span></pre>
+            </div>
+            <div class="facts">
+              <div class="mini-note"><strong>Can I run it?</strong> Python 3.11+, Git and the downloaded distribution are enough for this check. A GitHub repository and Codex are needed later for the PR walkthrough; Jira is optional.</div>
+              <div class="fact"><span class="fact-number">01</span><div><h3>Obtain archive and pin separately</h3><p class="small-copy">A matching SHA-256 proves byte equality with a trusted pin. The release is unsigned, so the digest does not authenticate the publisher.</p></div></div>
+              <div class="fact"><span class="fact-number">02</span><div><h3>Compare before extraction</h3><p class="small-copy">Stop on a mismatch. Only unzip and inspect the supplied distribution after the comparison succeeds.</p></div></div>
+              <div class="fact"><span class="fact-number">03</span><div><h3>Verification has no project side effect</h3><p class="small-copy">This check does not install the skill, alter a project, create a PR or call a ticket system.</p></div></div>
+              <div class="mini-note">Capture the complete checksum line and the independently obtained pin in the rehearsal; do not treat a matching digest as publisher authentication.</div>
+            </div>
+          </div>
+        </div>
+        <div class="footerline"><span>Artifact: locally captured SHA-256 comparison for the supplied AWF 1.8.9 distribution.</span><span class="source-chip">Source: global/awf/SKILL.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>The terminal result is a real local checksum capture of the supplied outer distribution in this workspace. Emphasise the trust limitation once: the distribution is unsigned, and a hash needs a separately trusted pin.</p>
+        <p class="note-source">Source: AWF 1.8.9 global/awf/SKILL.md — bundled release verification; locally captured SHA-256 of the supplied AWF-v1.8.9-distribution.zip.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-4" data-core="true" data-title="Install the skill" aria-roledescription="slide" aria-label="Slide 4 of 14: Install the skill">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 1: set it up</p><span class="slide-index">04 / 14</span></div>
+        <h2 class="slide-title">Install the skill</h2>
+        <div class="content">
+          <div class="terminal-layout">
+            <div class="terminal" aria-label="AWF 1.8.9 portable skill installation commands and captured summary">
+              <div class="terminal-head"><span>portable-skill-install</span><span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
+              <pre><span class="prompt">$</span> <span class="command">cd AWF-v1.8.9-distribution</span>
+<span class="prompt">$</span> <span class="command">python -B install_awf.py --dry-run</span>
+<span class="prompt">$</span> <span class="command">python -B install_awf.py</span>
+
+<span class="output-key">status</span>: <span class="output-value">"upgraded"</span>
+<span class="output-key">version</span>: <span class="output-value">"1.8.9"</span>
+<span class="output-key">previous_version</span>: <span class="output-value">"1.8.3"</span>
+<span class="output-key">backup</span>: <span class="output-value">retained</span>
+<span class="output-key">duplicates</span>: <span class="output-value">[]</span></pre>
+            </div>
+            <div class="facts">
+              <div class="fact"><span class="fact-number">1</span><div><h3>Run from the extracted distribution</h3><p class="small-copy">The dry run names the selected Codex skill destination, previous version, backup location, preserved settings and duplicate report.</p></div></div>
+              <div class="fact"><span class="fact-number">2</span><div><h3>Fail closed</h3><p class="small-copy">The installer stages the replacement and retains the prior folder outside the discovery path.</p></div></div>
+              <div class="fact"><span class="fact-number">3</span><div><h3>Refresh discovery</h3><p class="small-copy">Start a new Codex task or turn, then invoke <code>$awf</code> in the intended project.</p></div></div>
+              <div class="mini-note">Skill installation makes AWF available. It does not alter repositories or silently upgrade existing projects.</div>
+            </div>
+          </div>
+        </div>
+        <div class="footerline"><span>Artifact: local upgrade example, 1.8.3 → 1.8.9. A fresh install follows the same dry-run-first path.</span><span class="source-chip">Source: global/awf/SKILL.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>This deck's authoring environment was upgraded from the installed 1.8.3 skill to 1.8.9 through the supplied installer. The backup remained retained. This is not an adoption of any project.</p>
+        <p class="note-source">Source: AWF 1.8.9 global/awf/SKILL.md — portable skill installation; local installer result.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-5" data-core="true" data-title="Adopt it into a repository" aria-roledescription="slide" aria-label="Slide 5 of 14: Adopt it into a repository">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 1: set it up</p><span class="slide-index">05 / 14</span></div>
+        <h2 class="slide-title">Adopt it into a repository</h2>
+        <div class="content">
+          <div class="showcase-steps" role="img" aria-label="Project adoption: user asks AWF to adopt the release, AWF prepares a draft adoption pull request, then the owner reviews it.">
+            <article class="showcase-step">
+              <p class="step-label">You type</p>
+              <h3>Ask AWF to adopt 1.8.9</h3>
+              <div class="terminal"><div class="terminal-head"><span>Codex prompt</span></div><pre><span class="prompt">$</span> <span class="command">$awf adopt AWF 1.8.9 in this project</span>
+  <span class="command">and prepare a draft PR for owner review</span></pre></div>
+              <p>AWF inspects the target and keeps project-owned settings visible. Repository rules remain outside bootstrap authority.</p>
+            </article>
+            <article class="showcase-step">
+              <p class="step-label">AWF returns</p>
+              <h3>Bootstrap dry run and status</h3>
+              <div class="terminal" aria-label="Required adoption rehearsal capture format"><div class="terminal-head"><span>replace with actual bootstrap and status output</span></div><pre><span class="output-key">bootstrap_dry_run</span>: <span class="output-value">&lt;proposed derivation / residue report&gt;</span>
+<span class="output-key">integrity_valid</span>: <span class="output-value">true</span>
+<span class="output-key">status</span>: <span class="output-value">ACCEPTED</span>
+<span class="output-key">adoption_state</span>: <span class="output-value">CONFIGURED</span>
+<span class="output-key">next_action</span>: <span class="output-value">&lt;draft PR ready for owner review&gt;</span></pre></div>
+              <p>Show the proposed file list, then the installed checks. Also capture the draft adoption PR and observed rules status.</p>
+            </article>
+            <article class="showcase-step">
+              <p class="step-label">Owner reviews</p>
+              <h3>Decide whether to merge</h3>
+              <p>Review the draft’s governance change, preservation report and any observed-rule warnings. The owner makes the repository change effective.</p>
+              <div class="mini-note">Low-level bootstrap and verification syntax moves to Appendix B; this slide is the human handoff.</div>
+            </article>
+          </div>
+        </div>
+        <div class="footerline"><span>Required rehearsal capture: the selected repository’s draft adoption PR and post-install result.</span><span class="source-chip">Source: global/awf/references/workflow.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>State this explicitly: adoption changes repository governance files and prepares a draft PR for owner review and merge. It has no repository-rule precondition. Report observed rules as APPLIED, MISSING or UNOBSERVED, and offer the shipped ruleset separately. Appendix B contains the bootstrap and verification commands for technical follow-up.</p>
+        <p class="note-source">Source: AWF 1.8.9 global/awf/references/workflow.md — Adopt AWF; AGENTS.md.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-6" data-core="true" data-title="Choose the operating configuration" aria-roledescription="slide" aria-label="Slide 6 of 14: Choose the operating configuration">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 1: set it up</p><span class="slide-index">06 / 14</span></div>
+        <h2 class="slide-title">Choose the operating configuration</h2>
+        <div class="content">
+          <div class="config-layout" role="img" aria-label="An AWF operating configuration shown before and after a direct instruction; changes to protected project governance require a reviewed pull request.">
+            <article class="config-zone">
+              <span class="label-chip">Direct instruction</span>
+              <h3>Current operating view</h3>
+              <p class="path">OPERATING_CONFIG.yaml</p>
+              <div class="terminal"><div class="terminal-head"><span>illustrative operating show — replace in rehearsal</span></div><pre><span class="prompt">$</span> <span class="command">python -B ABS_PROJECT/.agentic/scripts/workflow.py operating show</span>
+
+<span class="output-key">streams.count</span>: <span class="output-value">3</span>
+<span class="output-key">worker</span>: <span class="output-value">gpt-5.6-terra / medium</span>
+<span class="output-key">critic</span>: <span class="output-value">gpt-5.6-sol / high</span></pre></div>
+              <p class="small-copy" style="margin-top:16px">A/B/C are the default native streams. Actual host capacity still binds.</p>
+            </article>
+            <article class="config-zone governance">
+              <span class="label-chip" style="color:var(--amber);border-color:rgba(246,197,110,.4);background:var(--amber-soft)">One realistic change</span>
+              <h3>Choose four Sol/high streams for future dispatch</h3>
+              <p class="path">Direct instruction → updated operating file</p>
+              <div class="terminal"><div class="terminal-head"><span>illustrative operating set — replace in rehearsal</span></div><pre><span class="prompt">$</span> <span class="command">python -B ABS_PROJECT/.agentic/scripts/workflow.py operating set \</span>
+  <span class="command">--instruction "4 streams, each Sol/high" \</span>
+  <span class="command">--set streams.count=4 --set streams.A.worker=gpt-5.6-sol/high \</span>
+  <span class="command">--set streams.B.worker=gpt-5.6-sol/high --set streams.C.worker=gpt-5.6-sol/high \</span>
+  <span class="command">--set streams.D.worker=gpt-5.6-sol/high</span>
+
+<span class="output-key">result</span>: <span class="output-value">accepted</span>
+<span class="output-key">next_dispatch</span>: <span class="output-value">streams.count = 4</span>
+<span class="output-key">worker_route</span>: <span class="output-value">A–D = gpt-5.6-sol / high</span>
+<span class="output-key">running_reservations</span>: <span class="output-value">unchanged</span></pre></div>
+              <div class="mini-note" style="margin-top:18px">Protected ceilings, allowlists, review floors and merge policy require a reviewed PR in <code>.agentic/PROJECT_CONFIG.yaml</code>.</div>
+            </article>
+          </div>
+        </div>
+        <div class="footerline"><span>Required rehearsal capture: an actual operating-show result and one accepted choice from the demonstration repository.</span><span class="source-chip">Source: .agentic/docs/29-OPERATING-CONFIGURATION.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>After CONFIGURED, show operating configuration and offer three choices: keep defaults, review Epics and recommend, or customize. Recommendations need explicit acceptance. Configuration does not create capacity or allow a worker to raise protected limits. The displayed output is a rehearsal format, not captured project evidence.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/docs/29-OPERATING-CONFIGURATION.md — Two configuration layers and Apply the user's choices; OPERATING_CONFIG.yaml.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-7" data-core="true" data-title="Merge the adoption PR" aria-roledescription="slide" aria-label="Slide 7 of 14: Merge the adoption PR">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 1: set it up</p><span class="slide-index">07 / 14</span></div>
+        <h2 class="slide-title">Merge the adoption PR</h2>
+        <div class="content">
+          <div class="showcase-steps" role="img" aria-label="AWF adoption PR, owner review and merge, and a fresh status result showing active adoption evidence.">
+            <article class="showcase-step">
+              <p class="step-label">AWF returns</p>
+              <h3>Draft adoption PR</h3>
+              <div class="capture-frame" style="min-height:126px"><div><strong>Insert actual PR</strong><p class="small-copy">&lt;PR URL&gt; · draft status · changed governance files</p></div></div>
+              <p>The PR is the owner’s review surface, not proof that the project is ACTIVE.</p>
+            </article>
+            <article class="showcase-step">
+              <p class="step-label">Owner reviews</p>
+              <h3>Review and merge</h3>
+              <p>Confirm the intended governance change, project-owned preservation and reported conditions. Merge manually when the repository owner accepts it.</p>
+              <div class="mini-note">A local receipt or an asserted branch state does not substitute for observing the adoption merge.</div>
+            </article>
+            <article class="showcase-step">
+              <p class="step-label">AWF returns after merge</p>
+              <h3>Fresh post-merge status</h3>
+              <div class="terminal"><div class="terminal-head"><span>required capture</span></div><pre><span class="output-key">adoption_pr</span>: <span class="output-value">&lt;PR NUMBER&gt;</span>
+<span class="output-key">default_branch</span>: <span class="output-value">observed</span>
+<span class="output-key">status</span>: <span class="output-value">&lt;actual status&gt;</span></pre></div>
+              <p>ACTIVE appears only when independent release trust, the receipt-changing merge and fresh accepted default-branch bytes all pass. Otherwise the status remains CONFIGURED.</p>
+            </article>
+          </div>
+        </div>
+        <div class="footerline"><span>Required rehearsal capture: the observed adoption merge and fresh status output from the default branch.</span><span class="source-chip">Source: .agentic/docs/20-NEW-PROJECT-SETUP.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>ACTIVE is not a label inferred from a receipt or branch assertion. It requires independent release trust, an observed receipt-changing adoption merge, and accepted raw AWF/configuration/receipt/provenance bytes on the fresh default branch. It does not enable a live adapter, merge code or Jira writes.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/docs/20-NEW-PROJECT-SETUP.md — Adoption guide; .agentic/SPECIFICATION.md — Integrity and adoption.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-8" data-core="true" data-title="Pick a ticket and dispatch" aria-roledescription="slide" aria-label="Slide 8 of 14: Pick a ticket and dispatch">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 2: run a ticket</p><span class="slide-index">08 / 14</span></div>
+        <h2 class="slide-title">Pick a ticket and dispatch</h2>
+        <div class="content">
+          <div class="artifact-board">
+            <article class="ticket-card">
+              <p class="ticket-key">WALKTHROUGH TICKET · &lt;TICKET-KEY&gt;</p>
+              <h3>&lt;Real ticket title from rehearsal&gt;</h3>
+              <p class="body-copy"><strong>Epic:</strong> &lt;EPIC-KEY&gt; · The selected low-risk ticket carries one key and title through every remaining slide. It needs accepted scope, a single writer and a current validation path.</p>
+              <div class="ticket-footer"><span class="status-chip blue">Ready</span><span class="status-chip">One writer</span><span class="status-chip">Independent review</span></div>
+              <div class="terminal" style="margin-top:20px"><div class="terminal-head"><span>native handoff</span></div><pre><span class="prompt">$</span> <span class="command">$awf dispatch &lt;TICKET-KEY&gt;</span></pre></div>
+            </article>
+            <div class="contract-lines" aria-label="Ticket contract contents">
+              <div class="contract-line"><strong>Capture readiness</strong><span>Insert the actual dispatch result: requirements and acceptance criteria accepted, or the specific reason dispatch stopped.</span></div>
+              <div class="contract-line"><strong>Scope / writer</strong><span>Show the selected file boundary, dependencies and exclusive writer decision.</span></div>
+              <div class="contract-line"><strong>Validation / risk</strong><span>Show the current validation path and whether a specialist trigger applies.</span></div>
+              <div class="contract-line"><strong>Capacity</strong><span>Show the effective ceiling and observed host capacity. A configured ceiling is not a free slot.</span></div>
+              <div class="capture-frame" style="min-height:126px; margin-top:16px"><div><strong>Required rehearsal capture</strong><p class="small-copy">&lt;TICKET-KEY&gt; · ticket title · readiness result · next action</p></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="footerline"><span>Required rehearsal capture: the same real ticket key, title and captured dispatch-readiness result.</span><span class="source-chip">Source: .agentic/docs/23-TICKET-LIFECYCLE.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>Before dispatch, confirm scope, contract, ownership, dependencies, file boundaries, operating choice, effective ceiling and actual capacity. The final rehearsal should replace all bracketed fields with one real low-risk ticket and capture the readiness output.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/docs/23-TICKET-LIFECYCLE.md — Routine work; global/awf/references/workflow.md — Routine ticket work.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-9" data-core="true" data-title="Routed, reserved, running" aria-roledescription="slide" aria-label="Slide 9 of 14: Routed, reserved, running">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 2: run a ticket</p><span class="slide-index">09 / 14</span></div>
+        <h2 class="slide-title">Routed, reserved, running</h2>
+        <div class="content">
+          <div class="route-layout">
+            <div role="img" aria-label="Rehearsal stream board showing the selected ticket running in stream A and streams B and C idle.">
+              <p class="ticket-key">REHEARSAL STREAM BOARD · &lt;TICKET-KEY&gt;</p>
+              <div class="three-streams four-streams">
+                <article class="stream running"><h3>Stream A</h3><p><strong>RUNNING</strong></p><p>Ticket: &lt;TICKET-KEY&gt;</p><p>Route: &lt;model / effort&gt;</p><p>Run: &lt;run ID&gt;</p></article>
+                <article class="stream"><h3>Stream B</h3><p><strong>IDLE</strong></p><p>No current reservation</p><p>Show observed capacity</p></article>
+                <article class="stream"><h3>Stream C</h3><p><strong>IDLE</strong></p><p>No current reservation</p><p>Show observed capacity</p></article>
+                <article class="stream"><h3>Stream D</h3><p><strong>IDLE</strong></p><p>No current reservation</p><p>Show observed capacity</p></article>
+              </div>
+              <div class="mini-note" style="margin-top:18px">Replace every field with the rehearsal capture. A configured ceiling is not a free host slot.</div>
+            </div>
+            <div class="ticket-card" aria-label="Placeholder for selected ticket route suggestion and reservation output">
+              <p class="ticket-key">REQUIRED REHEARSAL CAPTURE</p>
+              <h3>Suggest, reserve, then settle</h3>
+              <div class="terminal"><div class="terminal-head"><span>replace with actual suggest and reserve output</span></div><pre><span class="prompt">$</span> <span class="command">python .agentic/scripts/route_model.py suggest …</span>
+<span class="output-key">model</span>: <span class="output-value">&lt;observed model&gt;</span>
+<span class="output-key">effort</span>: <span class="output-value">&lt;observed effort&gt;</span>
+<span class="output-key">why</span>: <span class="output-value">&lt;route / override / floors&gt;</span>
+
+<span class="prompt">$</span> <span class="command">python .agentic/scripts/route_model.py reserve …</span>
+<span class="output-key">run_id</span>: <span class="output-value">&lt;run identifier&gt;</span>
+<span class="output-key">budget_bound</span>: <span class="output-value">&lt;observed bound&gt;</span>
+<span class="output-key">status</span>: <span class="output-value">&lt;reserved / launched&gt;</span></pre></div>
+              <div class="mini-note" style="margin-top:18px">After the worker finishes, capture <code>settle</code> too. Unknown usage is not silently zero.</div>
+            </div>
+          </div>
+        </div>
+        <div class="footerline"><span>Required rehearsal capture: the selected ticket’s suggested route, reservation record and observed stream status.</span><span class="source-chip">Source: .agentic/docs/27-MODEL-ROUTING.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>Route precedence is role default, simple/risk rules, stream override, matching Epic override, agent override, ticket override, then mandatory risk/review floors. A route can be unavailable rather than silently downgraded. Reconciliation is disabled by default and has a protected ticket-wide retry ceiling. The stream board and terminal are capture schemas, not project evidence.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/docs/27-MODEL-ROUTING.md — Policy and escalation; Reservation and settlement; .agentic/PROJECT_CONFIG.yaml.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-10" data-core="true" data-title="Draft PR and independent critic" aria-roledescription="slide" aria-label="Slide 10 of 14: Draft PR and independent critic">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 2: run a ticket</p><span class="slide-index">10 / 14</span></div>
+        <h2 class="slide-title">Draft PR and independent critic</h2>
+        <p class="ticket-key">WALKTHROUGH TICKET · &lt;TICKET-KEY&gt; — &lt;title&gt;</p>
+        <div class="content">
+          <div class="showcase-steps" role="img" aria-label="The ticket publishes a draft PR, an independent critic reviews the observed PR head, and the next action follows the critic verdict.">
+            <article class="showcase-step">
+              <p class="step-label">Observed candidate</p>
+              <h3>Draft PR at one head</h3>
+              <div class="capture-frame" style="min-height:128px"><div><strong>Insert actual PR evidence</strong><p class="small-copy">&lt;PR URL&gt; · &lt;head SHA&gt; · current validation / CI</p></div></div>
+              <p>Only after current requirements and validation are observed and draft status is cleared can critic review begin.</p>
+            </article>
+            <article class="showcase-step">
+              <p class="step-label">Independent review</p>
+              <h3>Critic verdict</h3>
+              <div class="capture-frame" style="min-height:128px"><div><strong>Insert actual finding</strong><p class="small-copy">Finding ID · severity · disposition or re-review result</p></div></div>
+              <p>The critic is independent and reviews the observed PR head, not an abstract branch.</p>
+            </article>
+            <article class="showcase-step">
+              <p class="step-label">Next action</p>
+              <h3>Amend or progress</h3>
+              <p>BLOCKER or MAJOR stops the candidate. A changed head, base, requirement or policy requires fresh affected evidence and, where needed, re-review.</p>
+              <div class="mini-note">Do not turn a first-pass approval into the demonstration; show a real finding or real re-review outcome.</div>
+            </article>
+          </div>
+        </div>
+        <div class="footerline"><span>Required rehearsal capture: PR URL, exact observed head, current validation and critic finding or re-review outcome.</span><span class="source-chip">Source: .agentic/docs/23-TICKET-LIFECYCLE.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>A local worktree is insufficient for PR review. On worker COMPLETE, the publisher pushes a scoped branch and opens a draft PR. Critic approval is bound to the observed PR head, not an abstract branch. New head, base, requirements or policy requires fresh evidence and, where applicable, re-review.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/docs/23-TICKET-LIFECYCLE.md — Routine work; .agentic/SPECIFICATION.md — Candidate and evidence.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-11" data-core="true" data-title="Final gate, authorisation and merge" aria-roledescription="slide" aria-label="Slide 11 of 14: Final gate, authorisation and merge">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 2: run a ticket</p><span class="slide-index">11 / 14</span></div>
+        <h2 class="slide-title">Final gate, authorisation, merge</h2>
+        <p class="ticket-key">WALKTHROUGH TICKET · &lt;TICKET-KEY&gt; — &lt;title&gt;</p>
+        <div class="content">
+          <div class="showcase-steps" role="img" aria-label="The final gate produces an owner-ready candidate, selected authorization fields identify it, and a certified executor checks the single-use permit before observing the manual merge.">
+            <article class="showcase-step">
+              <p class="step-label">AWF returns</p>
+              <h3>Final gate result</h3>
+              <div class="capture-frame" style="min-height:126px"><div><strong>Insert <code>evaluate --request</code> output</strong><p class="small-copy">&lt;PR URL&gt; · &lt;head SHA&gt; · READY_FOR_OWNER_AUTHORIZATION</p></div></div>
+              <p>Current critic, applicable specialists, blocking-thread resolution, validation and candidate-bound CI determine readiness.</p>
+            </article>
+            <article class="showcase-step">
+              <p class="step-label">Owner receives</p>
+              <h3>Selected authorisation fields</h3>
+              <div class="receipt-grid">
+                <div><span>Repository / PR</span><b>&lt;identity / number&gt;</b></div>
+                <div><span>Head SHA</span><b>&lt;exact head&gt;</b></div>
+                <div><span>Expiry</span><b>&lt;timestamp&gt;</b></div>
+                <div><span>Decision</span><b>&lt;authorise / decline&gt;</b></div>
+              </div>
+              <p>Capture the complete validated request and authorisation. These are selected fields only; review readiness is not merge permission.</p>
+            </article>
+            <article class="showcase-step">
+              <p class="step-label">Owner action</p>
+              <h3>Permit check, then manual merge</h3>
+              <div class="capture-frame" style="min-height:126px"><div><strong>Insert the checked permit and merged PR</strong><p class="small-copy">current gate · matched candidate · consumed single-use authorisation · observed result</p></div></div>
+              <p>A certified executor rechecks the current gate and exact candidate, consumes the permit once, then observes the manual merge. Unknown outcome requires reconciliation.</p>
+            </article>
+          </div>
+        </div>
+        <div class="footerline"><span>Required rehearsal capture: real gate output, exact owner request and observed merged PR for the same ticket.</span><span class="source-chip">Source: .agentic/SPECIFICATION.md · Human merge boundary</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>Green review is not merge authority. The authorisation binds ordered, case-sensitive fields plus a nonce, gate hash, expiry and raw unedited source. A trusted executor authenticates human source and quorum. The offline evaluator never does so. Keep the many remaining candidate fields in the appendix discussion, not the walkthrough.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/SPECIFICATION.md — Human merge boundary; .agentic/docs/23-TICKET-LIFECYCLE.md — Routine work.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-12" data-core="true" data-title="Jira: one transition, once" aria-roledescription="slide" aria-label="Slide 12 of 14: Jira: one transition, once">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 2: run a ticket</p><span class="slide-index">12 / 14</span></div>
+        <h2 class="slide-title">Jira: one transition, once</h2>
+        <div class="content">
+          <div class="showcase-steps" role="img" aria-label="For the selected rehearsal path a confirmed merge is observed, Jira stays disabled and no external ticket write is performed, and a future Jira writer must be qualified separately.">
+            <article class="showcase-step">
+              <p class="step-label">After merge</p>
+              <h3>One confirmed candidate</h3>
+              <p>Use the observed matched merge from the preceding slide. PR closure or a potential merge is not enough.</p>
+              <div class="capture-frame" style="min-height:108px"><div><strong>Reuse the merged PR capture</strong><p class="small-copy">&lt;TICKET-KEY&gt; · &lt;merged PR URL&gt;</p></div></div>
+            </article>
+            <article class="showcase-step">
+              <p class="step-label">Selected demo path</p>
+              <h3>No Jira write</h3>
+              <div class="terminal"><div class="terminal-head"><span>required three-line rehearsal log</span></div><pre><span class="output-key">ticket</span>: <span class="output-value">&lt;TICKET-KEY&gt;</span>
+<span class="output-key">jira_write</span>: <span class="output-value">not performed</span>
+<span class="output-key">workflow_state</span>: <span class="output-value">MERGED</span></pre></div>
+              <p>The ticket system stays unchanged; no Jira evidence is fabricated.</p>
+            </article>
+            <article class="showcase-step">
+              <p class="step-label">Separate decision</p>
+              <h3>Qualify a Jira writer later</h3>
+              <p>Only a confirmed merge plus explicit authority permits one configured ticket Done transition. Read-before, attempt-once and read-after evidence are a separate qualification.</p>
+              <div class="mini-note">AWF never creates tickets, updates Epics or mirrors its internal workflow states into Jira.</div>
+            </article>
+          </div>
+        </div>
+        <div class="footerline"><span>Selected rehearsal path: Jira disabled. Replace the three-line log with the actual result before presenting.</span><span class="source-chip">Source: .agentic/docs/23-TICKET-LIFECYCLE.md · Jira boundary</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>One explicitly authorised ticket transition to Done follows confirmed merge. If Jira is disabled or unscoped, there are no Jira writes and no fabricated Jira evidence. A mismatch or unknown outcome stops all further Jira writes without a retry. If the live rehearsal uses Jira instead, replace this whole slide with the actual read-before, attempted transition and read-after log for the selected ticket.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/docs/23-TICKET-LIFECYCLE.md — Jira boundary.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-13" data-core="true" data-title="What you control, what it will not do" aria-roledescription="slide" aria-label="Slide 13 of 14: What you control, what it will not do">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 3: control and limits</p><span class="slide-index">13 / 14</span></div>
+        <h2 class="slide-title">What you control, what it will not do</h2>
+        <div class="content">
+          <div class="action-map" role="img" aria-label="Two configuration layers: OPERATING_CONFIG.yaml changes by direct instruction within limits, while PROJECT_CONFIG.yaml changes by reviewed pull request.">
+            <div class="action-map-row">
+              <p class="path">OPERATING_CONFIG.yaml</p>
+              <strong>Change by direct instruction</strong>
+              <span>Streams and approved routes for subsequent dispatch. Running reservations retain their original operating hash.</span>
+            </div>
+            <div class="action-map-row governed">
+              <p class="path">.agentic/PROJECT_CONFIG.yaml</p>
+              <strong>Change through a reviewed PR</strong>
+              <span>Ceilings, allowlists, review floors, budgets, merge policy and recovery controls remain protected.</span>
+            </div>
+          </div>
+          <div class="config-layout" style="margin-top:24px">
+            <article class="config-zone">
+              <span class="label-chip">Owner takeaway</span>
+              <h3>You control operating choices</h3>
+              <p class="small-copy">A direct request that exceeds a protected ceiling or weakens review is refused rather than silently applied.</p>
+            </article>
+            <article class="config-zone governance">
+              <span class="label-chip" style="color:var(--rose);border-color:rgba(245,145,160,.4);background:var(--rose-soft)">Six non-goals</span>
+              <ul class="non-goal-list">
+                <li>Does not launch agents or attest that a model ran.</li>
+                <li>Does not merge code.</li>
+                <li>Does not create tickets, update Epics or mirror workflow states into Jira.</li>
+                <li>Does not treat a review approval as merge authority.</li>
+                <li>Does not retry an uncertain merge, Jira write or provider outcome.</li>
+                <li>Does not enable the external reviewer or scheduled loop because a project is ACTIVE.</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+        <div class="footerline"><span>Protected governance changes need a reviewed PR. Optional live components have their own qualification.</span><span class="source-chip">Source: .agentic/SPECIFICATION.md · Authority and modes</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>Keep the authority boundary plain. Worktrees are not isolation. Candidate content cannot grant permission. Secrets, trusted state and routing ledgers remain outside workers. The optional scheduled review loop and external review adapter each require separate qualification. Unknown effects require reconciliation before any retry.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/SPECIFICATION.md — Authority and modes; .agentic/docs/29-OPERATING-CONFIGURATION.md — Two configuration layers; .agentic/docs/28-EXTERNAL-REVIEW.md — Adoption and qualification.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="slide-14" data-core="true" data-title="Pilot" aria-roledescription="slide" aria-label="Slide 14 of 14: Pilot">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Act 3: first move</p><span class="slide-index">14 / 14</span></div>
+        <h2 class="slide-title">Pilot: one repository, ten tickets, measured evidence</h2>
+        <div class="content">
+          <div class="pilot-layout">
+            <div>
+              <div class="pilot-numbers" aria-label="Suggested pilot scope: one repository, ten bounded AWF tickets and ten matched comparison tickets.">
+                <div class="pilot-number"><b>1</b><span>owner-approved repository</span></div>
+                <div class="pilot-number"><b>10</b><span>bounded AWF tickets</span></div>
+                <div class="pilot-number"><b>10</b><span>matched comparison tickets</span></div>
+              </div>
+              <p class="body-copy">Nominate an accountable owner and start with one low-risk first ticket. Use matched non-AWF tickets only as pilot context, not as a claim of causal productivity uplift. Keep Jira disabled for the first walkthrough unless a separately qualified writer is explicitly in scope.</p>
+              <ul class="measure-list">
+                <li>Merged PRs</li><li>Defects found in review</li><li>Rework loops</li><li>Lead time: ticket to merge</li><li>Human minutes per ticket</li><li>Model cost per ticket</li><li>Recovery incidents</li><li>Owner readiness</li>
+              </ul>
+            </div>
+            <div class="flow-steps" role="img" aria-label="Pilot sequence: nominate the repository owner and ticket, run the bounded workflow, and decide which optional components to qualify next.">
+              <div class="flow-step"><span class="flow-number">01</span><div><strong>Nominate the first three</strong><span>Repository, accountable owner and low-risk ticket — all named before work begins.</span></div></div>
+              <div class="flow-step"><span class="flow-number">02</span><div><strong>Run the bounded workflow</strong><span>Verify, adopt, configure, dispatch, independently review and leave the owner as the merge authority.</span></div></div>
+              <div class="flow-step"><span class="flow-number">03</span><div><strong>Decide the next qualification</strong><span>Consider a Jira writer or optional adapter only after core adoption and native operation are evidenced.</span></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="footerline"><span>Illustrative pilot design only. It makes no productivity or causal uplift claim.</span><span class="source-chip">Source: .agentic/docs/27-MODEL-ROUTING.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>The 20 independently reviewed low-risk-ticket / 95 percent acceptance / no known escaped-defect threshold is a routing-qualification threshold, not a productivity benchmark. It should not be presented as measured AWF uplift. Before any live presentation, replace all capture cards with the selected rehearsal evidence.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/docs/27-MODEL-ROUTING.md — Operator reconciliation and evidence; AGENTS.md.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="appendix-a" data-appendix="true" data-title="Appendix A: evidence states and invalidation" aria-roledescription="slide" aria-label="Appendix A: evidence states and invalidation">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Appendix A</p><span class="slide-index">Evidence states</span></div>
+        <h2 class="slide-title">Adoption proof and candidate-bound evidence</h2>
+        <div class="content">
+          <div class="appendix-grid">
+            <div>
+              <table class="evidence-table" aria-label="AWF adoption state table">
+                <thead><tr><th>State</th><th>What it proves</th><th>What it does not prove</th></tr></thead>
+                <tbody>
+                  <tr><td>UNVERIFIED</td><td>No current accepted adoption proof.</td><td>Nothing about safe installation or live readiness.</td></tr>
+                  <tr><td>INSTALLED</td><td>Managed bytes match installation receipt.</td><td>Accepted policy, release provenance or live authority.</td></tr>
+                  <tr><td>CONFIGURED</td><td>Installed verification and configuration validation accept current state.</td><td>Independent release trust or enabled live adapters.</td></tr>
+                  <tr><td>ACTIVE</td><td>Independent release trust, observed adoption merge and fresh accepted raw bytes.</td><td>Agent launch, merge, Jira writer or adapter qualification.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h3 style="margin-bottom:14px; font-size:clamp(20px,1.8vw,28px)">Evidence invalidation</h3>
+              <ul class="reference-list">
+                <li><strong>Candidate changes</strong>Head, base, target, merge method, requirements or policy change invalidates affected review, gate or authorisation evidence.</li>
+                <li><strong>Blocking findings</strong>Open or disputed BLOCKER and MAJOR findings prevent readiness. Resolution remains linked to evidence and fresh independent review.</li>
+                <li><strong>Unknown effects</strong>MERGE_UNKNOWN and uncertain Jira outcomes require authoritative reconciliation before any retry.</li>
+                <li><strong>Durable evidence</strong>Keep requirements/policy hashes, PR identity, test/CI provenance, reviews, gate, authorisation, routing and reconciliation outside worker worktrees.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div class="footerline"><span>Appendix slides sit outside the 27-minute core. Use the table of contents to enter them.</span><span class="source-chip">Source: .agentic/docs/20-NEW-PROJECT-SETUP.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>Use this appendix if the audience asks what the state labels prove or why a new PR head requires review again.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/docs/20-NEW-PROJECT-SETUP.md — Adoption guide; .agentic/SPECIFICATION.md — Candidate and evidence.</p>
+      </aside>
+    </section>
+
+    <section class="slide" id="appendix-b" data-appendix="true" data-title="Appendix B: optional adapters and recovery" aria-roledescription="slide" aria-label="Appendix B: optional adapters and recovery">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Appendix B</p><span class="slide-index">Optional components</span></div>
+        <h2 class="slide-title">Optional adapters, recovery and command reference</h2>
+        <div class="content">
+          <div class="appendix-grid">
+            <div>
+              <h3 style="margin-bottom:14px; font-size:clamp(20px,1.8vw,28px)">Optional components</h3>
+              <ul class="reference-list">
+                <li><strong>Scheduled review loop</strong>One explicitly enrolled existing GitHub.com PR. It can run critic, bounded amendment, fresh critic and current-head CI. It never creates the first PR, merges or writes Jira.</li>
+                <li><strong>External review adapter</strong>Separate provider, secrets, credential scope and qualification requirements. Native/scheduled evidence does not qualify it.</li>
+                <li><strong>Qualified host</strong>Observed rules, CI, trusted merge owners, actual resource limits, credential boundaries and recovery procedures remain project-specific evidence.</li>
+                <li><strong>Recovery</strong>Pause, preserve run evidence and reconcile exact state before resume. Do not reset accounting or create a second ledger.</li>
+              </ul>
+            </div>
+            <div>
+              <div class="terminal" aria-label="AWF adoption and routing command reference">
+                <div class="terminal-head"><span>adoption and routing reference</span></div>
+                <pre><span class="prompt">$</span> <span class="command">python -B scripts/bootstrap_project.py --dest ABS_PROJECT \</span>
+  <span class="command">--expected-manifest-sha256 PIN --codeowner @OWNER --dry-run</span>
+<span class="prompt">$</span> <span class="command">python -B scripts/bootstrap_project.py --dest ABS_PROJECT \</span>
+  <span class="command">--expected-manifest-sha256 PIN --codeowner @OWNER --mode install --on-conflict backup</span>
+<span class="prompt">$</span> <span class="command">python -B -I ABS_PROJECT/.agentic/scripts/workflow.py verify-installation</span>
+<span class="prompt">$</span> <span class="command">python -B -I ABS_PROJECT/.agentic/scripts/workflow.py validate-config</span>
+<span class="prompt">$</span> <span class="command">python -B -I ABS_PROJECT/.agentic/scripts/workflow.py status --json</span>
+<span class="prompt">$</span> <span class="command">python -B ABS_PROJECT/.agentic/scripts/route_model.py suggest \</span>
+  <span class="command">--config ABS_PROJECT/.agentic/PROJECT_CONFIG.yaml --request REQUEST.json \</span>
+  <span class="command">--capabilities OBSERVED_HOST.json</span>
+<span class="prompt">$</span> <span class="command">python -B ABS_PROJECT/.agentic/scripts/route_model.py reserve \</span>
+  <span class="command">--config ABS_PROJECT/.agentic/PROJECT_CONFIG.yaml --project-root ABS_PROJECT \</span>
+  <span class="command">--request REQUEST.json --capabilities OBSERVED_HOST.json --ledger ABS_STATE/routing.sqlite</span>
+<span class="prompt">$</span> <span class="command">python -B ABS_PROJECT/.agentic/scripts/route_model.py settle \</span>
+  <span class="command">--config ABS_PROJECT/.agentic/PROJECT_CONFIG.yaml --project-root ABS_PROJECT \</span>
+  <span class="command">--ledger ABS_STATE/routing.sqlite --run-id RUN_ID --outcome outcome.json</span></pre>
+              </div>
+              <div class="mini-note" style="margin-top:16px">Run bootstrap from the extracted distribution root; use reviewed absolute project and state paths. See the Commands heading in <code>.agentic/docs/27-MODEL-ROUTING.md</code> and <code>global/awf/references/workflow.md</code>.</div>
+            </div>
+          </div>
+        </div>
+        <div class="footerline"><span>Appendix slides sit outside the 27-minute core. Use the table of contents to enter them.</span><span class="source-chip">Source: .agentic/docs/27-MODEL-ROUTING.md</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>Optional components must be qualified separately. The scheduled review loop has its own host requirements and endpoint. Reconciliation preserves evidence and never treats timeouts as permission to retry a potentially completed effect.</p>
+        <p class="note-source">Source: AWF 1.8.9 .agentic/docs/27-MODEL-ROUTING.md — Commands; .agentic/docs/28-EXTERNAL-REVIEW.md — External review component; .agentic/docs/23-TICKET-LIFECYCLE.md — Control and recovery.</p>
+      </aside>
+    </section>
+
+    <div class="controls" aria-label="Presentation controls">
+      <button class="control" id="toc-toggle" type="button" aria-label="Open slide overview" aria-expanded="false">≡</button>
+      <button class="control" id="notes-toggle" type="button" aria-label="Show speaker notes" aria-expanded="false">◫</button>
+      <button class="control" id="prev-slide" type="button" aria-label="Previous slide">‹</button>
+      <button class="control" id="next-slide" type="button" aria-label="Next slide">›</button>
+    </div>
+
+    <section class="overlay" id="toc-panel" aria-label="Slide overview" aria-hidden="true">
+      <button class="overlay-close" id="toc-close" type="button" aria-label="Close slide overview">×</button>
+      <h2>Slide overview</h2>
+      <ol class="toc-list" id="toc-list"></ol>
+    </section>
+
+    <section class="notes-panel" id="notes-panel" aria-label="Speaker notes" aria-hidden="true">
+      <button class="overlay-close" id="notes-close" type="button" aria-label="Close speaker notes">×</button>
+      <h2 id="notes-title">Speaker notes</h2>
+      <div id="notes-content"></div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      const allSlides = Array.from(document.querySelectorAll('.slide'));
+      const coreSlides = allSlides.filter(slide => slide.dataset.core === 'true');
+      const appendixSlides = allSlides.filter(slide => slide.dataset.appendix === 'true');
+      const tocPanel = document.getElementById('toc-panel');
+      const tocToggle = document.getElementById('toc-toggle');
+      const tocClose = document.getElementById('toc-close');
+      const tocList = document.getElementById('toc-list');
+      const notesPanel = document.getElementById('notes-panel');
+      const notesToggle = document.getElementById('notes-toggle');
+      const notesClose = document.getElementById('notes-close');
+      const notesTitle = document.getElementById('notes-title');
+      const notesContent = document.getElementById('notes-content');
+      const status = document.getElementById('slide-status');
+      const prev = document.getElementById('prev-slide');
+      const next = document.getElementById('next-slide');
+      let current = 0;
+      let touchStartX = null;
+
+      function currentSlide() { return allSlides[current]; }
+
+      function updateNotes() {
+        const slide = currentSlide();
+        const notes = slide.querySelector('.slide-notes');
+        notesTitle.textContent = slide.dataset.title || 'Speaker notes';
+        notesContent.innerHTML = notes ? notes.innerHTML : '<p>No speaker notes.</p>';
+      }
+
+      function showSlide(index, focus) {
+        const nextIndex = Math.max(0, Math.min(allSlides.length - 1, index));
+        current = nextIndex;
+        allSlides.forEach((slide, i) => {
+          const active = i === current;
+          slide.classList.toggle('active', active);
+          slide.setAttribute('aria-hidden', String(!active));
+        });
+        updateNotes();
+        const slide = currentSlide();
+        const corePosition = coreSlides.indexOf(slide);
+        status.textContent = corePosition >= 0 ? `Slide ${corePosition + 1} of ${coreSlides.length}: ${slide.dataset.title}` : `${slide.dataset.title}`;
+        prev.disabled = current === 0 || (appendixSlides.includes(slide) && appendixSlides.indexOf(slide) === 0);
+        next.disabled = corePosition === coreSlides.length - 1 || (appendixSlides.includes(slide) && appendixSlides.indexOf(slide) === appendixSlides.length - 1);
+        if (focus) slide.querySelector('.slide-inner').focus({ preventScroll: true });
+      }
+
+      function closePanels() {
+        tocPanel.classList.remove('open');
+        tocPanel.setAttribute('aria-hidden', 'true');
+        tocToggle.setAttribute('aria-expanded', 'false');
+        notesPanel.classList.remove('open');
+        notesPanel.setAttribute('aria-hidden', 'true');
+        notesToggle.setAttribute('aria-expanded', 'false');
+      }
+
+      function isAppendix() { return appendixSlides.includes(currentSlide()); }
+
+      function nextSlide() {
+        if (isAppendix()) {
+          const appendixIndex = appendixSlides.indexOf(currentSlide());
+          if (appendixIndex < appendixSlides.length - 1) showSlide(allSlides.indexOf(appendixSlides[appendixIndex + 1]), true);
+          return;
+        }
+        const coreIndex = coreSlides.indexOf(currentSlide());
+        if (coreIndex < coreSlides.length - 1) showSlide(allSlides.indexOf(coreSlides[coreIndex + 1]), true);
+      }
+
+      function previousSlide() {
+        if (isAppendix()) {
+          const appendixIndex = appendixSlides.indexOf(currentSlide());
+          if (appendixIndex > 0) showSlide(allSlides.indexOf(appendixSlides[appendixIndex - 1]), true);
+          return;
+        }
+        const coreIndex = coreSlides.indexOf(currentSlide());
+        if (coreIndex > 0) showSlide(allSlides.indexOf(coreSlides[coreIndex - 1]), true);
+      }
+
+      allSlides.forEach((slide, index) => {
+        const li = document.createElement('li');
+        const button = document.createElement('button');
+        const label = slide.dataset.appendix === 'true' ? (index === allSlides.indexOf(appendixSlides[0]) ? 'A' : 'B') : String(coreSlides.indexOf(slide) + 1).padStart(2, '0');
+        button.innerHTML = `<b>${label}</b>${slide.dataset.title}`;
+        button.addEventListener('click', () => { closePanels(); showSlide(index, true); });
+        li.appendChild(button);
+        tocList.appendChild(li);
+      });
+
+      tocToggle.addEventListener('click', () => {
+        const open = !tocPanel.classList.contains('open');
+        closePanels();
+        if (open) {
+          tocPanel.classList.add('open');
+          tocPanel.setAttribute('aria-hidden', 'false');
+          tocToggle.setAttribute('aria-expanded', 'true');
+          tocClose.focus();
+        }
+      });
+      tocClose.addEventListener('click', () => { closePanels(); tocToggle.focus(); });
+
+      notesToggle.addEventListener('click', () => {
+        const open = !notesPanel.classList.contains('open');
+        closePanels();
+        if (open) {
+          notesPanel.classList.add('open');
+          notesPanel.setAttribute('aria-hidden', 'false');
+          notesToggle.setAttribute('aria-expanded', 'true');
+          notesClose.focus();
+        }
+      });
+      notesClose.addEventListener('click', () => { closePanels(); notesToggle.focus(); });
+
+      prev.addEventListener('click', previousSlide);
+      next.addEventListener('click', nextSlide);
+
+      document.addEventListener('keydown', event => {
+        const target = event.target;
+        const controlFocused = target && (target.matches('button, a, input, textarea, select') || target.closest('button, a, input, textarea, select'));
+        if (event.key === 'Escape') { closePanels(); return; }
+        if (tocPanel.classList.contains('open') || notesPanel.classList.contains('open')) return;
+        if (event.key === 'ArrowRight' || event.key === 'PageDown') { event.preventDefault(); nextSlide(); }
+        if (event.key === 'ArrowLeft' || event.key === 'PageUp') { event.preventDefault(); previousSlide(); }
+        if (event.key === 'Home') { event.preventDefault(); showSlide(0, true); }
+        if (event.key === 'End') { event.preventDefault(); showSlide(allSlides.indexOf(coreSlides[coreSlides.length - 1]), true); }
+        if ((event.key === 'o' || event.key === 'O') && !controlFocused) tocToggle.click();
+        if ((event.key === 'n' || event.key === 'N') && !controlFocused) notesToggle.click();
+        if (event.key === ' ' && !controlFocused) { event.preventDefault(); nextSlide(); }
+      });
+
+      const shell = document.querySelector('.deck-shell');
+      shell.addEventListener('pointerdown', event => { touchStartX = event.clientX; });
+      shell.addEventListener('pointerup', event => {
+        if (touchStartX === null || event.target.closest('button, a')) { touchStartX = null; return; }
+        const delta = event.clientX - touchStartX;
+        touchStartX = null;
+        if (Math.abs(delta) < 46) return;
+        if (delta < 0) nextSlide(); else previousSlide();
+      });
+
+      showSlide(0, false);
+    }());
+  </script>
+</body>
+</html>
