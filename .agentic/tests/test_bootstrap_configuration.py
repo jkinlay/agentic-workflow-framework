@@ -332,7 +332,9 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.source.mkdir()
         paths = [ROOT / "AGENTS.md", ROOT / ".agentic/workflow.yaml",
                  ROOT / ".agentic/scripts/workflow.py"]
-        paths += list((ROOT / ".agentic/lib/agentic").glob("*.py"))
+        # Include package modules recursively: provider adapters are part of the
+        # installed runtime, not optional test-only dependencies.
+        paths += list((ROOT / ".agentic/lib/agentic").rglob("*.py"))
         paths += list((ROOT / ".agentic/schemas").glob("*.json"))
         self.files = {path.relative_to(ROOT).as_posix(): path.read_bytes() for path in paths}
         self.files[CONFIG] = (ROOT / ".agentic/examples/unconfigured-project.yaml").read_bytes()

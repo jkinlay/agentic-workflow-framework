@@ -199,7 +199,7 @@
     ".agentic/tests/fixtures/fake_host_process.py": "6b2286fe01efeb04219b2d5a3f322423c5bfd6ddb1f49b734f72d22887c7095c",
     ".agentic/tests/test_adoption_status.py": "313004837927c6e03577e06f5c8cf2f77f47984080aabd1d7f7682dcc16bd58a",
     ".agentic/tests/test_adoption_validation.py": "7390fd02b6fb37dcff31b81eda177feea7ff8c6d102e74ffd556f14ca2072389",
-    ".agentic/tests/test_bootstrap_configuration.py": "2976350f0506cfd4499eb002ff612fe5f465781b63a93825638e8618b20e1483",
+    ".agentic/tests/test_bootstrap_configuration.py": "d99208aea1479656c8749f76b4326dd3985ee9bd98ac39f49f39c02150a82014",
     ".agentic/tests/test_codeowners.py": "12c0b86ed561d24d4d3c6cbe2c713be9820e62ed862455658a9b792e0fac5184",
     ".agentic/tests/test_config_diagnostics.py": "e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07",
     ".agentic/tests/test_continuation.py": "1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633",
