@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "awf-native-routine-v1",
+  "visibility": "public_example_omitted_from_packet",
+  "cases": [
+    {
+      "case_id": "NATIVE-34",
+      "required_codes": [
+        "publish_branch",
+        "open_draft_pr"
+      ],
+      "allowed_decisions": [
+        "publish_branch",
+        "open_draft_pr"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "routine.state",
+        "host.detail",
+        "policy.lifecycle",
+        "policy.publication"
+      ]
+    },
+    {
+      "case_id": "NATIVE-35",
+      "required_codes": [
+        "pause_affected_work",
+        "continue_unaffected_work"
+      ],
+      "allowed_decisions": [
+        "pause_affected_work",
+        "continue_unaffected_work"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "routine.state",
+        "host.detail"
+      ]
+    },
+    {
+      "case_id": "NATIVE-36",
+      "required_codes": [
+        "block_readiness",
+        "continue_affected_work",
+        "defer_reviewer_launch"
+      ],
+      "allowed_decisions": [
+        "block_readiness",
+        "continue_affected_work",
+        "defer_reviewer_launch"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "routine.state",
+        "host.detail",
+        "policy.lifecycle"
+      ]
+    },
+    {
+      "case_id": "NATIVE-37",
+      "required_codes": [
+        "retain_finding",
+        "block_readiness",
+        "continue_affected_work"
+      ],
+      "allowed_decisions": [
+        "retain_finding",
+        "block_readiness",
+        "continue_affected_work"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "routine.state",
+        "host.detail",
+        "policy.lifecycle"
+      ]
+    },
+    {
+      "case_id": "NATIVE-38",
+      "required_codes": [
+        "request_fresh_authorization"
+      ],
+      "allowed_decisions": [
+        "request_fresh_authorization"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "routine.state",
+        "host.detail",
+        "policy.lifecycle"
+      ]
+    },
+    {
+      "case_id": "NATIVE-39",
+      "required_codes": [
+        "transition_jira",
+        "reconcile_remote_state",
+        "continue_unaffected_work"
+      ],
+      "allowed_decisions": [
+        "transition_jira",
+        "reconcile_remote_state",
+        "continue_unaffected_work"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "routine.state",
+        "host.detail",
+        "policy.jira"
+      ]
+    },
+    {
+      "case_id": "NATIVE-40",
+      "required_codes": [
+        "apply_operating_change"
+      ],
+      "allowed_decisions": [
+        "apply_operating_change"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "operating.state",
+        "user.instruction",
+        "policy.operating"
+      ]
+    },
+    {
+      "case_id": "NATIVE-41",
+      "required_codes": [
+        "refuse_operating_change"
+      ],
+      "allowed_decisions": [
+        "refuse_operating_change"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "operating.state",
+        "user.instruction",
+        "policy.operating"
+      ]
+    },
+    {
+      "case_id": "NATIVE-42",
+      "required_codes": [
+        "transition_jira",
+        "reconcile_remote_state",
+        "continue_affected_work",
+        "continue_unaffected_work"
+      ],
+      "allowed_decisions": [
+        "transition_jira",
+        "reconcile_remote_state",
+        "continue_affected_work",
+        "continue_unaffected_work"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "routine.state",
+        "host.detail",
+        "policy.jira"
+      ]
+    },
+    {
+      "case_id": "NATIVE-43",
+      "required_codes": [
+        "transition_jira",
+        "reconcile_remote_state",
+        "retain_finding",
+        "block_readiness",
+        "continue_affected_work",
+        "continue_unaffected_work"
+      ],
+      "allowed_decisions": [
+        "transition_jira",
+        "reconcile_remote_state",
+        "retain_finding",
+        "block_readiness",
+        "continue_affected_work",
+        "continue_unaffected_work"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "routine.state",
+        "host.detail",
+        "policy.jira"
+      ]
+    },
+    {
+      "case_id": "NATIVE-44",
+      "required_codes": [
+        "request_fresh_authorization",
+        "continue_unaffected_work"
+      ],
+      "allowed_decisions": [
+        "request_fresh_authorization",
+        "continue_unaffected_work"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "routine.state",
+        "host.detail",
+        "policy.jira"
+      ]
+    },
+    {
+      "case_id": "NATIVE-45",
+      "required_codes": [
+        "post_evidence_comment",
+        "continue_unaffected_work"
+      ],
+      "allowed_decisions": [
+        "post_evidence_comment",
+        "continue_unaffected_work"
+      ],
+      "allowance_rationale": {},
+      "required_evidence_refs": [
+        "routine.state",
+        "host.detail",
+        "policy.digest"
+      ]
+    }
+  ]
+}

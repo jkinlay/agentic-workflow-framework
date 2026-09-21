@@ -1,0 +1,30 @@
+# Disposition of the amended adoption request
+
+Version 1.8.6 addresses configuration completion, observable adoption state and the adoption PR checklist added in sections 1.6–1.10 of the amended request, including the requirement to execute actual post-install verification commands. The complete request remains external evidence. The previous patch's default component-check behavior, separate release qualification, owner-applied ruleset and adoption/enablement distinction remain in force.
+
+| Concern | Contract and limit |
+| --- | --- |
+| Installation leaves unexplained placeholders | Fresh bootstrap derives supported target metadata and persists a real project UUID, while preserving existing configuration. Explicit name/repository-ID/test-command/Jira flags resolve missing inputs. Unsupported or unavailable identities remain exact JSON-path residue with reasons/remedies; no successful test or authenticated owner is invented. |
+| Library validation is mistaken for installed acceptance | After runtime-import preflight, bootstrap runs isolated `python -B -I ABS_INSTALLED_SCRIPT verify-installation` / `validate-config`, retaining commands/results. Its CONFIGURED requires both exit 0, integrity_valid=true/status=ACCEPTED and bound source/policy digests. Rejected configuration is INSTALLED_UNCONFIGURED; integrity failure is INSTALLATION_VERIFICATION_FAILED. Dry runs establish neither. |
+| Optional Jira and missing CI prevent adoption | New Jira without site/key is explicitly disabled with null values; local provisional records remain usable. Existing mappings are preserved. Enabled Jira without scope admits no tickets/mutations. Empty CI and trusted-owner lists warn during adoption; they are not live-ready policy or fabricated identities. |
+| Agents call a prepared installation active | INSTALLED requires receipt-consistent managed bytes; CONFIGURED adds accepted adoption configuration. Neither independently authenticates release provenance. Status recomputes current shared checks, not historical child execution. ACTIVE requires independent release trust, observed receipt-changing adoption merge and accepted raw AWF/configuration/receipt/provenance bytes on the fresh default branch. Unrelated product edits may coexist. Receipts/branch/status assertions alone cannot establish acceptance. Unknown evidence stays CONFIGURED with a next action. ACTIVE concerns adopted files, not running services. |
+| Adoption PR conceals remaining work | The shipped Markdown checklist records actual installation state, exact command outputs/exits, configuration paths/remedies, actual default-branch rules and status line. It distinguishes an existing hosted draft from local changes awaiting publication and states what remains disabled after merge. |
+| Enablement requirements become installation gates | Missing/unobserved rules and absent CI remain adoption warnings. Live external review/scheduling and restricted secret-repository pushes retain observed rules and mode qualification; relevant execution also needs configured CI and actual trusted merge owners. Local preparation continues when publication needs an owner. Bootstrap never applies server rules. |
+
+## Factual and authority boundaries
+
+The [GitHub rules API](https://docs.github.com/en/rest/repos/rules) states that strict up-to-date status-check policy has no effect until at least one required check is configured. Empty checks cannot establish current-base enforcement or independent review. The actual `awf/review` App identity and required CI must be configured/observed before relevant live enablement.
+
+Approval dismissal affects approving reviews, not arbitrary COMMENT freshness. Thread resolution is not external-review authenticity or AWF finding resolution. Required CODEOWNERS approval needs eligible non-author reviewers, not merely two handles; zero human approvals avoids sole-maintainer self-approval deadlock. Branch deletion/force-push rules protect the target ref, not individual files against ordinary reviewed edits. [Available GitHub rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets).
+
+Status release trust uses a separately pinned source or trusted host AWF skill bundle; it is not a publisher signature. Quiescent adoption and exclusive ownership remain required; static import checks do not isolate concurrent hostile writers. Accepted configuration and ACTIVE file adoption do not authenticate a merge authorizer, grant execution authority, enroll an adapter or qualify a host/engine. The repository-rule helper does not force unchanged legacy entrypoints to consult it; the host/operator must enforce prerequisites and existing qualification. Missing API access or unverifiable state is not proof of absent rules or completed adoption.
+
+## Evidence and remaining work
+
+Current focused regressions, independent review and source/installed/portable acceptance belong in external release evidence. This document states the implemented contract without inventing test totals or claiming live qualification. Any failed or incomplete acceptance remains visible and cannot be labelled a passing release.
+
+The retained pilot remains **10/12 strict FAIL**, with independent substantive assessments of **6 PASS, 1 FAIL out of seven**. Earlier **5/12 FAIL** and **1/3 FAIL** are unchanged. Different cases/contracts prohibit a controlled causal-improvement claim, and no project actions were executed by those decision pilots. This patch adds no model observations and infers no unsafe-action execution rate.
+
+Disposable GitHub validation remains a separate task needing an identified target and applicable authorization. No actual rule application, direct/force-push rejection, merge-method qualification, scheduled operation or external-engine activation is claimed here. Preserve the prior release and its complete evidence.
+
+See [migration](MIGRATION-v1.8.5-to-v1.8.6.md), [adoption](.agentic/docs/20-NEW-PROJECT-SETUP.md), [PR checklist](.agentic/templates/adoption-pr.md) and [external qualification](.agentic/docs/28-EXTERNAL-REVIEW.md).

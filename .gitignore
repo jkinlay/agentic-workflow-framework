@@ -1,19 +1,11 @@
-# Local machine and connector configuration
-.local/
-.agentic-workflow/local/
-*.local.yaml
+# AWF operating recovery files are local; changes/ is versioned audit evidence.
+.agentic-state/**/lock
+.agentic-state/operating/pending.json
+*.awf-operating-*.tmp
+.awf-*.tmp
 
-# Editor and operating-system files
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db
-
-# Temporary validation output
-.tmp/
-tmp/
-
-
-# Python bytecode from adapter tests
+# Python bytecode and local validation output.
 __pycache__/
 *.pyc
+.tmp/
+tmp/

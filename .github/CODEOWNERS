@@ -1,0 +1,11 @@
+# AWF governance ownership. Auto-requests review from the owner on changes to
+# protected paths. On a single-maintainer repository do NOT enable
+# "Require review from Code Owners" in the ruleset: a PR author cannot approve
+# their own PR and merges will deadlock. Enable it only with two or more owners.
+/AGENTS.md                @maintainer
+/PROJECT_INSTRUCTIONS.md  @maintainer
+/.agentic/                @maintainer
+/.github/                 @maintainer
+/.codex/                  @maintainer
+/SECURITY.md              @maintainer
+/CODEOWNERS               @maintainer

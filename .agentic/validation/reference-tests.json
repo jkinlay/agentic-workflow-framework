@@ -1,0 +1,9 @@
+{
+  "format": "awf-historical-validation-index-1",
+  "scope_kind": "historical_reference",
+  "status": "NOT_CURRENT_RELEASE_VALIDATION",
+  "historical_report": "history/reference-tests-pre-v1.8.3.json",
+  "historical_report_sha256": "f06c332e1755d3f58edb6a3b450ea6bdd402deffe8763c5c5aedcad81d5c9b2b",
+  "source_archive_sha256": "bcb9a7a78615b93568af1daa7308c62e6e03e217e7e76b0e90cbf2b686074cda",
+  "note": "Preserved byte-for-byte from the prior release. Its inherited version label, 240-test result and code hashes do not describe the current source. No original result is relabelled or rehashed. Current acceptance is the separate release validation JSON."
+}

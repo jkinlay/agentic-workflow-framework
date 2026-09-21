@@ -1,0 +1,41 @@
+{
+  "template_for": "review-cap-disposition",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "record_id": "00000000-0000-0000-0000-000000000000",
+    "created_at": "1970-01-01T00:00:00Z",
+    "producer_id": "UNFILLED",
+    "run_id": "00000000-0000-0000-0000-000000000000",
+    "binding": {
+      "project_id": "00000000-0000-0000-0000-000000000000",
+      "repository_id": 1,
+      "issue_id": "UNFILLED",
+      "requirements_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "candidate_id": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "decision": "MERGE_WITH_NOTES",
+    "open_finding_ids": [],
+    "notes": "UNFILLED",
+    "cycles": 0,
+    "cap_extensions": 0,
+    "successor_ticket": null,
+    "authorization_request_id": "00000000-0000-0000-0000-000000000000",
+    "owner_source": {
+      "channel": "github_pr_comment",
+      "comment_id": 1,
+      "actor_id": 1,
+      "actor_login": "UNFILLED",
+      "raw_body": "UNFILLED",
+      "raw_body_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "1970-01-01T00:00:00Z",
+      "updated_at": "1970-01-01T00:00:00Z"
+    },
+    "evidence": [
+      "urn:awf:UNFILLED"
+    ]
+  }
+}

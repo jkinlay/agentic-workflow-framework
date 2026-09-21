@@ -1,0 +1,2 @@
+# Complete transitive runtime dependencies. Use --require-hashes.
+-r .agentic/requirements.lock

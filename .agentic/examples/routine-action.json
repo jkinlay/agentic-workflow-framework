@@ -1,0 +1,8 @@
+{
+  "kind": "delegate",
+  "target": "synthetic independent Stream B ticket",
+  "scope_authorized": true,
+  "already_authorized": false,
+  "platform_permitted": true,
+  "prerequisites_met": true
+}
