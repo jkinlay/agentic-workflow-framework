@@ -99,16 +99,41 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertEqual(before['markdown_total_words'] + 9000, after['markdown_total_words'])
         self.assertIsNone(next(x for x in after['documentation_file_budgets'] if x['path'] == 'MANIFEST.md')['limit'])
 
-    def test_showcase_docs_are_integrity_content_not_operational_budget_or_version_claims(self):
+    def test_allowlisted_showcase_docs_are_integrity_content_not_operational_budget_or_version_claims(self):
         before = check_release(self.root)
-        path = self.root / 'docs/showcase/history.md'
-        path.parent.mkdir(parents=True)
         content = '# Historical deck\nAWF 1.2 release\n' + 'slide ' * 1300
-        path.write_text(content, encoding='utf-8')
-        after = check_release(self.root)
-        budget = next(item for item in after['documentation_file_budgets'] if item['path'] == 'docs/showcase/history.md')
-        self.assertEqual((None, 'showcase_material'), (budget['limit'], budget['category']))
+        for relative in ['docs/showcase/history.md', 'docs/AWF-Showcase-Presentation-Plan.md']:
+            with self.subTest(relative=relative):
+                path = self.root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding='utf-8')
+                after = check_release(self.root)
+                budget = next(item for item in after['documentation_file_budgets'] if item['path'] == relative)
+                self.assertEqual((None, 'showcase_material'), (budget['limit'], budget['category']))
+                path.unlink()
         self.assertEqual(before['documentation_words'] + len(content.split()), after['documentation_words'])
+
+    def test_non_showcase_docs_are_budgeted_and_stale_version_checked(self):
+        path = self.root / 'docs/operator.md'
+        path.parent.mkdir(parents=True)
+        path.write_text('# Operator\nAWF 1.2 release\n' + 'word ' * 801, encoding='utf-8')
+        with self.assertRaisesRegex(ValidationError, 'docs/operator.md: documentation budget exceeded'):
+            check_release(self.root)
+        path.write_text('# Operator\nAWF 1.2 release\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValidationError, 'docs/operator.md: stale operational'):
+            check_release(self.root)
+
+    def test_exact_showcase_path_references_are_historical_not_operational_claims(self):
+        self.assertEqual([], stale_versions('See docs/AWF-1.8.9-Showcase-Presentation.html', '1.9.2'))
+        self.assertEqual(['1.8.9'], stale_versions('See docs/AWF-1.8.9-Operator-Guide.md', '1.9.2'))
+
+    def test_tmp_tests_must_be_ignored_when_gitignore_is_present(self):
+        path = self.root / '.gitignore'
+        path.write_text('.tmp/\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValidationError, r'\.tmp-tests/'):
+            check_release(self.root)
+        path.write_text('.tmp/\n.tmp-tests/\n', encoding='utf-8')
+        self.assertEqual('PASS', check_release(self.root)['status'])
 
     def test_specification_and_runbook_have_1200_word_caps(self):
         for name in ['SPECIFICATION.md', '.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md', 'EXAMPLE-RUNBOOK.md']:

@@ -23,7 +23,12 @@ PROVENANCE = ".agentic/workflow-version.yaml"
 CODEOWNERS = ".github/CODEOWNERS"
 GITIGNORE = ".gitignore"
 GITIGNORE_TEMPLATE = ".agentic/templates/operating.gitignore"
-RELEASE_EXCLUDED_PREFIXES = ("docs/", ".tmp-tests/")
+RELEASE_EXCLUDED_PREFIXES = ("docs/showcase/", ".tmp-tests/")
+RELEASE_EXCLUDED_PATHS = frozenset({
+    "docs/AWF-1.8.9-Showcase-Presentation.html",
+    "docs/AWF-1.9.1-Showcase-Presentation.html",
+    "docs/AWF-Showcase-Presentation-Plan.md",
+})
 
 
 def json_bytes(value):
@@ -36,7 +41,7 @@ def managed(path):
 
 def release_member(path):
     """Repository-only showcase material is not portable release content."""
-    return not any(path.startswith(prefix) for prefix in RELEASE_EXCLUDED_PREFIXES)
+    return path not in RELEASE_EXCLUDED_PATHS and not any(path.startswith(prefix) for prefix in RELEASE_EXCLUDED_PREFIXES)
 
 
 def merge_operating_ignores(existing, required):

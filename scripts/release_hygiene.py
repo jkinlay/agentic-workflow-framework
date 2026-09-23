@@ -40,6 +40,12 @@ LONG_FORM = {'SPECIFICATION.md', '.agentic/docs/20-NEW-PROJECT-SETUP.md',
              '.agentic/docs/26-LOCAL-DISCOVERY-AND-ADOPTION.md',
              '.agentic/docs/27-MODEL-ROUTING.md'}
 PROMPT_PATHS = {'.agentic/prompts', 'scripts/prompt_templates'}
+SHOWCASE_PREFIXES = ('docs/showcase/',)
+SHOWCASE_PATHS = {
+    'docs/AWF-1.8.9-Showcase-Presentation.html',
+    'docs/AWF-1.9.1-Showcase-Presentation.html',
+    'docs/AWF-Showcase-Presentation-Plan.md',
+}
 VERSION_TOKEN = r'(?P<version>\d+\.\d+(?:\.\d+)?)(?!\d|\.\d)'
 # Match release meaning, not bare numbers: requirements such as PyYAML==6.0.2,
 # schema URNs and the compact AWF1.2 authorization wire format are independent.
@@ -60,12 +66,17 @@ def version_tuple(value):
     return tuple(map(int, value.split('.')))
 
 
+def showcase_material(relative):
+    name = relative.as_posix()
+    return name in SHOWCASE_PATHS or any(name.startswith(prefix) for prefix in SHOWCASE_PREFIXES)
+
+
 def word_budget(relative):
     """Per-file Markdown limits; generated manifest stays visible but uncapped."""
     name = relative.as_posix()
     if relative.name == 'MANIFEST.md':
         return None, 'generated_manifest'
-    if relative.parts and relative.parts[0] == 'docs':
+    if showcase_material(relative):
         return None, 'showcase_material'
     if relative.parent.as_posix() in PROMPT_PATHS or name in {
             '.agentic/review-loop/critic-prompt.md', '.agentic/review-loop/worker-prompt.md'}:
@@ -80,6 +91,8 @@ def stale_versions(body, current):
     current_tuple = version_tuple(current)
     # References to retained migration/disposition documents are historical links.
     body = re.sub(r'(?:MIGRATION-|RED-TEAM-DISPOSITION-v)[A-Za-z0-9.>_-]+\.md', '', body)
+    for path in SHOWCASE_PATHS:
+        body = body.replace(path, '')
     if 'urn:awf:1.2:' in body:
         body = body.replace('Agentic Workflow 1.2 —', 'Authorization protocol —')
         body = body.replace(r'Agentic Workflow 1.2 \u2014', 'Authorization protocol')
@@ -120,13 +133,17 @@ def check_release(root=ROOT, version=None):
         if any(marker in body for marker in MOJIBAKE_SIGNATURES):
             problems.append(rel.as_posix() + ': suspected mojibake or replacement character; inspect original text')
         historical_validation = rel.parts[:3] == ('.agentic', 'validation', 'history') and path.suffix == '.json'
-        if (rel.parts and rel.parts[0] == 'docs') or ('tests' in rel.parts or historical_validation or path.name in HISTORY
+        if showcase_material(rel) or ('tests' in rel.parts or historical_validation or path.name in HISTORY
                 or rel.as_posix() in HISTORICAL_PILOT_DOCUMENTS
                 or path.name.startswith(('MIGRATION-', 'RED-TEAM-DISPOSITION-'))):
             continue
         stale = stale_versions(body, current)
         if stale:
             problems.append(rel.as_posix() + ': stale operational release version: ' + ', '.join(stale))
+    gitignore = root / '.gitignore'
+    if gitignore.is_file() and '.tmp-tests/' not in {
+            line.strip() for line in gitignore.read_text(encoding='utf-8').splitlines()}:
+        problems.append('.gitignore: .tmp-tests/ must ignore local self-test output')
     if current == VERSION:
         prompts = render_prompts(root)
     else:

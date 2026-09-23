@@ -555,11 +555,23 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(verify_installed(self.dest), self.digest)
 
     def test_repository_showcase_docs_are_explicitly_outside_release_membership(self):
-        (self.source / 'docs/showcase').mkdir(parents=True)
-        (self.source / 'docs/showcase/history.md').write_bytes(b'Historical repository-only presentation\r\n')
+        for relative in ('docs/showcase/history.md',
+                         'docs/AWF-1.8.9-Showcase-Presentation.html',
+                         'docs/AWF-1.9.1-Showcase-Presentation.html',
+                         'docs/AWF-Showcase-Presentation-Plan.md'):
+            path = self.source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'Historical repository-only presentation\r\n')
         self.perform()
         self.assertEqual(verify_installed(self.dest), self.digest)
         self.assertFalse((self.dest / 'docs').exists())
+
+    def test_non_showcase_docs_are_checked_as_release_members(self):
+        (self.source / 'docs').mkdir()
+        (self.source / 'docs/operator.md').write_bytes(b'Ordinary release documentation\n')
+        with self.assertRaisesRegex(ValidationError, 'membership mismatch'):
+            self.perform()
+        self.assertFalse(self.dest.exists())
 
     def test_local_test_scratch_is_explicitly_outside_release_membership(self):
         (self.source / '.tmp-tests').mkdir()
