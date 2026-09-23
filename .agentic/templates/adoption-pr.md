@@ -1,4 +1,4 @@
-# Adopt AWF 1.9.1
+# Adopt AWF 1.9.2
 
 This draft changes repository governance files and preserves project-owned instructions, configuration and history. Complete every field from observed evidence; this template supplies no proof or authorization.
 
@@ -26,7 +26,7 @@ Record preserved versus derived project identity, repository metadata, test comm
 
 ## Host preflight
 
-Paste bootstrap's actual `adoption_pr_host_preflight_section` (PASS/WARN/SKIP/N_A rows for path length, `core.longpaths`, execution policy, symlink privilege, line endings, Git LFS): TO_RECORD. Rows never block INSTALLED; WARN rows are the next action. On non-Windows hosts the Windows rows read `N_A`.
+Paste actual `adoption_pr_host_preflight_section`, including `project_lint_scope`: TO_RECORD. Its WARN means Ruff/flake8 includes `.agentic`; add `extend-exclude = [".agentic"]` or the flake8 equivalent. Rows never block INSTALLED; WARN is next action; Windows-only rows are `N_A` elsewhere.
 
 ## Operating configuration at adoption
 

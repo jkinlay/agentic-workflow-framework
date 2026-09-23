@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import ValidationError, VERSION
 from agentic.canonical import sha256
-from agentic.installer import verify_release
+from agentic.installer import release_member, verify_release
 from agentic.safeio import Tree
 from release_hygiene import check_release
 
@@ -19,7 +19,7 @@ from release_hygiene import check_release
 def manifest():
     check_release(ROOT)
     with Tree(ROOT) as tree:
-        all_paths = tree.file_list(exclude_root_git=True)
+        all_paths = [path for path in tree.file_list(exclude_root_git=True) if release_member(path)]
         paths = [p for p in all_paths if p not in {'MANIFEST.json','MANIFEST.md'}]
         forbidden = {'.git', '__pycache__', '.venv', 'venv', '.pytest_cache', '.agentic-install', '.agentic-backup'}
         if any(set(Path(p).parts) & forbidden or p.endswith(('.pyc','.zip')) for p in paths):
@@ -70,7 +70,7 @@ def main():
     prefix = 'agentic-workflow-template-v' + VERSION.removesuffix('.0') + '/'
     expected = {}
     with Tree(ROOT) as tree, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for relative in tree.file_list(exclude_root_git=True):
+        for relative in (path for path in tree.file_list(exclude_root_git=True) if release_member(path)):
             data = tree.read(relative)
             info = zipfile.ZipInfo(prefix + relative, date_time=(2026,9,11,0,0,0))
             info.create_system = 3

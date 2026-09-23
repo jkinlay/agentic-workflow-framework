@@ -941,7 +941,9 @@ def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
     """CAS-update a project plan under a native lock with a recoverable journal."""
     project_root, runtime_root = Path(project_root).absolute(), Path(runtime_root).absolute()
     require(project_root.is_dir(), "Project root must already exist")
-    require(not ((runtime_root / "MANIFEST.json").exists() and project_root.is_relative_to(runtime_root)),
+    scratch = runtime_root / '.tmp-tests'
+    inside_release = project_root.is_relative_to(runtime_root) and not project_root.is_relative_to(scratch)
+    require(not ((runtime_root / "MANIFEST.json").exists() and inside_release),
             "Write the project plan outside the immutable release source")
     require(not project_root.is_relative_to(runtime_root / ".agentic"), "Cannot put a project plan in installed runtime files")
     if expected_plan_sha256 is not None:

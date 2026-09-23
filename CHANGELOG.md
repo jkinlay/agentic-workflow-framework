@@ -1,5 +1,9 @@
 # Change history
 
+## 1.9.2 — 23 September 2026
+
+Adds token-only host budgets with larger new-project token defaults, an exact-tree publisher commit route for workers unable to write Git metadata, project lint-scope preflight, and the repository-owned portable skill source. Existing project configuration remains preserved on upgrade; review, merge, reconciliation and Jira boundaries are unchanged. No new model pilot.
+
 ## 1.9.1 — 21 September 2026
 
 Corrects the adoption-status regression test for Windows host-preflight WARN rows. Runtime behavior is unchanged: those rows remain non-blocking and remain the status next action. No new model pilot.

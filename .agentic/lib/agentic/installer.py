@@ -23,6 +23,7 @@ PROVENANCE = ".agentic/workflow-version.yaml"
 CODEOWNERS = ".github/CODEOWNERS"
 GITIGNORE = ".gitignore"
 GITIGNORE_TEMPLATE = ".agentic/templates/operating.gitignore"
+RELEASE_EXCLUDED_PREFIXES = ("docs/", ".tmp-tests/")
 
 
 def json_bytes(value):
@@ -31,6 +32,11 @@ def json_bytes(value):
 
 def managed(path):
     return path in {"AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md", CODEOWNERS} or path.startswith(".agentic/")
+
+
+def release_member(path):
+    """Repository-only showcase material is not portable release content."""
+    return not any(path.startswith(prefix) for prefix in RELEASE_EXCLUDED_PREFIXES)
 
 
 def merge_operating_ignores(existing, required):
@@ -53,7 +59,8 @@ def verify_release(tree, expected_digest=None):
     manifest = loads(raw.decode("utf-8"))
     if set(manifest) != {"format", "template_version", "files"} or manifest["format"] != "awf-manifest-1" or manifest["template_version"] != VERSION:
         raise ValidationError("Unsupported release manifest")
-    actual = set(tree.file_list(exclude_root_git=True)) - {MANIFEST, "MANIFEST.md"}
+    actual = {path for path in tree.file_list(exclude_root_git=True)
+              if path not in {MANIFEST, "MANIFEST.md"} and release_member(path)}
     if actual != set(manifest["files"]):
         raise ValidationError("Release manifest file membership mismatch")
     folded = [path.casefold() for path in actual]
@@ -219,7 +226,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
     if not expected_digest or len(expected_digest) != 64:
         raise ValidationError("Provide the externally approved manifest SHA-256")
     source, destination = Path(source).absolute(), Path(destination).absolute()
-    if source == destination or source.is_relative_to(destination) or destination.is_relative_to(source):
+    overlap = source == destination or source.is_relative_to(destination) or destination.is_relative_to(source)
+    test_scratch = source / ".tmp-tests"
+    if overlap and not destination.is_relative_to(test_scratch):
         raise ValidationError("Source and destination trees must not overlap")
     with Tree(source) as src:
         digest, content = verify_release(src, expected_digest)

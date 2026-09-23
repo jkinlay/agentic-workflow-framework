@@ -14,7 +14,7 @@ REVIEW = {"READY_FOR_CRITIC", "CHANGES_REQUESTED", "SPECIALIST_REVIEW", "FINAL_R
 AFTER_MERGE = {"MERGED", "MERGED_PENDING_JIRA", "MERGED_PENDING_OWNER_CLOSURE", "DONE"}
 RESUME = {"READY", "IN_PROGRESS", "READY_FOR_CRITIC", "CHANGES_REQUESTED", "SPECIALIST_REVIEW", "FINAL_REVIEW",
           "MERGED_PENDING_JIRA", "REVIEW_CAP_REACHED", "MERGED_PENDING_OWNER_CLOSURE"}
-# Jira lifecycle mirroring (1.9.1): the controller is the sole writer and each
+# Jira lifecycle mirroring (1.9.2): the controller is the sole writer and each
 # mapped event has exactly one status_map target; BLOCK/PARK never write.
 JIRA_WRITES = {"WORKER_STARTED": "in_progress", "PR_READY": "in_review",
                "OWNER_CHANGES_REQUESTED": "in_progress", "HEAD_CHANGED": "in_progress", "JIRA_RECONCILED": "done"}

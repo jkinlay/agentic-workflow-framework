@@ -457,6 +457,16 @@ class ClosureAndParityTests(Fixture):
         with self.assertRaises(ValidationError):
             self.contracts.validate("worker-result", self.bundle["worker"])
 
+    def test_worker_commit_route_is_optional_and_enum_bounded(self):
+        worker = copy.deepcopy(self.bundle["worker"])
+        worker.pop("commit_route", None)
+        self.contracts.validate("worker-result", worker)
+        worker["commit_route"] = "PUBLISHER"
+        self.contracts.validate("worker-result", worker)
+        worker["commit_route"] = "UNTRUSTED"
+        with self.assertRaises(ValidationError):
+            self.contracts.validate("worker-result", worker)
+
     def test_local_ci_parity_requires_agreement_or_declared_distinction(self):
         self.bundle["worker"]["validation"][0].update(tests_discovered=401, tests_executed=401)
         self.bundle["ci"]["checks"][0]["tests_executed"] = 404

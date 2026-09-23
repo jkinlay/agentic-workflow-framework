@@ -99,6 +99,17 @@ class ReleaseHygieneTests(unittest.TestCase):
         self.assertEqual(before['markdown_total_words'] + 9000, after['markdown_total_words'])
         self.assertIsNone(next(x for x in after['documentation_file_budgets'] if x['path'] == 'MANIFEST.md')['limit'])
 
+    def test_showcase_docs_are_integrity_content_not_operational_budget_or_version_claims(self):
+        before = check_release(self.root)
+        path = self.root / 'docs/showcase/history.md'
+        path.parent.mkdir(parents=True)
+        content = '# Historical deck\nAWF 1.2 release\n' + 'slide ' * 1300
+        path.write_text(content, encoding='utf-8')
+        after = check_release(self.root)
+        budget = next(item for item in after['documentation_file_budgets'] if item['path'] == 'docs/showcase/history.md')
+        self.assertEqual((None, 'showcase_material'), (budget['limit'], budget['category']))
+        self.assertEqual(before['documentation_words'] + len(content.split()), after['documentation_words'])
+
     def test_specification_and_runbook_have_1200_word_caps(self):
         for name in ['SPECIFICATION.md', '.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md', 'EXAMPLE-RUNBOOK.md']:
             with self.subTest(name=name):

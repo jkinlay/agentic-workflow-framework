@@ -1,10 +1,10 @@
 # Ticket lifecycle
 
-This renders the normal transitions in [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/lifecycle.py) is the exact guard/control authority. These are AWF states; Jira writes are mirrored per event below. The reference state machine has no external side effects.
+This renders [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/lifecycle.py) is authoritative. These are AWF states; Jira writes are mirrored below. The reference state machine has no external side effects.
 
 ## Routine work
 
-On worker COMPLETE, the assigned publisher pushes the scoped feature branch and opens a draft PR against `github.base_branch`. Observe its repository, PR, head/base and target, then finalize candidate-bound records with that identity; a local worktree is not a PR. With current validation and requirements, mark ready, then dispatch the independent critic against that observed head. A changed head needs fresh review. Review-ready means READY_FOR_CRITIC; owner-ready means READY_FOR_OWNER_AUTHORIZATION after critic, required specialists and final gate. Neither authorizes merge.
+On worker COMPLETE, the publisher opens a draft PR from the branch. If Git-metadata writes are denied, the worker leaves the validated tree uncommitted, reports BLOCKED only for commit with `commit_route: PUBLISHER`, and records tested-tree evidence; the publisher commits that exact worktree without content edits and verifies equality. Differences return to the worker as scope violations; absent `commit_route` means `WORKER`. Observe PR/head/base/target and finalize records. Current validation permits mark-ready and critic review of that head; changes require re-review. READY_FOR_CRITIC precedes READY_FOR_OWNER_AUTHORIZATION after critic, specialists and final gate. Neither authorizes merge.
 
 Routine publication classification requires accepted repository/ID/default/ref bindings, the ticket/slug's `github.branch_pattern` and fresh live APPLIED rules evidence. It is presentation only: retain task scope, platform permissions, non-force feature refs and secret/adapter prerequisites. Reuse existing authorization; where missing, report the concrete action/owner.
 
@@ -46,6 +46,6 @@ Read back after every write; keep actor/timestamp only when observed. A mismatch
 
 ## Control and recovery
 
-Unspecified events reject. Requirements/policy changes block and invalidate evidence; unavailable CI blocks. Candidate changes invalidate review; failed CI, reopened threads, dismissed reviews or OWNER_CHANGES_REQUESTED return review states to CHANGES_REQUESTED. Revoked authorization invalidates its evidence. Terminal invalidations audit without changing state. POST_MERGE_FINDING records the finding and a successor ticket (`corrects`) without changing merged state.
+Unspecified events reject. Requirements/policy changes invalidate evidence and block, as does unavailable CI. Candidate changes invalidate review; failed CI, reopened threads, dismissed reviews or OWNER_CHANGES_REQUESTED return to CHANGES_REQUESTED. Revoked authorization invalidates its evidence. Terminal invalidations only audit. POST_MERGE_FINDING records the finding and successor (`corrects`) without changing merged state.
 
 BLOCK/FAIL record evidence; RECOVER needs resolved blocker, current external state, verified resume guards and revoked old permit, into a listed `resume_states` value. Cancellation/closure/supersession needs source/owner disposition, current state and revoked tasks. During MERGING/MERGE_UNKNOWN, disruptive events record uncertainty and reconcile before retry. Confirmed manual merges require matched candidate/authorization. Confirmed reverts reopen merged work; merged work cannot simply be cancelled. See [native coordination](24-STREAM-STARTUP.md) and [scheduled recovery](22-AUTOMATED-REVIEW-LOOP.md).

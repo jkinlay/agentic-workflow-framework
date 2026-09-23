@@ -173,6 +173,12 @@ class SelfTestReviewTests(unittest.TestCase):
         self.assertFalse(path.exists())
         self.assertIn('outside', error)
 
+    def test_direct_tmp_tests_report_is_created_after_integrity_preflight(self):
+        path = self.source / '.tmp-tests/self-test.json'
+        code, output, error, calls = self.invoke(['--report', str(path)])
+        self.assertEqual((0, 1), (code, calls), output + error)
+        self.assertEqual('PASS', json.loads(path.read_bytes())['status'])
+
     def assert_final_mutation_rejected(self, mutate, *, scope=False):
         with mock.patch.object(release_review, 'review_source', wraps=release_review.review_source) as review:
             code, output, error, calls = self.invoke(self.review_arguments(scope) + ['--report', str(self.report)], mutate)

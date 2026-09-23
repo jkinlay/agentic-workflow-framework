@@ -51,7 +51,10 @@ def preflight(archive_path, approved_digest, workdir, report_path):
     archive_path = Path(archive_path).resolve(strict=True)
     report_path = Path(report_path).resolve()
     workdir = Path(workdir or report_path.parent).resolve()
-    if workdir.is_relative_to(ROOT) or report_path.is_relative_to(ROOT):
+    scratch = (ROOT / '.tmp-tests').resolve()
+    work_in_release = workdir.is_relative_to(ROOT) and not workdir.is_relative_to(scratch)
+    report_in_release = report_path.is_relative_to(ROOT) and not report_path.is_relative_to(scratch)
+    if work_in_release or report_in_release:
         raise ValueError('Validation work directory and report must be outside the source release tree')
     if report_path == archive_path:
         raise ValueError('Validation report must not overwrite the approved archive')

@@ -554,6 +554,20 @@ class InstallerTests(unittest.TestCase):
         self.perform()
         self.assertEqual(verify_installed(self.dest), self.digest)
 
+    def test_repository_showcase_docs_are_explicitly_outside_release_membership(self):
+        (self.source / 'docs/showcase').mkdir(parents=True)
+        (self.source / 'docs/showcase/history.md').write_bytes(b'Historical repository-only presentation\r\n')
+        self.perform()
+        self.assertEqual(verify_installed(self.dest), self.digest)
+        self.assertFalse((self.dest / 'docs').exists())
+
+    def test_local_test_scratch_is_explicitly_outside_release_membership(self):
+        (self.source / '.tmp-tests').mkdir()
+        (self.source / '.tmp-tests/report.json').write_bytes(b'{}\n')
+        self.perform()
+        self.assertEqual(verify_installed(self.dest), self.digest)
+        self.assertFalse((self.dest / '.tmp-tests').exists())
+
     def test_root_git_hardlink_cannot_be_excluded_as_safe_metadata(self):
         sentinel = self.base / 'external-git.txt'
         sentinel.write_bytes(b'Protected sentinel')

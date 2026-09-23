@@ -106,7 +106,7 @@ def verify_record(record, request, gate, config, contracts, now):
     return {"decision": decision, "record_consistent": True, "live_source_verified": False, "owner_quorum_verified": False, "execution_authority": False}
 
 
-# Owner records other than merge authorization (1.9.1): finding and cap
+# Owner records other than merge authorization (1.9.2): finding and cap
 # dispositions, tier reassignment and owner closure use the same one-line
 # grammar, bound to the record, candidate head, contract and project. A record
 # whose raw body does not render exactly from its fields is refused.

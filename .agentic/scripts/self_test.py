@@ -50,8 +50,12 @@ def main(argv=None):
     parser.add_argument('--review-required-paths', type=Path)
     parser.add_argument('--expected-review-required-paths-sha256')
     args = parser.parse_args(argv)
+    report_in_temp = False
     if args.report and args.report.resolve().is_relative_to(ROOT):
-        parser.error('Write validation reports outside the source/installed root')
+        relative_report = args.report.resolve().relative_to(ROOT)
+        report_in_temp = len(relative_report.parts) == 2 and relative_report.parts[0] == '.tmp-tests'
+        if not report_in_temp:
+            parser.error('Write validation reports outside the source/installed root or directly under .tmp-tests')
     if args.report and args.report.exists():
         parser.error('Use a new report path; preserve existing reports and review inputs')
     started = time.monotonic()
@@ -75,6 +79,8 @@ def main(argv=None):
             report['dependencies'][package] = importlib.metadata.version(package)
         report['source_manifest_sha256'] = verify_installed(ROOT)
         report['checks']['integrity'] = 'PASS'
+        if report_in_temp:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
         review_values = (args.expected_manifest_sha256, args.reviews, args.expected_reviews_sha256,
                          args.review_required_paths, args.expected_review_required_paths_sha256)
         has_review_arguments = any(value is not None for value in review_values)
@@ -153,7 +159,10 @@ def main(argv=None):
                 target = unquote(target.strip('<>').split('#', 1)[0])
                 if not target or re.match(r'[A-Za-z][A-Za-z0-9+.-]*:', target):
                     continue
-                if not (path.parent / target).exists():
+                relative = path.relative_to(ROOT).as_posix()
+                generated_portable_asset = (relative == 'global/awf-portable/SKILL.md'
+                    and target in {f'assets/agentic-workflow-template-v{VERSION}.zip', 'assets/release.json'})
+                if not (path.parent / target).exists() and not generated_portable_asset:
                     raise ValueError(f'Broken document link: {path.relative_to(ROOT)} -> {target}')
                 links += 1
         report['checks']['local_markdown_links'] = links

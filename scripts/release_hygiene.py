@@ -65,10 +65,12 @@ def word_budget(relative):
     name = relative.as_posix()
     if relative.name == 'MANIFEST.md':
         return None, 'generated_manifest'
+    if relative.parts and relative.parts[0] == 'docs':
+        return None, 'showcase_material'
     if relative.parent.as_posix() in PROMPT_PATHS or name in {
             '.agentic/review-loop/critic-prompt.md', '.agentic/review-loop/worker-prompt.md'}:
         return 350, 'native_prompt'
-    if name in LONG_FORM or 'RUNBOOK' in relative.name.upper():
+    if name in LONG_FORM or relative.name == 'SPECIFICATION.md' or 'RUNBOOK' in relative.name.upper():
         return 1200, 'specification_or_runbook'
     return 800, 'documentation'
 
@@ -105,9 +107,9 @@ def check_release(root=ROOT, version=None):
             words = len(path.read_text(encoding='utf-8').split())
             cap, category = word_budget(rel)
             total_words += words
-            if cap is None:
+            if category == 'generated_manifest':
                 manifest_words += words
-            elif words > cap:
+            elif cap is not None and words > cap:
                 problems.append(f'{rel.as_posix()}: documentation budget exceeded: {words} > {cap} words ({category})')
             budgets.append({'path': rel.as_posix(), 'words': words, 'limit': cap, 'category': category})
         if path.suffix.lower() not in SCAN_SUFFIXES:
@@ -118,7 +120,7 @@ def check_release(root=ROOT, version=None):
         if any(marker in body for marker in MOJIBAKE_SIGNATURES):
             problems.append(rel.as_posix() + ': suspected mojibake or replacement character; inspect original text')
         historical_validation = rel.parts[:3] == ('.agentic', 'validation', 'history') and path.suffix == '.json'
-        if ('tests' in rel.parts or historical_validation or path.name in HISTORY
+        if (rel.parts and rel.parts[0] == 'docs') or ('tests' in rel.parts or historical_validation or path.name in HISTORY
                 or rel.as_posix() in HISTORICAL_PILOT_DOCUMENTS
                 or path.name.startswith(('MIGRATION-', 'RED-TEAM-DISPOSITION-'))):
             continue

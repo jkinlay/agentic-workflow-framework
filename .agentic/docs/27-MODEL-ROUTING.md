@@ -1,6 +1,6 @@
 # Balanced model routing
 
-Version 1.9.1. [SPECIFICATION](../SPECIFICATION.md) defines authority. The router proposes routes and records usage; the host authenticates evidence, launches models and enforces limits.
+Version 1.9.2. [SPECIFICATION](../SPECIFICATION.md) defines authority. The router proposes routes and records usage; the host authenticates evidence, launches models and enforces limits.
 
 ## Policy and escalation
 
@@ -25,6 +25,10 @@ Credentials, infrastructure, rate limits, cancellation and unknown outcomes requ
 ## Reservation and settlement
 
 `suggest` is read-only. Before dispatch, `reserve` atomically admits a run into the single protected project ledger outside all worker checkouts. Reservations are hard upper bounds the host must enforce. Effective budgets are the minimum of routing and existing execution caps. Monetary caps require known reservation and actual costs; unknown is not zero.
+
+### Token-only hosts
+
+When every effective monetary ceiling is `null`, a host without verified dollar accounting may reserve and settle with `reservation_cost_microusd: null` and `actual_cost_microusd: null`; token and run ceilings remain mandatory. If any effective monetary ceiling is an integer, the existing hard cost reservation and actual-cost requirements still apply. New adoptions default to token-only budgets of 1,000,000 tokens per ticket and 5,000,000 tokens per project day; upgrades preserve reviewed project configuration until an owner opts in through a governance PR.
 
 Outstanding runs block duplicate ticket/role/phase admission and remain charged across midnight. Ticket history survives policy changes. Usage counts on its start and closure UTC days; there are no timeout refunds.
 

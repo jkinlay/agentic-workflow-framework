@@ -18,6 +18,7 @@
       "candidate_id": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "status": "COMPLETE",
+    "commit_route": "WORKER",
     "dispatch_id": "00000000-0000-0000-0000-000000000000",
     "files_changed": [],
     "acceptance_criteria": [

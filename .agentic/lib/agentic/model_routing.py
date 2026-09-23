@@ -52,7 +52,7 @@ def default_policy():
                        "max_reasoning_failures_per_phase": 3,
                        "effort_ceiling": "high"},
         "budgets": {"max_runs_per_ticket": 8, "max_runs_per_project_day": 40,
-                    "max_tokens_per_ticket": 100000, "max_tokens_per_project_day": 500000,
+                    "max_tokens_per_ticket": 1000000, "max_tokens_per_project_day": 5000000,
                     "max_cost_microusd_per_ticket": None,
                     "max_cost_microusd_per_project_day": None},
         "adaptive": {"mode": "shadow", "min_reviewed_samples": 20,
@@ -197,9 +197,11 @@ def policy_from_config(config):
     for existing, routing in caps.items():
         if existing in execution:
             value = execution[existing]
-            _integer(value, existing, 1)
+            monetary = "cost" in existing
+            _integer(value, existing, 1, nullable=monetary)
             configured = policy["budgets"][routing]
-            policy["budgets"][routing] = value if configured is None else min(value, configured)
+            if value is not None:
+                policy["budgets"][routing] = value if configured is None else min(value, configured)
     roles = execution.get("roles", {})
     _require(isinstance(roles, dict), "execution.roles must be an object")
     for role in ROLES:

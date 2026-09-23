@@ -1,6 +1,6 @@
 # Native coordination runbook
 
-Version 1.9.1. This is coordinator guidance for a host with delegation tools. The planner does not launch agents or authenticate active-writer records.
+Version 1.9.2. This is coordinator guidance for a host with delegation tools. The planner does not launch agents or authenticate active-writer records.
 
 See [specification](../SPECIFICATION.md), [ticket lifecycle](23-TICKET-LIFECYCLE.md) and [operating configuration](29-OPERATING-CONFIGURATION.md). Default three streams each have one independent reviewer; their count is derived. Reviewers and any separate coordinator consume shared host slots; configured ceilings do not prove available agents.
 

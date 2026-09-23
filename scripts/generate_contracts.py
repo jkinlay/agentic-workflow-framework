@@ -151,7 +151,7 @@ def catalog():
         "capabilities": STRINGS, "status": enum("COMPLETE", "FAILED", "CANCELLED"),
         "attestation_evidence": EVIDENCE,
         "resources_held": arr(obj({"name": text(pattern="^[a-z][a-z0-9_]*$"), "slots": integer(1), "from": TIME, "until": TIME}))})
-    schemas["worker-result"] = bound({"status": enum("COMPLETE", "BLOCKED", "FAILED"), "dispatch_id": UUID,
+    schemas["worker-result"] = bound({"status": enum("COMPLETE", "BLOCKED", "FAILED"), "commit_route": enum("WORKER", "PUBLISHER"), "dispatch_id": UUID,
         "files_changed": STRINGS, "acceptance_criteria": arr(AC_RESULT, 1),
         "validation": arr(obj({"command": text(), "started_at": TIME, "finished_at": TIME, "exit_code": integer(-2147483648),
             "tested_tree_sha": SHA, "clean_checkout": BOOL, "evidence": EVIDENCE,
@@ -160,6 +160,8 @@ def catalog():
             "unevaluable_files": STRINGS}), 1),
         "self_review_complete": BOOL, "findings_addressed": STRINGS, "blockers": STRINGS, "closure": CLOSURE})
     schemas["amendment-result"] = copy.deepcopy(schemas["worker-result"])
+    for name in ("worker-result", "amendment-result"):
+        schemas[name]["required"].remove("commit_route")
     review = {"verdict": enum("APPROVE", "REQUEST_CHANGES", "INCOMPLETE"), "acceptance_criteria": arr(AC_RESULT, 1),
               "findings": arr(FINDING), "prior_finding_ids": STRINGS, "closure": CLOSURE,
               "coverage": obj({"complete": BOOL, "file_manifest_sha256": DIGEST, "reviewed_paths": STRINGS, "omissions": STRINGS}),
@@ -304,7 +306,7 @@ def catalog():
                "tier2_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking")})}),
            "transient_retry_limit": integer(0, maximum=5), "max_run_seconds": integer(1),
            "max_tool_calls_per_run": integer(1), "max_tokens_per_ticket": integer(1),
-           "max_cost_microusd_per_ticket": integer(1), "daily_project_cost_microusd": integer(1),
+           "max_cost_microusd_per_ticket": nullable(integer(1)), "daily_project_cost_microusd": nullable(integer(1)),
            "one_writer_per_ticket": TRUE, "roles": obj({r: role_policy for r in ["controller", "worker", "critic", "specialist"]}),
            "host_broker": obj({"enabled": BOOL, "broker_id": text(0), "lease_before_dispatch": TRUE,
                               "max_workers": integer(1), "max_heavy_jobs": integer(), "max_gpu_jobs": integer(),

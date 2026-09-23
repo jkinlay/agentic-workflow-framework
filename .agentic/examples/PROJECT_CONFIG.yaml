@@ -1,7 +1,7 @@
 {
   "version": 3,
   "template": {
-    "expected_workflow_version": "1.9.1"
+    "expected_workflow_version": "1.9.2"
   },
   "project": {
     "id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
@@ -100,9 +100,9 @@
     "transient_retry_limit": 2,
     "max_run_seconds": 3600,
     "max_tool_calls_per_run": 100,
-    "max_tokens_per_ticket": 100000,
-    "max_cost_microusd_per_ticket": 10000000,
-    "daily_project_cost_microusd": 50000000,
+    "max_tokens_per_ticket": 1000000,
+    "max_cost_microusd_per_ticket": null,
+    "daily_project_cost_microusd": null,
     "one_writer_per_ticket": true,
     "roles": {
       "controller": {
@@ -294,8 +294,8 @@
       "budgets": {
         "max_runs_per_ticket": 8,
         "max_runs_per_project_day": 40,
-        "max_tokens_per_ticket": 100000,
-        "max_tokens_per_project_day": 500000,
+        "max_tokens_per_ticket": 1000000,
+        "max_tokens_per_project_day": 5000000,
         "max_cost_microusd_per_ticket": null,
         "max_cost_microusd_per_project_day": null
       },
