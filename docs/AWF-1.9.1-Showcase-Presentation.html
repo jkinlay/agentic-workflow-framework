@@ -104,9 +104,13 @@
     .term pre { margin: 0; padding: 12px 14px; color: #dfe9f5; font-family: var(--mono); font-size: clamp(11px, .92vw, 15px); line-height: 1.5; white-space: pre-wrap; }
     .term .p { color: var(--muted-2); } .term .k { color: var(--teal); } .term .s { color: var(--green); } .term .w { color: var(--amber); } .term .r { color: var(--rose); } .term .c { color: #8ea3bd; }
 
-    .capture { display: grid; gap: 6px; padding: 12px 14px; border: 1.5px dashed rgba(246, 197, 110, .7); border-radius: 12px; background: var(--amber-soft); }
-    .capture .cap-id { color: var(--amber); font-family: var(--mono); font-size: clamp(11px, .9vw, 14px); font-weight: 800; letter-spacing: .06em; }
-    .capture .cap-what { color: var(--ink); font-size: clamp(13px, 1.05vw, 17px); line-height: 1.35; }
+    .capture { position: relative; display: grid; gap: 6px; padding: 34px 16px 14px; border: 3px dashed var(--amber); border-radius: 12px;
+      background: repeating-linear-gradient(135deg, rgba(246,197,110,.10) 0 12px, rgba(246,197,110,.03) 12px 24px); }
+    .capture::before { content: "NOT YET CAPTURED"; position: absolute; top: 0; left: 0; right: 0; padding: 6px 16px; border-radius: 8px 8px 0 0;
+      background: var(--amber); color: #061526; font-size: clamp(11px, .9vw, 14px); font-weight: 900; letter-spacing: .1em; }
+    .capture .cap-id { color: var(--amber); font-family: var(--mono); font-size: clamp(12px, 1vw, 15px); font-weight: 800; letter-spacing: .04em; }
+    .capture .cap-what { color: var(--muted); font-size: clamp(12px, .95vw, 15px); line-height: 1.35; }
+    .real-tag { color: var(--green); font-weight: 800; }
 
     table.t { width: 100%; border-collapse: collapse; font-size: clamp(12px, 1.02vw, 16px); line-height: 1.35; }
     table.t th, table.t td { padding: .55em .6em; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
@@ -381,35 +385,38 @@
     </section>
 
     <!-- ===================== 6 VERIFY + INSTALL ===================== -->
-    <section class="slide" data-core="true" data-title="Verify and install" data-minutes="1.5" aria-roledescription="slide">
+    <section class="slide" data-core="true" data-title="Verify the release" data-minutes="1.5" aria-roledescription="slide">
       <div class="slide-inner">
         <div class="topline"><p class="eyebrow">Act 1 · Set it up</p><span class="slide-index"></span></div>
-        <h2 class="slide-title">Check the download against a published fingerprint, then install the skill</h2>
+        <h2 class="slide-title">Check the release against a pin before anything runs</h2>
         <div class="content">
           <div class="grid-2">
-            <div style="display:grid; gap:14px">
-              <div class="term">
-                <div class="term-head"><span>PowerShell · verify, then install</span><span>Python 3.11+ · Git</span></div>
-<pre><span class="p">PS&gt;</span> Get-FileHash .\AWF-v1.9.1-distribution.zip -Algorithm SHA256
-<span class="c"># compare with the SHA-256 on the v1.9.1 GitHub Release page</span>
-<span class="p">PS&gt;</span> python -B install_awf.py --dry-run
-<span class="p">PS&gt;</span> python -B install_awf.py</pre>
-              </div>
-              <div class="capture"><span class="cap-id">CAP-06 · rehearsal capture</span><span class="cap-what">Paste: the hash beside the Release page's published value, and the installer result (status, version 1.9.1, previous version, backup kept).</span></div>
+            <div class="term">
+              <div class="term-head"><span>PowerShell · rehearsal, 23 September 2026</span><span class="real-tag">real output</span></div>
+<pre><span class="p">PS&gt;</span> Get-FileHash .\release-1.9.1\MANIFEST.json -Algorithm SHA256
+<span class="s">C3BED1CE03703661DE65B32F5A5071005E5DE27F4CE0D36F746315609D564D25</span>
+
+<span class="p">PS&gt;</span> python -B scripts/bootstrap_project.py --dest ..\signal-lab `
+       --expected-manifest-sha256 c3bed1ce…d564d25 ...
+status : <span class="s">CONFIGURED</span>
+
+<span class="c"># the pin is written into each project's receipt</span>
+signal-lab      source_manifest_sha256 : <span class="s">c3bed1ce…d564d25</span>
+HFT-Strategies  source_manifest_sha256 : <span class="s">c3bed1ce…d564d25</span></pre>
             </div>
             <div class="copy">
-              <p><b>Why the check matters.</b> The release is not signed. A matching hash proves you have the same bytes as the published fingerprint; it only helps if that fingerprint comes from somewhere else, such as the Release page.</p>
-              <p><b>Second check inside the files.</b> Bootstrap refuses to run unless the release manifest matches a pin you supply. For 1.9.1 that manifest hash is <code>c3bed1ce…d564d25</code>.</p>
-              <p><b>What install does.</b> Adds the <code>$awf</code> skill to Codex, keeps a backup of the old one, and changes <b>no</b> repository.</p>
+              <p><b>Why the check matters.</b> The release is not signed. A matching hash proves you have the bytes the pin describes; it only helps if the pin comes from somewhere you trust, such as a GitHub Release page.</p>
+              <p><b>Bootstrap enforces it.</b> Give it the wrong pin, or run it from a checkout with extra files, and it refuses: "Release manifest file membership mismatch".</p>
+              <p><b>Same bytes everywhere.</b> signal-lab and the live HFT Strategies project carry the same release pin in their installation receipts.</p>
             </div>
           </div>
         </div>
-        <div class="footerline"><span>Install makes AWF available to Codex. Nothing reaches a project until the next step.</span><span>README.md · global/awf/SKILL.md</span></div>
+        <div class="footerline"><span>Release 1.9.1 = commit <strong>1f5f146</strong> (21 Sep 2026). The portable <code>$awf</code> skill for 1.9.1 is not yet packaged; see slide 14.</span><span>README.md · 20-NEW-PROJECT-SETUP.md</span></div>
       </div>
       <aside class="slide-notes" hidden>
-        <p>"Setup is two commands. First, check the download. The release isn't signed, so be honest about what the hash buys you: it proves you have the same bytes as the fingerprint on the Release page, and nothing more."</p>
-        <p>"There's a second check inside: the bootstrap script won't install unless the release manifest matches a pin you give it. Then the installer adds the skill to Codex and keeps a backup of whatever was there. It doesn't touch any repository."</p>
-        <p class="note-source">Manifest SHA-256 for 1.9.1 (release-1.9.1-pinned worktree, commit 1f5f146): c3bed1ce03703661de65b32f5a5071005e5de27f4ce0d36f746315609d564d25. Publish the v1.9.1 Release with the distribution ZIP hash before presenting (proof pack §5).</p>
+        <p>"Before anything runs, check the release. The release isn't signed, so be honest about what a hash buys you: it proves you have the same bytes as the pin, and nothing more. The pin has to come from somewhere you trust."</p>
+        <p>"Bootstrap enforces it: with the wrong pin, or from a folder with extra files in it, it refuses to install. And the pin is recorded in every project's receipt: the demo repository and my live HFT project show the same one."</p>
+        <p class="note-source">Rehearsal files: awf-rehearsal-1.9.1\cap07-bootstrap-install.json. The 1.9.1 portable skill distribution could not be built from the public repo: build_skill_distribution.py needs a portable skill source (scripts/install_skill.py), which only exists for 1.7 to 1.8.9. Publish the v1.9.1 Release pin before presenting.</p>
       </aside>
     </section>
 
@@ -427,10 +434,23 @@
 draft PR for owner review. Code owner @jkinlay.
 Test command: python -m pytest. Jira disabled.</pre>
               </div>
-              <div class="capture"><span class="cap-id">CAP-07 · rehearsal capture</span><span class="cap-what">Paste: the draft adoption PR (number, files changed) and the <code>status</code> line, expected <code>AWF 1.9.1: CONFIGURED</code>.</span></div>
+              <div class="term">
+                <div class="term-head"><span>After install · status</span><span class="real-tag">real output</span></div>
+<pre><span class="p">PS&gt;</span> python -B -I .agentic\scripts\workflow.py status
+AWF 1.9.1: <span class="s">CONFIGURED</span> — streams 3/6
+Next: verify the trusted host AWF skill or pass
+      --release-source and a trusted pin.
+Host preflight <span class="w">WARN</span>: powershell_execution_policy;
+      line_endings (fixed in the PR)</pre>
+              </div>
+              <div class="term">
+                <div class="term-head"><span>Draft adoption PR</span><span class="real-tag">real</span></div>
+<pre>jkinlay/signal-lab <span class="k">#4</span> · Adopt AWF 1.9.1
+CI <span class="s">pass</span> · <span class="s">merged by owner</span> 23 Sep 14:08</pre>
+              </div>
             </div>
             <div class="term">
-              <div class="term-head"><span>bootstrap --dry-run · jkinlay/signal-lab</span><span>real output, abridged</span></div>
+              <div class="term-head"><span>bootstrap --dry-run · jkinlay/signal-lab</span><span class="real-tag">real output, abridged</span></div>
 <pre>status             : <span class="s">PLAN</span>
 managed_files      : 214
 conflicts          : []
@@ -480,10 +500,20 @@ next_step          : Proceed with the adoption PR; report
             </div>
             <div style="display:grid; gap:14px; align-content:start">
               <div class="term">
-                <div class="term-head"><span>You type</span></div>
-<pre>Stream A worker Terra/high; keep the critics on Sol/high.</pre>
+                <div class="term-head"><span>operating set · "Stream A worker Terra/high; keep the critics on Sol/high."</span><span class="real-tag">real</span></div>
+<pre>| Stream | Worker                         | Reviewer           |
+| A      | gpt-5.6-terra / <span class="s">high (pinned)</span>  | gpt-5.6-sol / high |
+| B      | gpt-5.6-terra / medium         | gpt-5.6-sol / high |
+| C      | gpt-5.6-terra / medium         | gpt-5.6-sol / high |</pre>
               </div>
-              <div class="capture"><span class="cap-id">CAP-08 · rehearsal capture</span><span class="cap-what">Paste: AWF's echo of the change and the updated table. Then ask for "8 streams" and paste the refusal (above the ceiling of six).</span></div>
+              <div class="term">
+                <div class="term-head"><span>operating set · "8 streams"</span><span class="real-tag">real · exit 2</span></div>
+<pre>status : <span class="r">REJECTED</span>
+reason : Stream count must be 1..6 within the
+         effective governance ceiling
+remedy : Change the binding governance value through
+         a reviewed PR to .agentic/PROJECT_CONFIG.yaml</pre>
+              </div>
               <div class="copy"><p>The critic stays on a <b>different model and a separate context</b> from the worker. Running work keeps the route it was reserved with.</p></div>
             </div>
           </div>
@@ -492,7 +522,7 @@ next_step          : Proceed with the adoption PR; report
       </div>
       <aside class="slide-notes" hidden>
         <p>"Once adopted, AWF shows its operating configuration and offers three choices: keep the defaults, let it look at the Epics and recommend, or customise. By default you get three streams, so three tickets in parallel. Workers run on Terra at medium effort, and each stream has its own critic on Sol at high effort: a different, stronger model, in a separate context."</p>
-        <p>"I changed one thing in plain English, and it echoed it back and applied it. Then I asked for eight streams, and it refused, because the ceiling is six and that ceiling lives in the protected config."</p>
+        <p>"In the rehearsal I changed one thing in plain English, stream A's worker to high effort, and it applied it and marked it pinned. Then I asked for eight streams. Rejected: the ceiling is six, it lives in the protected config, and the remedy it gives is a reviewed pull request, not a bigger number."</p>
       </aside>
     </section>
 
@@ -517,8 +547,15 @@ next_step          : Proceed with the adoption PR; report
             </table>
             <div style="display:grid; gap:12px; align-content:start">
               <div class="card teal"><span class="kicker">Scope</span><p class="small"><b>May change:</b> <code>signals.py</code>, two test files, README.<br><b>Must not change:</b> <code>backtest.py</code>, <code>data.py</code>, the look-ahead tests.</p></div>
-              <div class="card"><span class="kicker">Risk</span><p class="small">Tier 1 · no risk flags · closure standard FULL</p></div>
-              <div class="capture"><span class="cap-id">CAP-09 · rehearsal capture</span><span class="cap-what">Paste: <code>$awf dispatch</code> readiness result for SL-1.</span></div>
+              <div class="card"><span class="kicker">Risk</span><p class="small">Tier 2 (touches <code>src/</code>) · no risk flags · closure standard FULL</p></div>
+              <div class="term">
+                <div class="term-head"><span>Dispatch · 23 Sep 14:19</span><span class="real-tag">real</span></div>
+<pre>branch    codex/SL-1-zscore-reversion
+base      main @ f0084ee (adoption merged)
+worktree  exclusive, stream A
+worker    codex exec · gpt-5.6-terra / high
+sandbox   workspace-write, this worktree only</pre>
+              </div>
             </div>
           </div>
         </div>
@@ -532,32 +569,44 @@ next_step          : Proceed with the adoption PR; report
     </section>
 
     <!-- ===================== 10 ROUTE / RESERVE / RUN ===================== -->
-    <section class="slide" data-core="true" data-title="Routed, budgeted, running" data-minutes="1.5" aria-roledescription="slide">
+    <section class="slide" data-core="true" data-title="Routed, then the budget gate" data-minutes="1.5" aria-roledescription="slide">
       <div class="slide-inner">
         <div class="topline"><p class="eyebrow">Act 2 · Run a ticket</p><span class="slide-index"></span></div>
-        <h2 class="slide-title">Three tickets, three streams, each with a budget reserved before it starts</h2>
+        <h2 class="slide-title">The route was ready. The budget ledger refused to admit the run.</h2>
         <div class="content">
           <div class="grid-2">
             <div style="display:grid; gap:12px; align-content:start">
               <div class="grid-3" style="gap:10px">
-                <div class="card teal"><span class="kicker">Stream A</span><h3>SL-1</h3><p class="small">z-score signal · tier 1</p></div>
-                <div class="card amber"><span class="kicker">Stream B</span><h3>SL-2</h3><p class="small">transaction costs · changes results</p></div>
-                <div class="card amber"><span class="kicker">Stream C</span><h3>SL-3</h3><p class="small">gaps and late listings · data integrity</p></div>
+                <div class="card teal"><span class="kicker">Stream A</span><h3>SL-1</h3><p class="small">z-score signal · tier 2 · <b>ran</b></p></div>
+                <div class="card amber"><span class="kicker">Stream B</span><h3>SL-2</h3><p class="small">transaction costs · not run in rehearsal</p></div>
+                <div class="card amber"><span class="kicker">Stream C</span><h3>SL-3</h3><p class="small">gaps and late listings · not run in rehearsal</p></div>
               </div>
-              <div class="capture"><span class="cap-id">CAP-10 · rehearsal capture</span><span class="cap-what">Paste: the stream board and <code>route_model.py suggest</code> / <code>reserve</code> output for SL-1 (model, effort, run ID, budget bound).</span></div>
+              <div class="term">
+                <div class="term-head"><span>route_model.py suggest · SL-1 worker</span><span class="real-tag">real</span></div>
+<pre>status : <span class="s">ready</span>
+model  : gpt-5.6-terra / high   pinned: true
+reasons: simple, low-risk, low-uncertainty work with
+         strong verification; stream route pinned by user</pre>
+              </div>
+              <div class="term">
+                <div class="term-head"><span>route_model.py reserve</span><span class="real-tag">real · exit 2</span></div>
+<pre>status : <span class="r">blocked</span>
+reason : cost ceiling is configured but a verified
+         hard cost reservation is unavailable</pre>
+              </div>
             </div>
             <div class="copy">
               <p><b>Route.</b> The router proposes a model from the role, risk and any overrides. If the approved model isn't available, the run is refused, never quietly downgraded.</p>
-              <p><b>Reserve.</b> Before launch, the budget is written to a ledger that no agent can edit. The reservation is a hard upper bound.</p>
-              <p><b>Settle.</b> After the run, actual model, tokens and cost are recorded once. <b>Unknown cost is not zero</b>: it blocks further work until reconciled.</p>
+              <p><b>Reserve.</b> Before launch, the budget must be written to a ledger no agent can edit. 1.9.1 always carries a $10-per-ticket cap, so it demands a <b>verified dollar reservation</b>. Codex CLI reports tokens, not dollars, so the ledger said no.</p>
+              <p><b>What we did.</b> Ran SL-1 outside the ledger and recorded tokens directly (slide 15). The refusal is the right behaviour, and a gap: a subscription host needs token-only budgets.</p>
             </div>
           </div>
         </div>
         <div class="footerline"><span>Running work keeps the route and settings it was reserved with, even if you change the configuration mid-run.</span><span>.agentic/docs/27-MODEL-ROUTING.md</span></div>
       </div>
       <aside class="slide-notes" hidden>
-        <p>"I dispatched all three backlog tickets at once, one per stream. SL-1 is low risk; SL-2 and SL-3 change backtest results and data handling, so they get a higher tier and stricter review."</p>
-        <p>"Before any agent starts, three things happen. The router picks a model; if that model isn't available it refuses rather than downgrading. The budget is reserved in a ledger the agents can't touch. And afterwards the actual usage is settled. If the cost is unknown, that counts as a problem, not as zero."</p>
+        <p>"In the rehearsal I ran SL-1 on stream A. The router was happy: Terra at high effort, pinned because I set that earlier. Then the budget ledger refused to admit the run. The project carries a ten-dollar cap per ticket, so the ledger wants a verified dollar reservation, and Codex only tells you tokens. It would rather refuse than guess."</p>
+        <p>"That's the right instinct and a real gap: on a subscription host you need token budgets, not dollar budgets. So I ran the ticket outside the ledger and counted tokens by hand; you'll see the bill on slide 15. The fix goes into the next release."</p>
       </aside>
     </section>
 
@@ -588,10 +637,25 @@ portfolio = (held * asset_returns).sum(axis=1)</pre>
               </div>
             </div>
             <div style="display:grid; gap:12px; align-content:start">
-              <div class="capture"><span class="cap-id">CAP-11 · rehearsal capture</span><span class="cap-what">Paste: the worker's diff for SL-1 (trimmed to <code>zscore_reversion</code>) and the tests it added, with the PR number, head commit and CI status on that commit.</span></div>
+              <div class="term">
+                <div class="term-head"><span>src/signallab/signals.py · written by the worker</span><span class="real-tag">real</span></div>
+<pre><span class="k">def</span> zscore_reversion(prices, window=20):
+    <span class="k">if</span> window &lt; 2:
+        <span class="k">raise</span> ValueError("window must be at least 2")
+    log_p = np.log(prices)
+    rolling = log_p.rolling(window, min_periods=window)
+    std = rolling.std(ddof=1).replace(0.0, np.nan)
+    <span class="k">return</span> -(log_p - rolling.mean()) / std</pre>
+              </div>
+              <div class="term">
+                <div class="term-head"><span>PR #5 · head 77dd43c</span><span class="real-tag">real</span></div>
+<pre>4 files · +43 / −1 · 6 new tests (41 total)
+CI  test (py3.11) <span class="s">pass</span>   test (py3.12) <span class="s">pass</span>
+<span class="s">merged by owner</span> 14:53 as bd0aaaf</pre>
+              </div>
               <div class="copy">
                 <p><b>Why the test is registered, not written per signal:</b> every signal in <code>SIGNALS</code> is automatically run through the perturbation test, so a new signal cannot opt out of it.</p>
-                <p>35 tests on <code>main</code> before the ticket. CI runs them on Python 3.11 and 3.12 for every PR head.</p>
+                <p>The worker finished in 5 minutes but reported <b>BLOCKED</b>: its sandbox could not write git metadata, so it left the change uncommitted and said so instead of working around it. The publisher committed the unchanged worktree.</p>
               </div>
             </div>
           </div>
@@ -600,7 +664,7 @@ portfolio = (held * asset_returns).sum(axis=1)</pre>
       </div>
       <aside class="slide-notes" hidden>
         <p>"This is the slide a quant cares about: the actual code. On the left is the test the new signal had to pass. It moves every price after day 200 and checks that nothing at or before day 200 changes. Any signal registered in the library goes through it automatically. The worker isn't allowed to edit it."</p>
-        <p>"And here's the timing rule in the backtest: weights decided at the close of t earn the return from t to t+1. On the right is what the worker actually wrote, and the tests it added."</p>
+        <p>"On the right is what the worker actually wrote: seven lines, a trailing window with full warm-up, sample standard deviation, and flat windows mapped to NaN instead of infinity. Six new tests, all 41 green, CI green on the exact commit."</p><p>"One honest detail: the worker's sandbox couldn't write to git, so it stopped and reported BLOCKED rather than hacking around it. That's the behaviour you want."</p>
       </aside>
     </section>
 
@@ -622,7 +686,11 @@ portfolio = (held * asset_returns).sum(axis=1)</pre>
                 <h3>An agent could forge your sign-off</h3>
                 <p class="small">Owner decisions were stored as an unchecked data shape, so a worker could write a fake disposition that flipped the critic's verdict to PASS. <b>Blocker.</b> Fixed with an authenticated sign-off format; round 2 then found a subtler independence hole (a "verifier" sharing the worker's identity). Round 3 approved.</p>
               </div>
-              <div class="copy"><p>The critic reviews one exact commit. <b>A new commit means a new review.</b> A worker saying "fixed" never closes a finding; the critic re-checks the code.</p></div>
+              <div class="card teal">
+                <span class="kicker">signal-lab PR #5 · today</span>
+                <h3>The critic would not approve without evidence</h3>
+                <p class="small">Round 1: <b>INCOMPLETE</b>, no findings. It could not run 4 tests or see CI from its read-only sandbox, so it refused to pass. Round 2, given CI results tied to head <code>77dd43c</code>: <b>APPROVE</b>, all six criteria PASS.</p>
+              </div>
             </div>
           </div>
         </div>
@@ -656,7 +724,7 @@ portfolio = (held * asset_returns).sum(axis=1)</pre>
             <div class="card green">
               <span class="kicker">3 · Merge and check</span>
               <h3>Prove the merged code is the reviewed code</h3>
-              <p class="small">On PR #7: merge commit <code>6974271</code>, second parent <code>bd554ed</code> = the last reviewed head, re-verified from a fresh clone after merge.</p>
+              <p class="small">SL-1, today: PR #5 merged by the owner at 14:53. Merge commit <code>bd0aaaf</code>, second parent <code>77dd43c</code> = the exact head the critic approved.</p>
             </div>
           </div>
         </div>
@@ -664,7 +732,7 @@ portfolio = (held * asset_returns).sum(axis=1)</pre>
       </div>
       <aside class="slide-notes" hidden>
         <p>"Three steps to merge, and the point of all three is that a green tick is not permission. The gate checks that every piece of evidence is about the same commit. Then it comes to me, and my approval names that commit and expires. If the agent pushes one more commit, my approval doesn't carry over."</p>
-        <p>"Then after merge we check that what landed on main is exactly what was reviewed. On PR #7 you can see it in the merge record."</p>
+        <p>"Then after merge we check that what landed on main is exactly what was reviewed. For SL-1 you can see it in the merge record: the merge commit's second parent is the exact commit the critic approved."</p><p>"To be precise about the rehearsal: I merged SL-1 on the critic's approval and green CI. The formal final gate, the tier-2 specialist review and the signed approval record were not run, because the budget ledger had already refused the ticket. That's on the fix list."</p>
         <p>"Jira in one line: only the controller updates tickets, it reads back every change, and if something else changes the ticket underneath it, it stops and tells you rather than fighting. I left Jira off for the demo."</p>
         <p class="note-source">Optional rehearsal capture for this slide (not required): the SL-1 gate result, authorisation request and merged PR. If captured, show them in place of the PR #7 merge record.</p>
       </aside>
@@ -679,6 +747,7 @@ portfolio = (held * asset_returns).sum(axis=1)</pre>
           <table class="t">
             <thead><tr><th style="width:34%">What happened</th><th style="width:36%">Why it mattered</th><th>What changed</th></tr></thead>
             <tbody>
+              <tr><td>Rehearsal, 23 Sep: budget ledger refused SL-1 (dollar cap; Codex reports tokens); worker sandbox could not commit; ruff linted AWF files; 1.9.1 skill not buildable from public source</td><td>The controls held, but a real host could not satisfy them</td><td>1.9.2: token-only budgets, publisher commits, lint exclusion at adoption, package the skill (PR #14)</td></tr>
               <tr><td>Adopting 1.8.3 into HFT Strategies: the assistant reported AWF "active" while config validation had <b>rejected</b> it</td><td>A status claimed by an agent is not evidence</td><td>1.8.6: INSTALLED / CONFIGURED / ACTIVE are recomputed from checks, never asserted</td></tr>
               <tr><td>Jira Epics flipped to In Progress, then an unknown automation reverted them about 2 seconds later</td><td>Two writers fighting over one ticket, silently</td><td>1.9.0: one Jira writer, read-back after every write, stop on mismatch, never touch Epics</td></tr>
               <tr><td>Review rounds on PR #7 went 1 → 3 → 4 → 5 blocking before falling</td><td>An adversarial reviewer can keep a PR open indefinitely</td><td>1.9.0: round cap ending in one owner decision (merge with notes, park, rescope, one more round)</td></tr>
@@ -687,7 +756,7 @@ portfolio = (held * asset_returns).sum(axis=1)</pre>
             </tbody>
           </table>
         </div>
-        <div class="footerline"><span>Add anything that stopped, stalled or surprised you in the signal-lab rehearsal to the top of this table.</span><span>CHANGELOG.md · README.md · PR #7, #13</span></div>
+        <div class="footerline"><span>Top row: found during the signal-lab rehearsal, 23 September 2026.</span><span>CHANGELOG.md · README.md · PR #7, #13</span></div>
       </div>
       <aside class="slide-notes" hidden>
         <p>"I want to be straight about what's gone wrong, because each of these changed the design."</p>
@@ -706,10 +775,16 @@ portfolio = (held * asset_returns).sum(axis=1)</pre>
             <div style="display:grid; gap:14px; align-content:start">
               <div class="grid-3" style="gap:12px">
                 <div class="stat"><div class="big-num">54 min</div><span>PR #7, opened to merged, 5 review rounds</span></div>
-                <div class="stat"><div class="big-num">3</div><span>review rounds to ship 1.9.0 (cap 3 not exceeded)</span></div>
+                <div class="stat"><div class="big-num">22 min</div><span>SL-1, dispatch to critic approval</span></div>
                 <div class="stat"><div class="big-num">61</div><span>inline review comments on PR #7 for one issue fix, all read by the owner</span></div>
               </div>
-              <div class="capture"><span class="cap-id">CAP-15 · rehearsal capture</span><span class="cap-what">Paste one row per signal-lab ticket from <code>route_model.py settle</code> and your stopwatch: elapsed time, your minutes, review rounds, worker cost, critic cost. Add the totals.</span></div>
+              <div class="term">
+                <div class="term-head"><span>SL-1 · tokens reported by Codex CLI</span><span class="real-tag">real</span></div>
+<pre>worker   gpt-5.6-terra / high   14:19–14:24    97,767
+critic 1 gpt-5.6-sol / high     14:27–14:32    58,636  INCOMPLETE
+critic 2 gpt-5.6-sol / high     14:34–14:41   126,572  APPROVE
+<span class="s">total                          22 min       282,975 tokens</span></pre>
+              </div>
             </div>
             <div class="card amber">
               <span class="kicker">Where your time goes</span>
@@ -718,14 +793,14 @@ portfolio = (held * asset_returns).sum(axis=1)</pre>
                 <li><b>Per ticket:</b> accept the contract, read the critic's findings, approve the exact commit.</li>
                 <li><b>Only when needed:</b> a decision at the round cap, reconciling an unknown outcome.</li>
               </ul>
-              <p class="small" style="margin-top:12px">Every run's actual cost is recorded when it settles. We won't claim a productivity gain until the pilot measures one.</p>
+              <p class="small" style="margin-top:12px">Cost shown in tokens: the rehearsal ran outside the ledger (slide 10). Critic review used about twice the worker's tokens. We won't claim a productivity gain until the pilot measures one.</p>
             </div>
           </div>
         </div>
-        <div class="footerline"><span>Model cost is from the settlement ledger, not an estimate. Unknown cost blocks further work until reconciled.</span><span>.agentic/docs/27-MODEL-ROUTING.md</span></div>
+        <div class="footerline"><span>Tokens as reported by Codex CLI for each run. Owner time was not measured in the rehearsal.</span><span>.agentic/docs/27-MODEL-ROUTING.md</span></div>
       </div>
       <aside class="slide-notes" hidden>
-        <p>"Governance isn't free, so here's the bill. Elapsed time: the PR you saw took 54 minutes with five review rounds. For the signal-lab tickets, here is what each one cost in my minutes and in model spend, straight from the ledger, not estimated."</p>
+        <p>"Governance isn't free, so here's the bill for SL-1: about 283,000 tokens and 22 minutes from dispatch to approval. Notice where the tokens went: the reviews cost twice what the code did. That's the price of an independent check, and it's the number the pilot has to justify."</p>
         <p>"My time goes in three places: once per repository to adopt; per ticket to accept the contract, read the findings and approve; and occasionally to make a call at the review cap. I'm not claiming it makes us faster. The pilot is how we find out."</p>
       </aside>
     </section>
