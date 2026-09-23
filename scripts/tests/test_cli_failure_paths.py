@@ -343,6 +343,23 @@ class CliFailurePathTests(unittest.TestCase):
         self.assertFalse(work.exists())
         self.assertEqual(before, snapshot(source))
 
+    def test_release_builder_rejects_ignored_local_residue_before_rewriting_manifest(self):
+        source = self.root / 'source'
+        shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc', '.tmp', 'tmp'))
+        residue = source / '.tmp' / 'legacy-provider.patch'
+        residue.parent.mkdir()
+        residue.write_text('historical provider adapter material\n', encoding='utf-8')
+        manifests = {name: (source / name).read_bytes() for name in ('MANIFEST.json', 'MANIFEST.md')}
+        archive = self.root / 'candidate.zip'
+        done = subprocess.run([sys.executable, '-B', str(source / 'scripts/build_release.py'), '--output', str(archive)],
+                              cwd=source, env=self.env, capture_output=True, timeout=30)
+        output = (done.stdout + done.stderr).decode('utf-8', errors='replace')
+        self.assertNotEqual(0, done.returncode, output)
+        self.assertIn('runtime/build residue', output)
+        self.assertFalse(archive.exists())
+        self.assertEqual(manifests['MANIFEST.json'], (source / 'MANIFEST.json').read_bytes())
+        self.assertEqual(manifests['MANIFEST.md'], (source / 'MANIFEST.md').read_bytes())
+
 
 if __name__ == '__main__':
     unittest.main()

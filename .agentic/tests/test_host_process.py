@@ -142,7 +142,7 @@ class Launcher {
         self.fixture_config = {'real_git': self.real_git, 'remote': str(self.remote), 'calls': str(self.calls)}
         self.fixture_path.write_text(json.dumps(self.fixture_config), encoding='utf-8')
         self.env = dict(os.environ, AWF_FIXTURE_CONFIG=str(self.fixture_path), PYTHONDONTWRITEBYTECODE='1')
-        for name in ['GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'CODEX_API_KEY']:
+        for name in ['GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY']:
             self.env[name] = 'synthetic-not-a-secret'
         self.env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='core.fsmonitor', GIT_CONFIG_VALUE_0='synthetic-invalid-program')
 
@@ -189,6 +189,7 @@ class Launcher {
             self.assertIn('--output-last-message', call['argv'])
             self.assertEqual(call['environment']['PYTHONDONTWRITEBYTECODE'], '1')
         for call in self.observations():
+            self.assertNotIn('ANTHROPIC_API_KEY', call['environment'])
             self.assertNotIn('OPENAI_API_KEY', call['environment'])
             self.assertNotIn('GIT_CONFIG_COUNT', call['environment'])
             self.assertEqual(call['environment']['GIT_TERMINAL_PROMPT'], '0')
