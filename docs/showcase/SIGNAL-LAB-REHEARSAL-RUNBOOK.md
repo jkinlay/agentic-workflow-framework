@@ -106,19 +106,20 @@ Create `REHEARSAL-LOG.md` in the AWF repo's `docs/showcase/` folder with one row
 
 Pick the ticket with the best **real** critic finding as the one the deck follows end to end. Use the other two on the stream board and in the totals. If every ticket passes first time, say so on the slide, and use PR #7 and the 1.9.0 build ledger from the proof pack as the critic exhibit instead.
 
-## Capture checklist (maps to the revised 17-slide order)
+## Capture checklist (matches `docs/AWF-1.9.1-Showcase-Presentation.html`)
 
-| Slide | Capture |
-| --- | --- |
-| 2 Timeline | Per-ticket event log from step 6 |
-| 5 What gets installed | `.agentic` tree, adoption PR file list |
-| 6 Verify + install | Release pin, hash, installer output |
-| 7 Adopt | Adoption message, dry run, status, draft PR |
-| 8 Configure | Operating before and after, one refusal |
-| 9 Dispatch | Contract and readiness for the spine ticket |
-| 10 Route, reserve, run | Stream board with three tickets, suggest and reserve |
-| 11 The code | Trimmed diff and new tests; CI green on head |
-| 12 Critic finding | Finding, amendment diff, re-review |
-| 13 Gate → merge | Gate, authorisation, merged PR |
-| 14 What went wrong | Anything that stopped, stalled or surprised you |
-| 15 The bill | Settle output and stopwatch minutes |
+The deck marks each outstanding capture with an amber **CAP-nn** box; the slide overview (press O) counts how many remain. Replace each box with the real output.
+
+| Slide | Box | Capture |
+| --- | --- | --- |
+| 6 Verify and install | CAP-06 | Release pin beside `Get-FileHash`; installer result |
+| 7 Adopt | CAP-07 | Draft adoption PR (number, files); `status` line |
+| 8 Configure | CAP-08 | Echoed change and updated table; the refusal for "8 streams" |
+| 9 Dispatch | CAP-09 | `$awf dispatch` readiness for SL-1 |
+| 10 Route, reserve, run | CAP-10 | Stream board; `suggest` / `reserve` for SL-1 |
+| 11 The code | CAP-11 | SL-1 diff and new tests; PR, head SHA, CI on head |
+| 15 The bill | CAP-15 | Per-ticket settle rows and stopwatch minutes, with totals |
+
+Optional upgrades, no box on the slide: replace slide 2's PR #7 timeline with the spine ticket's timeline if it is stronger; put a real signal-lab critic finding first on slide 12; show the SL-1 gate, authorisation and merge on slide 13; add rehearsal problems to the top of slide 14.
+
+Already filled from real output: slide 5 and the right-hand panel of slide 7 come from a bootstrap dry run against signal-lab on 23 September 2026 (`docs/showcase/capture-bootstrap-dry-run.txt`, from the `release-1.9.1-pinned` worktree). Running bootstrap from the main repository checkout is rejected with "Release manifest file membership mismatch" because `docs/` is not in the release manifest, so run it from the extracted release.
