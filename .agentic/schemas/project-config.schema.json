@@ -29,7 +29,7 @@
       ],
       "properties": {
         "expected_workflow_version": {
-          "const": "1.9.2"
+          "const": "1.9.3"
         }
       }
     },
@@ -747,6 +747,25 @@
                   "uniqueItems": true
                 }
               }
+            }
+          }
+        },
+        "route_capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "observation_path",
+            "max_age_days"
+          ],
+          "properties": {
+            "observation_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "max_age_days": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
             }
           }
         },

@@ -19,7 +19,7 @@ class PortableDocumentationTests(unittest.TestCase):
                     self.assertTrue(any(target in body for target in targets))
                 self.assertIsNone(re.search(r'Done[- ]only|one[^.]*Done transition|non-done[^.]*reserved', body, re.I))
 
-    def test_upgrade_guidance_supports_verified_191_receipts(self):
+    def test_upgrade_guidance_supports_verified_192_receipts(self):
         text_paths = [ROOT / 'SKILL.md']
         text_paths.extend(sorted((ROOT / 'references').glob('*.md')))
         text_paths.extend(sorted((ROOT / 'scripts').glob('*.py')))
@@ -27,7 +27,7 @@ class PortableDocumentationTests(unittest.TestCase):
         self.assertIsNone(re.search(r'upgrade mode\s+is\s+same-version only', portable_text, re.I))
 
         workflow = (ROOT / 'references/workflow.md').read_text(encoding='utf-8')
-        self.assertRegex(workflow, r'verified 1\.9\.1 receipt[^\n]*--mode upgrade')
+        self.assertRegex(workflow, r'verified 1\.9\.2 receipt[^\n]*--mode upgrade')
         self.assertRegex(workflow, r'other cross-version adoption uses backed-up install')
 
 

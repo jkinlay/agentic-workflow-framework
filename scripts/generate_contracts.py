@@ -50,6 +50,7 @@ def when(field, value, condition):
 
 
 SHA = text(pattern="^[0-9a-f]{40}$")
+OBJECT_ID = text(pattern="^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 DIGEST = text(pattern="^[0-9a-f]{64}$")
 UUID = text(format="uuid")
 TIME = text(format="date-time")
@@ -151,17 +152,21 @@ def catalog():
         "capabilities": STRINGS, "status": enum("COMPLETE", "FAILED", "CANCELLED"),
         "attestation_evidence": EVIDENCE,
         "resources_held": arr(obj({"name": text(pattern="^[a-z][a-z0-9_]*$"), "slots": integer(1), "from": TIME, "until": TIME}))})
+    change = obj({"path": text(), "action": enum("added", "modified", "deleted")})
     schemas["worker-result"] = bound({"status": enum("COMPLETE", "BLOCKED", "FAILED"), "commit_route": enum("WORKER", "PUBLISHER"), "dispatch_id": UUID,
-        "files_changed": STRINGS, "acceptance_criteria": arr(AC_RESULT, 1),
+        "files_changed": STRINGS, "tested_tree": OBJECT_ID, "changes": arr(change, 1, uniqueItems=True),
+        "ignored_untracked": STRINGS, "acceptance_criteria": arr(AC_RESULT, 1),
         "validation": arr(obj({"command": text(), "started_at": TIME, "finished_at": TIME, "exit_code": integer(-2147483648),
             "tested_tree_sha": SHA, "clean_checkout": BOOL, "evidence": EVIDENCE,
             "tests_discovered": integer(), "tests_executed": integer(),
             "declared_skips": arr(obj({"id": text(), "reason_code": enum(*SKIP_REASONS)})),
             "unevaluable_files": STRINGS}), 1),
-        "self_review_complete": BOOL, "findings_addressed": STRINGS, "blockers": STRINGS, "closure": CLOSURE})
+        "self_review_complete": BOOL, "findings_addressed": STRINGS, "blockers": STRINGS, "closure": CLOSURE},
+        allOf=[when("commit_route", "PUBLISHER", {"required": ["tested_tree", "changes"]})])
     schemas["amendment-result"] = copy.deepcopy(schemas["worker-result"])
     for name in ("worker-result", "amendment-result"):
-        schemas[name]["required"].remove("commit_route")
+        for field in ("commit_route", "tested_tree", "changes", "ignored_untracked"):
+            schemas[name]["required"].remove(field)
     review = {"verdict": enum("APPROVE", "REQUEST_CHANGES", "INCOMPLETE"), "acceptance_criteria": arr(AC_RESULT, 1),
               "findings": arr(FINDING), "prior_finding_ids": STRINGS, "closure": CLOSURE,
               "coverage": obj({"complete": BOOL, "file_manifest_sha256": DIGEST, "reviewed_paths": STRINGS, "omissions": STRINGS}),
@@ -308,6 +313,7 @@ def catalog():
            "max_tool_calls_per_run": integer(1), "max_tokens_per_ticket": integer(1),
            "max_cost_microusd_per_ticket": nullable(integer(1)), "daily_project_cost_microusd": nullable(integer(1)),
            "one_writer_per_ticket": TRUE, "roles": obj({r: role_policy for r in ["controller", "worker", "critic", "specialist"]}),
+           "route_capabilities": obj({"observation_path": text(), "max_age_days": integer(1)}),
            "host_broker": obj({"enabled": BOOL, "broker_id": text(0), "lease_before_dispatch": TRUE,
                               "max_workers": integer(1), "max_heavy_jobs": integer(), "max_gpu_jobs": integer(),
                               "resources": {"type": "object", "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
@@ -338,7 +344,7 @@ def catalog():
     # Current governance keys are optional for upgraded 1.8.9 configurations; the
     # code applies the documented defaults when they are absent. Bootstrap writes them.
     execution = schemas["project-config"]["properties"]["execution"]
-    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions"]),
+    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions", "route_capabilities"]),
                             (execution["properties"]["host_broker"], ["resources"]),
                             (jira, ["lifecycle_writes", "owner_closure_keywords"]),
                             (schemas["project-config"]["properties"]["validation"]["properties"]["required_ci_checks"]["items"], ["verifies_history", "local_command"])):

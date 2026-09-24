@@ -117,6 +117,46 @@
       "minItems": 0,
       "uniqueItems": true
     },
+    "tested_tree": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "action"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "enum": [
+              "added",
+              "modified",
+              "deleted"
+            ]
+          }
+        }
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "ignored_untracked": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
     "acceptance_criteria": {
       "type": "array",
       "items": {
@@ -307,6 +347,26 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "commit_route": {
+            "const": "PUBLISHER"
+          }
+        },
+        "required": [
+          "commit_route"
+        ]
+      },
+      "then": {
+        "required": [
+          "tested_tree",
+          "changes"
+        ]
+      }
+    }
+  ],
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:awf:1.2:amendment-result",
   "title": "Agentic Workflow 1.2 \u2014 amendment-result"

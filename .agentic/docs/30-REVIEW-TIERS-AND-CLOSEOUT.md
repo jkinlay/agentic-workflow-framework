@@ -1,6 +1,6 @@
 # Review tiers, cap dispositions and closeout
 
-Version 1.9.2. The code (`review_policy.py`, `jira_lifecycle.py`, `closeout.py`, `digest.py`, `host_preflight.py`) and the [lifecycle](23-TICKET-LIFECYCLE.md) are the authority; nothing here grants execution authority.
+Version 1.9.3. The code (`review_policy.py`, `jira_lifecycle.py`, `closeout.py`, `digest.py`, `host_preflight.py`) and the [lifecycle](23-TICKET-LIFECYCLE.md) are the authority; nothing here grants execution authority.
 
 ## Risk tiers
 

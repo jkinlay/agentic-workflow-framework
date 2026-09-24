@@ -21,6 +21,14 @@
     "commit_route": "WORKER",
     "dispatch_id": "00000000-0000-0000-0000-000000000000",
     "files_changed": [],
+    "tested_tree": "0000000000000000000000000000000000000000",
+    "changes": [
+      {
+        "path": "UNFILLED",
+        "action": "added"
+      }
+    ],
+    "ignored_untracked": [],
     "acceptance_criteria": [
       {
         "id": "UNFILLED",

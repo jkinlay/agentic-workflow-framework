@@ -116,12 +116,12 @@ class OperatingRoutingTests(unittest.TestCase):
         self.assertEqual(other["model"], MODELS[0])
         self.assertEqual(self.route(complexity="low")["model"], MODELS[0])
         risky = self.route(epic_id="DEMO-1", epic_risk_flags=["concurrency"])
-        self.assertEqual((risky["model"], risky["reasoning_effort"]), (MODELS[3], "xhigh"))
+        self.assertEqual((risky["model"], risky["reasoning_effort"]), (MODELS[2], "xhigh"))
 
     def test_mandatory_epic_risk_floor_wins_over_pin_without_lowering_effort(self):
         self.value["streams"]["A"]["worker"] = {"model": MODELS[0], "reasoning_effort": "max", "pinned": True}
         route = self.route(epic_id="DEMO-1", epic_risk_flags=["security"])
-        self.assertEqual((route["model"], route["reasoning_effort"]), (MODELS[3], "max"))
+        self.assertEqual((route["model"], route["reasoning_effort"]), (MODELS[2], "max"))
         self.assertTrue(route["pinned"])
         self.assertTrue(route["high_risk"])
         self.assertIn("mandatory risk/review floor", " ".join(route["reasons"]))
@@ -136,7 +136,7 @@ class OperatingRoutingTests(unittest.TestCase):
         policy["agent_overrides"] = {"synthetic-A": {"worker": {"model": MODELS[2], "reasoning_effort": "high"}}}
         policy["ticket_overrides"] = {"DEMO-11": {"worker": {"model": MODELS[0], "reasoning_effort": "low", "pinned": True}}}
         self.assertEqual(self.route()["model"], MODELS[0])
-        self.assertEqual(self.route(risk="high")["model"], MODELS[3])
+        self.assertEqual(self.route(risk="high")["model"], MODELS[2])
         review = self.route(role="critic", worker_context_id="other")
         self.assertEqual((review["model"], review["reasoning_effort"]), (MODELS[2], "high"))
 
@@ -149,14 +149,14 @@ class OperatingRoutingTests(unittest.TestCase):
         route = select_route(policy_from_config(self.governance), request(risk="high"), host,
                              operating=validate_operating(self.value, self.governance), governance=self.governance)
         self.assertEqual(route["status"], "unavailable")
-        self.assertEqual(route["requested"]["model"], MODELS[3])
+        self.assertEqual(route["requested"]["model"], MODELS[2])
 
     def test_new_mandatory_risk_floor_also_wins_over_pin_on_reasoning_retry(self):
         self.value["streams"]["A"]["worker"]["pinned"] = True
         route = self.route(risk="high", last_failure_kind="reasoning",
                            previous_route={"model": MODELS[1], "reasoning_effort": "medium"})
         self.assertEqual(route["status"], "ready")
-        self.assertEqual(route["model"], MODELS[3])
+        self.assertEqual(route["model"], MODELS[2])
 
     def test_forged_or_governance_mismatched_snapshot_rejected(self):
         snapshot = validate_operating(self.value, self.governance)
@@ -292,7 +292,7 @@ class OperatingRecommendationRoutingTests(unittest.TestCase):
                 self.assertEqual(retry["status"], "ready")
                 self.assertTrue(retry["escalated"])
         self.assertTrue(snapshot.config["streams"]["B"]["worker"]["pinned"])
-        self.assertEqual(MODELS[3], self.route(snapshot, stream="B")["model"])
+        self.assertEqual(MODELS[2], self.route(snapshot, stream="B")["model"])
 
     def test_adoption_preserves_pins_until_explicit_custom_reversal(self):
         op.set_operating(self.root, self.governance, "Pin A to Sol/high", ["A.worker=gpt-5.6-sol/high"])
@@ -308,7 +308,7 @@ class OperatingRecommendationRoutingTests(unittest.TestCase):
         self.assertEqual("blocked", self.route(snapshot, last_failure_kind="reasoning",
                          previous_route={"model": MODELS[2], "reasoning_effort": "high"})["status"])
         risky = self.route(snapshot, risk="high")
-        self.assertEqual(MODELS[3], risky["model"])
+        self.assertEqual(MODELS[2], risky["model"])
         self.assertTrue(risky["pinned"])
         changed = op.set_operating(self.root, self.governance, "Set A worker back to Terra/medium",
                                    ["A.worker=gpt-5.6-terra/medium"])

@@ -17,6 +17,7 @@ from agentic import ValidationError
 from agentic.canonical import validate_value
 
 ROLES = ("controller", "worker", "critic", "specialist")
+RUN_ROLES = ("controller", "worker", "fix", "critic", "specialist")
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
 RISK_FLAGS = ("security", "permissions", "schema_or_migration", "data_loss",
@@ -27,6 +28,22 @@ NON_REASONING_FAILURES = ("credentials", "infrastructure", "rate_limit", "cancel
 
 def _pair(model, effort):
     return {"model": model, "reasoning_effort": effort}
+
+
+def outcome_template(role):
+    """Return the documented settlement shape; hosts replace observed placeholders."""
+    _require(role in ("worker", "fix", "critic", "specialist"), "unsupported outcome template role")
+    return {
+        "actual_model": "REPLACE_WITH_OBSERVED_MODEL",
+        "actual_reasoning_effort": "REPLACE_WITH_OBSERVED_EFFORT",
+        "actual_context_id": "REPLACE_WITH_OBSERVED_CONTEXT_ID",
+        "actual_tokens": 0,
+        "actual_cost_microusd": None,
+        "success": True,
+        "validation_passed": role in ("worker", "fix"),
+        "independent_review_passed": False,
+        "escaped_defect": False,
+    }
 
 
 def default_policy():
@@ -40,11 +57,11 @@ def default_policy():
         "role_defaults": {"controller": _pair(MODELS[2], "medium"),
                           "worker": _pair(MODELS[1], "medium"),
                           "critic": _pair(MODELS[2], "high"),
-                          "specialist": _pair(MODELS[3], "high")},
+                          "specialist": _pair(MODELS[2], "high")},
         "role_allowed_models": {role: list(MODELS) for role in ROLES},
         "simple_worker": _pair(MODELS[0], "low"),
         "review_floor": _pair(MODELS[2], "high"),
-        "risk_route": _pair(MODELS[3], "high"),
+        "risk_route": _pair(MODELS[2], "high"),
         "high_risk_flags": list(RISK_FLAGS),
         "agent_overrides": {},
         "ticket_overrides": {},
@@ -258,7 +275,7 @@ def _request(request):
         _name(request.get(field), field)
     if request.get("context_id") is not None:
         _name(request["context_id"], "context_id")
-    _require(request.get("role") in ROLES, "unknown routing role")
+    _require(request.get("role") in RUN_ROLES, "unknown routing role")
     for field in ("complexity", "risk", "uncertainty"):
         _require(request.get(field) in ("low", "medium", "high"), field + " must be low, medium, or high")
     _require(request.get("verification") in ("strong", "limited", "none"), "verification must be strong, limited, or none")
@@ -304,16 +321,23 @@ def _select_route(policy, request, capabilities, operating_config):
     _request(request)
     _object(capabilities, "capabilities")
     _require(isinstance(capabilities.get("models"), dict), "observed host capabilities.models must be an object")
-    for model, efforts in capabilities["models"].items():
+    normalized_capabilities = {}
+    for model, observation in capabilities["models"].items():
         _name(model, "capability model")
+        if isinstance(observation, dict):
+            efforts = observation.get("reasoning_efforts", []) if observation.get("status", "observed") == "observed" else []
+        else:
+            efforts = observation
         _require(isinstance(efforts, list) and all(isinstance(e, str) and e in EFFORTS for e in efforts),
                  "host model capabilities must be effort lists")
+        normalized_capabilities[model] = efforts
     role = request["role"]
+    policy_role = "worker" if role == "fix" else role
     risk_flags = set(request["risk_flags"]) | set(request.get("epic_risk_flags", []))
     high_risk = request["risk"] == "high" or bool(risk_flags & set(policy["high_risk_flags"]))
     demanding = high_risk or request["complexity"] == "high" or request["uncertainty"] == "high"
     simple = all(request[x] == "low" for x in ("risk", "complexity", "uncertainty")) and request["verification"] == "strong" and not risk_flags
-    selected = deepcopy(policy["role_defaults"][role])
+    selected = deepcopy(policy["role_defaults"][policy_role])
     reasons = ["balanced role default"]
     role_route = operating_config.get(role) if operating_config and role in ("controller", "specialist") else None
     if role_route:
@@ -321,7 +345,7 @@ def _select_route(policy, request, capabilities, operating_config):
         reasons = ["operating role default"]
     simple_route = operating_config["simple_worker"] if operating_config else policy["simple_worker"]
     simple_enabled = simple_route.get("enabled", True)
-    if role == "worker" and simple and simple_enabled:
+    if role in ("worker", "fix") and simple and simple_enabled:
         selected = {k: simple_route[k] for k in ("model", "reasoning_effort")}
         reasons = ["simple, low-risk, low-uncertainty work with strong verification"]
     if demanding:
@@ -331,15 +355,15 @@ def _select_route(policy, request, capabilities, operating_config):
     pinned = bool(role_route and role_route.get("pinned", False))
     if role == "worker" and simple and simple_enabled:
         pinned = simple_route.get("pinned", False)
-    if operating_config and role in ("worker", "critic"):
+    if operating_config and role in ("worker", "fix", "critic"):
         _require("stream" in request, "Operating worker/reviewer routing requires an observed stream A–F")
         stream_route = operating_config["streams"].get(request["stream"], {}).get("reviewer" if role == "critic" else "worker")
         _require(stream_route is not None, "Requested stream has no retained operating route; reconcile stream ownership")
         # An ordinary unpinned stream route is the normal-work default. Keeping
         # the simple option effective avoids overriding Luna with default Terra.
-        ordinary_default = all(stream_route[k] == policy["role_defaults"][role][k]
+        ordinary_default = all(stream_route[k] == policy["role_defaults"][policy_role][k]
                                for k in ("model", "reasoning_effort"))
-        if not (role == "worker" and simple and simple_enabled and ordinary_default and not stream_route.get("pinned", False)):
+        if not (role in ("worker", "fix") and simple and simple_enabled and ordinary_default and not stream_route.get("pinned", False)):
             selected = {k: stream_route[k] for k in ("model", "reasoning_effort")}
             pinned = stream_route.get("pinned", False)
             reasons.append("operating stream route" + (" pinned by user" if pinned else " for ordinary work"))
@@ -349,13 +373,13 @@ def _select_route(policy, request, capabilities, operating_config):
     # global route stays intact for unrelated work and future Epics.
     epic_routes = operating_config.get("epic_overrides", {}).get(request.get("epic_id"), {}) if operating_config else {}
     epic_route = (epic_routes.get("streams", {}).get(request.get("stream"), {}).get("reviewer" if role == "critic" else "worker")
-                  if role in ("worker", "critic") else epic_routes.get(role))
+                  if role in ("worker", "fix", "critic") else epic_routes.get(role))
     if epic_route is not None:
         selected = {k: epic_route[k] for k in ("model", "reasoning_effort")}
         pinned = epic_route.get("pinned", False)
         reasons.append("operating Epic-scoped route" + (" pinned by user" if pinned else ""))
     for field, key in (("agent_overrides", request["agent_id"]), ("ticket_overrides", request["ticket_id"])):
-        override = policy[field].get(key, {}).get(role)
+        override = policy[field].get(key, {}).get(policy_role)
         if override is not None:
             selected = {k: override[k] for k in ("model", "reasoning_effort")}
             pinned = override.get("pinned", False)
@@ -402,7 +426,7 @@ def _select_route(policy, request, capabilities, operating_config):
         ceiling = policy["escalation"]["effort_ceiling"]
         if EFFORTS.index(selected["reasoning_effort"]) > EFFORTS.index(ceiling):
             return {"status": "blocked", "reason": "monotone escalation would exceed configured effort ceiling", "policy_sha256": _fingerprint(policy)}
-        stronger_allowed = [m for m in policy["model_order"][rank + 1:] if m in policy["role_allowed_models"][role]]
+        stronger_allowed = [m for m in policy["model_order"][rank + 1:] if m in policy["role_allowed_models"][policy_role]]
         if already_stronger:
             # A revised risk assessment may already require a stronger model.
             # Do not unnecessarily step beyond that newly required route.
@@ -420,9 +444,9 @@ def _select_route(policy, request, capabilities, operating_config):
     _valid_pair(policy, selected, "selected route")
     if floor and not _at_least(policy, selected, floor):
         return {"status": "blocked", "reason": "escalation violates risk/review floor", "policy_sha256": _fingerprint(policy)}
-    if selected["model"] not in policy["role_allowed_models"][role]:
+    if selected["model"] not in policy["role_allowed_models"][policy_role]:
         return {"status": "unavailable", "reason": "selected model is outside effective role allowlist", "requested": selected, "policy_sha256": _fingerprint(policy)}
-    host_efforts = capabilities["models"].get(selected["model"], [])
+    host_efforts = normalized_capabilities.get(selected["model"], [])
     _require(isinstance(host_efforts, list) and all(isinstance(e, str) for e in host_efforts), "host model capabilities must be effort lists")
     if selected["reasoning_effort"] not in host_efforts:
         return {"status": "unavailable", "reason": "host does not support requested model/effort; no fallback", "requested": selected, "policy_sha256": _fingerprint(policy)}
@@ -795,12 +819,17 @@ class RoutingLedger:
             _require(outcome.get("failure_kind") is None, "successful run cannot have failure_kind")
         if outcome["independent_review_passed"]:
             _name(outcome.get("reviewer_context_id"), "reviewer_context_id")
-            _require(outcome["reviewer_context_id"] != outcome["actual_context_id"], "review outcome cannot attest its own independence")
         with self._transaction() as connection:
             row = connection.execute("SELECT * FROM model_runs WHERE run_id=?", (run_id,)).fetchone()
             _require(row is not None, "unknown reservation")
             _require(row["status"] == "reserved", "reservation already settled; duplicate settlement denied")
             route, request = json.loads(row["route"]), json.loads(row["request"])
+            if request["role"] in ("critic", "specialist"):
+                _require(not outcome["independent_review_passed"],
+                         "review runs cannot self-attest review independence; see .agentic/docs/27-MODEL-ROUTING.md#settlement-outcome-shapes")
+            if outcome["independent_review_passed"]:
+                _require(outcome["reviewer_context_id"] != outcome["actual_context_id"],
+                         "a run cannot self-attest review independence; see .agentic/docs/27-MODEL-ROUTING.md#settlement-outcome-shapes")
             _require(row["reserved_cost"] is None or outcome.get("actual_cost_microusd") is not None,
                      "observed actual cost required to settle a cost reservation")
             violations = []

@@ -64,7 +64,7 @@ def _stream():
 
 def default_operating():
     return {"version": 1, "source": "default", "streams": {"count": 3, **{s: _stream() for s in LABELS[:3]}},
-            "controller": _pair("gpt-5.6-sol", "medium"), "specialist": _pair("gpt-6-astra", "high"),
+            "controller": _pair("gpt-5.6-sol", "medium"), "specialist": _pair("gpt-5.6-sol", "high"),
             "simple_worker": {"enabled": True, **_pair("gpt-5.6-luna", "low")}}
 
 
@@ -779,7 +779,7 @@ def recommend_operating(epics_raw, snapshot, governance, *, inventory_raw=None, 
                 reviewer = _governing_route("reviewer", policy)
                 if high:
                     from .model_routing import EFFORTS
-                    reviewer["model"] = max((reviewer["model"], "gpt-6-astra"), key=policy["model_order"].index)
+                    reviewer["model"] = max((reviewer["model"], policy["risk_route"]["model"]), key=policy["model_order"].index)
                     reviewer["reasoning_effort"] = max((reviewer["reasoning_effort"], "high"), key=EFFORTS.index)
                 why = ("High-risk flags " + ", ".join(high) if high else "Specialist triggers " + ", ".join(specialists)
                        if specialists else "Entire scope is simple with strong verification; retain the default worker ceiling"

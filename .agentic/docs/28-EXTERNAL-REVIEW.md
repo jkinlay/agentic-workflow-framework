@@ -1,6 +1,6 @@
 # Independent Codex review
 
-Version 1.9.2. AWF scales independent Codex critics; it does not ship a Claude
+Version 1.9.3. AWF scales independent Codex critics; it does not ship a Claude
 review engine, a publisher App, or a hosted model-review workflow. This guide
 defines the qualified, operator-owned Codex review host. It is separate from
 adoption: installing AWF does not enroll a pull request, start a scheduler, or

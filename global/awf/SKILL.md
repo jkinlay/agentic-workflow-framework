@@ -5,7 +5,7 @@ description: Locate and verify catalogued Agentic Workflow releases for adoption
 
 # Catalogued AWF
 
-Use `scripts/awf.py --catalog CATALOG locate --version 1.9.2` and `inspect --project TARGET --version 1.9.2`. Preserve selectors, verify pins and read located AGENTS/configuration. Prepare reviewed adoption; do not claim the project changed from discovery alone. Prefer the separately installed portable skill for bundled-source preparation and skill upgrades.
+Use `scripts/awf.py --catalog CATALOG locate --version 1.9.3` and `inspect --project TARGET --version 1.9.3`. Preserve selectors, verify pins and read located AGENTS/configuration. Prepare reviewed adoption; do not claim the project changed from discovery alone. Prefer the separately installed portable skill for bundled-source preparation and skill upgrades.
 
 For adoption read [workflow](references/workflow.md). In the first message explain that installing AWF changes repository governance files, so you will prepare a draft PR for the owner to merge. Missing or unobserved default-branch rules are warnings, not preconditions for installing files, mapping configuration or preparing that PR. Report APPLIED/MISSING/UNOBSERVED accurately and offer the shipped ruleset.
 

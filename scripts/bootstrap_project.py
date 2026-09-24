@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify and transactionally install managed v1.9.2 workflow files."""
+"""Verify and transactionally install managed v1.9.3 workflow files."""
 from pathlib import Path
 import argparse
 import json
