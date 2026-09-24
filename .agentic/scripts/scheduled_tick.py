@@ -19,7 +19,8 @@ from review_loop import main as run_tick
 
 def run(config_path, invoke=run_tick):
     config_path=Path(config_path).resolve(strict=False)
-    if config_path.is_relative_to(ROOT):
+    scratch = (ROOT / '.tmp-tests').resolve()
+    if config_path.is_relative_to(ROOT) and not config_path.is_relative_to(scratch):
         raise ValueError('Scheduled host configuration and reports must be outside the immutable runtime')
     output,errors=io.StringIO(),io.StringIO()
     invocation_error=None

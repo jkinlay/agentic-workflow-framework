@@ -1,7 +1,7 @@
 {
   "template": {
     "name": "generic-agentic-development-workflow",
-    "version": "1.9.1",
+    "version": "1.9.2",
     "schema_revision": 3
   },
   "installation": {

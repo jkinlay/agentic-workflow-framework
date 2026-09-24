@@ -51,7 +51,7 @@
     "issue_id": "2001",
     "ticket": "EX-1",
     "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-    "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+    "policy_hash": "48b264236fc503c539522c6fa6f00f27370091dc415ae67c48a49747af896836",
     "objective": "Validate one label",
     "acceptance_criteria": [
       {
@@ -128,8 +128,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-      "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+      "contract_hash": "cc78543e789d85336c49b5b5862ee59b311699ce67c67282181669846fd98f4f",
+      "policy_hash": "48b264236fc503c539522c6fa6f00f27370091dc415ae67c48a49747af896836",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "contract_id": "9cd18fb5-8aee-5e37-bbda-348cfc9a7cff",
@@ -163,11 +163,12 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-      "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+      "contract_hash": "cc78543e789d85336c49b5b5862ee59b311699ce67c67282181669846fd98f4f",
+      "policy_hash": "48b264236fc503c539522c6fa6f00f27370091dc415ae67c48a49747af896836",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "status": "COMPLETE",
+    "commit_route": "WORKER",
     "dispatch_id": "ed026ea5-c0a7-567c-89ec-39dcf62c9bea",
     "files_changed": [
       "src/example.py"
@@ -226,8 +227,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-      "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+      "contract_hash": "cc78543e789d85336c49b5b5862ee59b311699ce67c67282181669846fd98f4f",
+      "policy_hash": "48b264236fc503c539522c6fa6f00f27370091dc415ae67c48a49747af896836",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "verdict": "APPROVE",
@@ -279,8 +280,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-      "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+      "contract_hash": "cc78543e789d85336c49b5b5862ee59b311699ce67c67282181669846fd98f4f",
+      "policy_hash": "48b264236fc503c539522c6fa6f00f27370091dc415ae67c48a49747af896836",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "retrieval_complete": true,
@@ -318,8 +319,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-      "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+      "contract_hash": "cc78543e789d85336c49b5b5862ee59b311699ce67c67282181669846fd98f4f",
+      "policy_hash": "48b264236fc503c539522c6fa6f00f27370091dc415ae67c48a49747af896836",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "state": "OPEN",
@@ -355,8 +356,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-        "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+        "contract_hash": "cc78543e789d85336c49b5b5862ee59b311699ce67c67282181669846fd98f4f",
+        "policy_hash": "48b264236fc503c539522c6fa6f00f27370091dc415ae67c48a49747af896836",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "controller",
@@ -389,8 +390,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-        "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+        "contract_hash": "cc78543e789d85336c49b5b5862ee59b311699ce67c67282181669846fd98f4f",
+        "policy_hash": "48b264236fc503c539522c6fa6f00f27370091dc415ae67c48a49747af896836",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "worker",
@@ -423,8 +424,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-        "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+        "contract_hash": "cc78543e789d85336c49b5b5862ee59b311699ce67c67282181669846fd98f4f",
+        "policy_hash": "48b264236fc503c539522c6fa6f00f27370091dc415ae67c48a49747af896836",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "critic",
@@ -456,8 +457,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-        "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+        "contract_hash": "cc78543e789d85336c49b5b5862ee59b311699ce67c67282181669846fd98f4f",
+        "policy_hash": "48b264236fc503c539522c6fa6f00f27370091dc415ae67c48a49747af896836",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "collector",

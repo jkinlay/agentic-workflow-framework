@@ -29,7 +29,7 @@
       ],
       "properties": {
         "expected_workflow_version": {
-          "const": "1.9.1"
+          "const": "1.9.2"
         }
       }
     },
@@ -500,14 +500,28 @@
           "maximum": 9007199254740991
         },
         "max_cost_microusd_per_ticket": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "daily_project_cost_microusd": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "one_writer_per_ticket": {
           "const": true

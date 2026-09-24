@@ -1,6 +1,6 @@
 # Adoption guide
 
-Version 1.9.1. Read [the specification](../SPECIFICATION.md) and project-owned instructions.
+Version 1.9.2. Read [the specification](../SPECIFICATION.md) and project-owned instructions.
 
 | Stage | Preconditions and outcome |
 | --- | --- |
@@ -31,7 +31,7 @@ New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organizat
 | Test command | Prefer an npm test script, then evident pytest markers; otherwise supply `--test-command COMMAND`. Run the selected project tests separately. |
 | Jira | Supply both `--jira-site URL` and `--jira-key KEY`. Neither sets `jira.enabled: false`, with null site/key, for a fresh project. Preserve existing Jira configuration. |
 
-Keep `template.expected_workflow_version: 1.9.1`, real paths, scope and protected limits. Bootstrap preserves root operating choices or seeds three streams within ceiling six, one reviewer each. Disabled/unscoped Jira permits no ticket mutations; use provisional local records.
+Keep `template.expected_workflow_version: 1.9.2`, real paths, scope and protected limits. Bootstrap preserves root operating choices or seeds three streams within ceiling six, one reviewer each. Disabled/unscoped Jira permits no ticket mutations; use provisional local records.
 
 Existing projects get `governance_proposal.adoption_pr_section` with exact current/proposed ceiling and reviewer count. Ordinary upgrades preserve both. Explicit `--propose-operating-capacity` stages ceiling six (higher preserved) and derived one-per-stream reviewers for owner review/merge; `--dry-run` writes nothing. Other governance/operating choices remain unchanged.
 
@@ -57,7 +57,7 @@ When CONFIGURED, show `workflow.py operating show` and offer keep defaults, revi
 | CONFIGURED | Installation and adoption configuration pass. Follow the reported merge, observation or accepted-checkout reconciliation action. |
 | ACTIVE | Independently trusted release bytes, observed merged adoption and accepted default-branch AWF bytes verify. This does not activate adapters. |
 
-INSTALLED/CONFIGURED prove local consistency. Status recomputes checks, not historical child execution; retain its actual `AWF 1.9.1: STATE` line/next action and `--json` details. `--adoption-pr NUMBER` must select the receipt-changing PR; optional `--gh ABS_TRUSTED_GH` selects the client. ACTIVE requires independent release trust (`--release-source ABS_SOURCE --expected-manifest-sha256 TRUSTED_PIN`, external to the project, or matching installed host skill), fresh GitHub repository/default-tip and merged adoption observations, plus accepted raw managed/configuration/receipt/provenance bytes and final rechecks. Unrelated product edits may coexist. Receipts, branch names and imported JSON cannot authorize ACTIVE; pins are not signatures. Missing acceptance proof stays CONFIGURED; unverified installation stays UNVERIFIED. Merge scoped installed-path attributes into project Git rules; never copy source-wide rules, renormalize unrelated files or rehash corruption. Verify fresh-checkout bytes and project tests.
+INSTALLED/CONFIGURED prove local consistency. Status recomputes checks, not historical child execution; retain its actual `AWF 1.9.2: STATE` line/next action and `--json` details. `--adoption-pr NUMBER` must select the receipt-changing PR; optional `--gh ABS_TRUSTED_GH` selects the client. ACTIVE requires independent release trust (`--release-source ABS_SOURCE --expected-manifest-sha256 TRUSTED_PIN`, external to the project, or matching installed host skill), fresh GitHub repository/default-tip and merged adoption observations, plus accepted raw managed/configuration/receipt/provenance bytes and final rechecks. Unrelated product edits may coexist. Receipts, branch names and imported JSON cannot authorize ACTIVE; pins are not signatures. Missing acceptance proof stays CONFIGURED; unverified installation stays UNVERIFIED. Merge scoped installed-path attributes into project Git rules; never copy source-wide rules, renormalize unrelated files or rehash corruption. Verify fresh-checkout bytes and project tests.
 
 7. Offer the [default-branch ruleset](../templates/awf-main-ruleset.json) for separate owner application; bootstrap never mutates server rules. Inspect/update existing rules rather than duplicating them. An authorized administrator can create a new ruleset:
 

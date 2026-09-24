@@ -9,7 +9,10 @@ from benchmark_native import BenchmarkError, ROOT, encoded, parse, prepare, read
 def prepare_pilot(output, root=ROOT):
     output, root = Path(output), Path(root)
     require(output.is_absolute() and not output.exists(), "Use a new absolute preparation directory")
-    require(not output.resolve().is_relative_to(root.resolve()), "Keep preparation outside the release tree")
+    resolved, release = output.resolve(), root.resolve()
+    scratch = (release / '.tmp-tests').resolve()
+    inside_release = resolved.is_relative_to(release) and not resolved.is_relative_to(scratch)
+    require(not inside_release, "Keep preparation outside the release tree")
     require(output.parent.is_dir(), "Preparation parent must already exist")
     packet, _ = prepare(root, suite="routine")
     rubric = parse(read(root / ".agentic/benchmarks/native/routine-rubric.json"))

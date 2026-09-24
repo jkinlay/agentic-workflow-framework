@@ -43,6 +43,11 @@ class ConfigurationDerivationTests(unittest.TestCase):
         self.assertIsNone(config["jira"]["site"])
         self.assertEqual(config["validation"]["required_ci_checks"], [])
         self.assertEqual(config["merge_gate"]["trusted_owner_ids"], [])
+        self.assertEqual(config["execution"]["max_tokens_per_ticket"], 1000000)
+        self.assertIsNone(config["execution"]["max_cost_microusd_per_ticket"])
+        self.assertIsNone(config["execution"]["daily_project_cost_microusd"])
+        self.assertEqual(config["execution"]["model_routing"]["budgets"]["max_tokens_per_ticket"], 1000000)
+        self.assertEqual(config["execution"]["model_routing"]["budgets"]["max_tokens_per_project_day"], 5000000)
         self.assertEqual({v["reviewer_identity"] for v in config["specialist_reviews"].values()}, {"@custom"})
         report = inspect_config(config, load(ROOT / ".agentic/workflow.yaml"), Contracts(ROOT / ".agentic/schemas"))
         self.assertEqual(report["status"], "ACCEPTED", report)
@@ -352,7 +357,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
     def perform(self, **kwargs):
         return install(self.source, self.dest, self.pin, configure=True, discover=False, overrides=explicit(), **kwargs)
 
-    def test_receipt_project_uuid_and_raw_config_survive_upgrade(self):
+    def test_same_version_receipt_project_uuid_and_raw_config_survive_upgrade(self):
         first = self.perform()
         config_path = self.dest / CONFIG
         raw = config_path.read_bytes()
@@ -363,6 +368,62 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual(receipt["project_id"], json.loads(raw)["project"]["id"])
         self.assertEqual(first["install_id"], second["install_id"])
         self.assertEqual(sha256(receipt["source_manifest_json"].encode()), self.pin)
+        self.assertEqual(verify_installed(self.dest), self.pin)
+
+    def test_191_upgrade_changes_only_version_line_in_owner_config(self):
+        first = self.perform()
+        legacy_agents = b"# AWF 1.9.1 managed instructions fixture\n"
+        (self.dest / "AGENTS.md").write_bytes(legacy_agents)
+        receipt_path = self.dest / INSTALLED
+        receipt = json.loads(receipt_path.read_bytes())
+        source_manifest = json.loads(receipt["source_manifest_json"])
+        source_manifest["template_version"] = "1.9.1"
+        source_manifest["files"]["AGENTS.md"] = sha256(legacy_agents)
+        old_source_raw = json_bytes(source_manifest).decode("utf-8")
+        old_source_pin = sha256(old_source_raw.encode("utf-8"))
+        receipt.update(template_version="1.9.1", source_manifest_json=old_source_raw,
+                       source_manifest_sha256=old_source_pin)
+        receipt["immutable_files"]["AGENTS.md"] = sha256(legacy_agents)
+        receipt_path.write_bytes(json_bytes(receipt))
+        provenance_path = self.dest / installer.PROVENANCE
+        provenance = json.loads(provenance_path.read_bytes())
+        provenance["template"]["version"] = "1.9.1"
+        provenance["installation"]["source_manifest_sha256"] = old_source_pin
+        provenance_path.write_bytes(json_bytes(provenance))
+
+        config_path = self.dest / CONFIG
+        config = json.loads(config_path.read_bytes())
+        config["template"]["expected_workflow_version"] = "1.9.1"
+        config["execution"].update(max_tokens_per_ticket=100000,
+                                   max_cost_microusd_per_ticket=2500000,
+                                   daily_project_cost_microusd=9000000)
+        config["execution"]["model_routing"]["budgets"].update(
+            max_tokens_per_ticket=100000,
+            max_tokens_per_project_day=400000,
+            max_cost_microusd_per_ticket=2400000,
+            max_cost_microusd_per_project_day=8500000)
+        text = json.dumps(config, indent=2, ensure_ascii=False)
+        text = text.replace('  "execution": {', '  # owner budget policy\n  "execution": {')
+        before = (text + "\n").replace("\n", "\r\n").encode("utf-8")
+        config_path.write_bytes(before)
+        expected = before.replace(b'"expected_workflow_version": "1.9.1"',
+                                  b'"expected_workflow_version": "1.9.2"')
+
+        second = self.perform(mode="upgrade")
+
+        after = config_path.read_bytes()
+        self.assertEqual(after, expected)
+        changed_lines = [(old, new) for old, new in zip(before.splitlines(keepends=True), after.splitlines(keepends=True))
+                         if old != new]
+        self.assertEqual(changed_lines, [
+            (b'    "expected_workflow_version": "1.9.1"\r\n',
+             b'    "expected_workflow_version": "1.9.2"\r\n')])
+        current = json.loads(after.replace(b'  # owner budget policy\r\n', b''))
+        self.assertEqual(current["execution"]["max_tokens_per_ticket"], 100000)
+        self.assertEqual(current["execution"]["max_cost_microusd_per_ticket"], 2500000)
+        self.assertEqual(current["execution"]["model_routing"]["budgets"]["max_tokens_per_ticket"], 100000)
+        self.assertEqual((self.dest / "AGENTS.md").read_bytes(), self.files["AGENTS.md"])
+        self.assertEqual(first["install_id"], second["install_id"])
         self.assertEqual(verify_installed(self.dest), self.pin)
 
     def test_legacy_upgrade_offer_dryrun_and_explicit_local_proposal(self):

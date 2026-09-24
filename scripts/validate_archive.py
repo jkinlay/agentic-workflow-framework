@@ -4,6 +4,7 @@ import hashlib
 import argparse
 import json
 import os
+import stat
 import subprocess
 import sys
 import uuid
@@ -46,12 +47,27 @@ def write_report(output, report):
     os.replace(temporary, output)
 
 
+def checked_scratch_root():
+    """Return the literal scratch path only when it cannot redirect writes."""
+    scratch = ROOT / '.tmp-tests'
+    if scratch.exists() or scratch.is_symlink():
+        metadata = os.lstat(scratch)
+        reparse = getattr(metadata, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+        junction = getattr(scratch, 'is_junction', lambda: False)()
+        if stat.S_ISLNK(metadata.st_mode) or reparse or junction or scratch.resolve() != scratch:
+            raise ValueError('Refusing linked or reparse-point .tmp-tests scratch directory')
+    return scratch
+
+
 def preflight(archive_path, approved_digest, workdir, report_path):
     """Validate paths, pin and complete inventory before creating any outputs."""
     archive_path = Path(archive_path).resolve(strict=True)
+    scratch = checked_scratch_root()
     report_path = Path(report_path).resolve()
     workdir = Path(workdir or report_path.parent).resolve()
-    if workdir.is_relative_to(ROOT) or report_path.is_relative_to(ROOT):
+    work_in_release = workdir.is_relative_to(ROOT) and not workdir.is_relative_to(scratch)
+    report_in_release = report_path.is_relative_to(ROOT) and not report_path.is_relative_to(scratch)
+    if work_in_release or report_in_release:
         raise ValueError('Validation work directory and report must be outside the source release tree')
     if report_path == archive_path:
         raise ValueError('Validation report must not overwrite the approved archive')

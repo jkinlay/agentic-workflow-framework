@@ -54,8 +54,8 @@ def config(example=True):
             "independent_reviewers": {"allocation": "one_per_stream"},
             "max_agent_runs_per_ticket": 8, "max_spawn_depth": 1, "max_amendment_cycles": 3, "max_cap_extensions": 2,
             "risk_tiers": copy.deepcopy(DEFAULT_RISK_TIERS), "transient_retry_limit": 2,
-            "max_run_seconds": 3600, "max_tool_calls_per_run": 100, "max_tokens_per_ticket": 100000,
-            "max_cost_microusd_per_ticket": 10000000, "daily_project_cost_microusd": 50000000, "one_writer_per_ticket": True,
+            "max_run_seconds": 3600, "max_tool_calls_per_run": 100, "max_tokens_per_ticket": 1000000,
+            "max_cost_microusd_per_ticket": None, "daily_project_cost_microusd": None, "one_writer_per_ticket": True,
             "roles": {name: copy.deepcopy(role) for name in ["controller", "worker", "critic", "specialist"]},
             "host_broker": {"enabled": False, "broker_id": "", "lease_before_dispatch": True, "max_workers": 3, "max_heavy_jobs": 1, "max_gpu_jobs": 0, "resources": {}}},
         "validation": {"commands": ["python -m unittest discover -s tests" if example else "CHANGE_ME_TEST_COMMAND"], "ci_candidate_policy": "synthetic_merge_required", "require_candidate_bound_ci_evidence": True,
@@ -118,7 +118,7 @@ def example_bundle(cfg):
     from agentic.operating import default_operating, validate_operating
     dispatch["operating_hash"] = validate_operating(default_operating(), cfg).operating_hash
     results = [{"id": item["id"], "verdict": "PASS", "evidence": evidence} for item in ac]
-    worker = record("worker-result", "worker", status="COMPLETE", dispatch_id=dispatch["record_id"], files_changed=["src/example.py"], acceptance_criteria=results,
+    worker = record("worker-result", "worker", status="COMPLETE", commit_route="WORKER", dispatch_id=dispatch["record_id"], files_changed=["src/example.py"], acceptance_criteria=results,
         validation=[{"command": cfg["validation"]["commands"][0], "started_at": "2026-09-09T11:59:59Z", "finished_at": NOW,
             "exit_code": 0, "tested_tree_sha": candidate["head_tree_sha"], "clean_checkout": True, "evidence": evidence,
             "tests_discovered": 2, "tests_executed": 2, "declared_skips": [], "unevaluable_files": []}],

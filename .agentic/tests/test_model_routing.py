@@ -1,5 +1,6 @@
 """Synthetic model selection, durable budget and evidence regressions."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from copy import deepcopy
 import importlib.util
 import io
@@ -110,6 +111,13 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertEqual(policy["role_allowed_models"]["worker"], [MODELS[0]])
         self.assertIsNone(self.policy["budgets"]["max_cost_microusd_per_ticket"])
 
+    def test_null_execution_cost_caps_preserve_token_only_policy(self):
+        config = {"execution": {"model_routing": self.policy, "max_cost_microusd_per_ticket": None,
+                                "daily_project_cost_microusd": None}}
+        effective = policy_from_config(config)
+        self.assertIsNone(effective["budgets"]["max_cost_microusd_per_ticket"])
+        self.assertIsNone(effective["budgets"]["max_cost_microusd_per_project_day"])
+
     def test_escalation_uses_persisted_history_and_survives_agent_change(self):
         first = self.reserve()
         self.ledger.settle(first["run_id"], outcome(first, success=False, failure_kind="implementation", validation_passed=False))
@@ -179,6 +187,23 @@ class ModelRoutingTests(unittest.TestCase):
         self.ledger.settle(first["run_id"], outcome(first, actual_cost_microusd=50))
         with self.assertRaisesRegex(ValidationError, "cost budget"):
             self.reserve(reservation_cost_microusd=51)
+
+    def test_token_only_reservation_and_settlement_record_null_cost(self):
+        reserved = self.reserve()
+        self.assertIsNone(reserved["reservation_cost_microusd"])
+        settled = self.ledger.settle(reserved["run_id"], outcome(reserved, actual_tokens=321))
+        self.assertEqual("settled", settled["status"])
+        with closing(sqlite3.connect(self.path)) as connection:
+            row = connection.execute("SELECT reserved_cost,actual_tokens,actual_cost FROM model_runs WHERE run_id=?",
+                                     (reserved["run_id"],)).fetchone()
+        self.assertEqual((None, 321, None), row)
+
+    def test_any_effective_monetary_cap_keeps_verified_cost_refusal(self):
+        config = {"execution": {"model_routing": self.policy, "max_cost_microusd_per_ticket": None,
+                                "daily_project_cost_microusd": 500}}
+        effective = policy_from_config(config)
+        with self.assertRaisesRegex(ValidationError, "^cost ceiling is configured but a verified hard cost reservation is unavailable$"):
+            self.ledger.reserve("project-1", effective, request(), capabilities())
 
     def test_unpriced_history_blocks_new_cost_cap(self):
         first = self.reserve()

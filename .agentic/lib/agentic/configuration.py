@@ -130,7 +130,9 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
                 problems.append(issue('$.execution.model_routing', 'invalid model routing policy: ' + str(exc)))
         require(execution['max_parallel_tickets_per_stream'] <= execution['max_parallel_tickets'],
                 '$.execution.max_parallel_tickets_per_stream', 'per-stream limit exceeds project limit')
-        require(execution['daily_project_cost_microusd'] >= execution['max_cost_microusd_per_ticket'],
+        daily_cost = execution['daily_project_cost_microusd']
+        ticket_cost = execution['max_cost_microusd_per_ticket']
+        require(daily_cost is None or ticket_cost is None or daily_cost >= ticket_cost,
                 '$.execution.max_cost_microusd_per_ticket', 'ticket cost cap exceeds daily project cap')
         require(not execution['host_broker']['enabled'] or bool(execution['host_broker']['broker_id'].strip()),
                 '$.execution.host_broker.broker_id', 'enabled broker needs an identity')

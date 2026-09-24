@@ -1,6 +1,6 @@
 # Agentic Workflow Framework
 
-Release 1.9.1. [Apache-2.0](LICENSE) applies; see [NOTICE](NOTICE).
+Release 1.9.2. [Apache-2.0](LICENSE) applies; see [NOTICE](NOTICE).
 
 ## Start
 
@@ -8,7 +8,7 @@ Install the portable `awf` skill with its verified distribution launcher. It bac
 
 Adoption installs files, maps configuration and prepares a draft PR even when default-branch rules are missing or unobserved. Report that warning and offer the shipped ruleset. Live automation retains observed-rule and qualification requirements; [adoption](.agentic/docs/20-NEW-PROJECT-SETUP.md) explains publication restrictions for repositories holding secrets. The first adoption message explains that changing governance files is why the draft PR is being prepared.
 
-Bootstrap derives supported project values, preserves existing configuration, and reports exact unresolved paths/remedies. New Jira can be disabled; absent CI and trusted merge owners warn during adoption. After writing files, bootstrap runs isolated installed `verify-installation`/`validate-config`; CONFIGURED needs successful exits, accepted outputs and bound digests. `workflow.py status` recomputes current checks: INSTALLED, CONFIGURED or independently trusted/observed ACTIVE. ACTIVE verifies adoption and raw AWF bytes on the accepted default branch, allowing unrelated product edits. Report that actual state and next action in the [adoption PR checklist](.agentic/templates/adoption-pr.md); ACTIVE does not enable live automation.
+Bootstrap preserves configuration, derives supported values and reports exact residue. New projects use token-only budgets; upgrades preserve reviewed bytes. Disabled Jira and absent CI/owners warn. Preflight warns when Ruff/flake8 includes managed `.agentic`. Installed `verify-installation`/`validate-config` need successful exits, accepted outputs and bound digests for CONFIGURED. `workflow.py status` recomputes INSTALLED, CONFIGURED or independently trusted/observed ACTIVE. ACTIVE verifies adoption and raw AWF bytes on the accepted default branch while allowing unrelated product edits; record state/next action in the [PR checklist](.agentic/templates/adoption-pr.md). It enables no automation.
 
 On a verified extraction with Python 3.11+ and locked dependencies, run ordinary component checks without review credentials:
 
@@ -31,11 +31,11 @@ Native defaults: three streams within ceiling six, one independent reviewer each
 
 The offline evaluator never grants execution authority. The reference adapter supports Codex/GitHub.com/Jira; Windows scheduling is optional. Other providers and live qualification are not implied.
 
-Worker COMPLETE leads to a scoped feature-branch push and draft PR, then current validation/requirements, mark-ready and critic review of the observed PR head. Review-ready is not owner-ready: final gates and human merge authority remain separate. Routine publication classification needs accepted identity and fresh live rules evidence; it grants no execution permission or adapter qualification. The controller mirrors the lifecycle into Jira (In Progress, In Review, Done after the observed merge), reading back every write, never retrying a mismatch, never transitioning Epics. Contracts declare a risk tier and closure standard; serious findings name a criterion or boundary; the amendment cap ends in one owner disposition ([review tiers](.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md)).
+Worker COMPLETE leads to branch/draft-PR publication, validation, mark-ready and critic review of the observed head. A Git-metadata-blocked worker may hand its tested uncommitted tree to the publisher for exact commit/tree verification. Review-ready is not owner-ready or merge authority. Routine publication needs accepted identity/live rules evidence and grants no execution authority. The controller mirrors Jira lifecycle states, reads back every write, never retries mismatches or transitions Epics. Contracts declare risk tier/closure; serious findings name a criterion/boundary; the amendment cap ends in an owner disposition ([review tiers](.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md)).
 
 ## Release
 
-See [changes](CHANGELOG.md), [1.9.1 migration](MIGRATION-v1.9.0-to-v1.9.1.md), [previous disposition](RED-TEAM-DISPOSITION-v1.8.7.md), [operating migration](MIGRATION-v1.8.6-to-v1.8.7.md) and [security](SECURITY.md). A release owner sets the canonical repository before publication. Legacy history is preserved. Its split model/publisher adapter remains inside this core. Project-specific qualification remains required.
+See [changes](CHANGELOG.md), [1.9.2 migration](MIGRATION-v1.9.1-to-v1.9.2.md), [previous disposition](RED-TEAM-DISPOSITION-v1.8.7.md), [operating migration](MIGRATION-v1.8.6-to-v1.8.7.md) and [security](SECURITY.md). A release owner sets the canonical repository before publication. Legacy history is preserved. Its split model/publisher adapter remains inside this core. Project-specific qualification remains required.
 
 With Python 3.11+ and hash-locked dependencies, regenerate via `scripts/generate_prompts.py`, build via `scripts/build_release.py`, and validate with `scripts/validate_archive.py --help`. `scripts/build_skill_distribution.py --help` packages the portable skill. Keep outputs/reports outside the source. Builds enforce per-file documentation/version budgets and report totals; acceptance tests verify installation, preserved configuration, Git bytes and reproducibility. Offline fixtures do not qualify live services. The self-reported structured-decision smoke harness checks supplied observations against a public rubric; it runs no model and does not measure prompt quality.
 
