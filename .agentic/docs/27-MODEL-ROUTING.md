@@ -28,7 +28,7 @@ Credentials, infrastructure, rate limits, cancellation and unknown outcomes requ
 
 ### Token-only hosts
 
-When every effective monetary ceiling is `null`, a host without verified dollar accounting may reserve and settle with `reservation_cost_microusd: null` and `actual_cost_microusd: null`; token and run ceilings remain mandatory. If any effective monetary ceiling is an integer, the existing hard cost reservation and actual-cost requirements still apply. New adoptions default to token-only budgets of 1,000,000 tokens per ticket and 5,000,000 tokens per project day; upgrades preserve reviewed project configuration until an owner opts in through a governance PR.
+When every effective monetary ceiling is `null`, a host without verified dollar accounting may reserve and settle with `reservation_cost_microusd: null` and `actual_cost_microusd: null`; token and run ceilings remain mandatory. If any effective monetary ceiling is an integer, the existing hard cost reservation and actual-cost requirements still apply. New adoptions default to 2,000,000 tokens and 12 runs per ticket, plus 30,000,000 tokens and 250 runs per project day; upgrades preserve reviewed project configuration until an owner opts in through a governance PR.
 
 Outstanding runs block duplicate ticket/role/phase admission and remain charged across midnight. Ticket history survives policy changes. Usage counts on its start and closure UTC days; there are no timeout refunds.
 

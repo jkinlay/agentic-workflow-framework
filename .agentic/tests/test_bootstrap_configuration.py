@@ -43,15 +43,30 @@ class ConfigurationDerivationTests(unittest.TestCase):
         self.assertIsNone(config["jira"]["site"])
         self.assertEqual(config["validation"]["required_ci_checks"], [])
         self.assertEqual(config["merge_gate"]["trusted_owner_ids"], [])
-        self.assertEqual(config["execution"]["max_tokens_per_ticket"], 1000000)
+        self.assertEqual(config["execution"]["max_tokens_per_ticket"], 2000000)
         self.assertIsNone(config["execution"]["max_cost_microusd_per_ticket"])
         self.assertIsNone(config["execution"]["daily_project_cost_microusd"])
-        self.assertEqual(config["execution"]["model_routing"]["budgets"]["max_tokens_per_ticket"], 1000000)
-        self.assertEqual(config["execution"]["model_routing"]["budgets"]["max_tokens_per_project_day"], 5000000)
+        self.assertEqual(config["execution"]["model_routing"]["budgets"]["max_tokens_per_ticket"], 2000000)
+        self.assertEqual(config["execution"]["model_routing"]["budgets"]["max_tokens_per_project_day"], 30000000)
         self.assertEqual({v["reviewer_identity"] for v in config["specialist_reviews"].values()}, {"@custom"})
         report = inspect_config(config, load(ROOT / ".agentic/workflow.yaml"), Contracts(ROOT / ".agentic/schemas"))
         self.assertEqual(report["status"], "ACCEPTED", report)
         self.assertEqual(report["ci_gate"], "NOT_CONFIGURED")
+
+    def test_new_adoption_budget_defaults(self):
+        config = adoption.prepare_config(template(), overrides=explicit(), discover=False)["config"]
+        self.assertEqual(2000000, config["execution"]["max_tokens_per_ticket"])
+        self.assertEqual(12, config["execution"]["max_agent_runs_per_ticket"])
+        self.assertIsNone(config["execution"]["max_cost_microusd_per_ticket"])
+        self.assertIsNone(config["execution"]["daily_project_cost_microusd"])
+        self.assertEqual({
+            "max_runs_per_ticket": 12,
+            "max_runs_per_project_day": 250,
+            "max_tokens_per_ticket": 2000000,
+            "max_tokens_per_project_day": 30000000,
+            "max_cost_microusd_per_ticket": None,
+            "max_cost_microusd_per_project_day": None,
+        }, config["execution"]["model_routing"]["budgets"])
 
     def test_new_projects_never_reuse_a_source_template_uuid(self):
         source = template()

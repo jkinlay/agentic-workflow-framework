@@ -64,7 +64,7 @@
     "independent_reviewers": {
       "allocation": "one_per_stream"
     },
-    "max_agent_runs_per_ticket": 8,
+    "max_agent_runs_per_ticket": 12,
     "max_spawn_depth": 1,
     "max_amendment_cycles": 3,
     "max_cap_extensions": 2,
@@ -98,7 +98,7 @@
     "transient_retry_limit": 2,
     "max_run_seconds": 3600,
     "max_tool_calls_per_run": 100,
-    "max_tokens_per_ticket": 1000000,
+    "max_tokens_per_ticket": 2000000,
     "max_cost_microusd_per_ticket": null,
     "daily_project_cost_microusd": null,
     "one_writer_per_ticket": true,
@@ -290,10 +290,10 @@
         "effort_ceiling": "high"
       },
       "budgets": {
-        "max_runs_per_ticket": 8,
-        "max_runs_per_project_day": 40,
-        "max_tokens_per_ticket": 1000000,
-        "max_tokens_per_project_day": 5000000,
+        "max_runs_per_ticket": 12,
+        "max_runs_per_project_day": 250,
+        "max_tokens_per_ticket": 2000000,
+        "max_tokens_per_project_day": 30000000,
         "max_cost_microusd_per_ticket": null,
         "max_cost_microusd_per_project_day": null
       },
