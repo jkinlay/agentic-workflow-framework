@@ -15,6 +15,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION
+from agentic.child_process import child_env
 from release_hygiene import word_budget
 LINE = VERSION.removesuffix('.0')
 
@@ -73,7 +74,8 @@ def main():
             raise ValueError("Host-specific or generated metadata in skill source: " + p.name)
     output.mkdir(parents=True)
     release_zip = output / f"agentic-workflow-template-v{LINE}.zip"
-    result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/build_release.py"), "--output", str(release_zip)], check=True, capture_output=True, text=True, encoding="utf-8")
+    result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/build_release.py"), "--output", str(release_zip)],
+                            check=True, capture_output=True, text=True, encoding="utf-8", env=child_env())
     proof = json.loads(result.stdout)
     distribution = output / f"AWF-v{LINE}-distribution"
     packaged_skill = distribution / "awf"
@@ -100,10 +102,14 @@ import sys
 if sys.version_info < (3, 11):
     raise SystemExit("Python 3.11 or later is required")
 root = Path(__file__).resolve().parent / "awf"
-for relative, expected in {{"SKILL-MANIFEST.json": "{pin}", "scripts/install_skill.py": "{installer_pin}"}}.items():
+for relative, expected in {{"SKILL-MANIFEST.json": "{pin}", "scripts/install_skill.py": "{installer_pin}",
+                           "assets/{release_zip.name}": "{proof['zip_sha256']}"}}.items():
     if hashlib.sha256((root / relative).read_bytes()).hexdigest() != expected:
         raise SystemExit("Distribution integrity failure: " + relative)
-raise SystemExit(subprocess.call([sys.executable, "-B", str(root / "scripts/install_skill.py"), "--expected-manifest-sha256", "{pin}", *sys.argv[1:]]))
+archive = root / "assets/{release_zip.name}"
+sys.path.insert(0, str(archive) + "/agentic-workflow-template-v{LINE}/.agentic/lib")
+from agentic.child_process import child_env
+raise SystemExit(subprocess.call([sys.executable, "-B", str(root / "scripts/install_skill.py"), "--expected-manifest-sha256", "{pin}", *sys.argv[1:]], env=child_env()))
 '''
     (distribution / "install_awf.py").write_text(launcher, encoding="utf-8", newline="\n")
     guide = f'''# Install AWF {VERSION}

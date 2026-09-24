@@ -190,6 +190,7 @@ class Launcher {
             self.assertEqual(call['environment']['PYTHONDONTWRITEBYTECODE'], '1')
         for call in self.observations():
             self.assertNotIn('ANTHROPIC_API_KEY', call['environment'])
+            self.assertNotIn('CODEX_API_KEY', call['environment'])
             self.assertNotIn('OPENAI_API_KEY', call['environment'])
             self.assertNotIn('GIT_CONFIG_COUNT', call['environment'])
             self.assertEqual(call['environment']['GIT_TERMINAL_PROMPT'], '0')

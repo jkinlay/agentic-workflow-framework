@@ -12,6 +12,7 @@ import re
 import subprocess
 
 from . import ValidationError
+from .child_process import child_env
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 MAX_BOUND_FILES = 10000
@@ -35,7 +36,8 @@ def git_command(repository, *args):
 
 def run_git(repository, *args):
     try:
-        return subprocess.run(git_command(repository, *args), capture_output=True, timeout=120, env=git_environment(), stdin=subprocess.DEVNULL)
+        return subprocess.run(git_command(repository, *args), capture_output=True, timeout=120,
+                              env=child_env(git_environment()), stdin=subprocess.DEVNULL)
     except subprocess.SubprocessError as exc:
         raise ValidationError(f"git {args[0]} did not complete: {type(exc).__name__}") from exc
 

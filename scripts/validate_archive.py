@@ -14,6 +14,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION, ValidationError
+from agentic.child_process import child_env
 from release_review import add_review_arguments, review_arguments, review_source
 RELEASE_LINE = VERSION.removesuffix('.0')
 PREFIX = f'agentic-workflow-template-v{RELEASE_LINE}/'
@@ -173,7 +174,8 @@ def validate(argv=None):
     def command(args, cwd=SOURCE, code=0, name=None, timeout=180, error_output=False):
         label = name or ' '.join(map(str,args))
         try:
-            done = subprocess.run([sys.executable, '-B', *map(str,args)], cwd=cwd, env=env, capture_output=True, timeout=timeout)
+            done = subprocess.run([sys.executable, '-B', *map(str,args)], cwd=cwd,
+                                  env=child_env(env), capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             def decoded(value):
                 return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else value or ''
