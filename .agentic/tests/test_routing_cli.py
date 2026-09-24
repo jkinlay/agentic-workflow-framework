@@ -68,8 +68,10 @@ class RoutingCLITests(unittest.TestCase):
         self.assertEqual(self.route()["model"], MODELS[1])
         defaults = self.invoke("defaults")
         self.assertEqual(defaults["reconciliation"]["enabled"], False)
-        self.assertEqual(1000000, defaults["budgets"]["max_tokens_per_ticket"])
-        self.assertEqual(5000000, defaults["budgets"]["max_tokens_per_project_day"])
+        self.assertEqual(12, defaults["budgets"]["max_runs_per_ticket"])
+        self.assertEqual(250, defaults["budgets"]["max_runs_per_project_day"])
+        self.assertEqual(2000000, defaults["budgets"]["max_tokens_per_ticket"])
+        self.assertEqual(30000000, defaults["budgets"]["max_tokens_per_project_day"])
 
     def test_token_only_cli_reserves_and_settles_with_null_cost(self):
         reserved = self.route("reserve")
