@@ -24,6 +24,7 @@ CODEOWNERS = ".github/CODEOWNERS"
 GITIGNORE = ".gitignore"
 GITIGNORE_TEMPLATE = ".agentic/templates/operating.gitignore"
 RELEASE_EXCLUDED_PREFIXES = ("docs/showcase/", ".tmp-tests/")
+UPGRADE_FROM_VERSION = "1.9.1"
 RELEASE_EXCLUDED_PATHS = frozenset({
     "docs/AWF-1.8.9-Showcase-Presentation.html",
     "docs/AWF-1.9.1-Showcase-Presentation.html",
@@ -148,21 +149,21 @@ def ensure_usable(root):
             raise ValidationError("Installation is incomplete; use bootstrap --recover before running tools")
 
 
-def verify_installed(root):
+def _verify_installed(root, expected_version):
     ensure_usable(root)
     with Tree(root) as tree:
         if tree.inspect(INSTALLED) is None:
             return verify_release(tree)[0]
         manifest = loads(tree.read(INSTALLED).decode())
-        if manifest.get("template_version") != VERSION:
+        if manifest.get("template_version") != expected_version:
             raise ValidationError("Installed template version mismatch")
         if "source_manifest_json" not in manifest:
-            raise ValidationError("Current-version receipt requires source_manifest_json; use an explicit reviewed migration for legacy receipts")
+            raise ValidationError("Verified installation receipt requires source_manifest_json")
         source_raw = manifest["source_manifest_json"]
         if not isinstance(source_raw, str) or sha256(source_raw.encode("utf-8")) != manifest["source_manifest_sha256"]:
             raise ValidationError("Installed embedded source manifest digest mismatch")
         source_manifest = loads(source_raw)
-        if source_manifest.get("format") != "awf-manifest-1" or source_manifest.get("template_version") != VERSION:
+        if source_manifest.get("format") != "awf-manifest-1" or source_manifest.get("template_version") != expected_version:
             raise ValidationError("Installed embedded source manifest is invalid")
         expected = {path: digest for path, digest in source_manifest["files"].items()
                     if managed(path) and path not in {CONFIG, PROVENANCE, CODEOWNERS}}
@@ -172,9 +173,37 @@ def verify_installed(root):
             if sha256(tree.read(path)) != digest:
                 raise ValidationError(f"Installed managed file changed: {path}")
         version = loads(tree.read(PROVENANCE).decode())
-        if version["template"]["version"] != VERSION or version["installation"]["source_manifest_sha256"] != manifest["source_manifest_sha256"]:
+        if version["template"]["version"] != expected_version or version["installation"]["source_manifest_sha256"] != manifest["source_manifest_sha256"]:
             raise ValidationError("Installed provenance is inconsistent")
         return manifest["source_manifest_sha256"]
+
+
+def verify_installed(root):
+    return _verify_installed(root, VERSION)
+
+
+def migrate_config_version(raw, previous=UPGRADE_FROM_VERSION, current=VERSION):
+    """Change only the unique, line-oriented template version scalar."""
+    config = load_yaml(raw)
+    template = config.get("template") if isinstance(config, dict) else None
+    if not isinstance(template, dict) or template.get("expected_workflow_version") != previous:
+        raise ValidationError(f"Upgrade requires template.expected_workflow_version {previous}")
+    key = rb'(?:"expected_workflow_version"|\'expected_workflow_version\'|expected_workflow_version)'
+    pattern = re.compile(
+        rb'(?m)^(?P<prefix>[ \t]*' + key + rb'[ \t]*:[ \t]*)(?P<quote>["\']?)' +
+        re.escape(previous.encode("ascii")) +
+        rb'(?P=quote)(?P<suffix>[ \t]*(?:,[ \t]*)?(?:#[^\r\n]*)?(?:\r\n|\n|\r|$))')
+    matches = list(pattern.finditer(raw))
+    if len(matches) != 1:
+        raise ValidationError("Upgrade requires one line-oriented template.expected_workflow_version scalar")
+    match = matches[0]
+    start = match.start() + len(match.group("prefix")) + len(match.group("quote"))
+    migrated = raw[:start] + current.encode("ascii") + raw[start + len(previous):]
+    expected = json.loads(json.dumps(config))
+    expected["template"]["expected_workflow_version"] = current
+    if load_yaml(migrated) != expected:
+        raise ValidationError("Configuration version migration changed owner policy")
+    return migrated
 
 
 def rollback(tree, journal):
@@ -322,11 +351,15 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                     break
         if mode == "upgrade":
             if _exists_read(dst, INSTALLED) is None or existing_config is None:
-                raise ValidationError(f"Upgrade requires a same-version {VERSION} installation; migrate older versions through a reviewed install")
-            verify_installed(destination)
-            planned[CONFIG] = existing_config
+                raise ValidationError(f"Upgrade requires an installed {UPGRADE_FROM_VERSION} or {VERSION} release")
+            installed_version = existing_receipt.get("template_version") if isinstance(existing_receipt, dict) else None
+            if installed_version not in {UPGRADE_FROM_VERSION, VERSION}:
+                raise ValidationError(f"Upgrade requires an installed {UPGRADE_FROM_VERSION} or {VERSION} release")
+            _verify_installed(destination, installed_version)
+            planned[CONFIG] = (migrate_config_version(existing_config)
+                               if installed_version == UPGRADE_FROM_VERSION else existing_config)
         if configure:
-            configure_plan(existing_config, existing_receipt)
+            configure_plan(planned[CONFIG] if mode == "upgrade" else existing_config, existing_receipt)
         original_version = _exists_read(dst, PROVENANCE)
         install_id = str(uuid.uuid4())
         if mode == "upgrade":
@@ -354,7 +387,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             if path in planning_inputs and old != planning_inputs[path]:
                 raise ValidationError("Destination changed while preparing adoption: " + path)
             originals[path] = old
-            if old is not None and old != data and path != GITIGNORE and not (mode == "upgrade" and path in {CONFIG, PROVENANCE, INSTALLED}):
+            if old is not None and old != data and path != GITIGNORE and not (mode == "upgrade" and managed(path)):
                 conflicts.append(path)
         if conflicts and conflict == "error":
             raise ValidationError("Conflicting files; no managed files written: " + ", ".join(sorted(conflicts)))

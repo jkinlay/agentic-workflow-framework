@@ -216,6 +216,24 @@ class CliFailurePathTests(unittest.TestCase):
         self.assertEqual(before, snapshot(self.root))
         self.assertFalse(resolved[1].exists())
 
+    def test_archive_rejects_linked_tmp_tests_before_outputs(self):
+        source = self.root / 'source-root'
+        outside = self.root / 'outside-scratch'
+        source.mkdir()
+        outside.mkdir()
+        scratch = source / '.tmp-tests'
+        try:
+            scratch.symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('PLATFORM_PRIVILEGE: Windows symlink creation privilege unavailable (WinError 1314)')
+            raise
+        archive, pin = self.archive()
+        before = snapshot(self.root)
+        with mock.patch.object(validate_archive, 'ROOT', source), self.assertRaisesRegex(ValueError, 'reparse-point'):
+            preflight(archive, pin, scratch / 'work', scratch / 'report.json')
+        self.assertEqual(before, snapshot(self.root))
+
     def test_archive_invalid_self_test_deadline_rejects_before_any_outputs(self):
         archive, pin = self.archive()
         before = snapshot(self.root)

@@ -135,6 +135,14 @@ class ReleaseHygieneTests(unittest.TestCase):
         path.write_text('.tmp/\n.tmp-tests/\n', encoding='utf-8')
         self.assertEqual('PASS', check_release(self.root)['status'])
 
+    def test_tmp_tests_content_is_excluded_from_release_enumeration(self):
+        path = self.root / '.tmp-tests/transient.md'
+        path.parent.mkdir()
+        path.write_text('# Transient\nAWF 1.7 release\n' + 'word ' * 1201, encoding='utf-8')
+        result = check_release(self.root)
+        self.assertNotIn('.tmp-tests/transient.md',
+                         {item['path'] for item in result['documentation_file_budgets']})
+
     def test_specification_and_runbook_have_1200_word_caps(self):
         for name in ['SPECIFICATION.md', '.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md', 'EXAMPLE-RUNBOOK.md']:
             with self.subTest(name=name):

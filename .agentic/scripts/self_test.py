@@ -6,9 +6,11 @@ from datetime import datetime, timezone
 import importlib.metadata
 import io
 import json
+import os
 from pathlib import Path
 import platform
 import re
+import stat
 import sys
 import time
 import unittest
@@ -38,6 +40,18 @@ def complete_form(value, schema, schemas):
             complete_form(child, schema['items'], schemas)
 
 
+def checked_scratch_root():
+    """Return the literal scratch path only when it cannot redirect writes."""
+    scratch = ROOT / '.tmp-tests'
+    if scratch.exists() or scratch.is_symlink():
+        metadata = os.lstat(scratch)
+        reparse = getattr(metadata, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)
+        junction = getattr(scratch, 'is_junction', lambda: False)()
+        if stat.S_ISLNK(metadata.st_mode) or reparse or junction or scratch.resolve() != scratch:
+            raise ValueError('Refusing linked or reparse-point .tmp-tests scratch directory')
+    return scratch
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report', type=Path)
@@ -51,11 +65,17 @@ def main(argv=None):
     parser.add_argument('--expected-review-required-paths-sha256')
     args = parser.parse_args(argv)
     report_in_temp = False
-    if args.report and args.report.resolve().is_relative_to(ROOT):
-        relative_report = args.report.resolve().relative_to(ROOT)
-        report_in_temp = len(relative_report.parts) == 2 and relative_report.parts[0] == '.tmp-tests'
-        if not report_in_temp:
-            parser.error('Write validation reports outside the source/installed root or directly under .tmp-tests')
+    if args.report:
+        try:
+            scratch = checked_scratch_root()
+        except ValueError as exc:
+            parser.error(str(exc))
+        resolved_report = args.report.resolve()
+        if resolved_report.is_relative_to(ROOT):
+            relative_report = resolved_report.relative_to(ROOT)
+            report_in_temp = (len(relative_report.parts) == 2 and relative_report.parts[0] == scratch.name)
+            if not report_in_temp:
+                parser.error('Write validation reports outside the source/installed root or directly under .tmp-tests')
     if args.report and args.report.exists():
         parser.error('Use a new report path; preserve existing reports and review inputs')
     started = time.monotonic()

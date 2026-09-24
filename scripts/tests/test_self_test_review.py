@@ -179,6 +179,21 @@ class SelfTestReviewTests(unittest.TestCase):
         self.assertEqual((0, 1), (code, calls), output + error)
         self.assertEqual('PASS', json.loads(path.read_bytes())['status'])
 
+    def test_linked_tmp_tests_report_is_rejected_before_runner(self):
+        outside = self.work / 'outside-scratch'
+        outside.mkdir()
+        scratch = self.source / '.tmp-tests'
+        try:
+            scratch.symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('PLATFORM_PRIVILEGE: Windows symlink creation privilege unavailable (WinError 1314)')
+            raise
+        code, output, error, calls = self.invoke(['--report', str(scratch / 'self-test.json')])
+        self.assertEqual((2, 0), (code, calls), output + error)
+        self.assertIn('reparse-point', error)
+        self.assertFalse((outside / 'self-test.json').exists())
+
     def assert_final_mutation_rejected(self, mutate, *, scope=False):
         with mock.patch.object(release_review, 'review_source', wraps=release_review.review_source) as review:
             code, output, error, calls = self.invoke(self.review_arguments(scope) + ['--report', str(self.report)], mutate)

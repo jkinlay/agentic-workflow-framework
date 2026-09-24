@@ -113,7 +113,8 @@ def check_release(root=ROOT, version=None):
     version_tuple(current)
     problems, budgets = [], []
     total_words = manifest_words = 0
-    files = sorted(p for p in root.rglob('*') if p.is_file() and '.git' not in p.relative_to(root).parts)
+    files = sorted(p for p in root.rglob('*') if p.is_file() and
+                   not ({'.git', '.tmp-tests'} & set(p.relative_to(root).parts)))
     for path in files:
         rel = path.relative_to(root)
         if path.suffix.lower() == '.md':
