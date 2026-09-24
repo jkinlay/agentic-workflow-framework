@@ -18,6 +18,7 @@ from urllib.parse import quote, urlsplit
 
 from .. import ValidationError
 from ..canonical import canonical, fresh, loads, now_text, sha256, validate_value
+from ..child_process import child_env
 from ..safeio import Tree
 
 FORMAT = "awf-repository-rules-observation-1"
@@ -109,7 +110,7 @@ def _read_discovery_command(command, root, deadline):
                GIT_OPTIONAL_LOCKS="0", GH_PROMPT_DISABLED="1", GH_PAGER="cat")
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         process = subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL, stdout=out,
-                                   stderr=err, env=env, shell=False)
+                                   stderr=err, env=child_env(env), shell=False)
         try:
             while process.poll() is None:
                 if time.monotonic() >= deadline or max(os.fstat(out.fileno()).st_size, os.fstat(err.fileno()).st_size) > MAX_BYTES:
@@ -356,7 +357,8 @@ def _gh_get(endpoint, deadline, *, gh="gh"):
                "-H", "X-GitHub-Api-Version: 2026-03-10", endpoint]
     env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_PAGER="cat")
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env)
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                   env=child_env(env))
         try:
             while process.poll() is None:
                 require(time.monotonic() < deadline, "Rules observation deadline exhausted")

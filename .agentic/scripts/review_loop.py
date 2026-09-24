@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Run the automatic host review loop for one explicitly enrolled PR."""
-import argparse
-import json
 from pathlib import Path
 import sys
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT / '.agentic/lib'))
+from agentic.child_process import scrub_process_env
+scrub_process_env()
+
+import argparse
+import json
 from agentic.installer import verify_installed
 from agentic.review_loop import LoopStore, enroll, pause, resume, tick, require
 from agentic.providers.github_review_host import HostDriver, load_config

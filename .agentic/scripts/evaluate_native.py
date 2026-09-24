@@ -15,10 +15,12 @@ import tempfile
 import time
 
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 from benchmark_native import (BenchmarkError, MAX_BYTES, ROOT, ROLES, encoded, grade, parse, pin,
                               read, require, response_contract_errors, sha, validate_packet_contract, write_new,
                               validate_measurement_rubric, measure_routine_response)
 from routine_decisions import routine_input_errors
+from agentic.child_process import child_env
 
 MAX_CASES = 3
 MAX_SECONDS = 600
@@ -167,7 +169,8 @@ def execute_case(executable, case, packet, model, effort, seconds, destination, 
         environment = {key: value for key, value in os.environ.items() if key.upper() in allowed}
         started = time.monotonic()
         with (destination / "events.jsonl").open("xb") as out, (destination / "stderr.txt").open("xb") as err:
-            process = subprocess.Popen(command, cwd=cwd, env=environment, stdin=subprocess.PIPE, stdout=out, stderr=err)
+            process = subprocess.Popen(command, cwd=cwd, env=child_env(environment), stdin=subprocess.PIPE,
+                                       stdout=out, stderr=err)
             if attempt_state is not None:
                 attempt_state["attempted"] = True
             try:

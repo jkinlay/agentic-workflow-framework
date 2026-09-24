@@ -16,6 +16,7 @@ import uuid
 
 from . import ValidationError, VERSION
 from .canonical import loads, sha256
+from .child_process import child_env
 from .providers import github as github_provider
 from .safeio import Tree
 
@@ -224,7 +225,7 @@ def _post_command(command, root, timeout=60):
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             deadline = time.monotonic() + timeout
             process = subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL, stdout=out,
-                                       stderr=err, env=env, shell=False)
+                                       stderr=err, env=child_env(env), shell=False)
             try:
                 while process.poll() is None:
                     if time.monotonic() >= deadline or max(os.fstat(out.fileno()).st_size, os.fstat(err.fileno()).st_size) > MAX_METADATA_BYTES:

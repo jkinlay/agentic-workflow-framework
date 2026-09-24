@@ -21,8 +21,8 @@ def manifest():
     with Tree(ROOT) as tree:
         all_paths = [path for path in tree.file_list(exclude_root_git=True) if release_member(path)]
         paths = [p for p in all_paths if p not in {'MANIFEST.json','MANIFEST.md'}]
-        forbidden = {'.git', '__pycache__', '.venv', 'venv', '.pytest_cache', '.agentic-install', '.agentic-backup'}
-        if any(set(Path(p).parts) & forbidden or p.endswith(('.pyc','.zip')) for p in paths):
+        forbidden = {'.git', '.tmp', 'tmp', '__pycache__', '.venv', 'venv', '.pytest_cache', '.agentic-install', '.agentic-backup'}
+        if any(set(Path(p).parts) & forbidden or p.endswith(('.pyc', '.tmp', '.zip')) for p in paths):
             raise ValidationError('Source contains runtime/build residue; review it before packaging')
         files = {}
         # Do not bless checkout-induced EOL changes by simply rehashing them.

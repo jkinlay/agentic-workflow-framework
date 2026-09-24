@@ -11,6 +11,8 @@ import subprocess
 import tempfile
 import tomllib
 
+from .child_process import child_env
+
 PATH_WARN_LENGTH = 180
 MANAGED_PATHS = ("/.agentic/**", "/AGENTS.md", "/.github/PULL_REQUEST_TEMPLATE.md")
 
@@ -28,7 +30,7 @@ def run(args, cwd=None):
         env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
         env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
         result = subprocess.run([executable, *args[1:]], capture_output=True, text=True, timeout=30, cwd=cwd,
-                                env=env, stdin=subprocess.DEVNULL)
+                                env=child_env(env), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError, ValidationError) as exc:
         return None, f"{type(exc).__name__}: {exc}"
     return result.returncode, (result.stdout or result.stderr).strip()

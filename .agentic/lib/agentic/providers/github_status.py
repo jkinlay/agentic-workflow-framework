@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from .. import ValidationError, VERSION
 from ..canonical import load_yaml, loads, now_text, sha256
+from ..child_process import child_env
 from ..configuration import inspect_config
 from ..contracts import Contracts
 from ..installer import CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed, verify_installed
@@ -81,7 +82,8 @@ class Observation:
         command = [self.git_exe, '--no-replace-objects', '-c', 'core.fsmonitor=false',
                    '-c', 'core.hooksPath=' + os.devnull, '-C', str(self.root), *arguments]
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env)
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                       env=child_env(env))
             try:
                 while process.poll() is None:
                     require(time.monotonic() < self.deadline, 'Git acceptance observation timed out')

@@ -11,6 +11,7 @@ import re
 import subprocess
 
 from ..canonical import loads, sha256
+from ..child_process import child_env
 from ..review_loop import require
 
 
@@ -104,7 +105,7 @@ class HostDriver:
         env = dict(os.environ)
         # Neither candidate Git overrides nor paid API auth is inherited.
         for key in list(env):
-            if key.startswith('GIT_') or key in {'CODEX_API_KEY','OPENAI_API_KEY'}:
+            if key.startswith('GIT_'):
                 env.pop(key)
         if name == 'codex':
             for key in ['GH_TOKEN','GITHUB_TOKEN']:
@@ -115,11 +116,11 @@ class HostDriver:
         # File output keeps arbitrarily large agent logs out of process memory.
         if log:
             with Path(log).open('xb') as stream:
-                result = subprocess.run(command, cwd=cwd, env=env, input=stdin.encode('utf-8') if stdin else None,
+                result = subprocess.run(command, cwd=cwd, env=child_env(env), input=stdin.encode('utf-8') if stdin else None,
                     stdout=stream, stderr=subprocess.STDOUT, timeout=timeout or self.c['command_timeout_seconds'])
             require(result.returncode == 0, f'{name} failed; inspect retained run log')
             return ''
-        result = subprocess.run(command, cwd=cwd, env=env, input=stdin, text=True, encoding='utf-8', errors='strict',
+        result = subprocess.run(command, cwd=cwd, env=child_env(env), input=stdin, text=True, encoding='utf-8', errors='strict',
             capture_output=True, timeout=timeout or self.c['command_timeout_seconds'])
         require(result.returncode == 0, f'{name} failed with exit {result.returncode}; reconcile before retry')
         require(len(result.stdout) <= 8 * 1024 * 1024, 'Command output exceeds record limit')
