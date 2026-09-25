@@ -2,7 +2,7 @@
 
 315 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `1c6b4f9157c764d5b31fb267a0f15ef1623302baef66af9375d2fdda90772242`
+MANIFEST.json SHA-256: `4fb63f307e9a7b0fd0c6f1ce5d52d59d60f79a4633419ad4e05fe4c1490b3213`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -69,7 +69,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/interaction.py` | `ee21c165d9deead0501cf26cb88d8a1f0834b4c8031c9d1948354a7df2595ee9` |
 | `.agentic/lib/agentic/jira_lifecycle.py` | `bcdba157625b8b2d976ba7af9011e0962a2cec226e0af331a9fa0c51ad311e80` |
 | `.agentic/lib/agentic/lifecycle.py` | `1e2f4b5cb4e2a13793d2f81cea1d38592ce8ee6729b98796b728248c9428f9c2` |
-| `.agentic/lib/agentic/model_routing.py` | `12e1a71a4f12b2dae3fd122bd0df06e0fa8ae03f7cc7e2a648097110aa8c65f9` |
+| `.agentic/lib/agentic/model_routing.py` | `17cd312a99114b9e10752cd6e5bca40629e84ef481721b4885f4ae9a212c2782` |
 | `.agentic/lib/agentic/operating.py` | `f28713062daf9a9077177b481b735e4b1e79375b8df40069f77b1fdedab7cb0b` |
 | `.agentic/lib/agentic/operating_status.py` | `65725eb781376ac55d5f83f2168d3c9d882e3dd660d644eac6336c82eeaf790a` |
 | `.agentic/lib/agentic/policy.py` | `5e63d7f77c4bcef797a2c1e556d9ed3280b1e6958de7b46f29ce1bdc7789eca6` |
@@ -85,7 +85,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/safeio.py` | `1273d32a42719b8df3349f454cb38c66d6ddfcdd002984ff69c3fa0441db8876` |
 | `.agentic/lib/agentic/store.py` | `75ef0b187510842cd18707b893821de83bfb7f3485261854736b45f9f5000fb3` |
 | `.agentic/lib/agentic/streams.py` | `e8c7e8a0bd184aa08ceb7c706bc9bf2e6b465c00f0125282412f750de799557e` |
-| `.agentic/lib/agentic/upgrade.py` | `86ae01d278a43a26e5fe66c6431c160d290a75a9e497039ad0cc46738254cc24` |
+| `.agentic/lib/agentic/upgrade.py` | `a578a20e4c08e8258a44bc1c931cc83b6722df9e44c2315e713a3920512e6b30` |
 | `.agentic/prompts/amendment.md` | `cdb8ff1141e9096f34c027e2305ffb01ace7fa6120a6032dcb43724be7d4cd1b` |
 | `.agentic/prompts/controller.md` | `fa8b1de330d095bf7496118f15f51379967551447f3163aff67f465b65264069` |
 | `.agentic/prompts/critic.md` | `727cdbb8f17b97e0ba839af79e6d459c8827de5ccf0e1f00cead0ed9e439b9a9` |
@@ -220,8 +220,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_routing_integration.py` | `fa76c13c504ada646c428a0462715691d3da205aa699ee79c83f1b5c939a3696` |
 | `.agentic/tests/test_store_regressions.py` | `2cf43379f37928ead367f3fc60e4e282a7814a84194765b6cdd759a99dc42859` |
 | `.agentic/tests/test_streams.py` | `ff7c53fb4cf5d12cc91cba8e8f6fc13de2f6aaab9888267b743cc4043df65bef` |
-| `.agentic/tests/test_upgrade_matrix.py` | `aed2c532594cc48bb2d8f086d069302898cdb4fadd6939467abf283d88715094` |
-| `.agentic/tests/upgrade_fixtures.py` | `8a9903129b1517eed7ee8c5c729aeb00baee6ae2951c36527f14d764dc98d43a` |
+| `.agentic/tests/test_upgrade_matrix.py` | `ead649c4e3b8b92bfe376deaf4bdeaf76855a0f697cb2e4bf921f8c81e5e33a4` |
+| `.agentic/tests/upgrade_fixtures.py` | `c93d8f8275a54645402778770e30f8a557db8872615121a774178ce231139dd0` |
 | `.agentic/upgrade/known-versions.json` | `74da8f94b5fa3fdd33bec73b23b964635f84ba012e5cb0325c5ff5b0cee4c762` |
 | `.agentic/validation/reference-tests.json` | `a47a1b470324b265f69f96299594b83ea7374e7a767039443c7b5b78bb0c7ada` |
 | `.agentic/workflow-version.yaml` | `7203719187cd2c57c684c568d428c2d6df3ce39824a12aad82770eef96c985df` |

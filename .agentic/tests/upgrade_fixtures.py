@@ -34,6 +34,23 @@ def fixture_index():
     return value
 
 
+def fixture_storage_statistics():
+    """Recompute the index storage facts from the byte-exact fixture files."""
+    blobs = [path for path in BLOB_ROOT.iterdir() if path.is_file()]
+    metadata = [path for path in FIXTURE_ROOT.iterdir()
+                if path.is_file() and path != INDEX]
+    blob_bytes = sum(path.stat().st_size for path in blobs)
+    metadata_bytes = sum(path.stat().st_size for path in metadata)
+    return {
+        "blob_bytes": blob_bytes,
+        "blob_count": len(blobs),
+        "bytes": blob_bytes,
+        "kind": "plain-sha256-blobs",
+        "metadata_bytes_excluding_index": metadata_bytes,
+        "total_bytes_excluding_index": blob_bytes + metadata_bytes,
+    }
+
+
 def fixture_manifest(version):
     index = fixture_index()
     try:

@@ -455,6 +455,106 @@ def _select_route(policy, request, capabilities, operating_config):
             "policy_sha256": _fingerprint(policy), "dispatch_performed": False}
 
 
+def _current_retry_ceiling(connection, project_id):
+    return connection.execute(
+        "SELECT * FROM model_retry_ceiling_events WHERE project_id=? ORDER BY revision DESC LIMIT 1",
+        (project_id,)).fetchone()
+
+
+def _append_retry_ceiling(connection, project_id, previous, retry_limit, kind, observation):
+    revision = 1 if previous is None else previous["revision"] + 1
+    old_limit = None if previous is None else previous["retry_limit"]
+    audit = {**observation, "project_id": project_id, "revision": revision,
+             "previous_limit": old_limit, "new_limit": retry_limit, "kind": kind,
+             "recorded_at": datetime.now(timezone.utc).isoformat()}
+    connection.execute(
+        "INSERT INTO model_retry_ceiling_events "
+        "(project_id,revision,previous_limit,retry_limit,kind,observation) VALUES (?,?,?,?,?,?)",
+        (project_id, revision, old_limit, retry_limit, kind, json.dumps(audit)))
+    return _current_retry_ceiling(connection, project_id)
+
+
+def initialize_routing_ledger(connection, *, legacy_only=False):
+    """Create or migrate the authoritative routing-ledger schema on a connection."""
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_runs (
+      run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, ticket_id TEXT NOT NULL,
+      role TEXT NOT NULL, agent_id TEXT NOT NULL, phase TEXT NOT NULL,
+      created_at TEXT NOT NULL, day TEXT NOT NULL, policy_hash TEXT NOT NULL,
+      status TEXT NOT NULL, reserved_tokens INTEGER NOT NULL,
+      reserved_cost INTEGER, actual_tokens INTEGER, actual_cost INTEGER,
+      escalated INTEGER NOT NULL, request TEXT NOT NULL,
+      route TEXT NOT NULL, outcome TEXT)""")
+    connection.execute("CREATE INDEX IF NOT EXISTS model_runs_project ON model_runs(project_id,ticket_id,day)")
+    if legacy_only:
+        return
+    connection.execute("CREATE TABLE IF NOT EXISTS model_failure_resolutions (run_id TEXT PRIMARY KEY, observation TEXT NOT NULL)")
+    connection.execute("CREATE TABLE IF NOT EXISTS model_defect_observations (observation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, observation TEXT NOT NULL)")
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_reconciliations (
+      reconciliation_id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
+      project_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+      observation TEXT NOT NULL, result TEXT NOT NULL)""")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_update BEFORE UPDATE ON model_reconciliations BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_delete BEFORE DELETE ON model_reconciliations BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_replace BEFORE INSERT ON model_reconciliations WHEN EXISTS(SELECT 1 FROM model_reconciliations WHERE reconciliation_id=NEW.reconciliation_id OR run_id=NEW.run_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
+    connection.execute("CREATE TABLE IF NOT EXISTS model_retry_ceilings (project_id TEXT PRIMARY KEY, retry_limit INTEGER NOT NULL)")
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_limit_authorizations (
+      operation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+      request_hash TEXT NOT NULL, observation TEXT NOT NULL, result TEXT NOT NULL)""")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_update BEFORE UPDATE ON model_retry_limit_authorizations BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_delete BEFORE DELETE ON model_retry_limit_authorizations BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_replace BEFORE INSERT ON model_retry_limit_authorizations WHEN EXISTS(SELECT 1 FROM model_retry_limit_authorizations WHERE operation_id=NEW.operation_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_approval_consumptions (
+      reference_id TEXT PRIMARY KEY, first_operation_id TEXT NOT NULL,
+      first_project_id TEXT NOT NULL, provenance TEXT NOT NULL)""")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_update BEFORE UPDATE ON model_retry_approval_consumptions BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_delete BEFORE DELETE ON model_retry_approval_consumptions BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_replace BEFORE INSERT ON model_retry_approval_consumptions WHEN EXISTS(SELECT 1 FROM model_retry_approval_consumptions WHERE reference_id=NEW.reference_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
+    # Index existing grants without rewriting audit rows or rejecting old
+    # duplicate references. First historical use consumes the identity
+    # for every project and both reference fields in this database.
+    for row in connection.execute("SELECT * FROM model_retry_limit_authorizations ORDER BY rowid").fetchall():
+        audit = json.loads(row["observation"])
+        references = {_approval_reference(audit[field], historical=True)
+                      for field in ("authorization_ref", "evidence_ref")}
+        for reference in sorted(references):
+            if connection.execute("SELECT 1 FROM model_retry_approval_consumptions WHERE reference_id=?", (reference,)).fetchone() is None:
+                connection.execute("INSERT INTO model_retry_approval_consumptions VALUES (?,?,?,?)",
+                                   (reference, row["operation_id"], row["project_id"],
+                                    "historical grant; original records and duplicate references preserved"))
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_ceiling_events (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision > 0), previous_limit INTEGER,
+      retry_limit INTEGER NOT NULL CHECK(retry_limit >= 0),
+      kind TEXT NOT NULL, observation TEXT NOT NULL, UNIQUE(project_id,revision))""")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_update BEFORE UPDATE ON model_retry_ceiling_events BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_delete BEFORE DELETE ON model_retry_ceiling_events BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_replace BEFORE INSERT ON model_retry_ceiling_events WHEN EXISTS(SELECT 1 FROM model_retry_ceiling_events WHERE event_id=NEW.event_id OR (project_id=NEW.project_id AND revision=NEW.revision)) BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
+    # Preserve the last legacy ceiling, not a guessed historical policy.
+    for row in connection.execute("SELECT * FROM model_retry_ceilings").fetchall():
+        if _current_retry_ceiling(connection, row["project_id"]) is None:
+            _append_retry_ceiling(connection, row["project_id"], None,
+                                  row["retry_limit"], "legacy_migration", {
+                "policy_sha256": None,
+                "provenance": "v1.8.1 current ceiling; historical reductions were not audited"})
+    for operation in ("INSERT", "UPDATE", "DELETE"):
+        connection.execute(f"CREATE TRIGGER IF NOT EXISTS retry_legacy_no_{operation.lower()} BEFORE {operation} ON model_retry_ceilings BEGIN SELECT RAISE(ABORT, 'legacy ceiling table is sealed; use append-only events'); END")
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(model_runs)")}
+    if "closed_day" not in columns:
+        connection.execute("ALTER TABLE model_runs ADD COLUMN closed_day TEXT")
+        for row in connection.execute("SELECT run_id,outcome FROM model_runs WHERE outcome IS NOT NULL").fetchall():
+            closed_at = json.loads(row["outcome"]).get("settled_at")
+            _require(isinstance(closed_at, str) and len(closed_at) >= 10,
+                     "legacy ledger outcome lacks settlement timestamp; inspect protected ledger")
+            connection.execute("UPDATE model_runs SET closed_day=? WHERE run_id=?", (closed_at[:10], row["run_id"]))
+    if "operating_hash" not in columns:
+        # Attribution is additive. Never invent a current operating
+        # configuration for pre-operating reservations or settlements.
+        connection.execute("ALTER TABLE model_runs ADD COLUMN operating_hash TEXT")
+    connection.execute("CREATE INDEX IF NOT EXISTS model_runs_status ON model_runs(project_id,status)")
+    connection.execute("CREATE INDEX IF NOT EXISTS model_runs_day ON model_runs(project_id,day)")
+    connection.execute("CREATE INDEX IF NOT EXISTS model_runs_closed ON model_runs(project_id,closed_day)")
+
+
 class RoutingLedger:
     """One durable SQLite ledger per trusted controller, outside worker access.
 
@@ -466,80 +566,7 @@ class RoutingLedger:
         _require(str(path) != ":memory:", "routing ledger must be durable")
         _require(self.path.parent.is_dir(), "create a trusted ledger directory before use")
         with self._transaction() as connection:
-            connection.execute("""CREATE TABLE IF NOT EXISTS model_runs (
-              run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, ticket_id TEXT NOT NULL,
-              role TEXT NOT NULL, agent_id TEXT NOT NULL, phase TEXT NOT NULL,
-              created_at TEXT NOT NULL, day TEXT NOT NULL, policy_hash TEXT NOT NULL,
-              status TEXT NOT NULL, reserved_tokens INTEGER NOT NULL,
-              reserved_cost INTEGER, actual_tokens INTEGER, actual_cost INTEGER,
-              escalated INTEGER NOT NULL, request TEXT NOT NULL,
-              route TEXT NOT NULL, outcome TEXT)""")
-            connection.execute("CREATE INDEX IF NOT EXISTS model_runs_project ON model_runs(project_id,ticket_id,day)")
-            connection.execute("CREATE TABLE IF NOT EXISTS model_failure_resolutions (run_id TEXT PRIMARY KEY, observation TEXT NOT NULL)")
-            connection.execute("CREATE TABLE IF NOT EXISTS model_defect_observations (observation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, observation TEXT NOT NULL)")
-            connection.execute("""CREATE TABLE IF NOT EXISTS model_reconciliations (
-              reconciliation_id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
-              project_id TEXT NOT NULL, request_hash TEXT NOT NULL,
-              observation TEXT NOT NULL, result TEXT NOT NULL)""")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_update BEFORE UPDATE ON model_reconciliations BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_delete BEFORE DELETE ON model_reconciliations BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_replace BEFORE INSERT ON model_reconciliations WHEN EXISTS(SELECT 1 FROM model_reconciliations WHERE reconciliation_id=NEW.reconciliation_id OR run_id=NEW.run_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
-            connection.execute("CREATE TABLE IF NOT EXISTS model_retry_ceilings (project_id TEXT PRIMARY KEY, retry_limit INTEGER NOT NULL)")
-            connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_limit_authorizations (
-              operation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
-              request_hash TEXT NOT NULL, observation TEXT NOT NULL, result TEXT NOT NULL)""")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_update BEFORE UPDATE ON model_retry_limit_authorizations BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_delete BEFORE DELETE ON model_retry_limit_authorizations BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_replace BEFORE INSERT ON model_retry_limit_authorizations WHEN EXISTS(SELECT 1 FROM model_retry_limit_authorizations WHERE operation_id=NEW.operation_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
-            connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_approval_consumptions (
-              reference_id TEXT PRIMARY KEY, first_operation_id TEXT NOT NULL,
-              first_project_id TEXT NOT NULL, provenance TEXT NOT NULL)""")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_update BEFORE UPDATE ON model_retry_approval_consumptions BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_delete BEFORE DELETE ON model_retry_approval_consumptions BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_replace BEFORE INSERT ON model_retry_approval_consumptions WHEN EXISTS(SELECT 1 FROM model_retry_approval_consumptions WHERE reference_id=NEW.reference_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
-            # Index existing grants without rewriting audit rows or rejecting old
-            # duplicate references. First historical use consumes the identity
-            # for every project and both reference fields in this database.
-            for row in connection.execute("SELECT * FROM model_retry_limit_authorizations ORDER BY rowid").fetchall():
-                audit = json.loads(row["observation"])
-                references = {_approval_reference(audit[field], historical=True)
-                              for field in ("authorization_ref", "evidence_ref")}
-                for reference in sorted(references):
-                    if connection.execute("SELECT 1 FROM model_retry_approval_consumptions WHERE reference_id=?", (reference,)).fetchone() is None:
-                        connection.execute("INSERT INTO model_retry_approval_consumptions VALUES (?,?,?,?)",
-                                           (reference, row["operation_id"], row["project_id"],
-                                            "historical grant; original records and duplicate references preserved"))
-            connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_ceiling_events (
-              event_id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
-              revision INTEGER NOT NULL CHECK(revision > 0), previous_limit INTEGER,
-              retry_limit INTEGER NOT NULL CHECK(retry_limit >= 0),
-              kind TEXT NOT NULL, observation TEXT NOT NULL, UNIQUE(project_id,revision))""")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_update BEFORE UPDATE ON model_retry_ceiling_events BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_delete BEFORE DELETE ON model_retry_ceiling_events BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_replace BEFORE INSERT ON model_retry_ceiling_events WHEN EXISTS(SELECT 1 FROM model_retry_ceiling_events WHERE event_id=NEW.event_id OR (project_id=NEW.project_id AND revision=NEW.revision)) BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
-            # Preserve the last legacy ceiling, not a guessed historical policy.
-            for row in connection.execute("SELECT * FROM model_retry_ceilings").fetchall():
-                if self._current_retry_ceiling(connection, row["project_id"]) is None:
-                    self._append_retry_ceiling(connection, row["project_id"], None,
-                                               row["retry_limit"], "legacy_migration", {
-                        "policy_sha256": None, "provenance": "v1.8.1 current ceiling; historical reductions were not audited"})
-            for operation in ("INSERT", "UPDATE", "DELETE"):
-                connection.execute(f"CREATE TRIGGER IF NOT EXISTS retry_legacy_no_{operation.lower()} BEFORE {operation} ON model_retry_ceilings BEGIN SELECT RAISE(ABORT, 'legacy ceiling table is sealed; use append-only events'); END")
-            columns = {row["name"] for row in connection.execute("PRAGMA table_info(model_runs)")}
-            if "closed_day" not in columns:
-                connection.execute("ALTER TABLE model_runs ADD COLUMN closed_day TEXT")
-                for row in connection.execute("SELECT run_id,outcome FROM model_runs WHERE outcome IS NOT NULL").fetchall():
-                    closed_at = json.loads(row["outcome"]).get("settled_at")
-                    _require(isinstance(closed_at, str) and len(closed_at) >= 10,
-                             "legacy ledger outcome lacks settlement timestamp; inspect protected ledger")
-                    connection.execute("UPDATE model_runs SET closed_day=? WHERE run_id=?", (closed_at[:10], row["run_id"]))
-            if "operating_hash" not in columns:
-                # Attribution is additive. Never invent a current operating
-                # configuration for pre-operating reservations or settlements.
-                connection.execute("ALTER TABLE model_runs ADD COLUMN operating_hash TEXT")
-            connection.execute("CREATE INDEX IF NOT EXISTS model_runs_status ON model_runs(project_id,status)")
-            connection.execute("CREATE INDEX IF NOT EXISTS model_runs_day ON model_runs(project_id,day)")
-            connection.execute("CREATE INDEX IF NOT EXISTS model_runs_closed ON model_runs(project_id,closed_day)")
+            initialize_routing_ledger(connection)
 
     def _connect(self):
         connection = sqlite3.connect(str(self.path), timeout=30)
@@ -694,18 +721,12 @@ class RoutingLedger:
 
     @staticmethod
     def _current_retry_ceiling(connection, project_id):
-        return connection.execute("SELECT * FROM model_retry_ceiling_events WHERE project_id=? ORDER BY revision DESC LIMIT 1", (project_id,)).fetchone()
+        return _current_retry_ceiling(connection, project_id)
 
     @staticmethod
     def _append_retry_ceiling(connection, project_id, previous, retry_limit, kind, observation):
-        revision = 1 if previous is None else previous["revision"] + 1
-        old_limit = None if previous is None else previous["retry_limit"]
-        audit = {**observation, "project_id": project_id, "revision": revision,
-                 "previous_limit": old_limit, "new_limit": retry_limit, "kind": kind,
-                 "recorded_at": datetime.now(timezone.utc).isoformat()}
-        connection.execute("INSERT INTO model_retry_ceiling_events (project_id,revision,previous_limit,retry_limit,kind,observation) VALUES (?,?,?,?,?,?)",
-                           (project_id, revision, old_limit, retry_limit, kind, json.dumps(audit)))
-        return RoutingLedger._current_retry_ceiling(connection, project_id)
+        return _append_retry_ceiling(connection, project_id, previous, retry_limit, kind,
+                                     observation)
 
     @staticmethod
     def _retry_ceiling(connection, project_id, configured_limit, policy):

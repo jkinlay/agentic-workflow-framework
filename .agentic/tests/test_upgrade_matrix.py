@@ -21,10 +21,11 @@ from agentic.canonical import load_yaml  # noqa: E402
 from agentic.installer import (CONFIG, INSTALLED, KNOWN_VERSIONS, PROVENANCE,  # noqa: E402
     install, managed, verify_installed)
 from agentic.contracts import Contracts  # noqa: E402
+from agentic.model_routing import RoutingLedger  # noqa: E402
 from agentic.upgrade import load_known_versions, state_schema  # noqa: E402
 from upgrade_fixtures import (BLOB_ROOT, FIXTURE_ROOT, NEXT, advance_one_fixture_step,  # noqa: E402
-    file_tree, fixture_blob, fixture_index, fixture_manifest, managed_tree_from_receipt,
-    materialize, verify_materialized)
+    file_tree, fixture_blob, fixture_index, fixture_manifest, fixture_storage_statistics,
+    managed_tree_from_receipt, materialize, verify_materialized)
 
 VERSIONS = ("1.8.3", "1.8.9", "1.9.1", "1.9.2")
 FIXED_UUID = uuid.UUID("22222222-2222-4222-8222-222222222222")
@@ -86,6 +87,7 @@ class UpgradeMatrixTests(unittest.TestCase):
         self.assertLess(fixture_bytes, 5_000_000)
         self.assertEqual(index["storage"]["kind"], "plain-sha256-blobs")
         self.assertEqual(index["storage"]["blob_count"], len(list(BLOB_ROOT.iterdir())))
+        self.assertEqual(index["storage"], fixture_storage_statistics())
         referenced = set()
         for version in VERSIONS:
             manifest = fixture_manifest(version)
@@ -199,6 +201,9 @@ class UpgradeMatrixTests(unittest.TestCase):
                         expected_schema = ("critic-review:3" if schema.startswith("critic-review")
                                            else "controller-event:3")
                         self.assertEqual(state_schema(relative, actual_state), expected_schema)
+                    elif schema == "routing-ledger:model_runs-v1-legacy":
+                        self.assertEqual(state_schema(relative, actual_state),
+                                         "routing-ledger:model_runs-v1")
                     else:
                         self.assertEqual(actual_state, raw)
                 archive = destination / ".agentic-state/archive/upgrade-to-1.9.3/files/legacy-note.txt"
@@ -251,6 +256,96 @@ class UpgradeMatrixTests(unittest.TestCase):
         for relative in ("reviews/critic-review.json", "routing/ledger.sqlite"):
             self.assertTrue((destination / ".agentic-state/archive/upgrade-to-1.9.3/files" / relative).is_file())
 
+    def test_full_contract_validation_archives_exact_key_critic_counterexample(self):
+        destination, _ = self.fixture("1.9.2")
+        review = destination / ".agentic-state/reviews/critic-review.json"
+        value = json.loads(review.read_bytes())
+        expected_keys = set(value)
+        value.update(record_id="not-a-uuid", binding=[], verdict="INVALID",
+                     closure={"result": [], "evidence": "invalid"},
+                     evidence_checked={"invalid": True})
+        self.assertEqual(set(value), expected_keys)
+        review.write_bytes(json.dumps(value, indent=2).encode() + b"\n")
+
+        result = self.upgrade(destination)
+
+        action = next(item for item in result["upgrade"]["state_migrations"]
+                      if item["path"] == ".agentic-state/reviews/critic-review.json")
+        self.assertEqual(action["action"], "archived_read_only_copy")
+        self.assertEqual(action["validation_path"], action["path"])
+        for field in ("binding", "closure", "evidence_checked", "record_id", "verdict"):
+            self.assertIn(field, action["validation_reason"])
+        manifest = json.loads((destination / ".agentic-state/archive/upgrade-to-1.9.3/manifest.json").read_bytes())
+        archived = next(item for item in manifest["files"] if item["source"] == action["path"])
+        self.assertEqual(archived["validation_path"], action["path"])
+        self.assertEqual(archived["validation_reason"], action["validation_reason"])
+
+    def test_full_contract_validation_archives_invalid_lifecycle_and_operating_types(self):
+        destination, _ = self.fixture("1.9.2")
+        invalid = {
+            ".agentic-state/lifecycle/controller-event.json": ("sequence", "one"),
+            ".agentic-state/operating/records/operating-change.json": ("changes", "invalid"),
+        }
+        originals = {}
+        for relative, (field, replacement) in invalid.items():
+            path = destination / relative
+            value = json.loads(path.read_bytes())
+            value[field] = replacement
+            raw = json.dumps(value, indent=2).encode() + b"\n"
+            path.write_bytes(raw)
+            originals[relative] = raw
+
+        result = self.upgrade(destination)
+
+        actions = {item["path"]: item for item in result["upgrade"]["state_migrations"]}
+        for relative, (field, _) in invalid.items():
+            with self.subTest(path=relative):
+                self.assertEqual(actions[relative]["action"], "archived_read_only_copy")
+                self.assertIn(field, actions[relative]["validation_reason"])
+                archived = (destination / ".agentic-state/archive/upgrade-to-1.9.3/files" /
+                            relative.removeprefix(".agentic-state/"))
+                self.assertEqual(archived.read_bytes(), originals[relative])
+
+    def test_complete_ledger_schema_rejects_changed_column_and_missing_index(self):
+        for mutation in ("column_type", "missing_index"):
+            with self.subTest(mutation=mutation):
+                destination, _ = self.fixture("1.9.2")
+                ledger = destination / ".agentic-state/routing/ledger.sqlite"
+                ledger.unlink()
+                RoutingLedger(ledger)
+                connection = sqlite3.connect(ledger)
+                try:
+                    if mutation == "column_type":
+                        sql = connection.execute(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name='model_runs'").fetchone()[0]
+                        changed = sql.replace("reserved_tokens INTEGER NOT NULL",
+                                              "reserved_tokens TEXT NOT NULL")
+                        self.assertNotEqual(sql, changed)
+                        connection.execute("PRAGMA writable_schema=ON")
+                        connection.execute(
+                            "UPDATE sqlite_master SET sql=? WHERE type='table' AND name='model_runs'",
+                            (changed,))
+                        version = connection.execute("PRAGMA schema_version").fetchone()[0]
+                        connection.execute(f"PRAGMA schema_version={version + 1}")
+                        connection.execute("PRAGMA writable_schema=OFF")
+                    else:
+                        connection.execute("DROP INDEX model_runs_status")
+                    connection.commit()
+                finally:
+                    connection.close()
+                corrupt = ledger.read_bytes()
+                self.assertIsNone(state_schema(".agentic-state/routing/ledger.sqlite", corrupt))
+
+                result = self.upgrade(destination)
+
+                action = next(item for item in result["upgrade"]["state_migrations"]
+                              if item["path"] == ".agentic-state/routing/ledger.sqlite")
+                self.assertEqual(action["action"], "archived_read_only_copy")
+                self.assertIn("target initializer", action["validation_reason"])
+                archived = destination / ".agentic-state/archive/upgrade-to-1.9.3/files/routing/ledger.sqlite"
+                self.assertEqual(archived.read_bytes(), corrupt)
+                self.assertEqual(ledger.read_bytes(), corrupt)
+
     def test_state_compatibility_is_listed_for_every_adjacent_step(self):
         destination, before = self.fixture("1.8.3")
         plan = self.upgrade(destination, dry_run=True)
@@ -264,6 +359,10 @@ class UpgradeMatrixTests(unittest.TestCase):
                     self.assertEqual(actions[relative]["action"], "migrated_schema")
                     self.assertIn(actions[relative]["target_schema"],
                                   {"critic-review:3", "controller-event:3"})
+                elif relative.endswith("routing/ledger.sqlite") and step["from"] == "1.8.3":
+                    self.assertEqual(actions[relative]["action"], "migrated_schema")
+                    self.assertEqual(actions[relative]["target_schema"],
+                                     "routing-ledger:model_runs-v1")
                 else:
                     self.assertEqual(actions[relative]["action"], "retained_schema_compatible")
                     expected_schema = state_schema(relative, raw)
@@ -273,6 +372,9 @@ class UpgradeMatrixTests(unittest.TestCase):
                     if (relative.endswith("lifecycle/controller-event.json") and
                             step["from"] in {"1.9.1", "1.9.2"}):
                         expected_schema = "controller-event:3"
+                    if (relative.endswith("routing/ledger.sqlite") and
+                            step["from"] != "1.8.3"):
+                        expected_schema = "routing-ledger:model_runs-v1"
                     self.assertEqual(actions[relative]["schema"], expected_schema)
 
     def assert_refused_unchanged(self, destination, pattern):

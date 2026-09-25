@@ -4,7 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import base64
 import difflib
+from functools import lru_cache
 import json
+from pathlib import Path
 import re
 import sqlite3
 from types import MappingProxyType
@@ -292,69 +294,174 @@ def _target_provenance(raw, current, target):
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
-def _sqlite_schema(raw):
-    if not raw.startswith(b"SQLite format 3\x00"):
-        return None
+def _quoted(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _normalized_sql(value):
+    return None if value is None else re.sub(r"\s+", " ", value).strip()
+
+
+def _sqlite_schema(connection):
+    """Return complete structural metadata, including constraints, indexes and triggers."""
+    quick = connection.execute("PRAGMA quick_check").fetchone()
+    if quick is None or quick[0] != "ok":
+        raise ValidationError("routing ledger PRAGMA quick_check failed")
+    tables = tuple(row[0] for row in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"))
+    table_metadata = []
+    index_metadata = []
+    for name in tables:
+        quoted = _quoted(name)
+        table_metadata.append((
+            name,
+            tuple(tuple(row) for row in connection.execute(f"PRAGMA table_info({quoted})")),
+            tuple(tuple(row) for row in connection.execute(f"PRAGMA foreign_key_list({quoted})")),
+        ))
+        indexes = []
+        for row in connection.execute(f"PRAGMA index_list({quoted})"):
+            index_name = row[1]
+            indexes.append((index_name, row[2], row[3], row[4],
+                            tuple(tuple(detail) for detail in connection.execute(
+                                f"PRAGMA index_xinfo({_quoted(index_name)})"))))
+        index_metadata.append((name, tuple(sorted(indexes))))
+    objects = tuple((kind, name, table, _normalized_sql(sql))
+                    for kind, name, table, sql in connection.execute(
+                        "SELECT type,name,tbl_name,sql FROM sqlite_master "
+                        "WHERE type IN ('table','index','trigger','view') ORDER BY type,name"))
+    return {
+        "user_version": connection.execute("PRAGMA user_version").fetchone()[0],
+        "tables": tuple(table_metadata),
+        "indexes": tuple(index_metadata),
+        "objects": objects,
+    }
+
+
+@lru_cache(maxsize=2)
+def _expected_routing_schema(legacy):
+    from .model_routing import initialize_routing_ledger
     connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
     try:
-        connection.deserialize(raw)
-        quick = connection.execute("PRAGMA quick_check").fetchone()
-        if quick is None or quick[0] != "ok":
-            return None
-        tables = {}
-        for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table'"):
-            tables[name] = tuple(row[1] for row in connection.execute(
-                "PRAGMA table_info(" + '"' + name.replace('"', '""') + '"' + ")"))
-        return tables
-    except sqlite3.DatabaseError:
-        return None
+        initialize_routing_ledger(connection, legacy_only=legacy)
+        connection.commit()
+        return _sqlite_schema(connection)
     finally:
         connection.close()
 
 
-def state_schema(path, raw):
-    """Return the recognized durable schema, never merely a syntax result."""
+def _schema_difference(actual, expected):
+    for section in ("user_version", "tables", "indexes", "objects"):
+        if actual[section] != expected[section]:
+            return f"routing ledger {section} differs from the target initializer"
+    return "routing ledger schema differs from the target initializer"
+
+
+def _routing_validation(raw, *, allow_legacy=False):
+    if not raw.startswith(b"SQLite format 3\x00"):
+        return None, "routing ledger is not a SQLite 3 database"
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.deserialize(raw)
+        actual = _sqlite_schema(connection)
+    except (sqlite3.DatabaseError, ValidationError) as exc:
+        return None, f"routing ledger validation failed: {exc}"
+    finally:
+        connection.close()
+    target = _expected_routing_schema(False)
+    if actual == target:
+        return "routing-ledger:model_runs-v1", None
+    if allow_legacy and actual == _expected_routing_schema(True):
+        return "routing-ledger:model_runs-v1-legacy", None
+    return None, _schema_difference(actual, target)
+
+
+def _migrate_routing_ledger(raw):
+    schema, _ = _routing_validation(raw, allow_legacy=True)
+    if schema == "routing-ledger:model_runs-v1":
+        return raw
+    if schema != "routing-ledger:model_runs-v1-legacy":
+        return raw
+    from .model_routing import initialize_routing_ledger
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.deserialize(raw)
+        initialize_routing_ledger(connection)
+        connection.commit()
+        if _sqlite_schema(connection) != _expected_routing_schema(False):
+            return raw
+        return connection.serialize()
+    except (sqlite3.DatabaseError, ValidationError, KeyError, TypeError, ValueError):
+        return raw
+    finally:
+        connection.close()
+
+
+@lru_cache(maxsize=1)
+def _state_contracts():
+    from .contracts import Contracts
+    return Contracts(Path(__file__).resolve().parents[2] / "schemas")
+
+
+def _record_value(path, raw):
+    try:
+        if path.endswith(".json"):
+            return loads(raw.decode("utf-8")), None
+        if path.endswith((".yaml", ".yml")):
+            return load_yaml(raw), None
+    except (UnicodeDecodeError, ValueError) as exc:
+        return None, str(exc)
+    return None, "state record is not supported JSON or YAML"
+
+
+def _contract_validation(name, label, value):
+    try:
+        _state_contracts().validate(name, value)
+        return label, None
+    except (ValidationError, KeyError, TypeError, ValueError) as exc:
+        return None, str(exc)
+
+
+def _state_validation(path, raw, *, allow_legacy=False):
     relative = path.removeprefix(".agentic-state/")
     area = relative.split("/", 1)[0]
     if area == "routing" and path.endswith((".sqlite", ".sqlite3", ".db")):
-        tables = _sqlite_schema(raw)
-        required = {"run_id", "project_id", "ticket_id", "role", "agent_id", "phase",
-                    "created_at", "day", "policy_hash", "status", "reserved_tokens",
-                    "reserved_cost", "actual_tokens", "actual_cost", "escalated", "request",
-                    "route", "outcome"}
-        if tables is not None and required.issubset(set(tables.get("model_runs", ()))):
-            return "routing-ledger:model_runs-v1"
-        return None
-    if not path.endswith(".json"):
-        return None
-    try:
-        value = loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None
-    if area == "reviews" and isinstance(value, dict):
-        required = {"schema_version", "record_id", "created_at", "producer_id", "run_id",
-                    "binding", "verdict", "acceptance_criteria", "findings", "prior_finding_ids",
-                    "closure", "coverage", "evidence_checked"}
-        if value.get("schema_version") == 3 and set(value) == required:
-            return "critic-review:3"
-        if value.get("schema_version") == 3 and set(value) == required - {"closure"}:
-            return "critic-review:3-pre-closure"
-        return None
-    if area == "lifecycle" and isinstance(value, dict):
-        required = {"schema_version", "event_id", "project_id", "sequence", "timestamp", "actor",
-                    "event_type", "digest_sha256", "ticket", "previous_state", "state", "candidate",
-                    "external_event_id", "correlation_id", "causation_id", "payload_hash",
-                    "previous_hash", "event_hash", "evidence"}
-        if value.get("schema_version") == 3 and set(value) == required:
-            return "controller-event:3"
-        if value.get("schema_version") == 3 and set(value) == required - {"digest_sha256"}:
-            return "controller-event:3-pre-digest"
-        return None
-    if area == "operating" and isinstance(value, dict):
-        required = {"id", "created_at", "instruction", "before_hash", "after_hash", "changes",
-                    "source", "applied_from", "sequence", "previous_change_id", "governance_hash"}
-        return "operating-change:1" if set(value) == required and re.fullmatch(r"C-[0-9a-f]{32}", str(value.get("id"))) else None
-    return None
+        return _routing_validation(raw, allow_legacy=allow_legacy)
+    value, parse_error = _record_value(path, raw)
+    if parse_error is not None:
+        return None, parse_error
+    contracts = {
+        "reviews": ("critic-review", "critic-review:3"),
+        "lifecycle": ("controller-event", "controller-event:3"),
+        "operating": ("operating-change", "operating-change:1"),
+    }
+    if area not in contracts:
+        return None, "state path is not a recognized durable record kind"
+    name, label = contracts[area]
+    schema, reason = _contract_validation(name, label, value)
+    if schema is not None or not allow_legacy or not isinstance(value, dict):
+        return schema, reason
+    if area == "reviews" and "closure" not in value:
+        candidate = dict(value)
+        candidate["closure"] = {"result": "UNKNOWN",
+                                "evidence": list(value.get("evidence_checked", []))}
+        schema, _ = _contract_validation(name, label, candidate)
+        if schema is not None:
+            return "critic-review:3-pre-closure", None
+    if area == "lifecycle" and "digest_sha256" not in value:
+        candidate = dict(value)
+        candidate["digest_sha256"] = None
+        schema, _ = _contract_validation(name, label, candidate)
+        if schema is not None:
+            return "controller-event:3-pre-digest", None
+    return None, reason
+
+
+def state_schema(path, raw):
+    """Return a fully validated current or recognized migratable schema."""
+    return _state_validation(path, raw, allow_legacy=True)[0]
 
 
 def state_migration_plan(state, migrated, previous, current):
@@ -362,29 +469,46 @@ def state_migration_plan(state, migrated, previous, current):
     for path, raw in sorted(state.items()):
         if path.startswith(ARCHIVE_ROOT + "/"):
             continue
-        schema, target_schema = state_schema(path, raw), state_schema(path, migrated[path])
-        action = ("migrated_schema" if migrated[path] != raw else
-                  "retained_schema_compatible" if schema else "archive_read_only_copy")
-        actions.append({"path": path, "action": action, "schema": schema,
-                        "target_schema": target_schema, "from": previous, "to": current})
+        schema, source_reason = _state_validation(path, raw, allow_legacy=previous in {"1.8.3", "1.8.9"})
+        target_schema, target_reason = _state_validation(
+            path, migrated[path], allow_legacy=current == "1.8.9")
+        action = ("migrated_schema" if migrated[path] != raw and target_schema else
+                  "retained_schema_compatible" if schema and target_schema else
+                  "archive_read_only_copy")
+        item = {"path": path, "action": action, "schema": schema,
+                "target_schema": target_schema, "from": previous, "to": current}
+        if action == "archive_read_only_copy":
+            item.update(validation_path=path,
+                        validation_reason=target_reason or source_reason or
+                        "state record does not match its target schema")
+        actions.append(item)
     return actions
 
 
 def _migrate_state(state, previous, current):
     migrated = dict(state)
+    for path, raw in sorted(state.items()):
+        relative = path.removeprefix(".agentic-state/")
+        if (relative.split("/", 1)[0] == "routing"
+                and path.endswith((".sqlite", ".sqlite3", ".db"))):
+            migrated[path] = _migrate_routing_ledger(raw)
     if previous == "1.8.9" and current == "1.9.1":
         for path, raw in sorted(state.items()):
-            if state_schema(path, raw) != "critic-review:3-pre-closure":
+            if _state_validation(path, raw, allow_legacy=True)[0] != "critic-review:3-pre-closure":
                 continue
-            value = loads(raw.decode("utf-8"))
+            value, _ = _record_value(path, raw)
             value["closure"] = {"result": "UNKNOWN", "evidence": list(value["evidence_checked"])}
-            migrated[path] = json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+            candidate = json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+            if _state_validation(path, candidate)[0] is not None:
+                migrated[path] = candidate
         for path, raw in sorted(state.items()):
-            if state_schema(path, raw) != "controller-event:3-pre-digest":
+            if _state_validation(path, raw, allow_legacy=True)[0] != "controller-event:3-pre-digest":
                 continue
-            value = loads(raw.decode("utf-8"))
+            value, _ = _record_value(path, raw)
             value["digest_sha256"] = None
-            migrated[path] = json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+            candidate = json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+            if _state_validation(path, candidate)[0] is not None:
+                migrated[path] = candidate
     return migrated
 
 
@@ -457,17 +581,23 @@ def apply_chain(table, version, project_config, operating_config, receipt, prove
 
 
 def state_archive_plan(state):
-    unknown = {path: raw for path, raw in state.items()
-               if state_schema(path, raw) is None and not path.startswith(ARCHIVE_ROOT + "/")}
+    unknown = {path: (raw, _state_validation(path, raw)[1]) for path, raw in state.items()
+               if _state_validation(path, raw)[0] is None
+               and not path.startswith(ARCHIVE_ROOT + "/")}
     if not unknown:
         return {}, []
     files = []
     additions = {}
-    for path, raw in sorted(unknown.items()):
+    for path, (raw, reason) in sorted(unknown.items()):
         relative = path.removeprefix(".agentic-state/")
         archive = f"{ARCHIVE_ROOT}/files/{relative}"
         additions[archive] = raw
-        files.append({"source": path, "archive": archive, "sha256": sha256(raw), "source_retained": True})
+        files.append({"source": path, "archive": archive, "sha256": sha256(raw),
+                      "source_retained": True, "validation_path": path,
+                      "validation_reason": reason})
     manifest = {"format": "awf-state-archive-1", "target_version": "1.9.3", "files": files}
     additions[f"{ARCHIVE_ROOT}/manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
-    return additions, [{"path": item["source"], "action": "archived_read_only_copy", "archive": item["archive"]} for item in files]
+    return additions, [{"path": item["source"], "action": "archived_read_only_copy",
+                        "archive": item["archive"],
+                        "validation_path": item["validation_path"],
+                        "validation_reason": item["validation_reason"]} for item in files]
