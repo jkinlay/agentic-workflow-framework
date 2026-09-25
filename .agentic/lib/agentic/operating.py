@@ -68,6 +68,18 @@ def default_operating():
             "simple_worker": {"enabled": True, **_pair("gpt-5.6-luna", "low")}}
 
 
+def operating_applicability(governance):
+    """Report whether project governance supplies the policy operating choices bind to."""
+    execution = governance.get("execution") if isinstance(governance, dict) else None
+    if not isinstance(execution, dict) or "model_routing" not in execution:
+        return {"status": "NOT_APPLICABLE",
+                "reason": "Project configuration does not define a governing execution.model_routing policy; operating initialization is not applicable",
+                "governance_path": "$.execution.model_routing"}
+    return {"status": "APPLICABLE",
+            "reason": "Project configuration defines execution.model_routing; operating initialization and semantic validation apply",
+            "governance_path": "$.execution.model_routing"}
+
+
 def _upgrade_safe_operating(governance):
     """Derive initial choices from retained governance; never broaden an older role allowlist."""
     execution = governance.get("execution", {}) if isinstance(governance, dict) else {}

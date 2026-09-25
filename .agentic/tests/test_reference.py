@@ -529,6 +529,26 @@ class InstallerTests(unittest.TestCase):
         second = self.perform(mode="upgrade")
         self.assertEqual(first["install_id"], second["install_id"])
 
+    def test_install_upgrade_and_dry_run_report_operating_not_applicable(self):
+        first = self.perform()
+        self.assertEqual(first["operating"]["status"], "NOT_APPLICABLE")
+        self.assertIn("does not define a governing execution.model_routing policy",
+                      first["operating"]["reason"])
+        self.assertFalse((self.dest / "OPERATING_CONFIG.yaml").exists())
+        self.assertFalse((self.dest / ".agentic-state/operating").exists())
+
+        planned = self.perform(mode="upgrade", dry_run=True)
+        self.assertEqual(planned["operating"], planned["upgrade"]["operating"])
+        self.assertEqual(planned["operating"]["status"], "NOT_APPLICABLE")
+        self.assertEqual(planned["upgrade"]["operating_changes"], [])
+
+        upgraded = self.perform(mode="upgrade")
+        self.assertEqual(upgraded["operating"], upgraded["upgrade"]["operating"])
+        self.assertEqual(upgraded["operating"]["status"], "NOT_APPLICABLE")
+        self.assertEqual(upgraded["upgrade"]["operating_changes"], [])
+        self.assertFalse((self.dest / "OPERATING_CONFIG.yaml").exists())
+        self.assertFalse((self.dest / ".agentic-state/operating").exists())
+
     def test_default_conflict_no_managed_writes(self):
         self.dest.mkdir()
         (self.dest / "AGENTS.md").write_text("Original")

@@ -339,9 +339,12 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             if configure:
                 configure_plan()
             ignore_plan()
+            from .operating import operating_applicability
+            operating_report = operating_applicability(load_yaml(planned[CONFIG]))
             return {"status": "PLAN", "managed_files": sorted(planned), "source_manifest_sha256": digest,
                     "installed": False, "configuration": configuration_report, "governance_proposal": governance_proposal,
-                    "gitignore": ignore_report, "codeowners": owner_report, **rules_report()}
+                    "gitignore": ignore_report, "codeowners": owner_report,
+                    "operating": operating_report, **rules_report()}
     with Tree(destination, create=not dry_run) as dst:
         if dst.inspect(JOURNAL) is not None or dst.inspect(MARKER) is not None:
             raise ValidationError("An interrupted installation requires --recover")
@@ -446,12 +449,18 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                               "single_reviewed_change_set": True}
         if configure:
             configure_plan(planned[CONFIG] if mode == "upgrade" else existing_config, existing_receipt)
-        from .operating import inspect_operating, plan_initialize_operating
-        operating_plan = plan_initialize_operating(destination, load_yaml(planned[CONFIG]))
+        from .operating import inspect_operating, operating_applicability, plan_initialize_operating
+        governance = load_yaml(planned[CONFIG])
+        applicability = operating_applicability(governance)
+        if applicability["status"] == "NOT_APPLICABLE":
+            operating_plan = {"files": {}, "actions": [], "inspection": applicability}
+        else:
+            operating_plan = plan_initialize_operating(destination, governance)
         for path, data in operating_plan["files"].items():
             planned[path] = data
         if upgrade_report is not None:
             upgrade_report["operating_changes"] = operating_plan["actions"]
+            upgrade_report["operating"] = operating_plan["inspection"]
         install_id = str(uuid.uuid4())
         if mode == "upgrade":
             install_id = identity["install_id"]
@@ -544,8 +553,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 for path in deletions:
                     if dst.inspect(path) is not None:
                         raise ValidationError(f"Removed managed file remains after upgrade: {path}")
-                operating_report = inspect_operating(destination, load_yaml(planned[CONFIG]))
-                if operating_report["status"] != "ACCEPTED":
+                operating_report = (operating_plan["inspection"] if applicability["status"] == "NOT_APPLICABLE"
+                                    else inspect_operating(destination, governance))
+                if applicability["status"] != "NOT_APPLICABLE" and operating_report["status"] != "ACCEPTED":
                     raise ValidationError("Operating initialization failed after staged writes: " +
                                           "; ".join(item["path"] + ": " + item["reason"]
                                                     for item in operating_report["refusals"]))
