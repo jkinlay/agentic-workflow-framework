@@ -1,0 +1,13 @@
+{
+  "format": "awf-external-review-qualification-1",
+  "status": "pending-project-qualification",
+  "origin_repository": null,
+  "origin_commit": null,
+  "historical_demonstrations": [],
+  "effective_permissions_verified": false,
+  "instruction_paths_protected": false,
+  "head_binding_verified": false,
+  "live_benchmark_verified": false,
+  "note": "This sanitized framework imports no historical qualification. Current candidate, host, provider and credentials require human-owned project evidence.",
+  "environment_secret_boundaries_verified": false
+}

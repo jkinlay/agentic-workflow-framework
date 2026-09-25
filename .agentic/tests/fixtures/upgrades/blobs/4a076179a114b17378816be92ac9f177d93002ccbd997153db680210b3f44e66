@@ -1,0 +1,260 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "project_id",
+    "sequence",
+    "timestamp",
+    "actor",
+    "event_type",
+    "ticket",
+    "previous_state",
+    "state",
+    "candidate",
+    "external_event_id",
+    "correlation_id",
+    "causation_id",
+    "payload_hash",
+    "previous_hash",
+    "event_hash",
+    "evidence"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "actor": {
+      "enum": [
+        "controller",
+        "worker",
+        "critic",
+        "specialist",
+        "collector",
+        "owner",
+        "verifier"
+      ]
+    },
+    "event_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ticket": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "previous_state": {
+      "oneOf": [
+        {
+          "enum": [
+            "BACKLOG",
+            "READY",
+            "DISPATCHED",
+            "IN_PROGRESS",
+            "PR_DRAFT",
+            "READY_FOR_CRITIC",
+            "CHANGES_REQUESTED",
+            "AMENDING",
+            "SPECIALIST_REVIEW",
+            "FINAL_REVIEW",
+            "READY_FOR_OWNER_AUTHORIZATION",
+            "OWNER_AUTHORIZED",
+            "MERGING",
+            "MERGE_UNKNOWN",
+            "MERGED",
+            "MERGED_PENDING_JIRA",
+            "DONE",
+            "BLOCKED",
+            "FAILED",
+            "CANCELLED",
+            "SUPERSEDED",
+            "REOPENED"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "oneOf": [
+        {
+          "enum": [
+            "BACKLOG",
+            "READY",
+            "DISPATCHED",
+            "IN_PROGRESS",
+            "PR_DRAFT",
+            "READY_FOR_CRITIC",
+            "CHANGES_REQUESTED",
+            "AMENDING",
+            "SPECIALIST_REVIEW",
+            "FINAL_REVIEW",
+            "READY_FOR_OWNER_AUTHORIZATION",
+            "OWNER_AUTHORIZED",
+            "MERGING",
+            "MERGE_UNKNOWN",
+            "MERGED",
+            "MERGED_PENDING_JIRA",
+            "DONE",
+            "BLOCKED",
+            "FAILED",
+            "CANCELLED",
+            "SUPERSEDED",
+            "REOPENED"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "candidate": {
+      "oneOf": [
+        {
+          "$ref": "urn:awf:1.2:candidate"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "external_event_id": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "correlation_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "causation_id": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload_hash": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "previous_hash": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "event_hash": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "format": "uri"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "enum": [
+              "MERGED",
+              "MERGE_ATTEMPTED",
+              "OWNER_AUTHORIZED",
+              "JIRA_DONE"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "candidate": {
+            "$ref": "urn:awf:1.2:candidate"
+          },
+          "ticket": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "enum": [
+              "BACKLOG",
+              "READY",
+              "DISPATCHED",
+              "IN_PROGRESS",
+              "PR_DRAFT",
+              "READY_FOR_CRITIC",
+              "CHANGES_REQUESTED",
+              "AMENDING",
+              "SPECIALIST_REVIEW",
+              "FINAL_REVIEW",
+              "READY_FOR_OWNER_AUTHORIZATION",
+              "OWNER_AUTHORIZED",
+              "MERGING",
+              "MERGE_UNKNOWN",
+              "MERGED",
+              "MERGED_PENDING_JIRA",
+              "DONE",
+              "BLOCKED",
+              "FAILED",
+              "CANCELLED",
+              "SUPERSEDED",
+              "REOPENED"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:controller-event",
+  "title": "Agentic Workflow 1.2 \u2014 controller-event"
+}

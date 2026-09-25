@@ -1,0 +1,351 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_id",
+    "contract_version",
+    "created_at",
+    "project_id",
+    "repository_id",
+    "issue_id",
+    "ticket",
+    "requirements_hash",
+    "policy_hash",
+    "objective",
+    "acceptance_criteria",
+    "dependencies",
+    "branch_origin_sha",
+    "target_base_branch",
+    "scope",
+    "validation",
+    "risk_flags",
+    "specialist_domains",
+    "disposition"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "contract_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "contract_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "repository_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "issue_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ticket": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requirements_hash": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "policy_hash": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "text",
+          "validation"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "validation": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue_id",
+          "ticket",
+          "kind",
+          "direction",
+          "satisfied",
+          "target",
+          "evidence"
+        ],
+        "properties": {
+          "issue_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ticket": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "code",
+              "deployment",
+              "migration",
+              "environment"
+            ]
+          },
+          "direction": {
+            "const": "requires"
+          },
+          "satisfied": {
+            "type": "boolean"
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 0
+    },
+    "branch_origin_sha": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "target_base_branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_paths",
+        "allowed_adjacent_paths",
+        "protected_interfaces",
+        "forbidden_changes",
+        "governance_change_authorization"
+      ],
+      "properties": {
+        "expected_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "allowed_adjacent_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "protected_interfaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "forbidden_changes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "governance_change_authorization": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commands",
+        "test_cases",
+        "tests_not_applicable_reason"
+      ],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "test_cases": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "tests_not_applicable_reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "risk_flags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "security",
+        "schema_or_migration",
+        "public_api",
+        "data_loss",
+        "concurrency",
+        "production"
+      ],
+      "properties": {
+        "security": {
+          "type": "boolean"
+        },
+        "schema_or_migration": {
+          "type": "boolean"
+        },
+        "public_api": {
+          "type": "boolean"
+        },
+        "data_loss": {
+          "type": "boolean"
+        },
+        "concurrency": {
+          "type": "boolean"
+        },
+        "production": {
+          "type": "boolean"
+        }
+      }
+    },
+    "specialist_domains": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "disposition": {
+      "enum": [
+        "DRAFT",
+        "BLOCKED",
+        "READY"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "disposition": {
+            "const": "READY"
+          }
+        },
+        "required": [
+          "disposition"
+        ]
+      },
+      "then": {
+        "properties": {
+          "dependencies": {
+            "items": {
+              "properties": {
+                "satisfied": {
+                  "const": true
+                },
+                "evidence": {
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:ticket-contract",
+  "title": "Agentic Workflow 1.2 \u2014 ticket-contract"
+}

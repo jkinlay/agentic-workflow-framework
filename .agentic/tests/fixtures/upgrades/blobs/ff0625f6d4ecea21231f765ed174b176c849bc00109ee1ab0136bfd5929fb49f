@@ -1,0 +1,627 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "created_at",
+    "producer_id",
+    "run_id",
+    "binding",
+    "candidate",
+    "gates",
+    "record_ids",
+    "required_specialist_domains",
+    "residual_risks",
+    "conclusion",
+    "execution_authority",
+    "evaluation_mode",
+    "expires_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "producer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "repository_id",
+        "issue_id",
+        "requirements_hash",
+        "contract_hash",
+        "policy_hash",
+        "candidate_id"
+      ],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "issue_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requirements_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "contract_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "candidate": {
+      "$ref": "urn:awf:1.2:candidate"
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceptance_criteria",
+        "scope",
+        "critic_current_tuple",
+        "specialist_reviews",
+        "required_ci",
+        "ci_candidate_binding",
+        "blocking_threads_zero",
+        "dependencies",
+        "merge_compatibility",
+        "ticket_snapshot_current",
+        "review_coverage",
+        "provenance"
+      ],
+      "properties": {
+        "acceptance_criteria": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "critic_current_tuple": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "specialist_reviews": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "required_ci": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "ci_candidate_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "blocking_threads_zero": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "dependencies": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "merge_compatibility": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "ticket_snapshot_current": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "review_coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        }
+      }
+    },
+    "record_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "required_specialist_domains": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "residual_risks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "conclusion": {
+      "enum": [
+        "READY_FOR_OWNER_AUTHORIZATION",
+        "NOT_READY"
+      ]
+    },
+    "execution_authority": {
+      "const": false
+    },
+    "evaluation_mode": {
+      "const": "offline_reference"
+    },
+    "expires_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "conclusion": {
+            "const": "READY_FOR_OWNER_AUTHORIZATION"
+          }
+        },
+        "required": [
+          "conclusion"
+        ]
+      },
+      "then": {
+        "properties": {
+          "gates": {
+            "properties": {
+              "acceptance_criteria": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "scope": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "critic_current_tuple": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "required_ci": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "ci_candidate_binding": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "blocking_threads_zero": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "dependencies": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "merge_compatibility": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "ticket_snapshot_current": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "review_coverage": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "provenance": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "specialist_reviews": {
+                "properties": {
+                  "result": {
+                    "enum": [
+                      "PASS",
+                      "N_A"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "execution_authority": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "required_specialist_domains": {
+            "minItems": 1
+          },
+          "conclusion": {
+            "const": "READY_FOR_OWNER_AUTHORIZATION"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "gates": {
+            "properties": {
+              "specialist_reviews": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:final-gate",
+  "title": "Agentic Workflow 1.2 \u2014 final-gate"
+}

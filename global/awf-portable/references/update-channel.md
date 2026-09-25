@@ -5,3 +5,5 @@ Configure owner-controlled `update-channel.json` using [the example](update-chan
 Run `scripts/check_updates.py --project ABSOLUTE_PROJECT --channel CHANNEL_LOCATION`. Add `--version 1.9` for a family or `--version 1.9.3` for an exact release. Missing/unavailable metadata does not establish latest.
 
 The helper reads bounded channel/project metadata; it does not download/install a release. HTTPS access requires actual host access; private transport is external. Verify advertised archive/manifest digests separately before adoption. A copied channel is a snapshot; future discovery needs maintained publication.
+
+Installing the 1.9.3 portable distribution into an empty skills root is supported and requires no prior `awf` skill. Skill installation updates discovery only. Project migration is separate: the verified release bootstrap recognizes byte-exact 1.8.3, 1.8.9, 1.9.1 and 1.9.2 installations and upgrades them in one run after a non-writing plan.

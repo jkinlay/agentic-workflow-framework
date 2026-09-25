@@ -1,0 +1,44 @@
+# External review component
+
+This optional component separates Claude inference from deterministic publishing. Native critics, gates and scheduled Codex amendments remain distinct. Workflows ship inert and qualification false.
+
+## Execution and evidence
+
+The [Claude workflow](../external-review/workflows/awf-review-claude.yml) requires explicit enablement, a non-draft same-repository PR, and execution ref/PR target on the protected default branch. It checks out immutable `github.sha` for trusted adapter/policy code. PR head files are data: never execute commands or install dependencies from `pr/`.
+
+GitHub documents `pull_request_target`/`workflow_run` in default-branch context; candidate-context `pull_request_review` remains excluded. Verify before activation: [event semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows).
+
+Phase one independently reviews candidate data; phase two assesses untrusted developer claims while retaining earlier findings. Head contracts are proposed criteria, not accepted governance. Controlled failures retain error evidence; runner loss can prevent retention and remains failure.
+
+The publisher validates schema, engine, App identity, repository and expected/live head before posting COMMENT. Its token is not inherently comment-only; isolate it from models/workers. The [gate](../external-review/workflows/awf-review-gate.yml) requires the configured engine, current-head review and qualification, including `environment_secret_boundaries_verified` for secret-bearing engines. Copilot ignores only that inapplicable flag; all other qualification checks remain strict. Review presence never resolves blocking findings or authorizes merge.
+
+Successful Claude completion wakes a job without model/App secrets. It verifies workflow IDs/paths/events, numeric repository, single PR association, current head/default target, protected source ancestry and unchanged workflow bytes. Both named model/publisher jobs must complete successfully on the verified [producer attempt](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt). It selects the latest verified gate run, checks its review job, rechecks producer/head/attempt, then reruns only that original `pull_request_target` run's failed jobs. PR serialization and attempt checks bound duplicates; they are not atomic. Candidate artifacts/status names grant no authority. Its `github.token` Actions-write scope also permits [reruns/cancellation](https://docs.github.com/en/rest/actions/workflow-runs#cancel-a-workflow-run) and [dispatching eligible repository workflows](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event); trusted code narrows usage, not token permissions. Missing associations, skipped jobs, changed state or exhausted reruns require coordinator reconciliation. Copilot/manual reviews need a trusted coordinator rerun without another routine prompt. Observe the resulting required check; requesting a rerun proves no acceptance.
+
+## Mandatory server-side secret boundaries
+
+Pre-create separate environments:
+
+| Environment | Exclusive secret |
+| --- | --- |
+| `awf-review-model` | `ANTHROPIC_API_KEY` |
+| `awf-review-publisher` | `AWF_REVIEWER_APP_PRIVATE_KEY` |
+
+Select deployment branches matching only the exact protected default branch: no agent branches, broad patterns, merge refs or tags. “Protected branches only” admits everything if protections are absent. Rules match the run's `GITHUB_REF`, not arbitrary checkouts; retain PR-target guards. Environment secrets arrive after rules pass. See [environment rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments).
+
+Keep equivalent credentials and these secrets out of repository/organization scope. Agent-controlled branches must be secret-less. Only publisher/wake tokens have write permissions. Protect workflow/adapter/policy paths, default writes and environment administration, including bypasses. Verify required-check provenance, not name alone. An unknown environment can auto-create without protection. Verify settings and plan support; remain disabled if unavailable. See [environment setup](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
+
+## Adoption and qualification
+
+1. Preserve the accepted engine and `.agentic/project.yaml`. Merge reviewed [project.example.yaml](../external-review/project.example.yaml) fields; this inert policy is separate from core `PROJECT_CONFIG.yaml`. Resolve identity/model placeholders from approved values. All example qualification flags remain false.
+2. Review/copy templates into `.github/workflows/`, protecting code/dependencies. Prepend `core/` to paths for source-hosting layouts. Verify action pins. Configure the App for `pull_requests: write, metadata: read`; approve model, egress, paths and cost. Keep `AWF_ENABLE_CLAUDE_REVIEW` unset during preparation.
+3. In an authorized disposable canary, demonstrate environment separation, agent/unprotected-target rejection, model read-only permissions, publisher identity, head/stale-review binding and automatic gate wake/check provenance. Negative probes can mutate over-permissioned targets. Require exact repository confirmation and `--canary-marker ABSOLUTE_EXTERNAL_JSON --canary-marker-sha256 PINNED_SHA256`, independently provisioned outside checkout. The marker binds repository/numeric ID, PR/head, expiry within 24 hours, `disposable: true` and allowed probes: an operator assertion, not authentication.
+4. Retain inventory without secret values, environment/branch settings, code/schema/workflow hashes, App identity, run URLs and probe evidence. Test seeded defects/injection through the actual engine. Offline/historical/native smoke evidence cannot qualify it.
+5. Owners set qualification flags from observed evidence and explicitly approve activation. Requalify material code, policy, action, credential or environment changes; preserve findings and human merge requirements.
+
+## Limits and offline verification
+
+Remote model endpoints require reviewed HTTPS without userinfo, query or fragment. Explicit `--allow-loopback-http` accepts numeric loopback fixtures only; use synthetic credentials. Parent/child enforce this boundary and bypass proxies for loopback HTTP.
+
+UTF-8 input/request/diff caps are 1,000,000/1,500,000/400,000 bytes; oversize fails without silent omissions. Output is capped at 8,000 tokens. Two phases each get one 300-second supervised attempt plus two-second cleanup: 604 seconds, excluding uninterruptible OS startup delays/report I/O. Thirty-minute model and ten/five-minute publisher/gate jobs remain outer bounds. Local termination does not prove remote cancellation. For transient 429/5xx or unknown outcomes, the coordinator reconciles provider outcome/usage before an authorized producer rerun; no automatic retry. Qualify within these limits.
+
+Run `python -B .agentic/external-review/claude/verify.py unit --out EXTERNAL_REPORT.json`; fake-network tests need no live key. Only the Anthropic Messages-compatible route ships. The [record](../external-review/qualification.json) remains unqualified.

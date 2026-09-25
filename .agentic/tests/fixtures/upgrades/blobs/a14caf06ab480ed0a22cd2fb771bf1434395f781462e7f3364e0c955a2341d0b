@@ -1,0 +1,34 @@
+{
+  "template_for": "run-attestation",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "record_id": "00000000-0000-0000-0000-000000000000",
+    "created_at": "1970-01-01T00:00:00Z",
+    "producer_id": "UNFILLED",
+    "run_id": "00000000-0000-0000-0000-000000000000",
+    "binding": {
+      "project_id": "00000000-0000-0000-0000-000000000000",
+      "repository_id": 1,
+      "issue_id": "UNFILLED",
+      "requirements_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "candidate_id": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "role": "controller",
+    "context_id": "00000000-0000-0000-0000-000000000000",
+    "parent_run_id": null,
+    "model": "UNFILLED",
+    "runtime_version": "UNFILLED",
+    "instruction_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "permission_profile_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "capabilities": [],
+    "status": "COMPLETE",
+    "attestation_evidence": [
+      "urn:awf:UNFILLED"
+    ],
+    "resources_held": []
+  }
+}

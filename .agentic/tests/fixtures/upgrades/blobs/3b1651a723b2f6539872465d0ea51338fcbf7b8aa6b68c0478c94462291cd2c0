@@ -1,0 +1,47 @@
+# Ticket lifecycle
+
+This renders the normal transitions in [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/lifecycle.py) is the exact guard/control authority. These are AWF states, not Jira status transitions. The reference state machine has no external side effects.
+
+## Routine work
+
+On worker COMPLETE, the assigned publisher pushes the scoped feature branch and opens a draft PR against `github.base_branch`. Observe its repository, PR, head/base and target, then finalize candidate-bound records with that actual identity; never use placeholder PR numbers. A local worktree is not a PR. With current validation and requirements, mark ready, then dispatch the independent critic against that observed head. A changed head needs fresh review. Review-ready means READY_FOR_CRITIC; owner-ready means READY_FOR_OWNER_AUTHORIZATION after critic, required specialists and final gate. Neither authorizes merge.
+
+Routine publication classification requires accepted project/repository/numeric-ID/default/ref bindings, the current ticket/slug's `github.branch_pattern`, and fresh matching live raw APPLIED rules evidence. It is presentation only, never permission or qualification. Retain task scope, host/platform permissions, non-force/non-delete feature refs and applicable secret/adapter prerequisites. Reuse existing authorization; where missing, report the concrete action/owner. Continue independent work.
+
+| From | Event → To | Required evidence |
+| --- | --- | --- |
+| BACKLOG | TICKET_READY → READY | Valid configuration, scope, ownership, satisfied dependencies, ready contract. |
+| READY | DISPATCH_ACCEPTED → DISPATCHED | Permitted dispatch, current lease/ownership, reserved budget. |
+| DISPATCHED | WORKER_STARTED → IN_PROGRESS | Registered run and verified worktree. |
+| IN_PROGRESS | WORKER_COMPLETED → PR_DRAFT | Valid worker result, `branch_pushed`, `pr_exists`. |
+| PR_DRAFT | PR_READY → READY_FOR_CRITIC | Current validation/requirements and observed `draft_cleared`. |
+| READY_FOR_CRITIC | CRITIC_REJECTED → CHANGES_REQUESTED | Current review. |
+| CHANGES_REQUESTED | AMENDMENT_ACCEPTED → AMENDING | Permitted dispatch, current lease/ownership, reserved budget. |
+| AMENDING | AMENDMENT_COMPLETED → READY_FOR_CRITIC | Valid result, current validation and registered new head. |
+| READY_FOR_CRITIC | CRITIC_APPROVED_SPECIALISTS → SPECIALIST_REVIEW | Current critic and required specialists. |
+| READY_FOR_CRITIC | CRITIC_APPROVED_FINAL → FINAL_REVIEW | Current critic; no specialists required. |
+| SPECIALIST_REVIEW | SPECIALIST_REJECTED → CHANGES_REQUESTED | Current review. |
+| SPECIALIST_REVIEW | SPECIALISTS_APPROVED → FINAL_REVIEW | Current specialists and critic. |
+| FINAL_REVIEW | FINAL_GATE_PASSED → READY_FOR_OWNER_AUTHORIZATION | Derived gate ready; requirements current. |
+| READY_FOR_OWNER_AUTHORIZATION | OWNER_AUTHORIZED → OWNER_AUTHORIZED | Verified authorization, unused request, current gate. |
+| OWNER_AUTHORIZED | MERGE_STARTED → MERGING | Certified executor, atomic candidate protocol, consumed permit, current gate. |
+| MERGING | MERGE_OBSERVED → MERGED | Confirmed merge and matched candidate. |
+| MERGE_UNKNOWN | MERGE_OBSERVED → MERGED | Confirmed merge and matched candidate. |
+| MERGE_UNKNOWN | NO_MERGE_CONFIRMED → FINAL_REVIEW | Confirmed no merge, current external state, revoked old permit. |
+| MERGED | JIRA_UNAVAILABLE → MERGED_PENDING_JIRA | Confirmed merge. |
+| MERGED | JIRA_RECONCILED → DONE | Confirmed merge, confirmed Jira Done, refreshed dependencies. |
+| MERGED_PENDING_JIRA | JIRA_RECONCILED → DONE | Same reconciliation evidence; no blind repeat write. |
+| FAILED | RECOVERABLE_FAILURE → BLOCKED | Recoverable failure and recorded blocker. |
+| REOPENED | REOPEN_DISPOSITION → CANCELLED | Owner disposition and recorded successor. |
+
+## Jira boundary
+
+AWF models only one explicitly authorized ticket status write after confirmed merge, to `jira.status_map.done`. Check whether it is already Done before writing. Never transition an Epic; Epics select scope/group streams. Other `status_map` entries are reserved, including In Progress/In Review. Disabled Jira permits no writes; retain merged results without fabricating `jira_done_confirmed`.
+
+After any Jira write, read the issue back. Preserve requested/observed status, issue/operation identity, and actor/timestamp only when observed; otherwise record unknown. A mismatch or unavailable/unknown result stops further Jira writes, not unaffected streams. Report a suspected external automation conflict for operator investigation; never reissue the transition or assert which actor reverted it without evidence. Reconciliation may read authoritative state; it does not authorize a second write. The shipped adapter performs no Jira writes.
+
+## Control and recovery
+
+Unspecified events reject. Requirements/policy changes block and invalidate evidence; unavailable CI blocks. Candidate changes invalidate review; failed CI, reopened blocking threads or dismissed reviews return review states to CHANGES_REQUESTED. Revoked authorization invalidates its prior evidence. Terminal invalidations audit without changing state.
+
+BLOCK/FAIL record evidence; RECOVER needs resolved blocker, current external state, verified resume guards and revoked old permit. Resume only into a listed `resume_states` value. Cancellation/closure/deletion/supersession needs source/owner disposition, current state and revoked tasks. During MERGING/MERGE_UNKNOWN, disruptive events record uncertainty and reconcile before retry. Confirmed manual merges require matched candidate/authorization. Confirmed reverts reopen merged work; merged work cannot simply be cancelled. See [native coordination](24-STREAM-STARTUP.md) and [scheduled recovery](22-AUTOMATED-REVIEW-LOOP.md).

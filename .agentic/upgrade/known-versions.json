@@ -1,0 +1,103 @@
+{
+  "format": "awf-known-versions-1",
+  "floor": "1.8.0",
+  "target": "1.9.3",
+  "versions": [
+    {
+      "version": "1.8.3",
+      "provenance": {
+        "kind": "installed snapshot",
+        "source": "private installation, owner-verified"
+      },
+      "source_manifest_sha256": "526daf91fab63395a8c85aa8e39d007ce026fbbc825febaac6883de40819b8fc",
+      "managed_manifest_sha256": "8e8b20fab90afea823ec5fe89008d56390ce1abfaad6fc467188d3ae6551cc1f",
+      "managed_file_count": 160,
+      "receipt_schema": "awf-installed-receipt-legacy-1",
+      "configuration_schema": {
+        "id": "urn:awf:1.2:project-config",
+        "sha256": "8798950b286915cb3b71f35de6ded83fc96d5ab30f0abe10ff5702ac695e2d88"
+      },
+      "operating_configuration_schema": null,
+      "migration": {
+        "kind": "version-only",
+        "to": "1.8.9",
+        "new_required_settings": []
+      }
+    },
+    {
+      "version": "1.8.9",
+      "provenance": {
+        "kind": "source commit",
+        "repository": "this-repository",
+        "commit": "f16b11f"
+      },
+      "source_manifest_sha256": "f18aaac889455c2d6a0ae3668dd4a0cb11c54970658cd8017594844a50b56dbe",
+      "managed_manifest_sha256": "8dc24a9efe94633a9eed6427dcce33f6586d03bd1903fc32f036caeab1405c63",
+      "managed_file_count": 202,
+      "receipt_schema": "awf-installed-receipt-embedded-manifest-1",
+      "configuration_schema": {
+        "id": "urn:awf:1.2:project-config",
+        "sha256": "889b3e3918927bc90708972d122aab0e95b245634ea0107a86a2c194e1c28776"
+      },
+      "operating_configuration_schema": {
+        "id": "urn:awf:1.2:operating-config",
+        "sha256": "1dc1397ee78a7be6aad834e529f6afa9eca1e18ac80cce3afdb1cc9ea4668aa1"
+      },
+      "migration": {
+        "kind": "version-only",
+        "to": "1.9.1",
+        "new_required_settings": []
+      }
+    },
+    {
+      "version": "1.9.1",
+      "provenance": {
+        "kind": "source commit",
+        "repository": "this-repository",
+        "commit": "e7d80a6"
+      },
+      "source_manifest_sha256": "d10a180af0109ffda59f70d925dd934c8fb78d9a8016d7ca39086d715f1194bd",
+      "managed_manifest_sha256": "6efbefa2d06a6024492565191c22bef52db2ca00ca69492339970aa48f68aff1",
+      "managed_file_count": 224,
+      "receipt_schema": "awf-installed-receipt-embedded-manifest-1",
+      "configuration_schema": {
+        "id": "urn:awf:1.2:project-config",
+        "sha256": "3f8b41cb965c586e0cef46bf212051f22851dd77e9eae3eab3249bdb668e14f1"
+      },
+      "operating_configuration_schema": {
+        "id": "urn:awf:1.2:operating-config",
+        "sha256": "1dc1397ee78a7be6aad834e529f6afa9eca1e18ac80cce3afdb1cc9ea4668aa1"
+      },
+      "migration": {
+        "kind": "version-only",
+        "to": "1.9.2",
+        "new_required_settings": []
+      }
+    },
+    {
+      "version": "1.9.2",
+      "provenance": {
+        "kind": "source commit",
+        "repository": "this-repository",
+        "commit": "9221dd3"
+      },
+      "source_manifest_sha256": "29738ffb42108262a1d3498367948b2391cde430c1e71654dd38c952225e6706",
+      "managed_manifest_sha256": "f24202bc18c611dd123ae0f3fb97c7b7b7f2e4c067e5bb2d0995d7519a8af0a6",
+      "managed_file_count": 211,
+      "receipt_schema": "awf-installed-receipt-embedded-manifest-1",
+      "configuration_schema": {
+        "id": "urn:awf:1.2:project-config",
+        "sha256": "90b8334cb6e30960ad8567f3222e7a9eac7c5a05afa2d51abba7f97d68968da5"
+      },
+      "operating_configuration_schema": {
+        "id": "urn:awf:1.2:operating-config",
+        "sha256": "1dc1397ee78a7be6aad834e529f6afa9eca1e18ac80cce3afdb1cc9ea4668aa1"
+      },
+      "migration": {
+        "kind": "version-only",
+        "to": "1.9.3",
+        "new_required_settings": []
+      }
+    }
+  ]
+}

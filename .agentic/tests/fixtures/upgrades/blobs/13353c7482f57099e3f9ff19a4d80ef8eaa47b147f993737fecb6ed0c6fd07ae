@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-workflow-framework.invalid/schemas/review-report.schema.json",
+  "title": "AWF independent review report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "engine",
+    "reviewer_identity",
+    "repository",
+    "head_sha",
+    "status",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "engine": { "type": "string", "minLength": 1 },
+    "model": { "type": ["string", "null"] },
+    "vendor": { "type": ["string", "null"] },
+    "reviewer_identity": { "type": "string", "minLength": 1 },
+    "repository": { "type": "string", "minLength": 1 },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$" },
+    "status": { "enum": ["no_findings", "findings", "error"] },
+    "error": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "title", "description", "file", "blocking"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["critical", "high", "medium", "low"] },
+          "title": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "minLength": 1 },
+          "file": { "type": "string", "minLength": 1 },
+          "line": { "type": "integer", "minimum": 1 },
+          "side": { "enum": ["LEFT", "RIGHT"] },
+          "phase": { "enum": ["blind", "claims", "provider_native"] },
+          "blocking": { "type": "boolean" }
+        }
+      }
+    },
+    "claim_assessments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim_id", "status", "evidence"],
+        "properties": {
+          "claim_id": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["verified", "unverified", "contradicted"] },
+          "evidence": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "no_findings" } } },
+      "then": { "properties": { "findings": { "maxItems": 0 } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "findings" } } },
+      "then": { "properties": { "findings": { "minItems": 1 } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "error" } } },
+      "then": { "required": ["error"] }
+    }
+  ]
+}

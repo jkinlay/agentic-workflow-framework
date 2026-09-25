@@ -1,0 +1,24 @@
+{
+  "template_for": "jira-snapshot",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "issue_id": "UNFILLED",
+    "project_key": "UNFILLED",
+    "summary": "UNFILLED",
+    "description": "UNFILLED",
+    "acceptance_criteria": [
+      {
+        "id": "UNFILLED",
+        "text": "UNFILLED",
+        "validation": "UNFILLED"
+      }
+    ],
+    "dependencies": [],
+    "linked_requirements": [],
+    "epic_ids": [],
+    "labels": [],
+    "component_ids": []
+  }
+}

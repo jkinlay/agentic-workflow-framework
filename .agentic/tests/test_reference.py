@@ -580,6 +580,14 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(verify_installed(self.dest), self.digest)
         self.assertFalse((self.dest / '.tmp-tests').exists())
 
+    def test_historical_upgrade_fixtures_are_outside_portable_release_membership(self):
+        fixture = self.source / '.agentic/tests/fixtures/upgrades/blobs/example'
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_bytes(b'historical bytes with CRLF\r\n')
+        self.perform()
+        self.assertEqual(verify_installed(self.dest), self.digest)
+        self.assertFalse((self.dest / '.agentic/tests/fixtures/upgrades').exists())
+
     def test_root_git_hardlink_cannot_be_excluded_as_safe_metadata(self):
         sentinel = self.base / 'external-git.txt'
         sentinel.write_bytes(b'Protected sentinel')
