@@ -66,7 +66,8 @@ def verify_release(tree, expected_digest=None):
     manifest = loads(raw.decode("utf-8"))
     if set(manifest) != {"format", "template_version", "files"} or manifest["format"] != "awf-manifest-1" or manifest["template_version"] != VERSION:
         raise ValidationError("Unsupported release manifest")
-    actual = {path for path in tree.file_list(exclude_root_git=True)
+    actual = {path for path in tree.file_list(exclude_root_git=True,
+                                              exclude_prefixes=RELEASE_EXCLUDED_PREFIXES)
               if path not in {MANIFEST, "MANIFEST.md"} and release_member(path)}
     if actual != set(manifest["files"]):
         raise ValidationError("Release manifest file membership mismatch")
@@ -218,9 +219,9 @@ def rollback(tree, journal):
         if not isinstance(item, dict) or set(item) != {"path", "old", "new_sha256"}:
             raise ValidationError("Invalid recovery file entry")
         relative_parts(item["path"])
-        state_archive = item["path"].startswith(".agentic-state/archive/upgrade-to-")
+        state_path = item["path"].startswith(".agentic-state/")
         valid_new = item["new_sha256"] is None or re.fullmatch(r"[0-9a-f]{64}", item["new_sha256"])
-        if (not managed(item["path"]) and item["path"] != GITIGNORE and not state_archive) or item["path"] == MARKER or item["path"].casefold() in seen or not valid_new:
+        if (not managed(item["path"]) and item["path"] not in {GITIGNORE, "OPERATING_CONFIG.yaml"} and not state_path) or item["path"] == MARKER or item["path"].casefold() in seen or not valid_new:
             raise ValidationError("Unsafe or duplicate recovery path/digest")
         seen.add(item["path"].casefold())
         if item["old"] is not None:
@@ -304,9 +305,11 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
     def ignore_plan(existing_ignore=None):
         if GITIGNORE_TEMPLATE in content:
             planned[GITIGNORE] = merge_operating_ignores(existing_ignore, content[GITIGNORE_TEMPLATE])
+            appended = planned[GITIGNORE] if existing_ignore is None else planned[GITIGNORE][len(existing_ignore):]
             ignore_report.update(status="SEEDED" if existing_ignore is None else "UNCHANGED" if planned[GITIGNORE] == existing_ignore else "MERGED",
                 previous_sha256=None if existing_ignore is None else sha256(existing_ignore),
-                proposed_sha256=sha256(planned[GITIGNORE]))
+                proposed_sha256=sha256(planned[GITIGNORE]),
+                added_lines=appended.decode("utf-8").splitlines())
     def configure_plan(existing_config=None, existing_receipt=None):
         nonlocal configuration_report, governance_proposal
         from .adoption_config import prepare_config, operating_capacity_proposal
@@ -380,6 +383,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             state = {path: dst.read(path) for path in dst.file_list(exclude_root_git=True)
                      if path.startswith(".agentic-state/")}
             operating = _exists_read(dst, OPERATING)
+            provenance_raw = _exists_read(dst, PROVENANCE)
+            if provenance_raw is None:
+                raise ValidationError("Unrecognised AWF installation: workflow provenance is missing; no files changed")
             existing_codeowners = _exists_read(dst, CODEOWNERS)
             if installed_version == VERSION:
                 _verify_installed(destination, VERSION)
@@ -392,8 +398,11 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 if known_versions is None:
                     raise ValidationError("Release is missing the known-versions table required for a historical upgrade")
                 identity = identify_installation(dst, known_versions, existing_config, receipt_raw)
+                target_entry = {"source_manifest_sha256": digest,
+                                "_source_manifest_json": source_manifest_json,
+                                "_immutable_files": {path: sha256(data) for path, data in release_immutable.items()}}
                 bundle, step_reports = apply_chain(known_versions, identity["version"], existing_config,
-                                                   operating, receipt_raw, state)
+                                                   operating, receipt_raw, provenance_raw, state, target_entry)
                 migrated_config = bundle.project_config
                 total_diff = config_diff(existing_config, migrated_config, identity["version"], VERSION)
             assert_quiescent(existing_config)
@@ -413,7 +422,17 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             deletions = sorted(old_paths - new_paths)
             changed = sorted(path for path in old_paths & new_paths if old_files[path] != sha256(release_immutable[path]))
             additions = sorted(new_paths - old_paths)
-            archives, state_actions = ({}, []) if identity["version"] == VERSION else state_archive_plan(state)
+            migrated_state = state if identity["version"] == VERSION else dict(bundle.state)
+            migrated_actions = []
+            for path, data in sorted(migrated_state.items()):
+                if state.get(path) != data:
+                    planned[path] = data
+                    migrated_actions.append({"path": path, "action": "migrated_schema",
+                                             "source_sha256": sha256(state[path]),
+                                             "target_sha256": sha256(data)})
+            archives, archive_actions = (({}, []) if identity["version"] == VERSION
+                                         else state_archive_plan(migrated_state))
+            state_actions = migrated_actions + archive_actions
             for path, data in archives.items():
                 if dst.inspect(path) is not None and dst.read(path) != data:
                     raise ValidationError("State archive path already exists with different bytes; no files changed: " + path)
@@ -427,6 +446,12 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                               "single_reviewed_change_set": True}
         if configure:
             configure_plan(planned[CONFIG] if mode == "upgrade" else existing_config, existing_receipt)
+        from .operating import inspect_operating, plan_initialize_operating
+        operating_plan = plan_initialize_operating(destination, load_yaml(planned[CONFIG]))
+        for path, data in operating_plan["files"].items():
+            planned[path] = data
+        if upgrade_report is not None:
+            upgrade_report["operating_changes"] = operating_plan["actions"]
         install_id = str(uuid.uuid4())
         if mode == "upgrade":
             install_id = identity["install_id"]
@@ -458,7 +483,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             if path in planning_inputs and old != planning_inputs[path]:
                 raise ValidationError("Destination changed while preparing adoption: " + path)
             originals[path] = old
-            if old is not None and old != data and path != GITIGNORE and not (mode == "upgrade" and managed(path)):
+            state_migration = mode == "upgrade" and path.startswith(".agentic-state/")
+            if old is not None and old != data and path != GITIGNORE and not (
+                    mode == "upgrade" and managed(path)) and not state_migration:
                 conflicts.append(path)
         for path in deletions:
             if path in originals:
@@ -466,12 +493,17 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             originals[path] = _exists_read(dst, path)
             if originals[path] is None:
                 raise ValidationError("Managed file disappeared while preparing upgrade: " + path)
+        write_plan = [{"path": path, "action": "create" if originals[path] is None else
+                       "write_same" if originals[path] == data else "replace"}
+                      for path, data in sorted(planned.items())]
+        write_plan.extend({"path": path, "action": "delete"} for path in deletions)
         if conflicts and conflict == "error":
             raise ValidationError("Conflicting files; no managed files written: " + ", ".join(sorted(conflicts)))
         if dry_run:
             return {"status": "PLAN", "managed_files": sorted(planned), "conflicts": conflicts, "source_manifest_sha256": digest,
                     "installed": False, "configuration": configuration_report, "governance_proposal": governance_proposal,
-                    "gitignore": ignore_report, "codeowners": owner_report, "upgrade": upgrade_report, **rules_report()}
+                    "gitignore": ignore_report, "codeowners": owner_report, "upgrade": upgrade_report,
+                    "write_plan": write_plan, "operating": operating_plan["inspection"], **rules_report()}
         adoption_rules = rules_report()
         with install_lock(dst):
             # Re-read while locked: another cooperating installer or editor may
@@ -512,28 +544,20 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 for path in deletions:
                     if dst.inspect(path) is not None:
                         raise ValidationError(f"Removed managed file remains after upgrade: {path}")
+                operating_report = inspect_operating(destination, load_yaml(planned[CONFIG]))
+                if operating_report["status"] != "ACCEPTED":
+                    raise ValidationError("Operating initialization failed after staged writes: " +
+                                          "; ".join(item["path"] + ": " + item["reason"]
+                                                    for item in operating_report["refusals"]))
+                for path in archive_paths:
+                    if originals[path] is None:
+                        (destination / Path(path)).chmod(stat.S_IREAD)
                 # Journal remains a fail-closed marker until its final removal.
                 dst.unlink(MARKER)
                 dst.unlink(JOURNAL)
             except Exception:
                 rollback(dst, journal)
                 raise
-        for path in archive_paths:
-            archive = destination / Path(path)
-            try:
-                archive.chmod(stat.S_IREAD)
-            except OSError as exc:
-                raise ValidationError("State archive was written but could not be made read-only: " + path) from exc
-        # Operating configuration is project-owned and uses its own recoverable
-        # transaction. Never overwrite existing choices with release defaults.
-        # An incomplete/invalid operating layer remains explicit residue; the
-        # installed child checks below cannot report CONFIGURED without it.
-        from .operating import initialize_operating, inspect_operating
-        try:
-            initialize_operating(destination, load_yaml(planned[CONFIG]))
-        except (ValidationError, OSError, ValueError):
-            pass  # inspect_operating preserves the precise actionable refusal.
-        operating_report = inspect_operating(destination, load_yaml(planned[CONFIG]))
         return {"status": "INSTALLED" if mode == "install" else "UPGRADED", "template_version": VERSION,
                 "install_id": install_id, "source_manifest_sha256": digest, "managed_files": len(planned),
                 "profile": "manual_reference", "live_automation_enabled": False,
@@ -541,5 +565,5 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 "native_streams_dispatch_owner": "native host coordinator using the project's execution.native_streams policy",
                 "installer_launches_agents": False, "configuration": configuration_report,
                 "governance_proposal": governance_proposal, "gitignore": ignore_report,
-                "operating": operating_report,
+                "operating": operating_report, "write_plan": write_plan,
                 "codeowners": owner_report, "upgrade": upgrade_report, **adoption_rules}

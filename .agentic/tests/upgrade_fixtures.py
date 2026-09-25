@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,6 +61,9 @@ def _outside_repository(destination):
     root = ROOT.resolve()
     target = Path(destination).resolve()
     if target == root or root in target.parents:
+        shim = root / ".tmp-tests"
+        if os.environ.get("AWF_TEST_TEMP_SHIM") == "1" and (target == shim or shim in target.parents):
+            return target
         raise AssertionError("Upgrade fixtures must be materialised outside the repository")
     return target
 
@@ -72,6 +76,19 @@ def _write(destination, relative, raw, mode):
         path.chmod(0o755 if mode == "100755" else 0o644)
 
 
+def _shim_directories(destination, relatives):
+    if os.environ.get("AWF_TEST_TEMP_SHIM") != "1":
+        return
+    directories = sorted({str((destination / Path(relative)).parent) for relative in relatives})
+    environment = {**os.environ, "AWF_FIXTURE_DIRECTORIES": json.dumps(directories)}
+    command = ("$items=$env:AWF_FIXTURE_DIRECTORIES | ConvertFrom-Json; "
+               "$items | ForEach-Object { New-Item -ItemType Directory -Force -Path $_ | Out-Null }")
+    completed = subprocess.run(["powershell", "-NoProfile", "-Command", command],
+                               env=environment, capture_output=True, text=True)
+    if completed.returncode:
+        raise AssertionError("Fixture tempfile ACL shim failed: " + completed.stderr)
+
+
 def materialize(version, destination):
     """Write a historical fixture plus synthetic owner files to an empty temp dir."""
     destination = _outside_repository(destination)
@@ -79,18 +96,20 @@ def materialize(version, destination):
     if any(destination.iterdir()):
         raise AssertionError("Upgrade fixture destination must be empty")
     manifest = fixture_manifest(version)
+    sections = (manifest["managed_files"], manifest["owner_files"], manifest["state_files"])
+    target_paths = json.loads((ROOT / "MANIFEST.json").read_bytes())["files"]
+    _shim_directories(destination, [relative for section in sections for relative in section]
+                      + list(target_paths) + [".agentic-state/operating/changes/placeholder",
+                                              ".agentic-state/archive/upgrade-to-1.9.3/files/placeholder"])
     for relative, entry in sorted(manifest["managed_files"].items()):
         _write(destination, relative, fixture_blob(entry["sha256"]), entry["mode"])
     for relative, entry in sorted(manifest["owner_files"].items()):
         _write(destination, relative, fixture_blob(entry["sha256"]), entry["mode"])
-    state = {
-        ".agentic-state/routing/history.json": b'{"fixture":"routing-history"}\n',
-        ".agentic-state/reviews/history.json": b'{"fixture":"review-history"}\n',
-        ".agentic-state/lifecycle/history.json": b'{"fixture":"lifecycle-history"}\n',
-        ".agentic-state/legacy-note.txt": b"synthetic legacy state\r\n",
-    }
-    for relative, raw in state.items():
-        _write(destination, relative, raw, "100644")
+    state = {}
+    for relative, entry in sorted(manifest["state_files"].items()):
+        raw = fixture_blob(entry["sha256"])
+        _write(destination, relative, raw, entry["mode"])
+        state[relative] = raw
     return {
         "version": version,
         "manifest": manifest,
@@ -98,11 +117,13 @@ def materialize(version, destination):
         "codeowners": (destination / ".github/CODEOWNERS").read_bytes(),
         "instructions": (destination / "PROJECT_INSTRUCTIONS.md").read_bytes(),
         "operating": (destination / OPERATING).read_bytes() if (destination / OPERATING).is_file() else None,
+        "owner_files": {relative: (destination / Path(relative)).read_bytes()
+                        for relative in manifest["owner_files"]},
         "state": state,
     }
 
 
-def verify_materialized(version, destination):
+def verify_materialized(version, destination, *, verify_state=True):
     """Verify fixture membership and every receipt-managed byte without Git."""
     destination = _outside_repository(destination)
     manifest = fixture_manifest(version)
@@ -119,6 +140,10 @@ def verify_materialized(version, destination):
         actual = sha256(path.read_bytes()) if path.is_file() else None
         if actual != expected_hash:
             raise AssertionError(f"Materialized fixture mismatch: {relative} expected={expected_hash} actual={actual}")
+    if verify_state:
+        for relative, entry in manifest["state_files"].items():
+            if sha256((destination / Path(relative)).read_bytes()) != entry["sha256"]:
+                raise AssertionError("Materialized state fixture mismatch: " + relative)
     return expected
 
 
@@ -129,18 +154,26 @@ def advance_one_fixture_step(destination, version):
     if next_version == "1.9.3":
         raise AssertionError("The final step must use the real 1.9.3 installer")
     following = fixture_manifest(next_version)
-    verify_materialized(version, destination)
+    _shim_directories(_outside_repository(destination), following["managed_files"])
+    verify_materialized(version, destination, verify_state=False)
 
-    from agentic.upgrade import MigrationBundle, migrate_step
+    from agentic.installer import KNOWN_VERSIONS
+    from agentic.safeio import Tree
+    from agentic.upgrade import (MigrationBundle, identify_installation, load_known_versions,
+                                 migrate_step)
     from types import MappingProxyType
 
     root = _outside_repository(destination)
     config = (root / CONFIG).read_bytes()
     receipt = (root / INSTALLED).read_bytes()
+    provenance = (root / PROVENANCE).read_bytes()
     operating = (root / OPERATING).read_bytes() if (root / OPERATING).is_file() else None
     state = {path.relative_to(root).as_posix(): path.read_bytes()
              for path in root.joinpath(".agentic-state").rglob("*") if path.is_file()}
-    migrated = migrate_step(MigrationBundle(config, operating, receipt, MappingProxyType(state)), version, next_version)
+    table = load_known_versions((ROOT / KNOWN_VERSIONS).read_bytes())
+    migrated = migrate_step(MigrationBundle(config, operating, receipt, provenance,
+                                             MappingProxyType(state)),
+                            version, next_version, table["versions"][next_version])
 
     old_paths = set(current["managed_files"])
     new_paths = set(following["managed_files"])
@@ -149,10 +182,15 @@ def advance_one_fixture_step(destination, version):
     for relative, entry in sorted(following["managed_files"].items()):
         _write(root, relative, fixture_blob(entry["sha256"]), entry["mode"])
     (root / CONFIG).write_bytes(migrated.project_config)
-    for relative in (INSTALLED, PROVENANCE):
-        entry = following["owner_files"][relative]
-        _write(root, relative, fixture_blob(entry["sha256"]), entry["mode"])
-    verify_materialized(next_version, root)
+    (root / INSTALLED).write_bytes(migrated.receipt)
+    (root / PROVENANCE).write_bytes(migrated.provenance)
+    for relative, raw in migrated.state.items():
+        (root / Path(relative)).write_bytes(raw)
+    verify_materialized(next_version, root, verify_state=False)
+    with Tree(root) as tree:
+        identity = identify_installation(tree, table, migrated.project_config, migrated.receipt)
+    if identity["version"] != next_version:
+        raise AssertionError("Adjacent migration did not identify as " + next_version)
     return next_version
 
 

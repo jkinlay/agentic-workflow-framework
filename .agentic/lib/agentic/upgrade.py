@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
 import difflib
 import json
 import re
+import sqlite3
 from types import MappingProxyType
 
 from . import ValidationError
@@ -44,7 +46,8 @@ def load_known_versions(raw):
     versions = {}
     previous = None
     for entry in value["versions"]:
-        required = {"version", "provenance", "source_manifest_sha256", "managed_manifest_sha256",
+        required = {"version", "provenance", "source_manifest_sha256", "source_manifest_base64",
+                    "managed_manifest_sha256",
                     "managed_file_count", "receipt_schema", "configuration_schema",
                     "operating_configuration_schema", "migration"}
         if not isinstance(entry, dict) or set(entry) != required:
@@ -58,12 +61,30 @@ def load_known_versions(raw):
         for field in ("source_manifest_sha256", "managed_manifest_sha256"):
             if not re.fullmatch(r"[0-9a-f]{64}", str(entry[field])):
                 raise ValidationError(f"Invalid {field} for known version {version}")
+        source_encoded = entry["source_manifest_base64"]
+        try:
+            source_raw = None if source_encoded is None else base64.b64decode(source_encoded, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValidationError("Invalid encoded source manifest for known version " + version) from exc
+        if entry["receipt_schema"] == CURRENT_RECEIPT_SCHEMA:
+            if not isinstance(source_raw, str) or sha256(source_raw.encode("utf-8")) != entry["source_manifest_sha256"]:
+                raise ValidationError("Invalid embedded source manifest for known version " + version)
+            source_manifest = loads(source_raw)
+            immutable = immutable_from_source_manifest(source_manifest)
+            if (len(immutable) != entry["managed_file_count"]
+                    or managed_manifest_sha256(immutable) != entry["managed_manifest_sha256"]):
+                raise ValidationError("Embedded managed manifest differs for known version " + version)
+        elif source_raw is not None:
+            raise ValidationError("Legacy known version must not embed a source manifest: " + version)
+        else:
+            immutable = None
         migration = entry["migration"]
         if (not isinstance(migration, dict) or set(migration) != {"kind", "to", "new_required_settings"}
                 or migration["kind"] != "version-only" or _version_tuple(migration["to"]) is None
                 or not isinstance(migration["new_required_settings"], list)):
             raise ValidationError("Invalid migration step for known version " + version)
-        versions[version] = MappingProxyType(entry)
+        versions[version] = MappingProxyType({**entry, "_source_manifest_json": source_raw,
+                                               "_immutable_files": immutable})
         previous = parsed
     for version, entry in versions.items():
         target = entry["migration"]["to"]
@@ -180,42 +201,225 @@ def _replace_scalar(raw, key, previous, current, *, question):
     return migrated
 
 
+def _legacy_routing_policy(config):
+    execution = config["execution"]
+    roles = execution["roles"]
+    role_defaults = {role: {"model": roles[role]["model"],
+                            "reasoning_effort": roles[role]["reasoning_effort"]}
+                     for role in ("controller", "worker", "critic", "specialist")}
+    order = list(dict.fromkeys(pair["model"] for pair in role_defaults.values()))
+    efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+    allowed = {role: list(roles[role]["approved_model_ids"])
+               for role in ("controller", "worker", "critic", "specialist")}
+    tickets = execution["max_parallel_tickets"]
+    return {
+        "schema_version": 1, "profile": "balanced", "model_order": order,
+        "models": {model: {"reasoning_efforts": efforts} for model in order},
+        "role_defaults": role_defaults, "role_allowed_models": allowed,
+        "simple_worker": dict(role_defaults["worker"]),
+        "review_floor": dict(role_defaults["critic"]),
+        "risk_route": dict(role_defaults["critic"]),
+        "high_risk_flags": ["security", "permissions", "schema_or_migration", "data_loss",
+                            "concurrency", "production", "public_api", "architecture"],
+        "agent_overrides": {}, "ticket_overrides": {},
+        "escalation": {"enabled": False, "max_escalations_per_ticket": 0,
+                       "max_reasoning_failures_per_phase": 3, "effort_ceiling": "high"},
+        "budgets": {"max_runs_per_ticket": execution["max_agent_runs_per_ticket"],
+                    "max_runs_per_project_day": execution["max_agent_runs_per_ticket"] * tickets,
+                    "max_tokens_per_ticket": execution["max_tokens_per_ticket"],
+                    "max_tokens_per_project_day": execution["max_tokens_per_ticket"] * tickets,
+                    "max_cost_microusd_per_ticket": execution["max_cost_microusd_per_ticket"],
+                    "max_cost_microusd_per_project_day": execution["daily_project_cost_microusd"]},
+        "adaptive": {"mode": "shadow", "min_reviewed_samples": 20,
+                     "min_success_rate_percent": 95},
+        "reconciliation": {"enabled": False, "authorized_operator_ids": [],
+                           "max_reconciled_incident_retries_per_ticket": 2},
+    }
+
+
+def _insert_legacy_routing(raw):
+    config = load_yaml(raw)
+    if not isinstance(config, dict) or not isinstance(config.get("execution"), dict):
+        raise ValidationError("Migration is not deterministic. Owner question: which valid legacy execution policy should be retained?")
+    if "model_routing" in config["execution"]:
+        return raw
+    try:
+        policy = _legacy_routing_policy(config)
+    except (KeyError, TypeError) as exc:
+        raise ValidationError("Migration is not deterministic. Owner question: how should the legacy roles and budgets map to model_routing?") from exc
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    pattern = re.compile(rb'(?m)^(?P<indent>[ \t]*)["\']?host_broker["\']?[ \t]*:')
+    matches = list(pattern.finditer(raw))
+    if len(matches) != 1:
+        raise ValidationError("Migration is not deterministic. Owner question: where should the required model_routing policy be inserted?")
+    indent = matches[0].group("indent").decode("ascii")
+    rendered = json.dumps({"model_routing": policy}, indent=2, ensure_ascii=False).splitlines()[1:-1]
+    block = newline.join(indent + line[2:] for line in rendered) + "," + newline
+    migrated = raw[:matches[0].start()] + block.encode("utf-8") + raw[matches[0].start():]
+    expected = json.loads(json.dumps(config))
+    expected["execution"]["model_routing"] = policy
+    if load_yaml(migrated) != expected:
+        raise ValidationError("Migration is not deterministic. Owner question: how should the required model_routing policy be serialized?")
+    return migrated
+
+
 @dataclass(frozen=True)
 class MigrationBundle:
     project_config: bytes
     operating_config: bytes | None
     receipt: bytes
+    provenance: bytes
     state: MappingProxyType
 
 
-def migrate_step(bundle, previous, current):
-    """Pure version-only step; owner bytes outside the two version scalars are retained."""
+def _target_receipt(raw, current, target):
+    value = loads(raw.decode("utf-8"))
+    value["template_version"] = current
+    value["source_manifest_sha256"] = target["source_manifest_sha256"]
+    value["immutable_files"] = dict(target["_immutable_files"])
+    source_raw = target.get("_source_manifest_json")
+    if source_raw is None:
+        value.pop("source_manifest_json", None)
+    else:
+        value["source_manifest_json"] = source_raw
+    return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+
+
+def _target_provenance(raw, current, target):
+    value = loads(raw.decode("utf-8"))
+    value.setdefault("template", {})["version"] = current
+    value.setdefault("installation", {})["source_manifest_sha256"] = target["source_manifest_sha256"]
+    return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+
+
+def _sqlite_schema(raw):
+    if not raw.startswith(b"SQLite format 3\x00"):
+        return None
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.deserialize(raw)
+        quick = connection.execute("PRAGMA quick_check").fetchone()
+        if quick is None or quick[0] != "ok":
+            return None
+        tables = {}
+        for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+            tables[name] = tuple(row[1] for row in connection.execute(
+                "PRAGMA table_info(" + '"' + name.replace('"', '""') + '"' + ")"))
+        return tables
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        connection.close()
+
+
+def state_schema(path, raw):
+    """Return the recognized durable schema, never merely a syntax result."""
+    relative = path.removeprefix(".agentic-state/")
+    area = relative.split("/", 1)[0]
+    if area == "routing" and path.endswith((".sqlite", ".sqlite3", ".db")):
+        tables = _sqlite_schema(raw)
+        required = {"run_id", "project_id", "ticket_id", "role", "agent_id", "phase",
+                    "created_at", "day", "policy_hash", "status", "reserved_tokens",
+                    "reserved_cost", "actual_tokens", "actual_cost", "escalated", "request",
+                    "route", "outcome"}
+        if tables is not None and required.issubset(set(tables.get("model_runs", ()))):
+            return "routing-ledger:model_runs-v1"
+        return None
+    if not path.endswith(".json"):
+        return None
+    try:
+        value = loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if area == "reviews" and isinstance(value, dict):
+        required = {"schema_version", "record_id", "created_at", "producer_id", "run_id",
+                    "binding", "verdict", "acceptance_criteria", "findings", "prior_finding_ids",
+                    "closure", "coverage", "evidence_checked"}
+        if value.get("schema_version") == 3 and set(value) == required:
+            return "critic-review:3"
+        if value.get("schema_version") == 3 and set(value) == required - {"closure"}:
+            return "critic-review:3-pre-closure"
+        return None
+    if area == "lifecycle" and isinstance(value, dict):
+        required = {"schema_version", "event_id", "project_id", "sequence", "timestamp", "actor",
+                    "event_type", "digest_sha256", "ticket", "previous_state", "state", "candidate",
+                    "external_event_id", "correlation_id", "causation_id", "payload_hash",
+                    "previous_hash", "event_hash", "evidence"}
+        if value.get("schema_version") == 3 and set(value) == required:
+            return "controller-event:3"
+        if value.get("schema_version") == 3 and set(value) == required - {"digest_sha256"}:
+            return "controller-event:3-pre-digest"
+        return None
+    if area == "operating" and isinstance(value, dict):
+        required = {"id", "created_at", "instruction", "before_hash", "after_hash", "changes",
+                    "source", "applied_from", "sequence", "previous_change_id", "governance_hash"}
+        return "operating-change:1" if set(value) == required and re.fullmatch(r"C-[0-9a-f]{32}", str(value.get("id"))) else None
+    return None
+
+
+def state_migration_plan(state, migrated, previous, current):
+    actions = []
+    for path, raw in sorted(state.items()):
+        if path.startswith(ARCHIVE_ROOT + "/"):
+            continue
+        schema, target_schema = state_schema(path, raw), state_schema(path, migrated[path])
+        action = ("migrated_schema" if migrated[path] != raw else
+                  "retained_schema_compatible" if schema else "archive_read_only_copy")
+        actions.append({"path": path, "action": action, "schema": schema,
+                        "target_schema": target_schema, "from": previous, "to": current})
+    return actions
+
+
+def _migrate_state(state, previous, current):
+    migrated = dict(state)
+    if previous == "1.8.9" and current == "1.9.1":
+        for path, raw in sorted(state.items()):
+            if state_schema(path, raw) != "critic-review:3-pre-closure":
+                continue
+            value = loads(raw.decode("utf-8"))
+            value["closure"] = {"result": "UNKNOWN", "evidence": list(value["evidence_checked"])}
+            migrated[path] = json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+        for path, raw in sorted(state.items()):
+            if state_schema(path, raw) != "controller-event:3-pre-digest":
+                continue
+            value = loads(raw.decode("utf-8"))
+            value["digest_sha256"] = None
+            migrated[path] = json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+    return migrated
+
+
+def migrate_step(bundle, previous, current, target):
+    """Pure adjacent step with target-valid receipt/provenance and schema-classified state."""
     config = _replace_scalar(bundle.project_config, "expected_workflow_version", previous, current,
         question=f"should the unique template.expected_workflow_version scalar be changed from {previous} to {current}?")
-    receipt = _replace_scalar(bundle.receipt, "template_version", previous, current,
-        question=f"which registered {previous} installation receipt should be migrated to {current}?")
+    if previous == "1.8.3" and current == "1.8.9":
+        config = _insert_legacy_routing(config)
+    receipt = _target_receipt(bundle.receipt, current, target)
+    provenance = _target_provenance(bundle.provenance, current, target)
     if bundle.operating_config is not None:
         try:
             load_yaml(bundle.operating_config)
         except Exception as exc:
             raise ValidationError("Migration is not deterministic. Owner question: which valid OPERATING_CONFIG.yaml should be retained?") from exc
-    return MigrationBundle(config, bundle.operating_config, receipt, MappingProxyType(dict(bundle.state)))
+    state = _migrate_state(bundle.state, previous, current)
+    return MigrationBundle(config, bundle.operating_config, receipt, provenance,
+                           MappingProxyType(state))
 
 
-def migrate_1_8_3_to_1_8_9(bundle):
-    return migrate_step(bundle, "1.8.3", "1.8.9")
+def migrate_1_8_3_to_1_8_9(bundle, target):
+    return migrate_step(bundle, "1.8.3", "1.8.9", target)
 
 
-def migrate_1_8_9_to_1_9_1(bundle):
-    return migrate_step(bundle, "1.8.9", "1.9.1")
+def migrate_1_8_9_to_1_9_1(bundle, target):
+    return migrate_step(bundle, "1.8.9", "1.9.1", target)
 
 
-def migrate_1_9_1_to_1_9_2(bundle):
-    return migrate_step(bundle, "1.9.1", "1.9.2")
+def migrate_1_9_1_to_1_9_2(bundle, target):
+    return migrate_step(bundle, "1.9.1", "1.9.2", target)
 
 
-def migrate_1_9_2_to_1_9_3(bundle):
-    return migrate_step(bundle, "1.9.2", "1.9.3")
+def migrate_1_9_2_to_1_9_3(bundle, target):
+    return migrate_step(bundle, "1.9.2", "1.9.3", target)
 
 
 def config_diff(before, after, previous, current):
@@ -236,39 +440,25 @@ def migration_chain(table, version):
     return tuple(steps)
 
 
-def apply_chain(table, version, project_config, operating_config, receipt, state):
-    bundle = MigrationBundle(project_config, operating_config, receipt, MappingProxyType(dict(state)))
+def apply_chain(table, version, project_config, operating_config, receipt, provenance, state, target_entry):
+    bundle = MigrationBundle(project_config, operating_config, receipt, provenance,
+                             MappingProxyType(dict(state)))
     reports = []
     for previous, current, new_settings in migration_chain(table, version):
-        migrated = migrate_step(bundle, previous, current)
+        target = target_entry if current == table["target"] else table["versions"][current]
+        migrated = migrate_step(bundle, previous, current, target)
         reports.append({"from": previous, "to": current, "configuration_diff":
                         config_diff(bundle.project_config, migrated.project_config, previous, current),
-                        "new_required_settings": list(new_settings), "state_migrations": []})
+                        "new_required_settings": list(new_settings),
+                        "state_migrations": state_migration_plan(bundle.state, migrated.state,
+                                                                  previous, current)})
         bundle = migrated
     return bundle, reports
 
 
 def state_archive_plan(state):
-    """Recognized state is byte-compatible; unknown leaves get immutable archive copies."""
-    def recognized(path, raw):
-        relative = path.removeprefix(".agentic-state/")
-        area = relative.split("/", 1)[0]
-        if area not in {"routing", "operating", "reviews", "lifecycle", "audit"}:
-            return False
-        if path.endswith((".sqlite", ".sqlite3", ".db")):
-            return area == "routing" and raw.startswith(b"SQLite format 3\x00")
-        try:
-            if path.endswith(".json"):
-                loads(raw.decode("utf-8"))
-                return True
-            if path.endswith((".yaml", ".yml")):
-                load_yaml(raw)
-                return True
-        except Exception:
-            return False
-        return False
     unknown = {path: raw for path, raw in state.items()
-               if not recognized(path, raw) and not path.startswith(ARCHIVE_ROOT + "/")}
+               if state_schema(path, raw) is None and not path.startswith(ARCHIVE_ROOT + "/")}
     if not unknown:
         return {}, []
     files = []

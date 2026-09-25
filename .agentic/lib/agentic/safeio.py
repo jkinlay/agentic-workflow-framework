@@ -166,8 +166,9 @@ class Tree:
             os.unlink(name, dir_fd=handle)
             os.fsync(handle)
 
-    def file_list(self, *, exclude_root_git=False):
+    def file_list(self, *, exclude_root_git=False, exclude_prefixes=()):
         result = []
+        excluded_roots = {prefix.rstrip('/') for prefix in exclude_prefixes}
         def walk(directory):
             handle = self._pin_absolute(directory)
             entries = list(os.scandir(directory if os.name == "nt" else handle))
@@ -185,6 +186,8 @@ class Tree:
                 if exclude_root_git and relative == '.git':
                     if not (stat.S_ISDIR(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1)):
                         raise ValidationError('Unsupported root Git metadata')
+                    continue
+                if relative in excluded_roots and stat.S_ISDIR(info.st_mode):
                     continue
                 if stat.S_ISDIR(info.st_mode):
                     walk(directory / entry.name)

@@ -1,6 +1,8 @@
 import json
+import os
 from pathlib import Path
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -15,9 +17,11 @@ sys.path.insert(0, str(ROOT / ".agentic/tests"))
 
 from agentic import VERSION, ValidationError  # noqa: E402
 from agentic.canonical import sha256  # noqa: E402
+from agentic.canonical import load_yaml  # noqa: E402
 from agentic.installer import (CONFIG, INSTALLED, KNOWN_VERSIONS, PROVENANCE,  # noqa: E402
     install, managed, verify_installed)
-from agentic.upgrade import load_known_versions  # noqa: E402
+from agentic.contracts import Contracts  # noqa: E402
+from agentic.upgrade import load_known_versions, state_schema  # noqa: E402
 from upgrade_fixtures import (BLOB_ROOT, FIXTURE_ROOT, NEXT, advance_one_fixture_step,  # noqa: E402
     file_tree, fixture_blob, fixture_index, fixture_manifest, managed_tree_from_receipt,
     materialize, verify_materialized)
@@ -89,7 +93,7 @@ class UpgradeMatrixTests(unittest.TestCase):
             receipt = json.loads(fixture_blob(manifest["receipt"]["sha256"]))
             self.assertEqual(receipt["immutable_files"],
                              {path: entry["sha256"] for path, entry in manifest["managed_files"].items()})
-            for section in ("managed_files", "owner_files"):
+            for section in ("managed_files", "owner_files", "state_files"):
                 for entry in manifest[section].values():
                     self.assertIn(entry["mode"], {"100644", "100755"})
                     self.assertEqual(sha256(fixture_blob(entry["sha256"])), entry["sha256"])
@@ -129,7 +133,10 @@ class UpgradeMatrixTests(unittest.TestCase):
                 endings.add("CRLF" if b"\r\n" in config else "LF")
                 self.assertEqual(fixture_manifest(version)["line_endings"],
                                  "CRLF" if b"\r\n" in config else "LF")
-                self.assertNotIn(ROOT.resolve(), destination.resolve().parents)
+                if os.environ.get("AWF_TEST_TEMP_SHIM") == "1":
+                    self.assertIn((ROOT / ".tmp-tests").resolve(), destination.resolve().parents)
+                else:
+                    self.assertNotIn(ROOT.resolve(), destination.resolve().parents)
         self.assertEqual(endings, {"CRLF", "LF"})
 
     def test_legacy_identification_ignores_installation_level_identifiers(self):
@@ -156,13 +163,28 @@ class UpgradeMatrixTests(unittest.TestCase):
                 result = self.upgrade(destination)
                 after = (destination / CONFIG).read_bytes()
                 expected_config = before["configuration"].replace(version.encode(), VERSION.encode(), 1)
-                self.assertEqual(after, expected_config)
+                if version == "1.8.3":
+                    before_value, after_value = load_yaml(before["configuration"]), load_yaml(after)
+                    expected_owner = json.loads(json.dumps(before_value))
+                    expected_owner["template"]["expected_workflow_version"] = VERSION
+                    routing = after_value["execution"].pop("model_routing")
+                    self.assertEqual(after_value, expected_owner)
+                    self.assertEqual(routing["role_defaults"]["worker"]["model"],
+                                     before_value["execution"]["roles"]["worker"]["model"])
+                else:
+                    self.assertEqual(after, expected_config)
                 self.assertEqual(result["upgrade"]["detected_version"], version)
-                self.assertEqual(result["upgrade"]["new_required_settings"], [])
-                self.assertEqual((destination / ".github/CODEOWNERS").read_bytes(), before["codeowners"])
-                self.assertEqual((destination / "PROJECT_INSTRUCTIONS.md").read_bytes(), before["instructions"])
-                if before["operating"] is not None:
-                    self.assertEqual((destination / "OPERATING_CONFIG.yaml").read_bytes(), before["operating"])
+                self.assertEqual(bool(result["upgrade"]["new_required_settings"]), version == "1.8.3")
+                for relative, raw in before["owner_files"].items():
+                    if relative in {CONFIG, INSTALLED, PROVENANCE}:
+                        continue
+                    actual = (destination / Path(relative)).read_bytes()
+                    if relative == ".gitignore":
+                        self.assertTrue(actual.startswith(raw), relative)
+                        self.assertEqual(actual[len(raw):].decode().splitlines(),
+                                         result["gitignore"]["added_lines"])
+                    else:
+                        self.assertEqual(actual, raw, relative)
                 self.assertEqual(managed_tree_from_receipt(destination), expected_managed)
                 self.assertEqual(verify_installed(destination), self.pin)
                 status = subprocess.run(
@@ -171,10 +193,32 @@ class UpgradeMatrixTests(unittest.TestCase):
                 self.assertEqual(status.returncode, 0, status.stderr)
                 self.assertIn(json.loads(status.stdout)["project_state"], {"INSTALLED", "CONFIGURED"})
                 for relative, raw in before["state"].items():
-                    self.assertEqual((destination / relative).read_bytes(), raw)
+                    actual_state = (destination / relative).read_bytes()
+                    schema = state_schema(relative, raw)
+                    if schema in {"critic-review:3-pre-closure", "controller-event:3-pre-digest"}:
+                        expected_schema = ("critic-review:3" if schema.startswith("critic-review")
+                                           else "controller-event:3")
+                        self.assertEqual(state_schema(relative, actual_state), expected_schema)
+                    else:
+                        self.assertEqual(actual_state, raw)
                 archive = destination / ".agentic-state/archive/upgrade-to-1.9.3/files/legacy-note.txt"
                 self.assertEqual(archive.read_bytes(), before["state"][".agentic-state/legacy-note.txt"])
                 self.assertEqual(archive.stat().st_mode & stat.S_IWRITE, 0)
+                ledger = destination / ".agentic-state/routing/ledger.sqlite"
+                self.assertEqual(state_schema(".agentic-state/routing/ledger.sqlite",
+                                              ledger.read_bytes()), "routing-ledger:model_runs-v1")
+                connection = sqlite3.connect(ledger)
+                try:
+                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM model_runs").fetchone()[0], 1)
+                finally:
+                    connection.close()
+                contracts = Contracts(destination / ".agentic/schemas")
+                contracts.validate("critic-review", json.loads(
+                    (destination / ".agentic-state/reviews/critic-review.json").read_bytes()))
+                contracts.validate("controller-event", json.loads(
+                    (destination / ".agentic-state/lifecycle/controller-event.json").read_bytes()))
+                contracts.validate("operating-change", json.loads(
+                    (destination / ".agentic-state/operating/records/operating-change.json").read_bytes()))
 
     def test_direct_and_chained_real_fixture_upgrades_are_byte_identical(self):
         for version in VERSIONS:
@@ -193,6 +237,43 @@ class UpgradeMatrixTests(unittest.TestCase):
                                  optional_bytes(chained / "OPERATING_CONFIG.yaml"))
                 self.assertEqual(managed_tree_from_receipt(direct), managed_tree_from_receipt(chained))
                 self.assertEqual(subtree(direct, ".agentic-state/"), subtree(chained, ".agentic-state/"))
+
+    def test_schema_incompatible_json_and_header_only_sqlite_are_archived(self):
+        destination, _ = self.fixture("1.9.2")
+        review = destination / ".agentic-state/reviews/critic-review.json"
+        ledger = destination / ".agentic-state/routing/ledger.sqlite"
+        review.write_bytes(b'{"valid":"json","schema_version":999}\n')
+        ledger.write_bytes(b"SQLite format 3\x00" + b"\x00" * 100)
+        result = self.upgrade(destination)
+        actions = {item["path"]: item["action"] for item in result["upgrade"]["state_migrations"]}
+        self.assertEqual(actions[".agentic-state/reviews/critic-review.json"], "archived_read_only_copy")
+        self.assertEqual(actions[".agentic-state/routing/ledger.sqlite"], "archived_read_only_copy")
+        for relative in ("reviews/critic-review.json", "routing/ledger.sqlite"):
+            self.assertTrue((destination / ".agentic-state/archive/upgrade-to-1.9.3/files" / relative).is_file())
+
+    def test_state_compatibility_is_listed_for_every_adjacent_step(self):
+        destination, before = self.fixture("1.8.3")
+        plan = self.upgrade(destination, dry_run=True)
+        for step in plan["upgrade"]["steps"]:
+            actions = {item["path"]: item for item in step["state_migrations"]}
+            for relative, raw in before["state"].items():
+                if relative.endswith("legacy-note.txt"):
+                    self.assertEqual(actions[relative]["action"], "archive_read_only_copy")
+                elif (relative.endswith(("reviews/critic-review.json", "lifecycle/controller-event.json"))
+                      and step["from"] == "1.8.9"):
+                    self.assertEqual(actions[relative]["action"], "migrated_schema")
+                    self.assertIn(actions[relative]["target_schema"],
+                                  {"critic-review:3", "controller-event:3"})
+                else:
+                    self.assertEqual(actions[relative]["action"], "retained_schema_compatible")
+                    expected_schema = state_schema(relative, raw)
+                    if (relative.endswith("reviews/critic-review.json") and
+                            step["from"] in {"1.9.1", "1.9.2"}):
+                        expected_schema = "critic-review:3"
+                    if (relative.endswith("lifecycle/controller-event.json") and
+                            step["from"] in {"1.9.1", "1.9.2"}):
+                        expected_schema = "controller-event:3"
+                    self.assertEqual(actions[relative]["schema"], expected_schema)
 
     def assert_refused_unchanged(self, destination, pattern):
         before = file_tree(destination)
@@ -245,6 +326,31 @@ class UpgradeMatrixTests(unittest.TestCase):
         self.assertEqual(plan["upgrade"]["detected_version"], "1.9.2")
         self.assertIn("configuration_diff_total", plan["upgrade"])
         self.assertEqual(file_tree(destination), before)
+
+    def test_schema_invalid_operating_refuses_before_any_write(self):
+        destination, _ = self.fixture("1.9.2")
+        operating = destination / "OPERATING_CONFIG.yaml"
+        value = load_yaml(operating.read_bytes())
+        value["streams"]["count"] = 99
+        operating.write_bytes(json.dumps(value, indent=2).encode() + b"\n")
+        self.assert_refused_unchanged(destination, r"streams.count|maximum")
+
+    def test_dry_run_and_real_upgrade_report_the_same_writes_for_every_version(self):
+        for version in VERSIONS:
+            with self.subTest(version=version):
+                dry, _ = self.fixture(version)
+                actual, _ = self.fixture(version)
+                with patch("uuid.uuid4", return_value=FIXED_UUID), \
+                        patch("agentic.installer.now_text", return_value="2026-01-02T00:00:00Z"), \
+                        patch("agentic.operating.now_text", return_value="2026-01-02T00:00:00Z"):
+                    plan = self.upgrade(dry, dry_run=True)
+                with patch("uuid.uuid4", return_value=FIXED_UUID), \
+                        patch("agentic.installer.now_text", return_value="2026-01-02T00:00:00Z"), \
+                        patch("agentic.operating.now_text", return_value="2026-01-02T00:00:00Z"):
+                    result = self.upgrade(actual)
+                self.assertEqual(plan["write_plan"], result["write_plan"])
+                self.assertEqual(plan["upgrade"]["operating_changes"],
+                                 result["upgrade"]["operating_changes"])
 
     def test_failure_while_removing_historical_managed_files_rolls_back(self):
         destination, _ = self.fixture("1.8.3")
