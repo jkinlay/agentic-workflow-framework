@@ -1,4 +1,4 @@
-# Agentic Workflow 1.9.2 runtime dependency lock.
+# Agentic Workflow 1.9.3 runtime dependency lock.
 # Exact versions; SHA-256 allowlist from each release on PyPI.
 # Install with --require-hashes --only-binary=:all:. No runtime schema downloads.
 

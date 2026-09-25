@@ -1,4 +1,4 @@
-# Adopt AWF 1.9.2
+# Adopt AWF 1.9.3
 
 This draft changes repository governance files and preserves project-owned instructions, configuration and history. Complete every field from observed evidence; this template supplies no proof or authorization.
 

@@ -24,7 +24,7 @@ CODEOWNERS = ".github/CODEOWNERS"
 GITIGNORE = ".gitignore"
 GITIGNORE_TEMPLATE = ".agentic/templates/operating.gitignore"
 RELEASE_EXCLUDED_PREFIXES = ("docs/showcase/", ".tmp-tests/")
-UPGRADE_FROM_VERSION = "1.9.1"
+UPGRADE_FROM_VERSION = "1.9.2"
 RELEASE_EXCLUDED_PATHS = frozenset({
     "docs/AWF-1.8.9-Showcase-Presentation.html",
     "docs/AWF-1.9.1-Showcase-Presentation.html",

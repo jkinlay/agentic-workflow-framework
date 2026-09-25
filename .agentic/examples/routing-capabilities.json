@@ -1,9 +1,42 @@
 {
-  "source": "synthetic demonstration; replace with observed host capabilities",
+  "format": "awf-route-capabilities-1",
+  "source": "reference ChatGPT-backed Codex observation; copy only after probing the actual host",
   "models": {
-    "gpt-5.6-luna": ["low", "medium", "high"],
-    "gpt-5.6-terra": ["low", "medium", "high"],
-    "gpt-5.6-sol": ["low", "medium", "high"],
-    "gpt-6-astra": ["low", "medium", "high"]
+    "gpt-5.6-luna": {
+      "status": "observed",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "host_id": "chatgpt-codex-reference",
+      "host_software": "Codex",
+      "host_software_version": "2026-09-24",
+      "method": "successful_probe",
+      "observed_at": "2026-09-24T00:00:00Z"
+    },
+    "gpt-5.6-terra": {
+      "status": "observed",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "host_id": "chatgpt-codex-reference",
+      "host_software": "Codex",
+      "host_software_version": "2026-09-24",
+      "method": "successful_probe",
+      "observed_at": "2026-09-24T00:00:00Z"
+    },
+    "gpt-5.6-sol": {
+      "status": "observed",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "host_id": "chatgpt-codex-reference",
+      "host_software": "Codex",
+      "host_software_version": "2026-09-24",
+      "method": "successful_probe",
+      "observed_at": "2026-09-24T00:00:00Z"
+    },
+    "gpt-6-astra": {
+      "status": "refused",
+      "reasoning_efforts": [],
+      "host_id": "chatgpt-codex-reference",
+      "host_software": "Codex",
+      "host_software_version": "2026-09-24",
+      "method": "recorded_refusal",
+      "observed_at": "2026-09-24T00:00:00Z"
+    }
   }
 }

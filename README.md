@@ -1,6 +1,6 @@
 # Agentic Workflow Framework
 
-Release 1.9.2. [Apache-2.0](LICENSE) applies; see [NOTICE](NOTICE).
+Release 1.9.3. [Apache-2.0](LICENSE) applies; see [NOTICE](NOTICE).
 
 ## Start
 
@@ -35,7 +35,7 @@ Worker COMPLETE leads to branch/draft-PR publication, validation, mark-ready and
 
 ## Release
 
-See [changes](CHANGELOG.md), [1.9.2 migration](MIGRATION-v1.9.1-to-v1.9.2.md), [previous disposition](RED-TEAM-DISPOSITION-v1.8.7.md), [operating migration](MIGRATION-v1.8.6-to-v1.8.7.md) and [security](SECURITY.md). A release owner sets the canonical repository before publication. Legacy history is preserved. Its split model/publisher adapter remains inside this core. Project-specific qualification remains required.
+See [changes](CHANGELOG.md), [1.9.3 migration](MIGRATION-v1.9.2-to-v1.9.3.md), [previous disposition](RED-TEAM-DISPOSITION-v1.8.7.md), [operating migration](MIGRATION-v1.8.6-to-v1.8.7.md) and [security](SECURITY.md). A release owner sets the canonical repository before publication. Legacy history is preserved. Its split model/publisher adapter remains inside this core. Project-specific qualification remains required.
 
 With Python 3.11+ and hash-locked dependencies, regenerate via `scripts/generate_prompts.py`, build via `scripts/build_release.py`, and validate with `scripts/validate_archive.py --help`. `scripts/build_skill_distribution.py --help` packages the portable skill. Keep outputs/reports outside the source. Builds enforce per-file documentation/version budgets and report totals; acceptance tests verify installation, preserved configuration, Git bytes and reproducibility. Offline fixtures do not qualify live services. The self-reported structured-decision smoke harness checks supplied observations against a public rubric; it runs no model and does not measure prompt quality.
 

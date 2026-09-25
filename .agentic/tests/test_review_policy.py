@@ -463,6 +463,11 @@ class ClosureAndParityTests(Fixture):
         self.contracts.validate("worker-result", worker)
         worker["commit_route"] = "PUBLISHER"
         self.contracts.validate("worker-result", worker)
+        for required in ("tested_tree", "changes"):
+            incomplete = copy.deepcopy(worker)
+            incomplete.pop(required)
+            with self.subTest(required=required), self.assertRaises(ValidationError):
+                self.contracts.validate("worker-result", incomplete)
         worker["commit_route"] = "UNTRUSTED"
         with self.assertRaises(ValidationError):
             self.contracts.validate("worker-result", worker)

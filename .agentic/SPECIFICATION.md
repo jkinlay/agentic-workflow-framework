@@ -1,6 +1,6 @@
 # AWF specification
 
-Version 1.9.2. Host/provider controls apply. Agentic Workflow Framework maintainers; Apache-2.0; dependencies retain licences.
+Version 1.9.3. Host/provider controls apply. Agentic Workflow Framework maintainers; Apache-2.0; dependencies retain licences.
 
 ## Authority and modes
 
@@ -18,7 +18,7 @@ Workers evidence every criterion and the closure standard; independent critics i
 
 Closed revision-3 [schemas](schemas/) and the [evaluator](lib/agentic/gates.py) define records/thirteen gates. [Canonicalization](lib/agentic/canonical.py) rejects ambiguity. Complete wrappers and extract records. Follow the [lifecycle table](docs/23-TICKET-LIFECYCLE.md) and [machine definition](workflow.yaml); [state](lib/agentic/store.py) provides CAS, leases, idempotency and audit, not dispatch.
 
-Worker COMPLETE requires scoped branch publication and a draft PR (`branch_pushed`, `pr_exists`) before review handoff. A worker sandbox denied Git-metadata writes may return a validated uncommitted tree through the documented publisher route; the publisher makes no content edits and verifies the committed tree equals the tested tree. Current validation/requirements and observed `draft_cleared` permit READY_FOR_CRITIC; critics review the observed PR head. READY_FOR_OWNER_AUTHORIZATION requires critic, applicable specialists and final gate. Conditional routine publication needs accepted repository/default/feature-ref identity plus fresh live APPLIED rules evidence; presentation grants no authority and overrides no platform, scope, secret or adapter prerequisite.
+Worker COMPLETE requires scoped branch publication and a draft PR (`branch_pushed`, `pr_exists`) before review handoff. A worker sandbox denied Git-metadata writes may return a validated uncommitted tree through the documented publisher route, recording the base-plus-declared-changes `tested_tree`, `changes` and excluded `ignored_untracked`. The publisher makes no content edits and requires `git rev-parse HEAD^{tree}` to equal `tested_tree`; a difference is a scope violation returned to the worker. Current validation/requirements and observed `draft_cleared` permit READY_FOR_CRITIC; critics review the observed PR head. READY_FOR_OWNER_AUTHORIZATION requires critic, applicable specialists and final gate. Conditional routine publication needs accepted repository/default/feature-ref identity plus fresh live APPLIED rules evidence; presentation grants no authority and overrides no platform, scope, secret or adapter prerequisite.
 
 The controller is the sole Jira writer, mirroring the lifecycle: WORKER_STARTED → `in_progress`, PR_READY → `in_review`, owner changes → `in_progress`, observed merge → `done` with a closing comment naming PR, head and merge commit. BLOCK/PARK never write; owner-closure tickets stay In Review; Epics are never targets. Read before/after each write; on mismatch/unknown retain observed status/actor/time, stop that ticket's writes, report a suspected external automation conflict, never reissue. Disabled Jira permits no writes.
 
