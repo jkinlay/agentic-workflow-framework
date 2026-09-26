@@ -16,6 +16,7 @@
     "prior_findings",
     "finding_dispositions",
     "cap_disposition",
+    "publication_scan",
     "evidence_registry",
     "provenance_mode"
   ],
@@ -262,6 +263,9 @@
           "type": "null"
         }
       ]
+    },
+    "publication_scan": {
+      "$ref": "urn:awf:1.2:publication-scan"
     },
     "evidence_registry": {
       "type": "array",

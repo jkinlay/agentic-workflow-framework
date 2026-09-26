@@ -13,6 +13,7 @@
     "mergeable",
     "retrieval_complete",
     "file_manifest",
+    "body_sha256",
     "blocking_threads",
     "scope_pass",
     "dependency_compatibility_pass",
@@ -132,6 +133,11 @@
         }
       },
       "minItems": 1
+    },
+    "body_sha256": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
     },
     "blocking_threads": {
       "type": "array",

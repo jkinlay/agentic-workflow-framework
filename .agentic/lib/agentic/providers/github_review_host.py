@@ -230,12 +230,18 @@ class HostDriver:
         self.git(self.worker,'add','--',*paths)
         staged = self.git(self.worker,'diff','--cached','--name-only','-z').split('\0')
         require(set(x for x in staged if x) == set(paths), 'Staged inventory differs from validated amendment')
+        # Whitespace hygiene only; publication safety is the history-aware scan below.
         self.git(self.worker,'diff','--cached','--check')
         self.git(self.worker,'commit','-m',f'AWF: address independent review ({run_id})')
         new_head = self.git(self.worker,'rev-parse','HEAD')
         require(self.git(self.worker,'rev-parse','HEAD^') == candidate['head'], 'Amendment parent mismatch')
         require(not self.git(self.worker,'status','--porcelain','--untracked-files=all'), 'Uncommitted changes remain after amendment')
         require(self.snapshot() == candidate, 'PR moved before push; local commit retained for reconciliation')
+        from ..publication import scan_repository
+        pr = self.api(f'pulls/{self.c["pr"]}')
+        scan = scan_repository(self.worker, candidate['base'], new_head,
+            pr_body_texts=[pr.get('body') or ''], mapping_path=self.state / 'publication-deny.json')
+        require(scan['status'] == 'PASS', 'Publication scan blocked amendment push; rewrite contaminated unpublished history or redact provider text')
         # Normal push only. A divergent remote rejects; no destructive force retry.
         self.git(self.worker,'push','origin',new_head+':refs/heads/'+candidate['head_ref'])
         return {**candidate,'head':new_head}

@@ -83,10 +83,49 @@ def main(argv=None, default_root=None):
     cap_parser.add_argument("--head", required=True, help="Candidate head SHA the owner signed against")
     cap_parser.add_argument("--config", type=Path)
     sub.add_parser("preflight", help="Host preflight rows (PASS/WARN/SKIP/N_A); never blocks INSTALLED")
+    scan_parser = sub.add_parser("publication-scan", help="Scan every commit, patch, changed head file and supplied provider text")
+    scan_parser.add_argument("--base", required=True)
+    scan_parser.add_argument("--head", required=True)
+    scan_parser.add_argument("--pr-body", type=Path, action="append", default=[])
+    scan_parser.add_argument("--comment", type=Path, action="append", default=[])
+    scan_parser.add_argument("--mapping", type=Path)
+    scan_parser.add_argument("--config", type=Path)
+    scan_parser.add_argument("--json", action="store_true")
+    rewrite_parser = sub.add_parser("publication-rewrite", help="Squash an unpublished branch without changing its final tree")
+    rewrite_parser.add_argument("--base", required=True)
+    rewrite_parser.add_argument("--branch", required=True)
+    rewrite_parser.add_argument("--commits", type=int, required=True)
+    rewrite_parser.add_argument("--message-file", type=Path, required=True)
+    rewrite_parser.add_argument("--mapping", type=Path)
+    rewrite_parser.add_argument("--config", type=Path)
+    rewrite_parser.add_argument("--json", action="store_true")
+    render_parser = sub.add_parser("publication-render", help="Replace private mapping values in text with logical aliases")
+    render_parser.add_argument("--input", type=Path, required=True)
+    render_parser.add_argument("--mapping", type=Path)
     args = parser.parse_args(argv)
     try:
         root = args.root.absolute()
-        if args.command == "capabilities":
+        if args.command == "publication-scan":
+            from .publication import render_scan, scan_repository
+            output = scan_repository(root, args.base, args.head, pr_body_paths=args.pr_body,
+                                     comment_paths=args.comment, mapping_path=args.mapping, config_path=args.config)
+            print(json.dumps(output, indent=2, ensure_ascii=False) if args.json else render_scan(output), end="")
+            return 0 if output["status"] == "PASS" else 2
+        elif args.command == "publication-rewrite":
+            from .publication import rewrite_unpublished
+            output = rewrite_unpublished(root, args.base, args.branch, args.commits, args.message_file,
+                                         mapping_path=args.mapping, config_path=args.config)
+            if args.json:
+                print(json.dumps(output, indent=2, ensure_ascii=False))
+            else:
+                print(f"Publication rewrite: {output['status']}\nOld head: {output['old_head']}\nNew head: {output['head_sha']}\nTree: {output['head_tree']}\n{output['reflog_notice']}")
+            return 0
+        elif args.command == "publication-render":
+            from .publication import load_mapping, render_aliases
+            mapping, _digest, _path = load_mapping(root, args.mapping)
+            print(render_aliases(args.input.read_text(encoding="utf-8", errors="replace"), mapping), end="")
+            return 0
+        elif args.command == "capabilities":
             output = {"version": VERSION, "profile": "manual_reference", "live_dispatch": False, "live_jira_mutations": False,
                       "live_merge": False, "available": ["installation", "schema_validation", "offline_gate_evaluation", "authorization_consistency", "local_state_library", "simulation_tests"],
                       "separate_host_review_loop": {"entry_point": ".agentic/scripts/review_loop.py", "available": True,

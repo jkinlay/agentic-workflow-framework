@@ -131,10 +131,21 @@ def example_bundle(cfg):
     ci = record("ci", "collector", retrieval_complete=True, candidate_type="synthetic_merge", checks=[{"name": "unit-tests", "check_id": "check-1", "app_id": 42,
         "workflow_path": ".github/workflows/test.yml", "workflow_sha": "a" * 40, "attempt": 1, "event": "pull_request", "conclusion": "success",
         "tested_tree_sha": candidate["integration_tree_sha"], "tested_commit_sha": candidate["tested_merge_sha"], "tests_executed": 2, "completed_at": NOW, "evidence": evidence, "checkout_depth": "full"}], collector_attestation_id=uid("attestation-collector"))
-    pr = record("pr", "collector", state="OPEN", draft=False, mergeable=True, retrieval_complete=True, file_manifest=files, blocking_threads=[], scope_pass=True,
+    pr_body = "Synthetic draft body.\n"
+    pr = record("pr", "collector", state="OPEN", draft=False, mergeable=True, retrieval_complete=True, file_manifest=files,
+        body_sha256=sha256(pr_body.encode("utf-8")), blocking_threads=[], scope_pass=True,
         dependency_compatibility_pass=True, ruleset_verified=True, specialist_domains=[], classification_complete=True, collector_attestation_id=uid("attestation-collector"), evidence=evidence)
+    publication_scan = {"schema_version": 3, "status": "PASS", "base_sha": candidate["target_base_sha"],
+        "head_sha": candidate["head_sha"], "pr_body_sha256": pr["body_sha256"], "additional_pr_body_sha256": [],
+        "comment_sha256": [], "mapping_sha256": None, "project_config_sha256": None, "mapping_loaded": False,
+        "mapping_location": ".agentic-state/publication-deny.json", "commits_scanned": [candidate["head_sha"]],
+        "findings": [], "unscanned": [], "coverage": {"current_files": True, "commit_messages": True,
+            "every_patch": True, "generated_reports": "when committed or passed as provider text",
+            "captured_command_output": "when committed or passed as provider text", "pr_bodies": True, "pr_comments": False},
+        "execution_authority": False}
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,
-            "specialists": [], "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None, "evidence_registry": [{"uri": evidence[0],
+            "specialists": [], "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,
+            "publication_scan": publication_scan, "evidence_registry": [{"uri": evidence[0],
                 "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"}], "provenance_mode": "offline_fixture"}
 
 
