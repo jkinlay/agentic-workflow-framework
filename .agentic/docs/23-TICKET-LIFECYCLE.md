@@ -4,9 +4,11 @@ This renders [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/li
 
 ## Routine work
 
-On COMPLETE, the publisher opens a PR. A Git-metadata-blocked worker leaves the validated tree uncommitted, reports BLOCKED only for commit with `commit_route: PUBLISHER`, and records `tested_tree`, explicit `changes`, and excluded `ignored_untracked`. The candidate is the base tree plus those changes. The publisher commits without edits, compares `git rev-parse HEAD^{tree}` with `tested_tree`, and returns differences as scope violations, never repairs. Absent `commit_route` means `WORKER`. Observe PR/head/base/target and finalize records. Current validation permits mark-ready and critic review of that head; changes require re-review. READY_FOR_CRITIC precedes READY_FOR_OWNER_AUTHORIZATION after critic, specialists and final gate. Neither authorizes merge.
+On COMPLETE, publish a draft PR. A Git-blocked worker leaves the tree uncommitted and reports only commit BLOCKED with `commit_route: PUBLISHER`, `tested_tree`, `changes`, and excluded `ignored_untracked`. The publisher commits without edits, compares `HEAD^{tree}`, and rejects differences. Absent `commit_route` means `WORKER`. Observe PR/head/base/target before PR-bound records. Mark-ready precedes critic review; changes require re-review. Owner-ready requires critic, specialists and final gate. Neither authorizes merge.
 
-Routine publication classification requires accepted repository/ID/default/ref bindings, the ticket/slug's `github.branch_pattern` and fresh live APPLIED rules evidence. It is presentation only: retain task scope, platform permissions, non-force feature refs and secret/adapter prerequisites. Reuse existing authorization; where missing, report the concrete action/owner.
+Before push or PR creation, the publisher runs the [publication scan](31-PUBLICATION-SAFETY.md) on the exact base, head and final body. Require exit 0 and a matching PASS receipt; the final gate binds it to the candidate and observed body digest. Repeat for amendments; scan body edits and comments before posting. `diff --check` is whitespace-only.
+
+Routine publication requires accepted repository/ref bindings, branch pattern and fresh APPLIED rules. Classification is presentation only: retain scope, permissions, non-force refs and secret/adapter prerequisites. Report missing action and owner.
 
 | From | Event → To | Required evidence |
 | --- | --- | --- |
@@ -40,7 +42,7 @@ Routine publication classification requires accepted repository/ID/default/ref b
 
 ## Jira boundary
 
-The controller is the sole Jira writer, one mapped write per event: WORKER_STARTED writes `status_map.in_progress`; PR_READY writes `in_review`; OWNER_CHANGES_REQUESTED or HEAD_CHANGED in review writes `in_progress`; JIRA_RECONCILED after the observed merge writes `done` with a closing comment naming PR, reviewed head and merge commit. BLOCK and PARK never write. A ticket matching `jira.owner_closure_keywords` waits in `MERGED_PENDING_OWNER_CLOSURE` for an owner-closure record. Never transition an Epic. `jira.lifecycle_writes` turns mappings off, never adds one. Already at target is a no-op. Disabled Jira permits no writes.
+Only the controller writes Jira: WORKER_STARTED=`in_progress`; PR_READY=`in_review`; owner changes=`in_progress`; post-merge JIRA_RECONCILED=`done` with PR/head/merge. BLOCK/PARK never write. Owner-closure tickets wait for that record. Never transition Epics. `jira.lifecycle_writes` can disable mappings. Already-target is a no-op; disabled Jira forbids writes.
 
 Read back after every write; keep actor/timestamp only when observed. A mismatch or unknown result stops that ticket's writes, not unaffected streams: report a suspected external automation conflict, never reissue. Comments are digests bound by `digest_sha256` (`evidence_comment`), never transitions. The shipped adapter performs no Jira writes.
 

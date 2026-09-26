@@ -341,6 +341,7 @@
         "blob_sha": "1111111111111111111111111111111111111111"
       }
     ],
+    "body_sha256": "1d5e587dac06f7f47ccd3a5f96972d5f55fcbe7db44f39f7abe54071fb24f75b",
     "blocking_threads": [],
     "scope_pass": true,
     "dependency_compatibility_pass": true,
@@ -490,6 +491,34 @@
   "prior_findings": [],
   "finding_dispositions": [],
   "cap_disposition": null,
+  "publication_scan": {
+    "schema_version": 3,
+    "status": "PASS",
+    "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "pr_body_sha256": "1d5e587dac06f7f47ccd3a5f96972d5f55fcbe7db44f39f7abe54071fb24f75b",
+    "additional_pr_body_sha256": [],
+    "comment_sha256": [],
+    "mapping_sha256": null,
+    "project_config_sha256": null,
+    "mapping_loaded": false,
+    "mapping_location": ".agentic-state/publication-deny.json",
+    "commits_scanned": [
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "findings": [],
+    "unscanned": [],
+    "coverage": {
+      "current_files": true,
+      "commit_messages": true,
+      "every_patch": true,
+      "generated_reports": "when committed or passed as provider text",
+      "captured_command_output": "when committed or passed as provider text",
+      "pr_bodies": true,
+      "pr_comments": false
+    },
+    "execution_authority": false
+  },
   "evidence_registry": [
     {
       "uri": "urn:awf:fixture:example-evidence",

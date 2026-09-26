@@ -2,13 +2,17 @@
 
 ## 1.9.3 — 24 September 2026
 
-Adds Git-object-format-aware `tested_tree` computation for publisher-routed workers. The candidate is the base tree plus declared additions, modifications and deletions; undeclared tracked changes fail scope, undeclared untracked files are reported and excluded, and publisher commits must match `HEAD^{tree}` exactly. Worker results now carry `tested_tree`, `changes` and `ignored_untracked` with conditional publisher-route requirements.
+Adds Git-format-aware `tested_tree` for publisher-routed workers. Declared changes form the candidate; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match exactly.
 
-Changes new-adoption risk and specialist routes to `gpt-5.6-sol` / high. Capability observations carry host/software/version/method/time provenance, expire after a configurable age (30 days by default), and feed the warning-only `route_models_observed` preflight row. Existing projects keep owner-set routes.
+Sets new-adoption risk and specialist routes to `gpt-5.6-sol` / high. Expiring capability observations feed warning-only route preflight; existing owner-set routes persist.
 
-Documents settlement outcomes for worker, fix, critic and specialist runs and adds `route_model.py outcome-template --role ROLE`. Review runs settle with `independent_review_passed: false`; verdicts remain separate review records. This first 1.9.3 change set covers only items C, D and E; later change sets extend the release notes.
+Adds settlement outcomes and `route_model.py outcome-template`; verdicts remain separate records.
 
-Adds fresh installation and receipt/byte-verified upgrade from 1.8.3, 1.8.9, 1.9.1 and 1.9.2. Bytes persist; unsafe inputs make no changes.
+Adds byte-verified installation and upgrade from 1.8.3, 1.8.9, 1.9.1 and 1.9.2; unsafe inputs make no changes.
+
+Adds history-aware publication scanning of messages, patch lines, changed files, PR bodies and comments. Redacted findings block; receipts bind base, head and body digest. An ignored local mapping supplies aliases and deny entries alongside built-in path/network detectors and alias rendering.
+
+Adds an atomic one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, scanning the replacement and checking old ref reachability. It refuses published evidence or unsupported counts and reports reflog retention. This covers L1, L2 and L9 scanning; producer retrofits remain P1.
 
 ## 1.9.2 — 23 September 2026
 

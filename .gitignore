@@ -1,6 +1,7 @@
 # AWF operating recovery files are local; changes/ is versioned audit evidence.
 .agentic-state/**/lock
 .agentic-state/operating/pending.json
+.agentic-state/publication-deny.json
 *.awf-operating-*.tmp
 .awf-*.tmp
 

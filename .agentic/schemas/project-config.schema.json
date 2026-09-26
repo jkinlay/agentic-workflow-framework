@@ -1200,6 +1200,61 @@
           "const": false
         }
       }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deny_literals",
+        "deny_regexes",
+        "internal_hostnames"
+      ],
+      "properties": {
+        "deny_literals": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "deny_regexes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "pattern"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "format": "regex"
+              }
+            }
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "internal_hostnames": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]*$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      }
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

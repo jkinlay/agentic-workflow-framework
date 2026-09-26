@@ -27,6 +27,7 @@
         "blob_sha": "0000000000000000000000000000000000000000"
       }
     ],
+    "body_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "blocking_threads": [],
     "scope_pass": false,
     "dependency_compatibility_pass": false,

@@ -120,8 +120,8 @@ def main(argv=None):
             report['current_review'] = {'status': 'NOT_APPLICABLE', 'reason': 'Installed component check; source release review is established separately by archive acceptance'}
         contracts = Contracts(ROOT / '.agentic/schemas')
         operating_schemas = {'operating-config', 'operating-change', 'operating-recommendation', 'operating-epics'}
-        if len(contracts.schemas) != 38 or not operating_schemas <= set(contracts.schemas):
-            raise ValueError('Expected complete catalog of 34 evidence/governance and four operating schemas')
+        if len(contracts.schemas) != 39 or not operating_schemas <= set(contracts.schemas):
+            raise ValueError('Expected complete catalog of 35 evidence/governance and four operating schemas')
         validate_workflow(load(ROOT / '.agentic/workflow.yaml'))
         contracts.validate('project-config', load(ROOT / '.agentic/PROJECT_CONFIG.yaml'))
         report['checks']['schema_catalog_and_workflow'] = 'PASS'

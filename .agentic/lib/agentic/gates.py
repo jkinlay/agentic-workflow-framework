@@ -181,6 +181,7 @@ def evaluate(config, workflow, bundle, contracts, now):
         if unique(bundle[name]["acceptance_criteria"], "id", name + " acceptance criterion") != criteria:
             raise ValidationError("Acceptance-criterion coverage is incomplete")
     pr, critic, worker, ci = bundle["pr"], bundle["critic"], bundle["worker"], bundle["ci"]
+    publication = bundle["publication_scan"]
     file_paths = unique(pr["file_manifest"], "path", "candidate file")
     if len({p.casefold() for p in file_paths}) != len(file_paths):
         raise ValidationError("Candidate contains case-colliding paths")
@@ -285,6 +286,10 @@ def evaluate(config, workflow, bundle, contracts, now):
         "review_coverage": pr["retrieval_complete"] and pr["classification_complete"] and critic["coverage"]["complete"] and not critic["coverage"]["omissions"] and set(critic["coverage"]["reviewed_paths"]) == file_paths,
         "provenance": not provenance_problems,
         "local_ci_parity": parity_ok,
+        "publication_safety": publication["status"] == "PASS" and not publication["findings"]
+            and not publication["unscanned"] and publication["base_sha"] == candidate["target_base_sha"]
+            and publication["head_sha"] == candidate["head_sha"]
+            and publication["pr_body_sha256"] == pr["body_sha256"],
     }
     # These are content-addressed references to the actual evaluated inputs.
     # They prove derivation identity, not the truth of externally supplied data.
@@ -296,6 +301,7 @@ def evaluate(config, workflow, bundle, contracts, now):
         "ticket_snapshot_current": ["contract", "snapshot"], "review_coverage": ["critic", "pr"],
         "provenance": ["runs", "dispatch", "evidence_registry", "ci"],
         "local_ci_parity": ["worker", "ci", "contract"],
+        "publication_safety": ["publication_scan", "candidate", "pr"],
     }
     refs = {name: ["urn:awf:input:" + key + ":" + fingerprint("gate-input", bundle[key]) for key in keys]
             for name, keys in inputs.items()}
