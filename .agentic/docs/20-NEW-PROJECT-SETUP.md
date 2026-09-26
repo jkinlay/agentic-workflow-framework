@@ -18,7 +18,7 @@ python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 
 python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 TRUSTED_SHA256 --codeowner '@handle' --on-conflict backup
 ```
 
-New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organization/team'` overrides new entries. Preserve existing CODEOWNERS/reviewers; independently verify access and eligible non-author review. Optional `--rules-observation ABS_OBSERVATION.json --expected-rules-observation-sha256 OBSERVATION_PIN` supplies rules evidence; `--default-branch EXPECTED` avoids assuming `main`; observed conflicts reject. Cross-version adoption uses backed-up `install`; `--mode upgrade` is same-version only. Preserve backups/journals; recover unfinished installation before use.
+New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organization/team'` overrides new entries. Preserve existing CODEOWNERS/reviewers; verify access and eligible review. Optional `--rules-observation ABS_OBSERVATION.json --expected-rules-observation-sha256 OBSERVATION_PIN` supplies rules evidence; `--default-branch EXPECTED` avoids assuming `main`; observed conflicts reject. Fresh install needs no predecessor. Verified 1.8.3/1.8.9/1.9.1/1.9.2 use `--mode upgrade`; see [direct migration](../../MIGRATION-to-v1.9.3.md). Preserve backups/journals; recover unfinished installation before use.
 
 5. Bootstrap derives fresh configuration from observed target metadata; existing project values remain preserved, not silently replaced. Review its derivation and residue report:
 

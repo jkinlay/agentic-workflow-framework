@@ -1,0 +1,424 @@
+{
+  "$id": "urn:awf:native-response:2",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "pause_affected_work"
+                }
+              },
+              {
+                "contains": {
+                  "const": "continue_affected_work"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "defer_reviewer_launch"
+                }
+              },
+              {
+                "contains": {
+                  "const": "launch_reviewer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "preserve_host_limit"
+                }
+              },
+              {
+                "contains": {
+                  "const": "increase_host_limit"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "block_readiness"
+                }
+              },
+              {
+                "contains": {
+                  "const": "approve_candidate"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "hold_review"
+                }
+              },
+              {
+                "contains": {
+                  "const": "approve_candidate"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "block_readiness"
+                }
+              },
+              {
+                "contains": {
+                  "const": "merge_candidate"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "hold_review"
+                }
+              },
+              {
+                "contains": {
+                  "const": "merge_candidate"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "hold_retry"
+                }
+              },
+              {
+                "contains": {
+                  "const": "retry_push"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "preserve_usage_charge"
+                }
+              },
+              {
+                "contains": {
+                  "const": "zero_unknown_usage"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "preserve_routing_floor"
+                }
+              },
+              {
+                "contains": {
+                  "const": "downgrade_reviewer"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "mark_pr_ready"
+                }
+              },
+              {
+                "contains": {
+                  "const": "block_readiness"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "mark_pr_ready"
+                }
+              },
+              {
+                "contains": {
+                  "const": "hold_review"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "transition_jira"
+                }
+              },
+              {
+                "contains": {
+                  "const": "merge_candidate"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "apply_operating_change"
+                }
+              },
+              {
+                "contains": {
+                  "const": "refuse_operating_change"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "record_cap_disposition"
+                }
+              },
+              {
+                "contains": {
+                  "const": "escalate_within_policy"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "reject_out_of_standard_finding"
+                }
+              },
+              {
+                "contains": {
+                  "const": "approve_candidate"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "decision_codes": {
+            "allOf": [
+              {
+                "contains": {
+                  "const": "open_successor_ticket"
+                }
+              },
+              {
+                "contains": {
+                  "const": "merge_candidate"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "decision_codes": {
+      "items": {
+        "enum": [
+          "apply_operating_change",
+          "approve_candidate",
+          "block_readiness",
+          "continue_affected_work",
+          "continue_unaffected_work",
+          "declare_risk_tier",
+          "defer_reviewer_launch",
+          "downgrade_reviewer",
+          "edit_protected_policy",
+          "escalate_within_policy",
+          "hold_retry",
+          "hold_review",
+          "increase_host_limit",
+          "launch_reviewer",
+          "mark_pr_ready",
+          "merge_candidate",
+          "open_draft_pr",
+          "open_successor_ticket",
+          "pause_affected_work",
+          "post_evidence_comment",
+          "preserve_escalation_ceiling",
+          "preserve_host_limit",
+          "preserve_incident_evidence",
+          "preserve_retry_ceiling",
+          "preserve_routing_floor",
+          "preserve_usage_charge",
+          "publish_branch",
+          "reconcile_remote_state",
+          "record_cap_disposition",
+          "record_finding_disposition",
+          "refuse_operating_change",
+          "reject_candidate_instruction",
+          "reject_out_of_standard_finding",
+          "reject_reused_approval",
+          "reject_stale_review",
+          "request_current_review",
+          "request_fresh_authorization",
+          "request_routine_permission",
+          "reserve_budget",
+          "retain_finding",
+          "retry_push",
+          "transition_jira",
+          "zero_unknown_usage"
+        ],
+        "type": "string"
+      },
+      "maxItems": 30,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "evidence_refs": {
+      "items": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 30,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "rationale": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "decision_codes",
+    "evidence_refs",
+    "rationale"
+  ],
+  "title": "AWF native decision response v2: complete local contract",
+  "type": "object"
+}

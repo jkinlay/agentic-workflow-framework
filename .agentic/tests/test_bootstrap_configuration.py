@@ -14,10 +14,11 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
+sys.path.insert(0, str(ROOT / ".agentic/tests"))
 from agentic import ValidationError, VERSION
 from agentic import adoption_config as adoption
 from agentic import installer
-from agentic.canonical import load, sha256
+from agentic.canonical import load, load_yaml, sha256
 from agentic.installer import CONFIG, INSTALLED, GITIGNORE, GITIGNORE_TEMPLATE, install, json_bytes, merge_operating_ignores, verify_installed
 from agentic.contracts import Contracts
 from agentic.policy import inspect_config
@@ -360,6 +361,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.files[CONFIG] = (ROOT / ".agentic/examples/unconfigured-project.yaml").read_bytes()
         self.files[".github/CODEOWNERS"] = b"# Synthetic source ownership\n/.agentic/ @maintainer\n"
         self.files[GITIGNORE_TEMPLATE] = (ROOT / GITIGNORE_TEMPLATE).read_bytes()
+        self.files[installer.KNOWN_VERSIONS] = (ROOT / installer.KNOWN_VERSIONS).read_bytes()
         for name, raw in self.files.items():
             path = self.source / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -386,28 +388,15 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual(verify_installed(self.dest), self.pin)
 
     def test_192_upgrade_changes_only_version_line_in_owner_config(self):
-        first = self.perform()
-        legacy_agents = b"# AWF 1.9.2 managed instructions fixture\n"
-        (self.dest / "AGENTS.md").write_bytes(legacy_agents)
+        from upgrade_fixtures import materialize
+        materialize("1.9.2", self.dest)
         receipt_path = self.dest / INSTALLED
         receipt = json.loads(receipt_path.read_bytes())
-        source_manifest = json.loads(receipt["source_manifest_json"])
-        source_manifest["template_version"] = "1.9.2"
-        source_manifest["files"]["AGENTS.md"] = sha256(legacy_agents)
-        old_source_raw = json_bytes(source_manifest).decode("utf-8")
-        old_source_pin = sha256(old_source_raw.encode("utf-8"))
-        receipt.update(template_version="1.9.2", source_manifest_json=old_source_raw,
-                       source_manifest_sha256=old_source_pin)
-        receipt["immutable_files"]["AGENTS.md"] = sha256(legacy_agents)
-        receipt_path.write_bytes(json_bytes(receipt))
-        provenance_path = self.dest / installer.PROVENANCE
-        provenance = json.loads(provenance_path.read_bytes())
-        provenance["template"]["version"] = "1.9.2"
-        provenance["installation"]["source_manifest_sha256"] = old_source_pin
-        provenance_path.write_bytes(json_bytes(provenance))
-
+        old_install_id = receipt["install_id"]
+        legacy_agents = (self.dest / "AGENTS.md").read_bytes()
+        self.assertNotEqual(legacy_agents, self.files["AGENTS.md"])
         config_path = self.dest / CONFIG
-        config = json.loads(config_path.read_bytes())
+        config = load_yaml(config_path.read_bytes())
         config["template"]["expected_workflow_version"] = "1.9.2"
         config["execution"].update(max_tokens_per_ticket=100000,
                                    max_cost_microusd_per_ticket=2500000,
@@ -438,8 +427,49 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual(current["execution"]["max_cost_microusd_per_ticket"], 2500000)
         self.assertEqual(current["execution"]["model_routing"]["budgets"]["max_tokens_per_ticket"], 100000)
         self.assertEqual((self.dest / "AGENTS.md").read_bytes(), self.files["AGENTS.md"])
-        self.assertEqual(first["install_id"], second["install_id"])
+        self.assertEqual(old_install_id, second["install_id"])
         self.assertEqual(verify_installed(self.dest), self.pin)
+
+    def test_192_pure_migration_changes_only_version_line(self):
+        from types import MappingProxyType
+        from agentic.upgrade import MigrationBundle, load_known_versions, migrate_1_9_2_to_1_9_3
+        from upgrade_fixtures import fixture_blob, fixture_manifest
+        config = json.loads((ROOT / ".agentic/examples/unconfigured-project.yaml").read_bytes())
+        config["template"]["expected_workflow_version"] = "1.9.2"
+        config["execution"].update(max_tokens_per_ticket=100000,
+                                   max_cost_microusd_per_ticket=2500000,
+                                   daily_project_cost_microusd=9000000)
+        config["execution"]["model_routing"]["budgets"].update(
+            max_tokens_per_ticket=100000,
+            max_tokens_per_project_day=400000,
+            max_cost_microusd_per_ticket=2400000,
+            max_cost_microusd_per_project_day=8500000)
+        text = json.dumps(config, indent=2, ensure_ascii=False)
+        text = text.replace('  "execution": {', '  # owner budget policy\n  "execution": {')
+        before = (text + "\n").replace("\n", "\r\n").encode("utf-8")
+        expected = before.replace(b'"expected_workflow_version": "1.9.2"',
+                                  b'"expected_workflow_version": "1.9.3"')
+        fixture = fixture_manifest("1.9.2")
+        receipt = fixture_blob(fixture["receipt"]["sha256"])
+        provenance = fixture_blob(fixture["owner_files"][installer.PROVENANCE]["sha256"])
+        source_manifest = json.loads((self.source / "MANIFEST.json").read_bytes())
+        target = {"source_manifest_sha256": self.pin,
+                  "source_manifest_json": (self.source / "MANIFEST.json").read_text(encoding="utf-8"),
+                  "_immutable_files": {path: digest for path, digest in source_manifest["files"].items()
+                                       if installer.managed(path) and path not in {CONFIG, installer.PROVENANCE,
+                                                                                ".github/CODEOWNERS"}}}
+        after = migrate_1_9_2_to_1_9_3(
+            MigrationBundle(before, None, receipt, provenance, MappingProxyType({})), target).project_config
+        self.assertEqual(after, expected)
+        changed_lines = [(old, new) for old, new in zip(before.splitlines(keepends=True), after.splitlines(keepends=True))
+                         if old != new]
+        self.assertEqual(changed_lines, [
+            (b'    "expected_workflow_version": "1.9.2"\r\n',
+             b'    "expected_workflow_version": "1.9.3"\r\n')])
+        current = json.loads(after.replace(b'  # owner budget policy\r\n', b''))
+        self.assertEqual(current["execution"]["max_tokens_per_ticket"], 100000)
+        self.assertEqual(current["execution"]["max_cost_microusd_per_ticket"], 2500000)
+        self.assertEqual(current["execution"]["model_routing"]["budgets"]["max_tokens_per_ticket"], 100000)
 
     def test_legacy_upgrade_offer_dryrun_and_explicit_local_proposal(self):
         self.perform()

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import ValidationError, VERSION
 from agentic.canonical import sha256
-from agentic.installer import release_member, verify_release
+from agentic.installer import RELEASE_EXCLUDED_PREFIXES, release_member, verify_release
 from agentic.safeio import Tree
 from release_hygiene import check_release
 
@@ -19,7 +19,9 @@ from release_hygiene import check_release
 def manifest():
     check_release(ROOT)
     with Tree(ROOT) as tree:
-        all_paths = [path for path in tree.file_list(exclude_root_git=True) if release_member(path)]
+        all_paths = [path for path in tree.file_list(exclude_root_git=True,
+                                                     exclude_prefixes=RELEASE_EXCLUDED_PREFIXES)
+                     if release_member(path)]
         paths = [p for p in all_paths if p not in {'MANIFEST.json','MANIFEST.md'}]
         forbidden = {'.git', '.tmp', 'tmp', '__pycache__', '.venv', 'venv', '.pytest_cache', '.agentic-install', '.agentic-backup'}
         if any(set(Path(p).parts) & forbidden or p.endswith(('.pyc', '.tmp', '.zip')) for p in paths):

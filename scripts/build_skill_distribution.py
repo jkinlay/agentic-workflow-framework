@@ -28,6 +28,27 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
+def render_launcher(skill_manifest_sha256, installer_sha256, release_zip_name, release_zip_sha256):
+    return f'''#!/usr/bin/env python3
+"""Install AWF {VERSION}; forwards --dry-run, --dest and --backup-root."""
+from pathlib import Path
+import hashlib
+import subprocess
+import sys
+if sys.version_info < (3, 11):
+    raise SystemExit("Python 3.11 or later is required")
+root = Path(__file__).resolve().parent / "awf"
+for relative, expected in {{"SKILL-MANIFEST.json": "{skill_manifest_sha256}", "scripts/install_skill.py": "{installer_sha256}",
+                           "assets/{release_zip_name}": "{release_zip_sha256}"}}.items():
+    if hashlib.sha256((root / relative).read_bytes()).hexdigest() != expected:
+        raise SystemExit("Distribution integrity failure: " + relative)
+archive = root / "assets/{release_zip_name}"
+sys.path.insert(0, str(archive) + "/agentic-workflow-template-v{LINE}/.agentic/lib")
+from agentic.child_process import child_env
+raise SystemExit(subprocess.call([sys.executable, "-B", str(root / "scripts/install_skill.py"), "--expected-manifest-sha256", "{skill_manifest_sha256}", *sys.argv[1:]], env=child_env()))
+'''
+
+
 def package(root, output):
     paths = sorted(p for p in root.rglob("*") if p.is_file())
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
@@ -93,24 +114,7 @@ def main():
     write_json(packaged_skill / "SKILL-MANIFEST.json", manifest)
     pin = digest((packaged_skill / "SKILL-MANIFEST.json").read_bytes())
     installer_pin = digest((packaged_skill / "scripts/install_skill.py").read_bytes())
-    launcher = f'''#!/usr/bin/env python3
-"""Install AWF {VERSION}; forwards --dry-run, --dest and --backup-root."""
-from pathlib import Path
-import hashlib
-import subprocess
-import sys
-if sys.version_info < (3, 11):
-    raise SystemExit("Python 3.11 or later is required")
-root = Path(__file__).resolve().parent / "awf"
-for relative, expected in {{"SKILL-MANIFEST.json": "{pin}", "scripts/install_skill.py": "{installer_pin}",
-                           "assets/{release_zip.name}": "{proof['zip_sha256']}"}}.items():
-    if hashlib.sha256((root / relative).read_bytes()).hexdigest() != expected:
-        raise SystemExit("Distribution integrity failure: " + relative)
-archive = root / "assets/{release_zip.name}"
-sys.path.insert(0, str(archive) + "/agentic-workflow-template-v{LINE}/.agentic/lib")
-from agentic.child_process import child_env
-raise SystemExit(subprocess.call([sys.executable, "-B", str(root / "scripts/install_skill.py"), "--expected-manifest-sha256", "{pin}", *sys.argv[1:]], env=child_env()))
-'''
+    launcher = render_launcher(pin, installer_pin, release_zip.name, proof['zip_sha256'])
     (distribution / "install_awf.py").write_text(launcher, encoding="utf-8", newline="\n")
     guide = f'''# Install AWF {VERSION}
 
@@ -124,7 +128,7 @@ python -B install_awf.py
 On Windows, `py -3 install_awf.py` is also supported. Use an absolute interpreter path if Python is not on PATH.
 The launcher contains package pins and verifies the installer before executing it. Verify the outer ZIP SHA-256 against an independently obtained delivery pin before running downloaded code. This distribution is unsigned: bundled hashes detect byte changes but do not authenticate {publisher_name} as their publisher.
 
-The installer reuses your user-level `awf` installation, stages and verifies the new package, retains the previous folder in an external backup and preserves local catalog/update-channel settings. Do not uninstall the prior skill first. Use `--dest ABSOLUTE_SKILLS_DIRECTORY/awf` to choose another installation. It does not remove other copies or plugins. See [installation and rollback](awf/references/skill-installation.md).
+The installer supports an empty skills root; a fresh installation never needs an earlier AWF version. When an `awf` installation exists, it stages and verifies the new package, retains the previous folder in an external backup and preserves local catalog/update-channel settings. Do not uninstall an existing skill first. Use `--dest ABSOLUTE_SKILLS_DIRECTORY/awf` to choose another installation. It does not remove other copies or plugins. See [installation and rollback](awf/references/skill-installation.md).
 
 The skill will be available on your next turn; start a new Codex task if needed to refresh discovery. Invoke `$awf` and ask it to adopt AWF {LINE} in the intended project. Existing projects retain their version until separately migrated. The bundled source contains the applicable versioned migration guides.
 

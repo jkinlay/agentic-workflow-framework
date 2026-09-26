@@ -1,0 +1,165 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate",
+    "snapshot",
+    "contract",
+    "dispatch",
+    "worker",
+    "critic",
+    "specialists",
+    "ci",
+    "pr",
+    "runs",
+    "prior_findings",
+    "evidence_registry",
+    "provenance_mode"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "candidate": {
+      "$ref": "urn:awf:1.2:candidate"
+    },
+    "snapshot": {
+      "$ref": "urn:awf:1.2:jira-snapshot"
+    },
+    "contract": {
+      "$ref": "urn:awf:1.2:ticket-contract"
+    },
+    "dispatch": {
+      "$ref": "urn:awf:1.2:work-dispatch"
+    },
+    "worker": {
+      "$ref": "urn:awf:1.2:worker-result"
+    },
+    "critic": {
+      "$ref": "urn:awf:1.2:critic-review"
+    },
+    "specialists": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:awf:1.2:specialist-review"
+      },
+      "minItems": 0
+    },
+    "ci": {
+      "$ref": "urn:awf:1.2:ci-evidence"
+    },
+    "pr": {
+      "$ref": "urn:awf:1.2:pr-snapshot"
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:awf:1.2:run-attestation"
+      },
+      "minItems": 3
+    },
+    "prior_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "severity",
+          "summary",
+          "evidence",
+          "status",
+          "resolution_evidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "enum": [
+              "BLOCKER",
+              "MAJOR",
+              "MINOR",
+              "NIT"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "status": {
+            "enum": [
+              "OPEN",
+              "RESOLVED",
+              "DISPUTED"
+            ]
+          },
+          "resolution_evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 0
+    },
+    "evidence_registry": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "uri",
+          "sha256",
+          "producer_id",
+          "retained_until"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string",
+            "minLength": 1,
+            "format": "uri"
+          },
+          "sha256": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "producer_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "retained_until": {
+            "type": "string",
+            "minLength": 1,
+            "format": "date-time"
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "provenance_mode": {
+      "const": "offline_fixture"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:evidence-bundle",
+  "title": "Agentic Workflow 1.2 \u2014 evidence-bundle"
+}

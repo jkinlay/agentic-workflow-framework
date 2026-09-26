@@ -1,0 +1,236 @@
+"""Synthetic evaluator mechanics; no model, provider or project action is run."""
+from contextlib import redirect_stdout
+from copy import deepcopy
+import importlib.util
+import io
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS = ROOT / ".agentic/scripts"
+sys.path.insert(0, str(SCRIPTS))
+spec = importlib.util.spec_from_file_location("native_evaluation_under_test", SCRIPTS / "evaluate_native.py")
+evaluation = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(evaluation)
+import benchmark_native as benchmark
+
+
+class NativeEvaluationTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="awf-evaluation-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        packet, _ = benchmark.prepare(ROOT)
+        self.packet = deepcopy(packet)
+        self.packet["benchmark_id"] = "synthetic-evaluator-fixture-only"
+        self.packet["cases"] = self.packet["cases"][:3]
+        for case in self.packet["cases"]:
+            case["task"] = "Synthetic test fixture; no model execution: " + case["task"]
+            original = {key: case[key] for key in ("case_id", "role", "task", "inputs")}
+            case["case_sha256"] = benchmark.sha(benchmark.encoded(original))
+        self.packet["suite_sha256"] = benchmark.sha(benchmark.encoded(self.packet["cases"]))
+        self.rubric = benchmark.parse(benchmark.read(ROOT / ".agentic/benchmarks/native/rubric.json"))
+        self.rubric["benchmark_id"] = self.packet["benchmark_id"]
+        self.rubric["visibility"] = "external_held_out"  # Synthetic API fixture, not a novelty claim.
+        self.rubric["cases"] = self.rubric["cases"][:3]
+        for target in self.rubric["cases"]:
+            target["allowance_rationale"] = {key: "PRIVATE-RUBRIC-ONLY-SENTINEL" for key in target["allowance_rationale"]}
+        self.packet_file, self.rubric_file = self.root / "packet.json", self.root / "rubric.json"
+        self.executable, self.output = self.root / "synthetic-codex.exe", self.root / "result"
+        self.executable.write_bytes(b"Synthetic executable fixture; never executed\n")
+        self.write_inputs()
+
+    def write_inputs(self):
+        self.packet_file.write_bytes(benchmark.encoded(self.packet))
+        self.rubric_file.write_bytes(benchmark.encoded(self.rubric))
+
+    def args(self):
+        args = ["--packet", str(self.packet_file), "--rubric", str(self.rubric_file),
+                "--codex", str(self.executable), "--output", str(self.output),
+                "--model", "synthetic-model", "--effort", "low", "--case-timeout", "1"]
+        for label, path in (("packet", self.packet_file), ("rubric", self.rubric_file), ("codex", self.executable)):
+            args += ["--expected-" + label + "-sha256", benchmark.sha(path.read_bytes())]
+        return args
+
+    def invoke(self, args=None):
+        with redirect_stdout(io.StringIO()) as output:
+            code = evaluation.main(args or self.args())
+        return code, json.loads(output.getvalue())
+
+    def fake_launcher(self, *, returncode=0, bad_events=None):
+        commands, prompts, processes = [], [], []
+        def launch(command, **kwargs):
+            index = len(commands)
+            commands.append((command, kwargs))
+            process = mock.Mock(returncode=returncode, pid=1000 + index)
+            process.poll.return_value = returncode
+            def communicate(raw=None, timeout=None):
+                if raw is not None:
+                    prompts.append(raw)
+                events = bad_events if bad_events is not None else b'\n'.join([
+                    benchmark.encoded({"type": "thread.started", "thread_id": "synthetic-thread-" + str(index)}).strip().replace(b'\n', b''),
+                    b'{"type":"turn.started"}',
+                    b'{"type":"item.completed","item":{"type":"agent_message","text":"synthetic"}}',
+                    b'{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":3}}'])
+                kwargs["stdout"].write(events)
+                kwargs["stdout"].flush()
+                target = self.rubric["cases"][index]
+                answer = {"decision_codes": target["required_codes"], "evidence_refs": target["required_evidence_refs"],
+                          "rationale": "Synthetic mocked observation; no model executed."}
+                Path(command[command.index("--output-last-message") + 1]).write_bytes(benchmark.encoded(answer))
+                return None, None
+            process.communicate.side_effect = communicate
+            processes.append(process)
+            return process
+        return launch, commands, prompts, processes
+
+    def test_tools_malformed_and_incomplete_jsonl_events_reject(self):
+        valid = b'{"type":"thread.started","thread_id":"synthetic"}\n'
+        cases = [b'', b'not-json', b'{"type":"turn.started","type":"turn.completed"}',
+                 valid + b'{"type":"item.completed","item":{"type":"command_execution"}}',
+                 valid + b'{"type":"turn.failed"}',
+                 valid + b'{"type":"turn.completed","usage":null}',
+                 valid + b'{"type":"turn.completed","usage":{}}\n{"type":"turn.completed","usage":{}}']
+        for raw in cases:
+            with self.subTest(raw=raw), self.assertRaises(benchmark.BenchmarkError):
+                evaluation.observed_events(raw)
+
+    def test_successful_mocked_execution_retains_unknown_actual_identity_and_evidence(self):
+        launch, commands, prompts, _ = self.fake_launcher()
+        with mock.patch.object(evaluation.subprocess, "Popen", side_effect=launch):
+            code, report = self.invoke()
+        self.assertEqual((0, "MEASURED", 3), (code, report["status"], len(commands)))
+        self.assertFalse(report["provider_qualified"])
+        self.assertFalse(report["comparative_quality_established"])
+        observations = benchmark.parse((self.output / "observations.json").read_bytes())
+        for result in observations["results"]:
+            self.assertIsNone(result["execution"]["actual_model"])
+            self.assertIsNone(result["execution"]["actual_effort"])
+            self.assertEqual([], result["observed_host_actions"])
+        for index, run in enumerate(report["runs"]):
+            self.assertIsNone(run["actual_model"])
+            self.assertEqual({"input_tokens": 4, "output_tokens": 3}, run["usage"])
+            self.assertTrue((self.output / self.packet["cases"][index]["case_id"] / "events.jsonl").is_file())
+        for prompt, (command, kwargs) in zip(prompts, commands):
+            self.assertNotIn(b"PRIVATE-RUBRIC-ONLY-SENTINEL", prompt)
+            self.assertNotIn(str(self.rubric_file).encode(), prompt)
+            self.assertNotIn(str(ROOT).encode(), prompt)
+            self.assertIn("--ephemeral", command)
+            self.assertIn("--ignore-user-config", command)
+            self.assertIn("features.shell_tool=false", command)
+            self.assertNotIn("shell", kwargs)
+            self.assertFalse(Path(kwargs["cwd"]).is_relative_to(ROOT))
+
+    def test_self_consistent_wrong_release_prompt_rejects_before_launch_or_output(self):
+        case = self.packet["cases"][0]
+        case["prompt"] = "Self-consistent forged prompt; not this release's generated role prompt.\n"
+        case["prompt_sha256"] = benchmark.sha(case["prompt"].encode())
+        self.write_inputs()
+        with mock.patch.object(evaluation.subprocess, "Popen") as launch:
+            code, report = self.invoke()
+        self.assertEqual((2, "NOT_RUN"), (code, report["status"]))
+        self.assertIn("prompt differs", report["reason"])
+        launch.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_packet_rubric_and_executable_hashes_bound_before_any_launch(self):
+        for option in ("--expected-packet-sha256", "--expected-rubric-sha256", "--expected-codex-sha256"):
+            args = self.args()
+            args[args.index(option) + 1] = "0" * 64
+            with self.subTest(option=option), mock.patch.object(evaluation.subprocess, "Popen") as launch:
+                code, report = self.invoke(args)
+            self.assertEqual((2, "NOT_RUN"), (code, report["status"]))
+            launch.assert_not_called()
+            self.assertFalse(self.output.exists())
+
+    def test_existing_output_is_preserved_without_adding_an_error_report(self):
+        self.output.mkdir()
+        (self.output / "keep.txt").write_bytes(b"Existing owner evidence\n")
+        with mock.patch.object(evaluation.subprocess, "Popen") as launch:
+            code, report = self.invoke()
+        self.assertEqual((2, "NOT_RUN"), (code, report["status"]))
+        launch.assert_not_called()
+        self.assertEqual(["keep.txt"], [path.name for path in self.output.iterdir()])
+        self.assertEqual(b"Existing owner evidence\n", (self.output / "keep.txt").read_bytes())
+
+    def test_failure_after_process_launch_is_incomplete_with_unknown_usage(self):
+        launch, commands, _, _ = self.fake_launcher(returncode=1)
+        with mock.patch.object(evaluation.subprocess, "Popen", side_effect=launch):
+            code, report = self.invoke()
+        self.assertEqual((2, "INCOMPLETE", 1), (code, report["status"], len(commands)))
+        self.assertTrue(report["attempted_execution"])
+        self.assertTrue(report["unresolved_usage"])
+        self.assertFalse(report["automatic_retry"])
+        self.assertTrue((self.output / "evaluation.json").is_file())
+        self.assertTrue((self.output / self.packet["cases"][0]["case_id"] / "launch.json").is_file())
+
+    def test_tool_event_after_launch_stays_incomplete_and_retains_event_bytes(self):
+        raw = b'{"type":"item.completed","item":{"type":"command_execution","command":"synthetic"}}'
+        launch, commands, _, _ = self.fake_launcher(bad_events=raw)
+        with mock.patch.object(evaluation.subprocess, "Popen", side_effect=launch):
+            code, report = self.invoke()
+        self.assertEqual((2, "INCOMPLETE", 1), (code, report["status"], len(commands)))
+        self.assertIn("Tool or unknown item", report["reason"])
+        self.assertEqual(raw, (self.output / self.packet["cases"][0]["case_id"] / "events.jsonl").read_bytes())
+
+    def test_launch_record_write_failure_reaps_started_child(self):
+        process = mock.Mock(returncode=None, pid=999)
+        process.poll.return_value = None
+        destination = self.root / "case-output"
+        destination.mkdir()
+        real_write = evaluation.write_new
+        def fail_launch(path, value):
+            if Path(path).name == "launch.json":
+                raise OSError("synthetic disk failure")
+            return real_write(path, value)
+        with mock.patch.object(evaluation.subprocess, "Popen", return_value=process), \
+                mock.patch.object(evaluation, "write_new", side_effect=fail_launch), \
+                self.assertRaises(OSError):
+            evaluation.execute_case(self.executable, self.packet["cases"][0], self.packet,
+                                    "synthetic-model", "low", 1, destination)
+        process.kill.assert_called_once()
+        process.communicate.assert_called_once_with(timeout=2)
+
+    def test_launch_record_failure_keeps_in_memory_attempt_and_incomplete_report(self):
+        process = mock.Mock(returncode=None, pid=999)
+        process.poll.return_value = None
+        real_write = evaluation.write_new
+        def fail_launch(path, value):
+            if Path(path).name == "launch.json":
+                raise OSError("synthetic disk failure")
+            return real_write(path, value)
+        with mock.patch.object(evaluation.subprocess, "Popen", return_value=process), \
+                mock.patch.object(evaluation, "write_new", side_effect=fail_launch):
+            code, report = self.invoke()
+        self.assertEqual((2, "INCOMPLETE"), (code, report["status"]))
+        self.assertTrue(report["attempted_execution"])
+        self.assertTrue(report["unresolved_usage"])
+        self.assertTrue(report["attempts"][0]["attempted"])
+        self.assertFalse(list(self.output.glob("*/launch.json")))
+        self.assertTrue((self.output / "evaluation.json").is_file())
+        process.kill.assert_called_once()
+        process.communicate.assert_called_once_with(timeout=2)
+
+    def test_late_process_success_is_rejected_before_accepting_observation(self):
+        destination = self.root / "late-case"
+        destination.mkdir()
+        launch, commands, _, processes = self.fake_launcher()
+        attempted = {"attempted": False}
+        with mock.patch.object(evaluation.subprocess, "Popen", side_effect=launch), \
+                mock.patch.object(evaluation.time, "monotonic", side_effect=[0, 0.1, 1.1]), \
+                self.assertRaisesRegex(benchmark.BenchmarkError, "after deadline"):
+            evaluation.execute_case(self.executable, self.packet["cases"][0], self.packet,
+                                    "synthetic-model", "low", 1, destination, attempted)
+        self.assertTrue(attempted["attempted"])
+        self.assertEqual(1, len(commands))
+        self.assertEqual(1, processes[0].communicate.call_count)
+        self.assertFalse((destination / "raw-response.json").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,8 @@
+{
+  "state": "WAITING",
+  "summary": "Synthetic example: CI for the assigned ticket is running.",
+  "action": "Observe current-head CI and continue the next independent, dependency-ready stream ticket.",
+  "owner": "controller",
+  "trigger": "next CI observation or ready stream dispatch",
+  "authorization": null
+}

@@ -8,6 +8,8 @@ Changes new-adoption risk and specialist routes to `gpt-5.6-sol` / high. Capabil
 
 Documents settlement outcomes for worker, fix, critic and specialist runs and adds `route_model.py outcome-template --role ROLE`. Review runs settle with `independent_review_passed: false`; verdicts remain separate review records. This first 1.9.3 change set covers only items C, D and E; later change sets extend the release notes.
 
+Adds fresh installation and receipt/byte-verified upgrade from 1.8.3, 1.8.9, 1.9.1 and 1.9.2. Bytes persist; unsafe inputs make no changes.
+
 ## 1.9.2 — 23 September 2026
 
 Adds token-only host budgets with larger new-project token/run defaults, an exact-tree publisher commit route for workers unable to write Git metadata, project lint-scope preflight, and the repository-owned portable skill source. Host child processes now consistently exclude Anthropic, Codex and OpenAI API keys. Release builds reject `.tmp`/`tmp` path components and `*.tmp` files before rewriting manifests or creating an archive, while retaining `.tmp-tests` as an excluded local test area whose links remain forbidden. The defaults reflect an owner workload of 10–20 tickets a day, signal-lab SL-1's 282,975 tokens in 3 runs, the 77-file AWF 1.9.2 PR's 1,402,537 tokens in 6 runs across three critic rounds, and 8–9 runs for a full ticket. Existing project configuration remains preserved on upgrade; review, merge, reconciliation and Jira boundaries are unchanged. No new model pilot.

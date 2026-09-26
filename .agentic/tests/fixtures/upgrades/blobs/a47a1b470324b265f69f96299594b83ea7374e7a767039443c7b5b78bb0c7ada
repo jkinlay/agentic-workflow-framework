@@ -1,0 +1,11 @@
+{
+  "format": "awf-historical-validation-index-1",
+  "scope_kind": "historical_reference",
+  "status": "NOT_CURRENT_RELEASE_VALIDATION",
+  "historical_summary": {
+    "scope": "pre-v1.8.3 component validation",
+    "status": "PASS",
+    "tests": {"run": 240, "failures": 0, "errors": 0, "skipped": 1}
+  },
+  "note": "The sanitized upstream retains only this aggregate historical summary. It contains no raw execution record, host fingerprint, source archive reference or current-release claim. Current acceptance requires separate, independently pinned evidence."
+}

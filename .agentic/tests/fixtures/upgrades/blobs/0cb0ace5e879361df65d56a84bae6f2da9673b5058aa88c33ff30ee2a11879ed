@@ -1,0 +1,199 @@
+"""Shared adoption validation diagnostics; acceptance does not enable automation."""
+from __future__ import annotations
+
+import json
+from urllib.parse import urlsplit
+
+from jsonschema import Draft202012Validator
+
+from . import ValidationError, VERSION
+from .canonical import validate_value
+
+FLAGS = {
+    '$.project.id': 'bootstrap generates a stable UUID4; preserve the installation receipt',
+    '$.project.name': '--project-name', '$.project.short_name': '--project-short-name',
+    '$.github.repository': '--github-repo', '$.github.repository_id': '--repository-id',
+    '$.github.base_branch': '--default-branch', '$.jira.site': '--jira-site',
+    '$.jira.project_key': '--jira-key', '$.validation.commands': '--test-command',
+}
+
+
+def json_path(parts):
+    result = '$'
+    for part in parts:
+        result += f'[{part}]' if isinstance(part, int) else (
+            '.' + part if part.isidentifier() else '[' + json.dumps(part) + ']')
+    return result
+
+
+def issue(path, reason):
+    flag = FLAGS.get(path)
+    if path.startswith('$.validation.commands'):
+        flag = '--test-command'
+    if path.startswith('$.specialist_reviews.') and path.endswith('.reviewer_identity'):
+        flag = '--codeowner for unresolved defaults, or edit .agentic/PROJECT_CONFIG.yaml'
+    return {'path': path, 'reason': reason,
+            'flag': flag or 'edit ' + path + ' in .agentic/PROJECT_CONFIG.yaml'}
+
+
+def placeholder_issues(value, parts=()):
+    found = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            found.extend(placeholder_issues(child, (*parts, key)))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            found.extend(placeholder_issues(child, (*parts, index)))
+    elif isinstance(value, str):
+        path = json_path(parts)
+        reason = ('unresolved placeholder' if 'CHANGE_ME' in value or 'SET_BY_BOOTSTRAP' in value else
+                  'whitespace-only value' if value and not value.strip() else
+                  'zero UUID placeholder' if path == '$.project.id' and value == '00000000-0000-0000-0000-000000000000' else
+                  'zero commit SHA placeholder' if parts and parts[-1] == 'workflow_sha' and value == '0' * 40 else None)
+        if reason:
+            found.append(issue(path, reason))
+    return found
+
+
+def inspect_config(config, workflow, contracts, project_instructions=None):
+    from .policy import PROTECTED_PATHS, policy_hash, safe_path
+    problems, warnings = [], []
+    if project_instructions is not None:
+        from .review_policy import BOUNDARY_SENTENCE, project_instructions_errors
+        for sentence in project_instructions_errors(project_instructions):
+            problems.append(issue('PROJECT_INSTRUCTIONS.md', f'contradicts the mandatory boundary rule ("{BOUNDARY_SENTENCE}"): "{sentence}"'))
+    try:
+        validate_value(config)
+    except ValidationError as exc:
+        problems.append(issue('$', str(exc)))
+    validator = Draft202012Validator(contracts.schemas['project-config'], registry=contracts.registry,
+                                     format_checker=contracts.formats)
+    schema_errors = sorted(validator.iter_errors(config), key=lambda error: str(list(error.absolute_path)))
+    for error in schema_errors:
+        if error.validator == 'required' and isinstance(error.instance, dict):
+            for key in error.validator_value:
+                if key not in error.instance:
+                    problems.append(issue(json_path((*error.absolute_path, key)), 'required value is missing'))
+        else:
+            problems.append(issue(json_path(error.absolute_path), error.message))
+    problems.extend(placeholder_issues(config))
+    # Null is allowed in inert release forms, but adoption always needs the real
+    # repository identity. Report it even when another field has a schema error.
+    github = config.get('github') if isinstance(config, dict) else None
+    if isinstance(github, dict) and 'repository_id' in github and github['repository_id'] is None:
+        problems.append(issue('$.github.repository_id', 'numeric repository identity is unresolved'))
+    ci = config.get('validation', {}).get('required_ci_checks') if isinstance(config, dict) and isinstance(config.get('validation'), dict) else None
+    ci_gate = 'CONFIGURED' if isinstance(ci, list) and ci and not any(
+        item['path'].startswith('$.validation.required_ci_checks') for item in problems) else 'NOT_CONFIGURED'
+    if ci_gate == 'NOT_CONFIGURED':
+        warnings.append({'path': '$.validation.required_ci_checks', 'code': 'CI_NOT_CONFIGURED',
+                         'message': 'Adoption may proceed; configure pinned CI before live enablement or gate readiness.'})
+    # Schema errors are complete; semantic checks require the closed, typed shape.
+    if not schema_errors and isinstance(config, dict):
+        def require(condition, path, reason):
+            if not condition:
+                problems.append(issue(path, reason))
+        require(type(config['github']['repository_id']) is int and config['github']['repository_id'] > 0,
+                '$.github.repository_id', 'numeric repository identity is unresolved')
+        if not isinstance(workflow, dict):
+            problems.append(issue('$.template.expected_workflow_version', 'verified workflow must be an object'))
+            workflow = {}
+        require(workflow.get('template_version') == VERSION and workflow.get('version') == 3,
+                '$.template.expected_workflow_version', 'workflow version must match the verified release with schema revision 3')
+        require(workflow.get('live_side_effects_supported') is False, '$.controller', 'workflow cannot enable live reference side effects')
+        from .lifecycle import validate_workflow
+        try:
+            validate_workflow(workflow)
+        except ValidationError as exc:
+            problems.append(issue('$.template.expected_workflow_version', str(exc)))
+        require({'BLOCKER', 'MAJOR'}.issubset(config['critic']['blocking_severities']),
+                '$.critic.blocking_severities', 'BLOCKER and MAJOR must always block')
+        require(set(PROTECTED_PATHS).issubset(config['scope']['protected_paths']),
+                '$.scope.protected_paths', 'baseline protected paths cannot be removed')
+        jira = config['jira']
+        enabled = jira.get('enabled', True)
+        if not enabled:
+            require(jira['site'] is None and jira['project_key'] is None, '$.jira', 'disabled Jira uses null site and project_key')
+        scope = jira['scope']
+        if enabled and not scope['allow_entire_project'] and not any(scope[k] for k in ('included_epics', 'labels_any', 'components_any')):
+            warnings.append({'path': '$.jira.scope', 'code': 'JIRA_SCOPE_NOT_CONFIGURED',
+                             'message': 'No Jira ticket is in scope; configure explicit selectors before Jira work.'})
+        for key in ('included_epics', 'labels_any', 'components_any'):
+            for index, value in enumerate(scope[key]):
+                require(bool(value.strip()), f'$.jira.scope.{key}[{index}]', 'empty/whitespace Jira selector')
+        execution = config['execution']
+        if 'model_routing' in execution:
+            from .model_routing import policy_from_config
+            try:
+                policy_from_config(config)
+            except (ValueError, TypeError, KeyError) as exc:
+                problems.append(issue('$.execution.model_routing', 'invalid model routing policy: ' + str(exc)))
+        require(execution['max_parallel_tickets_per_stream'] <= execution['max_parallel_tickets'],
+                '$.execution.max_parallel_tickets_per_stream', 'per-stream limit exceeds project limit')
+        daily_cost = execution['daily_project_cost_microusd']
+        ticket_cost = execution['max_cost_microusd_per_ticket']
+        require(daily_cost is None or ticket_cost is None or daily_cost >= ticket_cost,
+                '$.execution.max_cost_microusd_per_ticket', 'ticket cost cap exceeds daily project cap')
+        require(not execution['host_broker']['enabled'] or bool(execution['host_broker']['broker_id'].strip()),
+                '$.execution.host_broker.broker_id', 'enabled broker needs an identity')
+        require('{ticket}' in config['github']['branch_pattern'], '$.github.branch_pattern', 'branch pattern must include {ticket}')
+        owners = config['merge_gate']['trusted_owner_ids']
+        if not owners:
+            warnings.append({'path': '$.merge_gate.trusted_owner_ids', 'code': 'OWNER_GATE_NOT_CONFIGURED',
+                             'message': 'Adoption may proceed; configure actual trusted numeric owner IDs before merge authorization.'})
+        else:
+            require(config['merge_gate']['high_risk_owner_quorum'] <= len(owners),
+                    '$.merge_gate.high_risk_owner_quorum', 'owner quorum exceeds trusted owners')
+        origins = [('$.github.host', config['github']['host'])]
+        if enabled:
+            origins.append(('$.jira.site', jira['site']))
+        for path, value in origins:
+            try:
+                parsed = urlsplit(value)
+                valid = parsed.scheme == 'https' and parsed.hostname and not (parsed.username or parsed.password or parsed.query or parsed.fragment) and parsed.path in ('', '/')
+            except (ValueError, TypeError):
+                valid = False
+            require(valid, path, 'service identity must be an HTTPS origin without credentials/query/fragment')
+        names = set()
+        for index, check in enumerate(ci):
+            require(check['name'] not in names, f'$.validation.required_ci_checks[{index}].name', 'duplicate CI check name')
+            names.add(check['name'])
+            try:
+                safe_path(check['workflow_path'])
+            except ValidationError as exc:
+                problems.append(issue(f'$.validation.required_ci_checks[{index}].workflow_path', str(exc)))
+        for role, policy in execution['roles'].items():
+            require(policy['model'] in policy['approved_model_ids'], f'$.execution.roles.{role}.model', 'model is absent from approved_model_ids')
+        for flag in ('security', 'schema_or_migration', 'public_api', 'data_loss', 'concurrency', 'production'):
+            require(any(flag in domain['risk_flags'] for domain in config['specialist_reviews'].values()),
+                    '$.specialist_reviews', f'risk flag {flag} has no required specialist mapping')
+        tiers = execution.get('risk_tiers')
+        if tiers is not None:
+            require(bool(tiers['tier1_eligible_paths']), '$.execution.risk_tiers.tier1_eligible_paths', 'Tier 1 needs at least one eligible path pattern, or remove risk_tiers')
+            require(not set(tiers['tier1_eligible_paths']) & (set(PROTECTED_PATHS) | set(config['scope']['protected_paths'])),
+                    '$.execution.risk_tiers.tier1_eligible_paths', 'protected paths are always Tier 2')
+            require(set(tiers['tier1_review']['specialist_when_touching']) <= set(config['specialist_reviews']),
+                    '$.execution.risk_tiers.tier1_review.specialist_when_touching', 'names an unconfigured specialist domain')
+        jira_cfg = config['jira']
+        if enabled and 'lifecycle_writes' in jira_cfg:
+            require(all(isinstance(v, bool) for v in jira_cfg['lifecycle_writes'].values()), '$.jira.lifecycle_writes', 'lifecycle writes are booleans')
+        resources = execution['host_broker'].get('resources', {})
+        require(not resources or execution['host_broker']['enabled'], '$.execution.host_broker.resources', 'named resources bind only when the broker is enabled')
+    # Keep separate reasons on the same path while suppressing duplicate schema reports.
+    problems = sorted({(item['path'], item['reason']): item for item in problems}.values(), key=lambda item: (item['path'], item['reason']))
+    if any(item['path'].startswith('$.validation.required_ci_checks') for item in problems):
+        ci_gate = 'NOT_CONFIGURED'
+    return {'status': 'REJECTED' if problems else 'ACCEPTED',
+            'policy_sha256': None if problems else policy_hash(config, workflow),
+            'unresolved': problems, 'ci_gate': ci_gate, 'warnings': warnings, 'execution_authority': False}
+
+
+def require_enablement_config(config, workflow, contracts):
+    report = inspect_config(config, workflow, contracts)
+    if report['status'] != 'ACCEPTED':
+        raise ValidationError('Configuration is not accepted: ' + '; '.join(item['path'] + ': ' + item['reason'] for item in report['unresolved']))
+    if report['ci_gate'] != 'CONFIGURED':
+        raise ValidationError('$.validation.required_ci_checks: CI_NOT_CONFIGURED; configure pinned CI before live enablement')
+    if not config['merge_gate']['trusted_owner_ids']:
+        raise ValidationError('$.merge_gate.trusted_owner_ids: OWNER_GATE_NOT_CONFIGURED')
+    return report

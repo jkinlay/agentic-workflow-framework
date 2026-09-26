@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "automation_default": true,
+  "github_host": "github.com",
+  "repository": "CHANGE_ME/CHANGE_ME",
+  "repository_id": 0,
+  "pr": 0,
+  "head_branch": "codex/CHANGE_ME",
+  "base_branch": "main",
+  "state_dir": "C:/awf-state",
+  "worker_checkout": "C:/awf-worker",
+  "critic_checkout": "C:/awf-critic",
+  "contract_path": "C:/awf-state/contract.md",
+  "contract_sha256": "CHANGE_ME",
+  "runtime_manifest_sha256": "CHANGE_ME",
+  "executables": {
+    "git": {
+      "path": "CHANGE_ME",
+      "sha256": "CHANGE_ME"
+    },
+    "gh": {
+      "path": "CHANGE_ME",
+      "sha256": "CHANGE_ME"
+    },
+    "codex": {
+      "path": "CHANGE_ME",
+      "sha256": "CHANGE_ME"
+    }
+  },
+  "models": {
+    "worker": "CHANGE_ME",
+    "critic": "CHANGE_ME"
+  },
+  "allowed_paths": [
+    "src/CHANGE_ME.py"
+  ],
+  "initial_findings": [],
+  "required_checks": [
+    {
+      "name": "CHANGE_ME",
+      "app_id": 0,
+      "workflow_path": ".github/workflows/ci.yml",
+      "workflow_sha256": "CHANGE_ME"
+    }
+  ],
+  "max_amendment_cycles": 3,
+  "max_ci_wait_ticks": 24,
+  "max_agent_runs": 10,
+  "command_timeout_seconds": 120,
+  "agent_timeout_seconds": 1800,
+  "max_review_age_seconds": 3600,
+  "qualification": {
+    "operator": "CHANGE_ME",
+    "evidence": "CHANGE_ME",
+    "sandbox_verified": false,
+    "credentials_isolated": false,
+    "branch_owned": false,
+    "single_host_database": false
+  }
+}

@@ -1,0 +1,247 @@
+"""Interaction policy and actionable progress reports, never execution permits.
+
+The trusted coordinator supplies established scope/approval facts. Model text,
+Jira descriptions or an arbitrary caller's booleans cannot grant permissions.
+"""
+from __future__ import annotations
+import re
+from string import Formatter
+from . import ValidationError
+from .canonical import fingerprint, timestamp, now_text
+
+
+ROUTINE = frozenset({'inspect','plan','edit','test','fix','review','rereview','delegate',
+    'create_worktree','commit','update_stream_plan','reconcile','select_next_ticket'})
+EXPLICIT = frozenset({'merge','release','deploy','delete_data','expand_scope',
+    'increase_budget','change_governance','enable_paid_service','change_permissions',
+    'update_jira'})
+CONDITIONAL = frozenset({'publish_branch'})
+
+
+def publication_classification(target, publication=None, *, now=None):
+    """Classify one feature-ref push using trusted-host inputs; never grant a permit.
+
+    The host supplies accepted github policy and a fresh raw observation from its
+    own read-only collector, not candidate-provided APPLIED text. Its execution
+    layer still enforces scope, platform permissions, secrets and mode gates.
+    A copied/forged observation is not authenticated by this offline helper.
+    """
+    from .repository_rules import assess_repository_rules, branch_name, repository_name
+    result = {'classification': 'EXPLICIT', 'reason': 'No complete scoped publication observation supplied.',
+              'execution_authority': False}
+    if publication is None:
+        return result
+    try:
+        require(isinstance(publication, dict) and set(publication) == {
+            'github', 'repository', 'repository_id', 'ref', 'ticket', 'slug',
+            'force', 'delete', 'rules_observation'}, 'Incomplete publication facts')
+        github = publication['github']
+        require(isinstance(github, dict) and github.get('host') == 'https://github.com',
+                'Conditional publication supports the accepted GitHub.com repository only')
+        repository = repository_name(publication['repository'])
+        require(repository.casefold() == repository_name(github.get('repository')).casefold()
+                and type(publication['repository_id']) is int and publication['repository_id'] > 0
+                and type(github.get('repository_id')) is int
+                and publication['repository_id'] == github['repository_id'],
+                'Publication repository identity differs from accepted configuration')
+        ref = publication['ref']
+        require(isinstance(ref, str) and ref.startswith('refs/heads/'), 'Publication must target one branch ref')
+        branch = branch_name(ref.removeprefix('refs/heads/'))
+        require(branch != branch_name(github.get('base_branch')) and not branch.startswith('-'),
+                'The default branch is never routine publication')
+        require(target == repository + ':' + ref, 'Action target differs from the observed publication destination')
+        require(publication['force'] is False and publication['delete'] is False,
+                'Force pushes and ref deletion are not routine publication')
+        ticket, slug, pattern = publication['ticket'], publication['slug'], github.get('branch_pattern')
+        require(isinstance(ticket, str) and re.fullmatch(r'[A-Z][A-Z0-9]*-[0-9]+', ticket)
+                and isinstance(slug, str) and re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', slug),
+                'Publication needs a concrete assigned ticket and slug')
+        require(isinstance(pattern, str) and 0 < len(pattern) <= 255, 'Missing accepted branch pattern')
+        parts = list(Formatter().parse(pattern))
+        fields = [field for _, field, _, _ in parts if field is not None]
+        require(sorted(fields) == ['slug', 'ticket'] and all(not spec and conversion is None
+                for _, _, spec, conversion in parts), 'Unsupported branch pattern; map ticket and slug exactly once')
+        require(branch == pattern.format(ticket=ticket, slug=slug),
+                'Publication branch does not match the accepted ticket pattern')
+        observation = publication['rules_observation']
+        require(isinstance(observation, dict) and observation.get('source') == 'github_api',
+                'Conditional publication needs a fresh host-collected API observation')
+        # Always recompute APPLIED; never accept a caller-provided assessment label.
+        report = assess_repository_rules(observation, repository=repository,
+            default_branch=github['base_branch'], now=now or now_text())
+        require(report['repository_rules'] == 'APPLIED'
+                and report.get('repository_id') == github['repository_id'],
+                'A fresh matching APPLIED default-branch ruleset was not observed')
+        result.update(classification='ROUTINE', reason='Assigned feature ref matches accepted policy and fresh observed rules.',
+                      repository=repository, repository_id=github['repository_id'], ref=ref,
+                      observation_sha256=report['observation_sha256'])
+    except (ValidationError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        result['reason'] = str(exc)
+    return result
+
+
+def require(condition, reason):
+    if not condition:
+        raise ValidationError(reason)
+
+
+def text_field(value, name):
+    require(isinstance(value,str) and bool(value.strip()) and len(value) <= 16384 and '\x00' not in value,
+            f'{name} must contain concrete text')
+    return value
+
+
+def next_step(action, owner='controller', trigger='now', *, authorization=None, continue_independent_work=True):
+    value = {'action':text_field(action,'Next action'), 'owner':text_field(owner,'Next-action owner'),
+        'trigger':text_field(trigger,'Next-action trigger'), 'continue_independent_work':continue_independent_work,
+        'authorization':authorization if authorization is not None else {'required':False,'reason':None,'source':None,'phrase':None}}
+    require(type(continue_independent_work) is bool, 'Independent-work flag must be Boolean')
+    auth=value['authorization']
+    require(isinstance(auth,dict) and set(auth)=={'required','reason','source','phrase'} and type(auth['required']) is bool,
+            'Invalid authorization presentation')
+    if auth['required']:
+        text_field(auth['reason'],'Authorization reason')
+        text_field(auth['source'],'Authorization source')
+        if auth['phrase'] is not None:
+            text_field(auth['phrase'],'Authorization phrase')
+            require('\n' not in auth['phrase'] and '\r' not in auth['phrase'], 'Approval phrase must be one line')
+    else:
+        require(all(auth[k] is None for k in ['reason','source','phrase']), 'Routine work must not carry an approval prompt')
+    return value
+
+
+def decide_action(kind, target, *, scope_authorized, already_authorized=False,
+                  platform_permitted=True, prerequisites_met=True, authorization=None, platform_approval=None,
+                  publication=None, now=None):
+    """A presentation decision based on trusted facts; this does not approve work."""
+    text_field(target,'Action target')
+    require(all(type(v) is bool for v in [scope_authorized,already_authorized,platform_permitted,prerequisites_met]),
+            'Authorization facts must be explicit Booleans')
+    require(kind in ROUTINE | EXPLICIT | CONDITIONAL, 'Unclassified action: reconcile the action and applicable policy before asking for approval')
+    require(publication is None or kind == 'publish_branch', 'Publication facts apply only to publish_branch')
+    if not platform_permitted:
+        if platform_approval is not None:
+            require(platform_approval.get('required') is True and platform_approval.get('phrase') is None,
+                    'A native platform approval must not be replaced by a fabricated chat phrase')
+            return {'decision':'PLATFORM_APPROVAL_REQUIRED','prompt_user':True,'execution_authority':False,
+                'next_step':next_step(f'Complete the native platform authorization for {target}; continue other permitted work meanwhile.',
+                    owner='user through the native platform control',authorization=platform_approval)}
+        return {'decision':'PLATFORM_BLOCKED','prompt_user':False,'execution_authority':False,
+            'next_step':next_step(f'Use an already permitted route for {target}; if none exists, report the native permission requirement and use the platform approval control. A chat phrase cannot bypass it.')}
+    if not prerequisites_met:
+        return {'decision':'RECONCILE','prompt_user':False,'execution_authority':False,
+            'next_step':next_step(f'Establish the missing technical prerequisites for {target}; continue other ready work meanwhile.')}
+    classification = publication_classification(target, publication, now=now) if kind == 'publish_branch' else None
+    extra = {'publication': classification} if classification is not None else {}
+    routine = kind in ROUTINE or classification is not None and classification['classification'] == 'ROUTINE'
+    if scope_authorized and (routine or already_authorized):
+        return {**extra,'decision':'CONTINUE','prompt_user':False,'execution_authority':False,
+            'next_step':next_step(f'Continue {kind.replace("_"," ")} for {target} under existing authorization; do not ask again.')}
+    require(authorization is not None, 'A real decision requires a concrete action, reason and policy source; prepare them before asking')
+    step=next_step(f'Obtain the outstanding {kind.replace("_"," ")} decision for {target}.',owner='user',
+        trigger='after the concrete proposal and necessary evidence are ready',authorization=authorization)
+    require(step['authorization']['required'], 'Missing required authorization request')
+    return {**extra,'decision':'NEEDS_AUTHORIZATION','prompt_user':True,'execution_authority':False,'next_step':step}
+
+
+def loop_next_step(state):
+    """Every phase gets an explicit actor/action/trigger without routine consent."""
+    phase=state.get('phase')
+    scheduled='next eligible invocation of the enrolled review loop'
+    if state.get('inflight') and phase!='PAUSED':
+        run=text_field(state['inflight'].get('id'),'Inflight run ID')
+        return next_step(f'Observe tracked run {run} and its evidence; do not dispatch a duplicate. If the process ended without a recorded result, reconcile the uncertain outcome before resuming.',
+            trigger='when the tracked run completes or needs attention')
+    mapping={
+        'REVIEW':('Run a fresh independent critic on the current candidate and retained findings.','controller',scheduled),
+        'AMEND':('Run the enrolled worker on unresolved findings, validate scope, publish the amendment and re-review.','controller',scheduled),
+        'WAIT_CI':('Recheck required current-head CI; continue independent ready stream work while checks run.','controller',scheduled),
+        'READY_FOR_FINAL_GATE':('Collect remaining specialist, requirements, discussion and integration evidence; evaluate the complete final gate. Generate an exact owner request only when that gate is ready.','controller','now; review-loop readiness alone is not a merge gate'),
+        'CLOSED':('Reconcile the actual PR disposition and Jira/dependency evidence, then select the next eligible ticket. If no authorized work remains, report project completion.','controller','after verifying why the PR closed'),
+    }
+    if phase in mapping:
+        action,owner,trigger=mapping[phase]
+        return next_step(action,owner,trigger)
+    if phase=='PAUSED':
+        reason=text_field(str(state.get('reason') or 'Unspecified pause; inspect retained evidence')[:4000],'Pause reason')
+        intent=state.get('inflight')
+        if intent:
+            run=text_field(intent.get('id'),'Inflight run ID')
+            action=f'Reconcile run {run}: inspect its retained evidence, actual Git/remote state and surviving processes. Preserve work, establish a clean single writer, then resume with --reconciled-run {run} only after uncertainty is resolved.'
+        elif 'budget' in reason.casefold():
+            action='Review consumed attempts and remaining work. Prepare a bounded recovery or revised budget proposal with its exact scope and applicable policy before requesting any new spending authority; do not reset counters.'
+        else:
+            action=f'Resolve the recorded blocker ({reason}). Reconcile the current candidate and ownership, then resume a clean enrollment with --reconciled-run none. Ordinary repair and resumption within existing authority need no new consent.'
+        return next_step(action,trigger='after technical reconciliation; continue independent ready work now')
+    return next_step('Inspect the recorded state and applicable recovery procedure; establish the next valid action before executing anything.',trigger='now; state is unknown')
+
+
+def rejected_next_step(reason):
+    detail=str(reason)[:4000]
+    return next_step(f'Inspect and fix the reported prerequisite or configuration error: {detail}. Retry the same command only after the failure is understood. If a native approval is the actual blocker, identify its action and platform control explicitly.')
+
+
+def status_report(state, summary, action, owner='controller', trigger='now', authorization=None, **extra):
+    require(state in {'RUNNING','WAITING','BLOCKED','NEEDS_AUTHORIZATION','COMPLETE'}, 'Unknown project progress state')
+    text_field(summary,'Progress summary')
+    step=next_step(action,owner,trigger,authorization=authorization,continue_independent_work=state!='COMPLETE')
+    require((state=='NEEDS_AUTHORIZATION')==step['authorization']['required'], 'Status and authorization requirement disagree')
+    return {**extra,'status':state,'summary':summary,'next_step':step,'execution_authority':False}
+
+
+def gate_handoff(gate, request, config, contracts, now):
+    """Render an existing fresh request; never invent a missing candidate/permit."""
+    from .authorization import render_request
+    from .lifecycle import definition
+    from .policy import validate_config
+    contracts.validate('final-gate',gate)
+    contracts.validate('authorization-request',request)
+    policy=validate_config(config,definition(),contracts)
+    require(gate['conclusion']=='READY_FOR_OWNER_AUTHORIZATION','Complete the failing final gate before requesting owner authorization')
+    require(request['candidate']==gate['candidate'] and request['binding']==gate['binding'] and
+        request['gate_id']==gate['record_id'] and request['gate_hash']==fingerprint('gate',gate), 'Gate/request candidate or identity mismatch')
+    require(gate['binding']['policy_hash']==policy and gate['binding']['project_id']==config['project']['id'] and
+        gate['binding']['repository_id']==config['github']['repository_id'], 'Gate uses a different or superseded project policy')
+    candidate=gate['candidate']
+    require(gate['binding']['candidate_id']==fingerprint('candidate',candidate), 'Gate candidate fingerprint does not match its complete candidate')
+    github=config['github']
+    require(all(candidate[field]==github[key] for field,key in [('host','host'),('repository_id','repository_id'),
+        ('repository','repository'),('target_base_branch','base_branch'),('merge_method','merge_method')]),
+        'Gate candidate repository, host, target or merge method differs from current project policy')
+    require(timestamp(gate['created_at']) <= timestamp(request['created_at']) <= timestamp(now) < timestamp(gate['expires_at']) and
+        request['expires_at']==gate['expires_at'], 'Authorization request is stale, future-dated or temporally inconsistent')
+    require((timestamp(gate['expires_at'])-timestamp(gate['created_at'])).total_seconds() <= config['merge_gate']['authorization_ttl_seconds'], 'Gate lifetime exceeds current policy')
+    phrase=render_request(request)
+    require(request['expected_text']==phrase,'Stored approval phrase differs from its bound fields')
+    return status_report('NEEDS_AUTHORIZATION',
+        f'Offline final-gate records are consistent for {candidate["repository"]} PR #{candidate["pr_number"]}; current live source, owner identity/quorum and repository controls still require verification.',
+        'Verify current live evidence and owner eligibility, then obtain the explicit candidate-bound merge decision in the configured authorization channel.',
+        owner='controller then eligible owner',trigger='only after live source checks; the phrase is not an execution permit',
+        authorization={'required':True,'reason':'The complete workflow requires explicit human authorization of this exact final candidate.',
+            'source':'.agentic/PROJECT_CONFIG.yaml: merge_gate.human_authorization_required; .agentic/docs/08-MERGE-GATE.md', 'phrase':phrase},
+        live_source_verified=False,owner_quorum_verified=False)
+
+
+def render_markdown(value):
+    step=value['next_step']
+    # Validate both hand-authored status and derived reports before presentation.
+    next_step(step['action'],step['owner'],step['trigger'],authorization=step['authorization'],
+        continue_independent_work=step['continue_independent_work'])
+    summary=value.get('summary') or value.get('reason') or value.get('status') or value.get('phase') or 'Progress recorded'
+    state=value.get('status') or value.get('phase') or value.get('decision') or 'RECORDED'
+    lines=[f'State: {state}',str(summary),'',f'Next: {step["action"]}',f'Owner: {step["owner"]}.',f'Trigger: {step["trigger"]}.']
+    auth=step['authorization']
+    if auth['required']:
+        lines += ['',f'Authorization required: {auth["reason"]}',f'Required by: {auth["source"]}']
+        if auth['phrase'] is not None:
+            # Fence length must exceed backticks in arbitrary supplied prose.
+            import re
+            fence='`'*max(3,1+max([len(x) for x in re.findall(r'`+',auth['phrase'])] or [0]))
+            lines += ['', 'Approval phrase (reply or submit in the required authorization channel):',fence+'text',auth['phrase'],fence]
+        else:
+            lines += ['', 'Use the required native approval control; no reliable chat authorization phrase is available.']
+    else:
+        lines += ['', 'New AWF authorization requested: none.']
+    if step['continue_independent_work']:
+        lines += ['Continue other authorized, dependency-ready work while waiting.']
+    return '\n'.join(lines)+'\n'

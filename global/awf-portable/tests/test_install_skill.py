@@ -62,6 +62,17 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(installer.inventory(self.dest), before)
         self.assertFalse(self.backups.exists())
 
+    def test_fresh_default_install_with_empty_home_and_no_prior_skill(self):
+        profile = self.root / "empty-home"
+        codex_home = profile / ".codex"
+        with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False), \
+                patch.object(Path, "home", return_value=profile):
+            result = installer.install(self.source, self.pin)
+        destination = codex_home / "skills" / "awf"
+        self.assertEqual(result["status"], "installed")
+        self.assertEqual(Path(result["destination"]), destination)
+        self.assertTrue((destination / installer.RECEIPT).is_file())
+
     def test_upgrade_then_idempotence_with_local_files(self):
         self.old_skill()
         self.run_install()
