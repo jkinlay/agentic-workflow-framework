@@ -546,6 +546,41 @@ class PublicationRewriteTests(unittest.TestCase):
                                  capture_output=True, text=True)
         self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
 
+    def test_ac44_failed_final_cas_rechecks_raw_reflog_after_unlink_race(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+        real_remove = publication._remove_new_loose_object
+        created = []
+
+        def fail_final_update(root, *args, **kwargs):
+            if args and args[0] == "update-ref" and args[1] == "refs/heads/awf/EX-6-publication":
+                created.append(args[2])
+                return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
+            return real_git(root, *args, **kwargs)
+
+        def concurrent_ref_cycle_then_unlink(destination, parent_existed):
+            real_git(self.repo.path, "update-ref", "refs/heads/concurrent-race", created[0])
+            real_git(self.repo.path, "update-ref", "refs/heads/concurrent-race", head, created[0])
+            real_remove(destination, parent_existed)
+
+        with mock.patch.object(publication, "_git", side_effect=fail_final_update), \
+                mock.patch.object(publication, "_remove_new_loose_object",
+                                  side_effect=concurrent_ref_cycle_then_unlink):
+            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "refs/heads/concurrent-race^{commit}"))
+        raw_log = self.repo.path / ".git" / "logs" / "refs" / "heads" / "concurrent-race"
+        self.assertIn(created[0].encode("ascii"), raw_log.read_bytes())
+        self.assertEqual("", git(self.repo.path, "cat-file", "-e", created[0] + "^{commit}"))
+        checked = subprocess.run(["git", "-C", str(self.repo.path), "fsck", "--full"],
+                                 capture_output=True, text=True)
+        self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
+
     def test_ac44_invalid_utf8_message_refuses_without_change(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.bin"
