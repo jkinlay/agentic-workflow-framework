@@ -605,6 +605,108 @@ class PublicationRewriteTests(unittest.TestCase):
                                  capture_output=True, text=True)
         self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
 
+    def test_ac44_failed_final_cas_restores_reflogless_detached_head_after_unlink_race(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        git(self.repo.path, "config", "core.logAllRefUpdates", "false")
+        (self.repo.path / ".git" / "logs" / "HEAD").unlink(missing_ok=True)
+        real_git = publication._git
+        real_remove = publication._remove_new_loose_object
+        created = []
+
+        def fail_final_update(root, *args, **kwargs):
+            if args and args[0] == "update-ref" and args[1] == "refs/heads/awf/EX-6-publication":
+                created.append(args[2])
+                return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
+            return real_git(root, *args, **kwargs)
+
+        def detach_head_then_unlink(destination, parent_existed):
+            real_git(self.repo.path, "update-ref", "--no-deref", "HEAD", created[0])
+            real_remove(destination, parent_existed)
+
+        with mock.patch.object(publication, "_git", side_effect=fail_final_update), \
+                mock.patch.object(publication, "_remove_new_loose_object",
+                                  side_effect=detach_head_then_unlink):
+            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertFalse((self.repo.path / ".git" / "logs" / "HEAD").exists())
+        self.assertEqual(created[0], git(self.repo.path, "rev-parse", "HEAD^{commit}"))
+        self.assertEqual("", git(self.repo.path, "cat-file", "-e", created[0] + "^{commit}"))
+        checked = subprocess.run(["git", "-C", str(self.repo.path), "fsck", "--full"],
+                                 capture_output=True, text=True)
+        self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
+
+    def test_ac44_failed_final_cas_restores_reflogless_orig_head_after_unlink_race(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        git(self.repo.path, "config", "core.logAllRefUpdates", "false")
+        (self.repo.path / ".git" / "logs" / "ORIG_HEAD").unlink(missing_ok=True)
+        real_git = publication._git
+        real_remove = publication._remove_new_loose_object
+        created = []
+
+        def fail_final_update(root, *args, **kwargs):
+            if args and args[0] == "update-ref" and args[1] == "refs/heads/awf/EX-6-publication":
+                created.append(args[2])
+                return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
+            return real_git(root, *args, **kwargs)
+
+        def claim_orig_head_then_unlink(destination, parent_existed):
+            real_git(self.repo.path, "update-ref", "ORIG_HEAD", created[0])
+            real_remove(destination, parent_existed)
+
+        with mock.patch.object(publication, "_git", side_effect=fail_final_update), \
+                mock.patch.object(publication, "_remove_new_loose_object",
+                                  side_effect=claim_orig_head_then_unlink):
+            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertFalse((self.repo.path / ".git" / "logs" / "ORIG_HEAD").exists())
+        self.assertEqual(created[0], git(self.repo.path, "rev-parse", "ORIG_HEAD^{commit}"))
+        self.assertEqual("", git(self.repo.path, "cat-file", "-e", created[0] + "^{commit}"))
+        checked = subprocess.run(["git", "-C", str(self.repo.path), "fsck", "--full"],
+                                 capture_output=True, text=True)
+        self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
+
+    def test_ac44_failed_final_cas_restores_linked_worktree_detached_head_after_unlink_race(self):
+        linked = Path(self.temp.name) / "linked"
+        git(self.repo.path, "config", "core.logAllRefUpdates", "false")
+        git(self.repo.path, "worktree", "add", "--detach", str(linked), self.repo.base)
+        linked_git_dir = Path(git(linked, "rev-parse", "--git-dir"))
+        (linked_git_dir / "logs" / "HEAD").unlink(missing_ok=True)
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        real_git = publication._git
+        real_remove = publication._remove_new_loose_object
+        created = []
+
+        def fail_final_update(root, *args, **kwargs):
+            if args and args[0] == "update-ref" and args[1] == "refs/heads/awf/EX-6-publication":
+                created.append(args[2])
+                return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
+            return real_git(root, *args, **kwargs)
+
+        def detach_linked_head_then_unlink(destination, parent_existed):
+            real_git(linked, "update-ref", "--no-deref", "HEAD", created[0])
+            real_remove(destination, parent_existed)
+
+        with mock.patch.object(publication, "_git", side_effect=fail_final_update), \
+                mock.patch.object(publication, "_remove_new_loose_object",
+                                  side_effect=detach_linked_head_then_unlink):
+            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertFalse((linked_git_dir / "logs" / "HEAD").exists())
+        self.assertEqual(created[0], git(linked, "rev-parse", "HEAD^{commit}"))
+        self.assertEqual("", git(self.repo.path, "cat-file", "-e", created[0] + "^{commit}"))
+        checked = subprocess.run(["git", "-C", str(self.repo.path), "fsck", "--full"],
+                                 capture_output=True, text=True)
+        self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
+
     def test_ac44_invalid_utf8_message_refuses_without_change(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.bin"
