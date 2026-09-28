@@ -279,6 +279,13 @@ class HostTests(unittest.TestCase):
         driver.git=local_git  # Explicit local transport seam; production forbids it.
         candidate={**CANDIDATE,'head':head,'base':base}
         driver.snapshot=lambda: {**candidate,'head':command('--git-dir',str(remote),'rev-parse','refs/heads/codex/test')}
+        driver.api_calls=[]
+        def api(endpoint):
+            driver.api_calls.append(endpoint)
+            if endpoint != 'pulls/7':
+                raise AssertionError('Unexpected fixture API endpoint: '+endpoint)
+            return {'body':'Synthetic draft body.\n'}
+        driver.api=api
         def agent(role,current,findings,run_id,files=None):
             (worker/'src/a.py').write_text('value = 3\n')
             return {'candidate':current,'outcome':'CHANGED','summary':'Synthetic file edit; no model called'}
@@ -292,6 +299,7 @@ class HostTests(unittest.TestCase):
         self.assertEqual(driver.snapshot(),amended)
         self.assertEqual(command('-C',str(driver.worker),'rev-parse','HEAD^'),candidate['head'])
         self.assertEqual(command('-C',str(driver.worker),'status','--porcelain'),'')
+        self.assertEqual(driver.api_calls,['pulls/7'])
 
     def test_real_local_git_scope_escape_cannot_publish(self):
         driver,candidate,command=self.local_git_driver()
@@ -420,5 +428,5 @@ class HostTests(unittest.TestCase):
     def test_protected_paths_and_unsafe_names(self):
         for value in ['AGENTS.md','src/AGENTS.md','.agentic/a','x/.codex/a','.github/workflows/ci.yml','scripts/bootstrap_project.py']:
             self.assertTrue(protected(value))
-        for value in ['../a','/a','-a','C:/a','a\\b','a\nsecret']:
+        for value in ['../a','/a','-a','C'+':/a','a\\b','a\nsecret']:
             self.assertFalse(safe_path(value))

@@ -10,7 +10,7 @@ Preserve owners and one writer per overlapping path. Follow [native streams](../
 
 WORKER_COMPLETED requires COMPLETE, `branch_pushed` and `pr_exists`: publish a draft against `github.base_branch` and bind records to its observed head. After validation, mark ready, observe `draft_cleared`, then dispatch the critic. Owner-ready requires critic, specialists and final gate; gates never authorize merge.
 
-Before any push or draft PR, render its body and run `publication-scan` over the exact base/head/body. Require exit 0 and a PASS receipt with matching resolved refs and body digest; retain it for `publication_safety`. Scan comments against that base/head before posting. Findings and unscanned content block; later deletion does not clean history. `diff --check` is whitespace-only. `publication-rewrite` may squash only unpublished history; published rewriting is an owner decision.
+Before any push or draft PR, render its body and run `publication-scan` on exact base/head/body. Require exit 0 and a matching PASS receipt for `publication_safety`; scan comments before posting. Blocking findings and unscanned content refuse publication; `PRE_EXISTING` does not, and later deletion cannot clean newly introduced history. `diff --check` is whitespace-only. `publication-rewrite` may squash only unpublished history; published rewriting is an owner decision.
 
 You alone write Jira: WORKER_STARTED=`in_progress`, PR_READY=`in_review`, owner changes=`in_progress`, JIRA_RECONCILED=`done` with PR/head/merge. BLOCK/PARK never write; owner-closure tickets remain In Review. Read before/after; mismatch stops writes. Never transition Epics. Post bound digests; comments never transition.
 

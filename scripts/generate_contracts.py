@@ -195,15 +195,22 @@ def catalog():
         "specialist_domains": STRINGS, "classification_complete": BOOL, "collector_attestation_id": UUID,
         "evidence": EVIDENCE})
     scan_finding = obj({"commit": OBJECT_ID, "path": text(), "line": nullable(integer(1)), "source": text(),
-        "change": nullable(enum("added", "deleted")), "detector_id": text(), "redacted_excerpt": text()})
-    unscanned = obj({"commit": OBJECT_ID, "path": text(), "source": text(), "reason": enum("binary", "oversize"),
+        "change": nullable(enum("added", "deleted")), "classification": enum("BLOCKING", "PRE_EXISTING"),
+        "detector_id": text(), "match_sha256": DIGEST})
+    unscanned = obj({"commit": OBJECT_ID, "path": text(), "source": text(),
+        "reason": enum("binary", "oversize", "invalid-utf8", "line-too-long"),
         "parent": nullable(OBJECT_ID)})
+    base_tree_search = obj({"complete": BOOL, "blobs_scanned": integer(), "bytes_scanned": integer(),
+        "max_blobs": integer(1), "max_bytes": integer(1),
+        "reason": nullable(enum("binary", "oversize", "invalid-utf8", "line-too-long", "blob-limit", "byte-limit"))})
     schemas["publication-scan"] = obj({"schema_version": const(3), "status": enum("PASS", "BLOCKED"),
         "base_sha": OBJECT_ID, "head_sha": OBJECT_ID, "pr_body_sha256": nullable(DIGEST),
         "additional_pr_body_sha256": arr(DIGEST), "comment_sha256": arr(DIGEST),
         "mapping_sha256": nullable(DIGEST), "project_config_sha256": nullable(DIGEST),
         "mapping_loaded": BOOL, "mapping_location": const(".agentic-state/publication-deny.json"),
-        "commits_scanned": arr(OBJECT_ID), "findings": arr(scan_finding), "unscanned": arr(unscanned),
+        "commits_scanned": arr(OBJECT_ID), "blocking_findings_count": integer(),
+        "pre_existing_findings_count": integer(), "findings": arr(scan_finding), "unscanned": arr(unscanned),
+        "base_tree_search": base_tree_search,
         "coverage": obj({"current_files": TRUE, "commit_messages": TRUE, "every_patch": TRUE,
             "generated_reports": text(), "captured_command_output": text(), "pr_bodies": BOOL, "pr_comments": BOOL}),
         "execution_authority": FALSE})

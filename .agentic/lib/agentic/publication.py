@@ -1,8 +1,8 @@
 """History-aware publication scanning and unpublished-branch rewriting.
 
-Findings deliberately contain only redacted match fingerprints.  Git paths are
-read from NUL-delimited plumbing and blob content is decoded with replacement,
-so unusual path bytes and non-UTF-8 text cannot desynchronise the scan.
+Findings deliberately contain only detector identifiers and match digests. Git
+paths are read from NUL-delimited plumbing. Content which is not strict UTF-8
+is unscanned and blocks instead of being decoded with replacement.
 """
 from __future__ import annotations
 
@@ -20,11 +20,14 @@ import tempfile
 
 from . import ValidationError
 from .child_process import child_env
-from .gittree import verify_publisher_tree
 
 
 DEFAULT_MAPPING = Path(".agentic-state/publication-deny.json")
 MAX_TEXT_BYTES = 32 * 1024 * 1024
+MAX_SCAN_LINE_CHARS = 16 * 1024
+MAX_CONFIG_REGEX_CHARS = 512
+MAX_BASE_TREE_BLOBS = 100_000
+MAX_BASE_TREE_BYTES = 256 * 1024 * 1024
 ALIAS = re.compile(r"^[a-z][a-z0-9_]*$")
 UNC = re.compile(r"(?<![\\])\\\\[A-Za-z0-9][A-Za-z0-9._-]*[\\/][^\s<>:\"|?*]+(?:[\\/][^\s<>:\"|?*]+)*")
 WINDOWS_ABSOLUTE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[^\s<>:\"|?*]+[\\/]?)+")
@@ -38,6 +41,10 @@ class Detector:
     detector_id: str
     regex: re.Pattern
     private_ip: bool = False
+
+
+class _ScanLimit(Exception):
+    pass
 
 
 def _safe_env(extra=None):
@@ -78,7 +85,83 @@ def _json_file(path, label):
     return value
 
 
-def load_mapping(root, mapping_path=None):
+def _validate_configured_regex(pattern, label):
+    """Reject large and structurally dangerous operator-supplied regexes."""
+    if not isinstance(pattern, str) or not pattern or len(pattern) > MAX_CONFIG_REGEX_CHARS:
+        raise ValidationError(f"{label} regular expressions must contain 1-{MAX_CONFIG_REGEX_CHARS} characters")
+    if re.search(r"\\[1-9]|\(\?P=", pattern):
+        raise ValidationError(f"{label} contains a backreference, which is not allowed")
+    # Configuration does not need lookarounds or inline mode changes: matching
+    # is already case-insensitive. Refusing these keeps the complexity audit
+    # small and deterministic. Non-capturing groups remain available.
+    if "(?" in pattern.replace("(?:", ""):
+        raise ValidationError(f"{label} contains an unsupported group extension")
+    groups = [{"repeat": False, "branch": False}]
+    group_atoms = []
+    in_class = False
+    escaped = False
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if escaped:
+            escaped = False
+            group_atoms.append(None)
+        elif char == "\\":
+            escaped = True
+        elif in_class:
+            if char == "]":
+                in_class = False
+                group_atoms.append(None)
+        elif char == "[":
+            in_class = True
+        elif char == "(":
+            groups.append({"repeat": False, "branch": False})
+            group_atoms.append(None)
+            if pattern[index:index + 3] == "(?:":
+                index += 2
+        elif char == ")":
+            if len(groups) > 1:
+                group_atoms.append(groups.pop())
+        elif char == "|":
+            groups[-1]["branch"] = True
+            group_atoms.append(None)
+        elif char in "*+?" or char == "{":
+            atom = group_atoms[-1] if group_atoms else None
+            if isinstance(atom, dict) and (atom["repeat"] or atom["branch"]):
+                raise ValidationError(f"{label} contains a repeated group with nested repetition or alternation")
+            groups[-1]["repeat"] = True
+            group_atoms.append(None)
+        elif char not in "^$":
+            group_atoms.append(None)
+        index += 1
+    try:
+        return re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise ValidationError(f"{label} contains an invalid regular expression") from exc
+
+
+def _assert_mapping_untracked(root, path, tracked_head="HEAD", extra_env=None):
+    """A candidate-controlled mapping must never suppress a built-in."""
+    root = Path(root).resolve()
+    absolute = Path(path).absolute()
+    try:
+        relative = absolute.relative_to(root).as_posix()
+    except ValueError:
+        return
+    indexed = _git(root, "ls-files", "--error-unmatch", "--", relative, check=False, extra_env=extra_env)
+    if indexed.returncode == 0:
+        raise ValidationError("Operator-local publication mapping is tracked in the index; remove it from Git before scanning")
+    if indexed.returncode != 1:
+        raise ValidationError("Operator-local publication mapping index state could not be verified")
+    in_head = _git(root, "ls-tree", "-z", "--full-tree", tracked_head, "--", relative,
+                   check=False, extra_env=extra_env)
+    if in_head.returncode:
+        raise ValidationError("Operator-local publication mapping HEAD state could not be verified")
+    if in_head.stdout:
+        raise ValidationError("Operator-local publication mapping is tracked in HEAD; remove it from Git before scanning")
+
+
+def load_mapping(root, mapping_path=None, *, tracked_head="HEAD", extra_env=None):
     """Load the ignored operator-local mapping without returning private values in errors."""
     path = Path(mapping_path) if mapping_path else Path(root) / DEFAULT_MAPPING
     if not path.is_absolute():
@@ -86,6 +169,7 @@ def load_mapping(root, mapping_path=None):
     if not path.exists():
         return {"version": 1, "aliases": {}, "deny_literals": [], "deny_regexes": [],
                 "internal_hostnames": [], "builtin_allow": []}, None, path
+    _assert_mapping_untracked(root, path, tracked_head, extra_env)
     value = _json_file(path, "operator-local publication mapping")
     allowed = {"version", "aliases", "deny_literals", "deny_regexes", "internal_hostnames", "builtin_allow"}
     if set(value) - allowed or value.get("version") != 1:
@@ -107,10 +191,7 @@ def load_mapping(root, mapping_path=None):
         for item in values:
             if not isinstance(item, dict) or set(item) != {"id", "pattern"} or not ALIAS.fullmatch(item["id"]):
                 raise ValidationError(f"Mapping {key} entries need lower-case id and pattern")
-            try:
-                re.compile(item["pattern"], re.IGNORECASE)
-            except re.error as exc:
-                raise ValidationError(f"Mapping {key} contains an invalid regular expression") from exc
+            _validate_configured_regex(item["pattern"], f"Mapping {key}")
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return value, hashlib.sha256(canonical).hexdigest(), path
 
@@ -143,10 +224,7 @@ def _project_declarations(root, config_path=None):
     for item in publication.get("deny_regexes", []):
         if not isinstance(item, dict) or set(item) != {"id", "pattern"} or not ALIAS.fullmatch(item["id"]):
             raise ValidationError("Project publication regex entries need lower-case id and pattern")
-        try:
-            re.compile(item["pattern"], re.IGNORECASE)
-        except re.error as exc:
-            raise ValidationError("Project publication declarations contain an invalid regular expression") from exc
+        _validate_configured_regex(item["pattern"], "Project publication declarations")
     return publication, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -168,9 +246,8 @@ def _detectors(mapping, declarations):
     return result, allows
 
 
-def _redacted(value):
-    prefix = value[:2].encode("unicode_escape").decode("ascii")
-    return f"{prefix}… sha256:{hashlib.sha256(value.encode('utf-8', 'surrogatepass')).hexdigest()[:12]}"
+def _match_digest(value):
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _private_ip(value):
@@ -179,15 +256,18 @@ def _private_ip(value):
     except ValueError:
         return False
     if isinstance(address, ipaddress.IPv4Address):
-        return (address in ipaddress.ip_network("10.0.0.0/8") or
-                address in ipaddress.ip_network("172.16.0.0/12") or
-                address in ipaddress.ip_network("192.168.0.0/16"))
-    return address in ipaddress.ip_network("fc00::/7")
+        networks = ("10" + ".0.0.0/8", "172" + ".16.0.0/12", "192" + ".168.0.0/16")
+        return any(address in ipaddress.ip_network(network) for network in networks)
+    return address in ipaddress.ip_network("fc00" + ":" + ":/7")
 
 
-def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, change=None):
-    findings = []
-    for number, line in enumerate(text.splitlines() or [text], 1):
+def _iter_matches(text, detectors, allows):
+    if len(text.encode("utf-8", "surrogatepass")) > MAX_TEXT_BYTES:
+        raise _ScanLimit("oversize")
+    lines = text.splitlines() or [text]
+    if any(len(line) > MAX_SCAN_LINE_CHARS for line in lines):
+        raise _ScanLimit("line-too-long")
+    for number, line in enumerate(lines, 1):
         for detector in detectors:
             for match in detector.regex.finditer(line):
                 value = match.group(0)
@@ -197,9 +277,22 @@ def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, 
                         allow_id in {"all", detector.detector_id.removeprefix("builtin.")} and pattern.search(value)
                         for allow_id, pattern in allows):
                     continue
-                findings.append({"commit": commit, "path": path, "line": number + line_offset,
-                                 "source": source, "change": change, "detector_id": detector.detector_id,
-                                 "redacted_excerpt": _redacted(value)})
+                yield number, detector.detector_id, value
+
+
+def _scan_text(text, *, commit, path, source, detectors, allows, preexisting=frozenset(),
+               line_offset=0, change=None):
+    findings = []
+    for number, detector_id, value in _iter_matches(text, detectors, allows):
+        # Membership contains only matches positively observed in the bounded
+        # base scan. An incomplete scan never infers membership for unseen
+        # values, but a later unrelated scan failure must not erase proof that
+        # this exact detector/value pair was already observed.
+        classification = ("PRE_EXISTING" if (detector_id, value.casefold()) in preexisting
+                          else "BLOCKING")
+        findings.append({"commit": commit, "path": path, "line": number + line_offset,
+                         "source": source, "change": change, "classification": classification,
+                         "detector_id": detector_id, "match_sha256": _match_digest(value)})
     return findings
 
 
@@ -218,15 +311,19 @@ def _tree(root, commit, extra_env=None):
 def _blob(root, oid, extra_env=None):
     value = _git(root, "cat-file", "blob", oid, extra_env=extra_env).stdout
     if len(value) > MAX_TEXT_BYTES:
-        return None, "oversize"
+        return None, "oversize", len(value)
     if b"\0" in value:
-        return None, "binary"
-    return value.decode("utf-8", "replace"), None
+        return None, "binary", len(value)
+    try:
+        return value.decode("utf-8", "strict"), None, len(value)
+    except UnicodeDecodeError:
+        return None, "invalid-utf8", len(value)
 
 
 def _changed_pairs(root, old, new, extra_env=None):
-    raw = _git(root, "diff-tree", "-r", "-z", "--no-commit-id", "--name-status", "-M", old, new,
-               extra_env=extra_env).stdout.split(b"\0")
+    args = ["diff-tree", "-r", "-z", "--no-commit-id", "--name-status", "-M"]
+    args.extend((old, new) if old is not None else ("--root", new))
+    raw = _git(root, *args, extra_env=extra_env).stdout.split(b"\0")
     result, index = [], 0
     while index < len(raw) and raw[index]:
         status = raw[index].decode("ascii", "replace")
@@ -246,47 +343,112 @@ def _changed_pairs(root, old, new, extra_env=None):
 def _path_for_output(path, detectors, allows):
     if path is None:
         return None
-    if _scan_text(path, commit=None, path="path", source="path", detectors=detectors, allows=allows):
+    try:
+        sensitive = _scan_text(path, commit=None, path="path", source="path", detectors=detectors, allows=allows)
+    except _ScanLimit:
+        sensitive = True
+    if sensitive:
         return "redacted-path sha256:" + hashlib.sha256(path.encode("utf-8", "surrogatepass")).hexdigest()[:12]
     return path
 
 
+def _base_tree_membership(root, base_sha, detectors, allows, tree, extra_env=None):
+    """Return detector/value membership only after a complete bounded scan."""
+    matches, seen = set(), set()
+    blobs_scanned = 0
+    bytes_scanned = 0
+    reason = None
+    for _path, (_mode, kind, oid) in sorted(tree.items()):
+        if kind != "blob" or oid in seen:
+            continue
+        seen.add(oid)
+        if blobs_scanned >= MAX_BASE_TREE_BLOBS:
+            reason = "blob-limit"
+            break
+        text, blob_reason, size = _blob(root, oid, extra_env)
+        if bytes_scanned + size > MAX_BASE_TREE_BYTES:
+            reason = "byte-limit"
+            break
+        blobs_scanned += 1
+        bytes_scanned += size
+        if blob_reason:
+            reason = reason or blob_reason
+            continue
+        try:
+            matches.update((detector_id, value.casefold())
+                           for _line, detector_id, value in _iter_matches(text, detectors, allows))
+        except _ScanLimit as exc:
+            reason = reason or str(exc)
+            continue
+    complete = reason is None
+    return matches, {
+        "complete": complete,
+        "blobs_scanned": blobs_scanned,
+        "bytes_scanned": bytes_scanned,
+        "max_blobs": MAX_BASE_TREE_BLOBS,
+        "max_bytes": MAX_BASE_TREE_BYTES,
+        "reason": reason,
+    }
+
+
+def _append_scan(findings, unscanned, text, *, commit, path, source, detectors, allows,
+                 preexisting, parent=None, line_offset=0, change=None):
+    try:
+        findings.extend(_scan_text(text, commit=commit, path=path, source=source, detectors=detectors,
+                                  allows=allows, preexisting=preexisting,
+                                  line_offset=line_offset, change=change))
+    except _ScanLimit as exc:
+        unscanned.append({"commit": commit, "path": path, "source": source,
+                          "reason": str(exc), "parent": parent})
+
+
 def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_body_texts=(), comment_texts=(),
                     mapping_path=None, config_path=None, extra_env=None):
-    """Scan branch history, final changed files, and prospective provider text."""
+    """Scan branch history, complete touched head files, and provider text."""
     root = Path(root).resolve()
     base_sha = _git(root, "rev-parse", "--verify", base + "^{commit}", extra_env=extra_env).stdout.decode("ascii").strip()
     head_sha = _git(root, "rev-parse", "--verify", head + "^{commit}", extra_env=extra_env).stdout.decode("ascii").strip()
     ancestor = _git(root, "merge-base", "--is-ancestor", base_sha, head_sha, extra_env=extra_env, check=False)
     if ancestor.returncode != 0:
         raise ValidationError("Publication base must be an ancestor of head")
-    mapping, mapping_sha, mapping_file = load_mapping(root, mapping_path)
+    mapping, mapping_sha, _mapping_file = load_mapping(root, mapping_path, tracked_head=head_sha,
+                                                        extra_env=extra_env)
     declarations, config_sha = _project_declarations(root, config_path)
     detectors, allows = _detectors(mapping, declarations)
+    tree_cache = {}
+    base_tree = tree_cache.setdefault(base_sha, _tree(root, base_sha, extra_env))
+    preexisting, base_search = _base_tree_membership(
+        root, base_sha, detectors, allows, base_tree, extra_env)
     commits = [item.decode("ascii") for item in _git(root, "rev-list", "--reverse", "--topo-order", base_sha + ".." + head_sha,
                                                        extra_env=extra_env).stdout.splitlines()]
     findings, unscanned = [], []
-    tree_cache = {}
     for commit in commits:
         raw_commit = _git(root, "cat-file", "commit", commit, extra_env=extra_env).stdout
         message = raw_commit.split(b"\n\n", 1)[1] if b"\n\n" in raw_commit else b""
-        findings += _scan_text(message.decode("utf-8", "replace"), commit=commit, path="message", source="message",
-                               detectors=detectors, allows=allows)
+        try:
+            message_text = message.decode("utf-8", "strict")
+        except UnicodeDecodeError:
+            unscanned.append({"commit": commit, "path": "message", "source": "message",
+                              "reason": "invalid-utf8", "parent": None})
+        else:
+            _append_scan(findings, unscanned, message_text, commit=commit, path="message", source="message",
+                         detectors=detectors, allows=allows, preexisting=preexisting)
         parents = _git(root, "rev-list", "--parents", "-n", "1", commit, extra_env=extra_env).stdout.decode("ascii").split()[1:]
-        for parent in parents:
+        for parent in parents or [None]:
             for status, before_path, after_path in _changed_pairs(root, parent, commit, extra_env):
-                old_tree = tree_cache.setdefault(parent, _tree(root, parent, extra_env))
+                old_tree = {} if parent is None else tree_cache.setdefault(parent, _tree(root, parent, extra_env))
                 new_tree = tree_cache.setdefault(commit, _tree(root, commit, extra_env))
                 output_path = _path_for_output(after_path or before_path, detectors, allows)
                 path_text = (before_path or "") + "\n" + (after_path or "")
-                findings += _scan_text(path_text, commit=commit, path=output_path, source="patch-path",
-                                       detectors=detectors, allows=allows)
+                _append_scan(findings, unscanned, path_text, commit=commit, path=output_path,
+                             source="patch-path", detectors=detectors, allows=allows,
+                             preexisting=preexisting, parent=parent)
                 old_text, old_reason = ("", None)
                 new_text, new_reason = ("", None)
                 if before_path and before_path in old_tree and old_tree[before_path][1] == "blob":
-                    old_text, old_reason = _blob(root, old_tree[before_path][2], extra_env)
+                    old_text, old_reason, _old_size = _blob(root, old_tree[before_path][2], extra_env)
                 if after_path and after_path in new_tree and new_tree[after_path][1] == "blob":
-                    new_text, new_reason = _blob(root, new_tree[after_path][2], extra_env)
+                    new_text, new_reason, _new_size = _blob(root, new_tree[after_path][2], extra_env)
                 if old_reason or new_reason:
                     unscanned.append({"commit": commit, "path": output_path, "source": "patch",
                                       "reason": old_reason or new_reason, "parent": parent})
@@ -295,49 +457,77 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                 matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
                 for opcode, a1, a2, b1, b2 in matcher.get_opcodes():
                     if opcode in {"delete", "replace"}:
-                        findings += _scan_text("\n".join(old_lines[a1:a2]), commit=commit, path=output_path,
-                                               source="patch", change="deleted", line_offset=a1,
-                                               detectors=detectors, allows=allows)
+                        _append_scan(findings, unscanned, "\n".join(old_lines[a1:a2]), commit=commit,
+                                     path=output_path, source="patch", change="deleted", line_offset=a1,
+                                     detectors=detectors, allows=allows, preexisting=preexisting,
+                                     parent=parent)
                     if opcode in {"insert", "replace"}:
-                        findings += _scan_text("\n".join(new_lines[b1:b2]), commit=commit, path=output_path,
-                                               source="patch", change="added", line_offset=b1,
-                                               detectors=detectors, allows=allows)
-    base_tree = tree_cache.setdefault(base_sha, _tree(root, base_sha, extra_env))
+                        _append_scan(findings, unscanned, "\n".join(new_lines[b1:b2]), commit=commit,
+                                     path=output_path, source="patch", change="added", line_offset=b1,
+                                     detectors=detectors, allows=allows, preexisting=preexisting,
+                                     parent=parent)
     head_tree = tree_cache.setdefault(head_sha, _tree(root, head_sha, extra_env))
-    for _status, before_path, path in _changed_pairs(root, base_sha, head_sha, extra_env):
+    for _status, _before_path, path in _changed_pairs(root, base_sha, head_sha, extra_env):
         if path is None or path not in head_tree or head_tree[path][1] != "blob":
             continue
         output_path = _path_for_output(path, detectors, allows)
-        new_text, reason = _blob(root, head_tree[path][2], extra_env)
-        old_text, old_reason = "", None
-        if before_path and before_path in base_tree and base_tree[before_path][1] == "blob":
-            old_text, old_reason = _blob(root, base_tree[before_path][2], extra_env)
-        if reason or old_reason:
-            unscanned.append({"commit": head_sha, "path": output_path, "source": "current-file", "reason": reason or old_reason,
+        new_text, reason, _size = _blob(root, head_tree[path][2], extra_env)
+        if reason:
+            unscanned.append({"commit": head_sha, "path": output_path, "source": "current-file", "reason": reason,
                               "parent": None})
         else:
-            old_lines, new_lines = old_text.splitlines(), new_text.splitlines()
-            for opcode, _a1, _a2, b1, b2 in difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False).get_opcodes():
-                if opcode in {"insert", "replace"}:
-                    findings += _scan_text("\n".join(new_lines[b1:b2]), commit=head_sha, path=output_path,
-                                           source="current-file", line_offset=b1, detectors=detectors, allows=allows)
+            _append_scan(findings, unscanned, new_text, commit=head_sha, path=output_path,
+                         source="current-file", detectors=detectors, allows=allows,
+                         preexisting=preexisting)
     body_hashes, comment_hashes = [], []
-    body_values = list(pr_body_texts) + [Path(path).read_text(encoding="utf-8", errors="replace") for path in pr_body_paths]
-    comment_values = list(comment_texts) + [Path(path).read_text(encoding="utf-8", errors="replace") for path in comment_paths]
-    for body in body_values:
+    body_values = [(body, None) for body in pr_body_texts]
+    comment_values = [(comment, None) for comment in comment_texts]
+    for channel, paths, values in (("pr-body", pr_body_paths, body_values),
+                                   ("comment", comment_paths, comment_values)):
+        for path in paths:
+            try:
+                raw = Path(path).read_bytes()
+            except OSError as exc:
+                raise ValidationError(f"Provider text could not be read: {type(exc).__name__}") from exc
+            try:
+                text = raw.decode("utf-8", "strict")
+                reason = None
+            except UnicodeDecodeError:
+                text, reason = None, "invalid-utf8"
+            values.append((text, (reason, raw) if reason else None))
+    for body, problem in body_values:
+        if problem:
+            reason, raw = problem
+            body_hashes.append(hashlib.sha256(raw).hexdigest())
+            unscanned.append({"commit": head_sha, "path": "pr-body", "source": "pr-body",
+                              "reason": reason, "parent": None})
+            continue
         body_hashes.append(hashlib.sha256(body.encode("utf-8")).hexdigest())
-        findings += _scan_text(body, commit=head_sha, path="pr-body", source="pr-body", detectors=detectors, allows=allows)
-    for comment in comment_values:
+        _append_scan(findings, unscanned, body, commit=head_sha, path="pr-body", source="pr-body",
+                     detectors=detectors, allows=allows, preexisting=preexisting)
+    for comment, problem in comment_values:
+        if problem:
+            reason, raw = problem
+            comment_hashes.append(hashlib.sha256(raw).hexdigest())
+            unscanned.append({"commit": head_sha, "path": "comment", "source": "comment",
+                              "reason": reason, "parent": None})
+            continue
         comment_hashes.append(hashlib.sha256(comment.encode("utf-8")).hexdigest())
-        findings += _scan_text(comment, commit=head_sha, path="comment", source="comment", detectors=detectors, allows=allows)
-    findings.sort(key=lambda item: (item["commit"] or "", item["path"] or "", item["line"] or 0, item["detector_id"]))
-    status = "BLOCKED" if findings or unscanned else "PASS"
+        _append_scan(findings, unscanned, comment, commit=head_sha, path="comment", source="comment",
+                     detectors=detectors, allows=allows, preexisting=preexisting)
+    findings.sort(key=lambda item: (item["commit"] or "", item["path"] or "", item["line"] or 0,
+                                    item["detector_id"], item["classification"]))
+    blocking_count = sum(item["classification"] == "BLOCKING" for item in findings)
+    preexisting_count = len(findings) - blocking_count
+    status = "BLOCKED" if blocking_count or unscanned else "PASS"
     return {"schema_version": 3, "status": status, "base_sha": base_sha, "head_sha": head_sha,
             "pr_body_sha256": body_hashes[0] if len(body_hashes) == 1 else None,
             "additional_pr_body_sha256": body_hashes[1:], "comment_sha256": comment_hashes,
             "mapping_sha256": mapping_sha, "project_config_sha256": config_sha,
             "mapping_loaded": mapping_sha is not None, "mapping_location": DEFAULT_MAPPING.as_posix(),
-            "commits_scanned": commits, "findings": findings, "unscanned": unscanned,
+            "commits_scanned": commits, "blocking_findings_count": blocking_count,
+            "pre_existing_findings_count": preexisting_count, "findings": findings, "unscanned": unscanned,
+            "base_tree_search": base_search,
             "coverage": {"current_files": True, "commit_messages": True, "every_patch": True,
                          "generated_reports": "when committed or passed as provider text",
                          "captured_command_output": "when committed or passed as provider text",
@@ -347,25 +537,28 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
 
 def render_scan(result):
     lines = [f"Publication scan: {result['status']}", f"Base: {result['base_sha']}", f"Head: {result['head_sha']}",
-             f"Commits scanned: {len(result['commits_scanned'])}", f"Findings: {len(result['findings'])}",
-             f"Unscanned binary/oversize entries: {len(result['unscanned'])}"]
+             f"Commits scanned: {len(result['commits_scanned'])}",
+             f"Blocking findings: {result['blocking_findings_count']}",
+             f"Pre-existing findings: {result['pre_existing_findings_count']}",
+             f"Unscanned entries: {len(result['unscanned'])}"]
     for item in result["findings"]:
         line = "" if item["line"] is None else f":{item['line']}"
-        lines.append(f"- {item['commit']} {item['path']}{line} {item['detector_id']} {item['redacted_excerpt']}")
+        lines.append(f"- {item['classification']} {item['commit']} {item['path']}{line} "
+                     f"{item['detector_id']} sha256:{item['match_sha256']}")
     for item in result["unscanned"]:
         lines.append(f"- NOT SCANNED {item['commit']} {item['path']} ({item['reason']})")
     return "\n".join(lines) + "\n"
 
 
-def _ref_tips(root, prefixes=("refs/heads", "refs/tags")):
+def _ref_tips(root, prefixes=("refs/heads", "refs/tags", "refs/remotes")):
     raw = _git(root, "for-each-ref", "--format=%(refname)%00%(objectname)%00", *prefixes).stdout.split(b"\0")
     values = [item.decode("utf-8", "surrogateescape").lstrip("\n") for item in raw if item.strip(b"\n")]
     return list(zip(values[0::2], values[1::2]))
 
 
-def _local_remote_has_ref(root, remote, ref):
+def _local_remote_has_ref(root, url, ref):
     """Sandbox-safe fallback after ls-remote was attempted for a local bare remote."""
-    raw = _git(root, "remote", "get-url", remote).stdout.decode("utf-8", "surrogateescape").strip()
+    raw = url
     if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", raw) and not raw.lower().startswith("file://"):
         return None
     value = raw[7:] if raw.lower().startswith("file://") else raw
@@ -380,6 +573,60 @@ def _local_remote_has_ref(root, remote, ref):
     if present.returncode not in {0, 1}:
         return None
     return present.returncode == 0
+
+
+def _remote_urls(root, remote):
+    urls = []
+    for flags in (("--all",), ("--push", "--all")):
+        result = _git(root, "remote", "get-url", *flags, remote, check=False)
+        if result.returncode:
+            raise ValidationError("Remote URL lookup failed; rewrite refused without changes")
+        values = [line.decode("utf-8", "surrogateescape") for line in result.stdout.splitlines() if line]
+        if not values:
+            raise ValidationError("Remote URL lookup returned no URLs; rewrite refused without changes")
+        urls.extend(values)
+    return list(dict.fromkeys(urls))
+
+
+def _install_loose_object(source, destination):
+    """Install a loose object atomically and return whether this call added it."""
+    if destination.exists():
+        return False
+    parent_created = not destination.parent.exists()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix="awf-object-", dir=destination.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as target, Path(source).open("rb") as origin:
+            shutil.copyfileobj(origin, target)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, destination)
+        return True
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        Path(temporary).unlink(missing_ok=True)
+        if parent_created:
+            try:
+                destination.parent.rmdir()
+            except OSError:
+                pass
+        raise
+
+
+def _remove_installed_object(destination):
+    try:
+        destination.unlink()
+        try:
+            destination.parent.rmdir()
+        except OSError:
+            pass
+    except OSError as exc:
+        raise ValidationError(
+            "OBJECT_CLEANUP_FAILED: remove the newly installed loose object at the reported Git object path "
+            "after verifying no ref uses the replacement commit") from exc
 
 
 def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_path=None, config_path=None):
@@ -411,19 +658,20 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
             raise ValidationError("Published-history rewrite refused: a remote-tracking ref exists; owner decision is out of scope")
     remotes = [line.decode("utf-8") for line in _git(root, "remote").stdout.splitlines()]
     for remote in remotes:
-        # Read-only local bare remotes are used by the refusal proof; no object
-        # transfer or sub-protocol is invoked by ls-remote.
-        probe = _git(root, "-c", "protocol.file.allow=always", "ls-remote", "--exit-code", "--heads", remote, ref,
-                     check=False, timeout=60)
-        if probe.returncode == 0 and probe.stdout:
-            raise ValidationError("Published-history rewrite refused: branch exists on a remote; owner decision is out of scope")
-        if probe.returncode == 2:
-            continue
-        local_present = _local_remote_has_ref(root, remote, ref)
-        if local_present is True:
-            raise ValidationError("Published-history rewrite refused: branch exists on a remote; owner decision is out of scope")
-        if local_present is not False:
-            raise ValidationError("Remote publication state could not be verified; rewrite refused without changes")
+        for url in _remote_urls(root, remote):
+            # File transport is enabled only for the read-only synthetic local
+            # remote proof. No object transfer or sub-protocol is invoked.
+            probe = _git(root, "-c", "protocol.file.allow=always", "ls-remote", "--exit-code",
+                         "--heads", url, ref, check=False, timeout=60)
+            if probe.returncode == 0 and probe.stdout:
+                raise ValidationError("Published-history rewrite refused: branch exists on a remote; owner decision is out of scope")
+            if probe.returncode == 2:
+                continue
+            local_present = _local_remote_has_ref(root, url, ref)
+            if local_present is True:
+                raise ValidationError("Published-history rewrite refused: branch exists on a remote; owner decision is out of scope")
+            if local_present is not False:
+                raise ValidationError("Remote publication state could not be verified; rewrite refused without changes")
     for other_ref, tip in _ref_tips(root):
         if other_ref == ref:
             continue
@@ -449,33 +697,47 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
         object_format = _git(root, "rev-parse", "--show-object-format").stdout.decode("ascii").strip()
         if object_format not in {"sha1", "sha256"}:
             raise ValidationError("Unsupported Git object format")
+        if len(_git(root, "rev-list", base_sha + ".." + created, extra_env=extra).stdout.splitlines()) != 1:
+            raise ValidationError("Replacement history does not contain exactly one commit")
+        # This is the last reachability proof before the sole ref mutation. The
+        # target ref is intentionally excluded; the CAS replaces its old tip.
+        for check_ref, tip in _ref_tips(root):
+            if check_ref == ref:
+                continue
+            if any(_git(root, "merge-base", "--is-ancestor", commit, tip, check=False).returncode == 0
+                   for commit in old_commits):
+                raise ValidationError("Old commits remain reachable from another local or remote-tracking ref")
         source = temp_objects / created[:2] / created[2:]
         destination = object_dir / created[:2] / created[2:]
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        existed = destination.exists()
-        if not existed:
-            shutil.copyfile(source, destination)
-        update = _git(root, "update-ref", ref, created, old_head, check=False)
-        if update.returncode:
-            if not existed:
-                destination.unlink(missing_ok=True)
-            raise ValidationError("Atomic branch update failed; branch was not changed")
+        installed = _install_loose_object(source, destination)
+        update_error = None
         try:
-            verify_publisher_tree(root, old_tree)
-            if len(_git(root, "rev-list", base_sha + ".." + created).stdout.splitlines()) != 1:
-                raise ValidationError("Replacement history does not contain exactly one commit")
-            reachable = []
-            for check_ref, tip in _ref_tips(root):
-                for commit in old_commits:
-                    if _git(root, "merge-base", "--is-ancestor", commit, tip, check=False).returncode == 0:
-                        reachable.append(check_ref)
-            if reachable:
-                raise ValidationError("Old commits remain reachable from a branch or tag")
-        except Exception:
-            rollback = _git(root, "update-ref", ref, old_head, created, check=False)
-            if rollback.returncode == 0 and not existed:
-                destination.unlink(missing_ok=True)
-            raise
+            update = _git(root, "update-ref", ref, created, old_head, check=False)
+        except ValidationError as exc:
+            update, update_error = None, exc
+        if update_error is not None or update.returncode:
+            try:
+                observed = _git(root, "rev-parse", "--verify", ref + "^{commit}", check=False)
+            except ValidationError as exc:
+                raise ValidationError(
+                    f"REF_STATE_UNKNOWN: reconcile {ref}; run `git rev-parse {ref}` and, if it is {created}, "
+                    f"recover with `git update-ref {ref} {old_head} {created}` before retrying") from exc
+            current = observed.stdout.decode("ascii", "replace").strip() if observed.returncode == 0 else None
+            if current == created:
+                try:
+                    rollback = _git(root, "update-ref", ref, old_head, created, check=False)
+                except ValidationError:
+                    rollback = None
+                if rollback is None or rollback.returncode:
+                    raise ValidationError(
+                        f"ROLLBACK_FAILED: {ref} may remain at {created}; recover with `git update-ref {ref} "
+                        f"{old_head} {created}` after reconciling the current ref, then rerun validation")
+            elif current != old_head:
+                raise ValidationError(
+                    f"REF_STATE_UNKNOWN: reconcile {ref}; expected {old_head} or {created}, observed lookup failure or another value")
+            if installed:
+                _remove_installed_object(destination)
+            raise ValidationError("Atomic branch update failed; branch and object store were restored") from update_error
     return {"status": "PASS", "branch": branch, "base_sha": base_sha, "old_head": old_head,
             "head_sha": created, "head_tree": old_tree, "commits": 1, "publication_scan": scan,
             "old_commits_reachable_from_branches_or_tags": False,

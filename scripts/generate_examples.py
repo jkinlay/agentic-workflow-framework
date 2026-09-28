@@ -139,7 +139,10 @@ def example_bundle(cfg):
         "head_sha": candidate["head_sha"], "pr_body_sha256": pr["body_sha256"], "additional_pr_body_sha256": [],
         "comment_sha256": [], "mapping_sha256": None, "project_config_sha256": None, "mapping_loaded": False,
         "mapping_location": ".agentic-state/publication-deny.json", "commits_scanned": [candidate["head_sha"]],
-        "findings": [], "unscanned": [], "coverage": {"current_files": True, "commit_messages": True,
+        "blocking_findings_count": 0, "pre_existing_findings_count": 0, "findings": [], "unscanned": [],
+        "base_tree_search": {"complete": True, "blobs_scanned": 1, "bytes_scanned": 1,
+            "max_blobs": 100000, "max_bytes": 268435456, "reason": None},
+        "coverage": {"current_files": True, "commit_messages": True,
             "every_patch": True, "generated_reports": "when committed or passed as provider text",
             "captured_command_output": "when committed or passed as provider text", "pr_bodies": True, "pr_comments": False},
         "execution_authority": False}

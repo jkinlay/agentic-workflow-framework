@@ -1,10 +1,10 @@
 # Publication safety
 
-Version 1.9.3. Publication is blocked unless the exact candidate history and provider text pass a history-aware scan. `git diff --check` checks whitespace only and is never evidence that content is safe to publish.
+Version 1.9.3. Exact candidate history and provider text must pass. `git diff --check` is whitespace-only evidence.
 
 ## Operator-local deny mapping
 
-The default mapping is `.agentic-state/publication-deny.json`. The installed `.gitignore` rule keeps it untracked. For the external review host, the same filename lives in its configured external state directory. Use version 1 JSON with these optional fields:
+The untracked default is `.agentic-state/publication-deny.json`; an external review host uses its state directory. Version 1 fields are:
 
 ```json
 {
@@ -17,9 +17,9 @@ The default mapping is `.agentic-state/publication-deny.json`. The installed `.g
 }
 ```
 
-Aliases such as `{raw_estate}` and `{output_root}` are safe tracked forms. `publication-render --input REPORT` replaces mapped private values with their aliases before a report or prompt is saved. Local `builtin_allow` entries can tune false positives by detector id (`unc_path`, `windows_absolute`, `home_path`, `private_ipv4`, `private_ipv6`) or `all`; tracked configuration cannot disable built-ins.
+Aliases such as `{raw_estate}` are safe tracked forms; `publication-render --input REPORT` substitutes them before saving. `builtin_allow` tunes named built-ins or `all`. The scanner refuses a mapping tracked in the index or scanned head, including a force-added ignored file. Tracked content cannot disable built-ins.
 
-Projects may add the optional tracked `publication` object with `deny_literals`, named `deny_regexes`, and `internal_hostnames`. These only add detectors. Keep actual machine paths and network mappings in the operator-local file.
+Tracked `publication` declarations (`deny_literals`, named `deny_regexes`, `internal_hostnames`) only add detectors. Private mappings remain local. Regexes are limited to 512 characters; backreferences, group extensions except non-capturing groups, and repeated groups containing repetition or alternation are refused. Lines exceeding 16,384 characters are `UNSCANNED` and block.
 
 ## Scan and receipt
 
@@ -29,15 +29,21 @@ Run:
 python -B .agentic/scripts/workflow.py publication-scan --base BASE --head HEAD --pr-body PR_BODY --json
 ```
 
-The scan covers every commit message; every added and deleted line in each commit relative to each parent, including merges; current content of paths changed across the range; and supplied PR bodies/comments. Thus generated reports and captured command output are covered when committed or supplied as provider text. Context lines and untouched pre-existing files are not scanned. Renames use both old and new paths. Binary or oversize blobs are reported as unscanned and block a pass.
+The scan covers all commit messages; added/deleted lines against every parent, including roots and merges; complete head content of touched paths; and supplied PR bodies/comments. Committed reports/output are therefore covered. Renames use both paths. Binary, oversize, invalid UTF-8 or overlong-line content is `UNSCANNED` and blocks.
 
-Built-ins detect network-share locators, absolute drive paths, common absolute home-directory paths, private IPv4 ranges and unique-local IPv6 ranges. Local aliases/literals/regexes/hostnames and project declarations add exact detectors. Findings contain the commit, path or provider-text channel, line when available, detector id, and only a redacted fingerprint.
+Every occurrence is retained. `PRE_EXISTING` means the same detector/value was positively observed in the bounded base-tree search; it is counted but does not block, including deletion. Everything else is `BLOCKING`, including add-then-remove history. `PASS` means zero blocking findings and zero unscanned items.
 
-The publisher preserves the JSON receipt. Its resolved base and head and `pr_body_sha256` must match the pushed candidate and exact posted body. Any finding, unscanned content, body change, head change, or base change invalidates it. Scan a prospective comment with `--comment FILE` before posting it.
+Base membership visits sorted paths and reads duplicate blobs once: at most 100,000 blobs, 256 MiB total, 32 MiB per blob and 16,384 characters per line. Binary/invalid or per-blob bounded content marks the search incomplete but does not prevent later blobs being checked within the global bounds. Positively observed detector/value pairs remain proven; unseen values receive no exemption. Receipts record completion, reason, work and bounds. Cost is one bounded full-base read.
+
+Built-ins detect network shares, absolute drive/home paths and private/unique-local IPs. Local and project declarations add detectors. Findings retain location, classification, detector id and SHA-256 match digest only.
+
+The receipt's base, head and `pr_body_sha256` must match publication. Blocking findings, unscanned content or tuple/body changes invalidate it. Scan comments before posting.
 
 ## Unpublished rewrite
 
-`publication-rewrite --base BASE --branch BRANCH --commits 1 --message-file FILE` creates one replacement commit from the same final tree with `commit-tree`, scans it, checks tree equality with `agentic.gittree`, and atomically updates the branch only after all checks pass. It refuses upstreams, matching remote-tracking refs, a branch present on any configured remote, dirty state, unsupported commit counts, and old commits reachable from another local branch or tag. Rewriting published history is an owner decision and is out of scope.
+`publication-rewrite --base BASE --branch BRANCH --commits 1 --message-file FILE` scans one same-tree replacement before an atomic branch update. It checks every fetch/push URL, and refuses upstreams, matching remote refs, a remotely present branch, dirty state, unsupported counts, or old commits reachable from heads, tags or remote refs. Lookups fail closed. Published-history rewriting is out of scope.
+
+The isolated replacement object uses same-directory temp/rename. Failed ref updates remove it; ambiguous updates reconcile old/new tips and roll back by compare-and-swap. `ROLLBACK_FAILED` reports the recovery command. Tree, count, scan, URL absence and reachability are proved before the sole mutation.
 
 A successful rewrite does not erase reflogs or unreachable objects. When a value must also leave the local object store, an operator applies an approved retention policy to expire the relevant reflogs and prune unreachable objects after preserving required recovery evidence.
 

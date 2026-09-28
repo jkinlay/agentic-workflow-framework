@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import shutil
 import sys
 import tempfile
@@ -26,6 +27,13 @@ class ReleaseHygieneTests(unittest.TestCase):
 
     def test_current_generated_prompts_accepted(self):
         self.assertEqual(5, check_release(self.root)['prompts'])
+
+    def test_specification_gate_count_matches_generated_catalogue(self):
+        schema = json.loads((ROOT / '.agentic/schemas/final-gate.schema.json').read_text(encoding='utf-8'))
+        count = len(schema['properties']['gates']['required'])
+        words = {14: 'fourteen'}
+        self.assertIn(words[count] + ' gates',
+                      (ROOT / '.agentic/SPECIFICATION.md').read_text(encoding='utf-8'))
 
     def test_historical_pilot_exemption_does_not_hide_operational_files(self):
         parent = self.root / '.agentic/benchmarks/native'

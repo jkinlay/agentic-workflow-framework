@@ -14,8 +14,11 @@
     "mapping_loaded",
     "mapping_location",
     "commits_scanned",
+    "blocking_findings_count",
+    "pre_existing_findings_count",
     "findings",
     "unscanned",
+    "base_tree_search",
     "coverage",
     "execution_authority"
   ],
@@ -108,6 +111,16 @@
       },
       "minItems": 0
     },
+    "blocking_findings_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "pre_existing_findings_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
     "findings": {
       "type": "array",
       "items": {
@@ -119,8 +132,9 @@
           "line",
           "source",
           "change",
+          "classification",
           "detector_id",
-          "redacted_excerpt"
+          "match_sha256"
         ],
         "properties": {
           "commit": {
@@ -161,13 +175,20 @@
               }
             ]
           },
+          "classification": {
+            "enum": [
+              "BLOCKING",
+              "PRE_EXISTING"
+            ]
+          },
           "detector_id": {
             "type": "string",
             "minLength": 1
           },
-          "redacted_excerpt": {
+          "match_sha256": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{64}$"
           }
         }
       },
@@ -202,7 +223,9 @@
           "reason": {
             "enum": [
               "binary",
-              "oversize"
+              "oversize",
+              "invalid-utf8",
+              "line-too-long"
             ]
           },
           "parent": {
@@ -220,6 +243,60 @@
         }
       },
       "minItems": 0
+    },
+    "base_tree_search": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "complete",
+        "blobs_scanned",
+        "bytes_scanned",
+        "max_blobs",
+        "max_bytes",
+        "reason"
+      ],
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "blobs_scanned": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bytes_scanned": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "max_blobs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "enum": [
+                "binary",
+                "oversize",
+                "invalid-utf8",
+                "line-too-long",
+                "blob-limit",
+                "byte-limit"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
     },
     "coverage": {
       "type": "object",
