@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.installer import install, recover
 from agentic import ValidationError
-from agentic.adoption_config import post_install_checks
+from agentic.adoption_config import ensure_installed_runtime, post_install_checks
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -52,6 +52,7 @@ def main():
                 default_branch=args.default_branch, review_app_id=args.review_app_id, configure=True,
                 propose_operating_capacity=args.propose_operating_capacity)
             if not args.dry_run:
+                result["runtime"] = ensure_installed_runtime(args.dest)
                 result.update(post_install_checks(args.dest, result))
         print(json.dumps(result, indent=2))
         return 1 if result["status"] == "INSTALLED_UNCONFIGURED" else 2 if result["status"] == "INSTALLATION_VERIFICATION_FAILED" else 0

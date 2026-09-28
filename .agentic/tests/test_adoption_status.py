@@ -251,7 +251,7 @@ class AdoptionStatusTests(unittest.TestCase):
             'sha': self.head, 'accepted_surface': 'github_graphql',
             'rest_api_version': '2022-11-28'})
         self.assertFalse(result['execution_authority'])
-        self.assertEqual(result['line'], f'AWF {VERSION}: ACTIVE — streams 3/6')
+        self.assertEqual(result['line'], f'AWF {VERSION}: ACTIVE - streams 3/6')
         preflight_next = result['host_preflight']['next_action']
         rendered = status.render_status(result)
         if preflight_next:

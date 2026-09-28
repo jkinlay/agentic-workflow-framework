@@ -39,13 +39,7 @@ Bootstrap appends [narrow ignore rules](../templates/operating.gitignore), prese
 
 Empty `validation.required_ci_checks: []` is accepted for adoption with `ci_gate: NOT_CONFIGURED`; fresh empty trusted-owner IDs also warn. Neither is a fabricated identity or live-ready policy. Configure observed CI identities and real merge owners before relevant live enablement.
 
-6. With exclusive ownership and quiescent adoption, bootstrap checks runtime imports and executes isolated installed commands. Repeat after correcting configuration:
-
-```text
-python -B -I ABS_TARGET/.agentic/scripts/workflow.py verify-installation
-python -B -I ABS_TARGET/.agentic/scripts/workflow.py validate-config
-python -B -I ABS_TARGET/.agentic/scripts/workflow.py status
-```
+6. Bootstrap provisions the ignored `.agentic/.venv` runtime and runs isolated installed commands. From the target root, use `doctor` for resolved commands. Quick checks are not a full self-test. See [Windows diagnostics](32-WINDOWS-DIAGNOSTICS.md).
 
 CONFIGURED (exit 0) requires actual verification exit 0/`integrity_valid: true`, validation exit 0/`status: ACCEPTED`, and matching source/policy/operating digests. Rejected configuration gives `INSTALLED_UNCONFIGURED` (exit 1) with exact paths/remedies; integrity failure gives `INSTALLATION_VERIFICATION_FAILED` (exit 2). `post_install_checks` retains commands/results, `configuration` child-observed residue, and `pre_install_configuration` derivation. Unsafe imports leave NOT_RUN; dry runs prove no installation.
 

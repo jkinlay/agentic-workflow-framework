@@ -10,9 +10,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import stat
 import tempfile
 import time
 import uuid
+import venv
 
 from . import ValidationError, VERSION
 from .canonical import loads, sha256
@@ -26,6 +28,24 @@ repository_name = github_provider.repository_name
 origin_repository = github_provider.origin_repository
 _executable = github_provider._discovery_executable
 _read_command = github_provider._read_discovery_command
+
+
+def ensure_installed_runtime(destination):
+    """Create the canonical ignored project runtime without fetching packages."""
+    from .runtime_commands import installed_paths
+    root, interpreter, entry_point = installed_paths(destination)
+    runtime_root = root / ".agentic" / ".venv"
+    if runtime_root.exists() or runtime_root.is_symlink():
+        metadata = os.lstat(runtime_root)
+        reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        junction = getattr(runtime_root, "is_junction", lambda: False)()
+        if stat.S_ISLNK(metadata.st_mode) or reparse or junction or runtime_root.resolve() != runtime_root:
+            raise ValidationError("Refusing linked or reparse-point canonical runtime")
+    venv.EnvBuilder(with_pip=False, system_site_packages=True, clear=True).create(runtime_root)
+    if not interpreter.is_file() or not entry_point.is_file():
+        raise ValidationError("Canonical installed runtime or workflow entry point is unavailable")
+    return {"interpreter": str(interpreter), "entry_point": str(entry_point),
+            "dependency_source": "bootstrap interpreter system-site-packages; installed checks verify required imports"}
 
 
 def unresolved(value):
@@ -261,8 +281,9 @@ def _post_command(command, root, timeout=60):
 
 def post_install_checks(destination, installation):
     root = Path(destination).resolve()
-    script = str(root / ".agentic/scripts/workflow.py")
-    commands = [[sys.executable, "-B", "-I", script, action]
+    from .runtime_commands import installed_paths
+    _root, interpreter, entry_point = installed_paths(root)
+    commands = [[str(interpreter), "-B", "-I", str(entry_point), "--root", str(root), action]
                 for action in ("verify-installation", "validate-config")]
     try:
         _verify_import_surface(root, installation["source_manifest_sha256"])

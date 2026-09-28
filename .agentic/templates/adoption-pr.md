@@ -18,6 +18,8 @@ This draft changes repository governance files and preserves project-owned instr
 
 Bootstrap CONFIGURED requires both commands to exit 0, verification `integrity_valid: true`, validation `status: ACCEPTED` and matching source/policy digests; record those comparisons. A dry run is preparation only. Status recomputes current checks; INSTALLED/CONFIGURED establish local consistency, not release provenance or historical child execution. Failed integrity is not an installed baseline. Record exclusive ownership/quiescence and any runtime-import rejection; preserve NOT_RUN outcomes.
 
+Attach doctor JSON and preflight evidence.
+
 | Remaining configuration JSON path | Observed reason | Flag or project file remedy | Owner / next action |
 | --- | --- | --- | --- |
 | TO_RECORD, or None after actual validation | TO_RECORD | TO_RECORD | TO_RECORD |

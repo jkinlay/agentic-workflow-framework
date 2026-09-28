@@ -288,9 +288,11 @@ class PostInstallCheckTests(unittest.TestCase):
             result = adoption.post_install_checks(ROOT, self.installation)
         self.assertEqual(result["status"], "CONFIGURED")
         self.assertEqual([item.args[0][-1] for item in run.call_args_list], ["verify-installation", "validate-config"])
+        from agentic.runtime_commands import installed_paths
+        _root, interpreter, entry_point = installed_paths(ROOT)
         for item in run.call_args_list:
-            self.assertEqual(item.args[0][:3], [sys.executable, "-B", "-I"])
-            self.assertTrue(Path(item.args[0][3]).is_absolute())
+            self.assertEqual(item.args[0][:4], [str(interpreter), "-B", "-I", str(entry_point)])
+            self.assertEqual(item.args[0][4:6], ["--root", str(ROOT.resolve())])
         self.assertFalse(result["active"])
 
     def test_missing_or_mismatched_operating_check_cannot_report_configured(self):
@@ -645,7 +647,7 @@ class BootstrapMainTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         for state, expected in (("CONFIGURED", 0), ("INSTALLED_UNCONFIGURED", 1), ("INSTALLATION_VERIFICATION_FAILED", 2)):
-            with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--github-repo", "fixture/repo"]), patch.object(module, "install", return_value={"status": "INSTALLED"}) as install_call, patch.object(module, "post_install_checks", return_value={"status": state}), patch("sys.stdout", new_callable=io.StringIO) as out:
+            with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--github-repo", "fixture/repo"]), patch.object(module, "install", return_value={"status": "INSTALLED"}) as install_call, patch.object(module, "ensure_installed_runtime", return_value={"interpreter": "fixture", "entry_point": "fixture"}), patch.object(module, "post_install_checks", return_value={"status": state}), patch("sys.stdout", new_callable=io.StringIO) as out:
                 self.assertEqual(module.main(), expected)
                 self.assertEqual(json.loads(out.getvalue())["status"], state)
                 self.assertTrue(install_call.call_args.kwargs["configure"])

@@ -18,32 +18,75 @@ from .child_process import child_env
 PATH_WARN_LENGTH = 180
 MANAGED_PATHS = ("/.agentic/**", "/AGENTS.md", "/.github/PULL_REQUEST_TEMPLATE.md")
 ROUTE_OBSERVATION_DEFAULT_DAYS = 30
+MAX_DIAGNOSTIC_CHARS = 2048
+EXECUTION_POLICY_SCOPES = {"MachinePolicy", "UserPolicy", "Process", "CurrentUser", "LocalMachine"}
+EXECUTION_POLICIES = {"Undefined", "Restricted", "AllSigned", "RemoteSigned", "Unrestricted", "Bypass", "Default"}
 
 
 def row(check, status, detail, remedy=""):
     return {"check": check, "status": status, "detail": detail, "remedy": remedy}
 
 
+def _bounded(value):
+    value = (value or "").strip()
+    return value[:MAX_DIAGNOSTIC_CHARS]
+
+
+def _nonzero_category(output):
+    lowered = output.casefold()
+    if "module could not be loaded" in lowered or "couldnotautoloadmatchingmodule" in lowered:
+        return "MODULE_LOAD_FAILURE"
+    if "access is denied" in lowered or "permission denied" in lowered:
+        return "ACCESS_DENIED"
+    return "NONZERO_EXIT"
+
+
 def run(args, cwd=None):
     """Trusted-host executables only: never a file inside the checkout or a script wrapper."""
     from . import ValidationError
     from .providers.github_status import host_executable
+    executable = str(args[0])
     try:
         executable = host_executable(args[0], Path(cwd or os.getcwd()))
         env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
         env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
         result = subprocess.run([executable, *args[1:]], capture_output=True, text=True, timeout=30, cwd=cwd,
                                 env=child_env(env), stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired as exc:
+        return {"executable": executable, "exit_code": None, "output": _bounded(str(exc)),
+                "diagnostic_category": "TIMEOUT"}
+    except FileNotFoundError as exc:
+        return {"executable": executable, "exit_code": None, "output": _bounded(str(exc)),
+                "diagnostic_category": "MISSING_EXECUTABLE"}
     except (OSError, subprocess.SubprocessError, ValidationError) as exc:
-        return None, f"{type(exc).__name__}: {exc}"
-    return result.returncode, (result.stdout or result.stderr).strip()
+        text = f"{type(exc).__name__}: {exc}"
+        category = "MISSING_EXECUTABLE" if "unavailable" in str(exc).casefold() else "EXECUTION_UNAVAILABLE"
+        return {"executable": executable, "exit_code": None, "output": _bounded(text),
+                "diagnostic_category": category}
+    output = _bounded(result.stdout or result.stderr)
+    return {"executable": executable, "exit_code": result.returncode, "output": output,
+            "diagnostic_category": "OK" if result.returncode == 0 else _nonzero_category(output)}
 
 
 def git_config(root, key):
-    code, output = run(["git", "config", "--get", key], cwd=str(root))
-    if code is None:
-        return "unavailable (" + output.split(":")[0] + ")"
-    return output if code == 0 else None
+    probe = run(["git", "config", "--get", key], cwd=str(root))
+    return probe, probe["output"] if probe["exit_code"] == 0 else None
+
+
+def _observed(row_value, probe, *, category=None):
+    row_value.update(executable=probe["executable"], exit_code=probe["exit_code"],
+                     diagnostic_category=category or probe["diagnostic_category"])
+    return row_value
+
+
+def _execution_policy_rows(output):
+    rows = {}
+    for line in output.splitlines():
+        fields = line.strip().split("=")
+        if len(fields) != 2 or fields[0] not in EXECUTION_POLICY_SCOPES or fields[1] not in EXECUTION_POLICIES or fields[0] in rows:
+            return None
+        rows[fields[0]] = fields[1]
+    return rows if set(rows) == EXECUTION_POLICY_SCOPES else None
 
 
 def gitattributes_coverage(root):
@@ -233,31 +276,50 @@ def preflight(root, *, platform=None):
     rows.append(project_lint_scope(root))
     rows.append(route_models_observed(root))
     if windows:
-        longpaths = git_config(root, "core.longpaths")
-        rows.append(row("core.longpaths", "PASS" if longpaths == "true" else "WARN", f"core.longpaths={longpaths or 'unset'}",
-                        "" if longpaths == "true" else "git config --system core.longpaths true (also add the CI step)."))
-        code, output = run(["powershell", "-NoProfile", "-Command", "Get-ExecutionPolicy -List | ForEach-Object { $_.Scope.ToString() + '=' + $_.ExecutionPolicy.ToString() }"])
-        if code is None:
-            rows.append(row("powershell_execution_policy", "SKIP", output, "PowerShell not available; fixture launchers using .ps1 may fail."))
+        longpaths_probe, longpaths = git_config(root, "core.longpaths")
+        longpaths_ok = longpaths_probe["exit_code"] == 0 and longpaths == "true"
+        rows.append(_observed(row("core.longpaths", "PASS" if longpaths_ok else "WARN",
+                                  f"core.longpaths={longpaths or 'unobserved'}",
+                                  "" if longpaths_ok else "git config --system core.longpaths true (also add the CI step)."),
+                              longpaths_probe))
+        policy_probe = run(["powershell", "-NoProfile", "-Command", "Get-ExecutionPolicy -List | ForEach-Object { $_.Scope.ToString() + '=' + $_.ExecutionPolicy.ToString() }"])
+        output = policy_probe["output"]
+        if policy_probe["exit_code"] is None:
+            rows.append(_observed(row("powershell_execution_policy", "SKIP", output,
+                                      "PowerShell not available or timed out; fixture launchers using .ps1 may fail."), policy_probe))
+        elif policy_probe["exit_code"] != 0:
+            rows.append(_observed(row("powershell_execution_policy", "WARN", output or "PowerShell returned a nonzero exit",
+                                      "Resolve the PowerShell host/module error, then rerun preflight."), policy_probe))
         else:
-            restricted = any(s in output for s in ("=Restricted", "=AllSigned", "=Undefined"))
-            effective = next((line for line in output.splitlines() if not line.endswith("=Undefined")), output)
-            rows.append(row("powershell_execution_policy", "WARN" if restricted else "PASS", output.replace("\n", "; "),
-                            "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned, or launch fixtures with -ExecutionPolicy Bypass." if restricted else ""))
+            policies = _execution_policy_rows(output)
+            if policies is None:
+                rows.append(_observed(row("powershell_execution_policy", "WARN", "PowerShell returned an unexpected execution-policy row shape",
+                                          "Run Get-ExecutionPolicy -List and resolve malformed or incomplete output."),
+                                      policy_probe, category="INVALID_OUTPUT"))
+            else:
+                restricted = any(value in ("Restricted", "AllSigned", "Undefined") for value in policies.values())
+                rows.append(_observed(row("powershell_execution_policy", "WARN" if restricted else "PASS", output.replace("\n", "; "),
+                                          "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned, or launch fixtures with -ExecutionPolicy Bypass." if restricted else ""),
+                                      policy_probe))
         status, detail, remedy = symlink_privilege()
         rows.append(row("symlink_privilege", status, detail, remedy))
-        autocrlf = git_config(root, "core.autocrlf")
+        autocrlf_probe, autocrlf = git_config(root, "core.autocrlf")
         covered, detail = gitattributes_coverage(root)
-        rows.append(row("line_endings", "PASS" if covered else "WARN", f"core.autocrlf={autocrlf or 'unset'}; .gitattributes {detail}",
-                        "" if covered else "Merge .agentic/templates/installed.gitattributes into the root .gitattributes so manifest-bound bytes survive checkout."))
+        line_endings_ok = autocrlf_probe["exit_code"] == 0 and covered
+        rows.append(_observed(row("line_endings", "PASS" if line_endings_ok else "WARN",
+                                  f"core.autocrlf={autocrlf or 'unobserved'}; .gitattributes {detail}",
+                                  "" if line_endings_ok else "Observe core.autocrlf and merge .agentic/templates/installed.gitattributes into the root .gitattributes so manifest-bound bytes survive checkout."),
+                              autocrlf_probe))
     else:
         for name in ("core.longpaths", "powershell_execution_policy", "symlink_privilege", "line_endings"):
             rows.append(row(name, "N_A", "not a Windows host", ""))
     attributes = Path(root) / ".gitattributes"
     if attributes.is_file() and "filter=lfs" in attributes.read_text(encoding="utf-8", errors="replace"):
-        code, output = run(["git", "lfs", "version"])
-        rows.append(row("git_lfs", "PASS" if code == 0 else "WARN", output if code == 0 else "git lfs not found",
-                        "" if code == 0 else "Install Git LFS; .gitattributes names an lfs filter."))
+        lfs_probe = run(["git", "lfs", "version"])
+        lfs_ok = lfs_probe["exit_code"] == 0
+        rows.append(_observed(row("git_lfs", "PASS" if lfs_ok else "WARN",
+                                  lfs_probe["output"] if lfs_ok else "git lfs observation failed",
+                                  "" if lfs_ok else "Install Git LFS; .gitattributes names an lfs filter."), lfs_probe))
     else:
         rows.append(row("git_lfs", "N_A", ".gitattributes names no lfs filter", ""))
     warnings = [r for r in rows if r["status"] == "WARN"]

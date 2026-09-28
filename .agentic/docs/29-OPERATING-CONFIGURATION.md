@@ -1,6 +1,6 @@
 # Operating configuration by conversation
 
-At CONFIGURED, run `python -B .agentic/scripts/workflow.py operating show`, paste its table in the adoption PR, and offer **keep defaults**, **review Epics and recommend**, or **custom**. Keeping defaults permits authorized work. CONFIGURED does not mean ACTIVE or enable an adapter.
+At CONFIGURED, run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating show`, paste its table in the adoption PR, and offer **keep defaults**, **review Epics and recommend**, or **custom**. Keeping defaults permits authorized work. CONFIGURED does not mean ACTIVE or enable an adapter.
 
 ## Two configuration layers
 
