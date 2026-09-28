@@ -369,11 +369,11 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     findings, unscanned = [], []
     tree_cache = {}
     base_tree = tree_cache.setdefault(base_sha, _tree(root, base_sha, extra_env))
-    # A deleted line from a file that already existed at the accepted base is
-    # not newly published by this candidate.  Candidate additions are always
-    # scanned when introduced; files born in the candidate retain that origin
-    # through rename/copy so their later deletions remain covered as well.
-    path_origins = {path: path for path in base_tree}
+    # Keep provenance per commit.  A traversal-global pathname map makes merge
+    # results depend on parent order when disconnected roots reuse a path.
+    # Each parent transition is derived independently and merge results retain
+    # a base origin if any parent carries one.
+    origin_maps = {base_sha: {path: path for path in base_tree}}
     touched_head_paths = set()
     for commit in commits:
         raw_commit = _git(root, "cat-file", "commit", commit, extra_env=extra_env).stdout
@@ -387,23 +387,36 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
             findings += _scan_text(message_text, commit=commit, path="message", source="message",
                                    detectors=detectors, allows=allows)
         parents = _git(root, "rev-list", "--parents", "-n", "1", commit, extra_env=extra_env).stdout.decode("ascii").split()[1:]
+        commit_tree = tree_cache.setdefault(commit, _tree(root, commit, extra_env))
+        transition_maps = []
         for parent in parents or [None]:
+            if parent is None:
+                parent_origins = {}
+            elif parent in origin_maps:
+                parent_origins = origin_maps[parent]
+            elif _git(root, "merge-base", "--is-ancestor", parent, base_sha,
+                      extra_env=extra_env, check=False).returncode == 0:
+                parent_tree = tree_cache.setdefault(parent, _tree(root, parent, extra_env))
+                parent_origins = {path: path for path in parent_tree}
+            else:
+                raise ValidationError("Publication history traversal omitted a merge parent")
+            transitioned = dict(parent_origins)
+            transition_maps.append(transitioned)
             for status, before_path, after_path in _changed_pairs(root, parent, commit, extra_env):
                 old_tree = {} if parent is None else tree_cache.setdefault(parent, _tree(root, parent, extra_env))
-                new_tree = tree_cache.setdefault(commit, _tree(root, commit, extra_env))
-                origin = path_origins.get(before_path)
-                if before_path is not None and before_path not in path_origins and before_path in base_tree:
-                    origin = before_path
+                origin = parent_origins.get(before_path)
                 if after_path is not None:
                     touched_head_paths.add(after_path)
                     if status.startswith("A"):
-                        path_origins[after_path] = None
+                        transitioned[after_path] = None
                     elif status.startswith(("R", "C")):
-                        path_origins[after_path] = origin
+                        transitioned[after_path] = origin
                     else:
-                        path_origins.setdefault(after_path, origin)
+                        transitioned[after_path] = origin
                 if status.startswith("R") and before_path != after_path:
-                    path_origins.pop(before_path, None)
+                    transitioned.pop(before_path, None)
+                elif status.startswith("D"):
+                    transitioned.pop(before_path, None)
                 output_path = _path_for_output(after_path or before_path, detectors, allows)
                 path_text = (before_path or "") + "\n" + (after_path or "")
                 findings += _scan_text(path_text, commit=commit, path=output_path, source="patch-path",
@@ -412,8 +425,8 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                 new_text, new_reason = ("", None)
                 if before_path and before_path in old_tree and old_tree[before_path][1] == "blob":
                     old_text, old_reason = _blob(root, old_tree[before_path][2], extra_env)
-                if after_path and after_path in new_tree and new_tree[after_path][1] == "blob":
-                    new_text, new_reason = _blob(root, new_tree[after_path][2], extra_env)
+                if after_path and after_path in commit_tree and commit_tree[after_path][1] == "blob":
+                    new_text, new_reason = _blob(root, commit_tree[after_path][2], extra_env)
                 if old_reason or new_reason:
                     unscanned.append({"commit": commit, "path": output_path, "source": "patch",
                                       "reason": old_reason or new_reason, "parent": parent})
@@ -429,6 +442,17 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                         findings += _scan_text("\n".join(new_lines[b1:b2]), commit=commit, path=output_path,
                                                source="patch", change="added", line_offset=b1,
                                                detectors=detectors, allows=allows)
+        for transitioned in transition_maps:
+            for path in list(transitioned):
+                if path not in commit_tree:
+                    transitioned.pop(path)
+            for path in commit_tree:
+                transitioned.setdefault(path, None)
+        origin_maps[commit] = {
+            path: next((origin for origin in (values.get(path) for values in transition_maps)
+                        if origin is not None), None)
+            for path in commit_tree
+        }
     head_tree = tree_cache.setdefault(head_sha, _tree(root, head_sha, extra_env))
     for path in sorted(touched_head_paths):
         if path is None or path not in head_tree or head_tree[path][1] != "blob":
@@ -530,17 +554,20 @@ def _local_remote_has_ref(root, url, ref):
     return present.returncode == 0
 
 
-def _remote_push_urls(root, remote):
-    result = _git(root, "remote", "get-url", "--push", "--all", remote, check=False)
-    if result.returncode:
-        raise ValidationError("Remote push URL inventory could not be verified; rewrite refused without changes")
-    try:
-        values = [line.decode("utf-8") for line in result.stdout.splitlines() if line]
-    except UnicodeDecodeError as exc:
-        raise ValidationError("Remote push URL inventory is not UTF-8; rewrite refused without changes") from exc
+def _remote_urls(root, remote):
+    """Return every distinct fetch and push endpoint configured for a remote."""
+    values = set()
+    for arguments in (("--all", remote), ("--push", "--all", remote)):
+        result = _git(root, "remote", "get-url", *arguments, check=False)
+        if result.returncode:
+            raise ValidationError("Remote URL inventory could not be verified; rewrite refused without changes")
+        try:
+            values.update(line.decode("utf-8") for line in result.stdout.splitlines() if line)
+        except UnicodeDecodeError as exc:
+            raise ValidationError("Remote URL inventory is not UTF-8; rewrite refused without changes") from exc
     if not values:
-        raise ValidationError("Remote push URL inventory is empty; rewrite refused without changes")
-    return sorted(set(values))
+        raise ValidationError("Remote URL inventory is empty; rewrite refused without changes")
+    return sorted(values)
 
 
 def _remove_new_loose_object(destination, parent_existed):
@@ -552,6 +579,31 @@ def _remove_new_loose_object(destination, parent_existed):
         raise ValidationError("Failed rewrite left an unreferenced replacement object; operator cleanup is required") from exc
     if destination.exists():
         raise ValidationError("Failed rewrite left an unreferenced replacement object; operator cleanup is required")
+
+
+def _object_referenced(root, oid):
+    """Fail closed when ref reachability cannot be enumerated."""
+    result = _git(root, "for-each-ref", "--contains", oid, "--format=%(refname)", check=False)
+    if result.returncode:
+        return None
+    return bool(result.stdout.strip())
+
+
+def _cleanup_unreferenced_object(root, oid, destination, parent_existed, raw_object):
+    """Remove an isolated CAS loser without breaking a concurrently created ref."""
+    referenced = _object_referenced(root, oid)
+    if referenced is not False:
+        return
+    _remove_new_loose_object(destination, parent_existed)
+    # A ref may have won between the reachability check and unlink.  Git will
+    # reject a later ref creation once the object is absent; a ref that won in
+    # the narrow interval makes show-ref fail closed until the object returns.
+    refs = _git(root, "show-ref", check=False)
+    if refs.returncode:
+        restored = _git(root, "hash-object", "-t", "commit", "-w", "--stdin",
+                        input_bytes=raw_object).stdout.decode("ascii").strip()
+        if restored != oid:
+            raise ValidationError("Failed rewrite could not restore an object needed by a concurrent ref")
 
 
 def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_path=None, config_path=None):
@@ -580,20 +632,20 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
         raise ValidationError("Published-history rewrite refused: branch has an upstream; owner decision is out of scope")
     remotes = [line.decode("utf-8") for line in _git(root, "remote").stdout.splitlines()]
     for remote in remotes:
-        for url in _remote_push_urls(root, remote):
+        for url in _remote_urls(root, remote):
             # Read-only local bare remotes are used by the refusal proof; no
             # object transfer or sub-protocol is invoked by ls-remote.
             probe = _git(root, "-c", "protocol.file.allow=always", "ls-remote", "--exit-code",
                          "--heads", url, ref, check=False, timeout=60)
             if probe.returncode == 0 and probe.stdout:
-                raise ValidationError("Published-history rewrite refused: branch exists on a push remote; owner decision is out of scope")
+                raise ValidationError("Published-history rewrite refused: branch exists on a configured remote URL; owner decision is out of scope")
             if probe.returncode == 2:
                 continue
             local_present = _local_remote_has_ref(root, url, ref)
             if local_present is True:
-                raise ValidationError("Published-history rewrite refused: branch exists on a push remote; owner decision is out of scope")
+                raise ValidationError("Published-history rewrite refused: branch exists on a configured remote URL; owner decision is out of scope")
             if local_present is not False:
-                raise ValidationError("Remote push publication state could not be verified; rewrite refused without changes")
+                raise ValidationError("Remote publication state could not be verified; rewrite refused without changes")
     for other_ref, tip in _ref_tips(root):
         if other_ref == ref:
             continue
@@ -646,7 +698,7 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
         ref_updated = True
     except Exception:
         if not ref_updated and not existed and not loose_existed and destination.exists():
-            _remove_new_loose_object(destination, parent_existed)
+            _cleanup_unreferenced_object(root, created, destination, parent_existed, raw_object)
         raise
     return {"status": "PASS", "branch": branch, "base_sha": base_sha, "old_head": old_head,
             "head_sha": created, "head_tree": old_tree, "commits": 1, "publication_scan": scan,

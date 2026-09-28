@@ -429,5 +429,5 @@ class HostTests(unittest.TestCase):
     def test_protected_paths_and_unsafe_names(self):
         for value in ['AGENTS.md','src/AGENTS.md','.agentic/a','x/.codex/a','.github/workflows/ci.yml','scripts/bootstrap_project.py']:
             self.assertTrue(protected(value))
-        for value in ['../a','/a','-a','C:/a','a\\b','a\nsecret']:
+        for value in ['../a','/a','-a','C:' + '/a','a\\b','a\nsecret']:
             self.assertFalse(safe_path(value))

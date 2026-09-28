@@ -162,6 +162,33 @@ class PublicationScanTests(unittest.TestCase):
         self.assertEqual("PASS", result["status"])
         self.assertFalse(result["findings"])
 
+    def test_deleted_preexisting_base_line_is_independent_of_merge_parent_order(self):
+        for root_first in (False, True):
+            with self.subTest(root_first=root_first):
+                parent = Path(self.temp.name) / ("root-first" if root_first else "root-second")
+                parent.mkdir()
+                repo = Repository(parent)
+                mapping = repo.mapping()
+                git(repo.path, "switch", "main")
+                repo.write("context.txt", private_locator() + "\nretained\n")
+                git(repo.path, "add", "context.txt")
+                git(repo.path, "commit", "-m", "accepted base private line")
+                base = git(repo.path, "rev-parse", "HEAD")
+                git(repo.path, "switch", "-C", "awf/EX-6-publication")
+                repo.write("context.txt", "retained\n")
+                feature = repo.commit("delete accepted-base line", "context.txt")
+                safe_blob = git(repo.path, "hash-object", "-w", "--stdin", input_bytes=b"safe root\n")
+                root_tree = git(repo.path, "mktree", input_bytes=(
+                    f"100644 blob {safe_blob}\tcontext.txt\n").encode("ascii"))
+                side_root = git(repo.path, "commit-tree", root_tree, input_bytes=b"unrelated root\n")
+                feature_tree = git(repo.path, "rev-parse", feature + "^{tree}")
+                ordered = (side_root, feature) if root_first else (feature, side_root)
+                merge = git(repo.path, "commit-tree", feature_tree,
+                            "-p", ordered[0], "-p", ordered[1], input_bytes=b"merge root\n")
+                git(repo.path, "update-ref", "refs/heads/awf/EX-6-publication", merge, feature)
+                result = scan_repository(repo.path, base, merge, mapping_path=mapping)
+                self.assertEqual("PASS", result["status"], render_scan(result))
+
     def test_ac53_channels_and_builtin_cannot_be_disabled_by_tracked_config(self):
         value = private_locator()
         config = self.repo.path / ".agentic" / "PROJECT_CONFIG.yaml"
@@ -405,13 +432,30 @@ class PublicationRewriteTests(unittest.TestCase):
                         "refs/heads/awf/EX-6-publication", head], check=True, capture_output=True)
         git(self.repo.path, "remote", "set-url", "--add", "--push", "origin", str(self.remote))
         git(self.repo.path, "remote", "set-url", "--add", "--push", "origin", str(published))
-        with self.assertRaisesRegex(ValidationError, "push remote"):
+        with self.assertRaisesRegex(ValidationError, "configured remote URL"):
             rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                 mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
         git(self.repo.path, "config", "--unset-all", "remote.origin.pushurl")
         git(self.repo.path, "update-ref", "refs/remotes/origin/other", head)
         with self.assertRaisesRegex(ValidationError, "remote-tracking ref"):
+            rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                mapping_path=self.mapping)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_ac44_distinct_fetch_and_push_urls_are_all_checked(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        published = Path(self.temp.name) / "fetch-published.git"
+        subprocess.run(["git", "init", "--bare", str(published)], check=True, capture_output=True)
+        shutil.copytree(self.repo.path / ".git" / "objects", published / "objects", dirs_exist_ok=True)
+        subprocess.run(["git", "--git-dir", str(published), "update-ref",
+                        "refs/heads/awf/EX-6-publication", head], check=True, capture_output=True)
+        git(self.repo.path, "remote", "set-url", "origin", str(published))
+        git(self.repo.path, "remote", "set-url", "--push", "origin", str(self.remote))
+        with self.assertRaisesRegex(ValidationError, "configured remote URL"):
             rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                 mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
@@ -435,6 +479,27 @@ class PublicationRewriteTests(unittest.TestCase):
         after = {path.relative_to(object_root) for path in object_root.rglob("*") if path.is_file()}
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
         self.assertEqual(before, after)
+
+    def test_ac44_failed_final_cas_preserves_object_claimed_by_concurrent_ref(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+        created = []
+        def lose_after_concurrent_ref(root, *args, **kwargs):
+            if args and args[0] == "update-ref" and args[1] == "refs/heads/awf/EX-6-publication":
+                created.append(args[2])
+                real_git(root, "update-ref", "refs/heads/concurrent", args[2])
+                return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
+            return real_git(root, *args, **kwargs)
+        with mock.patch.object(publication, "_git", side_effect=lose_after_concurrent_ref):
+            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertEqual(created[0], git(self.repo.path, "rev-parse", "refs/heads/concurrent^{commit}"))
+        self.assertEqual("", git(self.repo.path, "cat-file", "-e", created[0] + "^{commit}"))
 
     def test_ac44_invalid_utf8_message_refuses_without_change(self):
         self.contaminate_then_remove()
