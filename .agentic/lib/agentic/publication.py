@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-import stat
 import subprocess
 import tempfile
 
@@ -29,12 +28,6 @@ MAX_TEXT_BYTES = 32 * 1024 * 1024
 MAX_REGEX_ENTRIES = 64
 MAX_REGEX_CHARS = 256
 MAX_REGEX_REPEAT = 64
-MAX_REFLOG_FILES = 4096
-MAX_REFLOG_BYTES = 64 * 1024 * 1024
-MAX_PSEUDOREF_ENTRIES = 16384
-MAX_PSEUDOREF_FILES = 4096
-MAX_PSEUDOREF_BYTES = 64 * 1024 * 1024
-PSEUDOREF_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 ALIAS = re.compile(r"^[a-z][a-z0-9_]*$")
 UNC = re.compile(r"(?<![\\])\\\\[A-Za-z0-9][A-Za-z0-9._-]*[\\/][^\s<>:\"|?*]+(?:[\\/][^\s<>:\"|?*]+)*")
 WINDOWS_ABSOLUTE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[^\s<>:\"|?*]+[\\/]?)+")
@@ -583,297 +576,6 @@ def _remote_urls(root, remote):
     return sorted(values)
 
 
-def _remove_new_loose_object(destination, parent_existed):
-    try:
-        destination.unlink(missing_ok=True)
-        if not parent_existed:
-            destination.parent.rmdir()
-    except OSError as exc:
-        raise ValidationError("Failed rewrite left an unreferenced replacement object; operator cleanup is required") from exc
-    if destination.exists():
-        raise ValidationError("Failed rewrite left an unreferenced replacement object; operator cleanup is required")
-
-
-def _object_referenced(root, oid):
-    """Fail closed when live-ref or reflog reachability cannot be enumerated."""
-    result = _git(root, "for-each-ref", "--contains", oid, "--format=%(refname)", check=False)
-    if result.returncode:
-        return None
-    if result.stdout.strip():
-        return True
-    # A ref may have selected the object and moved away again.  Its reflog is
-    # recovery state, and deleting the object would make that reflog invalid.
-    reflogs = _git(root, "reflog", "show", "--all", "--format=%H", check=False)
-    if reflogs.returncode:
-        return None
-    try:
-        tips = {line.decode("ascii") for line in reflogs.stdout.splitlines() if line}
-    except UnicodeDecodeError:
-        return None
-    for tip in tips:
-        if tip == oid:
-            return True
-        if _git(root, "merge-base", "--is-ancestor", oid, tip, check=False).returncode == 0:
-            return True
-    return False
-
-
-def _object_named_by_ref_or_reflog(root, oid):
-    """Inspect ref, pseudoref and reflog OID fields without object lookup."""
-    try:
-        encoded = oid.encode("ascii")
-    except UnicodeEncodeError:
-        return None
-    refs = _git(root, "for-each-ref", "--format=%(objectname)", check=False)
-    if refs.returncode:
-        return None
-    if encoded in refs.stdout.splitlines():
-        return True
-    pseudorefs = _raw_pseudoref_names_oid(root, encoded)
-    if pseudorefs is not False:
-        return pseudorefs
-    return _raw_reflog_names_oid(root, encoded)
-
-
-def _git_storage_path(root, option):
-    """Resolve a Git storage directory without accepting ambiguous output."""
-    result = _git(root, "rev-parse", option, check=False)
-    if result.returncode:
-        return None
-    try:
-        value = result.stdout.decode("utf-8").strip()
-    except UnicodeDecodeError:
-        return None
-    if not value or "\x00" in value or "\n" in value or "\r" in value:
-        return None
-    path = Path(value)
-    return path if path.is_absolute() else Path(root).resolve() / path
-
-
-def _stat_identity(value):
-    """Return the fields needed to reject a raced file or directory."""
-    return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
-            value.st_mtime_ns, value.st_ctime_ns,
-            getattr(value, "st_file_attributes", 0), getattr(value, "st_reparse_tag", 0))
-
-
-def _linklike(value):
-    """Recognize POSIX links and Windows reparse points without following them."""
-    reparse = getattr(value, "st_file_attributes", 0) & getattr(
-        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    return stat.S_ISLNK(value.st_mode) or bool(reparse)
-
-
-def _read_stable_regular_file(path, byte_limit):
-    """Read one bounded file without following a final-component symlink."""
-    try:
-        before = path.lstat()
-        if _linklike(before) or not stat.S_ISREG(before.st_mode) or before.st_size > byte_limit:
-            return None
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
-        try:
-            opened = os.fstat(descriptor)
-            if (_linklike(opened) or not stat.S_ISREG(opened.st_mode)
-                    or _stat_identity(opened) != _stat_identity(before)):
-                return None
-            data = bytearray()
-            while len(data) <= byte_limit:
-                chunk = os.read(descriptor, min(1024 * 1024, byte_limit + 1 - len(data)))
-                if not chunk:
-                    break
-                data.extend(chunk)
-            after = os.fstat(descriptor)
-        finally:
-            os.close(descriptor)
-        path_after = path.lstat()
-        if (len(data) > byte_limit or len(data) != after.st_size
-                or _stat_identity(after) != _stat_identity(opened)
-                or _stat_identity(path_after) != _stat_identity(opened)):
-            return None
-        return bytes(data)
-    except OSError:
-        return None
-
-
-def _pseudoref_storage_roots(root):
-    """Enumerate the common and per-worktree Git dirs without following links."""
-    common = _git_storage_path(root, "--git-common-dir")
-    git_dir = _git_storage_path(root, "--git-dir")
-    if common is None or git_dir is None:
-        return None
-    roots = [common, git_dir]
-    worktrees = common / "worktrees"
-    worktrees_identity = None
-    try:
-        for candidate in (common, git_dir):
-            metadata = candidate.lstat()
-            if _linklike(metadata) or not stat.S_ISDIR(metadata.st_mode):
-                return None
-        try:
-            metadata = worktrees.lstat()
-        except FileNotFoundError:
-            pass
-        else:
-            if _linklike(metadata) or not stat.S_ISDIR(metadata.st_mode):
-                return None
-            worktrees_identity = _stat_identity(metadata)
-            entries = 0
-            for entry in worktrees.iterdir():
-                entries += 1
-                if entries > MAX_PSEUDOREF_ENTRIES:
-                    return None
-                entry_metadata = entry.lstat()
-                if _linklike(entry_metadata) or not stat.S_ISDIR(entry_metadata.st_mode):
-                    return None
-                roots.append(entry)
-    except OSError:
-        return None
-    distinct = []
-    seen = set()
-    for candidate in roots:
-        key = os.path.abspath(candidate)
-        if key not in seen:
-            seen.add(key)
-            distinct.append(candidate)
-    return distinct, worktrees, worktrees_identity
-
-
-def _raw_pseudoref_names_oid(root, encoded_oid):
-    """Read live all-caps pseudorefs, including every linked-worktree HEAD."""
-    if not re.fullmatch(rb"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", encoded_oid):
-        return None
-    inventory = _pseudoref_storage_roots(root)
-    if inventory is None:
-        return None
-    roots, worktrees, worktrees_identity = inventory
-    files_seen, bytes_seen, entries_seen = 0, 0, 0
-    try:
-        for storage in roots:
-            before = storage.lstat()
-            if _linklike(before) or not stat.S_ISDIR(before.st_mode):
-                return None
-            for path in storage.iterdir():
-                entries_seen += 1
-                if entries_seen > MAX_PSEUDOREF_ENTRIES:
-                    return None
-                if PSEUDOREF_NAME.fullmatch(path.name) is None:
-                    continue
-                files_seen += 1
-                if files_seen > MAX_PSEUDOREF_FILES:
-                    return None
-                remaining = MAX_PSEUDOREF_BYTES - bytes_seen
-                if remaining < 0:
-                    return None
-                data = _read_stable_regular_file(path, remaining)
-                if data is None:
-                    return None
-                bytes_seen += len(data)
-                for line in data.splitlines():
-                    fields = line.split(None, 1)
-                    if fields and fields[0].lower() == encoded_oid.lower():
-                        return True
-            after = storage.lstat()
-            if _stat_identity(after) != _stat_identity(before):
-                return None
-        try:
-            worktrees_after = worktrees.lstat()
-        except FileNotFoundError:
-            if worktrees_identity is not None:
-                return None
-        else:
-            if (_linklike(worktrees_after) or worktrees_identity is None
-                    or _stat_identity(worktrees_after) != worktrees_identity):
-                return None
-        return False
-    except OSError:
-        return None
-
-
-def _raw_reflog_names_oid(root, encoded_oid):
-    """Read raw reflog OID fields because Git hides entries for missing objects."""
-    common = _git_storage_path(root, "--git-common-dir")
-    git_dir = _git_storage_path(root, "--git-dir")
-    if common is None or git_dir is None:
-        return None
-    roots = [common / "logs", git_dir / "logs"]
-    worktrees = common / "worktrees"
-    try:
-        if worktrees.exists():
-            if worktrees.is_symlink() or not worktrees.is_dir():
-                return None
-            for entry in worktrees.iterdir():
-                if entry.is_symlink() or not entry.is_dir():
-                    return None
-                roots.append(entry / "logs")
-        seen, files_seen, bytes_seen = set(), 0, 0
-        for log_root in roots:
-            key = os.path.abspath(log_root)
-            if key in seen:
-                continue
-            seen.add(key)
-            if not log_root.exists():
-                continue
-            if log_root.is_symlink() or not log_root.is_dir():
-                return None
-            for directory, dirs, files in os.walk(log_root, followlinks=False):
-                current = Path(directory)
-                if current.is_symlink():
-                    return None
-                for name in dirs:
-                    if (current / name).is_symlink():
-                        return None
-                for name in files:
-                    path = current / name
-                    if path.is_symlink() or not path.is_file():
-                        return None
-                    files_seen += 1
-                    if files_seen > MAX_REFLOG_FILES:
-                        return None
-                    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-                    descriptor = os.open(path, flags)
-                    try:
-                        size = os.fstat(descriptor).st_size
-                        bytes_seen += size
-                        if size > MAX_REFLOG_BYTES or bytes_seen > MAX_REFLOG_BYTES:
-                            return None
-                        data = b""
-                        while len(data) <= size:
-                            chunk = os.read(descriptor, min(1024 * 1024, size + 1 - len(data)))
-                            if not chunk:
-                                break
-                            data += chunk
-                        if len(data) != size:
-                            return None
-                    finally:
-                        os.close(descriptor)
-                    for line in data.splitlines():
-                        fields = line.split(b" ", 2)
-                        if len(fields) != 3:
-                            return None
-                        if encoded_oid in fields[:2]:
-                            return True
-        return False
-    except OSError:
-        return None
-
-
-def _cleanup_unreferenced_object(root, oid, destination, parent_existed, raw_object):
-    """Remove an isolated CAS loser without breaking a concurrently created ref."""
-    referenced = _object_referenced(root, oid)
-    if referenced is not False:
-        return
-    _remove_new_loose_object(destination, parent_existed)
-    # A regular ref or pseudoref may have won between the reachability check
-    # and unlink, or selected the object and moved away while retaining it in
-    # a reflog. Recheck all forms; an unreadable proof restores fail-closed.
-    if _object_named_by_ref_or_reflog(root, oid) is not False:
-        restored = _git(root, "hash-object", "-t", "commit", "-w", "--stdin",
-                        input_bytes=raw_object).stdout.decode("ascii").strip()
-        if restored != oid:
-            raise ValidationError("Failed rewrite could not restore an object needed by a concurrent ref")
-
-
 def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_path=None, config_path=None):
     """Atomically squash one unpublished branch after scanning the replacement history."""
     root = Path(root).resolve()
@@ -948,26 +650,19 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
             raise ValidationError("Unsupported Git object format")
         raw_object = _git(root, "cat-file", "commit", created, extra_env=extra).stdout
     # The quarantine has been fully validated and removed before the only two
-    # persistent operations.  Git writes the object atomically; update-ref is
-    # the final operation, so no fallible rollback/postcheck follows success.
-    destination = object_dir / created[:2] / created[2:]
-    existed = _git(root, "cat-file", "-e", created + "^{commit}", check=False).returncode == 0
-    loose_existed = destination.exists()
-    parent_existed = destination.parent.exists()
-    ref_updated = False
-    try:
-        installed = _git(root, "hash-object", "-t", "commit", "-w", "--stdin", input_bytes=raw_object).stdout.decode("ascii").strip()
-        installed_present = _git(root, "cat-file", "-e", created + "^{commit}", check=False).returncode == 0
-        if installed != created or not installed_present:
-            raise ValidationError("Replacement object installation did not preserve its identity")
-        update = _git(root, "update-ref", ref, created, old_head, check=False)
-        if update.returncode:
-            raise ValidationError("Atomic branch update failed; branch was not changed")
-        ref_updated = True
-    except Exception:
-        if not ref_updated and not existed and not loose_existed and destination.exists():
-            _cleanup_unreferenced_object(root, created, destination, parent_existed, raw_object)
-        raise
+    # persistent operations. Git writes the object atomically and update-ref is
+    # the final operation. If that CAS fails, retain the validated object:
+    # no ref census can exclude a validated lock being renamed immediately
+    # after the census, and ordinary Git grace/GC safely handles unreachable
+    # objects without risking a concurrent ref, pseudoref or reflog.
+    installed = _git(root, "hash-object", "-t", "commit", "-w", "--stdin",
+                     input_bytes=raw_object).stdout.decode("ascii").strip()
+    installed_present = _git(root, "cat-file", "-e", created + "^{commit}", check=False).returncode == 0
+    if installed != created or not installed_present:
+        raise ValidationError("Replacement object installation did not preserve its identity")
+    update = _git(root, "update-ref", ref, created, old_head, check=False)
+    if update.returncode:
+        raise ValidationError("Atomic branch update failed; branch was not changed and the validated replacement object was retained for Git recovery/GC")
     return {"status": "PASS", "branch": branch, "base_sha": base_sha, "old_head": old_head,
             "head_sha": created, "head_tree": old_tree, "commits": 1, "publication_scan": scan,
             "old_commits_reachable_from_branches_or_tags": False,
