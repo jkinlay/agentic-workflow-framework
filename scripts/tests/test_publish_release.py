@@ -1,0 +1,195 @@
+"""Release publication, reproducibility, clean-source, and local-remote proofs."""
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+import zipfile
+
+ROOT = Path(__file__).resolve().parents[2]
+SPEC = importlib.util.spec_from_file_location("awf_publish_release", ROOT / "scripts/publish_release.py")
+publisher = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(publisher)
+
+
+def command(args, cwd, env=None):
+    result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=300)
+    if result.returncode:
+        raise AssertionError(result.stdout + result.stderr)
+    return result.stdout.strip()
+
+
+class PublishReleaseTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory(prefix="awf-publish-release-")
+        cls.base = Path(cls.temporary.name)
+        cls.repository = cls.base / "source"
+        shutil.copytree(ROOT, cls.repository, ignore=shutil.ignore_patterns(".git", ".tmp-tests", "__pycache__", "*.pyc"))
+        command([sys.executable, "-B", str(cls.repository / "scripts/build_release.py"), "--manifest-only"], cls.repository)
+        cls.git_env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                       "GIT_AUTHOR_DATE": "2026-09-24T00:00:00+00:00",
+                       "GIT_COMMITTER_DATE": "2026-09-24T00:00:00+00:00"}
+        command(["git", "init", "-b", "main"], cls.repository, cls.git_env)
+        command(["git", "config", "user.name", "Synthetic Release Test"], cls.repository, cls.git_env)
+        command(["git", "config", "user.email", "release@example.invalid"], cls.repository, cls.git_env)
+        command(["git", "config", "core.autocrlf", "false"], cls.repository, cls.git_env)
+        command(["git", "config", "core.filemode", "false"], cls.repository, cls.git_env)
+        command(["git", "add", "."], cls.repository, cls.git_env)
+        command(["git", "-c", "commit.gpgsign=false", "commit", "-m", "Synthetic release fixture"],
+                cls.repository, cls.git_env)
+        cls.commit = command(["git", "rev-parse", "HEAD"], cls.repository, cls.git_env)
+        cls.epoch = int(command(["git", "show", "-s", "--format=%ct", cls.commit], cls.repository, cls.git_env))
+        cls.windows_check = cls.base / "windows-check.json"
+        cls.windows_check.write_text(json.dumps({
+            "format": "awf-clean-windows-portable-check-1", "status": "PASS", "version": "1.9.3",
+            "source_commit": cls.commit,
+            "checks": {"portable_build": "PASS", "host_skill_install": "PASS", "host_skill_verify": "PASS"},
+        }, sort_keys=True), encoding="utf-8")
+        cls.windows_pin = hashlib.sha256(cls.windows_check.read_bytes()).hexdigest()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temporary.cleanup()
+
+    @staticmethod
+    def fake_validation(source, output, env):
+        return {"self_test": {"run": 1, "failures": 0, "errors": 0},
+                "release_hygiene": {"status": "PASS"},
+                "portable_suites": {"portable_core": 1, "portable_host": 1}}
+
+    def build(self, name):
+        source = self.base / (name + "-source")
+        temporary = self.base / (name + "-tmp")
+        temporary.mkdir()
+        publisher.materialize_commit(self.repository, self.commit, source)
+        previous = {key: os.environ.get(key) for key in ("TMP", "TEMP")}
+        os.environ.update(TMP=str(temporary), TEMP=str(temporary))
+        try:
+            return publisher.build_assets(source, self.base / name, self.epoch)
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_ac10_two_builds_are_byte_identical_and_metadata_is_normalized(self):
+        first, first_proof = self.build("first-build")
+        second, second_proof = self.build("second-build")
+        first_hashes = {path.name: publisher.sha256(path) for path in first}
+        second_hashes = {path.name: publisher.sha256(path) for path in second}
+        self.assertEqual(first_hashes, second_hashes)
+        print("AC10_ASSET_SHA256=" + json.dumps(first_hashes, sort_keys=True))
+        self.assertEqual(first_proof["manifest_sha256"], second_proof["manifest_sha256"])
+        metadata = None
+        for path in first:
+            with zipfile.ZipFile(path) as archive:
+                self.assertEqual(archive.namelist(), sorted(archive.namelist()))
+                current = [(entry.date_time, entry.create_system, entry.external_attr,
+                            entry.compress_type, entry.extra, entry.comment) for entry in archive.infolist()]
+                self.assertTrue(current)
+                self.assertTrue(all(item[3] == zipfile.ZIP_STORED for item in current))
+                self.assertTrue(all(item[1] == 3 and item[2] >> 16 == 0o100644 for item in current))
+                self.assertTrue(all(item[4:] == (b"", b"") for item in current))
+                if metadata is None:
+                    metadata = current[0][0]
+                self.assertTrue(all(item[0] == metadata for item in current))
+
+    def test_dry_run_records_hashes_and_makes_no_remote_change(self):
+        result = publisher.publish(self.repository, self.commit, self.base / "dry-run-output",
+                                   self.windows_check, self.windows_pin, dry_run=True,
+                                   validation_runner=self.fake_validation)
+        self.assertEqual("DRY_RUN", result["status"])
+        for name, digest in result["record"]["assets"].items():
+            self.assertIn(name, result["tag_message"])
+            self.assertIn(digest, result["tag_message"])
+            self.assertIn(digest, result["release_body"])
+        self.assertFalse(result["remote_changes"])
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.3"], self.repository))
+
+    def test_k6_reports_untracked_tracked_and_version_disagreement_together(self):
+        readme = self.repository / "README.md"
+        original = readme.read_bytes()
+        untracked = self.repository / "synthetic-untracked.txt"
+        try:
+            readme.write_text(readme.read_text(encoding="utf-8").replace("Release 1.9.3", "Release 9.9.9", 1), encoding="utf-8")
+            untracked.write_text("fixture", encoding="utf-8")
+            report = publisher.source_report(self.repository, self.commit)
+            joined = "\n".join(report["problems"])
+            self.assertIn("tracked modification", joined)
+            self.assertIn("untracked file", joined)
+            self.assertIn("version disagreement", joined)
+        finally:
+            readme.write_bytes(original)
+            untracked.unlink()
+
+    def make_fake_gh(self, directory, storage, log):
+        script = directory / "fake_gh.py"
+        script.write_text("""import json, os, pathlib, shutil, sys
+args=sys.argv[1:]
+with pathlib.Path(os.environ['AWF_FAKE_GH_LOG']).open('a', encoding='utf-8') as out:
+    out.write(json.dumps(args)+'\\n')
+store=pathlib.Path(os.environ['AWF_FAKE_GH_STORE'])
+store.mkdir(exist_ok=True)
+if args[:2] == ['release','create']:
+    for value in args[3:]:
+        path=pathlib.Path(value)
+        if path.suffix == '.zip' and path.is_file(): shutil.copyfile(path, store/path.name)
+elif args[:2] == ['release','download']:
+    target=pathlib.Path(args[args.index('--dir')+1]); target.mkdir(exist_ok=True)
+    for path in store.glob('*.zip'): shutil.copyfile(path, target/path.name)
+else: raise SystemExit(2)
+""", encoding="utf-8")
+        if os.name == "nt":
+            executable = directory / "gh.cmd"
+            executable.write_text('@"' + sys.executable + '" "%~dp0fake_gh.py" %*\n', encoding="utf-8")
+        else:
+            executable = directory / "gh"
+            executable.write_text("#!/bin/sh\nexec \"" + sys.executable + "\" \"$(dirname \"$0\")/fake_gh.py\" \"$@\"\n", encoding="utf-8")
+            executable.chmod(0o755)
+        return executable
+
+    def test_local_bare_remote_fake_gh_and_verify_changed_byte(self):
+        bare = self.base / "remote.git"
+        command(["git", "init", "--bare", str(bare)], self.base)
+        command(["git", "remote", "add", "origin", str(bare)], self.repository)
+        command(["git", "push", "-u", "origin", "main"], self.repository)
+        fake_bin = self.base / "fake-bin"; fake_bin.mkdir()
+        store = self.base / "fake-release"; store.mkdir()
+        log = self.base / "fake-gh.jsonl"
+        executable = self.make_fake_gh(fake_bin, store, log)
+        env = os.environ.copy()
+        env.update(PATH=str(fake_bin) + os.pathsep + env.get("PATH", ""),
+                   AWF_FAKE_GH_LOG=str(log), AWF_FAKE_GH_STORE=str(store))
+        old = os.environ.copy()
+        os.environ.update(env)
+        try:
+            result = publisher.publish(self.repository, self.commit, self.base / "published-output",
+                                       self.windows_check, self.windows_pin,
+                                       validation_runner=self.fake_validation, gh=str(executable))
+            self.assertEqual("DRAFT_CREATED", result["status"])
+            verified = publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-output",
+                                            gh=str(executable))
+            self.assertEqual("PASS", verified["status"])
+            changed = next(store.glob("*.zip"))
+            changed.write_bytes(changed.read_bytes() + b"changed")
+            with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):
+                publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-fail-output",
+                                     gh=str(executable))
+        finally:
+            os.environ.clear(); os.environ.update(old)
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any(call[:2] == ["release", "create"] and "--draft" in call for call in calls))
+        self.assertTrue(any(call[:2] == ["release", "download"] for call in calls))
+
+
+if __name__ == "__main__":
+    unittest.main()

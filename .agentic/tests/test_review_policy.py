@@ -346,6 +346,15 @@ class CapTests(Fixture):
         plan = cap_disposition_plan(self.config, self.disposition("PARK"), 3, 0, self.open_findings())
         self.assertEqual({"reason_code": "REVIEW_CAP_PARKED", "resume_state": "CHANGES_REQUESTED"}, plan["blocker"])
 
+    def test_ac2_run_and_review_round_caps_are_independent(self):
+        self.config["execution"]["max_agent_runs_per_ticket"] = 16
+        self.config["execution"]["model_routing"]["budgets"]["max_runs_per_ticket"] = 16
+        self.assertTrue(cap_status(self.config, 3, 0)["cap_reached"])
+        self.config["execution"]["max_agent_runs_per_ticket"] = 1
+        self.config["execution"]["model_routing"]["budgets"]["max_runs_per_ticket"] = 1
+        self.assertFalse(cap_status(self.config, 2, 0)["cap_reached"])
+        self.assertTrue(cap_status(self.config, 3, 0)["cap_reached"])
+
     def test_third_extension_refused_by_governance_path(self):
         self.assertEqual(1, cap_disposition_plan(self.config, self.disposition("EXTEND_ONE_CYCLE"), 3, 0, self.open_findings())["cap_extensions"])
         with self.assertRaisesRegex(ValidationError, r"\$\.execution\.max_cap_extensions"):

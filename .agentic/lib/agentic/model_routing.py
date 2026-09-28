@@ -68,7 +68,7 @@ def default_policy():
         "escalation": {"enabled": True, "max_escalations_per_ticket": 2,
                        "max_reasoning_failures_per_phase": 3,
                        "effort_ceiling": "high"},
-        "budgets": {"max_runs_per_ticket": 12, "max_runs_per_project_day": 250,
+        "budgets": {"max_runs_per_ticket": 16, "max_runs_per_project_day": 250,
                     "max_tokens_per_ticket": 2000000, "max_tokens_per_project_day": 30000000,
                     "max_cost_microusd_per_ticket": None,
                     "max_cost_microusd_per_project_day": None},
@@ -489,6 +489,11 @@ def initialize_routing_ledger(connection, *, legacy_only=False):
         return
     connection.execute("CREATE TABLE IF NOT EXISTS model_failure_resolutions (run_id TEXT PRIMARY KEY, observation TEXT NOT NULL)")
     connection.execute("CREATE TABLE IF NOT EXISTS model_defect_observations (observation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, observation TEXT NOT NULL)")
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_disposition_requests (
+      request_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, ticket_id TEXT NOT NULL,
+      run_id TEXT UNIQUE NOT NULL, observation TEXT NOT NULL)""")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS disposition_request_no_update BEFORE UPDATE ON model_disposition_requests BEGIN SELECT RAISE(ABORT, 'disposition requests are append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS disposition_request_no_delete BEFORE DELETE ON model_disposition_requests BEGIN SELECT RAISE(ABORT, 'disposition requests are append-only'); END")
     connection.execute("""CREATE TABLE IF NOT EXISTS model_reconciliations (
       reconciliation_id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
       project_id TEXT NOT NULL, request_hash TEXT NOT NULL,
@@ -696,6 +701,8 @@ class RoutingLedger:
           SELECT rowid FROM model_runs WHERE project_id=? AND status='reserved' UNION
           SELECT rowid FROM model_runs WHERE project_id=? AND closed_day=?)""",
           (project_id, day, project_id, project_id, day)))
+        ticket_cap = policy["budgets"]["max_runs_per_ticket"]
+        ticket_used = len(ticket_rows) + 1
         for scope, history in (("ticket", ticket_rows), ("project_day", daily_rows)):
             budgets = policy["budgets"]
             _require(len(history) + 1 <= budgets["max_runs_per_" + scope], scope + " run budget exhausted")
@@ -714,10 +721,64 @@ class RoutingLedger:
                             request["phase"], now, day, route["policy_sha256"], "reserved",
                             request["reservation_tokens"], request.get("reservation_cost_microusd"),
                             None, None, int(route["escalated"]), json.dumps(enriched), json.dumps(route), None, route["operating_hash"]))
+        warn_at = (3 * ticket_cap + 3) // 4
+        disposition_at = (9 * ticket_cap + 9) // 10
+        signal = ("NEEDS_DISPOSITION" if ticket_used >= disposition_at else
+                  "WARN" if ticket_used >= warn_at else "OK")
+        disposition = None
+        if ticket_used == disposition_at:
+            open_findings = request.get("open_findings", [])
+            _require(isinstance(open_findings, list) and all(isinstance(item, str) and item for item in open_findings),
+                     "open_findings must be a list of nonempty finding IDs")
+            _require(len(set(open_findings)) == len(open_findings), "open_findings must be unique")
+            recommendation = request.get("recommended_disposition", "continue")
+            _require(recommendation in ("continue", "rescope", "park"),
+                     "recommended_disposition must be continue, rescope, or park")
+            disposition = {"format": "awf-run-disposition-request-1",
+                           "request_id": str(uuid.uuid4()), "project_id": project_id,
+                           "ticket_id": request["ticket_id"], "run_id": run_id,
+                           "runs_used": ticket_used, "run_cap": ticket_cap,
+                           "open_findings": open_findings,
+                           "recommended_action": recommendation,
+                           "recorded_at": now, "owner_delivery_required": True}
+            connection.execute("INSERT INTO model_disposition_requests VALUES (?,?,?,?,?)",
+                               (disposition["request_id"], project_id, request["ticket_id"],
+                                run_id, json.dumps(disposition)))
         return {**route, "status": "reserved", "run_id": run_id,
                 "reservation_tokens": request["reservation_tokens"],
                 "reservation_cost_microusd": request.get("reservation_cost_microusd"),
+                "ticket_runs_used": ticket_used, "ticket_run_cap": ticket_cap,
+                "run_cap_signal": signal, "disposition_request": disposition,
                 "requires_host_limit_enforcement": True}
+
+    def summary(self, project_id, ticket_id):
+        """Return ticket-wide run and token accounting grouped by recorded role."""
+        _name(project_id, "project_id")
+        _name(ticket_id, "ticket_id")
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT role,status,reserved_tokens,actual_tokens FROM model_runs "
+                "WHERE project_id=? AND ticket_id=? ORDER BY rowid", (project_id, ticket_id)).fetchall()
+            requests = connection.execute(
+                "SELECT observation FROM model_disposition_requests "
+                "WHERE project_id=? AND ticket_id=? ORDER BY rowid", (project_id, ticket_id)).fetchall()
+        by_role = {}
+        for row in rows:
+            group = by_role.setdefault(row["role"], {"runs": 0, "tokens": 0, "reserved_tokens": 0,
+                                                      "actual_tokens": 0, "unsettled_runs": 0})
+            group["runs"] += 1
+            group["reserved_tokens"] += row["reserved_tokens"]
+            if row["actual_tokens"] is None:
+                group["unsettled_runs"] += 1
+                group["tokens"] += row["reserved_tokens"]
+            else:
+                group["actual_tokens"] += row["actual_tokens"]
+                group["tokens"] += row["actual_tokens"]
+        return {"status": "summary", "project_id": project_id, "ticket_id": ticket_id,
+                "runs": len(rows), "tokens": sum(row["actual_tokens"] if row["actual_tokens"] is not None
+                                                    else row["reserved_tokens"] for row in rows),
+                "by_role": {role: by_role[role] for role in sorted(by_role)},
+                "disposition_requests": [json.loads(row["observation"]) for row in requests]}
 
     @staticmethod
     def _current_retry_ceiling(connection, project_id):

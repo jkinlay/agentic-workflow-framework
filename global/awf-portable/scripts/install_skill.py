@@ -230,7 +230,11 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
         if previous == manifest["version"]:
             verify_package(dest, expected_manifest_sha256, local | {RECEIPT})
             receipt = read_json(dest / RECEIPT)
-            if receipt.get("schema_version") != 1 or receipt.get("name") != "awf" or receipt.get("version") != previous or receipt.get("manifest_sha256") != expected_manifest_sha256.lower() or receipt.get("files") != wanted:
+            if (receipt.get("format") != "awf-host-skill-trust-1"
+                    or receipt.get("schema_version") != 1 or receipt.get("inventory_complete") is not True
+                    or receipt.get("name") != "awf" or receipt.get("version") != previous
+                    or receipt.get("manifest_sha256") != expected_manifest_sha256.lower()
+                    or receipt.get("files") != wanted):
                 raise InstallError("Installed receipt does not bind this package")
             return {"status": "already-installed", "version": previous, "destination": str(dest), "duplicates": duplicate_locations(dest, project)}
     result = {"status": "would-upgrade" if previous else "would-install", "version": manifest["version"], "previous_version": previous, "destination": str(dest), "backup_root": str(backup_root), "preserved": sorted(local & set(before or {})), "duplicates": duplicate_locations(dest, project)}
@@ -256,7 +260,11 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
             target = stage / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dest / rel, target)
-        receipt = {"schema_version": 1, "name": "awf", "version": manifest["version"], "manifest_sha256": expected_manifest_sha256.lower(), "files": wanted, "preserved_local_files": result["preserved"], "previous_backup": str(backup) if previous else None}
+        receipt = {"format": "awf-host-skill-trust-1", "schema_version": 1, "name": "awf",
+                   "version": manifest["version"], "manifest_sha256": expected_manifest_sha256.lower(),
+                   "files": wanted, "inventory_complete": True,
+                   "preserved_local_files": result["preserved"],
+                   "previous_backup": str(backup) if previous else None}
         (stage / RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
         verify_package(stage, expected_manifest_sha256, local | {RECEIPT})
         if (inventory(dest) if dest.exists() else None) != before:

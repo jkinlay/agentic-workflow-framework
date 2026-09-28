@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,6 +28,12 @@ def digest(data):
 
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def archive_time():
+    epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "315532800"))
+    value = datetime.fromtimestamp(max(epoch, 315532800), timezone.utc)
+    return (value.year, value.month, value.day, value.hour, value.minute, value.second // 2 * 2)
 
 
 def render_launcher(skill_manifest_sha256, installer_sha256, release_zip_name, release_zip_sha256):
@@ -50,13 +58,17 @@ raise SystemExit(subprocess.call([sys.executable, "-B", str(root / "scripts/inst
 
 
 def package(root, output):
-    paths = sorted(p for p in root.rglob("*") if p.is_file())
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+    paths = sorted((p for p in root.rglob("*") if p.is_file()),
+                   key=lambda p: p.relative_to(root).as_posix())
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as z:
         for p in paths:
-            info = zipfile.ZipInfo(root.name + "/" + p.relative_to(root).as_posix(), (2026, 9, 12, 0, 0, 0))
+            info = zipfile.ZipInfo(root.name + "/" + p.relative_to(root).as_posix(), archive_time())
             info.create_system = 3
             info.external_attr = 0o100644 << 16
-            z.writestr(info, p.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+            info.compress_type = zipfile.ZIP_STORED
+            info.extra = b""
+            info.comment = b""
+            z.writestr(info, p.read_bytes(), compress_type=zipfile.ZIP_STORED)
     with zipfile.ZipFile(output) as z:
         if z.testzip() or len(z.namelist()) != len(paths):
             raise ValueError("Archive verification failed")

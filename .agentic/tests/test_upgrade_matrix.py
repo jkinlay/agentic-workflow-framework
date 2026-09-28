@@ -164,9 +164,17 @@ class UpgradeMatrixTests(unittest.TestCase):
                 destination, before = self.fixture(version)
                 result = self.upgrade(destination)
                 after = (destination / CONFIG).read_bytes()
+                before_value = load_yaml(before["configuration"])
+                after_value = load_yaml(after)
+                self.assertEqual(after_value["execution"]["max_agent_runs_per_ticket"],
+                                 before_value["execution"]["max_agent_runs_per_ticket"])
+                expected_routing_cap = (before_value.get("execution", {}).get("model_routing", {})
+                                        .get("budgets", {}).get("max_runs_per_ticket",
+                                             before_value["execution"]["max_agent_runs_per_ticket"]))
+                self.assertEqual(after_value["execution"]["model_routing"]["budgets"]["max_runs_per_ticket"],
+                                 expected_routing_cap)
                 expected_config = before["configuration"].replace(version.encode(), VERSION.encode(), 1)
                 if version == "1.8.3":
-                    before_value, after_value = load_yaml(before["configuration"]), load_yaml(after)
                     expected_owner = json.loads(json.dumps(before_value))
                     expected_owner["template"]["expected_workflow_version"] = VERSION
                     routing = after_value["execution"].pop("model_routing")

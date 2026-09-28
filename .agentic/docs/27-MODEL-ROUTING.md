@@ -14,11 +14,11 @@ Configure `execution.model_routing`; `defaults` prints its complete schema-compa
 | Independent critic | `gpt-5.6-sol` | high |
 | Specialist; high complexity, uncertainty or risk | `gpt-5.6-sol` | high |
 
-Simple means low complexity/risk/uncertainty, strong verification and no risk flags; Jira priority is insufficient. Preserve ticket/phase identities. Requests include observed `stream`; an `epic_id` also requires host-observed `epic_risk_flags`, explicitly empty when none. Never infer risk context.
+Simple means low complexity/risk/uncertainty, strong verification and no risk flags; Jira priority is insufficient. Preserve ticket/phase identities. Requests include observed `stream`; `epic_id` requires host-observed `epic_risk_flags`. Never infer risk.
 
-Precedence: role default, simple/risk rules, stream override, matching Epic-scoped override, agent override, ticket override; mandatory risk/review floors apply afterward. Root [operating configuration](29-OPERATING-CONFIGURATION.md) supplies stream/role choices without changing governance. Only the unchanged unpinned worker default permits qualifying simple work; custom stream/Epic routes override it. `pinned:true` blocks optional escalation, never floors. Allowlists intersect `role_allowed_models` with `execution.roles.*.approved_model_ids`. The host must support the route; otherwise return `unavailable`, without fallback. Review contexts must differ from workers; initially unknown contexts are checked at settlement.
+Precedence: role default, simple/risk rules, stream, matching Epic, agent, then ticket override; mandatory floors follow. Root [operating configuration](29-OPERATING-CONFIGURATION.md) supplies stream/role choices without changing governance. Only an unchanged unpinned worker default permits simple work. `pinned:true` blocks optional escalation, never floors. Allowlists intersect `role_allowed_models` with approved role IDs. Unsupported routes return `unavailable`, without fallback. Review contexts must differ from workers.
 
-Escalation occurs between runs, from durable reasoning/implementation/validation failure history. Both model rank and effort remain nondecreasing, including after reclassification. Each approved model must support the configured effort ceiling. If monotonicity conflicts with that ceiling or a pin, block. Defaults allow two escalations per ticket and three reasoning failures per phase. Within accepted limits, escalation needs no repeated user prompt.
+Escalation uses failure history between runs. Model rank and effort never decrease. Approved models must support the effort ceiling; conflicts with it or a pin block. Defaults allow two escalations per ticket and three reasoning failures per phase.
 
 Credentials, infrastructure, rate limits, cancellation and unknown outcomes require investigation. `resolve-failure` records verified recovery before a same-model retry; it preserves budgets, floors and pins.
 
@@ -30,7 +30,9 @@ A model/effort listed by policy or a host is a claim until a current observation
 
 ### Token-only hosts
 
-When every effective monetary ceiling is `null`, a host without verified dollar accounting may reserve and settle with `reservation_cost_microusd: null` and `actual_cost_microusd: null`; token and run ceilings remain mandatory. If any effective monetary ceiling is an integer, the existing hard cost reservation and actual-cost requirements still apply. New adoptions default to 2,000,000 tokens and 12 runs per ticket, plus 30,000,000 tokens and 250 runs per project day; upgrades preserve reviewed project configuration until an owner opts in through a governance PR.
+When every effective monetary ceiling is `null`, a host without verified dollar accounting may reserve and settle with `reservation_cost_microusd: null` and `actual_cost_microusd: null`; token and run ceilings remain mandatory. If any effective monetary ceiling is an integer, the existing hard cost reservation and actual-cost requirements still apply. New adoptions default to 2,000,000 tokens and 16 runs per ticket, plus 30,000,000 tokens and 250 runs per project day; upgrades preserve reviewed project configuration until an owner opts in through a governance PR.
+
+For cap *N*, `WARN` starts at `ceil(.75N)` and `NEEDS_DISPOSITION` at `ceil(.90N)`. Crossings succeed; the latter appends an owner request (usage, findings, `continue|rescope|park`). Only the cap refuses. `summary --ticket T` groups runs/tokens by role. Round caps remain independent.
 
 Outstanding runs block duplicate ticket/role/phase admission and remain charged across midnight. Ticket history survives policy changes. Usage counts on its start and closure UTC days; there are no timeout refunds.
 
@@ -77,6 +79,7 @@ python .agentic/scripts/route_model.py outcome-template --role worker
 python .agentic/scripts/route_model.py suggest --config PROJECT/.agentic/PROJECT_CONFIG.yaml --request request.json --capabilities observed-host.json
 python .agentic/scripts/route_model.py reserve --config PROJECT/.agentic/PROJECT_CONFIG.yaml --project-root PROJECT --request request.json --capabilities observed-host.json --ledger STATE/routing.sqlite
 python .agentic/scripts/route_model.py settle --config PROJECT/.agentic/PROJECT_CONFIG.yaml --project-root PROJECT --ledger STATE/routing.sqlite --run-id RUN_ID --outcome outcome.json
+python .agentic/scripts/route_model.py summary --config PROJECT/.agentic/PROJECT_CONFIG.yaml --project-root PROJECT --ledger STATE/routing.sqlite --ticket TICKET
 python .agentic/scripts/route_model.py reconcile --config PROJECT/.agentic/PROJECT_CONFIG.yaml --project-root PROJECT --ledger STATE/routing.sqlite --run-id RUN_ID --observation operator-reconciliation.json
 ```
 

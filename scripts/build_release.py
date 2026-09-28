@@ -2,7 +2,9 @@
 """Generate a complete manifest and deterministic source ZIP; run tests separately."""
 from __future__ import annotations
 import argparse
+from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sys
 import zipfile
@@ -14,6 +16,12 @@ from agentic.canonical import sha256
 from agentic.installer import RELEASE_EXCLUDED_PREFIXES, release_member, verify_release
 from agentic.safeio import Tree
 from release_hygiene import check_release
+
+
+def archive_time():
+    epoch = int(os.environ.get('SOURCE_DATE_EPOCH', '315532800'))
+    value = datetime.fromtimestamp(max(epoch, 315532800), timezone.utc)
+    return (value.year, value.month, value.day, value.hour, value.minute, value.second // 2 * 2)
 
 
 def manifest():
@@ -71,14 +79,18 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     prefix = 'agentic-workflow-template-v' + VERSION.removesuffix('.0') + '/'
     expected = {}
-    with Tree(ROOT) as tree, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for relative in (path for path in tree.file_list(exclude_root_git=True) if release_member(path)):
+    with Tree(ROOT) as tree, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_STORED) as archive:
+        for relative in (path for path in tree.file_list(
+                exclude_root_git=True, exclude_prefixes=RELEASE_EXCLUDED_PREFIXES)
+                if release_member(path)):
             data = tree.read(relative)
-            info = zipfile.ZipInfo(prefix + relative, date_time=(2026,9,11,0,0,0))
+            info = zipfile.ZipInfo(prefix + relative.replace('\\', '/'), date_time=archive_time())
             info.create_system = 3
             info.external_attr = 0o100644 << 16
-            info.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+            info.compress_type = zipfile.ZIP_STORED
+            info.extra = b''
+            info.comment = b''
+            archive.writestr(info, data, compress_type=zipfile.ZIP_STORED)
             expected[info.filename] = sha256(data)
     with zipfile.ZipFile(output) as archive:
         if archive.testzip() is not None or set(archive.namelist()) != set(expected) or len(archive.namelist()) != len(expected):
@@ -86,8 +98,10 @@ def main():
         if any(sha256(archive.read(p)) != digest for p,digest in expected.items()):
             raise ValidationError('ZIP content mismatch')
     zip_digest = sha256(output.read_bytes())
-    output.with_suffix('.zip.sha256').write_text(f'{zip_digest}  {output.name}\n', encoding='utf-8')
-    output.with_suffix('.manifest.sha256').write_text(f'{digest}  MANIFEST.json\n', encoding='utf-8')
+    output.with_suffix('.zip.sha256').write_text(
+        f'{zip_digest}  {output.name}\n', encoding='utf-8', newline='\n')
+    output.with_suffix('.manifest.sha256').write_text(
+        f'{digest}  MANIFEST.json\n', encoding='utf-8', newline='\n')
     print(json.dumps({'version':VERSION,'zip':str(output),'zip_sha256':zip_digest,'manifest_sha256':digest,
         'files':len(expected),'bytes':output.stat().st_size,'tests_run_by_builder':False}, indent=2))
     return 0

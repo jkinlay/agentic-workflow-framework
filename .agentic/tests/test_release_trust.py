@@ -12,7 +12,7 @@ import zipfile
 from agentic import VERSION, ValidationError
 from agentic.canonical import sha256
 from agentic.installer import json_bytes
-from agentic.release_trust import approved_manifest, bundled_manifest
+from agentic.release_trust import approved_manifest, bundled_manifest, establish_release_trust
 
 
 class ReleaseTrustTests(unittest.TestCase):
@@ -45,7 +45,10 @@ class ReleaseTrustTests(unittest.TestCase):
         self.skill_map = {name: sha256(raw) for name, raw in content.items()}
         manifest = json_bytes({'name': 'awf', 'version': VERSION,
                               'files': [{'path': name, 'sha256': pin} for name, pin in self.skill_map.items()]})
-        self.receipt = {'name': 'awf', 'version': VERSION, 'manifest_sha256': sha256(manifest), 'files': self.skill_map}
+        self.receipt = {'format': 'awf-host-skill-trust-1', 'schema_version': 1,
+                        'name': 'awf', 'version': VERSION, 'manifest_sha256': sha256(manifest),
+                        'files': self.skill_map, 'inventory_complete': True,
+                        'preserved_local_files': []}
         for name, raw in content.items():
             (self.skill / name).write_bytes(raw)
         (self.skill / 'SKILL-MANIFEST.json').write_bytes(manifest)
@@ -62,6 +65,15 @@ class ReleaseTrustTests(unittest.TestCase):
     def test_host_skill_receipt_closure_and_bundled_source(self):
         self.assertEqual(self.host(), (self.pin, 'trusted_host_installed_awf_skill'))
 
+    def test_host_trust_reports_resolved_paths_and_complete_atomic_receipt(self):
+        with patch.dict(os.environ, {'CODEX_HOME': str(self.base / 'host')}):
+            result = establish_release_trust(self.project)
+        self.assertEqual(result['codex_home'], str((self.base / 'host').resolve()))
+        self.assertEqual(result['host_skill_path'], str(self.skill.resolve()))
+        self.assertEqual(result['host_receipt_path'], str((self.skill / '.awf-install-receipt.json').resolve()))
+        self.assertEqual(result['verified_inventory'], len(self.skill_map))
+        self.assertTrue(result['atomic_receipt'])
+
     def test_host_bundle_byte_edit_is_rejected(self):
         (self.skill / 'assets/release.json').write_bytes(b'{}')
         with self.assertRaisesRegex(ValidationError, 'content/size mismatch'):
@@ -71,6 +83,11 @@ class ReleaseTrustTests(unittest.TestCase):
         self.receipt['files'] = {}
         (self.skill / '.awf-install-receipt.json').write_bytes(json_bytes(self.receipt))
         with self.assertRaisesRegex(ValidationError, 'inventory differs'):
+            self.host()
+
+    def test_unrecorded_host_file_is_rejected(self):
+        (self.skill / 'unrecorded.txt').write_text('not trusted', encoding='utf-8')
+        with self.assertRaisesRegex(ValidationError, 'inventory is not closed'):
             self.host()
 
     def test_old_host_version_has_actionable_next_step(self):
@@ -100,6 +117,28 @@ class ReleaseTrustTests(unittest.TestCase):
                 z.writestr(f'agentic-workflow-template-v{VERSION}/' + name, raw)
         with self.assertRaisesRegex(ValidationError, 'unsupported source archive compression'):
             bundled_manifest(data.getvalue(), self.pin)
+
+    def test_ac35_extracted_directory_and_release_zip_are_separate_verified_sources(self):
+        extracted = establish_release_trust(self.project, release_source=self.source,
+                                             expected_manifest_sha256=self.pin)
+        self.assertEqual(extracted['basis'], 'verified_extracted_release_and_approved_pin')
+        self.assertFalse(extracted['git_provenance_required'])
+        archive = self.base / 'release.zip'
+        archive.write_bytes(self.archive)
+        zipped = establish_release_trust(self.project, release_source=archive,
+                                         expected_manifest_sha256=self.pin)
+        self.assertEqual(zipped['basis'], 'verified_release_zip_and_approved_pin')
+        original = (self.source / 'AGENTS.md').read_bytes()
+        try:
+            (self.source / 'AGENTS.md').write_bytes(b'changed')
+            with self.assertRaisesRegex(ValidationError, 'digest mismatch'):
+                establish_release_trust(self.project, release_source=self.source,
+                                        expected_manifest_sha256=self.pin)
+        finally:
+            (self.source / 'AGENTS.md').write_bytes(original)
+        with self.assertRaisesRegex(ValidationError, 'manifest digest mismatch'):
+            establish_release_trust(self.project, release_source=archive,
+                                    expected_manifest_sha256='0' * 64)
 
 
 if __name__ == '__main__':
