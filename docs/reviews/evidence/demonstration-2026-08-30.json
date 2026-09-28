@@ -1,0 +1,200 @@
+{
+ "schema_version": 1,
+ "adapter": "claude",
+ "recorded_at": "2026-08-30T14:17:30Z",
+ "run_url": "https://github.com/jkinlay/agentic-workflow-framework/actions/runs/33316442455",
+ "steps": [
+  {
+   "step": "model-negative",
+   "principal": "GITHUB_TOKEN (model job)",
+   "attempts": [
+    {
+     "name": "read pull request",
+     "method": "GET",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/pulls/4",
+     "status": 200,
+     "message": "",
+     "expected": [
+      200
+     ],
+     "pass": true
+    },
+    {
+     "name": "issue comment (must be refused)",
+     "method": "POST",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/issues/4/comments",
+     "status": 403,
+     "message": "Resource not accessible by integration",
+     "expected": [
+      403
+     ],
+     "pass": true
+    },
+    {
+     "name": "pull-request review (must be refused)",
+     "method": "POST",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/pulls/4/reviews",
+     "status": 403,
+     "message": "Resource not accessible by integration",
+     "expected": [
+      403
+     ],
+     "pass": true
+    },
+    {
+     "name": "create ref (must be refused)",
+     "method": "POST",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/git/refs",
+     "status": 403,
+     "message": "Resource not accessible by integration",
+     "expected": [
+      403
+     ],
+     "pass": true
+    },
+    {
+     "name": "create check run (must be refused)",
+     "method": "POST",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/check-runs",
+     "status": 403,
+     "message": "Resource not accessible by integration",
+     "expected": [
+      403
+     ],
+     "pass": true
+    }
+   ],
+   "pass": true
+  },
+  {
+   "step": "publisher-negative",
+   "principal": "reviewer App installation token",
+   "attempts": [
+    {
+     "name": "read pull request",
+     "method": "GET",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/pulls/4",
+     "status": 200,
+     "message": "",
+     "expected": [
+      200
+     ],
+     "pass": true
+    },
+    {
+     "name": "create ref (must be refused)",
+     "method": "POST",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/git/refs",
+     "status": 403,
+     "message": "Resource not accessible by integration",
+     "expected": [
+      403
+     ],
+     "pass": true
+    },
+    {
+     "name": "create check run (must be refused)",
+     "method": "POST",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/check-runs",
+     "status": 403,
+     "message": "Resource not accessible by integration",
+     "expected": [
+      403
+     ],
+     "pass": true
+    },
+    {
+     "name": "write file contents (must be refused)",
+     "method": "PUT",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/contents/awf-demo-must-fail-1788099434.txt",
+     "status": 403,
+     "message": "Resource not accessible by integration",
+     "expected": [
+      403
+     ],
+     "pass": true
+    },
+    {
+     "name": "update repository settings (must be refused)",
+     "method": "PATCH",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework",
+     "status": 403,
+     "message": "Resource not accessible by integration",
+     "expected": [
+      403
+     ],
+     "pass": true
+    },
+    {
+     "name": "add label (informational)",
+     "method": "POST",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/issues/4/labels",
+     "status": 200,
+     "message": "",
+     "informational": true
+    },
+    {
+     "name": "merge pull request (must be refused)",
+     "method": "PUT",
+     "url": "https://api.github.com/repos/jkinlay/agentic-workflow-framework/pulls/4/merge",
+     "status": 403,
+     "message": "Resource not accessible by integration",
+     "expected": [
+      403,
+      405,
+      404
+     ],
+     "pass": true
+    }
+   ],
+   "pass": true
+  },
+  {
+   "step": "app-permissions",
+   "app_id": "4770484",
+   "app_slug": "awf-reviewer",
+   "installation_id": 157719123,
+   "repository_selection": "selected",
+   "permissions": {
+    "metadata": "read",
+    "pull_requests": "write"
+   },
+   "expected": {
+    "pull_requests": "write",
+    "metadata": "read"
+   },
+   "pass": true
+  },
+  {
+   "step": "unit",
+   "tests_run": 34,
+   "failures": [],
+   "errors": [],
+   "pass": true
+  },
+  {
+   "step": "hashes",
+   "sha256": {
+    "awf_review_common.py": "caff6e201a4113b33f62f5851cb5fe3cc3e0c603d8f386374f473612d9b77e82",
+    "build_input.py": "8979ec5ecd78c898f6bede93a92d769753c2ee54e53d54167b09db6a18913205",
+    "run_model.py": "7cb986fb0d5ed1d5ed5a71c00b370865c2ca10e60dd263664a190d10ca3722c1",
+    "publish.py": "8ff8f6f42679eef1221668aef84d2ef5116245c6c7d32692910037bc563d1a74",
+    "verify.py": "a0d8e1dac09a940f208273ab1e449f555ba31187d8a9bd28d6eedf747588000d",
+    "review-report.schema.json": "13353c7482f57099e3f9ff19a4d80ef8eaa47b147f993737fecb6ed0c6fd07ae"
+   },
+   "pass": true
+  }
+ ],
+ "missing_steps": [],
+ "suggested_qualification": {
+  "effective_permissions_verified": true,
+  "head_binding_verified": false,
+  "instruction_paths_protected": false
+ },
+ "head_binding_evidence": "",
+ "notes": [
+  "effective_permissions_verified may be set true only if every permission step passed in this run.",
+  "head_binding_verified requires the URL of a gate run that failed after a push made a prior review stale.",
+  "instruction_paths_protected is set by the human after server-side path rules are confirmed active."
+ ]
+}
