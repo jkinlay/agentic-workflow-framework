@@ -198,12 +198,18 @@ def _require_operator_local_mapping(root, path):
     try:
         relative = lexical.relative_to(root)
     except ValueError:
-        return
-    cursor = lexical
-    while cursor != root:
+        # The same checkout can have distinct lexical spellings (notably
+        # /var and /private/var on macOS).  An in-repository mapping must not
+        # become trusted merely because its caller used the other spelling.
+        try:
+            relative = lexical.resolve(strict=False).relative_to(root)
+        except ValueError:
+            return
+    cursor = root
+    for component in relative.parts:
+        cursor /= component
         if cursor.is_symlink():
             raise ValidationError("Operator-local publication mapping must not traverse repository symlinks")
-        cursor = cursor.parent
     tracked = _git(root, "ls-files", "--error-unmatch", "--", relative.as_posix(), check=False)
     ignored = _git(root, "check-ignore", "--quiet", "--no-index", "--", relative.as_posix(), check=False)
     if tracked.returncode == 0 or ignored.returncode != 0:
@@ -643,11 +649,44 @@ def _remove_new_loose_object(destination, parent_existed):
 
 
 def _object_referenced(root, oid):
-    """Fail closed when ref reachability cannot be enumerated."""
+    """Fail closed when live-ref or reflog reachability cannot be enumerated."""
     result = _git(root, "for-each-ref", "--contains", oid, "--format=%(refname)", check=False)
     if result.returncode:
         return None
-    return bool(result.stdout.strip())
+    if result.stdout.strip():
+        return True
+    # A ref may have selected the object and moved away again.  Its reflog is
+    # recovery state, and deleting the object would make that reflog invalid.
+    reflogs = _git(root, "reflog", "show", "--all", "--format=%H", check=False)
+    if reflogs.returncode:
+        return None
+    try:
+        tips = {line.decode("ascii") for line in reflogs.stdout.splitlines() if line}
+    except UnicodeDecodeError:
+        return None
+    for tip in tips:
+        if tip == oid:
+            return True
+        if _git(root, "merge-base", "--is-ancestor", oid, tip, check=False).returncode == 0:
+            return True
+    return False
+
+
+def _object_named_by_ref_or_reflog(root, oid):
+    """Inspect ref/reflog OID fields without requiring the object to exist."""
+    try:
+        encoded = oid.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    refs = _git(root, "for-each-ref", "--format=%(objectname)", check=False)
+    if refs.returncode:
+        return None
+    if encoded in refs.stdout.splitlines():
+        return True
+    reflogs = _git(root, "reflog", "show", "--all", "--format=%H", check=False)
+    if reflogs.returncode:
+        return None
+    return encoded in reflogs.stdout.splitlines()
 
 
 def _cleanup_unreferenced_object(root, oid, destination, parent_existed, raw_object):
@@ -656,11 +695,10 @@ def _cleanup_unreferenced_object(root, oid, destination, parent_existed, raw_obj
     if referenced is not False:
         return
     _remove_new_loose_object(destination, parent_existed)
-    # A ref may have won between the reachability check and unlink.  Git will
-    # reject a later ref creation once the object is absent; a ref that won in
-    # the narrow interval makes show-ref fail closed until the object returns.
-    refs = _git(root, "show-ref", check=False)
-    if refs.returncode:
+    # A ref may have won between the reachability check and unlink, or selected
+    # the object and moved away while retaining it in a reflog.  Recheck both
+    # forms of reachability; an unreadable proof also restores fail-closed.
+    if _object_named_by_ref_or_reflog(root, oid) is not False:
         restored = _git(root, "hash-object", "-t", "commit", "-w", "--stdin",
                         input_bytes=raw_object).stdout.decode("ascii").strip()
         if restored != oid:
