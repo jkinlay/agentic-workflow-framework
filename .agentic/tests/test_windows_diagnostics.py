@@ -1,6 +1,7 @@
 """K8-K11 Windows diagnostics, honest preflight, progress and output tests."""
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from contextlib import contextmanager
 import io
@@ -25,6 +26,24 @@ from agentic.runtime_commands import command_catalog, installed_paths, powershel
 SELF_TEST_SPEC = importlib.util.spec_from_file_location("awf_self_test_progress", ROOT / ".agentic/scripts/self_test.py")
 self_test = importlib.util.module_from_spec(SELF_TEST_SPEC)
 SELF_TEST_SPEC.loader.exec_module(self_test)
+
+_RUNTIME_DISTRIBUTIONS = (
+    "PyYAML", "jsonschema", "attrs", "jsonschema-specifications",
+    "referencing", "rpds-py", "typing-extensions",
+)
+
+
+def _ac36_bootstrap_command(source, project, manifest_pin, wheelhouse):
+    """Build the one AC36 bootstrap command; the offline wheelhouse is mandatory."""
+    source, project, wheelhouse = map(Path, (source, project, wheelhouse))
+    if not all(path.is_absolute() for path in (source, project, wheelhouse)):
+        raise ValueError("AC36 fixture paths must be absolute")
+    return [sys.executable, "-B", str(source / "scripts/bootstrap_project.py"),
+            "--dest", str(project), "--expected-manifest-sha256", manifest_pin,
+            "--runtime-wheelhouse", str(wheelhouse),
+            "--github-repo", "example-owner/example-repo", "--repository-id", "24680",
+            "--project-name", "Example Repo", "--project-short-name", "EX",
+            "--test-command", "python -m unittest", "--default-branch", "main"]
 
 
 @contextmanager
@@ -91,6 +110,19 @@ class RuntimeCommandTests(unittest.TestCase):
             self.assertNotIn("[", item["command"])
         self.assertEqual("'example ''repo'", powershell_quote("example 'repo"))
 
+    def test_ac36_bootstrap_command_cannot_drop_the_offline_wheelhouse(self):
+        base = (ROOT.parent / "AC36 fixture with spaces").resolve()
+        command = _ac36_bootstrap_command(
+            base / "release source", base / "project", "a" * 64,
+            base / "offline wheelhouse")
+        self.assertEqual(1, command.count("--runtime-wheelhouse"))
+        index = command.index("--runtime-wheelhouse")
+        self.assertEqual(str(base / "offline wheelhouse"), command[index + 1])
+        self.assertLess(index, command.index("--github-repo"))
+        with self.assertRaisesRegex(ValueError, "must be absolute"):
+            _ac36_bootstrap_command(Path("relative-source"), base / "project", "a" * 64,
+                                    base / "offline wheelhouse")
+
     def test_doctor_cli_emits_the_same_structured_commands_and_paths(self):
         completed = subprocess.run(
             [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
@@ -107,26 +139,68 @@ class RuntimeCommandTests(unittest.TestCase):
         powershell = shutil.which("powershell.exe")
         if powershell is None:
             self.skipTest("AC36 SKIP: powershell.exe is unavailable on this Windows host")
-        manifest = ROOT / "MANIFEST.json"
-        import hashlib
-        pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        from test_bootstrap_configuration import installed_wheel, wheel_lock
         with temporary_directory(prefix="example repo ", require_external=True) as folder:
+            fixture_source = Path(folder) / "release source"
+            shutil.copytree(ROOT, fixture_source, ignore=shutil.ignore_patterns(
+                ".git", "__pycache__", "*.pyc", ".tmp", "tmp", ".tmp-tests", ".venv"))
+            wheelhouse = Path(folder) / "offline wheelhouse"
+            wheelhouse.mkdir()
+            entries, expected_artifacts = [], {}
+            for name in _RUNTIME_DISTRIBUTIONS:
+                version, wheel = installed_wheel(name)
+                filename = name.replace("-", "_") + "-" + version + "-py3-none-any.whl"
+                (wheelhouse / filename).write_bytes(wheel)
+                entries.append((name, version, wheel))
+                expected_artifacts[name] = hashlib.sha256(wheel).hexdigest()
+            lock = wheel_lock(entries)
+            self.assertNotEqual((ROOT / ".agentic/requirements.lock").read_bytes(), lock)
+            (fixture_source / ".agentic/requirements.lock").write_bytes(lock)
+            built = subprocess.run(
+                [sys.executable, "-B", "scripts/build_release.py", "--manifest-only"],
+                cwd=fixture_source, capture_output=True, text=True, timeout=120)
+            self.assertEqual(0, built.returncode, built.stderr + built.stdout)
+            manifest = fixture_source / "MANIFEST.json"
+            pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
             project = Path(folder) / "fixture project"
             project.mkdir()
-            bootstrap = [sys.executable, "-B", str(ROOT / "scripts/bootstrap_project.py"),
-                         "--dest", str(project), "--expected-manifest-sha256", pin,
-                         "--github-repo", "example-owner/example-repo", "--repository-id", "24680",
-                         "--project-name", "Example Repo", "--project-short-name", "EX",
-                         "--test-command", "python -m unittest", "--default-branch", "main"]
-            installed = subprocess.run(bootstrap, cwd=ROOT, capture_output=True, text=True, timeout=120)
+            bootstrap = _ac36_bootstrap_command(fixture_source, project, pin, wheelhouse)
+            installed = subprocess.run(bootstrap, cwd=fixture_source, capture_output=True,
+                                       text=True, timeout=180)
             self.assertEqual(0, installed.returncode, installed.stderr + installed.stdout)
+            installation = json.loads(installed.stdout)
+            self.assertEqual("CONFIGURED", installation["status"])
+            self.assertEqual(expected_artifacts, installation["runtime"]["artifact_sha256"])
+            self.assertEqual(hashlib.sha256(lock).hexdigest(),
+                             installation["runtime"]["requirements_lock_sha256"])
+            self.assertEqual(lock, (project / ".agentic/requirements.lock").read_bytes())
             report = command_catalog(project, platform="nt")
+            self.assertTrue(report["runtime"]["interpreter_exists"])
+            self.assertTrue(report["runtime"]["entry_point_exists"])
+            reached = set()
             for item in report["commands"]:
                 with self.subTest(purpose=item["purpose"]):
                     completed = subprocess.run([powershell, "-NoProfile", "-Command", item["command"]],
                                                cwd=project, capture_output=True, text=True, timeout=90)
                     self.assertIn(completed.returncode, item["expected_exit_codes"],
                                   completed.stderr + completed.stdout)
+                    self.assertTrue(completed.stdout.strip(),
+                                    "Generated command returned no evidence: " + item["command"])
+                    if item["purpose"] == "adoption":
+                        self.assertEqual("awf-host-preflight-1", json.loads(completed.stdout)["format"])
+                    elif item["purpose"] == "verification":
+                        self.assertIs(True, json.loads(completed.stdout)["integrity_valid"])
+                    elif item["purpose"] == "validation":
+                        self.assertEqual("ACCEPTED", json.loads(completed.stdout)["status"])
+                    elif item["purpose"] == "status":
+                        self.assertTrue(completed.stdout.splitlines()[0].startswith("AWF 1.9.3: "))
+                    elif item["purpose"] == "operating":
+                        self.assertIn("operating configuration", completed.stdout)
+                        self.assertIn("Options: keep", completed.stdout)
+                    else:
+                        self.fail("Unexpected generated command purpose: " + item["purpose"])
+                    reached.add(item["purpose"])
+            self.assertEqual({"adoption", "verification", "validation", "status", "operating"}, reached)
 
     def test_documentation_lint_rejects_each_damaged_command_form(self):
         damaged = [".agentic" + ".venv", "workflow" + "\\" + ".py",

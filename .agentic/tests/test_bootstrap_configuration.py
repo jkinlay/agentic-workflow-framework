@@ -842,6 +842,25 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual(checked["status"], "CONFIGURED", checked)
         self.assertEqual([item["exit_code"] for item in checked["post_install_checks"]], [0, 0])
 
+    def test_prevalidated_wheel_bytes_survive_source_removal_and_bind_installed_lock(self):
+        wheelhouse = self.prepare_runtime_source()
+        prepared = adoption.prevalidate_runtime_wheelhouse(self.source, self.pin, wheelhouse)
+        result = self.perform()
+        for artifact in wheelhouse.iterdir():
+            artifact.unlink()
+        wheelhouse.rmdir()
+        runtime = adoption.ensure_installed_runtime(self.dest, prepared_wheelhouse=prepared)
+        self.assertTrue(Path(runtime["interpreter"]).is_file())
+        self.assertEqual(sha256((self.dest / ".agentic/requirements.lock").read_bytes()),
+                         runtime["requirements_lock_sha256"])
+        lock_path = self.dest / ".agentic/requirements.lock"
+        changed = lock_path.read_text(encoding="utf-8")
+        offset = changed.index("--hash=sha256:") + len("--hash=sha256:")
+        changed = changed[:offset] + ("0" if changed[offset] != "0" else "1") + changed[offset + 1:]
+        lock_path.write_text(changed, encoding="utf-8")
+        with self.assertRaisesRegex(ValidationError, "changed after wheelhouse prevalidation"):
+            adoption.ensure_installed_runtime(self.dest, prepared_wheelhouse=prepared)
+
     def test_runtime_rejects_unhashed_or_version_mismatched_dependency_lock(self):
         wheelhouse = self.prepare_runtime_source()
         self.perform()
@@ -977,20 +996,46 @@ class BootstrapMainTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("test_bootstrap_entry", ROOT / "scripts/bootstrap_project.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        pin = "a" * 64
+        wheelhouse = ROOT / ".tmp-tests" / "fixture-wheelhouse"
         for state, expected in (("CONFIGURED", 0), ("INSTALLED_UNCONFIGURED", 1), ("INSTALLATION_VERIFICATION_FAILED", 2)):
-            with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--github-repo", "fixture/repo"]), patch.object(module, "install", return_value={"status": "INSTALLED"}) as install_call, patch.object(module, "ensure_installed_runtime", return_value={"interpreter": "fixture", "entry_point": "fixture"}), patch.object(module, "post_install_checks", return_value={"status": state}), patch("sys.stdout", new_callable=io.StringIO) as out:
+            prepared = type("Prepared", (), {"source_manifest_sha256": pin})()
+            events = []
+            def prevalidate(*args):
+                events.append("prevalidate")
+                return prepared
+            def install_result(*args, **kwargs):
+                events.append("install")
+                return {"status": "INSTALLED", "source_manifest_sha256": pin}
+            def runtime_result(*args, **kwargs):
+                events.append("runtime")
+                self.assertEqual(args, (ROOT,))
+                self.assertIs(kwargs["prepared_wheelhouse"], prepared)
+                return {"interpreter": "fixture", "entry_point": "fixture"}
+            def checked(*args):
+                events.append("postcheck")
+                return {"status": state}
+            argv = ["bootstrap", "--dest", str(ROOT), "--expected-manifest-sha256", pin,
+                    "--runtime-wheelhouse", str(wheelhouse), "--github-repo", "fixture/repo"]
+            with patch.object(sys, "argv", argv), patch.object(
+                    module, "prevalidate_runtime_wheelhouse", side_effect=prevalidate) as prevalidate_call, patch.object(
+                    module, "install", side_effect=install_result) as install_call, patch.object(
+                    module, "ensure_installed_runtime", side_effect=runtime_result), patch.object(
+                    module, "post_install_checks", side_effect=checked), patch(
+                    "sys.stdout", new_callable=io.StringIO) as out:
                 self.assertEqual(module.main(), expected)
                 self.assertEqual(json.loads(out.getvalue())["status"], state)
                 self.assertTrue(install_call.call_args.kwargs["configure"])
-        with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--dry-run"]), patch.object(module, "install", return_value={"status": "PLAN"}), patch.object(module, "post_install_checks", side_effect=AssertionError("dryrun must not execute")), patch("sys.stdout", new_callable=io.StringIO):
+                self.assertEqual(prevalidate_call.call_args.args, (ROOT, pin, wheelhouse))
+                self.assertEqual(events, ["prevalidate", "install", "runtime", "postcheck"])
+        with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--dry-run"]), patch.object(module, "prevalidate_runtime_wheelhouse", side_effect=AssertionError("dryrun must not prevalidate runtime")), patch.object(module, "install", return_value={"status": "PLAN"}), patch.object(module, "ensure_installed_runtime", side_effect=AssertionError("dryrun must not build runtime")), patch.object(module, "post_install_checks", side_effect=AssertionError("dryrun must not execute")), patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(module.main(), 0)
-        with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--mode", "upgrade", "--propose-operating-capacity", "--dry-run"]), patch.object(module, "install", return_value={"status": "PLAN"}) as install_call, patch("sys.stdout", new_callable=io.StringIO):
+        with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--mode", "upgrade", "--propose-operating-capacity", "--dry-run"]), patch.object(module, "prevalidate_runtime_wheelhouse", side_effect=AssertionError("dryrun must not prevalidate runtime")), patch.object(module, "install", return_value={"status": "PLAN"}) as install_call, patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(module.main(), 0)
             self.assertTrue(install_call.call_args.kwargs["propose_operating_capacity"])
-        wheelhouse = ROOT / ".tmp-tests" / "fixture-wheelhouse"
-        with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--runtime-wheelhouse", str(wheelhouse)]), patch.object(module, "install", return_value={"status": "INSTALLED"}), patch.object(module, "ensure_installed_runtime", return_value={"interpreter": "fixture", "entry_point": "fixture"}) as runtime_call, patch.object(module, "post_install_checks", return_value={"status": "CONFIGURED"}), patch("sys.stdout", new_callable=io.StringIO):
+        with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--recover"]), patch.object(module, "prevalidate_runtime_wheelhouse", side_effect=AssertionError("recovery must not prevalidate runtime")), patch.object(module, "recover", return_value={"status": "NO_PENDING_INSTALL"}), patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(module.main(), 0)
-            self.assertEqual(runtime_call.call_args.args, (ROOT, wheelhouse))
+            self.assertEqual("NO_PENDING_INSTALL", json.loads(out.getvalue())["status"])
         with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--recover", "--propose-operating-capacity"]), patch.object(module, "recover", side_effect=AssertionError("invalid combined flags")), patch("sys.stderr", new_callable=io.StringIO):
             self.assertEqual(module.main(), 2)
 

@@ -104,6 +104,36 @@ class CliFailurePathTests(unittest.TestCase):
                     ['--dest', destination, '--expected-manifest-sha256', '0' * 64], 'approved digest')
         self.assertEqual(before, snapshot(destination))
 
+    def test_bootstrap_missing_or_invalid_wheelhouse_precedes_every_destination_write(self):
+        pin = hashlib.sha256((ROOT / 'MANIFEST.json').read_bytes()).hexdigest()
+        cases = [
+            ('missing-wheelhouse', [], '--runtime-wheelhouse is required'),
+            ('empty-wheelhouse', ['--runtime-wheelhouse', self.wheelhouse], 'wheelhouse is empty'),
+        ]
+        for mode in ('install', 'upgrade'):
+            for name, extra, reason in cases:
+                with self.subTest(mode=mode, name=name):
+                    destination = self.root / (mode + '-' + name)
+                    destination.mkdir()
+                    (destination / 'owner-file').write_bytes(b'preserve exactly\n')
+                    before = sorted((path.relative_to(destination).as_posix(), path.is_dir(),
+                                     None if path.is_dir() else path.read_bytes())
+                                    for path in destination.rglob('*'))
+                    self.reject(ROOT / 'scripts/bootstrap_project.py',
+                                ['--dest', destination, '--mode', mode,
+                                 '--expected-manifest-sha256', pin, *extra], reason)
+                    after = sorted((path.relative_to(destination).as_posix(), path.is_dir(),
+                                    None if path.is_dir() else path.read_bytes())
+                                   for path in destination.rglob('*'))
+                    self.assertEqual(before, after)
+                    self.assertFalse((destination / '.agentic').exists())
+                    self.assertFalse((destination / '.agentic-install').exists())
+                    self.assertFalse((destination / 'AGENTS.md').exists())
+                    self.assertFalse((destination / '.agentic/PROJECT_CONFIG.yaml').exists())
+                    self.assertFalse((destination / '.agentic/installed-manifest.json').exists())
+                    self.assertFalse((destination / '.agentic/workflow-version.yaml').exists())
+                    self.assertFalse((destination / '.github/CODEOWNERS').exists())
+
     def test_bootstrap_invalid_mode_rejects_before_mutation(self):
         destination = self.root / 'project'
         self.reject(ROOT / 'scripts/bootstrap_project.py', ['--dest', destination, '--mode', 'replace'], 'invalid choice')

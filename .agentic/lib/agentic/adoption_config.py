@@ -65,12 +65,11 @@ def _distribution_name(value):
     return _DISTRIBUTION_NAME.sub("-", value).lower()
 
 
-def _locked_dependencies(lock_path):
-    """Read exact dependency identities and their complete-artifact hash allowlists."""
+def _locked_dependencies_bytes(raw):
+    """Read exact dependency identities and complete-artifact hashes from locked bytes."""
     try:
-        raw = lock_path.read_bytes()
         text = raw.decode("utf-8")
-    except (OSError, UnicodeError) as exc:
+    except (AttributeError, UnicodeError) as exc:
         raise ValidationError("Canonical runtime dependency lock is unavailable or invalid") from exc
     dependencies = {}
     current = None
@@ -99,6 +98,27 @@ def _locked_dependencies(lock_path):
     for item in dependencies.values():
         item["artifact_hashes"] = frozenset(item["artifact_hashes"])
     return dependencies, hashlib.sha256(raw).hexdigest()
+
+
+def _locked_dependencies(lock_path):
+    """Read exact dependency identities and their complete-artifact hash allowlists."""
+    try:
+        raw = lock_path.read_bytes()
+    except OSError as exc:
+        raise ValidationError("Canonical runtime dependency lock is unavailable or invalid") from exc
+    return _locked_dependencies_bytes(raw)
+
+
+class _PreparedRuntimeWheelhouse:
+    """Opaque, release-bound wheel bytes accepted before any destination mutation."""
+
+    __slots__ = ("source_manifest_sha256", "requirements_lock_sha256", "dependencies", "artifacts")
+
+    def __init__(self, source_manifest_sha256, requirements_lock_sha256, dependencies, artifacts):
+        self.source_manifest_sha256 = source_manifest_sha256
+        self.requirements_lock_sha256 = requirements_lock_sha256
+        self.dependencies = dependencies
+        self.artifacts = artifacts
 
 
 def _file_sha256(path):
@@ -344,6 +364,30 @@ def _load_locked_wheels(wheelhouse, requirements):
     return artifacts
 
 
+def prevalidate_runtime_wheelhouse(source, expected_manifest_sha256, wheelhouse):
+    """Bind a complete offline wheelhouse to a pinned release before target writes."""
+    if not expected_manifest_sha256 or len(expected_manifest_sha256) != 64:
+        raise ValidationError("Provide the externally approved manifest SHA-256")
+    # Keep this check after the release-pin shape check so a missing approval is
+    # never obscured by an attacker-selected dependency path.
+    missing = wheelhouse is None
+    from .installer import verify_release
+    with Tree(Path(source).absolute()) as tree:
+        source_manifest_sha256, content = verify_release(tree, expected_manifest_sha256)
+    if missing:
+        raise ValidationError(
+            "--runtime-wheelhouse is required for non-dry-run installation and upgrade")
+    try:
+        lock_raw = content[".agentic/requirements.lock"]
+    except KeyError as exc:
+        raise ValidationError("Verified release is missing the canonical runtime dependency lock") from exc
+    dependencies, lock_sha256 = _locked_dependencies_bytes(lock_raw)
+    if set(dependencies) != set(_RUNTIME_IMPORTS):
+        raise ValidationError("Canonical runtime dependency lock and reviewed import invariant disagree")
+    artifacts = _load_locked_wheels(wheelhouse, dependencies)
+    return _PreparedRuntimeWheelhouse(source_manifest_sha256, lock_sha256, dependencies, artifacts)
+
+
 def _extract_locked_wheels(artifacts, target):
     copied, folded, total = {}, {}, 0
     for name in sorted(artifacts):
@@ -467,7 +511,7 @@ def _transaction_sibling(runtime_root, kind):
     raise ValidationError("Could not allocate a unique runtime transaction path")
 
 
-def ensure_installed_runtime(destination, wheelhouse=None):
+def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhouse=None):
     """Build a hash-bound offline runtime and atomically replace the canonical runtime."""
     from .runtime_commands import installed_paths
     root, interpreter, entry_point = installed_paths(destination)
@@ -483,8 +527,16 @@ def ensure_installed_runtime(destination, wheelhouse=None):
     dependencies, lock_sha256 = _locked_dependencies(lock_path)
     if set(dependencies) != set(_RUNTIME_IMPORTS):
         raise ValidationError("Canonical runtime dependency lock and reviewed import invariant disagree")
-    source = wheelhouse if wheelhouse is not None else root / ".agentic" / "wheelhouse"
-    artifacts = _load_locked_wheels(source, dependencies)
+    if prepared_wheelhouse is None:
+        source = wheelhouse if wheelhouse is not None else root / ".agentic" / "wheelhouse"
+        artifacts = _load_locked_wheels(source, dependencies)
+    else:
+        if wheelhouse is not None or not isinstance(prepared_wheelhouse, _PreparedRuntimeWheelhouse):
+            raise ValidationError("Canonical runtime received an invalid prevalidated wheelhouse")
+        if (lock_sha256 != prepared_wheelhouse.requirements_lock_sha256 or
+                dependencies != prepared_wheelhouse.dependencies):
+            raise ValidationError("Installed runtime dependency lock changed after wheelhouse prevalidation")
+        artifacts = prepared_wheelhouse.artifacts
     expected_versions = {name: dependencies[name]["version"] for name in sorted(dependencies)}
     stage = _transaction_sibling(runtime_root, "staging")
     backup = _transaction_sibling(runtime_root, "backup")

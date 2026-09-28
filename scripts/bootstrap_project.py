@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.installer import install, recover
 from agentic import ValidationError
-from agentic.adoption_config import ensure_installed_runtime, post_install_checks
+from agentic.adoption_config import (ensure_installed_runtime, post_install_checks,
+                                     prevalidate_runtime_wheelhouse)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -22,7 +23,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--recover", action="store_true")
     parser.add_argument("--runtime-wheelhouse", type=Path,
-        help="Offline directory containing exactly one complete requirements.lock-pinned wheel per runtime dependency")
+        help="Mandatory for writing install/upgrade: offline directory containing exactly one complete requirements.lock-pinned wheel per runtime dependency")
     parser.add_argument("--project-name")
     parser.add_argument("--project-short-name")
     parser.add_argument("--jira-key")
@@ -42,6 +43,10 @@ def main():
         if args.recover:
             result = recover(args.dest)
         else:
+            prepared_wheelhouse = None
+            if not args.dry_run:
+                prepared_wheelhouse = prevalidate_runtime_wheelhouse(
+                    ROOT, args.expected_manifest_sha256, args.runtime_wheelhouse)
             overrides = {}
             for source, target in [("project_name", "name"), ("project_short_name", "short_name"),
                     ("jira_key", "jira_key"), ("jira_site", "jira_site"), ("github_repo", "repository"),
@@ -54,7 +59,10 @@ def main():
                 default_branch=args.default_branch, review_app_id=args.review_app_id, configure=True,
                 propose_operating_capacity=args.propose_operating_capacity)
             if not args.dry_run:
-                result["runtime"] = ensure_installed_runtime(args.dest, args.runtime_wheelhouse)
+                if result.get("source_manifest_sha256") != prepared_wheelhouse.source_manifest_sha256:
+                    raise ValidationError("Installed release identity changed after runtime prevalidation")
+                result["runtime"] = ensure_installed_runtime(
+                    args.dest, prepared_wheelhouse=prepared_wheelhouse)
                 result.update(post_install_checks(args.dest, result))
         print(json.dumps(result, indent=2))
         return 1 if result["status"] == "INSTALLED_UNCONFIGURED" else 2 if result["status"] == "INSTALLATION_VERIFICATION_FAILED" else 0
