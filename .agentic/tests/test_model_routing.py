@@ -218,6 +218,32 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertEqual(sum(group["tokens"] for group in summary["by_role"].values()), sum(range(1, 17)))
         self.assertEqual(len(summary["disposition_requests"]), 1)
 
+    def test_upgraded_ledger_past_threshold_emits_one_disposition_request(self):
+        # Simulate rows written by a pre-feature ledger without disposition
+        # requests, then retain the legacy twelve-run cap on upgrade.
+        self.policy["budgets"]["max_runs_per_ticket"] = 100
+        for index in range(11):
+            context = "legacy-context-" + str(index)
+            reserved = self.reserve(phase="legacy-phase-" + str(index), context_id=context)
+            self.ledger.settle(reserved["run_id"], outcome(reserved, actual_context_id=context))
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute("DROP TABLE model_disposition_requests")
+            connection.commit()
+        finally:
+            connection.close()
+        self.ledger = RoutingLedger(self.path)
+        self.policy["budgets"]["max_runs_per_ticket"] = 12
+        reserved = self.reserve(phase="post-upgrade", context_id="post-upgrade-context",
+                                open_findings=["FINDING-LEGACY"],
+                                recommended_disposition="continue")
+        self.assertEqual(reserved["run_cap_signal"], "NEEDS_DISPOSITION")
+        self.assertEqual((reserved["ticket_runs_used"], reserved["ticket_run_cap"]), (12, 12))
+        self.assertEqual(reserved["disposition_request"]["open_findings"], ["FINDING-LEGACY"])
+        self.assertEqual(reserved["disposition_request"]["runs_used"], 12)
+        summary = self.ledger.summary("project-1", "EX-10")
+        self.assertEqual(len(summary["disposition_requests"]), 1)
+
     def test_cost_caps_need_known_reservations_and_actuals(self):
         self.policy["budgets"]["max_cost_microusd_per_ticket"] = 100
         with self.assertRaisesRegex(ValidationError, "cost reservation"):

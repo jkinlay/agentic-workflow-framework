@@ -726,7 +726,15 @@ class RoutingLedger:
         signal = ("NEEDS_DISPOSITION" if ticket_used >= disposition_at else
                   "WARN" if ticket_used >= warn_at else "OK")
         disposition = None
-        if ticket_used == disposition_at:
+        prior_dispositions = []
+        if ticket_used >= disposition_at:
+            prior_dispositions = connection.execute(
+                "SELECT observation FROM model_disposition_requests "
+                "WHERE project_id=? AND ticket_id=? ORDER BY rowid",
+                (project_id, request["ticket_id"])).fetchall()
+        if ticket_used >= disposition_at and not any(
+                json.loads(row["observation"]).get("run_cap") == ticket_cap
+                for row in prior_dispositions):
             open_findings = request.get("open_findings", [])
             _require(isinstance(open_findings, list) and all(isinstance(item, str) and item for item in open_findings),
                      "open_findings must be a list of nonempty finding IDs")

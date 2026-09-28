@@ -179,6 +179,12 @@ else: raise SystemExit(2)
             verified = publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-output",
                                             gh=str(executable))
             self.assertEqual("PASS", verified["status"])
+            extra = store / "unexpected-extra.zip"
+            extra.write_bytes(b"unrecorded release asset")
+            with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):
+                publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-extra-output",
+                                     gh=str(executable))
+            extra.unlink()
             changed = next(store.glob("*.zip"))
             changed.write_bytes(changed.read_bytes() + b"changed")
             with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):

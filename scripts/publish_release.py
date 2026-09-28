@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -288,7 +289,12 @@ def verify_tag(repository, tag, output_dir, *, gh="gh"):
         published = base / "published"
         published.mkdir()
         run([gh, "release", "download", tag, "--dir", str(published)], cwd=repository)
-        observed = {name: sha256(published / name) for name in hashes if (published / name).is_file()}
+        observed = {}
+        for path in published.iterdir():
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ReleaseError("published release assets differ from the annotated tag record")
+            observed[path.name] = sha256(path)
         if observed != hashes:
             raise ReleaseError("published release assets differ from the annotated tag record")
         return {"status": "PASS", "tag": tag, "commit": commit,
