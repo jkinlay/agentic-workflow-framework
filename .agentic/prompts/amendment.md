@@ -8,7 +8,7 @@ Emit a candidate-bound `amendment-result`: COMPLETE/BLOCKED/FAILED, each criteri
 
 Preserve publication ownership. The enrolled controller stages/commits/pushes; return scoped changes. Native publication follows the [lifecycle](../docs/23-TICKET-LIFECYCLE.md), existing authority and applicable gates. Publish the amendment to the existing PR and register its observed new head before re-review; no force-push or merge is implied.
 
-Before pushing, the controller requires a passing publication scan bound to the base, amended head and PR-body digest. Scan comments before posting. Later deletion does not clear a finding.
+Before pushing, the controller requires a passing publication scan bound to the base, amended head and PR-body digest. Scan comments before posting. A reported base-tree `PRE_EXISTING` match does not block; deleting a newly introduced value later in the range does not clear its blocking finding.
 
 If a remote operation is unknown, retain its identity, commit and reservation. Stop dependent retries until authoritative reconciliation; do not reset, erase logs or release charges.
 

@@ -15,8 +15,18 @@
     "mapping_loaded": false,
     "mapping_location": ".agentic-state/publication-deny.json",
     "commits_scanned": [],
+    "blocking_findings_count": 0,
+    "pre_existing_findings_count": 0,
     "findings": [],
     "unscanned": [],
+    "base_tree_search": {
+      "complete": false,
+      "blobs_scanned": 0,
+      "bytes_scanned": 0,
+      "max_blobs": 1,
+      "max_bytes": 1,
+      "reason": null
+    },
     "coverage": {
       "current_files": true,
       "commit_messages": true,

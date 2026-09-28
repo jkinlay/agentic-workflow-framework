@@ -10,9 +10,9 @@ Adds settlement outcomes and `route_model.py outcome-template`; verdicts remain 
 
 Adds byte-verified installation and upgrade from 1.8.3, 1.8.9, 1.9.1 and 1.9.2; unsafe inputs make no changes.
 
-Adds history-aware publication scanning of messages, patch lines, changed files, PR bodies and comments. Redacted findings block; receipts bind base, head and body digest. An ignored local mapping supplies aliases and deny entries alongside built-in path/network detectors and alias rendering.
+Adds strict history-aware publication scanning and digest-only findings. Bounded base search reports non-blocking `PRE_EXISTING` matches; other findings and unscanned content block. Receipts bind base, head and body. Untracked mappings add aliases/denies.
 
-Adds an atomic one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, scanning the replacement and checking old ref reachability. It refuses published evidence or unsupported counts and reports reflog retention. This covers L1, L2 and L9 scanning; producer retrofits remain P1.
+Adds an atomic unpublished one-commit rewrite preserving `HEAD^{tree}`. It checks all fetch/push URLs and local/remote refs, cleans failed object installs, names rollback failure, and reports reflog retention. This covers L1, L2 and L9 scanning; producer retrofits remain P1.
 
 ## 1.9.2 — 23 September 2026
 

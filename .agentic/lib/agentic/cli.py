@@ -83,7 +83,7 @@ def main(argv=None, default_root=None):
     cap_parser.add_argument("--head", required=True, help="Candidate head SHA the owner signed against")
     cap_parser.add_argument("--config", type=Path)
     sub.add_parser("preflight", help="Host preflight rows (PASS/WARN/SKIP/N_A); never blocks INSTALLED")
-    scan_parser = sub.add_parser("publication-scan", help="Scan every commit, patch, changed head file and supplied provider text")
+    scan_parser = sub.add_parser("publication-scan", help="Scan every commit, patch, complete touched head file and supplied provider text")
     scan_parser.add_argument("--base", required=True)
     scan_parser.add_argument("--head", required=True)
     scan_parser.add_argument("--pr-body", type=Path, action="append", default=[])

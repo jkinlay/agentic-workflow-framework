@@ -8,7 +8,7 @@ Test behavior and failures with temporary directories outside the repository. `w
 
 Follow the [lifecycle](../docs/23-TICKET-LIFECYCLE.md): publish branch/draft PR before handoff. If Git writes are denied, leave the validated tree uncommitted, report only commit BLOCKED with `commit_route: PUBLISHER`, `tested_tree`, `changes`, and `ignored_untracked`. The publisher makes no content edits, compares `HEAD^{tree}`, and rejects differences. Observe pushed branch, PR and head before PR-bound records. Publication retains all rule, permission, scope, secret and adapter prerequisites. Never fabricate a PR.
 
-Use logical aliases in tracked output. Before either publication route, render the PR body and require `publication-scan` on the exact base/head/body before push or PR creation. It scans every message and each commit's added/deleted lines. `diff --check` is whitespace-only.
+Use logical aliases in tracked output. Before either publication route, render the PR body and require `publication-scan` on the exact base/head/body before push or PR creation. It scans every message, each commit's added/deleted lines and complete touched head files. Pre-existing matches are reported separately; blocking findings or unscanned items refuse publication. `diff --check` is whitespace-only.
 
 After validation, mark ready and observe `draft_cleared` before READY_FOR_CRITIC. Review targets the observed PR head. Owner-ready follows critic, specialists and final gate; never merge from review-ready. Only the controller writes Jira.
 

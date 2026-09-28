@@ -506,8 +506,18 @@
     "commits_scanned": [
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     ],
+    "blocking_findings_count": 0,
+    "pre_existing_findings_count": 0,
     "findings": [],
     "unscanned": [],
+    "base_tree_search": {
+      "complete": true,
+      "blobs_scanned": 1,
+      "bytes_scanned": 1,
+      "max_blobs": 100000,
+      "max_bytes": 268435456,
+      "reason": null
+    },
     "coverage": {
       "current_files": true,
       "commit_messages": true,
