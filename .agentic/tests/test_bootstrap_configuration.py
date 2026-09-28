@@ -1,17 +1,23 @@
 """Offline metadata/configuration and installed-CLI bootstrap regressions."""
 from __future__ import annotations
 
+import base64
+import csv
+import hashlib
+import importlib.metadata
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 import uuid
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
@@ -32,6 +38,97 @@ def template():
 
 def explicit():
     return {"repository": "fixture/widget", "repository_id": 54321, "base_branch": "trunk", "test_command": "pytest"}
+
+
+def _record_hash(raw):
+    return "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode("ascii")
+
+
+def synthetic_wheel(name="fixture-dep", version="1.0", *, additions=None,
+                    metadata_name=None, metadata_version=None, corrupt_record=None,
+                    special_member=None):
+    """Build a small deterministic wheel byte fixture, including a complete RECORD."""
+    normalized = name.replace("-", "_").replace(".", "_")
+    dist_info = f"{normalized}-{version}.dist-info"
+    files = {
+        f"{normalized}.py": b"VALUE = 1\n",
+        f"{dist_info}/METADATA": (
+            "Metadata-Version: 2.1\n"
+            f"Name: {metadata_name or name}\n"
+            f"Version: {metadata_version or version}\n\n").encode("utf-8"),
+        f"{dist_info}/WHEEL": b"Wheel-Version: 1.0\nGenerator: awf-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    files.update(additions or {})
+    record_path = f"{dist_info}/RECORD"
+    rows = [[path, _record_hash(raw), str(len(raw))] for path, raw in sorted(files.items())]
+    rows.append([record_path, "", ""])
+    output = io.StringIO(newline="")
+    csv.writer(output, lineterminator="\n").writerows(rows)
+    record = output.getvalue().encode("utf-8")
+    if corrupt_record == "hash":
+        position = record.index(b"sha256=") + len(b"sha256=")
+        replacement = b"A" if record[position:position + 1] != b"A" else b"B"
+        record = record[:position] + replacement + record[position + 1:]
+    elif corrupt_record == "inventory":
+        record += b"unlisted.py,,\n"
+    files[record_path] = record
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path, raw in sorted(files.items()):
+            info = zipfile.ZipInfo(path)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            if special_member == path:
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(info, raw)
+    return buffer.getvalue()
+
+
+def wheel_lock(entries):
+    lines = ["# Test runtime lock."]
+    for name, version, raw in entries:
+        lines.extend([f"{name}=={version} \\", f"    --hash=sha256:{hashlib.sha256(raw).hexdigest()}"])
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def installed_wheel(distribution_name):
+    """Repack the test interpreter's installed dependency as a complete local wheel fixture."""
+    distribution = importlib.metadata.distribution(distribution_name)
+    root = Path(distribution.locate_file("")).resolve(strict=True)
+    files = {}
+    for member in distribution.files or ():
+        source = Path(distribution.locate_file(member))
+        try:
+            metadata = os.lstat(source)
+            resolved = source.resolve(strict=True)
+            relative = resolved.relative_to(root).as_posix()
+        except (OSError, ValueError):
+            continue
+        if (not stat.S_ISREG(metadata.st_mode) or relative.endswith(".dist-info/RECORD") or
+                "/__pycache__/" in "/" + relative or relative.endswith((".pyc", ".pyo", ".pth")) or
+                Path(relative).name.lower() in {"sitecustomize.py", "usercustomize.py"}):
+            continue
+        files[relative] = resolved.read_bytes()
+    dist_infos = {path.split("/", 1)[0] for path in files if path.endswith(".dist-info/METADATA")}
+    if len(dist_infos) != 1:
+        raise AssertionError(f"test dependency {distribution_name} has no unique metadata")
+    dist_info = dist_infos.pop()
+    if f"{dist_info}/WHEEL" not in files:
+        files[f"{dist_info}/WHEEL"] = b"Wheel-Version: 1.0\nGenerator: awf-test\nRoot-Is-Purelib: false\nTag: py3-none-any\n"
+    record_path = f"{dist_info}/RECORD"
+    rows = [[path, _record_hash(raw), str(len(raw))] for path, raw in sorted(files.items())]
+    rows.append([record_path, "", ""])
+    output = io.StringIO(newline="")
+    csv.writer(output, lineterminator="\n").writerows(rows)
+    files[record_path] = output.getvalue().encode("utf-8")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path, raw in sorted(files.items()):
+            info = zipfile.ZipInfo(path)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(info, raw)
+    return distribution.version, buffer.getvalue()
 
 
 class ConfigurationDerivationTests(unittest.TestCase):
@@ -347,6 +444,104 @@ class PostInstallCheckTests(unittest.TestCase):
             self.assertIsNotNone(result["diagnostic"])
 
 
+class RuntimeWheelArtifactTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="awf-wheel-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.wheelhouse = self.root / "wheelhouse"
+        self.wheelhouse.mkdir()
+        self.lock = self.root / "requirements.lock"
+
+    def inspect(self, raw, *, name="fixture-dep", version="1.0", lock_raw=None):
+        (self.wheelhouse / f"{name}-{version}-py3-none-any.whl").write_bytes(raw)
+        self.lock.write_bytes(lock_raw or wheel_lock([(name, version, raw)]))
+        requirements, _digest = adoption._locked_dependencies(self.lock)
+        return adoption._load_locked_wheels(self.wheelhouse, requirements)
+
+    def test_complete_wheel_bytes_are_bound_to_an_allowed_lock_hash(self):
+        raw = synthetic_wheel()
+        artifacts = self.inspect(raw)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), artifacts["fixture-dep"]["artifact_sha256"])
+        arbitrary = b"fixture-dep==1.0 \\\n    --hash=sha256:" + b"0" * 64 + b"\n"
+        with self.assertRaisesRegex(ValidationError, "artifact SHA-256 is absent"):
+            self.inspect(raw, lock_raw=arbitrary)
+
+    def test_forged_metadata_record_and_exact_version_are_rejected(self):
+        cases = [
+            (synthetic_wheel(metadata_name="different-dep"), "absent from requirements.lock"),
+            (synthetic_wheel(metadata_version="2.0"), "exact version identity"),
+            (synthetic_wheel(corrupt_record="hash"), "RECORD hash or size mismatch"),
+            (synthetic_wheel(corrupt_record="inventory"), "RECORD inventory"),
+        ]
+        for index, (raw, message) in enumerate(cases):
+            with self.subTest(message=message):
+                (self.wheelhouse / f"case-{index}.whl").write_bytes(raw)
+                self.lock.write_bytes(wheel_lock([("fixture-dep", "1.0", raw)]))
+                requirements, _digest = adoption._locked_dependencies(self.lock)
+                with self.assertRaisesRegex(ValidationError, message):
+                    adoption._load_locked_wheels(self.wheelhouse, requirements)
+                (self.wheelhouse / f"case-{index}.whl").unlink()
+
+    def test_startup_hooks_are_rejected_without_execution(self):
+        marker = self.root / "executed"
+        hook = ("open(" + repr(str(marker)) + ", 'w').write('executed')\n").encode("utf-8")
+        for path in ("fixture_hook.pth", "sitecustomize.py", "pkg/usercustomize.py"):
+            with self.subTest(path=path):
+                raw = synthetic_wheel(additions={path: hook})
+                with self.assertRaisesRegex(ValidationError, "prohibited Python startup hook"):
+                    self.inspect(raw)
+                self.assertFalse(marker.exists())
+                for artifact in self.wheelhouse.iterdir():
+                    artifact.unlink()
+
+    def test_unsafe_archive_paths_and_link_members_are_rejected(self):
+        cases = [
+            (synthetic_wheel(additions={"../escape.py": b"escape\n"}), "unsafe|non-canonical"),
+            (synthetic_wheel(additions={"linked.py": b"target"}, special_member="linked.py"), "link or special"),
+        ]
+        for index, (raw, message) in enumerate(cases):
+            with self.subTest(message=message):
+                (self.wheelhouse / f"case-{index}.whl").write_bytes(raw)
+                self.lock.write_bytes(wheel_lock([("fixture-dep", "1.0", raw)]))
+                requirements, _digest = adoption._locked_dependencies(self.lock)
+                with self.assertRaisesRegex(ValidationError, message):
+                    adoption._load_locked_wheels(self.wheelhouse, requirements)
+                (self.wheelhouse / f"case-{index}.whl").unlink()
+
+    def test_linked_wheelhouse_and_artifact_are_rejected(self):
+        raw = synthetic_wheel()
+        real = self.wheelhouse / "real.whl"
+        real.write_bytes(raw)
+        linked_artifact = self.wheelhouse / "linked.whl"
+        try:
+            linked_artifact.symlink_to(real)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        self.lock.write_bytes(wheel_lock([("fixture-dep", "1.0", raw)]))
+        requirements, _digest = adoption._locked_dependencies(self.lock)
+        with self.assertRaisesRegex(ValidationError, "only regular .whl"):
+            adoption._load_locked_wheels(self.wheelhouse, requirements)
+        linked_artifact.unlink()
+        hardlinked_artifact = self.wheelhouse / "hardlinked.whl"
+        try:
+            os.link(real, hardlinked_artifact)
+        except OSError:
+            pass
+        else:
+            with self.assertRaisesRegex(ValidationError, "only regular .whl"):
+                adoption._load_locked_wheels(self.wheelhouse, requirements)
+            hardlinked_artifact.unlink()
+        real.unlink()
+        real_house = self.root / "real-house"
+        real_house.mkdir()
+        (real_house / "fixture.whl").write_bytes(raw)
+        linked_house = self.root / "linked-house"
+        linked_house.symlink_to(real_house, target_is_directory=True)
+        with self.assertRaisesRegex(ValidationError, "real directory"):
+            adoption._load_locked_wheels(linked_house, requirements)
+
+
 class ConfiguredInstallerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="awf-config-")
@@ -373,6 +568,25 @@ class ConfiguredInstallerTests(unittest.TestCase):
                               "files": {name: sha256(raw) for name, raw in self.files.items()}})
         (self.source / "MANIFEST.json").write_bytes(manifest)
         self.pin = sha256(manifest)
+
+    def prepare_runtime_source(self):
+        wheelhouse = self.base / "wheelhouse"
+        wheelhouse.mkdir()
+        entries = []
+        for name in ("PyYAML", "jsonschema", "attrs", "jsonschema-specifications",
+                     "referencing", "rpds-py", "typing-extensions"):
+            version, raw = installed_wheel(name)
+            filename = name.replace("-", "_") + "-" + version + "-py3-none-any.whl"
+            (wheelhouse / filename).write_bytes(raw)
+            entries.append((name, version, raw))
+        lock = wheel_lock(entries)
+        self.files[".agentic/requirements.lock"] = lock
+        (self.source / ".agentic/requirements.lock").write_bytes(lock)
+        manifest = json_bytes({"format": "awf-manifest-1", "template_version": VERSION,
+                              "files": {name: sha256(raw) for name, raw in self.files.items()}})
+        (self.source / "MANIFEST.json").write_bytes(manifest)
+        self.pin = sha256(manifest)
+        return wheelhouse
 
     def perform(self, **kwargs):
         return install(self.source, self.dest, self.pin, configure=True, discover=False, overrides=explicit(), **kwargs)
@@ -608,11 +822,14 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual(before["install_id"], after["install_id"])
 
     def test_real_installed_commands_confirm_accepted_configuration(self):
+        wheelhouse = self.prepare_runtime_source()
         result = self.perform()
-        runtime = adoption.ensure_installed_runtime(self.dest)
+        runtime = adoption.ensure_installed_runtime(self.dest, wheelhouse)
         pyvenv = (self.dest / ".agentic/.venv/pyvenv.cfg").read_text(encoding="utf-8").lower()
         self.assertIn("include-system-site-packages = false", pyvenv)
         self.assertEqual(sha256((self.dest / ".agentic/requirements.lock").read_bytes()), runtime["requirements_lock_sha256"])
+        self.assertEqual(7, len(runtime["artifact_sha256"]))
+        self.assertIn("complete wheel SHA-256", runtime["dependency_source"])
         sentinel = self.base / "unlisted" / "awf_unlisted_sentinel.py"
         sentinel.parent.mkdir()
         sentinel.write_text("raise RuntimeError('executed')\n", encoding="utf-8")
@@ -626,32 +843,109 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual([item["exit_code"] for item in checked["post_install_checks"]], [0, 0])
 
     def test_runtime_rejects_unhashed_or_version_mismatched_dependency_lock(self):
+        wheelhouse = self.prepare_runtime_source()
         self.perform()
         lock = self.dest / ".agentic/requirements.lock"
         original = lock.read_text(encoding="utf-8")
         lock.write_text("PyYAML==6.0.3\n", encoding="utf-8")
-        with self.assertRaisesRegex(ValidationError, "requires exact versions and SHA-256 artifact hashes"):
-            adoption.ensure_installed_runtime(self.dest)
+        with self.assertRaisesRegex(ValidationError, "requires artifact hashes"):
+            adoption.ensure_installed_runtime(self.dest, wheelhouse)
         lock.write_text(original.replace("PyYAML==6.0.3", "PyYAML==0.0.0"), encoding="utf-8")
-        with self.assertRaisesRegex(ValidationError, "does not match the exact lock: PyYAML"):
-            adoption.ensure_installed_runtime(self.dest)
+        with self.assertRaisesRegex(ValidationError, "exact version identity"):
+            adoption.ensure_installed_runtime(self.dest, wheelhouse)
 
-    def test_runtime_rejects_dependency_record_hash_mismatch(self):
+    def test_runtime_failure_after_swap_restores_previous_good_runtime_and_cleans_transactions(self):
+        wheelhouse = self.prepare_runtime_source()
         self.perform()
-        actual_sha256 = adoption._file_sha256
-        def mismatched(path):
-            digest = actual_sha256(path)
-            if ".venv" not in Path(path).parts:
-                return bytes([digest[0] ^ 1]) + digest[1:]
-            return digest
-        with patch.object(adoption, "_file_sha256", side_effect=mismatched):
-            with self.assertRaisesRegex(ValidationError, "RECORD hash mismatch"):
-                adoption.ensure_installed_runtime(self.dest)
+        adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        marker = self.dest / ".agentic/.venv/previous-good-runtime"
+        marker.write_bytes(b"preserve me\n")
+        validate = adoption._validate_runtime
+        calls = 0
+        def fail_final(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValidationError("injected final runtime validation failure")
+            return validate(*args, **kwargs)
+        with patch.object(adoption, "_validate_runtime", side_effect=fail_final):
+            with self.assertRaisesRegex(ValidationError, "injected final"):
+                adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        self.assertEqual(marker.read_bytes(), b"preserve me\n")
+        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.staging-*")))
+        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
+
+    def test_runtime_keyboard_interrupt_after_swap_restores_previous_good_runtime(self):
+        wheelhouse = self.prepare_runtime_source()
+        self.perform()
+        adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        marker = self.dest / ".agentic/.venv/previous-good-runtime"
+        marker.write_bytes(b"preserve on interrupt\n")
+        validate = adoption._validate_runtime
+        calls = 0
+        def interrupt_final(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise KeyboardInterrupt()
+            return validate(*args, **kwargs)
+        with patch.object(adoption, "_validate_runtime", side_effect=interrupt_final):
+            with self.assertRaises(KeyboardInterrupt):
+                adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        self.assertEqual(marker.read_bytes(), b"preserve on interrupt\n")
+        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.staging-*")))
+        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
+
+    def test_runtime_stage_failure_leaves_no_partial_runtime_or_transaction_residue(self):
+        wheelhouse = self.prepare_runtime_source()
+        self.perform()
+        with patch.object(adoption, "_validate_runtime",
+                          side_effect=ValidationError("injected staged runtime validation failure")):
+            with self.assertRaisesRegex(ValidationError, "injected staged"):
+                adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        self.assertFalse((self.dest / ".agentic/.venv").exists())
+        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.staging-*")))
+        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
+
+    def test_runtime_success_atomically_replaces_previous_runtime_and_cleans_transactions(self):
+        wheelhouse = self.prepare_runtime_source()
+        self.perform()
+        adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        marker = self.dest / ".agentic/.venv/replace-me"
+        marker.write_bytes(b"old\n")
+        runtime = adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        self.assertFalse(marker.exists())
+        self.assertTrue(Path(runtime["interpreter"]).is_file())
+        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.staging-*")))
+        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
+
+    def test_runtime_cleanup_failure_after_commit_keeps_new_good_runtime_and_retries_cleanup(self):
+        wheelhouse = self.prepare_runtime_source()
+        self.perform()
+        adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        marker = self.dest / ".agentic/.venv/old-runtime-marker"
+        marker.write_bytes(b"old\n")
+        remove = adoption._remove_runtime_tree
+        failed = False
+        def fail_first_backup_cleanup(path):
+            nonlocal failed
+            if ".venv.backup-" in Path(path).name and not failed:
+                failed = True
+                raise ValidationError("injected backup cleanup failure")
+            return remove(path)
+        with patch.object(adoption, "_remove_runtime_tree", side_effect=fail_first_backup_cleanup):
+            with self.assertRaisesRegex(ValidationError, "injected backup cleanup"):
+                adoption.ensure_installed_runtime(self.dest, wheelhouse)
+        self.assertFalse(marker.exists())
+        self.assertTrue((self.dest / ".agentic/.venv/pyvenv.cfg").is_file())
+        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.staging-*")))
+        self.assertEqual([], list((self.dest / ".agentic").glob(".venv.backup-*")))
 
     def test_real_installed_commands_report_unconfigured_residue(self):
+        wheelhouse = self.prepare_runtime_source()
         result = install(self.source, self.dest, self.pin, configure=True, discover=False,
                          overrides={key: value for key, value in explicit().items() if key != "repository_id"})
-        adoption.ensure_installed_runtime(self.dest)
+        adoption.ensure_installed_runtime(self.dest, wheelhouse)
         checked = adoption.post_install_checks(self.dest, result)
         self.assertEqual(checked["status"], "INSTALLED_UNCONFIGURED", checked)
         self.assertEqual([item["exit_code"] for item in checked["post_install_checks"]], [0, 2])
@@ -693,6 +987,10 @@ class BootstrapMainTests(unittest.TestCase):
         with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--mode", "upgrade", "--propose-operating-capacity", "--dry-run"]), patch.object(module, "install", return_value={"status": "PLAN"}) as install_call, patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(module.main(), 0)
             self.assertTrue(install_call.call_args.kwargs["propose_operating_capacity"])
+        wheelhouse = ROOT / ".tmp-tests" / "fixture-wheelhouse"
+        with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--runtime-wheelhouse", str(wheelhouse)]), patch.object(module, "install", return_value={"status": "INSTALLED"}), patch.object(module, "ensure_installed_runtime", return_value={"interpreter": "fixture", "entry_point": "fixture"}) as runtime_call, patch.object(module, "post_install_checks", return_value={"status": "CONFIGURED"}), patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(module.main(), 0)
+            self.assertEqual(runtime_call.call_args.args, (ROOT, wheelhouse))
         with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--recover", "--propose-operating-capacity"]), patch.object(module, "recover", side_effect=AssertionError("invalid combined flags")), patch("sys.stderr", new_callable=io.StringIO):
             self.assertEqual(module.main(), 2)
 

@@ -10,8 +10,10 @@ Run a non-writing plan first, then prepare one reviewed upgrade PR:
 
 ```text
 python -B scripts/bootstrap_project.py --dest PROJECT --mode upgrade --expected-manifest-sha256 SHA256 --dry-run
-python -B scripts/bootstrap_project.py --dest PROJECT --mode upgrade --expected-manifest-sha256 SHA256
+python -B scripts/bootstrap_project.py --dest PROJECT --mode upgrade --expected-manifest-sha256 SHA256 --runtime-wheelhouse ABS_VERIFIED_WHEELHOUSE
 ```
+
+The writing run requires an operator-prepared offline wheelhouse containing exactly one compatible complete wheel per locked dependency. Every wheel must match a SHA-256 in `.agentic/requirements.lock`; installed package directories and their mutable METADATA/RECORD files are not accepted as a source. Runtime construction and isolated validation occur in a sibling staging directory, followed by an atomic replacement and final-path revalidation. Recoverable failures restore the previous good runtime and remove transaction residue. If rollback itself fails, the named recovery backup is retained and reported instead of destroyed.
 
 The plan reports the detected version, every chain step, per-step and total configuration diff, managed additions/changes/removals, every path/action the real run will write, operating-configuration creation/audit, and state actions. Steps change the unique `template.expected_workflow_version` scalar; 1.8.3→1.8.9 also adds the routing policy that became required, deterministically derived from retained legacy role allowlists and budget ceilings. It preserves comments, ordering, line endings, owner values and an existing valid `OPERATING_CONFIG.yaml`; no new-adoption default is injected. Operating configuration is semantically validated before any managed write, and a missing file plus its bootstrap audit are staged in the same rollback-capable transaction.
 

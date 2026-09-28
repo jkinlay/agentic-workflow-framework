@@ -137,6 +137,8 @@ def validate(argv=None):
     parser.add_argument('--expected-zip-sha256', required=True)
     parser.add_argument('--report', type=Path, required=True, help='New report file path; existing attempt reports are preserved')
     parser.add_argument('--workdir', type=Path)
+    parser.add_argument('--runtime-wheelhouse', type=Path,
+                        help='Verified offline wheel directory required by installed-runtime acceptance stages')
     add_review_arguments(parser)
     parser.add_argument('--self-test-timeout-seconds', type=self_test_timeout, default=600,
                         help='Deadline for each full source/installed self-test only: 60..3600 seconds (default: 600). Other acceptance-stage deadlines remain unchanged; timed-out runs retain a FAILED partial report and fixture directory.')
@@ -169,6 +171,14 @@ def validate(argv=None):
     except (ValidationError, OSError, ValueError, TypeError, RecursionError) as error:
         parser.error(str(error))
     checks.append({'check':'Current independent review covers verified source bytes','status':'PASS'})
+    if args.runtime_wheelhouse is None:
+        parser.error('--runtime-wheelhouse is required for complete installed-runtime acceptance')
+    try:
+        runtime_wheelhouse = args.runtime_wheelhouse.resolve(strict=True)
+        if not runtime_wheelhouse.is_dir():
+            raise ValueError('Offline runtime wheelhouse is not a directory')
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     review_cli = review_arguments(args)
 
     def command(args, cwd=SOURCE, code=0, name=None, timeout=180, error_output=False):
@@ -219,7 +229,8 @@ def validate(argv=None):
     command(['scripts/self_test.py','--release'],code=1,
             name='Explicit source release check still refuses missing review pins')
     command(['scripts/validate_archive.py','--archive',ARCHIVE,'--expected-zip-sha256',args_archive_pin,
-             '--workdir',RUN/'missing-pins','--report',RUN/'missing-pins-report.json'],code=2,
+             '--workdir',RUN/'missing-pins','--report',RUN/'missing-pins-report.json',
+             '--runtime-wheelhouse',runtime_wheelhouse],code=2,
             name='Archive acceptance still refuses missing review pins')
     assert not (RUN/'missing-pins-report.json').exists()
     command(['scripts/self_test.py','--release','--report',RUN/'extracted-self-test.json',
@@ -278,7 +289,8 @@ def validate(argv=None):
     (DEST/'.github').mkdir()
     (DEST/'.github/EXISTING.md').write_bytes(b'Existing project metadata\n')
     (DEST/'AGENTS.md').write_bytes(b'Existing owner instructions\n')
-    bootstrap = ['scripts/bootstrap_project.py','--dest',DEST,'--expected-manifest-sha256',MANIFEST]
+    bootstrap = ['scripts/bootstrap_project.py','--dest',DEST,'--expected-manifest-sha256',MANIFEST,
+                 '--runtime-wheelhouse',runtime_wheelhouse]
     command(bootstrap+['--dry-run'],code=2,name='CLI conflict preflight')
     assert (DEST/'AGENTS.md').read_bytes()==b'Existing owner instructions\n'
     first = json.loads(command(bootstrap+['--on-conflict','backup'],code=1,
@@ -330,7 +342,8 @@ def validate(argv=None):
         name='Installed enablement prerequisite refuses missing rules without blocking adoption')
     ADOPTION = RUN/'unprotected-adoption'; ADOPTION.mkdir()
     adopted = json.loads(command(['scripts/bootstrap_project.py','--dest',ADOPTION,
-        '--expected-manifest-sha256',MANIFEST,'--github-repo','example/adoption-fixture',
+        '--expected-manifest-sha256',MANIFEST,'--runtime-wheelhouse',runtime_wheelhouse,
+        '--github-repo','example/adoption-fixture',
         '--repository-id','54321','--project-name','Synthetic adoption fixture','--project-short-name','ADOPT',
         '--test-command','python -m unittest discover',
         '--codeowner','@other','--default-branch','trunk','--rules-observation',rules_observation,
@@ -397,7 +410,8 @@ def validate(argv=None):
     assert limited['capacity']['effective_writer_capacity']==1 and len(limited['dispatch_packets'])==1
     assert len(limited['deferred_dispatch_packets'])==2 and limited['prompt_user'] is False
     command(['scripts/validate_git_checkout.py','--source',SOURCE,'--expected-manifest-sha256',MANIFEST,
-        '--workdir',RUN/'g','--report',RUN/'git-checkout.json'],name='Windows-compatible Git checkout byte preservation and negative controls',timeout=360)
+        '--workdir',RUN/'g','--report',RUN/'git-checkout.json','--runtime-wheelhouse',runtime_wheelhouse],
+        name='Windows-compatible Git checkout byte preservation and negative controls',timeout=360)
     git_checkout = json.loads((RUN/'git-checkout.json').read_text(encoding='utf-8'))
     assert git_checkout['status']=='PASS'
     before = (SOURCE/'MANIFEST.json').read_bytes()

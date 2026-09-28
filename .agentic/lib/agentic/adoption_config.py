@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import copy
 import base64
+import csv
 import hashlib
-import importlib.metadata
+import io
 import json
 import os
-from pathlib import Path
+from email import policy as email_policy
+from email.parser import BytesParser
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
@@ -19,8 +22,10 @@ import sys
 import stat
 import tempfile
 import time
+import unicodedata
 import uuid
 import venv
+import zipfile
 
 from . import ValidationError, VERSION
 from .canonical import loads, sha256
@@ -36,11 +41,24 @@ _executable = github_provider._discovery_executable
 _read_command = github_provider._read_discovery_command
 
 
-_LOCK_REQUIREMENT = re.compile(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)")
-_LOCK_HASH = re.compile(r"--hash=sha256:([0-9a-f]{64})(?:\s|\\|$)")
+_LOCK_REQUIREMENT = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)==([A-Za-z0-9][A-Za-z0-9._+!-]*)$")
+_LOCK_HASH = re.compile(r"^--hash=sha256:([0-9a-f]{64})$")
 _DISTRIBUTION_NAME = re.compile(r"[-_.]+")
 _MAX_DEPENDENCY_FILE_BYTES = 128 * 1024 * 1024
 _MAX_DEPENDENCY_BYTES = 512 * 1024 * 1024
+_MAX_WHEEL_MEMBERS = 10000
+_RUNTIME_IMPORTS = {
+    "attrs": "attrs",
+    "jsonschema": "jsonschema",
+    "jsonschema-specifications": "jsonschema_specifications",
+    "pyyaml": "yaml",
+    "referencing": "referencing",
+    "rpds-py": "rpds",
+    "typing-extensions": "typing_extensions",
+}
+_STARTUP_HOOKS = {"sitecustomize.py", "usercustomize.py"}
+_WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *{"COM" + str(value) for value in range(1, 10)},
+                     *{"LPT" + str(value) for value in range(1, 10)}}
 
 
 def _distribution_name(value):
@@ -48,31 +66,38 @@ def _distribution_name(value):
 
 
 def _locked_dependencies(lock_path):
-    """Read exact dependency identities and require artifact hashes for each one."""
+    """Read exact dependency identities and their complete-artifact hash allowlists."""
     try:
         raw = lock_path.read_bytes()
         text = raw.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise ValidationError("Canonical runtime dependency lock is unavailable or invalid") from exc
-    dependencies, artifact_hashes = {}, {}
+    dependencies = {}
     current = None
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        match = _LOCK_REQUIREMENT.match(line)
+        continued = line.endswith("\\")
+        token = line[:-1].rstrip() if continued else line
+        match = _LOCK_REQUIREMENT.fullmatch(token)
         if match:
             display_name, version = match.groups()
             current = _distribution_name(display_name)
             if current in dependencies:
                 raise ValidationError("Canonical runtime dependency lock contains duplicate distributions")
-            dependencies[current] = {"name": display_name, "version": version}
-            artifact_hashes[current] = set()
-        if current is None:
+            dependencies[current] = {"name": display_name, "version": version, "artifact_hashes": set()}
+            if not continued:
+                raise ValidationError("Canonical runtime dependency lock requires artifact hashes after every pinned requirement")
+            continue
+        hash_match = _LOCK_HASH.fullmatch(token)
+        if current is None or hash_match is None:
             raise ValidationError("Canonical runtime dependency lock has content before a pinned requirement")
-        artifact_hashes[current].update(_LOCK_HASH.findall(line))
-    if not dependencies or any(not hashes for hashes in artifact_hashes.values()):
+        dependencies[current]["artifact_hashes"].add(hash_match.group(1))
+    if not dependencies or any(not item["artifact_hashes"] for item in dependencies.values()):
         raise ValidationError("Canonical runtime dependency lock requires exact versions and SHA-256 artifact hashes")
+    for item in dependencies.values():
+        item["artifact_hashes"] = frozenset(item["artifact_hashes"])
     return dependencies, hashlib.sha256(raw).hexdigest()
 
 
@@ -86,79 +111,269 @@ def _file_sha256(path):
             digest.update(block)
 
 
-def _record_sha256(member):
-    value = member.hash
-    if value is None:
-        return None
-    if value.mode != "sha256":
-        raise ValidationError("Installed dependency RECORD uses a non-SHA-256 file hash")
+def _record_sha256(value):
+    if re.fullmatch(r"sha256=[A-Za-z0-9_-]{43}", value) is None:
+        raise ValidationError("Locked wheel RECORD uses a missing or non-SHA-256 file hash")
     try:
-        return base64.urlsafe_b64decode(value.value + "=" * (-len(value.value) % 4))
+        encoded = value.partition("=")[2]
+        decoded = base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
     except (ValueError, TypeError) as exc:
-        raise ValidationError("Installed dependency RECORD contains an invalid SHA-256 file hash") from exc
+        raise ValidationError("Locked wheel RECORD contains an invalid SHA-256 file hash") from exc
+    if len(decoded) != hashlib.sha256().digest_size:
+        raise ValidationError("Locked wheel RECORD contains an invalid SHA-256 file hash")
+    return decoded
 
 
-def _copy_locked_distribution(requirement, target, copied):
-    """Copy one exact installed distribution after verifying every copied RECORD member."""
+def _regular_directory(path, label):
     try:
-        distribution = importlib.metadata.distribution(requirement["name"])
-    except importlib.metadata.PackageNotFoundError as exc:
-        raise ValidationError("Missing locked dependency: " + requirement["name"]) from exc
-    observed_name = _distribution_name(distribution.metadata.get("Name", ""))
-    if observed_name != _distribution_name(requirement["name"]) or distribution.version != requirement["version"]:
-        raise ValidationError("Installed dependency does not match the exact lock: " + requirement["name"])
-    try:
-        source_root = Path(distribution.locate_file("")).resolve(strict=True)
+        metadata = os.lstat(path)
+        resolved = Path(path).resolve(strict=True)
     except OSError as exc:
-        raise ValidationError("Installed dependency root is unavailable: " + requirement["name"]) from exc
-    members = list(distribution.files or ())
-    verified, total = 0, 0
-    metadata_verified = False
-    for member in members:
-        expected = _record_sha256(member)
-        if expected is None:
-            # RECORD and generated bytecode intentionally carry no wheel RECORD hash.
+        raise ValidationError(label + " is unavailable") from exc
+    reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    junction = getattr(Path(path), "is_junction", lambda: False)()
+    if stat.S_ISLNK(metadata.st_mode) or reparse or junction or not stat.S_ISDIR(metadata.st_mode):
+        raise ValidationError(label + " must be a real directory, not a link or reparse point")
+    return resolved
+
+
+def _wheel_member_path(name):
+    if (not isinstance(name, str) or not name or "\x00" in name or "\\" in name or
+            name.startswith("/") or re.match(r"^[A-Za-z]:", name)):
+        raise ValidationError("Locked wheel contains an unsafe member path")
+    directory = name.endswith("/")
+    value = name[:-1] if directory else name
+    parts = value.split("/")
+    unsafe_component = any(
+        part in {"", ".", ".."} or ":" in part or part.endswith((" ", ".")) or
+        unicodedata.normalize("NFC", part) != part or part.split(".", 1)[0].upper() in _WINDOWS_RESERVED
+        for part in parts)
+    if not value or unsafe_component or PurePosixPath(value).as_posix() != value:
+        raise ValidationError("Locked wheel contains a non-canonical member path")
+    return value, directory
+
+
+def _wheel_metadata(raw, name):
+    try:
+        message = BytesParser(policy=email_policy.default).parsebytes(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Locked wheel contains invalid " + name) from exc
+    values = message.get_all(name, [])
+    if message.defects or len(values) != 1 or not isinstance(values[0], str) or not values[0].strip():
+        raise ValidationError("Locked wheel must contain one exact " + name + " metadata field")
+    return values[0].strip()
+
+
+def _wheel_install_path(member, dist_info):
+    parts = member.split("/")
+    if parts[0].endswith(".data"):
+        expected_data = dist_info[:-len(".dist-info")] + ".data"
+        if parts[0] != expected_data or len(parts) < 3 or parts[1] not in {"purelib", "platlib"}:
+            raise ValidationError("Locked wheel uses an unsupported data or script installation scheme")
+        parts = parts[2:]
+    relative = PurePosixPath(*parts)
+    if relative.name.lower().endswith(".pth") or relative.name.lower() in _STARTUP_HOOKS:
+        raise ValidationError("Locked wheel contains a prohibited Python startup hook: " + relative.as_posix())
+    return relative
+
+
+def _inspect_locked_wheel(filename, raw, requirements):
+    """Validate a complete hash-bound wheel and return immutable extraction bytes."""
+    artifact_sha256 = hashlib.sha256(raw).hexdigest()
+    allowed_hashes = set().union(*(item["artifact_hashes"] for item in requirements.values()))
+    if artifact_sha256 not in allowed_hashes:
+        raise ValidationError("Offline wheel artifact SHA-256 is absent from requirements.lock")
+    if len(raw) > _MAX_DEPENDENCY_FILE_BYTES:
+        raise ValidationError("Locked wheel artifact exceeds the runtime copy limit")
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(raw))
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ValidationError("Locked runtime artifact is not a valid wheel: " + filename) from exc
+    with archive:
+        infos = archive.infolist()
+        if not infos or len(infos) > _MAX_WHEEL_MEMBERS:
+            raise ValidationError("Locked wheel has an invalid member count")
+        members, folded_members, total = {}, set(), 0
+        for info in infos:
+            member, directory = _wheel_member_path(info.filename)
+            folded = member.casefold()
+            if member in members or folded in folded_members:
+                raise ValidationError("Locked wheel contains a duplicate member path: " + member)
+            folded_members.add(folded)
+            mode = (info.external_attr >> 16) & 0xffff
+            kind = stat.S_IFMT(mode)
+            if info.flag_bits & 1:
+                raise ValidationError("Locked wheel contains encrypted content")
+            if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+                raise ValidationError("Locked wheel uses an unsupported compression type")
+            if directory:
+                if kind not in {0, stat.S_IFDIR}:
+                    raise ValidationError("Locked wheel directory has an unsafe file type")
+                members[member] = None
+                continue
+            if kind not in {0, stat.S_IFREG}:
+                raise ValidationError("Locked wheel contains a link or special file: " + member)
+            if info.file_size > _MAX_DEPENDENCY_FILE_BYTES:
+                raise ValidationError("Locked wheel member exceeds the runtime copy limit")
+            total += info.file_size
+            if total > _MAX_DEPENDENCY_BYTES:
+                raise ValidationError("Locked wheel exceeds the runtime extraction limit")
+            try:
+                data = archive.read(info)
+            except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+                raise ValidationError("Locked wheel member cannot be read safely: " + member) from exc
+            if len(data) != info.file_size:
+                raise ValidationError("Locked wheel member size changed while reading: " + member)
+            members[member] = data
+
+    files = {path: value for path, value in members.items() if value is not None}
+    metadata_paths = [path for path in files if path.endswith(".dist-info/METADATA")]
+    wheel_paths = [path for path in files if path.endswith(".dist-info/WHEEL")]
+    record_paths = [path for path in files if path.endswith(".dist-info/RECORD")]
+    if len(metadata_paths) != 1 or len(wheel_paths) != 1 or len(record_paths) != 1:
+        raise ValidationError("Locked wheel must contain exactly one METADATA, WHEEL and RECORD")
+    dist_info = metadata_paths[0].split("/", 1)[0]
+    expected_prefix = dist_info + "/"
+    if wheel_paths[0] != expected_prefix + "WHEEL" or record_paths[0] != expected_prefix + "RECORD":
+        raise ValidationError("Locked wheel metadata directories disagree")
+    dist_info_roots = {path.split("/", 1)[0] for path in files if path.split("/", 1)[0].endswith(".dist-info")}
+    if dist_info_roots != {dist_info}:
+        raise ValidationError("Locked wheel contains an unexpected distribution metadata directory")
+    observed_name = _wheel_metadata(files[metadata_paths[0]], "Name")
+    observed_version = _wheel_metadata(files[metadata_paths[0]], "Version")
+    wheel_message = BytesParser(policy=email_policy.default).parsebytes(files[wheel_paths[0]])
+    wheel_versions = wheel_message.get_all("Wheel-Version", [])
+    purelib_values = wheel_message.get_all("Root-Is-Purelib", [])
+    wheel_tags = wheel_message.get_all("Tag", [])
+    if (wheel_message.defects or [str(value) for value in wheel_versions] != ["1.0"] or len(purelib_values) != 1 or
+            str(purelib_values[0]).lower() not in {"true", "false"} or not wheel_tags or
+            any(not isinstance(value, str) or not value.strip() for value in wheel_tags)):
+        raise ValidationError("Locked wheel contains invalid or incomplete WHEEL metadata")
+    canonical_name = _distribution_name(observed_name)
+    requirement = requirements.get(canonical_name)
+    if requirement is None:
+        raise ValidationError("Offline wheelhouse contains an artifact absent from requirements.lock: " + observed_name)
+    if observed_version != requirement["version"]:
+        raise ValidationError("Locked wheel does not match the exact version identity: " + requirement["name"])
+    stem = dist_info[:-len(".dist-info")]
+    if "-" not in stem:
+        raise ValidationError("Locked wheel has an invalid distribution metadata directory")
+    stem_name, stem_version = stem.rsplit("-", 1)
+    if _distribution_name(stem_name) != canonical_name or stem_version.replace("_", "-") != observed_version.replace("_", "-"):
+        raise ValidationError("Locked wheel metadata path disagrees with its exact identity")
+    if artifact_sha256 not in requirement["artifact_hashes"]:
+        raise ValidationError("Offline wheel artifact SHA-256 is absent from requirements.lock: " + requirement["name"])
+
+    try:
+        record_text = files[record_paths[0]].decode("utf-8")
+        rows = list(csv.reader(io.StringIO(record_text, newline="")))
+    except (UnicodeError, csv.Error) as exc:
+        raise ValidationError("Locked wheel RECORD is invalid") from exc
+    records = {}
+    for row in rows:
+        if len(row) != 3:
+            raise ValidationError("Locked wheel RECORD has an invalid row")
+        record_path, hash_value, size_value = row
+        normalized, directory = _wheel_member_path(record_path)
+        if directory or normalized in records:
+            raise ValidationError("Locked wheel RECORD contains a duplicate or directory row")
+        records[normalized] = (hash_value, size_value)
+    if set(records) != set(files):
+        raise ValidationError("Locked wheel RECORD inventory does not exactly match the archive")
+    for member, data in files.items():
+        hash_value, size_value = records[member]
+        if member == record_paths[0]:
+            if hash_value or size_value:
+                raise ValidationError("Locked wheel RECORD self-entry must omit hash and size")
             continue
-        source = Path(distribution.locate_file(member))
+        if re.fullmatch(r"0|[1-9][0-9]*", size_value) is None:
+            raise ValidationError("Locked wheel RECORD contains an invalid member size")
+        expected_size = int(size_value)
+        if expected_size != len(data) or _record_sha256(hash_value) != hashlib.sha256(data).digest():
+            raise ValidationError("Locked wheel RECORD hash or size mismatch: " + member)
+
+    installed = {}
+    for member, data in files.items():
+        relative = _wheel_install_path(member, dist_info)
+        key = relative.as_posix()
+        if not key or key in installed:
+            raise ValidationError("Locked wheel contains a conflicting installed path: " + key)
+        installed[key] = data
+    return {"name": canonical_name, "display_name": requirement["name"],
+            "version": observed_version, "artifact_sha256": artifact_sha256,
+            "filename": filename, "files": installed}
+
+
+def _load_locked_wheels(wheelhouse, requirements):
+    """Read an operator-prepared offline wheelhouse into verified immutable bytes."""
+    root = _regular_directory(wheelhouse, "Offline runtime wheelhouse")
+    artifacts, total = {}, 0
+    try:
+        entries = sorted(root.iterdir(), key=lambda value: value.name)
+    except OSError as exc:
+        raise ValidationError("Offline runtime wheelhouse cannot be enumerated") from exc
+    if not entries:
+        raise ValidationError("Offline runtime wheelhouse is empty")
+    for path in entries:
         try:
-            metadata = os.lstat(source)
-            resolved = source.resolve(strict=True)
+            metadata = os.lstat(path)
         except OSError as exc:
-            raise ValidationError("Installed dependency RECORD member is unavailable: " + requirement["name"]) from exc
+            raise ValidationError("Offline runtime wheel artifact is unavailable: " + path.name) from exc
         reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-        if stat.S_ISLNK(metadata.st_mode) or reparse or not stat.S_ISREG(metadata.st_mode):
-            raise ValidationError("Installed dependency RECORD member is linked or not a regular file: " + requirement["name"])
-        try:
-            relative = resolved.relative_to(source_root)
-        except ValueError:
-            # Console entry points live outside site-packages and are not used by the canonical runtime.
-            continue
+        if (not path.name.endswith(".whl") or stat.S_ISLNK(metadata.st_mode) or reparse or
+                not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1):
+            raise ValidationError("Offline runtime wheelhouse may contain only regular .whl files: " + path.name)
         if metadata.st_size > _MAX_DEPENDENCY_FILE_BYTES:
-            raise ValidationError("Installed dependency RECORD member exceeds the runtime copy limit")
-        total += metadata.st_size
+            raise ValidationError("Offline runtime wheel artifact exceeds the runtime copy limit")
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise ValidationError("Offline runtime wheel artifact cannot be read: " + path.name) from exc
+        if len(raw) != metadata.st_size:
+            raise ValidationError("Offline runtime wheel artifact changed while reading: " + path.name)
+        total += len(raw)
         if total > _MAX_DEPENDENCY_BYTES:
-            raise ValidationError("Installed dependencies exceed the runtime copy limit")
-        actual = _file_sha256(resolved)
-        if actual != expected:
-            raise ValidationError("Installed dependency RECORD hash mismatch: " + requirement["name"])
-        destination = target / relative
-        previous = copied.get(relative.as_posix())
-        if previous is not None and previous != actual:
-            raise ValidationError("Locked dependencies contain a conflicting runtime file: " + relative.as_posix())
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if previous is None:
-            shutil.copyfile(resolved, destination)
-            if _file_sha256(destination) != expected:
-                raise ValidationError("Canonical runtime dependency copy failed verification: " + requirement["name"])
-            copied[relative.as_posix()] = actual
-        verified += 1
-        metadata_verified = metadata_verified or relative.name in {"METADATA", "PKG-INFO"}
-    if not verified or not metadata_verified:
-        raise ValidationError("Installed dependency lacks verified package metadata/files: " + requirement["name"])
-    return verified
+            raise ValidationError("Offline runtime wheelhouse exceeds the runtime copy limit")
+        artifact = _inspect_locked_wheel(path.name, raw, requirements)
+        if artifact["name"] in artifacts:
+            raise ValidationError("Offline runtime wheelhouse contains multiple artifacts for: " + artifact["display_name"])
+        artifacts[artifact["name"]] = artifact
+    missing = sorted(set(requirements) - set(artifacts))
+    if missing:
+        raise ValidationError("Offline runtime wheelhouse is missing locked dependencies: " + ", ".join(missing))
+    return artifacts
 
 
-def _runtime_site_packages(interpreter, root):
+def _extract_locked_wheels(artifacts, target):
+    copied, folded, total = {}, {}, 0
+    for name in sorted(artifacts):
+        artifact = artifacts[name]
+        for relative_text, raw in sorted(artifact["files"].items()):
+            relative = PurePosixPath(relative_text)
+            previous = copied.get(relative_text)
+            digest = hashlib.sha256(raw).digest()
+            previous_folded = folded.get(relative_text.casefold())
+            if previous is not None or previous_folded is not None:
+                raise ValidationError("Locked wheels contain a conflicting runtime file: " + relative_text)
+            total += len(raw)
+            if total > _MAX_DEPENDENCY_BYTES:
+                raise ValidationError("Locked dependencies exceed the runtime extraction limit")
+            destination = target.joinpath(*relative.parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with destination.open("xb") as stream:
+                    stream.write(raw)
+                os.chmod(destination, 0o600)
+            except OSError as exc:
+                raise ValidationError("Canonical runtime dependency extraction failed: " + relative_text) from exc
+            if _file_sha256(destination) != digest:
+                raise ValidationError("Canonical runtime dependency extraction failed verification: " + relative_text)
+            copied[relative_text] = digest
+            folded[relative_text.casefold()] = relative_text
+    return copied
+
+
+def _runtime_site_packages(interpreter, root, runtime_root):
     command = [str(interpreter), "-B", "-I", "-c",
                "import json,sysconfig; print(json.dumps([sysconfig.get_path('purelib'),sysconfig.get_path('platlib')]))"]
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
@@ -173,14 +388,87 @@ def _runtime_site_packages(interpreter, root):
             any(not isinstance(value, str) or not value for value in paths)):
         raise ValidationError("Canonical runtime returned invalid site-packages paths")
     resolved = [Path(value).resolve() for value in paths]
-    runtime_root = (Path(root) / ".agentic" / ".venv").resolve()
+    runtime_root = Path(runtime_root).resolve()
     if any(not value.is_relative_to(runtime_root) for value in resolved):
         raise ValidationError("Canonical runtime site-packages escapes the isolated runtime")
     return resolved[0]
 
 
-def ensure_installed_runtime(destination):
-    """Create the canonical ignored project runtime without fetching packages."""
+def _runtime_interpreter(runtime_root):
+    return Path(runtime_root) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _runtime_tree_files(site_packages):
+    files = {}
+    for base, directories, names in os.walk(site_packages, topdown=True, followlinks=False):
+        base_path = Path(base)
+        for name in list(directories) + list(names):
+            path = base_path / name
+            metadata = os.lstat(path)
+            reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if stat.S_ISLNK(metadata.st_mode) or reparse:
+                raise ValidationError("Canonical runtime contains a linked dependency path")
+            if name in names and not stat.S_ISREG(metadata.st_mode):
+                raise ValidationError("Canonical runtime contains a special dependency file")
+        for name in names:
+            relative = (base_path / name).relative_to(site_packages).as_posix()
+            if name.lower().endswith(".pth") or name.lower() in _STARTUP_HOOKS:
+                raise ValidationError("Canonical runtime contains a prohibited Python startup hook: " + relative)
+            files[relative] = _file_sha256(base_path / name)
+    return files
+
+
+def _validate_runtime(interpreter, root, runtime_root, expected_versions, expected_files):
+    site_packages = _runtime_site_packages(interpreter, root, runtime_root)
+    if _runtime_tree_files(site_packages) != expected_files:
+        raise ValidationError("Canonical runtime dependency inventory changed during validation")
+    script = (
+        "import importlib,importlib.metadata as m,json,sys,sysconfig;"
+        "mods={'attrs':'attrs','jsonschema':'jsonschema','jsonschema-specifications':'jsonschema_specifications',"
+        "'pyyaml':'yaml','referencing':'referencing','rpds-py':'rpds','typing-extensions':'typing_extensions'};"
+        "[importlib.import_module(v) for v in mods.values()];"
+        "print(json.dumps({'versions':{k:m.version(k) for k in mods},'prefix':sys.prefix,"
+        "'purelib':sysconfig.get_path('purelib'),'platlib':sysconfig.get_path('platlib')},sort_keys=True))"
+    )
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")}
+    env.update(PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1", PIP_NO_INDEX="1")
+    try:
+        result = subprocess.run([str(interpreter), "-B", "-I", "-c", script], cwd=root,
+                                env=child_env(env), stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=60, check=False)
+        output = json.loads(result.stdout.decode("utf-8")) if result.returncode == 0 else None
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        raise ValidationError("Canonical runtime dependency imports could not be validated") from exc
+    if (not isinstance(output, dict) or output.get("versions") != expected_versions or
+            Path(output.get("prefix", "")).resolve() != Path(runtime_root).resolve() or
+            any(not Path(output.get(key, "")).resolve().is_relative_to(Path(runtime_root).resolve())
+                for key in ("purelib", "platlib"))):
+        raise ValidationError("Canonical runtime dependency versions or isolation do not match the exact lock")
+    if _runtime_tree_files(site_packages) != expected_files:
+        raise ValidationError("Canonical runtime dependency inventory changed after isolated imports")
+
+
+def _remove_runtime_tree(path):
+    path = Path(path)
+    if not path.exists() and not path.is_symlink():
+        return
+    metadata = os.lstat(path)
+    reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if stat.S_ISLNK(metadata.st_mode) or reparse or not stat.S_ISDIR(metadata.st_mode):
+        raise ValidationError("Refusing to clean a linked or non-directory runtime transaction path")
+    shutil.rmtree(path)
+
+
+def _transaction_sibling(runtime_root, kind):
+    for _attempt in range(10):
+        candidate = runtime_root.with_name(runtime_root.name + "." + kind + "-" + uuid.uuid4().hex)
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    raise ValidationError("Could not allocate a unique runtime transaction path")
+
+
+def ensure_installed_runtime(destination, wheelhouse=None):
+    """Build a hash-bound offline runtime and atomically replace the canonical runtime."""
     from .runtime_commands import installed_paths
     root, interpreter, entry_point = installed_paths(destination)
     runtime_root = root / ".agentic" / ".venv"
@@ -188,23 +476,67 @@ def ensure_installed_runtime(destination):
         metadata = os.lstat(runtime_root)
         reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         junction = getattr(runtime_root, "is_junction", lambda: False)()
-        if stat.S_ISLNK(metadata.st_mode) or reparse or junction or runtime_root.resolve() != runtime_root:
+        if (stat.S_ISLNK(metadata.st_mode) or reparse or junction or not stat.S_ISDIR(metadata.st_mode) or
+                runtime_root.resolve() != runtime_root):
             raise ValidationError("Refusing linked or reparse-point canonical runtime")
     lock_path = root / ".agentic" / "requirements.lock"
     dependencies, lock_sha256 = _locked_dependencies(lock_path)
-    venv.EnvBuilder(with_pip=False, system_site_packages=False, clear=True).create(runtime_root)
-    if not interpreter.is_file() or not entry_point.is_file():
-        raise ValidationError("Canonical installed runtime or workflow entry point is unavailable")
-    site_packages = _runtime_site_packages(interpreter, root)
-    site_packages.mkdir(parents=True, exist_ok=True)
-    copied, verified_files = {}, 0
-    for name in sorted(dependencies):
-        verified_files += _copy_locked_distribution(dependencies[name], site_packages, copied)
+    if set(dependencies) != set(_RUNTIME_IMPORTS):
+        raise ValidationError("Canonical runtime dependency lock and reviewed import invariant disagree")
+    source = wheelhouse if wheelhouse is not None else root / ".agentic" / "wheelhouse"
+    artifacts = _load_locked_wheels(source, dependencies)
+    expected_versions = {name: dependencies[name]["version"] for name in sorted(dependencies)}
+    stage = _transaction_sibling(runtime_root, "staging")
+    backup = _transaction_sibling(runtime_root, "backup")
+    had_previous = runtime_root.exists()
+    committed = False
+    try:
+        venv.EnvBuilder(with_pip=False, system_site_packages=False, clear=False).create(stage)
+        stage_interpreter = _runtime_interpreter(stage)
+        if not stage_interpreter.is_file() or not entry_point.is_file():
+            raise ValidationError("Canonical installed runtime or workflow entry point is unavailable")
+        site_packages = _runtime_site_packages(stage_interpreter, root, stage)
+        site_packages.mkdir(parents=True, exist_ok=True)
+        expected_files = _extract_locked_wheels(artifacts, site_packages)
+        _validate_runtime(stage_interpreter, root, stage, expected_versions, expected_files)
+        if had_previous:
+            os.replace(runtime_root, backup)
+        os.replace(stage, runtime_root)
+        _validate_runtime(interpreter, root, runtime_root, expected_versions, expected_files)
+        # Final-path validation is the commit point.  From here onward the new
+        # canonical runtime is the known-good copy; a backup-cleanup error must
+        # never roll it back to a possibly partially removed backup.
+        committed = True
+        if backup.exists():
+            _remove_runtime_tree(backup)
+    except BaseException as original:
+        if not committed:
+            try:
+                # Filesystem state, rather than flags set after os.replace(),
+                # closes the asynchronous-exception windows on both renames.
+                if backup.exists() or backup.is_symlink():
+                    if runtime_root.exists() or runtime_root.is_symlink():
+                        _remove_runtime_tree(runtime_root)
+                    os.replace(backup, runtime_root)
+                elif (not had_previous and not stage.exists() and
+                      (runtime_root.exists() or runtime_root.is_symlink())):
+                    _remove_runtime_tree(runtime_root)
+            except BaseException as rollback_error:
+                raise ValidationError(
+                    "Canonical runtime replacement failed and automatic rollback could not complete; "
+                    "the uniquely named backup was retained for recovery: " + str(backup)) from rollback_error
+        raise
+    finally:
+        if stage.exists() or stage.is_symlink():
+            _remove_runtime_tree(stage)
+        if committed and (backup.exists() or backup.is_symlink()):
+            _remove_runtime_tree(backup)
     return {"interpreter": str(interpreter), "entry_point": str(entry_point),
-            "dependency_source": "exact lock versions copied offline from bootstrap distributions after RECORD SHA-256 verification",
+            "dependency_source": "operator-supplied offline wheelhouse; complete wheel SHA-256 pinned by requirements.lock; RECORD and extracted inventory verified",
             "requirements_lock_sha256": lock_sha256,
             "locked_dependencies": {item["name"]: item["version"] for item in dependencies.values()},
-            "verified_dependency_files": verified_files}
+            "artifact_sha256": {artifacts[name]["display_name"]: artifacts[name]["artifact_sha256"] for name in sorted(artifacts)},
+            "verified_dependency_files": len(expected_files)}
 
 
 def unresolved(value):

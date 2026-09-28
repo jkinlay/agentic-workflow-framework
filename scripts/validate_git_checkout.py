@@ -2,7 +2,7 @@
 """Exercise real, offline Git autocrlf roundtrips without touching user Git state.
 
 API: run_validation(source, expected_manifest_sha256, workdir,
-                    python_executable=None) -> dict
+                    python_executable=None, runtime_wheelhouse=None) -> dict
 
 The helper retains its uniquely named fixture directory and command logs. Every
 Git command uses isolated configuration, an empty hooks/template directory and
@@ -107,7 +107,7 @@ def _locations(source, workdir, report=None):
     return source, workdir, report
 
 
-def run_validation(source, expected_manifest_sha256, workdir, python_executable=None):
+def run_validation(source, expected_manifest_sha256, workdir, python_executable=None, runtime_wheelhouse=None):
     """Return PASS evidence or raise GitCheckoutValidationError with partial evidence."""
     report = {
         "validation": "git-autocrlf-checkout",
@@ -146,6 +146,9 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
         require(set(manifest) == {"format", "template_version", "files"} and manifest["format"] == "awf-manifest-1", "Unsupported release manifest")
         require(set(payload) - {"MANIFEST.json", "MANIFEST.md"} == set(manifest["files"]), "Source manifest membership differs before Git validation")
         require(all(digest(payload[name]) == expected for name, expected in manifest["files"].items()), "Source file bytes differ from the approved manifest before Git validation")
+        require(runtime_wheelhouse is not None, "A verified offline runtime wheelhouse is required for installed checkout validation")
+        runtime_wheelhouse = Path(runtime_wheelhouse).resolve(strict=True)
+        require(runtime_wheelhouse.is_dir(), "The offline runtime wheelhouse is not a directory")
         require(".gitattributes" in payload and ".agentic/templates/installed.gitattributes" in payload,
                 "Release and installed-project LF attribute policies are required")
         report["template_version"] = manifest["template_version"]
@@ -295,6 +298,7 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
         # command is configuration only; bootstrap does not execute project tests.
         bootstrap = command("Install into a project with existing gitattributes", [python, "-B", "scripts/bootstrap_project.py",
                 "--dest", installed, "--expected-manifest-sha256", expected_manifest_sha256,
+                "--runtime-wheelhouse", runtime_wheelhouse,
                 "--github-repo", "example/lf-fixture", "--repository-id", "54321",
                 "--project-name", "Synthetic LF fixture", "--project-short-name", "LFFIXTURE",
                 "--test-command", "python -m unittest discover", "--default-branch", "trunk"], source)
@@ -394,13 +398,16 @@ def main(argv=None):
     parser.add_argument("--expected-manifest-sha256", required=True)
     parser.add_argument("--workdir", type=Path, required=True, help="Short external directory; unique test fixtures are retained")
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--runtime-wheelhouse", type=Path,
+                        help="Verified offline wheel directory used by installed-checkout bootstrap validation")
     args = parser.parse_args(argv)
     try:
         args.source, args.workdir, args.report = _locations(args.source, args.workdir, args.report)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     try:
-        report = run_validation(args.source, args.expected_manifest_sha256, args.workdir)
+        report = run_validation(args.source, args.expected_manifest_sha256, args.workdir,
+                                runtime_wheelhouse=args.runtime_wheelhouse)
         code = 0
     except GitCheckoutValidationError as exc:
         report = exc.report

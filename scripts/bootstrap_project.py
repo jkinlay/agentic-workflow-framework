@@ -21,6 +21,8 @@ def main():
     parser.add_argument("--on-conflict", choices=["error", "backup"], default="error")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--recover", action="store_true")
+    parser.add_argument("--runtime-wheelhouse", type=Path,
+        help="Offline directory containing exactly one complete requirements.lock-pinned wheel per runtime dependency")
     parser.add_argument("--project-name")
     parser.add_argument("--project-short-name")
     parser.add_argument("--jira-key")
@@ -52,7 +54,7 @@ def main():
                 default_branch=args.default_branch, review_app_id=args.review_app_id, configure=True,
                 propose_operating_capacity=args.propose_operating_capacity)
             if not args.dry_run:
-                result["runtime"] = ensure_installed_runtime(args.dest)
+                result["runtime"] = ensure_installed_runtime(args.dest, args.runtime_wheelhouse)
                 result.update(post_install_checks(args.dest, result))
         print(json.dumps(result, indent=2))
         return 1 if result["status"] == "INSTALLED_UNCONFIGURED" else 2 if result["status"] == "INSTALLATION_VERIFICATION_FAILED" else 0

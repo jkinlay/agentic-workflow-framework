@@ -32,6 +32,8 @@ class CliFailurePathTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.wheelhouse = self.root / 'wheelhouse'
+        self.wheelhouse.mkdir()
         self.env = {k: v for k, v in os.environ.items() if k.upper() not in {'PYTHONPATH', 'PYTHONHOME'}}
         self.env.update(PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
 
@@ -73,6 +75,7 @@ class CliFailurePathTests(unittest.TestCase):
     def archive_args(self, path, pin, work=None, report=None):
         return ['--archive', path, '--expected-zip-sha256', pin,
                 '--reviews',self.root/'independent-review.json','--expected-reviews-sha256','0'*64,
+                '--runtime-wheelhouse',self.wheelhouse,
                 '--workdir', work or self.root / 'unused-work', '--report', report or self.root / 'report.json']
 
     def test_each_entry_point_rejects_missing_required_arguments_without_writes(self):
