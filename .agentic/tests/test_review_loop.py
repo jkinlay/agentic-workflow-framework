@@ -279,12 +279,17 @@ class HostTests(unittest.TestCase):
         driver.git=local_git  # Explicit local transport seam; production forbids it.
         candidate={**CANDIDATE,'head':head,'base':base}
         driver.snapshot=lambda: {**candidate,'head':command('--git-dir',str(remote),'rev-parse','refs/heads/codex/test')}
-        def local_provider_api(suffix):
+        api_calls=[]
+        def local_provider_api(suffix, *args, **kwargs):
+            api_calls.append((suffix,args,kwargs))
             # Intercept the exact provider read used by amend(); never run the
             # fixture's Python executable as gh or contact GitHub.
             self.assertEqual(suffix, 'pulls/7')
+            self.assertEqual(args, ())
+            self.assertEqual(kwargs, {})
             return {'number': 7, 'body': 'Synthetic local amendment fixture'}
         driver.api=local_provider_api
+        driver.local_api_calls=api_calls
         def agent(role,current,findings,run_id,files=None):
             (worker/'src/a.py').write_text('value = 3\n')
             return {'candidate':current,'outcome':'CHANGED','summary':'Synthetic file edit; no model called'}
@@ -298,6 +303,7 @@ class HostTests(unittest.TestCase):
         self.assertEqual(driver.snapshot(),amended)
         self.assertEqual(command('-C',str(driver.worker),'rev-parse','HEAD^'),candidate['head'])
         self.assertEqual(command('-C',str(driver.worker),'status','--porcelain'),'')
+        self.assertEqual(driver.local_api_calls,[('pulls/7',(),{})])
 
     def test_real_local_git_scope_escape_cannot_publish(self):
         driver,candidate,command=self.local_git_driver()

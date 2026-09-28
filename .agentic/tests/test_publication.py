@@ -1,12 +1,15 @@
 import json
 import copy
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from agentic import ValidationError
+from agentic import publication
 from agentic.canonical import load
 from agentic.contracts import Contracts
 from agentic.gates import evaluate
@@ -154,7 +157,7 @@ class PublicationScanTests(unittest.TestCase):
         self.assertTrue(any(item["path"] == "comment" for item in comment["findings"]))
         self.assertNotIn(value, json.dumps(body) + json.dumps(comment))
 
-    def test_ac43_preexisting_context_line_does_not_trigger(self):
+    def test_ac53_complete_touched_head_content_blocks_preexisting_context(self):
         value = private_locator()
         git(self.repo.path, "switch", "main")
         self.repo.write("context.txt", value + "\nold\n")
@@ -165,7 +168,23 @@ class PublicationScanTests(unittest.TestCase):
         self.repo.write("context.txt", value + "\nnew\n")
         self.repo.commit("change adjacent line", "context.txt")
         result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertTrue(any(item["source"] == "current-file" and item["path"] == "context.txt"
+                            for item in result["findings"]))
+
+    def test_deleted_preexisting_base_line_does_not_block(self):
+        value = private_locator()
+        git(self.repo.path, "switch", "main")
+        self.repo.write("context.txt", value + "\nretained\n")
+        git(self.repo.path, "add", "context.txt")
+        git(self.repo.path, "commit", "-m", "preexisting private context")
+        base = git(self.repo.path, "rev-parse", "HEAD")
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication")
+        self.repo.write("context.txt", "retained\n")
+        self.repo.commit("remove preexisting private context", "context.txt")
+        result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
         self.assertEqual("PASS", result["status"])
+        self.assertFalse(result["findings"])
 
     def test_ac53_channels_and_builtin_cannot_be_disabled_by_tracked_config(self):
         value = private_locator()
@@ -209,6 +228,48 @@ class PublicationScanTests(unittest.TestCase):
         renamed = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
         self.assertEqual("PASS", renamed["status"])
 
+    def test_invalid_utf8_blob_message_and_provider_text_are_unscanned(self):
+        self.repo.write("invalid.dat", data=b"text-\xff-not-utf8")
+        blob_commit = self.repo.commit("add invalid text", "invalid.dat")
+        blob = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+        self.assertTrue(any(item["commit"] == blob_commit and item["reason"] == "invalid-utf8"
+                            for item in blob["unscanned"]))
+        Contracts(ROOT / ".agentic/schemas").validate("publication-scan", blob)
+        git(self.repo.path, "reset", "--hard", self.repo.base)
+        self.repo.write("safe.txt", "changed\n")
+        git(self.repo.path, "add", "safe.txt")
+        tree = git(self.repo.path, "write-tree")
+        parent = git(self.repo.path, "rev-parse", "HEAD")
+        template = git(self.repo.path, "commit-tree", tree, "-p", parent, input_bytes=b"template\n")
+        raw_template = subprocess.run(["git", "-C", str(self.repo.path), "cat-file", "commit", template],
+                                      capture_output=True, check=True).stdout
+        forged = raw_template.split(b"\n\n", 1)[0] + b"\n\nmessage-\xff\n"
+        invalid_message = git(self.repo.path, "hash-object", "-t", "commit", "-w", "--stdin", input_bytes=forged)
+        git(self.repo.path, "update-ref", "refs/heads/awf/EX-6-publication", invalid_message, parent)
+        message = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+        self.assertTrue(any(item["commit"] == invalid_message and item["path"] == "message"
+                            and item["reason"] == "invalid-utf8" for item in message["unscanned"]))
+        provider = Path(self.temp.name) / "provider.txt"
+        provider.write_bytes(b"provider-\xff")
+        body = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping,
+                               pr_body_paths=[provider])
+        self.assertTrue(any(item["path"] == "pr-body" and item["reason"] == "invalid-utf8"
+                            for item in body["unscanned"]))
+
+    def test_parentless_side_root_is_scanned(self):
+        value = private_locator().encode("utf-8") + b"\n"
+        blob = git(self.repo.path, "hash-object", "-w", "--stdin", input_bytes=value)
+        tree = git(self.repo.path, "mktree", input_bytes=f"100644 blob {blob}\troot.txt\n".encode("ascii"))
+        root_commit = git(self.repo.path, "commit-tree", tree, input_bytes=b"unrelated root\n")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        head_tree = git(self.repo.path, "rev-parse", "HEAD^{tree}")
+        merge = git(self.repo.path, "commit-tree", head_tree, "-p", old_head, "-p", root_commit,
+                    input_bytes=b"merge unrelated root\n")
+        git(self.repo.path, "update-ref", "refs/heads/awf/EX-6-publication", merge, old_head)
+        result = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+        self.assertTrue(any(item["commit"] == root_commit and item["path"] == "root.txt"
+                            for item in result["findings"]))
+
     def test_builtin_path_ip_and_declared_hostname_detectors(self):
         self.repo.write("safe.txt", "changed\n")
         self.repo.commit("safe", "safe.txt")
@@ -251,6 +312,55 @@ class PublicationScanTests(unittest.TestCase):
                                   ".agentic-state/publication-deny.json"], capture_output=True, text=True)
         self.assertEqual(0, ignored.returncode, ignored.stderr)
         self.assertIn(".agentic-state/publication-deny.json", ignored.stdout)
+
+    def test_force_tracked_mapping_cannot_disable_builtin(self):
+        value = "10." + "2.3.4"
+        self.mapping.write_text(json.dumps({"version": 1, "builtin_allow": [{
+            "id": "private_ipv4", "pattern": r"10\.2\.3\.4"}]}), encoding="utf-8")
+        self.repo.write("generated.txt", value + "\n")
+        git(self.repo.path, "add", "generated.txt")
+        git(self.repo.path, "add", "-f", ".agentic-state/publication-deny.json")
+        git(self.repo.path, "commit", "-m", "attempt tracked detector override")
+        with self.assertRaisesRegex(ValidationError, "untracked and ignored"):
+            scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+
+    def test_custom_regex_policy_is_bounded_and_safe(self):
+        for pattern in (r"(a+)+$", r"a.*b", r"a?b", r"a{1,8}b{1,8}", r"a{1,65}",
+                        r"a{0,8}", r"^$", "a" * 257):
+            with self.subTest(pattern=pattern):
+                self.mapping.write_text(json.dumps({"version": 1, "deny_regexes": [{
+                    "id": "unsafe", "pattern": pattern}]}), encoding="utf-8")
+                with self.assertRaisesRegex(ValidationError, "regular expression"):
+                    scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+        self.mapping.write_text(json.dumps({"version": 1, "deny_regexes": [{
+            "id": "bounded", "pattern": r"private-[0-9]{1,8}"}]}), encoding="utf-8")
+        self.repo.write("safe.txt", "changed\n")
+        self.repo.commit("safe", "safe.txt")
+        result = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping,
+                                 pr_body_texts=["private-1234"])
+        self.assertTrue(any(item["detector_id"] == "local.regex.bounded" for item in result["findings"]))
+
+    def test_findings_use_digest_only_redaction(self):
+        value = private_locator()
+        self.repo.write("generated.txt", value + "\n")
+        self.repo.commit("add generated", "generated.txt")
+        result = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+        excerpts = [item["redacted_excerpt"] for item in result["findings"]]
+        self.assertTrue(excerpts)
+        self.assertTrue(all(re.fullmatch(r"sha256:[0-9a-f]{64}", item) for item in excerpts))
+        self.assertNotIn(value[:2], json.dumps(excerpts))
+
+    def test_scanner_source_passes_its_own_builtin_detectors(self):
+        source = (ROOT / ".agentic/lib/agentic/publication.py").read_text(encoding="utf-8")
+        self.repo.write("publication.py", source)
+        self.repo.commit("dogfood publication scanner", "publication.py")
+        result = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+        self.assertEqual("PASS", result["status"], render_scan(result))
+
+    def test_specification_names_fourteen_gates(self):
+        specification = (ROOT / ".agentic/SPECIFICATION.md").read_text(encoding="utf-8")
+        self.assertIn("records/fourteen gates", specification)
+        self.assertNotIn("records/thirteen gates", specification)
 
 
 class PublicationRewriteTests(unittest.TestCase):
@@ -303,6 +413,59 @@ class PublicationRewriteTests(unittest.TestCase):
         subprocess.run(["git", "--git-dir", str(self.remote), "update-ref",
             "refs/heads/awf/EX-6-publication", head], check=True, capture_output=True)
         with self.assertRaisesRegex(ValidationError, "Published-history rewrite refused"):
+            rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                mapping_path=self.mapping)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_ac44_all_push_urls_and_remote_tracking_refs_block(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        published = Path(self.temp.name) / "published.git"
+        subprocess.run(["git", "init", "--bare", str(published)], check=True, capture_output=True)
+        shutil.copytree(self.repo.path / ".git" / "objects", published / "objects", dirs_exist_ok=True)
+        subprocess.run(["git", "--git-dir", str(published), "update-ref",
+                        "refs/heads/awf/EX-6-publication", head], check=True, capture_output=True)
+        git(self.repo.path, "remote", "set-url", "--add", "--push", "origin", str(self.remote))
+        git(self.repo.path, "remote", "set-url", "--add", "--push", "origin", str(published))
+        with self.assertRaisesRegex(ValidationError, "push remote"):
+            rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                mapping_path=self.mapping)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+        git(self.repo.path, "config", "--unset-all", "remote.origin.pushurl")
+        git(self.repo.path, "update-ref", "refs/remotes/origin/other", head)
+        with self.assertRaisesRegex(ValidationError, "remote-tracking ref"):
+            rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                mapping_path=self.mapping)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_ac44_failed_final_cas_leaves_no_ref_or_object_residue(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        object_root = self.repo.path / ".git" / "objects"
+        before = {path.relative_to(object_root) for path in object_root.rglob("*") if path.is_file()}
+        real_git = publication._git
+        def fail_update(root, *args, **kwargs):
+            if args and args[0] == "update-ref":
+                return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
+            return real_git(root, *args, **kwargs)
+        with mock.patch.object(publication, "_git", side_effect=fail_update):
+            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        after = {path.relative_to(object_root) for path in object_root.rglob("*") if path.is_file()}
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertEqual(before, after)
+
+    def test_ac44_invalid_utf8_message_refuses_without_change(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.bin"
+        message.write_bytes(b"clean-\xff")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(ValidationError, "strict UTF-8"):
             rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                 mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))

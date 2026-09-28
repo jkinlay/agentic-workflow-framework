@@ -575,6 +575,7 @@
       "every_patch": true,
       "generated_reports": "when committed or passed as provider text",
       "captured_command_output": "when committed or passed as provider text",
+      "strict_utf8": true,
       "pr_bodies": true,
       "pr_comments": false
     },

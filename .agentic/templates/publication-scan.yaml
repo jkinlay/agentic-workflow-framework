@@ -23,6 +23,7 @@
       "every_patch": true,
       "generated_reports": "UNFILLED",
       "captured_command_output": "UNFILLED",
+      "strict_utf8": true,
       "pr_bodies": false,
       "pr_comments": false
     },
