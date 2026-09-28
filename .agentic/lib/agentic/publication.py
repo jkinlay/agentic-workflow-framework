@@ -28,6 +28,8 @@ MAX_TEXT_BYTES = 32 * 1024 * 1024
 MAX_REGEX_ENTRIES = 64
 MAX_REGEX_CHARS = 256
 MAX_REGEX_REPEAT = 64
+MAX_REFLOG_FILES = 4096
+MAX_REFLOG_BYTES = 64 * 1024 * 1024
 ALIAS = re.compile(r"^[a-z][a-z0-9_]*$")
 UNC = re.compile(r"(?<![\\])\\\\[A-Za-z0-9][A-Za-z0-9._-]*[\\/][^\s<>:\"|?*]+(?:[\\/][^\s<>:\"|?*]+)*")
 WINDOWS_ABSOLUTE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[^\s<>:\"|?*]+[\\/]?)+")
@@ -683,10 +685,90 @@ def _object_named_by_ref_or_reflog(root, oid):
         return None
     if encoded in refs.stdout.splitlines():
         return True
-    reflogs = _git(root, "reflog", "show", "--all", "--format=%H", check=False)
-    if reflogs.returncode:
+    return _raw_reflog_names_oid(root, encoded)
+
+
+def _git_storage_path(root, option):
+    """Resolve a Git storage directory without accepting ambiguous output."""
+    result = _git(root, "rev-parse", option, check=False)
+    if result.returncode:
         return None
-    return encoded in reflogs.stdout.splitlines()
+    try:
+        value = result.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    if not value or "\x00" in value or "\n" in value or "\r" in value:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else Path(root).resolve() / path
+
+
+def _raw_reflog_names_oid(root, encoded_oid):
+    """Read raw reflog OID fields because Git hides entries for missing objects."""
+    common = _git_storage_path(root, "--git-common-dir")
+    git_dir = _git_storage_path(root, "--git-dir")
+    if common is None or git_dir is None:
+        return None
+    roots = [common / "logs", git_dir / "logs"]
+    worktrees = common / "worktrees"
+    try:
+        if worktrees.exists():
+            if worktrees.is_symlink() or not worktrees.is_dir():
+                return None
+            for entry in worktrees.iterdir():
+                if entry.is_symlink() or not entry.is_dir():
+                    return None
+                roots.append(entry / "logs")
+        seen, files_seen, bytes_seen = set(), 0, 0
+        for log_root in roots:
+            key = os.path.abspath(log_root)
+            if key in seen:
+                continue
+            seen.add(key)
+            if not log_root.exists():
+                continue
+            if log_root.is_symlink() or not log_root.is_dir():
+                return None
+            for directory, dirs, files in os.walk(log_root, followlinks=False):
+                current = Path(directory)
+                if current.is_symlink():
+                    return None
+                for name in dirs:
+                    if (current / name).is_symlink():
+                        return None
+                for name in files:
+                    path = current / name
+                    if path.is_symlink() or not path.is_file():
+                        return None
+                    files_seen += 1
+                    if files_seen > MAX_REFLOG_FILES:
+                        return None
+                    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                    descriptor = os.open(path, flags)
+                    try:
+                        size = os.fstat(descriptor).st_size
+                        bytes_seen += size
+                        if size > MAX_REFLOG_BYTES or bytes_seen > MAX_REFLOG_BYTES:
+                            return None
+                        data = b""
+                        while len(data) <= size:
+                            chunk = os.read(descriptor, min(1024 * 1024, size + 1 - len(data)))
+                            if not chunk:
+                                break
+                            data += chunk
+                        if len(data) != size:
+                            return None
+                    finally:
+                        os.close(descriptor)
+                    for line in data.splitlines():
+                        fields = line.split(b" ", 2)
+                        if len(fields) != 3:
+                            return None
+                        if encoded_oid in fields[:2]:
+                            return True
+        return False
+    except OSError:
+        return None
 
 
 def _cleanup_unreferenced_object(root, oid, destination, parent_existed, raw_object):
