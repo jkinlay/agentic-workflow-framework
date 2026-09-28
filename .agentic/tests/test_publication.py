@@ -327,6 +327,24 @@ class PublicationScanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "untracked and ignored"):
             scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
 
+    def test_force_tracked_mapping_cannot_hide_behind_repository_alias(self):
+        value = "10." + "2.3.4"
+        self.mapping.write_text(json.dumps({"version": 1, "builtin_allow": [{
+            "id": "private_ipv4", "pattern": r"10\.2\.3\.4"}]}), encoding="utf-8")
+        self.repo.write("generated.txt", value + "\n")
+        git(self.repo.path, "add", "generated.txt")
+        git(self.repo.path, "add", "-f", ".agentic-state/publication-deny.json")
+        git(self.repo.path, "commit", "-m", "attempt aliased tracked detector override")
+        alias = Path(self.temp.name) / "repository-alias"
+        try:
+            alias.symlink_to(self.repo.path, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlinks unavailable: {type(exc).__name__}")
+        aliased_mapping = alias / ".agentic-state" / "publication-deny.json"
+        with self.assertRaisesRegex(ValidationError, "untracked and ignored"):
+            scan_repository(self.repo.path.resolve(), self.repo.base, "HEAD",
+                            mapping_path=aliased_mapping)
+
     def test_custom_regex_policy_is_bounded_and_safe(self):
         for pattern in (r"(a+)+$", r"a.*b", r"a?b", r"a{1,8}b{1,8}", r"a{1,65}",
                         r"a{0,8}", r"^$", "a" * 257):
@@ -500,6 +518,33 @@ class PublicationRewriteTests(unittest.TestCase):
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
         self.assertEqual(created[0], git(self.repo.path, "rev-parse", "refs/heads/concurrent^{commit}"))
         self.assertEqual("", git(self.repo.path, "cat-file", "-e", created[0] + "^{commit}"))
+
+    def test_ac44_failed_final_cas_preserves_object_retained_only_by_reflog(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+        created = []
+        def lose_after_concurrent_ref_moves_away(root, *args, **kwargs):
+            if args and args[0] == "update-ref" and args[1] == "refs/heads/awf/EX-6-publication":
+                created.append(args[2])
+                real_git(root, "update-ref", "refs/heads/concurrent", args[2])
+                real_git(root, "update-ref", "refs/heads/concurrent", head, args[2])
+                return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
+            return real_git(root, *args, **kwargs)
+        with mock.patch.object(publication, "_git", side_effect=lose_after_concurrent_ref_moves_away):
+            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "refs/heads/concurrent^{commit}"))
+        reflog = git(self.repo.path, "reflog", "show", "--format=%H", "refs/heads/concurrent").splitlines()
+        self.assertIn(created[0], reflog)
+        self.assertEqual("", git(self.repo.path, "cat-file", "-e", created[0] + "^{commit}"))
+        checked = subprocess.run(["git", "-C", str(self.repo.path), "fsck", "--full"],
+                                 capture_output=True, text=True)
+        self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
 
     def test_ac44_invalid_utf8_message_refuses_without_change(self):
         self.contaminate_then_remove()
