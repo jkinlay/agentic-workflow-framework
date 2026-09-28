@@ -141,7 +141,8 @@ def example_bundle(cfg):
         "mapping_location": ".agentic-state/publication-deny.json", "commits_scanned": [candidate["head_sha"]],
         "findings": [], "unscanned": [], "coverage": {"current_files": True, "commit_messages": True,
             "every_patch": True, "generated_reports": "when committed or passed as provider text",
-            "captured_command_output": "when committed or passed as provider text", "pr_bodies": True, "pr_comments": False},
+            "captured_command_output": "when committed or passed as provider text", "strict_utf8": True,
+            "pr_bodies": True, "pr_comments": False},
         "execution_authority": False}
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,
             "specialists": [], "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,

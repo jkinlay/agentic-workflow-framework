@@ -196,7 +196,8 @@ def catalog():
         "evidence": EVIDENCE})
     scan_finding = obj({"commit": OBJECT_ID, "path": text(), "line": nullable(integer(1)), "source": text(),
         "change": nullable(enum("added", "deleted")), "detector_id": text(), "redacted_excerpt": text()})
-    unscanned = obj({"commit": OBJECT_ID, "path": text(), "source": text(), "reason": enum("binary", "oversize"),
+    unscanned = obj({"commit": OBJECT_ID, "path": text(), "source": text(),
+        "reason": enum("binary", "oversize", "invalid-utf8"),
         "parent": nullable(OBJECT_ID)})
     schemas["publication-scan"] = obj({"schema_version": const(3), "status": enum("PASS", "BLOCKED"),
         "base_sha": OBJECT_ID, "head_sha": OBJECT_ID, "pr_body_sha256": nullable(DIGEST),
@@ -205,7 +206,8 @@ def catalog():
         "mapping_loaded": BOOL, "mapping_location": const(".agentic-state/publication-deny.json"),
         "commits_scanned": arr(OBJECT_ID), "findings": arr(scan_finding), "unscanned": arr(unscanned),
         "coverage": obj({"current_files": TRUE, "commit_messages": TRUE, "every_patch": TRUE,
-            "generated_reports": text(), "captured_command_output": text(), "pr_bodies": BOOL, "pr_comments": BOOL}),
+            "generated_reports": text(), "captured_command_output": text(), "strict_utf8": TRUE,
+            "pr_bodies": BOOL, "pr_comments": BOOL}),
         "execution_authority": FALSE})
     gate_results = obj({name: obj({"result": enum("PASS", "FAIL", "N_A"), "evidence": EVIDENCE}) for name in GATE_NAMES})
     gate_pass = {"properties": {"gates": {"properties": {name: {"properties": {"result": const("PASS")}}
