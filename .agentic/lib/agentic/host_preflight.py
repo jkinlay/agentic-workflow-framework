@@ -19,7 +19,8 @@ PATH_WARN_LENGTH = 180
 MANAGED_PATHS = ("/.agentic/**", "/AGENTS.md", "/.github/PULL_REQUEST_TEMPLATE.md")
 ROUTE_OBSERVATION_DEFAULT_DAYS = 30
 MAX_DIAGNOSTIC_CHARS = 2048
-EXECUTION_POLICY_SCOPES = {"MachinePolicy", "UserPolicy", "Process", "CurrentUser", "LocalMachine"}
+EXECUTION_POLICY_PRECEDENCE = ("MachinePolicy", "UserPolicy", "Process", "CurrentUser", "LocalMachine")
+EXECUTION_POLICY_SCOPES = set(EXECUTION_POLICY_PRECEDENCE)
 EXECUTION_POLICIES = {"Undefined", "Restricted", "AllSigned", "RemoteSigned", "Unrestricted", "Bypass", "Default"}
 
 
@@ -87,6 +88,13 @@ def _execution_policy_rows(output):
             return None
         rows[fields[0]] = fields[1]
     return rows if set(rows) == EXECUTION_POLICY_SCOPES else None
+
+
+def _effective_execution_policy(policies):
+    for scope in EXECUTION_POLICY_PRECEDENCE:
+        if policies[scope] != "Undefined":
+            return scope, policies[scope]
+    return None, "Undefined"
 
 
 def gitattributes_coverage(root):
@@ -297,9 +305,15 @@ def preflight(root, *, platform=None):
                                           "Run Get-ExecutionPolicy -List and resolve malformed or incomplete output."),
                                       policy_probe, category="INVALID_OUTPUT"))
             else:
-                restricted = any(value in ("Restricted", "AllSigned", "Undefined") for value in policies.values())
-                rows.append(_observed(row("powershell_execution_policy", "WARN" if restricted else "PASS", output.replace("\n", "; "),
-                                          "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned, or launch fixtures with -ExecutionPolicy Bypass." if restricted else ""),
+                effective_scope, effective_policy = _effective_execution_policy(policies)
+                restricted = effective_policy in {"Restricted", "AllSigned", "Default", "Undefined"}
+                if effective_scope in {"MachinePolicy", "UserPolicy"}:
+                    remedy = "Resolve the effective Group Policy execution policy with the administrator; lower scopes cannot override it."
+                else:
+                    remedy = "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned, or launch fixtures with -ExecutionPolicy Bypass."
+                detail = output.replace("\n", "; ") + "; effective=" + (effective_scope or "platform-default") + "=" + effective_policy
+                rows.append(_observed(row("powershell_execution_policy", "WARN" if restricted else "PASS", detail,
+                                          remedy if restricted else ""),
                                       policy_probe))
         status, detail, remedy = symlink_privilege()
         rows.append(row("symlink_privilege", status, detail, remedy))

@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -354,7 +355,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.source, self.dest = self.base / "source", self.base / "project"
         self.source.mkdir()
         paths = [ROOT / "AGENTS.md", ROOT / ".agentic/workflow.yaml",
-                 ROOT / ".agentic/scripts/workflow.py"]
+                 ROOT / ".agentic/scripts/workflow.py", ROOT / ".agentic/requirements.lock"]
         # Include package modules recursively: provider adapters are part of the
         # installed runtime, not optional test-only dependencies.
         paths += list((ROOT / ".agentic/lib/agentic").rglob("*.py"))
@@ -608,13 +609,49 @@ class ConfiguredInstallerTests(unittest.TestCase):
 
     def test_real_installed_commands_confirm_accepted_configuration(self):
         result = self.perform()
+        runtime = adoption.ensure_installed_runtime(self.dest)
+        pyvenv = (self.dest / ".agentic/.venv/pyvenv.cfg").read_text(encoding="utf-8").lower()
+        self.assertIn("include-system-site-packages = false", pyvenv)
+        self.assertEqual(sha256((self.dest / ".agentic/requirements.lock").read_bytes()), runtime["requirements_lock_sha256"])
+        sentinel = self.base / "unlisted" / "awf_unlisted_sentinel.py"
+        sentinel.parent.mkdir()
+        sentinel.write_text("raise RuntimeError('executed')\n", encoding="utf-8")
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(sentinel.parent)
+        isolated = subprocess.run([runtime["interpreter"], "-B", "-I", "-c", "import awf_unlisted_sentinel"],
+                                  cwd=self.dest, env=env, capture_output=True, text=True)
+        self.assertNotEqual(0, isolated.returncode)
         checked = adoption.post_install_checks(self.dest, result)
         self.assertEqual(checked["status"], "CONFIGURED", checked)
         self.assertEqual([item["exit_code"] for item in checked["post_install_checks"]], [0, 0])
 
+    def test_runtime_rejects_unhashed_or_version_mismatched_dependency_lock(self):
+        self.perform()
+        lock = self.dest / ".agentic/requirements.lock"
+        original = lock.read_text(encoding="utf-8")
+        lock.write_text("PyYAML==6.0.3\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValidationError, "requires exact versions and SHA-256 artifact hashes"):
+            adoption.ensure_installed_runtime(self.dest)
+        lock.write_text(original.replace("PyYAML==6.0.3", "PyYAML==0.0.0"), encoding="utf-8")
+        with self.assertRaisesRegex(ValidationError, "does not match the exact lock: PyYAML"):
+            adoption.ensure_installed_runtime(self.dest)
+
+    def test_runtime_rejects_dependency_record_hash_mismatch(self):
+        self.perform()
+        actual_sha256 = adoption._file_sha256
+        def mismatched(path):
+            digest = actual_sha256(path)
+            if ".venv" not in Path(path).parts:
+                return bytes([digest[0] ^ 1]) + digest[1:]
+            return digest
+        with patch.object(adoption, "_file_sha256", side_effect=mismatched):
+            with self.assertRaisesRegex(ValidationError, "RECORD hash mismatch"):
+                adoption.ensure_installed_runtime(self.dest)
+
     def test_real_installed_commands_report_unconfigured_residue(self):
         result = install(self.source, self.dest, self.pin, configure=True, discover=False,
                          overrides={key: value for key, value in explicit().items() if key != "repository_id"})
+        adoption.ensure_installed_runtime(self.dest)
         checked = adoption.post_install_checks(self.dest, result)
         self.assertEqual(checked["status"], "INSTALLED_UNCONFIGURED", checked)
         self.assertEqual([item["exit_code"] for item in checked["post_install_checks"]], [0, 2])

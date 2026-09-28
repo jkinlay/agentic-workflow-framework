@@ -70,9 +70,9 @@ def probe(executable, code, output, category=None):
             "diagnostic_category": category or ("OK" if code == 0 else "NONZERO_EXIT")}
 
 
-def policy_output(value="Bypass"):
+def policy_output(value="Bypass", **overrides):
     scopes = ("MachinePolicy", "UserPolicy", "Process", "CurrentUser", "LocalMachine")
-    return "\n".join(scope + "=" + value for scope in scopes)
+    return "\n".join(scope + "=" + overrides.get(scope, value) for scope in scopes)
 
 
 class RuntimeCommandTests(unittest.TestCase):
@@ -166,6 +166,31 @@ class HonestPreflightTests(unittest.TestCase):
         row = self.run_scenario(probe("powershell.exe", 0, "CurrentUser=Bypass"))["powershell_execution_policy"]
         self.assertEqual("WARN", row["status"])
         self.assertEqual("INVALID_OUTPUT", row["diagnostic_category"])
+
+    def test_effective_policy_uses_scope_precedence_not_any_restrictive_lower_scope(self):
+        output = policy_output("Undefined", CurrentUser="RemoteSigned", LocalMachine="Restricted")
+        row = self.run_scenario(probe("powershell.exe", 0, output))["powershell_execution_policy"]
+        self.assertEqual("PASS", row["status"], row)
+        self.assertIn("effective=CurrentUser=RemoteSigned", row["detail"])
+        self.assertEqual("", row["remedy"])
+
+    def test_process_bypass_overrides_restricted_user_and_machine_scopes(self):
+        output = policy_output("Undefined", Process="Bypass", CurrentUser="Restricted", LocalMachine="AllSigned")
+        row = self.run_scenario(probe("powershell.exe", 0, output))["powershell_execution_policy"]
+        self.assertEqual("PASS", row["status"], row)
+        self.assertIn("effective=Process=Bypass", row["detail"])
+
+    def test_group_policy_restriction_overrides_permissive_lower_scopes(self):
+        output = policy_output("Bypass", MachinePolicy="AllSigned")
+        row = self.run_scenario(probe("powershell.exe", 0, output))["powershell_execution_policy"]
+        self.assertEqual("WARN", row["status"], row)
+        self.assertIn("effective=MachinePolicy=AllSigned", row["detail"])
+        self.assertIn("Group Policy", row["remedy"])
+
+    def test_all_undefined_warns_about_platform_default(self):
+        row = self.run_scenario(probe("powershell.exe", 0, policy_output("Undefined")))["powershell_execution_policy"]
+        self.assertEqual("WARN", row["status"], row)
+        self.assertIn("effective=platform-default=Undefined", row["detail"])
 
     def test_every_nonzero_child_observation_is_never_pass(self):
         def fake_run(arguments, cwd=None):

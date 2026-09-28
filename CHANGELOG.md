@@ -16,7 +16,7 @@ Adds a one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, sc
 
 Hardens activation with versioned REST/GraphQL merge identity, complete PR/base/head/state/time cross-checks, Git-object checkout comparison, lock-free inspection, structured blockers, strict ACTIVE exit and capabilities. Network detectors self-scan without weakening detection.
 
-Adds K8-K11 Windows diagnostics, honest preflight, observable self-test progress and encoding-safe CLI output.
+Adds K8-K11 Windows diagnostics, effective-policy preflight, isolated locked runtime, observable self-test progress and encoding-safe CLI output.
 
 ## 1.9.2 — 23 September 2026
 
