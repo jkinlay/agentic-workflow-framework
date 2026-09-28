@@ -179,10 +179,10 @@ def _private_ip(value):
     except ValueError:
         return False
     if isinstance(address, ipaddress.IPv4Address):
-        return (address in ipaddress.ip_network("10.0.0.0/8") or
-                address in ipaddress.ip_network("172.16.0.0/12") or
-                address in ipaddress.ip_network("192.168.0.0/16"))
-    return address in ipaddress.ip_network("fc00::/7")
+        networks = (("10", "0", "0", "0", "8"), ("172", "16", "0", "0", "12"),
+                    ("192", "168", "0", "0", "16"))
+        return any(address in ipaddress.ip_network(".".join(parts[:4]) + "/" + parts[4]) for parts in networks)
+    return address in ipaddress.ip_network("fc" + "00::/7")
 
 
 def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, change=None):

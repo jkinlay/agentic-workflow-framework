@@ -10,7 +10,8 @@ from agentic import ValidationError
 from agentic.canonical import load
 from agentic.contracts import Contracts
 from agentic.gates import evaluate
-from agentic.publication import render_aliases, render_scan, rewrite_unpublished, scan_repository
+from agentic.publication import (_detectors, _scan_text, render_aliases, render_scan,
+                                 rewrite_unpublished, scan_repository)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -70,6 +71,14 @@ class PublicationScanTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_builtin_detectors_do_not_flag_their_own_shipped_source(self):
+        path = ROOT / ".agentic/lib/agentic/publication.py"
+        detectors, allows = _detectors({}, {})
+        findings = _scan_text(path.read_text(encoding="utf-8"), commit="working-tree",
+                              path=".agentic/lib/agentic/publication.py", source="current_file",
+                              detectors=detectors, allows=allows)
+        self.assertEqual([], [item for item in findings if item["detector_id"].startswith("builtin.")])
 
     def test_ac43_removed_value_still_blocks_and_is_redacted(self):
         value = private_locator()

@@ -344,7 +344,8 @@ def _snapshot(tree, governance):
         fail("$", "Operating file differs from the last audited change; reconcile the external edit before dispatch")
     return replace(snapshot, last_change_id=events[-1]["id"] if events else None,
                    _provenance_json=canonical({"path": str(tree.root / CONFIG), "raw_sha256": sha256(raw),
-                                              "audit": "recorded" if events else "unrecorded_project_owned"}))
+                                               "audit": "recorded" if events else "unrecorded_project_owned",
+                                               "audit_sha256": sha256(canonical(events))}))
 
 
 @contextmanager
@@ -359,12 +360,37 @@ def load_operating(project_root, governance):
         return snapshot
 
 
+def read_operating(project_root, governance):
+    """Read a stable operating snapshot without creating or opening a lock.
+
+    Two independently pinned reads must agree.  A pending journal is rejected by
+    ``_snapshot`` and a concurrent change is reported rather than racing a writer.
+    Mutating entry points continue to use ``locked_operating``.
+    """
+    observed = []
+    for _attempt in range(2):
+        with Tree(project_root) as tree:
+            _bound_governance(tree, governance)
+            observed.append(_snapshot(tree, governance))
+    first, second = observed
+    if (first.operating_hash, first.governance_hash, first.last_change_id, first._provenance_json) != (
+            second.operating_hash, second.governance_hash, second.last_change_id, second._provenance_json):
+        fail("$", "CONCURRENT_CHANGE: operating files changed during the read-only observation; run the command again")
+    return second
+
+
 def inspect_operating(project_root, governance):
     try:
-        value = load_operating(project_root, governance)
+        value = read_operating(project_root, governance)
         return {"status": "ACCEPTED", "hash": value.operating_hash, "source": value.source,
                 "streams": value.count, "last_change_id": value.last_change_id, "refusals": [], **operating_ceiling(governance)}
-    except (ValidationError, OSError, ValueError) as exc:
+    except OSError as exc:
+        from .activation import access_diagnostic
+        diagnostic = access_diagnostic(exc, "OPERATING_CONFIG.yaml or .agentic-state/operating")
+        return {"status": "ACCESS_UNAVAILABLE", "hash": None, "source": None, "streams": None,
+                "last_change_id": None, "refusals": [], "diagnostic": diagnostic,
+                **operating_ceiling(governance)}
+    except (ValidationError, ValueError) as exc:
         return {"status": "REJECTED", "hash": None, "source": None, "streams": None, "last_change_id": None,
                 "refusals": getattr(exc, "refusals", [refusal("$", str(exc) if isinstance(exc, ValidationError) else
                     "Operating configuration could not be read; restore the project file and correct filesystem/runtime access")]),
@@ -1055,7 +1081,7 @@ def main(argv=None, default_root=None):
         elif args.command == "recover":
             snapshot = recover_operating(args.root, governance, args.expected_journal_sha256)
         else:
-            snapshot = load_operating(args.root, governance)
+            snapshot = read_operating(args.root, governance)
         state = _local_state(args.root, governance)
         result = {"status": "ACCEPTED", "project_state": state, "operating_hash": snapshot.operating_hash,
                   "governance_hash": snapshot.governance_hash, "source": snapshot.source, "streams": snapshot.count,
@@ -1065,6 +1091,15 @@ def main(argv=None, default_root=None):
         print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result["table"])
         return 0
     except (ValidationError, OSError, ValueError, UnicodeError) as exc:
-        print(json.dumps({"status": "REJECTED", "refusals": getattr(exc, "refusals", [refusal("$", str(exc))]),
-                          "execution_authority": False, "next_action": "Correct the named input or reconcile the pinned operating transaction; governance changes require a reviewed PR"}, ensure_ascii=False, indent=2))
+        if isinstance(exc, OSError):
+            from .activation import access_diagnostic
+            output = {"status": "ACCESS_UNAVAILABLE", "refusals": [],
+                      "diagnostic": access_diagnostic(exc, "OPERATING_CONFIG.yaml or .agentic-state/operating"),
+                      "execution_authority": False,
+                      "next_action": "Restore read access to the named operating paths and run operating show again"}
+        else:
+            output = {"status": "REJECTED", "refusals": getattr(exc, "refusals", [refusal("$", str(exc))]),
+                      "execution_authority": False,
+                      "next_action": "Correct the named input or reconcile the pinned operating transaction; governance changes require a reviewed PR"}
+        print(json.dumps(output, ensure_ascii=False, indent=2))
         return 2

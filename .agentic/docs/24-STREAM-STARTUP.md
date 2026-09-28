@@ -14,6 +14,8 @@ Use `.agentic/scripts/plan_streams.py` over verified inventory for project-owned
 
 Through supported host tools, assign bounded non-overlapping work within those limits. An implementing coordinator is a writer; reviewers and queued proposals are not. Record returned agent IDs and assignments, reuse existing owners and account for other occupied slots.
 
+Before dispatch, require every stream capability through `agentic.activation.require_capabilities`. ACTIVE alone is insufficient: an `UNAVAILABLE`, `UNOBSERVED` or `NOT_APPLICABLE` required capability refuses the stream. L3 supplies publication/PR readiness, K14/L6 external-resource readiness and K13 Jira identity observations; do not infer those rows before their observers exist.
+
 Follow [routing](27-MODEL-ROUTING.md): reserve, launch through the host, settle observed results. Missing launch, usage or enforcement capability is a limitation, not inferred success.
 
 Direct chat instructions may change the operating count within its ceiling through `operating set`, without a governance PR. Echo/apply/show; recommendations require acceptance. Reducing count drains surplus streams' existing tickets without new dispatches. Preserve active/paused owners. Changes to protected caps still require governance review; never silently raise them. Missing repository rules do not block local [adoption](20-NEW-PROJECT-SETUP.md).

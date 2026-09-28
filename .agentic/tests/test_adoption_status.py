@@ -43,7 +43,10 @@ class AdoptionStatusTests(unittest.TestCase):
         files = {p.relative_to(cls.root).as_posix(): p.read_bytes() for p in schemas.glob('*.json')}
         files['.agentic/workflow.yaml'] = json_bytes(definition())
         files['AGENTS.md'] = b'# Explicit synthetic status fixture\n'
+        files['.github/CODEOWNERS'] = b'# Synthetic ownership\n/.agentic/ @maintainer\n'
+        files['.gitattributes'] = b'* text=auto\n'
         for name, raw in files.items():
+            (cls.root / name).parent.mkdir(parents=True, exist_ok=True)
             (cls.root / name).write_bytes(raw)
         manifest = {'format': 'awf-manifest-1', 'template_version': VERSION,
                     'files': {name: sha256(raw) for name, raw in files.items()}}
@@ -54,11 +57,14 @@ class AdoptionStatusTests(unittest.TestCase):
             (cls.source / name).parent.mkdir(parents=True, exist_ok=True)
             (cls.source / name).write_bytes(raw)
         (cls.source / 'MANIFEST.json').write_bytes(manifest_text.encode())
+        immutable = {name: digest for name, digest in manifest['files'].items()
+                     if name != '.github/CODEOWNERS' and (name == 'AGENTS.md' or name.startswith('.agentic/'))}
         receipt = {'template_version': VERSION, 'source_manifest_sha256': manifest_pin,
-                   'source_manifest_json': manifest_text, 'immutable_files': manifest['files'],
+                   'source_manifest_json': manifest_text, 'immutable_files': immutable,
                    'project_id': cls.config['project']['id'],
                    'install_id': '953e9182-2b55-40ec-9f0e-2f4ab863b641',
-                   'initial_config_sha256': sha256(json_bytes(cls.config)), 'mutable_paths': [CONFIG]}
+                   'initial_config_sha256': sha256(json_bytes(cls.config)),
+                   'mutable_paths': [CONFIG, '.github/CODEOWNERS']}
         files[CONFIG] = json_bytes(cls.config)
         files[INSTALLED] = json_bytes(receipt)
         files[PROVENANCE] = json_bytes({'template': {'version': VERSION},
@@ -69,7 +75,7 @@ class AdoptionStatusTests(unittest.TestCase):
         from agentic.operating import initialize_operating
         initialize_operating(cls.root, cls.config)
         def git(*args):
-            completed = subprocess.run([cls.git, '-c', 'core.autocrlf=false', '-c', 'core.fsmonitor=false',
+            completed = subprocess.run([cls.git, '-c', 'core.autocrlf=true', '-c', 'core.fsmonitor=false',
                 '-c', 'core.hooksPath=' + str(cls.root / 'no-hooks'), '-C', str(cls.root), *args],
                 capture_output=True, timeout=30, check=True)
             return completed.stdout.decode().strip()
@@ -81,6 +87,7 @@ class AdoptionStatusTests(unittest.TestCase):
         cls.before_receipt = git('rev-parse', 'HEAD')
         git('add', '.')
         git('-c', 'user.name=AWF Synthetic Fixture', '-c', 'user.email=awf@example.invalid', 'commit', '-m', 'Synthetic adoption fixture')
+        git('checkout-index', '-f', '--', '.github/CODEOWNERS')
         cls.head = git('rev-parse', 'HEAD')
         cls.base = 'repos/fixture/example'
         entry = lambda name, raw: {'path': name, 'type': 'blob', 'mode': '100644', 'sha': status.blob_sha(raw)}
@@ -98,9 +105,12 @@ class AdoptionStatusTests(unittest.TestCase):
                 'encoding': 'base64', 'content': base64.b64encode(files[INSTALLED]).decode()},
             cls.base + f'/git/commits/{cls.head}': {'sha': cls.head, 'tree': {'sha': 'a' * 40}},
             cls.base + '/git/trees/' + 'a' * 40: {'truncated': False, 'tree': [
-                entry('AGENTS.md', files['AGENTS.md']), {'path': '.agentic', 'type': 'tree', 'mode': '040000', 'sha': 'b' * 40}]},
+                entry('AGENTS.md', files['AGENTS.md']), {'path': '.agentic', 'type': 'tree', 'mode': '040000', 'sha': 'b' * 40},
+                {'path': '.github', 'type': 'tree', 'mode': '040000', 'sha': 'c' * 40}]},
             cls.base + '/git/trees/' + 'b' * 40 + '?recursive=1': {'truncated': False, 'tree': [
                 entry(name.removeprefix('.agentic/'), raw) for name, raw in files.items() if name.startswith('.agentic/')]},
+            cls.base + '/git/trees/' + 'c' * 40 + '?recursive=1': {'truncated': False, 'tree': [
+                entry('CODEOWNERS', files['.github/CODEOWNERS'])]},
         }
         cls.graphql_response = {'data': {'repository': {
             'id': 'R_fixture', 'nameWithOwner': 'fixture/example',
@@ -120,13 +130,15 @@ class AdoptionStatusTests(unittest.TestCase):
         self.requests = []
         self.projected_requests = []
         self.reader = None
+        self.graphql = copy.deepcopy(self.graphql_response)
+        (self.root / '.github/CODEOWNERS').write_bytes(self.files['.github/CODEOWNERS'].replace(b'\n', b'\r\n'))
 
     def tearDown(self):
         self.run_git('reset', '--hard', self.head)
         for name, raw in self.files.items():
             (self.root / name).write_bytes(raw)
 
-    def observe(self, pr=7):
+    def observe(self, pr=7, capabilities=None):
         def read(endpoint, deadline, gh, pr_file_metadata=False):
             self.requests.append(endpoint)
             if pr_file_metadata:
@@ -141,10 +153,71 @@ class AdoptionStatusTests(unittest.TestCase):
                 patch.object(status, '_gh_get', side_effect=read), \
                 patch.object(status, '_gh_graphql', side_effect=read_graphql):
             return status.project_status(self.root, adoption_pr=pr, release_source=self.source,
-                                         expected_manifest_sha256=self.manifest_pin)
+                                         expected_manifest_sha256=self.manifest_pin,
+                                         capability_observations=capabilities)
+
+    def test_ac31_attribute_converted_codeowners_uses_git_objects(self):
+        raw = (self.root / '.github/CODEOWNERS').read_bytes()
+        self.assertIn(b'\r\n', raw)
+        result = self.observe()
+        self.assertEqual('ACTIVE', result['project_state'], result)
+        checkout = next(item for item in result['checks'] if item['code'] == 'ACCEPTED_CHECKOUT')
+        self.assertIn('attribute conversion', checkout['evidence'])
+
+    def test_ac31_real_codeowners_change_reports_dirty_path_class(self):
+        path = self.root / '.github/CODEOWNERS'
+        path.write_bytes(b'# Changed synthetic ownership\r\n/.agentic/ @maintainer\r\n')
+        result = self.observe()
+        self.assertEqual('CONFIGURED', result['project_state'])
+        checkout = next(item for item in result['checks'] if item['code'] == 'ACCEPTED_CHECKOUT')
+        self.assertEqual('MISMATCH', checkout['state'])
+        self.assertIn('DIRTY_PATH', checkout['evidence'])
+        self.assertIn('.github/CODEOWNERS', checkout['evidence'])
+
+    def test_ac33_reports_three_independent_blockers(self):
+        from agentic import operating as op
+        config = copy.deepcopy(self.config)
+        config['validation']['commands'] = ['CHANGE_ME_TEST_COMMAND']
+        (self.root / CONFIG).write_bytes(json_bytes(config))
+        journal = self.root / op.JOURNAL
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_bytes(b'{}\n')
+        try:
+            result = status.project_status(self.root)
+        finally:
+            journal.unlink(missing_ok=True)
+        blocked = {item['code'] for item in result['activation']['blockers']}
+        self.assertTrue({'PROJECT_CONFIGURATION', 'OPERATING_PENDING_JOURNAL', 'RELEASE_TRUST'} <= blocked, result)
+
+    def test_ac47_active_can_report_unavailable_publication_and_refuse_dispatch(self):
+        from agentic.activation import require_capabilities
+        observation = {'state': 'UNAVAILABLE', 'evidence': 'Synthetic provider fixture denies branch publication',
+                       'observed_at': '2026-09-26T12:00:00Z'}
+        result = self.observe(capabilities={'branch_publication': observation})
+        self.assertEqual('ACTIVE', result['project_state'], result)
+        self.assertEqual('UNAVAILABLE', result['capabilities']['branch_publication']['state'])
+        with self.assertRaisesRegex(ValidationError, 'CAPABILITY_UNAVAILABLE.*branch_publication'):
+            require_capabilities(result['capabilities'], ['local_work', 'branch_publication'])
+
+    def test_ac32_validate_show_and_status_are_read_only_without_writer_lock(self):
+        from agentic import operating as op
+        from agentic.cli import main
+        def snapshot():
+            return {path.relative_to(self.root).as_posix(): (path.stat().st_size, path.stat().st_mtime_ns)
+                    for path in self.root.rglob('*') if path.is_file()}
+        before = snapshot()
+        with patch.object(op, '_lock', side_effect=PermissionError(13, 'synthetic write denied')):
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(0, main(['--root', str(self.root), 'validate-config']))
+                self.assertEqual(0, op.main(['--root', str(self.root), 'show', '--json']))
+            result = self.observe()
+        self.assertEqual('ACTIVE', result['project_state'], result)
+        self.assertEqual(before, snapshot())
 
     def test_accepted_default_checkout_and_merged_receipt_are_active(self):
         result = self.observe()
+        from agentic.contracts import Contracts
+        Contracts(self.root / '.agentic/schemas').validate('activation-status', result)
         self.assertEqual(result['project_state'], 'ACTIVE', result)
         self.assertEqual(result['accepted_checkout'], 'VERIFIED')
         self.assertEqual(result['adoption_acceptance_sha'], self.head)
@@ -157,7 +230,8 @@ class AdoptionStatusTests(unittest.TestCase):
         preflight_next = result['host_preflight']['next_action']
         rendered = status.render_status(result)
         if preflight_next:
-            self.assertEqual(rendered, result['line'] + '\nNext: Host preflight WARN: ' + preflight_next)
+            self.assertEqual(rendered, result['line'] + '\nNext: Host preflight WARN: ' + preflight_next +
+                             '\nNext command: python -B .agentic/scripts/workflow.py status --require-active')
         else:
             self.assertNotIn('Next:', rendered)
 
@@ -521,6 +595,7 @@ class AdoptionStatusTests(unittest.TestCase):
     def test_status_does_not_execute_product_clean_filters(self):
         marker = Path(self.temporary.name) / 'filter-executed.txt'
         attribute = self.root / '.gitattributes'
+        original_attributes = attribute.read_bytes()
         attribute.write_text('* filter=awf-inert-marker\n', encoding='utf-8')
         subprocess.run([self.git, '-C', str(self.root), 'config', 'filter.awf-inert-marker.clean',
                         'echo executed > "' + str(marker).replace('\\', '/') + '"'], check=True, timeout=20)
@@ -530,7 +605,7 @@ class AdoptionStatusTests(unittest.TestCase):
             self.assertFalse(marker.exists())
         finally:
             subprocess.run([self.git, '-C', str(self.root), 'config', '--unset', 'filter.awf-inert-marker.clean'], check=True, timeout=20)
-            attribute.unlink()
+            attribute.write_bytes(original_attributes)
 
     def test_malformed_remote_objects_remain_structured(self):
         cases = [(self.base, None), (self.base, {'id': 101, 'default_branch': 'trunk', 'full_name': None}),
@@ -558,6 +633,15 @@ class AdoptionStatusTests(unittest.TestCase):
             with redirect_stdout(out):
                 self.assertEqual(main(['--root', str(self.root), 'status', '--json']), 0)
             self.assertEqual(json.loads(out.getvalue()), result)
+
+    def test_ac33_require_active_exit_code(self):
+        from agentic.cli import main
+        inactive = {'line': f'AWF {VERSION}: CONFIGURED', 'project_state': 'CONFIGURED', 'next_action': None}
+        active = {'line': f'AWF {VERSION}: ACTIVE', 'project_state': 'ACTIVE', 'next_action': None}
+        with patch.object(status, 'project_status', return_value=inactive), redirect_stdout(io.StringIO()):
+            self.assertEqual(4, main(['--root', str(self.root), 'status', '--require-active']))
+        with patch.object(status, 'project_status', return_value=active), redirect_stdout(io.StringIO()):
+            self.assertEqual(0, main(['--root', str(self.root), 'status', '--require-active']))
 
 
 if __name__ == '__main__':

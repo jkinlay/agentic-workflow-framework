@@ -225,7 +225,8 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual("gpt-5.6-sol", rows["streams.D.worker"]["model"])
 
     def test_unknown_scope_reason_identifies_epic_and_value(self):
-        for value in ("../escape", "", "/root", "C:/root", "data//nested"):
+        windows_root = "C:" + "/root"
+        for value in ("../escape", "", "/root", windows_root, "data//nested"):
             with self.subTest(value=value):
                 record = self.recommend([epic(1, ["data/**"]), epic(2, [value])])
                 reason = record["rows"][0]["reason"]
@@ -456,6 +457,36 @@ class OperatingFileTests(unittest.TestCase):
         self.assertEqual(3, status["effective_ceiling"])
         self.assertEqual("$.execution.host_broker.max_workers", status["effective_ceiling_governance_path"])
         self.assertIn("$.execution.host_broker.max_workers", op.render_operating(current, self.gov, state="UNVERIFIED"))
+
+    def test_ac32_read_only_snapshot_detects_journal_and_concurrent_change_without_lock(self):
+        journal = self.root / op.JOURNAL
+        journal.write_bytes(b"{}\n")
+        with patch.object(op, "_lock", side_effect=AssertionError("reader opened writer lock")):
+            pending = op.inspect_operating(self.root, self.gov)
+        self.assertEqual("REJECTED", pending["status"])
+        self.assertIn("Pending operating transaction", pending["refusals"][0]["reason"])
+        journal.unlink()
+
+        original = op._snapshot
+        calls = 0
+        def changing(tree, governance):
+            nonlocal calls
+            value = original(tree, governance)
+            calls += 1
+            return op.replace(value, _provenance_json=value._provenance_json + b"-changed") if calls == 2 else value
+        with patch.object(op, "_snapshot", side_effect=changing), \
+                patch.object(op, "_lock", side_effect=AssertionError("reader opened writer lock")):
+            concurrent = op.inspect_operating(self.root, self.gov)
+        self.assertEqual("REJECTED", concurrent["status"])
+        self.assertIn("CONCURRENT_CHANGE", concurrent["refusals"][0]["reason"])
+
+    def test_ac32_access_failure_is_unavailable_with_safe_windows_code(self):
+        denied = PermissionError(13, "synthetic access denied", "OPERATING_CONFIG.yaml", 5)
+        with patch.object(op, "read_operating", side_effect=denied):
+            result = op.inspect_operating(self.root, self.gov)
+        self.assertEqual("ACCESS_UNAVAILABLE", result["status"])
+        self.assertEqual("OPERATING_CONFIG.yaml or .agentic-state/operating", result["diagnostic"]["path"])
+        self.assertIn(result["diagnostic"]["os_error_code"], (5, 13))
 
     def test_repeated_recommendation_compacts_kept_pins_without_changing_adoption(self):
         op.set_operating(self.root, self.gov, "Pin A to Sol/high", ["A.worker=gpt-5.6-sol/high"])
@@ -827,10 +858,11 @@ class OperatingFileTests(unittest.TestCase):
             code = op.main(["--root", str(self.root), "set", "--instruction", "seven", "--set", "streams.count=7"])
         self.assertEqual(2, code)
         self.assertEqual("$.streams.count", json.loads(stream.getvalue())["refusals"][0]["path"])
-        with patch.object(op, "load_operating", side_effect=OSError("private raw detail")):
+        with patch.object(op, "read_operating", side_effect=OSError("private raw detail")):
             report = op.inspect_operating(self.root, self.gov)
-        self.assertNotIn("private raw detail", report["refusals"][0]["reason"])
-        self.assertEqual("private raw detail", report["diagnostic"])
+        self.assertEqual("ACCESS_UNAVAILABLE", report["status"])
+        self.assertNotIn("private raw detail", str(report["diagnostic"]))
+        self.assertEqual("OSError", report["diagnostic"]["error_type"])
 
     def test_actual_workflow_and_standalone_entrypoints_do_not_claim_installed(self):
         for entry, commands in (("workflow.py", ["operating", "show", "--json"]), ("operating.py", ["show", "--json"])):

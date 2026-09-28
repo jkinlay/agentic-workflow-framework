@@ -292,6 +292,21 @@ def catalog():
         "control_generation": integer(1), "tickets": arr(obj({"issue_id": text(), "state": enum(*STATES), "revision": integer()})),
         "pending_operation_ids": STRINGS, "unknown_operation_ids": STRINGS, "active_lease_ids": STRINGS,
         "owner_actions": STRINGS, "authoritative": FALSE})
+    activation_check = obj({"code": text(pattern="^[A-Z][A-Z0-9_]*$"), "stage": text(),
+        "state": enum("PASS", "INVALID", "MISMATCH", "UNAVAILABLE", "UNOBSERVED", "NOT_APPLICABLE"),
+        "evidence": text(), "remedy": text(), "observed_at": TIME})
+    capability = obj({"state": enum("AVAILABLE", "UNAVAILABLE", "UNOBSERVED", "NOT_APPLICABLE"),
+        "evidence": text(), "observed_at": TIME}, required=["state", "evidence", "observed_at"])
+    capability["properties"]["completed_by"] = text()
+    schemas["activation-status"] = {"type": "object", "additionalProperties": True,
+        "required": ["version", "project_state", "checks", "capabilities", "activation", "execution_authority"],
+        "properties": {"version": const(VERSION),
+            "project_state": nullable(enum("INSTALLED", "CONFIGURED", "ACTIVE")),
+            "checks": arr(activation_check),
+            "capabilities": obj({name: capability for name in ["local_work", "external_data_read",
+                "branch_publication", "pr_creation", "independent_review", "jira_read", "jira_write", "merge_execution"]}),
+            "activation": obj({"blockers": arr(activation_check), "next_command": text()}),
+            "execution_authority": FALSE}}
     schemas["evidence-bundle"] = obj({"schema_version": const(3), "candidate": ref("candidate"),
         "snapshot": ref("jira-snapshot"), "contract": ref("ticket-contract"), "dispatch": ref("work-dispatch"),
         "worker": ref("worker-result"), "critic": ref("critic-review"), "specialists": arr(ref("specialist-review")),
