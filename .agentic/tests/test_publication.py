@@ -1,5 +1,6 @@
 import json
 import copy
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -27,6 +28,12 @@ def git(repository, *args, input_bytes=None, check=True):
 
 def private_locator():
     return "\\" * 2 + "example-host" + "\\" + "share" + "\\" + "raw"
+
+
+def historical_install_skill_line():
+    drive_absolute = '"C:' + '/escape"'
+    return ('        for path in (entry["path"], "../escape", "/absolute", ' + drive_absolute
+            + ', "a\\\\b", "a/./b", "AUX.txt"):')
 
 
 class Repository:
@@ -203,6 +210,63 @@ class PublicationScanTests(unittest.TestCase):
                                          pr_body_texts=[value])
                 self.assertTrue(any(item["detector_id"] == detector for item in result["findings"]))
                 self.assertNotIn(value, json.dumps(result))
+
+    def test_closed_historical_self_reference_has_exact_identity_boundaries(self):
+        line = historical_install_skill_line()
+        self.assertEqual("9515f6d34fac1b879b719d088f982fa4ecaffa5957045bbf766890abde5853a2",
+                         hashlib.sha256(line.encode("utf-8")).hexdigest())
+        target = "global/awf-portable/tests/test_install_skill.py"
+        other = "global/awf-portable/tests/other_test.py"
+        changed_line = line + " # changed"
+
+        git(self.repo.path, "switch", "main")
+        self.repo.write(target, line + "\n" + changed_line + "\n")
+        self.repo.write(other, line + "\n")
+        git(self.repo.path, "add", target, other)
+        git(self.repo.path, "commit", "-m", "fixture baseline")
+        base = git(self.repo.path, "rev-parse", "HEAD")
+
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication", base)
+        self.repo.write(target, changed_line + "\n")
+        self.repo.commit("remove exact historical line", target)
+        exact = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
+        self.assertEqual("PASS", exact["status"])
+
+        drive_absolute = "C:" + "/escape"
+        self.mapping.write_text(json.dumps({"version": 1, "aliases": {"fixture": [drive_absolute]}}),
+                                encoding="utf-8")
+        different_detector = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
+        self.assertTrue(any(item["detector_id"] == "local.alias.fixture"
+                            for item in different_detector["findings"]))
+
+        self.mapping = self.repo.mapping()
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication", base)
+        self.repo.write(other, "safe\n")
+        self.repo.commit("remove line from another path", other)
+        different_path = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
+        self.assertTrue(any(item["path"] == other and item["source"] == "patch"
+                            and item["change"] == "deleted" for item in different_path["findings"]))
+
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication", base)
+        self.repo.write(target, line + "\n")
+        self.repo.commit("remove changed historical line", target)
+        changed = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
+        self.assertTrue(any(item["path"] == target and item["source"] == "patch"
+                            and item["change"] == "deleted" for item in changed["findings"]))
+
+        git(self.repo.path, "switch", "main")
+        self.repo.write(target, "safe\n")
+        git(self.repo.path, "add", target)
+        git(self.repo.path, "commit", "-m", "safe second baseline")
+        second_base = git(self.repo.path, "rev-parse", "HEAD")
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication", second_base)
+        self.repo.write(target, line + "\n")
+        self.repo.commit("add historical line", target)
+        added = scan_repository(self.repo.path, second_base, "HEAD", mapping_path=self.mapping)
+        self.assertTrue(any(item["path"] == target and item["source"] == "patch"
+                            and item["change"] == "added" for item in added["findings"]))
+        self.assertTrue(any(item["path"] == target and item["source"] == "current-file"
+                            for item in added["findings"]))
 
     def test_merge_commit_resolution_is_scanned(self):
         git(self.repo.path, "switch", "-c", "side", self.repo.base)
