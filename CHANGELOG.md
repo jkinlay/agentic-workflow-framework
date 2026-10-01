@@ -8,7 +8,7 @@ Sets new-adoption risk and specialist routes to `gpt-5.6-sol` / high. Capability
 
 Adds outcome templates; verdicts remain separate.
 
-Adds byte-verified install/upgrade, GraphQL-bound adoption merge identity and compact PR file observation; unsafe evidence fails closed.
+Adds byte-verified install/upgrade; unsafe evidence fails closed.
 
 Adds publication scanning of messages, patches, files, PR bodies and comments. Findings block; receipts bind base, head and body digest. An ignored mapping supplies aliases and deny entries beside built-in detectors.
 

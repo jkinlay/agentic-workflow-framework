@@ -159,6 +159,7 @@ class AdoptionStatusTests(unittest.TestCase):
             return copy.deepcopy(value), len(json_bytes(value))
         def read_pr_files(endpoint, deadline, gh):
             self.requests.append(endpoint)
+            self.projected_requests.append(endpoint)
             value = self.reader(endpoint) if self.reader else self.api[endpoint]
             projected = [{field: entry.get(field) for field in ('filename', 'status', 'sha')}
                          if isinstance(entry, dict) else entry for entry in value]
