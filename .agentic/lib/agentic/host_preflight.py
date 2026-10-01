@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import tomllib
 
 from .child_process import child_env
@@ -19,6 +20,8 @@ PATH_WARN_LENGTH = 180
 MANAGED_PATHS = ("/.agentic/**", "/AGENTS.md", "/.github/PULL_REQUEST_TEMPLATE.md")
 ROUTE_OBSERVATION_DEFAULT_DAYS = 30
 MAX_DIAGNOSTIC_CHARS = 2048
+MAX_CAPTURE_BYTES = 4096
+HOST_COMMAND_TIMEOUT_SECONDS = 30
 EXECUTION_POLICY_PRECEDENCE = ("MachinePolicy", "UserPolicy", "Process", "CurrentUser", "LocalMachine")
 EXECUTION_POLICY_SCOPES = set(EXECUTION_POLICY_PRECEDENCE)
 EXECUTION_POLICIES = {"Undefined", "Restricted", "AllSigned", "RemoteSigned", "Unrestricted", "Bypass", "Default"}
@@ -42,6 +45,49 @@ def _nonzero_category(output):
     return "NONZERO_EXIT"
 
 
+def _drain_bounded(stream, captured, state):
+    """Drain a child pipe without retaining more than MAX_CAPTURE_BYTES."""
+    try:
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                return
+            available = MAX_CAPTURE_BYTES - len(captured)
+            if available > 0:
+                captured.extend(chunk[:available])
+            if len(chunk) > available:
+                state["truncated"] = True
+    except (OSError, ValueError) as exc:
+        state["error"] = type(exc).__name__
+
+
+def _decode_captured(stdout, stderr, states):
+    invalid = []
+    decoded = []
+    for label, value in (("stdout", stdout), ("stderr", stderr)):
+        if not value:
+            continue
+        try:
+            text = bytes(value).decode("utf-8")
+        except UnicodeDecodeError:
+            invalid.append(label)
+            text = bytes(value).decode("utf-8", errors="replace")
+        decoded.append(text)
+    notes = []
+    truncated = [label for label in ("stdout", "stderr") if states[label]["truncated"]]
+    failures = [label + "=" + states[label]["error"] for label in ("stdout", "stderr")
+                if states[label]["error"]]
+    if invalid:
+        notes.append("invalid UTF-8 from child " + ", ".join(invalid))
+    if truncated:
+        notes.append("child " + ", ".join(truncated) + f" truncated at {MAX_CAPTURE_BYTES} bytes")
+    if failures:
+        notes.append("child output capture failed: " + ", ".join(failures))
+    observed = "\n".join(decoded)
+    output = _bounded("; ".join(notes) + (("\n" + observed) if notes and observed else observed))
+    return observed, output, bool(invalid), bool(truncated), bool(failures)
+
+
 def run(args, cwd=None):
     """Trusted-host executables only: never a file inside the checkout or a script wrapper."""
     from . import ValidationError
@@ -51,11 +97,8 @@ def run(args, cwd=None):
         executable = host_executable(args[0], Path(cwd or os.getcwd()))
         env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
         env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
-        result = subprocess.run([executable, *args[1:]], capture_output=True, text=True, timeout=30, cwd=cwd,
-                                env=child_env(env), stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired as exc:
-        return {"executable": executable, "exit_code": None, "output": _bounded(str(exc)),
-                "diagnostic_category": "TIMEOUT"}
+        process = subprocess.Popen([executable, *args[1:]], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   cwd=cwd, env=child_env(env), stdin=subprocess.DEVNULL, bufsize=0)
     except FileNotFoundError as exc:
         return {"executable": executable, "exit_code": None, "output": _bounded(str(exc)),
                 "diagnostic_category": "MISSING_EXECUTABLE"}
@@ -64,15 +107,60 @@ def run(args, cwd=None):
         category = "MISSING_EXECUTABLE" if "unavailable" in str(exc).casefold() else "EXECUTION_UNAVAILABLE"
         return {"executable": executable, "exit_code": None, "output": _bounded(text),
                 "diagnostic_category": category}
-    observed = "\n".join(part for part in (result.stdout, result.stderr) if part)
-    output = _bounded(observed)
-    return {"executable": executable, "exit_code": result.returncode, "output": output,
-            "diagnostic_category": "OK" if result.returncode == 0 else _nonzero_category(observed)}
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    states = {name: {"truncated": False, "error": None} for name in captured}
+    threads = []
+    for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+        thread = threading.Thread(target=_drain_bounded, args=(stream, captured[name], states[name]), daemon=True)
+        thread.start()
+        threads.append((thread, stream, name))
+    timed_out = False
+    try:
+        process.wait(timeout=HOST_COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process.kill()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            states["stderr"]["error"] = "PROCESS_DID_NOT_EXIT"
+    finally:
+        for thread, stream, name in threads:
+            thread.join(timeout=2)
+            if thread.is_alive():
+                states[name]["error"] = states[name]["error"] or "PIPE_DID_NOT_CLOSE"
+            try:
+                stream.close()
+            except OSError:
+                states[name]["error"] = states[name]["error"] or "PIPE_CLOSE_FAILED"
+            if thread.is_alive():
+                thread.join(timeout=2)
+    observed, output, invalid, truncated, capture_failed = _decode_captured(
+        captured["stdout"], captured["stderr"], states)
+    if timed_out:
+        category = "TIMEOUT"
+        prefix = f"child exceeded {HOST_COMMAND_TIMEOUT_SECONDS}-second deadline"
+        output = _bounded(prefix + (("\n" + output) if output else ""))
+        exit_code = None
+    elif capture_failed:
+        category = "OUTPUT_CAPTURE_FAILURE"
+        exit_code = process.returncode
+    elif invalid:
+        category = "INVALID_ENCODING"
+        exit_code = process.returncode
+    elif process.returncode == 0 and truncated:
+        category = "OUTPUT_TRUNCATED"
+        exit_code = process.returncode
+    else:
+        category = "OK" if process.returncode == 0 else _nonzero_category(observed)
+        exit_code = process.returncode
+    return {"executable": executable, "exit_code": exit_code, "output": output,
+            "diagnostic_category": category}
 
 
 def git_config(root, key):
     probe = run(["git", "config", "--get", key], cwd=str(root))
-    return probe, probe["output"] if probe["exit_code"] == 0 else None
+    return probe, probe["output"] if probe["exit_code"] == 0 and probe["diagnostic_category"] == "OK" else None
 
 
 def _observed(row_value, probe, *, category=None):
@@ -286,7 +374,7 @@ def preflight(root, *, platform=None):
     rows.append(route_models_observed(root))
     if windows:
         longpaths_probe, longpaths = git_config(root, "core.longpaths")
-        longpaths_ok = longpaths_probe["exit_code"] == 0 and longpaths == "true"
+        longpaths_ok = longpaths_probe["diagnostic_category"] == "OK" and longpaths == "true"
         rows.append(_observed(row("core.longpaths", "PASS" if longpaths_ok else "WARN",
                                   f"core.longpaths={longpaths or 'unobserved'}",
                                   "" if longpaths_ok else "git config --system core.longpaths true (also add the CI step)."),
@@ -296,7 +384,7 @@ def preflight(root, *, platform=None):
         if policy_probe["exit_code"] is None:
             rows.append(_observed(row("powershell_execution_policy", "SKIP", output,
                                       "PowerShell not available or timed out; fixture launchers using .ps1 may fail."), policy_probe))
-        elif policy_probe["exit_code"] != 0:
+        elif policy_probe["exit_code"] != 0 or policy_probe["diagnostic_category"] != "OK":
             rows.append(_observed(row("powershell_execution_policy", "WARN", output or "PowerShell returned a nonzero exit",
                                       "Resolve the PowerShell host/module error, then rerun preflight."), policy_probe))
         else:
@@ -320,7 +408,7 @@ def preflight(root, *, platform=None):
         rows.append(row("symlink_privilege", status, detail, remedy))
         autocrlf_probe, autocrlf = git_config(root, "core.autocrlf")
         covered, detail = gitattributes_coverage(root)
-        line_endings_ok = autocrlf_probe["exit_code"] == 0 and covered
+        line_endings_ok = autocrlf_probe["diagnostic_category"] == "OK" and covered
         rows.append(_observed(row("line_endings", "PASS" if line_endings_ok else "WARN",
                                   f"core.autocrlf={autocrlf or 'unobserved'}; .gitattributes {detail}",
                                   "" if line_endings_ok else "Observe core.autocrlf and merge .agentic/templates/installed.gitattributes into the root .gitattributes so manifest-bound bytes survive checkout."),
@@ -331,7 +419,7 @@ def preflight(root, *, platform=None):
     attributes = Path(root) / ".gitattributes"
     if attributes.is_file() and "filter=lfs" in attributes.read_text(encoding="utf-8", errors="replace"):
         lfs_probe = run(["git", "lfs", "version"])
-        lfs_ok = lfs_probe["exit_code"] == 0
+        lfs_ok = lfs_probe["diagnostic_category"] == "OK"
         rows.append(_observed(row("git_lfs", "PASS" if lfs_ok else "WARN",
                                   lfs_probe["output"] if lfs_ok else "git lfs observation failed",
                                   "" if lfs_ok else "Install Git LFS; .gitattributes names an lfs filter."), lfs_probe))

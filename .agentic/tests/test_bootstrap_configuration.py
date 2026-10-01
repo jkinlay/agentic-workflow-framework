@@ -26,7 +26,8 @@ from agentic import ValidationError, VERSION
 from agentic import adoption_config as adoption
 from agentic import installer
 from agentic.canonical import load, load_yaml, sha256
-from agentic.installer import CONFIG, INSTALLED, GITIGNORE, GITIGNORE_TEMPLATE, install, json_bytes, merge_operating_ignores, verify_installed
+from agentic.installer import (CONFIG, INSTALLED, GITIGNORE, GITIGNORE_TEMPLATE, install, json_bytes,
+                               merge_operating_ignores, operating_ignore_plan, verify_installed)
 from agentic.contracts import Contracts
 from agentic.policy import inspect_config
 
@@ -364,6 +365,18 @@ class OperatingAdoptionProposalTests(unittest.TestCase):
         self.assertEqual(merge_operating_ignores(None, block), block)
         self.assertNotIn(b".agentic-state/\n", block)
         self.assertNotIn(b".agentic-state/operating/changes/\n", block)
+
+    def test_fresh_and_upgrade_ignore_plans_include_canonical_runtime_without_installing(self):
+        block = (ROOT / GITIGNORE_TEMPLATE).read_bytes()
+        runtime_rule = b".agentic/.venv/"
+        legacy_block = block.replace(runtime_rule + b"\n", b"")
+        for name, existing, status in (("fresh", None, "SEEDED"),
+                                       ("upgrade", legacy_block, "MERGED")):
+            with self.subTest(name=name):
+                proposed, report = operating_ignore_plan(existing, block)
+                self.assertEqual(status, report["status"])
+                self.assertIn(runtime_rule, proposed.splitlines())
+                self.assertIn(runtime_rule.decode("ascii"), report["added_lines"])
 
 
 class PostInstallCheckTests(unittest.TestCase):

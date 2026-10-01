@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION, ValidationError
 from agentic.child_process import child_env
+from agentic.runtime_commands import installed_paths
 from release_review import add_review_arguments, review_arguments, review_source
 RELEASE_LINE = VERSION.removesuffix('.0')
 PREFIX = f'agentic-workflow-template-v{RELEASE_LINE}/'
@@ -99,15 +100,21 @@ def preflight(archive_path, approved_digest, workdir, report_path):
     return archive_path, workdir, report_path
 
 
+def expected_post_install_commands(destination):
+    root, interpreter, entry_point = installed_paths(destination)
+    return [[str(interpreter), '-B', '-I', str(entry_point), '--root', str(root), action]
+            for action in ('verify-installation', 'validate-config')]
+
+
 def assert_bootstrap_checks(report, destination, manifest, *, configured):
     """Inspect evidence from both real installed CLI invocations, not copy status."""
     assert report['status'] == ('CONFIGURED' if configured else 'INSTALLED_UNCONFIGURED')
     assert report['installed'] is True and report['active'] is False
     observed = report['post_install_checks']
     assert len(observed) == 2
-    script = str(destination.resolve() / '.agentic/scripts/workflow.py')
-    for item, action in zip(observed, ('verify-installation', 'validate-config')):
-        assert item['command'] == [sys.executable, '-B', '-I', script, action]
+    expected = expected_post_install_commands(destination)
+    for item, command in zip(observed, expected):
+        assert item['command'] == command
         assert item.get('execution_status') != 'NOT_RUN'
         assert isinstance(item['output'], dict)
     integrity, configuration = observed

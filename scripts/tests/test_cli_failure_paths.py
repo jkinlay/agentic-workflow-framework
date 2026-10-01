@@ -21,10 +21,26 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from validate_archive import PREFIX, RELEASE_LINE, VERSION, preflight
 import validate_archive
+import validate_git_checkout
 
 
 def snapshot(root):
     return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+
+class ValidatorCommandContractTests(unittest.TestCase):
+    def test_expected_installed_commands_are_canonical_and_noninstalling(self):
+        destination = ROOT / '.tmp-tests' / 'nonexistent project with spaces'
+        expected_root, expected_interpreter, expected_entry = validate_archive.installed_paths(destination)
+        expected = [[str(expected_interpreter), '-B', '-I', str(expected_entry),
+                     '--root', str(expected_root), action]
+                    for action in ('verify-installation', 'validate-config')]
+        for helper in (validate_archive.expected_post_install_commands,
+                       validate_git_checkout.expected_post_install_commands):
+            with self.subTest(module=helper.__module__):
+                self.assertEqual(expected, helper(destination))
+        self.assertIn(str(Path('.agentic') / '.venv'), expected[0][0])
+        self.assertFalse(destination.exists())
 
 
 class CliFailurePathTests(unittest.TestCase):

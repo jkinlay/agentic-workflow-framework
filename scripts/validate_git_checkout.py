@@ -30,6 +30,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.child_process import child_env
+from agentic.runtime_commands import installed_paths
 WORKFLOW = ".agentic/scripts/workflow.py"
 
 
@@ -46,6 +47,12 @@ def digest(data):
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def expected_post_install_commands(destination):
+    root, interpreter, entry_point = installed_paths(destination)
+    return [[str(interpreter), "-B", "-I", str(entry_point), "--root", str(root), action]
+            for action in ("verify-installation", "validate-config")]
 
 
 def _pairs(items):
@@ -309,8 +316,9 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
                 "Bootstrap reported a different source manifest")
         observed = bootstrap_report["post_install_checks"]
         require(isinstance(observed, list) and len(observed) == 2, "Both installed bootstrap checks are required")
-        for item, action in zip(observed, ("verify-installation", "validate-config")):
-            require(item["command"] == [python, "-B", "-I", str(installed.resolve() / WORKFLOW), action]
+        expected_commands = expected_post_install_commands(installed)
+        for item, action, expected_command in zip(observed, ("verify-installation", "validate-config"), expected_commands):
+            require(item["command"] == expected_command
                     and item.get("execution_status") != "NOT_RUN" and item["exit_code"] == 0
                     and item["diagnostic"] is None and isinstance(item["output"], dict),
                     "Bootstrap did not prove the exact successful installed command: " + action)

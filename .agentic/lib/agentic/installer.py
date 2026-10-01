@@ -59,6 +59,19 @@ def merge_operating_ignores(existing, required):
     return existing + (b"\n" if existing and not existing.endswith(b"\n") else b"") + required
 
 
+def operating_ignore_plan(existing, required):
+    """Return the byte-exact project-owned ignore merge and its noninstalling plan."""
+    proposed = merge_operating_ignores(existing, required)
+    appended = proposed if existing is None else proposed[len(existing):]
+    report = {
+        "status": "SEEDED" if existing is None else "UNCHANGED" if proposed == existing else "MERGED",
+        "previous_sha256": None if existing is None else sha256(existing),
+        "proposed_sha256": sha256(proposed),
+        "added_lines": appended.decode("utf-8").splitlines(),
+    }
+    return proposed, report
+
+
 def verify_release(tree, expected_digest=None):
     raw = tree.read(MANIFEST)
     if expected_digest is not None and sha256(raw) != expected_digest:
@@ -304,12 +317,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                      "audit_policy": "Version .agentic-state/operating/changes/; review existing project ignore rules if they hide it."}
     def ignore_plan(existing_ignore=None):
         if GITIGNORE_TEMPLATE in content:
-            planned[GITIGNORE] = merge_operating_ignores(existing_ignore, content[GITIGNORE_TEMPLATE])
-            appended = planned[GITIGNORE] if existing_ignore is None else planned[GITIGNORE][len(existing_ignore):]
-            ignore_report.update(status="SEEDED" if existing_ignore is None else "UNCHANGED" if planned[GITIGNORE] == existing_ignore else "MERGED",
-                previous_sha256=None if existing_ignore is None else sha256(existing_ignore),
-                proposed_sha256=sha256(planned[GITIGNORE]),
-                added_lines=appended.decode("utf-8").splitlines())
+            planned[GITIGNORE], report = operating_ignore_plan(existing_ignore, content[GITIGNORE_TEMPLATE])
+            ignore_report.update(report)
     def configure_plan(existing_config=None, existing_receipt=None):
         nonlocal configuration_report, governance_proposal
         from .adoption_config import prepare_config, operating_capacity_proposal

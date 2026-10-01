@@ -22,6 +22,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
+from agentic import host_preflight
 from agentic.host_preflight import preflight
 from agentic import ValidationError
 from agentic.contracts import Contracts
@@ -306,6 +307,14 @@ class HonestPreflightTests(unittest.TestCase):
         self.assertEqual("WARN", row["status"])
         self.assertEqual("INVALID_OUTPUT", row["diagnostic_category"])
 
+    def test_zero_exit_capture_diagnostics_are_never_pass(self):
+        for category in ("INVALID_ENCODING", "OUTPUT_TRUNCATED", "OUTPUT_CAPTURE_FAILURE"):
+            with self.subTest(category=category):
+                observed = probe("powershell.exe", 0, policy_output(), category)
+                row = self.run_scenario(observed)["powershell_execution_policy"]
+                self.assertEqual("WARN", row["status"])
+                self.assertEqual(category, row["diagnostic_category"])
+
     def test_effective_policy_uses_scope_precedence_not_any_restrictive_lower_scope(self):
         output = policy_output("Undefined", CurrentUser="RemoteSigned", LocalMachine="Restricted")
         row = self.run_scenario(probe("powershell.exe", 0, output))["powershell_execution_policy"]
@@ -346,15 +355,44 @@ class HonestPreflightTests(unittest.TestCase):
             self.assertEqual(7, rows[name]["exit_code"])
 
     def test_nonzero_category_observes_stderr_even_when_stdout_is_present(self):
-        completed = subprocess.CompletedProcess(
-            ["powershell"], 1, stdout="partial rows", stderr="security module could not be loaded")
-        with patch("agentic.providers.github_status.host_executable", return_value="powershell.exe"), \
-                patch("agentic.host_preflight.subprocess.run", return_value=completed):
-            from agentic.host_preflight import run
-            observed = run(["powershell", "-NoProfile", "-Command", "fixture"])
+        code = ("import os,sys; os.write(1,b'partial rows'); "
+                "os.write(2,b'security module could not be loaded'); sys.exit(1)")
+        with patch("agentic.providers.github_status.host_executable", return_value=sys.executable):
+            observed = host_preflight.run(["python", "-c", code])
         self.assertEqual("MODULE_LOAD_FAILURE", observed["diagnostic_category"])
         self.assertIn("partial rows", observed["output"])
         self.assertIn("security module", observed["output"])
+
+    def test_child_output_is_byte_bounded_and_truncation_fails_closed(self):
+        size = host_preflight.MAX_CAPTURE_BYTES * 4
+        code = f"import os; os.write(1,b'x'*{size})"
+        with patch("agentic.providers.github_status.host_executable", return_value=sys.executable):
+            observed = host_preflight.run(["python", "-c", code])
+        self.assertEqual(0, observed["exit_code"])
+        self.assertEqual("OUTPUT_TRUNCATED", observed["diagnostic_category"])
+        self.assertIn(f"truncated at {host_preflight.MAX_CAPTURE_BYTES} bytes", observed["output"])
+        self.assertLessEqual(len(observed["output"]), host_preflight.MAX_DIAGNOSTIC_CHARS)
+        captured, state = bytearray(), {"truncated": False, "error": None}
+        host_preflight._drain_bounded(io.BytesIO(b"x" * size), captured, state)
+        self.assertEqual(host_preflight.MAX_CAPTURE_BYTES, len(captured))
+        self.assertTrue(state["truncated"])
+
+    def test_invalid_child_encoding_is_an_explicit_diagnostic(self):
+        code = "import os; os.write(1,b'valid\\xffinvalid')"
+        with patch("agentic.providers.github_status.host_executable", return_value=sys.executable):
+            observed = host_preflight.run(["python", "-c", code])
+        self.assertEqual(0, observed["exit_code"])
+        self.assertEqual("INVALID_ENCODING", observed["diagnostic_category"])
+        self.assertIn("invalid UTF-8 from child stdout", observed["output"])
+
+    def test_child_timeout_retains_the_deadline_diagnostic_and_output(self):
+        code = "import os,time; os.write(1,b'before timeout'); time.sleep(5)"
+        with patch("agentic.providers.github_status.host_executable", return_value=sys.executable), \
+                patch.object(host_preflight, "HOST_COMMAND_TIMEOUT_SECONDS", 0.05):
+            observed = host_preflight.run(["python", "-c", code])
+        self.assertIsNone(observed["exit_code"])
+        self.assertEqual("TIMEOUT", observed["diagnostic_category"])
+        self.assertIn("deadline", observed["output"])
 
 
 def synthetic_pass():
