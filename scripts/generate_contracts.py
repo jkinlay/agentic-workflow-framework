@@ -213,7 +213,11 @@ def catalog():
                         "interpreter_exists": BOOL, "entry_point_exists": BOOL}),
         "shell": const("powershell"),
         "commands": arr(obj({"purpose": enum("adoption", "verification", "validation", "status", "operating"),
-                             "command": text(), "expected_exit_codes": arr(integer(), 1, uniqueItems=True)}), 5),
+                             "command": text(), "expected_exit_codes": arr(integer(), 1, uniqueItems=True)}), 5,
+                        maxItems=5, allOf=[
+                            {"contains": {"properties": {"purpose": const(purpose)}, "required": ["purpose"]},
+                             "minContains": 1, "maxContains": 1}
+                            for purpose in ("adoption", "verification", "validation", "status", "operating")]),
         "long_argument_transport": obj({"method": const("json_or_response_file"), "detail": text()}),
         "activation_summary": obj({"status": const("EXTENSION_POINT"), "detail": text()}),
         "execution_authority": FALSE})

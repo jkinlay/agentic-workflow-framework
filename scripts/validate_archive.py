@@ -323,7 +323,7 @@ def validate(argv=None):
     unconfigured_status = json.loads(command([workflow,'status','--json'],cwd=DEST,
         name='Installed status names unconfigured paths and never claims active'))
     assert unconfigured_status['project_state']=='INSTALLED' and unconfigured_status['integrity_valid'] is True
-    assert unconfigured_status['line']==f'AWF {VERSION}: INSTALLED — streams 3/6'
+    assert unconfigured_status['line']==f'AWF {VERSION}: INSTALLED - streams 3/6'
     assert unconfigured_status['ci_gate']=='NOT_CONFIGURED' and unconfigured_status['accepted_checkout']=='UNOBSERVED'
     assert {item['path'] for item in unconfigured_status['configuration']['unresolved']}==expected_residue
     assert all(path in unconfigured_status['next_action'] for path in expected_residue)
@@ -360,7 +360,7 @@ def validate(argv=None):
         '--expected-manifest-sha256',MANIFEST,'--gh',RUN/'unavailable-gh-for-offline-acceptance'],cwd=ADOPTION,
         name='Configured status remains non-active without remote acceptance observations'))
     assert configured_status['project_state']=='CONFIGURED' and configured_status['integrity_valid'] is True
-    assert configured_status['line']==f'AWF {VERSION}: CONFIGURED — streams 3/6'
+    assert configured_status['line']==f'AWF {VERSION}: CONFIGURED - streams 3/6'
     assert configured_status['configuration']['status']=='ACCEPTED' and configured_status['configuration']['unresolved']==[]
     assert configured_status['ci_gate']=='NOT_CONFIGURED' and configured_status['accepted_checkout']=='UNOBSERVED'
     assert configured_status['adoption']=='UNOBSERVED' and configured_status['execution_authority'] is False

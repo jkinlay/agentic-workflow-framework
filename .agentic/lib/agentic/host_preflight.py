@@ -64,9 +64,10 @@ def run(args, cwd=None):
         category = "MISSING_EXECUTABLE" if "unavailable" in str(exc).casefold() else "EXECUTION_UNAVAILABLE"
         return {"executable": executable, "exit_code": None, "output": _bounded(text),
                 "diagnostic_category": category}
-    output = _bounded(result.stdout or result.stderr)
+    observed = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    output = _bounded(observed)
     return {"executable": executable, "exit_code": result.returncode, "output": output,
-            "diagnostic_category": "OK" if result.returncode == 0 else _nonzero_category(output)}
+            "diagnostic_category": "OK" if result.returncode == 0 else _nonzero_category(observed)}
 
 
 def git_config(root, key):

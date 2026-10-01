@@ -23,6 +23,7 @@ from agentic import VERSION
 
 HEARTBEAT_SECONDS = 15.0
 PHASES = ('discovery', 'syntax', 'documentation', 'release_hygiene', 'test_suite')
+NONDETERMINISTIC_REPORT_FIELDS = ('created_at', 'elapsed_seconds', 'phase_timings_seconds')
 
 
 class SelfTestProgress:
@@ -106,6 +107,11 @@ class ProgressTestResult(unittest.TextTestResult):
         finally:
             self.progress.test_stopped(test)
 
+    def addError(self, test, err):
+        if isinstance(err, tuple) and len(err) == 3 and issubclass(err[0], TimeoutError):
+            raise err[1].with_traceback(err[2])
+        super().addError(test, err)
+
 
 class ProgressTestRunner(unittest.TextTestRunner):
     def __init__(self, *args, progress, **kwargs):
@@ -121,6 +127,20 @@ def execute_test_suite(suite, progress):
     result = ProgressTestRunner(stream=output, verbosity=2, progress=progress).run(suite)
     deterministic_log = re.sub(r'Ran (\d+) tests? in [0-9.]+s', r'Ran \1 tests', output.getvalue())
     return result, deterministic_log
+
+
+def render_final_report(report, *, include_details=False):
+    """Render deterministic JSON ordering; only named timing fields may vary."""
+    omitted = set() if include_details else {'test_log', 'code_sha256'}
+    value = {key: item for key, item in report.items() if key not in omitted}
+    return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + '\n'
+
+
+def deterministic_report_bytes(report, *, include_details=False):
+    """Project out the documented timing fields for byte-for-byte comparisons."""
+    value = {key: item for key, item in report.items()
+             if key not in NONDETERMINISTIC_REPORT_FIELDS}
+    return render_final_report(value, include_details=include_details).encode('ascii')
 
 
 def documentation_command_problems(root):
@@ -383,18 +403,18 @@ def main(argv=None):
     report['review'] = report['current_review']['status']
     report['elapsed_seconds'] = round(time.monotonic() - started, 3)
     report['phase_timings_seconds'] = {name: progress.timings[name] for name in PHASES if name in progress.timings}
-    report['nondeterministic_fields'] = ['created_at', 'elapsed_seconds', 'phase_timings_seconds']
+    report['nondeterministic_fields'] = list(NONDETERMINISTIC_REPORT_FIELDS)
     if args.report:
         try:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             with args.report.open('x', encoding='utf-8', newline='\n') as stream:
-                stream.write(json.dumps(report, indent=2) + '\n')
+                stream.write(render_final_report(report, include_details=True))
         except OSError as error:
             report.update(status='FAILED', release_qualified=False, report_written=False,
                           report_write_error=type(error).__name__,
                           error='Could not create the new report; existing evidence was not overwritten')
     progress.stop()
-    print(json.dumps({k: v for k,v in report.items() if k not in {'test_log','code_sha256'}}, indent=2, ensure_ascii=True))
+    print(render_final_report(report), end='')
     if report['status'] == 'INTERRUPTED':
         return 130
     return 0 if report['status'] == 'PASS' else 1

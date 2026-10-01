@@ -88,7 +88,80 @@
           }
         }
       },
-      "minItems": 5
+      "minItems": 5,
+      "maxItems": 5,
+      "allOf": [
+        {
+          "contains": {
+            "properties": {
+              "purpose": {
+                "const": "adoption"
+              }
+            },
+            "required": [
+              "purpose"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "purpose": {
+                "const": "verification"
+              }
+            },
+            "required": [
+              "purpose"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "purpose": {
+                "const": "validation"
+              }
+            },
+            "required": [
+              "purpose"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "purpose": {
+                "const": "status"
+              }
+            },
+            "required": [
+              "purpose"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "properties": {
+              "purpose": {
+                "const": "operating"
+              }
+            },
+            "required": [
+              "purpose"
+            ]
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
     },
     "long_argument_transport": {
       "type": "object",

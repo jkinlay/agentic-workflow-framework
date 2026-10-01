@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 from contextlib import contextmanager
+import copy
 import io
 import json
 import os
@@ -15,12 +16,15 @@ import tempfile
 import time
 import unittest
 import uuid
+import venv
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic.host_preflight import preflight
+from agentic import ValidationError
+from agentic.contracts import Contracts
 from agentic.runtime_commands import command_catalog, installed_paths, powershell_quote
 
 SELF_TEST_SPEC = importlib.util.spec_from_file_location("awf_self_test_progress", ROOT / ".agentic/scripts/self_test.py")
@@ -62,24 +66,33 @@ def temporary_directory(*, prefix="", require_external=False):
         raise RuntimeError("Invalid bounded test temp target")
     if os.name == "nt":
         powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
-        if powershell is None:
-            raise unittest.SkipTest("Sandbox temp ACL shim requires PowerShell")
-        env = os.environ.copy()
-        env["AWF_CASE_TMP"] = str(candidate)
-        created = subprocess.run([powershell, "-NoProfile", "-Command",
-                                  "New-Item -ItemType Directory -LiteralPath $env:AWF_CASE_TMP | Out-Null"],
-                                 env=env, capture_output=True, text=True)
-        if created.returncode:
-            raise unittest.SkipTest("Sandbox temp ACL shim could not create a writable test directory")
+        try:
+            candidate.mkdir(parents=True)
+        except OSError:
+            if powershell is None:
+                raise unittest.SkipTest("Sandbox temp ACL shim requires PowerShell")
+            env = os.environ.copy()
+            env["AWF_CASE_TMP"] = str(candidate)
+            created = subprocess.run([powershell, "-NoProfile", "-Command",
+                                      "New-Item -ItemType Directory -LiteralPath $env:AWF_CASE_TMP | Out-Null"],
+                                     env=env, capture_output=True, text=True)
+            if created.returncode:
+                raise unittest.SkipTest("AC36 SKIP: restricted-token sandbox denied the external temp fixture")
     else:
         candidate.mkdir(parents=True)
     try:
         yield str(candidate)
     finally:
         if os.name == "nt":
-            subprocess.run([powershell, "-NoProfile", "-Command",
-                            "Remove-Item -LiteralPath $env:AWF_CASE_TMP -Recurse -Force"],
-                           env=env, capture_output=True, text=True)
+            try:
+                shutil.rmtree(candidate)
+            except OSError:
+                if powershell is not None:
+                    env = os.environ.copy()
+                    env["AWF_CASE_TMP"] = str(candidate)
+                    subprocess.run([powershell, "-NoProfile", "-Command",
+                                    "Remove-Item -LiteralPath $env:AWF_CASE_TMP -Recurse -Force"],
+                                   env=env, capture_output=True, text=True)
         else:
             shutil.rmtree(candidate)
 
@@ -109,6 +122,9 @@ class RuntimeCommandTests(unittest.TestCase):
             self.assertNotIn("\n", item["command"])
             self.assertNotIn("[", item["command"])
         self.assertEqual("'example ''repo'", powershell_quote("example 'repo"))
+        for unsafe in ("two\nlines", "two\rlines", "nul\x00value"):
+            with self.subTest(unsafe=repr(unsafe)), self.assertRaisesRegex(ValueError, "one line"):
+                powershell_quote(unsafe)
 
     def test_ac36_bootstrap_command_cannot_drop_the_offline_wheelhouse(self):
         base = (ROOT.parent / "AC36 fixture with spaces").resolve()
@@ -133,6 +149,50 @@ class RuntimeCommandTests(unittest.TestCase):
         self.assertEqual(command_catalog(ROOT)["commands"], report["commands"])
         self.assertEqual(str(installed_paths(ROOT)[1]), report["runtime"]["interpreter"])
         self.assertEqual(str(installed_paths(ROOT)[2]), report["runtime"]["entry_point"])
+
+    def test_doctor_contract_requires_exactly_one_command_for_each_purpose(self):
+        contracts = Contracts(ROOT / ".agentic" / "schemas")
+        report = command_catalog(ROOT)
+        contracts.validate("doctor-output", report)
+        duplicated = copy.deepcopy(report)
+        duplicated["commands"][-1]["purpose"] = "adoption"
+        with self.assertRaises(ValidationError):
+            contracts.validate("doctor-output", duplicated)
+
+    @unittest.skipUnless(os.name == "nt", "AC36 real PowerShell execution requires a Windows host")
+    def test_ac36_generated_commands_execute_unchanged_in_noninstalling_powershell_fixture(self):
+        powershell = shutil.which("powershell.exe")
+        if powershell is None:
+            self.skipTest("AC36 SKIP: powershell.exe is unavailable on this Windows host")
+        with temporary_directory(prefix="example repo ", require_external=True) as folder:
+            project = Path(folder) / "fixture project"
+            scripts = project / ".agentic" / "scripts"
+            scripts.mkdir(parents=True)
+            venv.EnvBuilder(with_pip=False).create(project / ".agentic" / ".venv")
+            entry = scripts / "workflow.py"
+            entry.write_text(
+                "import argparse,json\n"
+                "p=argparse.ArgumentParser()\n"
+                "p.add_argument('--root',required=True)\n"
+                "p.add_argument('command')\n"
+                "p.add_argument('remainder',nargs='*')\n"
+                "a=p.parse_args()\n"
+                "print(json.dumps({'command':a.command,'remainder':a.remainder,'root':a.root},sort_keys=True))\n",
+                encoding="utf-8", newline="\n")
+            report = command_catalog(project, platform="nt")
+            self.assertTrue(report["runtime"]["interpreter_exists"])
+            self.assertTrue(report["runtime"]["entry_point_exists"])
+            reached = set()
+            for item in report["commands"]:
+                with self.subTest(purpose=item["purpose"]):
+                    completed = subprocess.run(
+                        [powershell, "-NoProfile", "-Command", item["command"]],
+                        cwd=project, capture_output=True, text=True, timeout=30)
+                    self.assertEqual(0, completed.returncode, completed.stderr + completed.stdout)
+                    observed = json.loads(completed.stdout)
+                    self.assertEqual(str(project.resolve()), observed["root"])
+                    reached.add(item["purpose"])
+            self.assertEqual({"adoption", "verification", "validation", "status", "operating"}, reached)
 
     @unittest.skipUnless(os.name == "nt", "AC36 real PowerShell execution requires a Windows host")
     def test_ac36_generated_commands_execute_unchanged_in_real_powershell(self):
@@ -209,6 +269,11 @@ class RuntimeCommandTests(unittest.TestCase):
                     for problem in self_test.documentation_command_line_problems(line)]
         self.assertEqual(3, len(problems))
 
+    def test_documentation_lint_accepts_the_current_docs_prompts_and_templates(self):
+        checked, problems = self_test.documentation_command_problems(ROOT)
+        self.assertGreater(checked, 0)
+        self.assertEqual([], problems)
+
 
 class HonestPreflightTests(unittest.TestCase):
     def run_scenario(self, policy_probe):
@@ -280,6 +345,17 @@ class HonestPreflightTests(unittest.TestCase):
             self.assertNotEqual("PASS", rows[name]["status"], rows[name])
             self.assertEqual(7, rows[name]["exit_code"])
 
+    def test_nonzero_category_observes_stderr_even_when_stdout_is_present(self):
+        completed = subprocess.CompletedProcess(
+            ["powershell"], 1, stdout="partial rows", stderr="security module could not be loaded")
+        with patch("agentic.providers.github_status.host_executable", return_value="powershell.exe"), \
+                patch("agentic.host_preflight.subprocess.run", return_value=completed):
+            from agentic.host_preflight import run
+            observed = run(["powershell", "-NoProfile", "-Command", "fixture"])
+        self.assertEqual("MODULE_LOAD_FAILURE", observed["diagnostic_category"])
+        self.assertIn("partial rows", observed["output"])
+        self.assertIn("security module", observed["output"])
+
 
 def synthetic_pass():
     return None
@@ -287,6 +363,10 @@ def synthetic_pass():
 
 def synthetic_interrupt():
     raise KeyboardInterrupt()
+
+
+def synthetic_timeout():
+    raise TimeoutError()
 
 
 class SelfTestProgressTests(unittest.TestCase):
@@ -302,7 +382,7 @@ class SelfTestProgressTests(unittest.TestCase):
 
     def test_ac38_synthetic_final_result_is_deterministic_apart_from_timings(self):
         outputs = []
-        for _ in range(2):
+        for sequence in range(2):
             progress = self_test.SelfTestProgress(stream=io.StringIO(), interval=1)
             progress.start()
             progress.begin_phase("test_suite")
@@ -310,28 +390,39 @@ class SelfTestProgressTests(unittest.TestCase):
                 unittest.TestSuite([unittest.FunctionTestCase(synthetic_pass)]), progress)
             progress.complete_phase("test_suite")
             progress.stop()
-            outputs.append(json.dumps({"run": result.testsRun, "successful": result.wasSuccessful(),
-                                       "failures": len(result.failures), "errors": len(result.errors),
-                                       "log": log}, sort_keys=True).encode("ascii"))
+            report = {
+                "created_at": "fixture-time-" + str(sequence),
+                "elapsed_seconds": sequence + 0.25,
+                "phase_timings_seconds": {"test_suite": sequence + 0.125},
+                "nondeterministic_fields": list(self_test.NONDETERMINISTIC_REPORT_FIELDS),
+                "status": "PASS" if result.wasSuccessful() else "FAILED",
+                "tests": {"run": result.testsRun, "successful": result.wasSuccessful(),
+                          "failures": len(result.failures), "errors": len(result.errors)},
+                "test_log": log,
+            }
+            outputs.append(self_test.deterministic_report_bytes(report, include_details=True))
         self.assertEqual(outputs[0], outputs[1])
 
-    def test_ac38_interruption_names_last_phase_and_current_test_without_pass(self):
-        progress = self_test.SelfTestProgress(stream=io.StringIO(), interval=1)
-        progress.start()
-        progress.begin_phase("documentation")
-        progress.complete_phase("documentation")
-        progress.begin_phase("test_suite")
-        with self.assertRaises(KeyboardInterrupt):
-            self_test.execute_test_suite(
-                unittest.TestSuite([unittest.FunctionTestCase(synthetic_interrupt)]), progress)
-        evidence = {"status": "INTERRUPTED", "last_completed_phase": progress.last_completed_phase,
-                    "current_phase": progress.current_phase,
-                    "current_test": progress.current_test or progress.last_test}
-        progress.stop()
-        self.assertEqual("documentation", evidence["last_completed_phase"])
-        self.assertEqual("test_suite", evidence["current_phase"])
-        self.assertIn("synthetic_interrupt", evidence["current_test"])
-        self.assertNotEqual("PASS", evidence["status"])
+    def test_ac38_interruption_and_timeout_name_last_phase_and_current_test_without_pass(self):
+        for function, exception in ((synthetic_interrupt, KeyboardInterrupt),
+                                    (synthetic_timeout, TimeoutError)):
+            with self.subTest(exception=exception.__name__):
+                progress = self_test.SelfTestProgress(stream=io.StringIO(), interval=1)
+                progress.start()
+                progress.begin_phase("documentation")
+                progress.complete_phase("documentation")
+                progress.begin_phase("test_suite")
+                with self.assertRaises(exception):
+                    self_test.execute_test_suite(
+                        unittest.TestSuite([unittest.FunctionTestCase(function)]), progress)
+                evidence = {"status": "INTERRUPTED", "last_completed_phase": progress.last_completed_phase,
+                            "current_phase": progress.current_phase,
+                            "current_test": progress.current_test or progress.last_test}
+                progress.stop()
+                self.assertEqual("documentation", evidence["last_completed_phase"])
+                self.assertEqual("test_suite", evidence["current_phase"])
+                self.assertIn(function.__name__, evidence["current_test"])
+                self.assertNotEqual("PASS", evidence["status"])
 
 
 class EncodingOutputTests(unittest.TestCase):
@@ -361,6 +452,7 @@ class EncodingOutputTests(unittest.TestCase):
     def test_ac37_ascii_safe_json_and_ascii_status_survive_redirected_legacy_encoding(self):
         code, raw, errors = self.run_redirected("status", "--json")
         self.assertIn(code, (0, 2), errors.decode("ascii", errors="replace"))
+        self.assertNotIn(bytes.fromhex("efbfbd"), raw)
         parsed = json.loads(raw.decode("ascii"))
         self.assertIn("project_state", parsed)
         code, raw, errors = self.run_redirected("status")
@@ -368,6 +460,7 @@ class EncodingOutputTests(unittest.TestCase):
         first = raw.splitlines()[0]
         first.decode("ascii")
         self.assertNotIn(b"?", first)
+        self.assertNotIn(bytes.fromhex("efbfbd"), raw)
 
 
 if __name__ == "__main__":
