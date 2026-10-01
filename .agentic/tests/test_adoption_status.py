@@ -89,13 +89,19 @@ class AdoptionStatusTests(unittest.TestCase):
         git('-c', 'user.name=AWF Synthetic Fixture', '-c', 'user.email=awf@example.invalid', 'commit', '-m', 'Synthetic adoption fixture')
         git('checkout-index', '-f', '--', '.github/CODEOWNERS')
         cls.head = git('rev-parse', 'HEAD')
+        cls.pr_head = 'd' * 40
         cls.base = 'repos/fixture/example'
+        repository_identity = {'id': 101, 'node_id': 'R_fixture', 'full_name': 'fixture/example'}
         entry = lambda name, raw: {'path': name, 'type': 'blob', 'mode': '100644', 'sha': status.blob_sha(raw)}
         cls.responses = {
             cls.base: {'id': 101, 'node_id': 'R_fixture', 'full_name': 'fixture/example', 'default_branch': 'trunk'},
             cls.base + '/branches/trunk': {'name': 'trunk', 'commit': {'sha': cls.head}},
-            cls.base + '/pulls/7': {'number': 7, 'node_id': 'PR_fixture', 'merged': True,
-                                  'base': {'ref': 'trunk', 'repo': {'id': 101}}},
+            cls.base + '/pulls/7': {
+                'number': 7, 'node_id': 'PR_fixture', 'state': 'closed', 'merged': True,
+                'merged_at': '2026-09-14T12:00:00+00:00', 'merge_commit_sha': None,
+                'base': {'ref': 'trunk', 'repo': copy.deepcopy(repository_identity)},
+                'head': {'ref': 'awf/EX-6-activation', 'sha': cls.pr_head,
+                         'repo': copy.deepcopy(repository_identity)}},
             cls.base + '/pulls/7/files?per_page=100&page=1': [
                 {'filename': INSTALLED, 'status': 'added', 'sha': status.blob_sha(files[INSTALLED])}],
             cls.base + f'/commits/{cls.head}/pulls?per_page=100': [
@@ -113,12 +119,17 @@ class AdoptionStatusTests(unittest.TestCase):
                 entry('CODEOWNERS', files['.github/CODEOWNERS'])]},
         }
         cls.graphql_response = {'data': {'repository': {
-            'id': 'R_fixture', 'nameWithOwner': 'fixture/example',
+            'id': 'R_fixture', 'databaseId': 101, 'nameWithOwner': 'fixture/example',
             'defaultBranchRef': {'name': 'trunk', 'target': {'oid': cls.head}},
-            'pullRequest': {'id': 'PR_fixture', 'number': 7, 'baseRefName': 'trunk', 'state': 'MERGED',
+            'pullRequest': {'id': 'PR_fixture', 'number': 7, 'baseRefName': 'trunk',
+                            'headRefName': 'awf/EX-6-activation', 'headRefOid': cls.pr_head,
+                            'headRepository': {'id': 'R_fixture', 'databaseId': 101,
+                                               'nameWithOwner': 'fixture/example'},
+                            'state': 'MERGED',
                             'merged': True, 'mergedAt': '2026-09-14T12:00:00Z',
                             'mergeCommit': {'oid': cls.head, 'repository': {
-                                'id': 'R_fixture', 'nameWithOwner': 'fixture/example'}}}}}}
+                                'id': 'R_fixture', 'databaseId': 101,
+                                'nameWithOwner': 'fixture/example'}}}}}}
 
     @classmethod
     def tearDownClass(cls):
@@ -225,6 +236,9 @@ class AdoptionStatusTests(unittest.TestCase):
         self.assertEqual(result['adoption_merge_sha'], self.head)
         self.assertEqual(result['adoption_receipt_commit_sha'], self.head)
         self.assertEqual(result['merge_identity_source'], 'github_graphql')
+        self.assertEqual(result['merge_identity_observation'], {
+            'sha': self.head, 'accepted_surface': 'github_graphql',
+            'rest_api_version': '2022-11-28'})
         self.assertFalse(result['execution_authority'])
         self.assertEqual(result['line'], f'AWF {VERSION}: ACTIVE — streams 3/6')
         preflight_next = result['host_preflight']['next_action']
@@ -250,6 +264,14 @@ class AdoptionStatusTests(unittest.TestCase):
                 self.assertEqual(result['adoption_merge_sha'], self.head)
                 self.assertIn(self.base + f'/contents/{INSTALLED}?ref={self.head}', self.requests)
 
+    def test_positive_legacy_rest_merge_identity_is_cross_checked_with_graphql(self):
+        self.api[self.base + '/pulls/7']['merge_commit_sha'] = self.head
+        result = self.observe()
+        self.assertEqual(result['project_state'], 'ACTIVE', result)
+        self.assertEqual(result['merge_identity_source'], 'github_rest_and_graphql')
+        self.assertEqual(result['adoption_acceptance_basis'], 'github_rest_and_graphql_merge_commit')
+        self.assertEqual(result['github_rest_api_version'], '2022-11-28')
+
     def test_legacy_rest_merge_identity_must_match_graphql(self):
         values = [self.head, '', 'f' * 39, 'f' * 40, ['f' * 40]]
         for value in values:
@@ -259,6 +281,46 @@ class AdoptionStatusTests(unittest.TestCase):
                 result = self.observe()
                 expected = 'ACTIVE' if value == self.head else 'CONFIGURED'
                 self.assertEqual(result['project_state'], expected, result)
+
+    def test_rest_pr_requires_every_corresponding_identity_fact(self):
+        missing = [
+            'number', 'node_id', 'state', 'merged', 'merged_at', 'base', 'base.ref', 'base.repo',
+            'base.repo.id', 'base.repo.node_id', 'base.repo.full_name',
+            'head', 'head.ref', 'head.sha', 'head.repo', 'head.repo.id',
+            'head.repo.node_id', 'head.repo.full_name',
+        ]
+        for path in missing:
+            with self.subTest(missing=path):
+                self.api = copy.deepcopy(self.responses)
+                target = self.api[self.base + '/pulls/7']
+                parts = path.split('.')
+                for part in parts[:-1]:
+                    target = target[part]
+                del target[parts[-1]]
+                result = self.observe()
+                self.assertEqual('CONFIGURED', result['project_state'], result)
+                self.assertNotIn('report_active', result['decision_codes'])
+
+    def test_rest_pr_conflicts_fail_closed_for_every_bound_fact(self):
+        conflicts = [
+            ('number', 8), ('node_id', 'PR_other'), ('state', 'open'), ('merged', False),
+            ('merged_at', '2026-09-14T12:00:01Z'), ('base.ref', 'main'),
+            ('base.repo.id', 102), ('base.repo.node_id', 'R_other'),
+            ('base.repo.full_name', 'fixture/other'), ('head.ref', 'awf/EX-7-other'),
+            ('head.sha', 'e' * 40), ('head.repo.id', 102),
+            ('head.repo.node_id', 'R_other'), ('head.repo.full_name', 'fixture/other'),
+        ]
+        for path, value in conflicts:
+            with self.subTest(conflict=path):
+                self.api = copy.deepcopy(self.responses)
+                target = self.api[self.base + '/pulls/7']
+                parts = path.split('.')
+                for part in parts[:-1]:
+                    target = target[part]
+                target[parts[-1]] = value
+                result = self.observe()
+                self.assertEqual('CONFIGURED', result['project_state'], result)
+                self.assertNotIn('report_active', result['decision_codes'])
 
     def test_missing_malformed_or_nonancestor_graphql_merge_is_rejected(self):
         self.graphql['data']['repository']['pullRequest']['mergeCommit'] = None
@@ -288,17 +350,29 @@ class AdoptionStatusTests(unittest.TestCase):
         self.assertEqual(result['project_state'], 'CONFIGURED', result)
         self.assertNotIn('report_active', result['decision_codes'])
 
-    def test_graphql_identity_is_cross_bound_to_rest_repository_default_and_pr(self):
+    def test_graphql_identity_is_cross_bound_to_every_rest_pr_fact(self):
         mutations = [
             ('nameWithOwner', 'fixture/other'),
             ('id', 'R_other'),
+            ('databaseId', 102),
             ('defaultBranchRef.name', 'main'),
             ('defaultBranchRef.target.oid', 'f' * 40),
             ('pullRequest.number', 8),
             ('pullRequest.number', True),
             ('pullRequest.id', 'PR_other'),
+            ('pullRequest.baseRefName', 'main'),
+            ('pullRequest.headRefName', 'awf/EX-7-other'),
+            ('pullRequest.headRefOid', 'e' * 40),
+            ('pullRequest.headRepository.id', 'R_other'),
+            ('pullRequest.headRepository.databaseId', 102),
+            ('pullRequest.headRepository.nameWithOwner', 'fixture/other'),
+            ('pullRequest.state', 'OPEN'),
             ('pullRequest.merged', False),
+            ('pullRequest.mergedAt', '2026-09-14T12:00:01Z'),
+            ('pullRequest.mergeCommit.oid', 'e' * 40),
             ('pullRequest.mergeCommit.repository.id', 'R_other'),
+            ('pullRequest.mergeCommit.repository.databaseId', 102),
+            ('pullRequest.mergeCommit.repository.nameWithOwner', 'fixture/other'),
         ]
         for path, value in mutations:
             with self.subTest(path=path):
@@ -311,6 +385,43 @@ class AdoptionStatusTests(unittest.TestCase):
                 result = self.observe()
                 self.assertEqual(result['project_state'], 'CONFIGURED', result)
                 self.assertNotIn('report_active', result['decision_codes'])
+
+    def test_graphql_requires_every_corresponding_identity_fact(self):
+        missing = [
+            'id', 'databaseId', 'nameWithOwner', 'defaultBranchRef',
+            'defaultBranchRef.name', 'defaultBranchRef.target', 'defaultBranchRef.target.oid',
+            'pullRequest',
+            'pullRequest.id', 'pullRequest.number', 'pullRequest.baseRefName',
+            'pullRequest.headRefName', 'pullRequest.headRefOid',
+            'pullRequest.headRepository',
+            'pullRequest.headRepository.id', 'pullRequest.headRepository.databaseId',
+            'pullRequest.headRepository.nameWithOwner',
+            'pullRequest.state', 'pullRequest.merged', 'pullRequest.mergedAt',
+            'pullRequest.mergeCommit', 'pullRequest.mergeCommit.oid',
+            'pullRequest.mergeCommit.repository', 'pullRequest.mergeCommit.repository.id',
+            'pullRequest.mergeCommit.repository.databaseId',
+            'pullRequest.mergeCommit.repository.nameWithOwner',
+        ]
+        for path in missing:
+            with self.subTest(missing=path):
+                self.graphql = copy.deepcopy(self.graphql_response)
+                target = self.graphql['data']['repository']
+                parts = path.split('.')
+                for part in parts[:-1]:
+                    target = target[part]
+                del target[parts[-1]]
+                result = self.observe()
+                self.assertEqual('CONFIGURED', result['project_state'], result)
+                self.assertNotIn('report_active', result['decision_codes'])
+
+    def test_both_provider_surfaces_without_merge_identity_stay_unobserved(self):
+        self.api[self.base + '/pulls/7']['merge_commit_sha'] = None
+        self.graphql['data']['repository']['pullRequest']['mergeCommit'] = None
+        result = self.observe()
+        self.assertEqual('CONFIGURED', result['project_state'], result)
+        merge_check = next(item for item in result['checks'] if item['code'] == 'ADOPTION_MERGE')
+        self.assertEqual('UNOBSERVED', merge_check['state'])
+        self.assertIn('both provider surfaces omit', merge_check['evidence'])
 
     def test_graphql_errors_partial_data_and_bad_timestamp_fail_closed(self):
         values = [
@@ -359,6 +470,10 @@ class AdoptionStatusTests(unittest.TestCase):
                                    'commit-tree', tree, '-p', self.before_receipt, '-p', self.head,
                                    '-m', 'Synthetic two-parent integration')
         self.run_git('reset', '--hard', integration)
+        # Keep immutable installed bytes exact after the Windows checkout applies
+        # working-tree EOL conversion; Git-object acceptance is checked separately.
+        for name, raw in self.files.items():
+            (self.root / name).write_bytes(raw)
         receipt_commit = self.run_git('log', '-1', '--format=%H', '--', INSTALLED)
         self.api[self.base + '/branches/trunk']['commit']['sha'] = integration
         self.api[self.base + f'/commits/{receipt_commit}/pulls?per_page=100'] = copy.deepcopy(
@@ -407,7 +522,7 @@ class AdoptionStatusTests(unittest.TestCase):
         self.assertEqual(value, response)
         self.assertEqual(count, len(json_bytes(response)))
         self.assertEqual(sha256(status.MERGE_IDENTITY_QUERY.encode()),
-                         'b2f87ad0ebc3cb42da0f69c044c01a51ea0032982c4c892c84eb5ed37b164558')
+                         'e841b2ddafcc665fd4bcaf330757ac93cd6cf257e93e463b49964a5c2dac5040')
         command, payload, env = calls[0]
         self.assertEqual(command, ['/trusted/gh', 'api', '--hostname', 'github.com', '--method', 'POST',
                                    'graphql', '--input', '-'])
@@ -424,6 +539,48 @@ class AdoptionStatusTests(unittest.TestCase):
         with patch.object(status.subprocess, 'Popen', side_effect=oversized):
             with self.assertRaises(ValidationError):
                 status._gh_graphql('fixture/example', 7, status.time.monotonic() + 5,
+                                   gh='/trusted/gh')
+
+        def failed(command, stdin, stdout, stderr, env):
+            process = Process.__new__(Process)
+            stderr.write(b'synthetic provider refusal')
+            process.returncode = 1
+            return process
+
+        with patch.object(status.subprocess, 'Popen', side_effect=failed):
+            with self.assertRaisesRegex(ValidationError, 'did not complete successfully'):
+                status._gh_graphql('fixture/example', 7, status.time.monotonic() + 5,
+                                   gh='/trusted/gh')
+
+        def oversized_stderr(command, stdin, stdout, stderr, env):
+            process = Process.__new__(Process)
+            stderr.write(b'x' * (status.MAX_BYTES + 1))
+            process.returncode = 0
+            return process
+
+        with patch.object(status.subprocess, 'Popen', side_effect=oversized_stderr):
+            with self.assertRaisesRegex(ValidationError, 'stderr exceeds byte limit'):
+                status._gh_graphql('fixture/example', 7, status.time.monotonic() + 5,
+                                   gh='/trusted/gh')
+
+        class TimedOut:
+            def __init__(self):
+                self.returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                if self.returncode is None:
+                    raise subprocess.TimeoutExpired('gh', timeout)
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with patch.object(status.subprocess, 'Popen', return_value=TimedOut()):
+            with self.assertRaisesRegex(ValidationError, 'deadline exhausted'):
+                status._gh_graphql('fixture/example', 7, status.time.monotonic() + 0.01,
                                    gh='/trusted/gh')
 
     def test_status_denominator_uses_enabled_broker_ceiling(self):
@@ -480,6 +637,8 @@ class AdoptionStatusTests(unittest.TestCase):
 
     def test_unmerged_pr_never_reports_active(self):
         self.api[self.base + '/pulls/7']['merged'] = False
+        self.api[self.base + '/pulls/7']['state'] = 'open'
+        self.api[self.base + '/pulls/7']['merged_at'] = None
         result = self.observe()
         self.assertEqual((result['project_state'], result['adoption']), ('CONFIGURED', 'NOT_MERGED'))
         self.assertIn('Merge adoption PR #7', result['next_action'])

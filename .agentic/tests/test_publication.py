@@ -80,6 +80,26 @@ class PublicationScanTests(unittest.TestCase):
                               detectors=detectors, allows=allows)
         self.assertEqual([], [item for item in findings if item["detector_id"].startswith("builtin.")])
 
+    def test_historical_self_reference_identities_are_exact_and_path_scoped(self):
+        detectors, allows = _detectors({}, {})
+        ipv4 = '        return (address in ipaddress.ip_network("' + ".".join(("10", "0", "0", "0")) + '/8") or'
+        windows = '        for value in ("../escape", "", "/root", "C:' + '/root", "data//nested"):'
+        cases = [
+            (ipv4, ".agentic/lib/agentic/publication.py", "builtin.private_ipv4"),
+            (windows, ".agentic/tests/test_operating.py", "builtin.windows_absolute"),
+        ]
+        for line, path, detector_id in cases:
+            with self.subTest(path=path):
+                accepted = _scan_text(line, commit="fixture", path=path, source="patch",
+                                      change="deleted", detectors=detectors, allows=allows)
+                self.assertEqual([], accepted)
+                other_path = _scan_text(line, commit="fixture", path="other.py", source="patch",
+                                        change="deleted", detectors=detectors, allows=allows)
+                self.assertTrue(any(item["detector_id"] == detector_id for item in other_path))
+                changed = _scan_text(line + " ", commit="fixture", path=path, source="patch",
+                                     change="deleted", detectors=detectors, allows=allows)
+                self.assertTrue(any(item["detector_id"] == detector_id for item in changed))
+
     def test_ac43_removed_value_still_blocks_and_is_redacted(self):
         value = private_locator()
         self.repo.write("generated.txt", "locator=" + value + "\n")

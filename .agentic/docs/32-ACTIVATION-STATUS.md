@@ -4,7 +4,7 @@ Version 1.9.3. `workflow.py status` is a read-only observation. It creates no di
 
 Check states are `PASS`, `INVALID`, `MISMATCH`, `UNAVAILABLE`, `UNOBSERVED` and `NOT_APPLICABLE`. An unavailable later observation never lowers a state already established by earlier stages. Text output lists every blocker before one `Next command`; JSON uses the [activation-status schema](../schemas/activation-status.schema.json).
 
-Every GitHub REST request uses the centrally defined API version `2022-11-28`, which GitHub documents as supported through March 2028 in its [REST API version documentation](https://docs.github.com/en/rest/about-the-rest-api/api-versions). Merge identity cross-checks REST with GraphQL and records both the accepted surface and REST version.
+Every GitHub REST request uses the centrally defined API version `2022-11-28`, which GitHub documents as supported through March 2028 in its [REST API version documentation](https://docs.github.com/en/rest/about-the-rest-api/api-versions). Merge identity requires REST and GraphQL to agree on the numeric and immutable repository IDs, PR number and immutable ID, base ref, head ref/SHA/repository, merged state and merge time. Missing corresponding facts are `UNOBSERVED`; conflicts are `MISMATCH`. A null or absent REST merge SHA may fall back to a complete GraphQL merge commit, but both absent remain `UNOBSERVED`. The observation records whether GraphQL or REST+GraphQL supplied the accepted identity and records the REST API version.
 
 Status exit codes are:
 

@@ -32,6 +32,25 @@ HOME_PATH = re.compile(r"(?<![A-Za-z0-9])/(?:home|Users)/[^/\s]+(?:/[^\s]*)?")
 IP_CANDIDATE = re.compile(r"(?<![0-9A-Fa-f:.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9.])")
 IPV6_CANDIDATE = re.compile(r"(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![0-9A-Fa-f:])")
 
+# Closed identities for public detector-definition/test-vector lines that were
+# removed when AWF made its own tracked source scan-clean.  History scanning
+# must retain deleted-line coverage, so these exact full-line identities avoid
+# self-reference without accepting a value, regex, changed line, or other path.
+# Project-tracked configuration cannot extend this set or disable a built-in.
+_HISTORICAL_SELF_REFERENCES = {
+    (".agentic/lib/agentic/publication.py", "builtin.private_ipv4"): frozenset({
+        "4f515107bd58420bfded2fdb4eb0c0488264038ecfad82b5c745b6926af63d83",
+        "6665bfc2585ba8a5e193709bd26d347b728432934d5102f9fbfc3ecf4a474cbd",
+        "23c73dfb099cbf28a560053f2163b2eef79b93ab6ff5e5e9a09041dcc305e7a6",
+    }),
+    (".agentic/lib/agentic/publication.py", "builtin.private_ipv6"): frozenset({
+        "4c668724866b52e2869dcbc51ca6cca0c9333b0ae8b4805b5a374c05a4518084",
+    }),
+    (".agentic/tests/test_operating.py", "builtin.windows_absolute"): frozenset({
+        "c39c65eb607d83ae03418e589ac08a2a6c9240e0f65757516f364b5b89de522f",
+    }),
+}
+
 
 @dataclass(frozen=True)
 class Detector:
@@ -185,6 +204,11 @@ def _private_ip(value):
     return address in ipaddress.ip_network("fc" + "00::/7")
 
 
+def _historical_self_reference(path, detector_id, line):
+    identities = _HISTORICAL_SELF_REFERENCES.get((path, detector_id), ())
+    return hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest() in identities
+
+
 def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, change=None):
     findings = []
     for number, line in enumerate(text.splitlines() or [text], 1):
@@ -192,6 +216,8 @@ def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, 
             for match in detector.regex.finditer(line):
                 value = match.group(0)
                 if detector.private_ip and not _private_ip(value):
+                    continue
+                if _historical_self_reference(path, detector.detector_id, line):
                     continue
                 if detector.detector_id.startswith("builtin.") and any(
                         allow_id in {"all", detector.detector_id.removeprefix("builtin.")} and pattern.search(value)

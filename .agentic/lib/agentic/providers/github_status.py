@@ -31,16 +31,20 @@ SHA = re.compile(r'[0-9a-f]{40}')
 MERGE_IDENTITY_QUERY = '''query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     id
+    databaseId
     nameWithOwner
     defaultBranchRef{name target{... on Commit{oid}}}
     pullRequest(number:$number){
       id
       number
       baseRefName
+      headRefName
+      headRefOid
+      headRepository{id databaseId nameWithOwner}
       state
       merged
       mergedAt
-      mergeCommit{oid repository{id nameWithOwner}}
+      mergeCommit{oid repository{id databaseId nameWithOwner}}
     }
   }
 }'''
@@ -338,43 +342,142 @@ def receipt_changed(observation, repository, number, raw):
             'Selected adoption PR did not add or modify this exact installation receipt')
 
 
-def merge_identity(value, repository, repository_node_id, default, head, number, rest_pr):
-    """Cross-bind GraphQL's integration commit to the REST observation."""
-    require(isinstance(value, dict) and set(value) == {'data'},
-            'GraphQL merge-identity observation is incomplete')
+def _merge_unobserved(condition, message):
+    require(condition, 'MERGE_IDENTITY_UNOBSERVED: ' + message)
+
+
+def _merge_conflict(condition, message):
+    require(condition, 'MERGE_IDENTITY_CONFLICT: ' + message)
+
+
+def _complete_repository(value, label, *, numeric_id=None, node_id=None, name=None):
+    """Require the complete REST repository identity used for cross-surface binding."""
+    _merge_unobserved(isinstance(value, dict), label + ' repository identity is missing')
+    _merge_unobserved(type(value.get('id')) is int and value['id'] > 0,
+                      label + ' numeric repository ID is missing')
+    _merge_unobserved(isinstance(value.get('node_id'), str) and value['node_id'],
+                      label + ' immutable repository ID is missing')
+    _merge_unobserved(isinstance(value.get('full_name'), str) and value['full_name'],
+                      label + ' repository name is missing')
+    if numeric_id is not None:
+        _merge_conflict(value['id'] == numeric_id, label + ' numeric repository ID differs')
+    if node_id is not None:
+        _merge_conflict(value['node_id'] == node_id, label + ' immutable repository ID differs')
+    if name is not None:
+        _merge_conflict(value['full_name'].casefold() == name.casefold(), label + ' repository name differs')
+    return value
+
+
+def merge_identity(value, repository, repository_id, repository_node_id, default, default_head, number, rest_pr):
+    """Cross-bind complete REST and GraphQL PR facts before accepting a merge."""
+    _merge_unobserved(isinstance(value, dict) and set(value) == {'data'},
+                      'GraphQL merge-identity observation is incomplete')
     graph_repository = object_value(object_value(value['data']).get('repository'))
     graph_id = graph_repository.get('id')
-    require(isinstance(repository_node_id, str) and repository_node_id
-            and isinstance(graph_id, str) and graph_id == repository_node_id
-            and isinstance(graph_repository.get('nameWithOwner'), str)
-            and graph_repository['nameWithOwner'].casefold() == repository.casefold(),
-            'GraphQL repository identity differs from the REST observation')
+    _merge_unobserved(isinstance(repository_node_id, str) and repository_node_id
+                      and isinstance(graph_id, str) and graph_id
+                      and type(graph_repository.get('databaseId')) is int
+                      and isinstance(graph_repository.get('nameWithOwner'), str)
+                      and graph_repository['nameWithOwner'],
+                      'base repository identity is incomplete')
+    _merge_conflict(graph_id == repository_node_id and graph_repository['databaseId'] == repository_id
+                    and graph_repository['nameWithOwner'].casefold() == repository.casefold(),
+                    'GraphQL base repository identity differs from REST')
     graph_default = object_value(graph_repository.get('defaultBranchRef'))
     graph_target = object_value(graph_default.get('target'))
-    require(graph_default.get('name') == default and graph_target.get('oid') == head,
-            'GraphQL default branch differs from the REST observation')
+    _merge_unobserved(isinstance(graph_default.get('name'), str)
+                      and isinstance(graph_target.get('oid'), str),
+                      'GraphQL default branch identity is incomplete')
+    _merge_conflict(graph_default['name'] == default and graph_target['oid'] == default_head,
+                    'GraphQL default branch differs from REST')
+
+    _merge_unobserved(isinstance(rest_pr, dict), 'REST adoption PR is missing')
+    _merge_unobserved(type(rest_pr.get('number')) is int and rest_pr['number'] > 0,
+                      'REST PR number is missing')
+    _merge_unobserved(isinstance(rest_pr.get('node_id'), str) and rest_pr['node_id'],
+                      'REST immutable PR identity is missing')
+    _merge_unobserved(isinstance(rest_pr.get('state'), str) and rest_pr['state'],
+                      'REST PR state is missing')
+    _merge_unobserved(type(rest_pr.get('merged')) is bool, 'REST merged state is missing')
+    _merge_unobserved(isinstance(rest_pr.get('merged_at'), str) and rest_pr['merged_at'],
+                      'REST merge time is missing')
+    rest_merged_at = timestamp(rest_pr['merged_at'])
+    rest_base = rest_pr.get('base')
+    _merge_unobserved(isinstance(rest_base, dict), 'REST PR base identity is missing')
+    _merge_unobserved(isinstance(rest_base.get('ref'), str) and rest_base['ref'],
+                      'REST PR base ref is missing')
+    _complete_repository(rest_base.get('repo'), 'REST base', numeric_id=repository_id,
+                         node_id=repository_node_id, name=repository)
+    rest_head = rest_pr.get('head')
+    _merge_unobserved(isinstance(rest_head, dict), 'REST PR head identity is missing')
+    _merge_unobserved(isinstance(rest_head.get('ref'), str) and rest_head['ref'],
+                      'REST PR head ref is missing')
+    _merge_unobserved(isinstance(rest_head.get('sha'), str) and SHA.fullmatch(rest_head['sha']),
+                      'REST PR head SHA is missing or malformed')
+    rest_head_repository = _complete_repository(rest_head.get('repo'), 'REST head')
+    _merge_conflict(rest_pr['number'] == number and rest_base['ref'] == default,
+                    'REST PR number or base ref differs from the selected adoption PR')
+    _merge_conflict(rest_pr['state'] == 'closed' and rest_pr['merged'] is True,
+                    'REST PR does not report one merged state')
+
     graph_pr = object_value(graph_repository.get('pullRequest'))
-    require(isinstance(rest_pr.get('node_id'), str) and rest_pr['node_id']
-            and graph_pr.get('id') == rest_pr['node_id']
-            and type(graph_pr.get('number')) is int and graph_pr['number'] == number
-            and graph_pr.get('baseRefName') == default
-            and graph_pr.get('state') == 'MERGED' and graph_pr.get('merged') is True
-            and isinstance(graph_pr.get('mergedAt'), str) and graph_pr['mergedAt'],
-            'GraphQL adoption PR identity or merged state differs from REST')
-    timestamp(graph_pr['mergedAt'])
-    graph_merge = object_value(graph_pr.get('mergeCommit'))
+    _merge_unobserved(isinstance(graph_pr.get('id'), str) and graph_pr['id'],
+                      'GraphQL immutable PR identity is missing')
+    _merge_unobserved(type(graph_pr.get('number')) is int and graph_pr['number'] > 0,
+                      'GraphQL PR number is missing')
+    for field, label in (('baseRefName', 'base ref'), ('headRefName', 'head ref'),
+                         ('headRefOid', 'head SHA'), ('state', 'PR state'), ('mergedAt', 'merge time')):
+        _merge_unobserved(isinstance(graph_pr.get(field), str) and graph_pr[field],
+                          'GraphQL ' + label + ' is missing')
+    _merge_unobserved(type(graph_pr.get('merged')) is bool, 'GraphQL merged state is missing')
+    graph_head_repository = object_value(graph_pr.get('headRepository'))
+    _merge_unobserved(isinstance(graph_head_repository.get('id'), str) and graph_head_repository['id']
+                      and type(graph_head_repository.get('databaseId')) is int
+                      and isinstance(graph_head_repository.get('nameWithOwner'), str)
+                      and graph_head_repository['nameWithOwner'],
+                      'GraphQL head repository identity is incomplete')
+    graph_merged_at = timestamp(graph_pr['mergedAt'])
+    _merge_conflict(graph_pr['id'] == rest_pr['node_id'] and graph_pr['number'] == rest_pr['number'],
+                    'GraphQL PR identity differs from REST')
+    _merge_conflict(graph_pr['baseRefName'] == rest_base['ref'],
+                    'GraphQL base ref differs from REST')
+    _merge_conflict(graph_pr['headRefName'] == rest_head['ref']
+                    and graph_pr['headRefOid'] == rest_head['sha'],
+                    'GraphQL immutable PR head differs from REST')
+    _merge_conflict(graph_head_repository['id'] == rest_head_repository['node_id']
+                    and graph_head_repository['databaseId'] == rest_head_repository['id']
+                    and graph_head_repository['nameWithOwner'].casefold() == rest_head_repository['full_name'].casefold(),
+                    'GraphQL head repository differs from REST')
+    _merge_conflict(graph_pr['state'] == 'MERGED' and graph_pr['merged'] is True,
+                    'GraphQL PR does not report one merged state')
+    _merge_conflict(graph_merged_at == rest_merged_at, 'GraphQL merge time differs from REST')
+
+    graph_merge_value = graph_pr.get('mergeCommit')
+    if graph_merge_value is None:
+        _merge_unobserved(rest_pr.get('merge_commit_sha') is None,
+                          'GraphQL merge commit is missing while REST supplies an identity')
+        raise ValidationError('MERGE_IDENTITY_UNOBSERVED: both provider surfaces omit the merge commit identity')
+    graph_merge = object_value(graph_merge_value)
     merge = graph_merge.get('oid')
     merge_repository = object_value(graph_merge.get('repository'))
-    require(isinstance(merge, str) and SHA.fullmatch(merge)
-            and merge_repository.get('id') == graph_id
-            and isinstance(merge_repository.get('nameWithOwner'), str)
-            and merge_repository['nameWithOwner'].casefold() == repository.casefold(),
-            'GraphQL adoption merge identity is missing or malformed')
+    _merge_unobserved(isinstance(merge, str) and SHA.fullmatch(merge),
+                      'GraphQL merge commit identity is missing or malformed')
+    _merge_unobserved(isinstance(merge_repository.get('id'), str) and merge_repository['id']
+                      and type(merge_repository.get('databaseId')) is int
+                      and isinstance(merge_repository.get('nameWithOwner'), str)
+                      and merge_repository['nameWithOwner'],
+                      'GraphQL merge repository identity is incomplete')
+    _merge_conflict(merge_repository['id'] == graph_id
+                    and merge_repository['databaseId'] == graph_repository['databaseId']
+                    and merge_repository['nameWithOwner'].casefold() == repository.casefold(),
+                    'GraphQL merge repository differs from the base repository')
     legacy = rest_pr.get('merge_commit_sha')
     if legacy is not None:
-        require(isinstance(legacy, str) and SHA.fullmatch(legacy) and legacy == merge,
-                'REST and GraphQL adoption merge identities differ')
-    return merge
+        _merge_conflict(isinstance(legacy, str) and SHA.fullmatch(legacy) and legacy == merge,
+                        'REST and GraphQL adoption merge identities differ')
+    return {'sha': merge,
+            'accepted_surface': 'github_graphql' if legacy is None else 'github_rest_and_graphql',
+            'rest_api_version': GITHUB_REST_API_VERSION}
 
 
 def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expected_manifest_sha256=None,
@@ -570,8 +673,10 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
             else:
                 require(local_branch == default and local_head == head, 'Check out the observed default branch ' + default + ' at ' + head)
                 receipt_changed(observation, repository, adoption_pr, files[INSTALLED])
-                merge = merge_identity(observation.graphql(repository, adoption_pr), repository,
-                                       meta.get('node_id'), default, head, adoption_pr, pr)
+                merge_observation = merge_identity(observation.graphql(repository, adoption_pr), repository,
+                                                   meta.get('id'), meta.get('node_id'), default, head,
+                                                   adoption_pr, pr)
+                merge = merge_observation['sha']
                 observation.git('merge-base', '--is-ancestor', receipt_commit, merge)
                 observation.git('merge-base', '--is-ancestor', merge, head)
                 accepted_receipt = object_value(observation.get(f'repos/{repository}/contents/{INSTALLED}?ref={merge}'))
@@ -604,9 +709,10 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
                                   f" — streams {report['operating']['streams']}/{report['operating']['effective_ceiling']}"),
                               accepted_checkout='VERIFIED', accepted_head_sha=head,
                               adoption_acceptance_sha=merge,
-                              adoption_acceptance_basis='github_graphql_merge_commit',
+                              adoption_acceptance_basis=merge_observation['accepted_surface'] + '_merge_commit',
                               adoption_merge_sha=merge, adoption_receipt_commit_sha=receipt_commit,
-                              merge_identity_source='github_graphql',
+                              merge_identity_source=merge_observation['accepted_surface'],
+                              merge_identity_observation=merge_observation,
                               observed_at=now_text(), next_action=None, decision_codes=['report_active'])
                 evidence = 'Remote accepted tree matches local HEAD/index Git objects'
                 if conversions:
