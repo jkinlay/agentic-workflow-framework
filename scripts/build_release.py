@@ -24,6 +24,11 @@ def archive_time():
     return (value.year, value.month, value.day, value.hour, value.minute, value.second // 2 * 2)
 
 
+def archive_mode(data):
+    """Use content-defined modes so Windows and POSIX builds agree."""
+    return 0o100755 if data.startswith(b'#!') else 0o100644
+
+
 def manifest():
     check_release(ROOT)
     with Tree(ROOT) as tree:
@@ -86,7 +91,7 @@ def main():
             data = tree.read(relative)
             info = zipfile.ZipInfo(prefix + relative.replace('\\', '/'), date_time=archive_time())
             info.create_system = 3
-            info.external_attr = 0o100644 << 16
+            info.external_attr = archive_mode(data) << 16
             info.compress_type = zipfile.ZIP_STORED
             info.extra = b''
             info.comment = b''

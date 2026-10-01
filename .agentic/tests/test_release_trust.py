@@ -13,6 +13,7 @@ from agentic import VERSION, ValidationError
 from agentic.canonical import sha256
 from agentic.installer import json_bytes
 from agentic.release_trust import approved_manifest, bundled_manifest, establish_release_trust
+from agentic.providers.github_status import render_status
 
 
 class ReleaseTrustTests(unittest.TestCase):
@@ -48,7 +49,7 @@ class ReleaseTrustTests(unittest.TestCase):
         self.receipt = {'format': 'awf-host-skill-trust-1', 'schema_version': 1,
                         'name': 'awf', 'version': VERSION, 'manifest_sha256': sha256(manifest),
                         'files': self.skill_map, 'inventory_complete': True,
-                        'preserved_local_files': []}
+                        'preserved_local_files': [], 'preserved_local_inventory': {}}
         for name, raw in content.items():
             (self.skill / name).write_bytes(raw)
         (self.skill / 'SKILL-MANIFEST.json').write_bytes(manifest)
@@ -73,6 +74,10 @@ class ReleaseTrustTests(unittest.TestCase):
         self.assertEqual(result['host_receipt_path'], str((self.skill / '.awf-install-receipt.json').resolve()))
         self.assertEqual(result['verified_inventory'], len(self.skill_map))
         self.assertTrue(result['atomic_receipt'])
+        rendered = render_status({'line': 'AWF fixture: CONFIGURED', 'release_trust': result,
+                                  'next_action': 'Observe acceptance.'})
+        self.assertIn('Codex home: ' + str((self.base / 'host').resolve()), rendered)
+        self.assertIn('Host skill: ' + str(self.skill.resolve()), rendered)
 
     def test_host_bundle_byte_edit_is_rejected(self):
         (self.skill / 'assets/release.json').write_bytes(b'{}')
@@ -88,6 +93,18 @@ class ReleaseTrustTests(unittest.TestCase):
     def test_unrecorded_host_file_is_rejected(self):
         (self.skill / 'unrecorded.txt').write_text('not trusted', encoding='utf-8')
         with self.assertRaisesRegex(ValidationError, 'inventory is not closed'):
+            self.host()
+
+    def test_changed_preserved_local_file_is_rejected(self):
+        local = self.skill / 'local-config.json'
+        local.write_text('{"fixture":true}\n', encoding='utf-8')
+        self.receipt['preserved_local_files'] = ['local-config.json']
+        self.receipt['preserved_local_inventory'] = {
+            'local-config.json': sha256(local.read_bytes())}
+        (self.skill / '.awf-install-receipt.json').write_bytes(json_bytes(self.receipt))
+        self.assertEqual(self.host(), (self.pin, 'trusted_host_installed_awf_skill'))
+        local.write_text('{"fixture":false}\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValidationError, 'preserved local content'):
             self.host()
 
     def test_old_host_version_has_actionable_next_step(self):

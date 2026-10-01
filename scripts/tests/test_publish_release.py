@@ -32,7 +32,8 @@ class PublishReleaseTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory(prefix="awf-publish-release-")
         cls.base = Path(cls.temporary.name)
         cls.repository = cls.base / "source"
-        shutil.copytree(ROOT, cls.repository, ignore=shutil.ignore_patterns(".git", ".tmp-tests", "__pycache__", "*.pyc"))
+        shutil.copytree(ROOT, cls.repository,
+                        ignore=shutil.ignore_patterns(".git", ".tmp", ".tmp-tests", "__pycache__", "*.pyc"))
         command([sys.executable, "-B", str(cls.repository / "scripts/build_release.py"), "--manifest-only"], cls.repository)
         cls.git_env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
                        "GIT_AUTHOR_DATE": "2026-09-24T00:00:00+00:00",
@@ -97,7 +98,12 @@ class PublishReleaseTests(unittest.TestCase):
                             entry.compress_type, entry.extra, entry.comment) for entry in archive.infolist()]
                 self.assertTrue(current)
                 self.assertTrue(all(item[3] == zipfile.ZIP_STORED for item in current))
-                self.assertTrue(all(item[1] == 3 and item[2] >> 16 == 0o100644 for item in current))
+                expected_modes = [0o100755 if archive.read(entry).startswith(b"#!") else 0o100644
+                                  for entry in archive.infolist()]
+                self.assertEqual([item[2] >> 16 for item in current], expected_modes)
+                self.assertTrue(all(item[1] == 3 for item in current))
+                self.assertIn(0o100755, expected_modes)
+                self.assertIn(0o100644, expected_modes)
                 self.assertTrue(all(item[4:] == (b"", b"") for item in current))
                 if metadata is None:
                     metadata = current[0][0]
@@ -130,6 +136,17 @@ class PublishReleaseTests(unittest.TestCase):
         finally:
             readme.write_bytes(original)
             untracked.unlink()
+
+    def test_k6_reports_every_stale_generated_file(self):
+        source = self.base / "stale-generated-source"
+        publisher.materialize_commit(self.repository, self.commit, source)
+        schema = source / ".agentic/schemas/run-disposition-request.schema.json"
+        example = source / ".agentic/examples/project-status.json"
+        schema.write_text("{}\n", encoding="utf-8")
+        example.write_text("{}\n", encoding="utf-8")
+        problems = publisher.generated_file_problems(source)
+        self.assertIn("stale generated file: .agentic/schemas/run-disposition-request.schema.json", problems)
+        self.assertIn("stale generated file: .agentic/examples/project-status.json", problems)
 
     def make_fake_gh(self, directory, storage, log):
         script = directory / "fake_gh.py"

@@ -718,6 +718,10 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
 
 def render_status(report):
     lines = [report['line']]
+    trust = report.get('release_trust') or {}
+    if trust.get('basis') == 'trusted_host_installed_awf_skill':
+        lines.extend(('Codex home: ' + trust['codex_home'],
+                      'Host skill: ' + trust['host_skill_path']))
     summary = report.get('activation', {})
     blockers = summary.get('blockers', [])
     if blockers:

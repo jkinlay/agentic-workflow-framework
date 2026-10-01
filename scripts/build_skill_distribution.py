@@ -36,6 +36,11 @@ def archive_time():
     return (value.year, value.month, value.day, value.hour, value.minute, value.second // 2 * 2)
 
 
+def archive_mode(data):
+    """Use content-defined modes so Windows and POSIX builds agree."""
+    return 0o100755 if data.startswith(b"#!") else 0o100644
+
+
 def render_launcher(skill_manifest_sha256, installer_sha256, release_zip_name, release_zip_sha256):
     return f'''#!/usr/bin/env python3
 """Install AWF {VERSION}; forwards --dry-run, --dest and --backup-root."""
@@ -62,13 +67,14 @@ def package(root, output):
                    key=lambda p: p.relative_to(root).as_posix())
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as z:
         for p in paths:
+            data = p.read_bytes()
             info = zipfile.ZipInfo(root.name + "/" + p.relative_to(root).as_posix(), archive_time())
             info.create_system = 3
-            info.external_attr = 0o100644 << 16
+            info.external_attr = archive_mode(data) << 16
             info.compress_type = zipfile.ZIP_STORED
             info.extra = b""
             info.comment = b""
-            z.writestr(info, p.read_bytes(), compress_type=zipfile.ZIP_STORED)
+            z.writestr(info, data, compress_type=zipfile.ZIP_STORED)
     with zipfile.ZipFile(output) as z:
         if z.testzip() or len(z.namelist()) != len(paths):
             raise ValueError("Archive verification failed")

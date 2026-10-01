@@ -20,6 +20,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.child_process import child_env
 RECORD_PREFIX = "AWF-RELEASE-RECORD: "
+GENERATORS = (
+    ("scripts/generate_contracts.py",),
+    ("scripts/generate_examples.py",),
+    ("scripts/generate_prompts.py",),
+    ("scripts/generate_review_loop.py",),
+    ("scripts/generate_interaction.py",),
+    ("scripts/build_release.py", "--manifest-only"),
+)
 
 
 class ReleaseError(ValueError):
@@ -120,6 +128,29 @@ def version_problems(source):
     return problems
 
 
+def generated_file_problems(source):
+    """Regenerate every derived source and report the complete changed-path set."""
+    def inventory():
+        return {path.relative_to(source).as_posix(): path.read_bytes()
+                for path in source.rglob("*") if path.is_file()}
+
+    before = inventory()
+    problems = []
+    for arguments in GENERATORS:
+        script = source / arguments[0]
+        result = subprocess.run([sys.executable, "-B", str(script), *arguments[1:]],
+                                cwd=source, env=child_env(), capture_output=True, text=True,
+                                timeout=300, check=False)
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic"
+            problems.append(f"generated source refresh failed: {arguments[0]}: {detail}")
+    after = inventory()
+    for name in sorted(set(before) | set(after)):
+        if before.get(name) != after.get(name):
+            problems.append("stale generated file: " + name)
+    return problems
+
+
 def source_report(repository, commit):
     repository = Path(repository).resolve()
     problems = []
@@ -137,22 +168,7 @@ def source_report(repository, commit):
     with tempfile.TemporaryDirectory(prefix="awf-release-inspect-") as raw_temp:
         source = materialize_commit(repository, resolved, Path(raw_temp) / "source")
         problems.extend(version_problems(source))
-        before = {}
-        for name in ("MANIFEST.json", "MANIFEST.md"):
-            try:
-                before[name] = (source / name).read_bytes()
-            except OSError as exc:
-                before[name] = None
-                problems.append(f"stale generated file: {name}: {exc}")
-        result = subprocess.run([sys.executable, "-B", str(source / "scripts/build_release.py"), "--manifest-only"],
-                                cwd=source, env=child_env(), capture_output=True, text=True,
-                                timeout=300, check=False)
-        if result.returncode:
-            problems.append("manifest regeneration failed: " + (result.stderr.strip() or result.stdout.strip()))
-        else:
-            for name in before:
-                if before[name] != (source / name).read_bytes():
-                    problems.append("stale generated file: " + name)
+        problems.extend(generated_file_problems(source))
     return {"commit": resolved, "head": head, "problems": problems,
             "tracked_modifications": tracked, "untracked_files": untracked}
 

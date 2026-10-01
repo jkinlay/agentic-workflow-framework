@@ -104,6 +104,11 @@ def establish_release_trust(root, *, release_source=None, expected_manifest_sha2
                     'Host skill local-file inventory is invalid')
             for name in local:
                 relative_parts(name)
+            local_inventory = receipt.get('preserved_local_inventory')
+            require(isinstance(local_inventory, dict) and set(local_inventory) == set(local)
+                    and all(isinstance(value, str) and PIN.fullmatch(value)
+                            for value in local_inventory.values()),
+                    'Host skill local-file digest inventory is invalid')
             expected_paths = set(approved) | set(local) | {
                 'SKILL-MANIFEST.json', '.awf-install-receipt.json'}
             require(set(tree.file_list(exclude_root_git=True)) == expected_paths,
@@ -114,6 +119,11 @@ def establish_release_trust(root, *, release_source=None, expected_manifest_sha2
                 content[name] = tree.read(name, maximum=LIMIT)
                 total += len(content[name])
                 require(total <= LIMIT and sha256(content[name]) == digest, 'Host skill content/size mismatch: ' + name)
+            for name, digest in local_inventory.items():
+                raw = tree.read(name, maximum=LIMIT)
+                total += len(raw)
+                require(total <= LIMIT and sha256(raw) == digest,
+                        'Host skill preserved local content/size mismatch: ' + name)
             metadata = loads(content['assets/release.json'].decode('utf-8'))
             require(metadata.get('format') == 'awf-bundled-release-1' and metadata.get('version') == VERSION,
                     'Trusted host bundled release metadata mismatch')
@@ -126,7 +136,7 @@ def establish_release_trust(root, *, release_source=None, expected_manifest_sha2
             return {'manifest_sha256': digest, 'basis': 'trusted_host_installed_awf_skill',
                     'codex_home': str(codex_home), 'host_skill_path': str(skill),
                     'host_receipt_path': str(skill / '.awf-install-receipt.json'),
-                    'verified_inventory': len(approved), 'atomic_receipt': True,
+                    'verified_inventory': len(approved) + len(local_inventory), 'atomic_receipt': True,
                     'git_provenance_required': False}
     except (ValidationError, OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError, zipfile.BadZipFile) as exc:
         detail = ': ' + str(exc) if isinstance(exc, ValidationError) else ''
