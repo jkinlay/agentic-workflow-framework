@@ -16,7 +16,7 @@ Adds a one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, sc
 
 Hardens activation with versioned REST/GraphQL merge identity, complete PR/base/head/state/time cross-checks, Git-object checkout comparison, lock-free inspection, structured blockers, strict ACTIVE exit and capabilities. Network detectors self-scan without weakening detection.
 
-Hardens replacement-ref, raw-tree release, portable-order and routing-summary consistency.
+Hardens replacement-ref, inherited Git-environment, raw pinned-byte, no-follow raw-tree release, tagged archive-mode, portable-order and routing-summary consistency.
 
 ## 1.9.2 — 23 September 2026
 

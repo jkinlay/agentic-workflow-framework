@@ -118,10 +118,8 @@ class Observation:
         return value
 
     def git(self, *arguments):
-        env = {key: value for key, value in os.environ.items()
-               if not key.upper().startswith('GIT_') and key.upper() not in ('PYTHONPATH', 'PYTHONHOME')}
-        env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1',
-                   GIT_TERMINAL_PROMPT='0', GIT_OPTIONAL_LOCKS='0', GIT_NO_LAZY_FETCH='1')
+        from ..child_process import isolated_git_env
+        env = isolated_git_env()
         command = [self.git_exe, '--no-replace-objects', '-c', 'core.fsmonitor=false',
                    '-c', 'core.hooksPath=' + os.devnull, '-C', str(self.root), *arguments]
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:

@@ -41,7 +41,7 @@ The publisher preserves the JSON receipt. Its resolved base and head and `pr_bod
 
 A successful rewrite does not erase reflogs or unreachable objects. When a value must also leave the local object store, an operator applies an approved retention policy to expire the relevant reflogs and prune unreachable objects after preserving required recovery evidence.
 
-All publication identity and byte reads disable Git replacement objects in both the command line and child environment. Local `refs/replace/*` metadata therefore cannot substitute the publisher `HEAD^{tree}`, amendment parent/head identity, scanned history, or pinned CI workflow bytes.
+All publication identity and byte reads use a fresh Git child environment. Every inherited `GIT_*` name is removed case-insensitively before the fixed no-replacement, no-lazy-fetch, no-prompt and isolated system/global-configuration values are added. This excludes inherited repository/work-tree/object-directory, alternate-object and environment-config redirection while retaining command-line and environment replacement-ref defenses. Local `refs/replace/*` metadata therefore cannot substitute the publisher `HEAD^{tree}`, amendment parent/head identity, scanned history, or pinned CI workflow bytes. The review host obtains a pinned workflow blob as binary subprocess output and hashes those exact bytes; LF and CRLF blobs are different pins.
 
 ## Remaining L9 work
 

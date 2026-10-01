@@ -46,6 +46,9 @@ class PublishReleaseTests(unittest.TestCase):
         command(["git", "config", "core.autocrlf", "false"], cls.repository, cls.git_env)
         command(["git", "config", "core.filemode", "false"], cls.repository, cls.git_env)
         command(["git", "add", "."], cls.repository, cls.git_env)
+        # Mode fidelity must come from Git, not content: make a non-shebang
+        # executable while leaving Python shebang files non-executable.
+        command(["git", "update-index", "--chmod=+x", "LICENSE"], cls.repository, cls.git_env)
         command(["git", "-c", "commit.gpgsign=false", "commit", "-m", "Synthetic release fixture"],
                 cls.repository, cls.git_env)
         cls.commit = command(["git", "rev-parse", "HEAD"], cls.repository, cls.git_env)
@@ -70,13 +73,14 @@ class PublishReleaseTests(unittest.TestCase):
 
     def build(self, name):
         source = self.base / (name + "-source")
+        modes = self.base / (name + "-git-modes.json")
         temporary = self.base / (name + "-tmp")
         temporary.mkdir()
-        publisher.materialize_commit(self.repository, self.commit, source)
+        publisher.materialize_commit(self.repository, self.commit, source, mode_manifest=modes)
         previous = {key: os.environ.get(key) for key in ("TMP", "TEMP")}
         os.environ.update(TMP=str(temporary), TEMP=str(temporary))
         try:
-            return publisher.build_assets(source, self.base / name, self.epoch)
+            return publisher.build_assets(source, self.base / name, self.epoch, modes)
         finally:
             for key, value in previous.items():
                 if value is None:
@@ -100,16 +104,28 @@ class PublishReleaseTests(unittest.TestCase):
                             entry.compress_type, entry.extra, entry.comment) for entry in archive.infolist()]
                 self.assertTrue(current)
                 self.assertTrue(all(item[3] == zipfile.ZIP_STORED for item in current))
-                expected_modes = [0o100755 if archive.read(entry).startswith(b"#!") else 0o100644
-                                  for entry in archive.infolist()]
-                self.assertEqual([item[2] >> 16 for item in current], expected_modes)
+                expected_modes = [entry.external_attr >> 16 for entry in archive.infolist()]
+                self.assertTrue(all(mode in {0o100644, 0o100755} for mode in expected_modes))
                 self.assertTrue(all(item[1] == 3 for item in current))
-                self.assertIn(0o100755, expected_modes)
                 self.assertIn(0o100644, expected_modes)
                 self.assertTrue(all(item[4:] == (b"", b"") for item in current))
                 if metadata is None:
                     metadata = current[0][0]
                 self.assertTrue(all(item[0] == metadata for item in current))
+                if path.name.startswith("agentic-workflow-template-v"):
+                    raw_modes = {entry.path: int(entry.mode, 8)
+                                 for entry in publisher._tree_entries(self.repository, self.commit)}
+                    prefix = archive.infolist()[0].filename.split("/", 1)[0] + "/"
+                    observed = {entry.filename.removeprefix(prefix): entry.external_attr >> 16
+                                for entry in archive.infolist()}
+                    self.assertEqual(observed, {name: raw_modes[name] for name in observed})
+                    self.assertEqual(observed["LICENSE"], 0o100755)
+                    self.assertEqual(observed["scripts/build_release.py"], 0o100644)
+                if path.name.startswith("AWF-v"):
+                    launcher = next(entry for entry in archive.infolist()
+                                    if entry.filename.endswith("/install_awf.py"))
+                    self.assertTrue(archive.read(launcher).startswith(b"#!"))
+                    self.assertEqual(launcher.external_attr >> 16, 0o100644)
 
     def test_dry_run_records_hashes_and_makes_no_remote_change(self):
         result = publisher.publish(self.repository, self.commit, self.base / "dry-run-output",
@@ -185,6 +201,70 @@ class PublishReleaseTests(unittest.TestCase):
         materialized = self.base / "replacement-object-materialized"
         publisher.materialize_commit(repository, reviewed, materialized)
         self.assertEqual(b"reviewed release bytes\n", (materialized / "released.txt").read_bytes())
+
+    def test_g001_inherited_git_redirection_cannot_substitute_repository(self):
+        decoy = self.base / "git-env-decoy"
+        decoy.mkdir()
+        command(["git", "init", "-b", "main"], decoy, self.git_env)
+        command(["git", "config", "user.name", "Decoy"], decoy, self.git_env)
+        command(["git", "config", "user.email", "decoy@example.invalid"], decoy, self.git_env)
+        (decoy / "decoy.txt").write_text("decoy\n", encoding="utf-8")
+        command(["git", "add", "."], decoy, self.git_env)
+        command(["git", "-c", "commit.gpgsign=false", "commit", "-m", "decoy"], decoy, self.git_env)
+        inherited = {
+            "GIT_DIR": str(decoy / ".git"), "git_work_tree": str(decoy),
+            "GIT_OBJECT_DIRECTORY": str(decoy / ".git/objects"),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(decoy / ".git/objects"),
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.useReplaceRefs",
+            "GIT_CONFIG_VALUE_0": "true",
+        }
+        with patch.dict(os.environ, inherited, clear=False):
+            self.assertEqual(self.commit, publisher.git(self.repository, "rev-parse", "HEAD").strip())
+            self.assertIn("VERSION", {entry.path for entry in publisher._tree_entries(self.repository, self.commit)})
+
+    def test_b001_raced_directory_alias_and_hardlink_fail_before_escape_or_overwrite(self):
+        entries = publisher._tree_entries(self.repository, self.commit)
+        alias_entry = next(entry for entry in entries if "/" in entry.path)
+        top = alias_entry.path.split("/", 1)[0]
+        alias_entries = [entry for entry in entries if entry.path == alias_entry.path]
+        alias_blobs = publisher._tree_blobs(self.repository, alias_entries)
+        destination = self.base / "raced-alias-materialized"
+        escape = self.base / "raced-alias-escape"
+        escape.mkdir()
+
+        def alias_hook(kind, root, relative):
+            if kind != "directory" or relative != top:
+                return
+            alias = root / top
+            if os.name == "nt":
+                result = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(escape)],
+                                        capture_output=True, text=True, timeout=30)
+                if result.returncode:
+                    raise OSError("exclusive root prevented raced junction creation")
+            else:
+                os.symlink(escape, alias, target_is_directory=True)
+
+        with patch.object(publisher.safe_materialize, "RACE_HOOK", alias_hook):
+            with self.assertRaises(OSError):
+                publisher.safe_materialize.materialize(destination, alias_entries, alias_blobs)
+        self.assertEqual([], list(escape.iterdir()))
+
+        victim = self.base / "hardlink-victim.txt"
+        original = b"victim must not change\n"
+        victim.write_bytes(original)
+        flat = next(entry for entry in entries if "/" not in entry.path)
+        flat_entries = [flat]
+        flat_blobs = publisher._tree_blobs(self.repository, flat_entries)
+        destination = self.base / "raced-hardlink-materialized"
+
+        def hardlink_hook(kind, root, relative):
+            if kind == "file" and relative == flat.path:
+                os.link(victim, root / relative)
+
+        with patch.object(publisher.safe_materialize, "RACE_HOOK", hardlink_hook):
+            with self.assertRaises(OSError):
+                publisher.safe_materialize.materialize(destination, flat_entries, flat_blobs)
+        self.assertEqual(original, victim.read_bytes())
 
     def test_b001_materialization_ignores_export_attributes_and_verifies_raw_tree(self):
         repository = self.base / "raw-tree-source"

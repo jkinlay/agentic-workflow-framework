@@ -11,7 +11,7 @@ import re
 import subprocess
 
 from ..canonical import loads, sha256
-from ..child_process import child_env
+from ..child_process import child_env, isolated_git_env
 from ..review_loop import require
 
 
@@ -98,7 +98,7 @@ class HostDriver:
         self.state = Path(config['state_dir'])
         self.url = f"https://github.com/{config['repository']}.git"
 
-    def run(self, name, args, cwd=None, stdin=None, timeout=None, log=None):
+    def run(self, name, args, cwd=None, stdin=None, timeout=None, log=None, binary=False):
         executable = self.c['executables'][name]
         require(sha256(Path(executable['path']).read_bytes()) == executable['sha256'], 'Executable changed after configuration validation')
         require(sha256(Path(self.c['_config_path']).read_bytes()) == self.c['config_hash'], 'Host policy changed during operation')
@@ -108,8 +108,7 @@ class HostDriver:
             if key.upper().startswith('GIT_'):
                 env.pop(key)
         if name == 'git':
-            env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
-                GIT_NO_REPLACE_OBJECTS='1', GIT_OPTIONAL_LOCKS='0', GIT_NO_LAZY_FETCH='1')
+            env = isolated_git_env(env)
         if name == 'codex':
             for key in ['GH_TOKEN','GITHUB_TOKEN']:
                 env.pop(key, None)
@@ -119,20 +118,27 @@ class HostDriver:
         # File output keeps arbitrarily large agent logs out of process memory.
         if log:
             with Path(log).open('xb') as stream:
-                result = subprocess.run(command, cwd=cwd, env=child_env(env), input=stdin.encode('utf-8') if stdin else None,
+                payload = stdin.encode('utf-8') if isinstance(stdin, str) else stdin
+                result = subprocess.run(command, cwd=cwd, env=child_env(env), input=payload,
                     stdout=stream, stderr=subprocess.STDOUT, timeout=timeout or self.c['command_timeout_seconds'])
             require(result.returncode == 0, f'{name} failed; inspect retained run log')
             return ''
-        result = subprocess.run(command, cwd=cwd, env=child_env(env), input=stdin, text=True, encoding='utf-8', errors='strict',
-            capture_output=True, timeout=timeout or self.c['command_timeout_seconds'])
+        if binary:
+            payload = stdin.encode('utf-8') if isinstance(stdin, str) else stdin
+            result = subprocess.run(command, cwd=cwd, env=child_env(env), input=payload,
+                capture_output=True, timeout=timeout or self.c['command_timeout_seconds'])
+        else:
+            result = subprocess.run(command, cwd=cwd, env=child_env(env), input=stdin, text=True,
+                encoding='utf-8', errors='strict', capture_output=True,
+                timeout=timeout or self.c['command_timeout_seconds'])
         require(result.returncode == 0, f'{name} failed with exit {result.returncode}; reconcile before retry')
         require(len(result.stdout) <= 8 * 1024 * 1024, 'Command output exceeds record limit')
         return result.stdout
 
-    def git(self, checkout, *args, strip=True):
+    def git(self, checkout, *args, strip=True, binary=False):
         value = self.run('git', ['--no-replace-objects', '-c','core.useReplaceRefs=false',
             '-c','core.hooksPath=' + str(self.state / 'empty-hooks'), '-c','protocol.file.allow=never',
-            '-c','core.fsmonitor=false', '-C',str(checkout),*args])
+            '-c','core.fsmonitor=false', '-C',str(checkout),*args], binary=binary)
         return value.strip() if strip else value
 
     def api(self, suffix):
@@ -276,8 +282,10 @@ class HostDriver:
             require(url is not None, 'Required check lacks a pinned GitHub Actions run')
             run = self.api(f'actions/runs/{url[1]}')
             require(run['head_sha'] == candidate['head'] and run['path'] == required['workflow_path'] and run['repository']['id'] == self.c['repository_id'] and run['event'] in {'push','pull_request'}, 'CI run provenance mismatch')
-            content = self.git(self.critic, 'show', candidate['head']+':'+required['workflow_path'], strip=False)
-            require(sha256(content.encode('utf-8')) == required['workflow_sha256'], 'CI workflow content changed from approved pin')
+            content = self.git(self.critic, 'show', candidate['head']+':'+required['workflow_path'],
+                               strip=False, binary=True)
+            require(sha256(content) == required['workflow_sha256'],
+                    'CI workflow content changed from approved pin')
             if check['status'] != 'completed':
                 pending = True
             elif check['conclusion'] != 'success':

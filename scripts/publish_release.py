@@ -19,12 +19,14 @@ import zipfile
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
-from agentic.child_process import child_env
+sys.path.insert(0, str(ROOT / "scripts"))
+from agentic.child_process import child_env, isolated_git_env
 from agentic import ValidationError
 from agentic.safeio import relative_parts
+import safe_materialize
+from release_modes import write_mode_manifest
 RECORD_PREFIX = "AWF-RELEASE-RECORD: "
 RAW_GIT_ARGUMENTS = ("--no-replace-objects", "-c", "core.useReplaceRefs=false")
-RAW_GIT_ENV = {"GIT_NO_REPLACE_OBJECTS": "1"}
 GENERATORS = (
     ("scripts/generate_contracts.py",),
     ("scripts/generate_examples.py",),
@@ -65,9 +67,7 @@ def git(root, *args, text=True):
 
 def git_run(root, *args, text=True, input_data=None):
     """Run Git with replacement objects disabled for release identity and bytes."""
-    environment = os.environ.copy()
-    environment.update(RAW_GIT_ENV)
-    return run(["git", *RAW_GIT_ARGUMENTS, *args], cwd=root, env=environment, text=text,
+    return run(["git", *RAW_GIT_ARGUMENTS, *args], cwd=root, env=isolated_git_env(), text=text,
                input_data=input_data)
 
 
@@ -164,25 +164,24 @@ def _verify_materialized_tree(destination, entries, blobs):
             raise ReleaseError("Materialized release mode differs from the raw Git tree: " + path)
 
 
-def materialize_commit(repository, commit, destination):
+def materialize_commit(repository, commit, destination, *, mode_manifest=None):
     """Project one raw commit tree exactly, without archive attributes or replace refs."""
     destination = Path(destination)
     if destination.exists():
         raise ReleaseError("Release materialization destination already exists")
     entries = _tree_entries(repository, commit)
     blobs = _tree_blobs(repository, entries)
-    destination.mkdir()
     try:
-        for entry in entries:
-            target = destination.joinpath(*entry.path.split("/"))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(blobs[entry.oid])
-            if os.name != "nt":
-                target.chmod(int(entry.mode[-3:], 8))
+        safe_materialize.materialize(destination, entries, blobs)
         _verify_materialized_tree(destination, entries, blobs)
-    except BaseException:
-        shutil.rmtree(destination)
-        raise
+        if mode_manifest is not None:
+            write_mode_manifest(mode_manifest, entries)
+    except BaseException as exc:
+        if destination.exists() or destination.is_symlink():
+            shutil.rmtree(destination)
+        if isinstance(exc, ReleaseError):
+            raise
+        raise ReleaseError("No-follow release materialization failed: " + str(exc)) from exc
     return destination
 
 
@@ -301,16 +300,17 @@ def verify_windows_check(path, expected, commit, version):
     return {"sha256": expected, "checks": required}
 
 
-def build_assets(source, output, epoch):
+def build_assets(source, output, epoch, mode_manifest):
     output.mkdir(parents=True, exist_ok=False)
     env = os.environ.copy()
     env.update(SOURCE_DATE_EPOCH=str(epoch), PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
     line = (source / "VERSION").read_text(encoding="utf-8").strip().removesuffix(".0")
     source_zip = output / f"agentic-workflow-template-v{line}.zip"
     source_result = run([sys.executable, "-B", str(source / "scripts/build_release.py"),
-                         "--output", str(source_zip)], cwd=source, env=env)
+                         "--output", str(source_zip), "--git-mode-manifest", str(mode_manifest)], cwd=source, env=env)
     run([sys.executable, "-B", str(source / "scripts/build_skill_distribution.py"),
-         "--skill-source", str(source / "global/awf-portable"), "--output-dir", str(output / "portable")],
+         "--skill-source", str(source / "global/awf-portable"), "--output-dir", str(output / "portable"),
+         "--git-mode-manifest", str(mode_manifest), "--skill-git-prefix", "global/awf-portable"],
         cwd=source, env=env)
     assets = [source_zip, output / "portable" / f"AWF-SKILL-v{line}.zip",
               output / "portable" / f"AWF-v{line}-distribution.zip"]
@@ -359,11 +359,12 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
     commit = report["commit"]
     epoch = int(git(repository, "show", "-s", "--format=%ct", commit).strip())
     with tempfile.TemporaryDirectory(prefix="awf-release-publish-") as raw_temp:
-        source = materialize_commit(repository, commit, Path(raw_temp) / "source")
+        modes = Path(raw_temp) / "git-modes.json"
+        source = materialize_commit(repository, commit, Path(raw_temp) / "source", mode_manifest=modes)
         version = (source / "VERSION").read_text(encoding="utf-8").strip()
         windows = verify_windows_check(windows_check, windows_check_sha256, commit, version)
         output = output_path
-        assets, source_proof = build_assets(source, output, epoch)
+        assets, source_proof = build_assets(source, output, epoch, modes)
         env = os.environ.copy()
         env.update(SOURCE_DATE_EPOCH=str(epoch), TMP=str(Path(raw_temp) / "tmp"),
                    TEMP=str(Path(raw_temp) / "tmp"), PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
@@ -412,8 +413,9 @@ def verify_tag(repository, tag, output_dir, *, gh="gh"):
     epoch = int(git(repository, "show", "-s", "--format=%ct", commit).strip())
     with tempfile.TemporaryDirectory(prefix="awf-release-verify-") as raw_temp:
         base = Path(raw_temp)
-        source = materialize_commit(repository, commit, base / "source")
-        rebuilt, proof = build_assets(source, output_dir, epoch)
+        modes = base / "git-modes.json"
+        source = materialize_commit(repository, commit, base / "source", mode_manifest=modes)
+        rebuilt, proof = build_assets(source, output_dir, epoch, modes)
         hashes = {path.name: sha256(path) for path in rebuilt}
         if hashes != record.get("assets") or proof["manifest_sha256"] != record.get("manifest_sha256"):
             raise ReleaseError("rebuilt assets or manifest differ from the annotated tag record")

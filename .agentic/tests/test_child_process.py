@@ -8,7 +8,8 @@ import re
 import unittest
 from unittest import mock
 
-from agentic.child_process import PROVIDER_API_KEY_ENV_VARS, child_env, scrub_process_env
+from agentic.child_process import (ISOLATED_GIT_ENV, PROVIDER_API_KEY_ENV_VARS, child_env,
+                                   isolated_git_env, scrub_process_env)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +44,21 @@ class ChildEnvironmentTests(unittest.TestCase):
         with mock.patch.dict(os.environ, environment, clear=True):
             scrub_process_env()
             self.assertEqual(dict(os.environ), {"UNRELATED_VALUE": "kept"})
+
+    def test_isolated_git_environment_removes_all_inherited_git_redirection(self):
+        inherited = {
+            "Path": "fixture-bin", "GIT_DIR": "other.git", "git_work_tree": "elsewhere",
+            "GiT_ObJeCt_DiReCtOrY": "objects", "GIT_ALTERNATE_OBJECT_DIRECTORIES": "alternates",
+            "GIT_CONFIG": "redirect.cfg", "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "include.path",
+            "GIT_CONFIG_VALUE_0": "attacker.cfg", "PYTHONPATH": "candidate-code", "UNRELATED": "kept",
+        }
+        result = isolated_git_env(inherited)
+        self.assertEqual(result["UNRELATED"], "kept")
+        self.assertEqual(result["Path"], "fixture-bin")
+        self.assertNotIn("PYTHONPATH", result)
+        self.assertFalse({key for key in result if key.upper().startswith("GIT_")}
+                         - set(ISOLATED_GIT_ENV))
+        self.assertEqual({key: result[key] for key in ISOLATED_GIT_ENV}, ISOLATED_GIT_ENV)
 
     def test_scheduled_entry_points_scrub_before_non_bootstrap_imports(self):
         for relative in (".agentic/scripts/scheduled_tick.py", ".agentic/scripts/review_loop.py"):

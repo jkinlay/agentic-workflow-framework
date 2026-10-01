@@ -12,7 +12,7 @@ import re
 import subprocess
 
 from . import ValidationError
-from .child_process import child_env
+from .child_process import child_env, isolated_git_env
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 MAX_BOUND_FILES = 10000
@@ -20,11 +20,7 @@ MAX_BOUND_FILES = 10000
 
 def git_environment():
     """No inherited GIT_* redirection, no replace refs, no lazy promisor fetches, no hooks."""
-    env = {key: value for key, value in os.environ.items()
-           if not key.upper().startswith("GIT_") and key.upper() not in ("PYTHONPATH", "PYTHONHOME")}
-    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS="1",
-               GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1")
-    return env
+    return isolated_git_env()
 
 
 def git_command(repository, *args):

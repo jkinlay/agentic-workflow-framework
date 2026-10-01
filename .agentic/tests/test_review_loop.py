@@ -1,6 +1,7 @@
 """Synthetic end-to-end cycles and adversarial host adapter checks; no live agents."""
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import sqlite3
 import shutil
@@ -320,6 +321,34 @@ class HostTests(unittest.TestCase):
         self.assertEqual(driver.git(worker,'show',head+':src/a.py'),'value = 2')
         self.assertEqual(driver.git(worker,'rev-parse',head+'^'),base)
 
+    def test_host_git_ignores_inherited_repository_object_and_config_redirection(self):
+        git=shutil.which('git')
+        if not git: self.skipTest('Git executable unavailable for environment isolation regression')
+        def command(*args):
+            return subprocess.run([git,*args],text=True,encoding='utf-8',capture_output=True,
+                                  check=True).stdout.strip()
+        worker=self.base/'worker'
+        command('init','--initial-branch=main',str(worker))
+        command('-C',str(worker),'config','user.name','AWF fixture')
+        command('-C',str(worker),'config','user.email','fixture@example.invalid')
+        (worker/'src').mkdir(); (worker/'src/a.py').write_text('value = 1\n')
+        command('-C',str(worker),'add','.'); command('-C',str(worker),'commit','-m','candidate')
+        head=command('-C',str(worker),'rev-parse','HEAD')
+        self.value['executables']['git']={'path':git,'sha256':sha256(Path(git).read_bytes())}
+        driver=HostDriver(self.config(),ROOT)
+        decoy=self.base/'decoy'
+        command('init','--initial-branch=main',str(decoy))
+        command('-C',str(decoy),'config','user.name','Decoy')
+        command('-C',str(decoy),'config','user.email','decoy@example.invalid')
+        (decoy/'decoy.txt').write_text('decoy\n')
+        command('-C',str(decoy),'add','.'); command('-C',str(decoy),'commit','-m','decoy')
+        inherited={'GIT_DIR':str(decoy/'.git'),'git_work_tree':str(decoy),
+            'GIT_OBJECT_DIRECTORY':str(decoy/'.git/objects'),
+            'GIT_ALTERNATE_OBJECT_DIRECTORIES':str(decoy/'.git/objects'),
+            'GIT_CONFIG_COUNT':'1','GIT_CONFIG_KEY_0':'core.useReplaceRefs','GIT_CONFIG_VALUE_0':'true'}
+        with patch.dict(os.environ,inherited,clear=False):
+            self.assertEqual(driver.git(driver.worker,'rev-parse','HEAD'),head)
+
     def test_real_local_git_scope_escape_cannot_publish(self):
         driver,candidate,command=self.local_git_driver()
         agent=driver.agent
@@ -424,7 +453,7 @@ class HostTests(unittest.TestCase):
         checks = {'total_count':1,'check_runs':[{'name':'test','app':{'id':1},'head_sha':'a'*40,'details_url':'https://github.com/fixture/project/actions/runs/10/job/11','status':'completed','conclusion':'success'}]}
         run = {'head_sha':'a'*40,'path':'.github/workflows/ci.yml','repository':{'id':12},'event':'pull_request'}
         driver.api = lambda suffix: deepcopy(run if suffix.startswith('actions/') else checks)
-        driver.run = lambda *args,**kwargs: 'workflow\n'
+        driver.run = lambda *args,**kwargs: b'workflow\n'
         self.assertEqual(driver.ci(CANDIDATE),'PASS')
         checks['check_runs'][0]['head_sha']='e'*40
         self.assertEqual(driver.ci(CANDIDATE),'WAIT')
@@ -439,10 +468,27 @@ class HostTests(unittest.TestCase):
         checks = {'total_count':1,'check_runs':[{'name':'test','app':{'id':1},'head_sha':'a'*40,'details_url':'https://github.com/fixture/project/actions/runs/10','status':'completed','conclusion':'failure'}]}
         run = {'head_sha':'a'*40,'path':'.github/workflows/ci.yml','repository':{'id':12},'event':'push'}
         driver.api=lambda suffix: deepcopy(run if suffix.startswith('actions/') else checks)
-        driver.run=lambda *args,**kwargs: 'workflow\n'
+        driver.run=lambda *args,**kwargs: b'workflow\n'
         self.assertEqual(driver.ci(CANDIDATE),'FAIL')
-        driver.run=lambda *args,**kwargs: 'changed\n'
+        driver.run=lambda *args,**kwargs: b'changed\n'
         with self.assertRaises(ValidationError): driver.ci(CANDIDATE)
+
+    def test_ci_workflow_pin_compares_raw_crlf_and_lf_blob_bytes(self):
+        driver = HostDriver(self.config(),ROOT)
+        checks = {'total_count':1,'check_runs':[{'name':'test','app':{'id':1},'head_sha':'a'*40,
+            'details_url':'https://github.com/fixture/project/actions/runs/10','status':'completed','conclusion':'success'}]}
+        run = {'head_sha':'a'*40,'path':'.github/workflows/ci.yml','repository':{'id':12},'event':'push'}
+        driver.api=lambda suffix: deepcopy(run if suffix.startswith('actions/') else checks)
+        calls=[]
+        def raw(*args,**kwargs):
+            calls.append(kwargs)
+            return b'workflow\r\n'
+        driver.run=raw
+        with self.assertRaisesRegex(ValidationError,'workflow content changed'):
+            driver.ci(CANDIDATE)
+        self.assertTrue(calls[-1]['binary'])
+        driver.c['required_checks'][0]['workflow_sha256']=sha256(b'workflow\r\n')
+        self.assertEqual(driver.ci(CANDIDATE),'PASS')
 
     def test_protected_paths_and_unsafe_names(self):
         for value in ['AGENTS.md','src/AGENTS.md','.agentic/a','x/.codex/a','.github/workflows/ci.yml','scripts/bootstrap_project.py']:

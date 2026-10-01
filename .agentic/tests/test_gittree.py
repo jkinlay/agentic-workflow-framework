@@ -186,7 +186,8 @@ class GitTreeTests(unittest.TestCase):
                                capture_output=True, text=True)
         if probe.returncode:
             self.skipTest("TOOLCHAIN_ABSENT: installed Git lacks SHA-256 repository support")
-        for key, value in (("user.name", "AWF fixture"), ("user.email", "fixture@example.invalid")):
+        for key, value in (("user.name", "AWF fixture"), ("user.email", "fixture@example.invalid"),
+                           ("core.autocrlf", "false")):
             subprocess.run([shutil.which("git"), "-C", str(other), "config", key, value], check=True)
         (other / "a.txt").write_text("base\n", encoding="utf-8")
         subprocess.run([shutil.which("git"), "-C", str(other), "add", "a.txt"], check=True)

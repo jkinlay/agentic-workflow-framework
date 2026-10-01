@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 
 from . import ValidationError
-from .child_process import child_env
+from .child_process import child_env, isolated_git_env
 from .gittree import verify_publisher_tree
 
 
@@ -68,13 +68,7 @@ class Detector:
 
 
 def _safe_env(extra=None):
-    env = {key: value for key, value in os.environ.items()
-           if not key.upper().startswith("GIT_") and key.upper() not in {"PYTHONPATH", "PYTHONHOME"}}
-    env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_NO_REPLACE_OBJECTS="1",
-               GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_LAZY_FETCH="1")
-    if extra:
-        env.update(extra)
-    return env
+    return isolated_git_env(extra=extra)
 
 
 def _git(root, *args, input_bytes=None, extra_env=None, check=True, timeout=120):

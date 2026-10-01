@@ -9,7 +9,7 @@ import stat
 import subprocess
 
 from . import ValidationError
-from .child_process import child_env
+from .child_process import child_env, isolated_git_env
 
 
 @dataclass(frozen=True)
@@ -23,16 +23,13 @@ def _git(root, *args, input_bytes=None):
     executable = shutil.which("git")
     if not executable:
         raise ValidationError("Git is required to compute a tested tree")
-    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
-    env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_TERMINAL_PROMPT="0",
-               GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1")
     safe_root = str(Path(root).resolve())
     try:
         result = subprocess.run(
             [executable, "--no-replace-objects", "-c", "core.useReplaceRefs=false",
              "-c", "safe.directory=" + safe_root, *args], cwd=root,
             input=input_bytes, capture_output=True,
-            timeout=60, env=child_env(env), check=False,
+            timeout=60, env=child_env(isolated_git_env()), check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValidationError(f"Git tree command failed: {type(exc).__name__}: {exc}") from exc

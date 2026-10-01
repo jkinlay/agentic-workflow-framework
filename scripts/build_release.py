@@ -16,17 +16,13 @@ from agentic.canonical import sha256
 from agentic.installer import RELEASE_EXCLUDED_PREFIXES, release_member, verify_release
 from agentic.safeio import Tree
 from release_hygiene import check_release
+from release_modes import archive_mode, load_modes
 
 
 def archive_time():
     epoch = int(os.environ.get('SOURCE_DATE_EPOCH', '315532800'))
     value = datetime.fromtimestamp(max(epoch, 315532800), timezone.utc)
     return (value.year, value.month, value.day, value.hour, value.minute, value.second // 2 * 2)
-
-
-def archive_mode(data):
-    """Use content-defined modes so Windows and POSIX builds agree."""
-    return 0o100755 if data.startswith(b'#!') else 0o100644
 
 
 def manifest():
@@ -71,6 +67,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--manifest-only', action='store_true')
+    parser.add_argument('--git-mode-manifest', type=Path,
+                        help='raw tagged-tree mode map (required for a materialized source without .git)')
     args = parser.parse_args()
     if not args.manifest_only and not args.output:
         parser.error('--output ZIP is required unless --manifest-only is used')
@@ -82,6 +80,7 @@ def main():
         return 0
     output = args.output.absolute()
     output.parent.mkdir(parents=True, exist_ok=True)
+    modes = load_modes(ROOT, args.git_mode_manifest)
     prefix = 'agentic-workflow-template-v' + VERSION.removesuffix('.0') + '/'
     expected = {}
     with Tree(ROOT) as tree, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_STORED) as archive:
@@ -91,7 +90,7 @@ def main():
             data = tree.read(relative)
             info = zipfile.ZipInfo(prefix + relative.replace('\\', '/'), date_time=archive_time())
             info.create_system = 3
-            info.external_attr = archive_mode(data) << 16
+            info.external_attr = archive_mode(modes, relative.replace('\\', '/')) << 16
             info.compress_type = zipfile.ZIP_STORED
             info.extra = b''
             info.comment = b''
