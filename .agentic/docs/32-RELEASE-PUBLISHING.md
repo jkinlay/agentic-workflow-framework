@@ -16,7 +16,9 @@ Dry-run builds and validates locally but creates no tag, push or hosted release.
 
 ## Reproducible assets
 
-The source, portable-skill and complete-distribution ZIPs use sorted `/` member names, `ZIP_STORED`, the commit time converted to a UTC DOS timestamp, content-defined `0755` metadata for shebang executables and `0644` for other files, and empty extra/comment fields. Generated JSON and checksum text use deterministic ordering, UTF-8 and LF. Source validation rejects checkout CRLF/BOM bytes. Archive metadata ignores locale, umask and filesystem timestamps; output paths are not embedded.
+Release materialization reads the tagged commit with replacement objects disabled and enumerates its raw tree modes, object IDs and blob bytes. It does not use `git archive`, so committed `export-ignore` attributes cannot remove files. Before any destination path is created it rejects symlinks, gitlinks and other non-regular modes, nonportable or Windows-reserved names, trailing-dot/space aliases, and case-folding collisions at every path prefix. The completed projection is checked back against the raw inventory, regular modes and bytes.
+
+The source, portable-skill and complete-distribution ZIPs use sorted `/` member names, `ZIP_STORED`, the commit time converted to a UTC DOS timestamp, content-defined `0755` metadata for shebang executables and `0644` for other files, and empty extra/comment fields. Portable skill and distribution manifest inputs are ordered by repository-relative POSIX path strings, independent of native `Path` comparison rules. Generated JSON and checksum text use deterministic ordering, UTF-8 and LF. Source validation rejects checkout CRLF/BOM bytes. Archive metadata ignores locale, umask and filesystem timestamps; output paths are not embedded.
 
 The tag message and release body contain one canonical record binding the commit, `MANIFEST.json` SHA-256, every asset SHA-256, validation counts and the pinned clean-Windows check.
 

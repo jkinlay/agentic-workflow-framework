@@ -10,7 +10,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -183,6 +185,67 @@ class PublishReleaseTests(unittest.TestCase):
         materialized = self.base / "replacement-object-materialized"
         publisher.materialize_commit(repository, reviewed, materialized)
         self.assertEqual(b"reviewed release bytes\n", (materialized / "released.txt").read_bytes())
+
+    def test_b001_materialization_ignores_export_attributes_and_verifies_raw_tree(self):
+        repository = self.base / "raw-tree-source"
+        repository.mkdir()
+        command(["git", "init", "-b", "main"], repository, self.git_env)
+        command(["git", "config", "user.name", "Raw Tree Publisher"], repository, self.git_env)
+        command(["git", "config", "user.email", "raw-tree@example.invalid"], repository, self.git_env)
+        (repository / ".gitattributes").write_text("omitted.txt export-ignore\n", encoding="utf-8")
+        (repository / "omitted.txt").write_bytes(b"must remain in the tagged tree projection\n")
+        (repository / "ordinary.txt").write_bytes(b"ordinary\n")
+        (repository / "run.sh").write_bytes(b"#!/bin/sh\nexit 0\n")
+        command(["git", "add", "."], repository, self.git_env)
+        command(["git", "update-index", "--chmod=+x", "run.sh"], repository, self.git_env)
+        command(["git", "-c", "commit.gpgsign=false", "commit", "-m", "Raw release tree"],
+                repository, self.git_env)
+        commit = command(["git", "rev-parse", "HEAD"], repository, self.git_env)
+        entries = publisher._tree_entries(repository, commit)
+        blobs = publisher._tree_blobs(repository, entries)
+        source = self.base / "raw-tree-materialized"
+        publisher.materialize_commit(repository, commit, source)
+        self.assertEqual({".gitattributes", "omitted.txt", "ordinary.txt", "run.sh"},
+                         {path.relative_to(source).as_posix() for path in source.rglob("*") if path.is_file()})
+        self.assertEqual("100755", next(entry.mode for entry in entries if entry.path == "run.sh"))
+        self.assertEqual(b"must remain in the tagged tree projection\n", (source / "omitted.txt").read_bytes())
+
+        (source / "extra.txt").write_bytes(b"extra\n")
+        with self.assertRaisesRegex(publisher.ReleaseError, "inventory"):
+            publisher._verify_materialized_tree(source, entries, blobs)
+        (source / "extra.txt").unlink()
+        original = (source / "ordinary.txt").read_bytes()
+        (source / "ordinary.txt").write_bytes(b"changed\n")
+        with self.assertRaisesRegex(publisher.ReleaseError, "bytes"):
+            publisher._verify_materialized_tree(source, entries, blobs)
+        (source / "ordinary.txt").write_bytes(original)
+        if os.name != "nt":
+            (source / "run.sh").chmod(0o644)
+            with self.assertRaisesRegex(publisher.ReleaseError, "mode"):
+                publisher._verify_materialized_tree(source, entries, blobs)
+
+    def test_b001_unsafe_modes_and_aliases_fail_before_materialization(self):
+        oid = "a" * 40
+        cases = {
+            "symlink": (f"120000 blob {oid}\tlink\0".encode(), "non-regular"),
+            "case files": ((f"100644 blob {oid}\tName.txt\0"
+                            f"100644 blob {oid}\tname.txt\0").encode(), "case-folding"),
+            "case directories": ((f"100644 blob {oid}\tFoo/a.txt\0"
+                                  f"100644 blob {oid}\tfoo/b.txt\0").encode(), "case-folding"),
+            "reserved": (f"100644 blob {oid}\tdir/CON.txt\0".encode(), "nonportable"),
+            "trailing dot": (f"100644 blob {oid}\talias.\0".encode(), "nonportable"),
+        }
+        for label, (tree, message) in cases.items():
+            destination = self.base / ("unsafe-" + label.replace(" ", "-"))
+            def fake_git_run(_repository, *arguments, **_kwargs):
+                if arguments[0] == "rev-parse":
+                    return SimpleNamespace(stdout=oid + "\n")
+                self.assertEqual(arguments[0], "ls-tree")
+                return SimpleNamespace(stdout=tree)
+            with self.subTest(label=label), patch.object(publisher, "git_run", side_effect=fake_git_run):
+                with self.assertRaisesRegex(publisher.ReleaseError, message):
+                    publisher.materialize_commit(self.repository, self.commit, destination)
+                self.assertFalse(destination.exists())
 
     def make_fake_gh(self, directory, storage, log):
         script = directory / "fake_gh.py"

@@ -41,6 +41,8 @@ The publisher preserves the JSON receipt. Its resolved base and head and `pr_bod
 
 A successful rewrite does not erase reflogs or unreachable objects. When a value must also leave the local object store, an operator applies an approved retention policy to expire the relevant reflogs and prune unreachable objects after preserving required recovery evidence.
 
+All publication identity and byte reads disable Git replacement objects in both the command line and child environment. Local `refs/replace/*` metadata therefore cannot substitute the publisher `HEAD^{tree}`, amendment parent/head identity, scanned history, or pinned CI workflow bytes.
+
 ## Remaining L9 work
 
 This change supplies scanning and alias rendering. The later P1 half must retrofit alias rendering into every existing report/prompt producer and add external-resource admission, lifetime, remap, and bounded-observation controls. Until then, producers call `publication-render` explicitly and the publication scan remains the final blocking control.

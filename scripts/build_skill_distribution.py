@@ -30,6 +30,12 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
+def sorted_files(root):
+    """Return files in repository-style POSIX path order on every host OS."""
+    return sorted((path for path in root.rglob("*") if path.is_file()),
+                  key=lambda path: path.relative_to(root).as_posix())
+
+
 def archive_time():
     epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "315532800"))
     value = datetime.fromtimestamp(max(epoch, 315532800), timezone.utc)
@@ -63,8 +69,7 @@ raise SystemExit(subprocess.call([sys.executable, "-B", str(root / "scripts/inst
 
 
 def package(root, output):
-    paths = sorted((p for p in root.rglob("*") if p.is_file()),
-                   key=lambda p: p.relative_to(root).as_posix())
+    paths = sorted_files(root)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as z:
         for p in paths:
             data = p.read_bytes()
@@ -128,7 +133,7 @@ def main():
         "archive": release_zip.name, "archive_sha256": proof["zip_sha256"], "manifest_sha256": proof["manifest_sha256"]})
     manifest = {"schema_version": 1, "name": "awf", "version": VERSION,
         "files": [{"path": p.relative_to(packaged_skill).as_posix(), "sha256": digest(p.read_bytes())}
-                  for p in sorted(packaged_skill.rglob("*")) if p.is_file()]}
+                  for p in sorted_files(packaged_skill)]}
     write_json(packaged_skill / "SKILL-MANIFEST.json", manifest)
     pin = digest((packaged_skill / "SKILL-MANIFEST.json").read_bytes())
     installer_pin = digest((packaged_skill / "scripts/install_skill.py").read_bytes())
@@ -165,7 +170,8 @@ No personal paths, credentials or local settings are shipped. A copied update ch
         "archive": "awf/assets/" + release_zip.name, "archive_sha256": proof["zip_sha256"], "manifest_sha256": proof["manifest_sha256"]}]})
     skill_zip = output / f"AWF-SKILL-v{LINE}.zip"
     skill_sha = package(packaged_skill, skill_zip)
-    members = {p.relative_to(distribution).as_posix(): digest(p.read_bytes()) for p in sorted(distribution.rglob("*")) if p.is_file()}
+    members = {p.relative_to(distribution).as_posix(): digest(p.read_bytes())
+               for p in sorted_files(distribution)}
     write_json(distribution / "DISTRIBUTION-MANIFEST.json", {"format": "awf-portable-distribution-1", "version": VERSION, "files": members})
     dist_zip = output / f"AWF-v{LINE}-distribution.zip"
     dist_sha = package(distribution, dist_zip)

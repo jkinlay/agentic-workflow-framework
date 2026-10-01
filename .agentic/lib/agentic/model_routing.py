@@ -764,6 +764,10 @@ class RoutingLedger:
         _name(project_id, "project_id")
         _name(ticket_id, "ticket_id")
         with closing(self._connect()) as connection:
+            # BEGIN pins one read snapshot across both aggregates. Without it,
+            # a reservation commit between the SELECTs can expose its
+            # disposition request without exposing the corresponding run.
+            connection.execute("BEGIN")
             rows = connection.execute(
                 "SELECT role,status,reserved_tokens,actual_tokens FROM model_runs "
                 "WHERE project_id=? AND ticket_id=? ORDER BY rowid", (project_id, ticket_id)).fetchall()

@@ -105,8 +105,11 @@ class HostDriver:
         env = dict(os.environ)
         # Neither candidate Git overrides nor paid API auth is inherited.
         for key in list(env):
-            if key.startswith('GIT_'):
+            if key.upper().startswith('GIT_'):
                 env.pop(key)
+        if name == 'git':
+            env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                GIT_NO_REPLACE_OBJECTS='1', GIT_OPTIONAL_LOCKS='0', GIT_NO_LAZY_FETCH='1')
         if name == 'codex':
             for key in ['GH_TOKEN','GITHUB_TOKEN']:
                 env.pop(key, None)
@@ -127,7 +130,8 @@ class HostDriver:
         return result.stdout
 
     def git(self, checkout, *args, strip=True):
-        value = self.run('git', ['-c','core.hooksPath=' + str(self.state / 'empty-hooks'), '-c','protocol.file.allow=never',
+        value = self.run('git', ['--no-replace-objects', '-c','core.useReplaceRefs=false',
+            '-c','core.hooksPath=' + str(self.state / 'empty-hooks'), '-c','protocol.file.allow=never',
             '-c','core.fsmonitor=false', '-C',str(checkout),*args])
         return value.strip() if strip else value
 

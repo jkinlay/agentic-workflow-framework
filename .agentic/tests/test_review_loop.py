@@ -293,6 +293,33 @@ class HostTests(unittest.TestCase):
         self.assertEqual(command('-C',str(driver.worker),'rev-parse','HEAD^'),candidate['head'])
         self.assertEqual(command('-C',str(driver.worker),'status','--porcelain'),'')
 
+    def test_host_git_ignores_replacements_for_amendment_identity_and_pinned_bytes(self):
+        git = shutil.which('git')
+        if not git:
+            self.skipTest('Git executable unavailable for replacement-ref regression')
+        worker = self.base/'worker'
+        def command(*args):
+            return subprocess.run([git,*args],text=True,encoding='utf-8',capture_output=True,
+                                  check=True).stdout.strip()
+        command('init','--initial-branch=main',str(worker))
+        command('-C',str(worker),'config','user.name','AWF fixture')
+        command('-C',str(worker),'config','user.email','fixture@example.invalid')
+        command('-C',str(worker),'config','commit.gpgsign','false')
+        (worker/'src').mkdir(); (worker/'src/a.py').write_text('value = 1\n')
+        command('-C',str(worker),'add','src/a.py'); command('-C',str(worker),'commit','-m','baseline')
+        base = command('-C',str(worker),'rev-parse','HEAD')
+        (worker/'src/a.py').write_text('value = 2\n')
+        command('-C',str(worker),'commit','-am','candidate')
+        head = command('-C',str(worker),'rev-parse','HEAD')
+        self.value['executables']['git']={'path':git,'sha256':sha256(Path(git).read_bytes())}
+        driver = HostDriver(self.config(),ROOT)
+        command('-C',str(worker),'replace',head,base)
+        # Ordinary Git follows the local replacement ref and exposes baseline
+        # workflow-like bytes in place of the enrolled candidate bytes.
+        self.assertEqual(command('-C',str(worker),'show',head+':src/a.py'),'value = 1')
+        self.assertEqual(driver.git(worker,'show',head+':src/a.py'),'value = 2')
+        self.assertEqual(driver.git(worker,'rev-parse',head+'^'),base)
+
     def test_real_local_git_scope_escape_cannot_publish(self):
         driver,candidate,command=self.local_git_driver()
         agent=driver.agent

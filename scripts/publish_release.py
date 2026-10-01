@@ -13,12 +13,15 @@ import stat
 import subprocess
 import sys
 import tempfile
+from typing import NamedTuple
 import zipfile
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.child_process import child_env
+from agentic import ValidationError
+from agentic.safeio import relative_parts
 RECORD_PREFIX = "AWF-RELEASE-RECORD: "
 RAW_GIT_ARGUMENTS = ("--no-replace-objects", "-c", "core.useReplaceRefs=false")
 RAW_GIT_ENV = {"GIT_NO_REPLACE_OBJECTS": "1"}
@@ -36,12 +39,18 @@ class ReleaseError(ValueError):
     pass
 
 
+class TreeEntry(NamedTuple):
+    path: str
+    mode: str
+    oid: str
+
+
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def run(command, *, cwd, env=None, text=True):
-    result = subprocess.run(command, cwd=cwd, env=child_env(env), capture_output=True,
+def run(command, *, cwd, env=None, text=True, input_data=None):
+    result = subprocess.run(command, cwd=cwd, env=child_env(env), input=input_data, capture_output=True,
                             text=text, timeout=3600, check=False)
     if result.returncode:
         stdout = result.stdout if text else result.stdout.decode(errors="replace")
@@ -54,29 +63,126 @@ def git(root, *args, text=True):
     return git_run(root, *args, text=text).stdout
 
 
-def git_run(root, *args, text=True):
+def git_run(root, *args, text=True, input_data=None):
     """Run Git with replacement objects disabled for release identity and bytes."""
     environment = os.environ.copy()
     environment.update(RAW_GIT_ENV)
-    return run(["git", *RAW_GIT_ARGUMENTS, *args], cwd=root, env=environment, text=text)
+    return run(["git", *RAW_GIT_ARGUMENTS, *args], cwd=root, env=environment, text=text,
+               input_data=input_data)
+
+
+def _tree_entries(repository, commit):
+    """Read and validate the exact raw commit tree before creating any path."""
+    resolved = git(repository, "rev-parse", "--verify", f"{commit}^{{commit}}").strip()
+    raw = git_run(repository, "ls-tree", "-rz", "--full-tree", resolved, text=False).stdout
+    entries = []
+    aliases = {}
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, encoded_path = record.split(b"\t", 1)
+            mode, kind, oid = metadata.decode("ascii").split(" ")
+            path = encoded_path.decode("utf-8")
+        except (UnicodeError, ValueError) as exc:
+            raise ReleaseError("Git returned a malformed or non-UTF-8 release-tree entry") from exc
+        if kind != "blob" or mode not in {"100644", "100755"} or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", oid):
+            raise ReleaseError(f"Release tree contains a non-regular entry: {path}")
+        try:
+            parts = relative_parts(path)
+        except ValidationError as exc:
+            raise ReleaseError(f"Release tree contains an unsafe or nonportable path: {path}") from exc
+        # Check every prefix so Foo/a and foo/b cannot name one directory on a
+        # case-insensitive filesystem even though their complete paths differ.
+        for index in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:index])
+            folded = prefix.casefold()
+            if folded in aliases and aliases[folded] != prefix:
+                raise ReleaseError(
+                    f"Release tree contains case-folding aliases: {aliases[folded]} and {prefix}")
+            aliases[folded] = prefix
+        entries.append(TreeEntry(path, mode, oid))
+    if not entries:
+        raise ReleaseError("Release tree is empty")
+    return entries
+
+
+def _tree_blobs(repository, entries):
+    oids = list(dict.fromkeys(entry.oid for entry in entries))
+    request = b"".join(oid.encode("ascii") + b"\n" for oid in oids)
+    raw = git_run(repository, "cat-file", "--batch", text=False, input_data=request).stdout
+    blobs = {}
+    offset = 0
+    for requested in oids:
+        newline = raw.find(b"\n", offset)
+        if newline < 0:
+            raise ReleaseError("Git returned a truncated blob batch")
+        try:
+            actual, kind, raw_size = raw[offset:newline].decode("ascii").split(" ")
+            size = int(raw_size)
+        except (UnicodeError, ValueError) as exc:
+            raise ReleaseError("Git returned malformed blob metadata") from exc
+        offset = newline + 1
+        end = offset + size
+        if actual != requested or kind != "blob" or size < 0 or end >= len(raw) or raw[end:end + 1] != b"\n":
+            raise ReleaseError("Git returned inconsistent release blob data")
+        blobs[requested] = raw[offset:end]
+        offset = end + 1
+    if offset != len(raw):
+        raise ReleaseError("Git returned trailing release blob data")
+    return blobs
+
+
+def _verify_materialized_tree(destination, entries, blobs):
+    expected = {entry.path: entry for entry in entries}
+    expected_directories = {"/".join(entry.path.split("/")[:index])
+                            for entry in entries for index in range(1, len(entry.path.split("/")))}
+    actual = {}
+    actual_directories = set()
+    for base, directories, files in os.walk(destination, followlinks=False):
+        for name in directories + files:
+            node = Path(base) / name
+            relative = node.relative_to(destination).as_posix()
+            info = node.lstat()
+            if node.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise ReleaseError("Materialized release contains a link or reparse point: " + relative)
+            if name in directories:
+                if not stat.S_ISDIR(info.st_mode):
+                    raise ReleaseError("Materialized release contains a non-directory: " + relative)
+                actual_directories.add(relative)
+            else:
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ReleaseError("Materialized release contains a non-regular file: " + relative)
+                actual[relative] = info
+    if set(actual) != set(expected) or actual_directories != expected_directories:
+        raise ReleaseError("Materialized release inventory differs from the raw Git tree")
+    for path, entry in expected.items():
+        target = destination.joinpath(*path.split("/"))
+        if target.read_bytes() != blobs[entry.oid]:
+            raise ReleaseError("Materialized release bytes differ from the raw Git tree: " + path)
+        if os.name != "nt" and stat.S_IMODE(actual[path].st_mode) != int(entry.mode[-3:], 8):
+            raise ReleaseError("Materialized release mode differs from the raw Git tree: " + path)
 
 
 def materialize_commit(repository, commit, destination):
-    archive = destination.parent / (destination.name + ".zip")
-    git_run(repository, "archive", "--format=zip", "--output", str(archive), commit)
+    """Project one raw commit tree exactly, without archive attributes or replace refs."""
+    destination = Path(destination)
+    if destination.exists():
+        raise ReleaseError("Release materialization destination already exists")
+    entries = _tree_entries(repository, commit)
+    blobs = _tree_blobs(repository, entries)
     destination.mkdir()
-    with zipfile.ZipFile(archive) as package:
-        for info in package.infolist():
-            name = info.filename.rstrip("/")
-            parts = name.split("/")
-            if (not name or any(part in ("", ".", "..") for part in parts)
-                    or "\\" in info.filename or ":" in info.filename):
-                raise ReleaseError("Git archive contains an unsafe member")
-            if info.is_dir():
-                continue
-            target = destination.joinpath(*parts)
+    try:
+        for entry in entries:
+            target = destination.joinpath(*entry.path.split("/"))
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(package.read(info))
+            target.write_bytes(blobs[entry.oid])
+            if os.name != "nt":
+                target.chmod(int(entry.mode[-3:], 8))
+        _verify_materialized_tree(destination, entries, blobs)
+    except BaseException:
+        shutil.rmtree(destination)
+        raise
     return destination
 
 

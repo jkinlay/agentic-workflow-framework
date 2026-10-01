@@ -244,6 +244,38 @@ class ModelRoutingTests(unittest.TestCase):
         summary = self.ledger.summary("project-1", "EX-10")
         self.assertEqual(len(summary["disposition_requests"]), 1)
 
+    def test_summary_uses_one_read_snapshot_for_runs_and_dispositions(self):
+        reserved = self.reserve()
+        with closing(sqlite3.connect(self.path)) as setup:
+            self.assertEqual(setup.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+        reader = self.ledger._connect()
+        writer = sqlite3.connect(self.path, timeout=30)
+        observation = {"request_id": "concurrent-request", "run_id": reserved["run_id"]}
+
+        class CommitBetweenSummaryReads:
+            def __init__(self):
+                self.inserted = False
+
+            def execute(proxy, sql, parameters=()):
+                if sql.startswith("SELECT observation FROM model_disposition_requests"):
+                    writer.execute("INSERT INTO model_disposition_requests VALUES (?,?,?,?,?)", (
+                        "concurrent-request", "project-1", "EX-10", reserved["run_id"],
+                        json.dumps(observation)))
+                    writer.commit()
+                    proxy.inserted = True
+                return reader.execute(sql, parameters)
+
+            def close(proxy):
+                reader.close()
+                writer.close()
+
+        connection = CommitBetweenSummaryReads()
+        with patch.object(self.ledger, "_connect", return_value=connection):
+            summary = self.ledger.summary("project-1", "EX-10")
+        self.assertTrue(connection.inserted)
+        self.assertEqual((summary["runs"], summary["disposition_requests"]), (1, []))
+        self.assertEqual(len(self.ledger.summary("project-1", "EX-10")["disposition_requests"]), 1)
+
     def test_cost_caps_need_known_reservations_and_actuals(self):
         self.policy["budgets"]["max_cost_microusd_per_ticket"] = 100
         with self.assertRaisesRegex(ValidationError, "cost reservation"):

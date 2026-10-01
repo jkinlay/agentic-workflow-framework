@@ -1,10 +1,10 @@
 # Balanced model routing
 
-Version 1.9.3. [SPECIFICATION](../SPECIFICATION.md) defines authority. The router proposes routes and records usage; the host authenticates evidence, launches models and enforces limits.
+Version 1.9.3. [SPECIFICATION](../SPECIFICATION.md) defines authority. The router records routes/usage; the host authenticates evidence and enforces launches/limits.
 
 ## Policy and escalation
 
-Configure `execution.model_routing`; `defaults` prints its complete schema-compatible settings.
+Configure `execution.model_routing`; `defaults` prints complete settings.
 
 | Role/condition | Model | Effort |
 | --- | --- | --- |
@@ -22,7 +22,7 @@ Escalation uses failure history between runs. Model rank and effort never decrea
 
 Credentials, infrastructure, rate limits, cancellation and unknown outcomes require investigation. `resolve-failure` records verified recovery before a same-model retry; it preserves budgets, floors and pins.
 
-A model/effort listed by policy or a host is a claim until a current observation proves it. Observation entries record host ID, host software/version, `successful_probe` or `recorded_refusal`, and `observed_at`. `execution.route_capabilities.max_age_days` defaults to 30; missing, refused, unproven or stale configured routes produce the warning-only `route_models_observed` preflight row and never block installation.
+A configured model/effort is a claim until current observation proves it. Observation entries record host ID, host software/version, `successful_probe` or `recorded_refusal`, and `observed_at`. `execution.route_capabilities.max_age_days` defaults to 30; missing, refused, unproven or stale configured routes produce the warning-only `route_models_observed` preflight row and never block installation.
 
 ## Reservation and settlement
 
@@ -32,7 +32,7 @@ A model/effort listed by policy or a host is a claim until a current observation
 
 When every effective monetary ceiling is `null`, a host without verified dollar accounting may reserve and settle with `reservation_cost_microusd: null` and `actual_cost_microusd: null`; token and run ceilings remain mandatory. If any effective monetary ceiling is an integer, the existing hard cost reservation and actual-cost requirements still apply. New adoptions default to 2,000,000 tokens and 16 runs per ticket, plus 30,000,000 tokens and 250 runs per project day; upgrades preserve reviewed project configuration until an owner opts in through a governance PR.
 
-For cap *N*, `WARN` starts at `ceil(.75N)` and `NEEDS_DISPOSITION` at `ceil(.90N)`. Crossings succeed; the latter appends an owner request (usage, findings, `continue|rescope|park`). Only the cap refuses. `summary --ticket T` groups runs/tokens by role. Round caps remain independent.
+For cap *N*, `WARN` starts at `ceil(.75N)` and `NEEDS_DISPOSITION` at `ceil(.90N)`. Crossings succeed; the latter appends an owner request (usage, findings, `continue|rescope|park`). Only the cap refuses. `summary --ticket T` groups runs/tokens by role. Run and disposition totals share one SQLite snapshot, preventing mixed concurrent summaries. Round caps remain independent.
 
 Outstanding runs block duplicate ticket/role/phase admission and remain charged across midnight. Ticket history survives policy changes. Usage counts on its start and closure UTC days; there are no timeout refunds.
 
