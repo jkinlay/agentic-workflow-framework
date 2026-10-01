@@ -148,6 +148,42 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertIn("stale generated file: .agentic/schemas/run-disposition-request.schema.json", problems)
         self.assertIn("stale generated file: .agentic/examples/project-status.json", problems)
 
+    def test_g001_replacement_objects_cannot_substitute_release_bytes_or_identity(self):
+        repository = self.base / "replacement-object-source"
+        repository.mkdir()
+        command(["git", "init", "-b", "main"], repository, self.git_env)
+        command(["git", "config", "user.name", "Original Publisher"], repository, self.git_env)
+        command(["git", "config", "user.email", "original@example.invalid"], repository, self.git_env)
+        command(["git", "config", "core.autocrlf", "false"], repository, self.git_env)
+        released = repository / "released.txt"
+        released.write_bytes(b"reviewed release bytes\n")
+        command(["git", "add", "released.txt"], repository, self.git_env)
+        command(["git", "-c", "commit.gpgsign=false", "commit", "-m", "Reviewed release identity"],
+                repository, self.git_env)
+        reviewed = command(["git", "rev-parse", "HEAD"], repository, self.git_env)
+
+        command(["git", "config", "user.name", "Replacement Publisher"], repository, self.git_env)
+        command(["git", "config", "user.email", "replacement@example.invalid"], repository, self.git_env)
+        released.write_bytes(b"substituted release bytes\n")
+        command(["git", "add", "released.txt"], repository, self.git_env)
+        command(["git", "-c", "commit.gpgsign=false", "commit", "-m", "Replacement release identity"],
+                repository, self.git_env)
+        replacement = command(["git", "rev-parse", "HEAD"], repository, self.git_env)
+        command(["git", "replace", reviewed, replacement], repository, self.git_env)
+        command(["git", "update-ref", "refs/heads/main", reviewed], repository, self.git_env)
+
+        self.assertEqual("Replacement release identity",
+                         command(["git", "show", "-s", "--format=%s", reviewed], repository, self.git_env))
+        self.assertEqual("substituted release bytes",
+                         command(["git", "show", f"{reviewed}:released.txt"], repository, self.git_env))
+        identity = publisher.git(
+            repository, "show", "-s", "--format=%H%x00%an%x00%ae%x00%s", reviewed).strip().split("\0")
+        self.assertEqual([reviewed, "Original Publisher", "original@example.invalid",
+                          "Reviewed release identity"], identity)
+        materialized = self.base / "replacement-object-materialized"
+        publisher.materialize_commit(repository, reviewed, materialized)
+        self.assertEqual(b"reviewed release bytes\n", (materialized / "released.txt").read_bytes())
+
     def make_fake_gh(self, directory, storage, log):
         script = directory / "fake_gh.py"
         script.write_text("""import json, os, pathlib, shutil, sys

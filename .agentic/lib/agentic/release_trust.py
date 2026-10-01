@@ -111,7 +111,7 @@ def establish_release_trust(root, *, release_source=None, expected_manifest_sha2
                     'Host skill local-file digest inventory is invalid')
             expected_paths = set(approved) | set(local) | {
                 'SKILL-MANIFEST.json', '.awf-install-receipt.json'}
-            require(set(tree.file_list(exclude_root_git=True)) == expected_paths,
+            require(set(tree.file_list(reject_root_git=True)) == expected_paths,
                     'Host skill inventory is not closed by its receipt')
             total = 0
             content = {}

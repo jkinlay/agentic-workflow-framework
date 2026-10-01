@@ -63,7 +63,7 @@ def manifest():
     lines.extend(f'| `{p}` | `{h}` |' for p,h in files.items())
     (ROOT / 'MANIFEST.md').write_text('\n'.join(lines)+'\n', encoding='utf-8', newline='\n')
     with Tree(ROOT) as tree:
-        verify_release(tree, sha256(raw))
+        verify_release(tree, sha256(raw), allow_source_checkout=True)
     return sha256(raw)
 
 

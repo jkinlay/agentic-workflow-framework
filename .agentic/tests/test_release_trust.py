@@ -95,6 +95,23 @@ class ReleaseTrustTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'inventory is not closed'):
             self.host()
 
+    def test_k5_root_git_directory_and_file_are_rejected_by_host_receipt_closure(self):
+        for kind in ('directory', 'file'):
+            with self.subTest(kind=kind):
+                metadata = self.skill / '.git'
+                if kind == 'directory':
+                    metadata.mkdir()
+                else:
+                    metadata.write_text('gitdir: elsewhere\n', encoding='utf-8')
+                try:
+                    with self.assertRaisesRegex(ValidationError, 'Root Git metadata is not permitted'):
+                        self.host()
+                finally:
+                    if kind == 'directory':
+                        metadata.rmdir()
+                    else:
+                        metadata.unlink()
+
     def test_changed_preserved_local_file_is_rejected(self):
         local = self.skill / 'local-config.json'
         local.write_text('{"fixture":true}\n', encoding='utf-8')
@@ -122,6 +139,25 @@ class ReleaseTrustTests(unittest.TestCase):
         (self.source / 'unapproved.py').write_bytes(b'# inert extra\n')
         with self.assertRaisesRegex(ValidationError, 'membership mismatch'):
             approved_manifest(self.project, release_source=self.source, expected_manifest_sha256=self.pin)
+
+    def test_k7_extracted_source_rejects_root_git_directory_and_file(self):
+        for kind in ('directory', 'file'):
+            with self.subTest(kind=kind):
+                metadata = self.source / '.git'
+                if kind == 'directory':
+                    metadata.mkdir()
+                else:
+                    metadata.write_text('gitdir: elsewhere\n', encoding='utf-8')
+                try:
+                    with self.assertRaisesRegex(ValidationError, 'Root Git metadata is not permitted'):
+                        establish_release_trust(
+                            self.project, release_source=self.source,
+                            expected_manifest_sha256=self.pin)
+                finally:
+                    if kind == 'directory':
+                        metadata.rmdir()
+                    else:
+                        metadata.unlink()
 
     def test_archive_self_declared_digest_cannot_replace_host_pin(self):
         with self.assertRaisesRegex(ValidationError, 'manifest digest mismatch'):

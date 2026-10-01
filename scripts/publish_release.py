@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.child_process import child_env
 RECORD_PREFIX = "AWF-RELEASE-RECORD: "
+RAW_GIT_ARGUMENTS = ("--no-replace-objects", "-c", "core.useReplaceRefs=false")
+RAW_GIT_ENV = {"GIT_NO_REPLACE_OBJECTS": "1"}
 GENERATORS = (
     ("scripts/generate_contracts.py",),
     ("scripts/generate_examples.py",),
@@ -49,12 +51,19 @@ def run(command, *, cwd, env=None, text=True):
 
 
 def git(root, *args, text=True):
-    return run(["git", *args], cwd=root, text=text).stdout
+    return git_run(root, *args, text=text).stdout
+
+
+def git_run(root, *args, text=True):
+    """Run Git with replacement objects disabled for release identity and bytes."""
+    environment = os.environ.copy()
+    environment.update(RAW_GIT_ENV)
+    return run(["git", *RAW_GIT_ARGUMENTS, *args], cwd=root, env=environment, text=text)
 
 
 def materialize_commit(repository, commit, destination):
     archive = destination.parent / (destination.name + ".zip")
-    run(["git", "archive", "--format=zip", "--output", str(archive), commit], cwd=repository)
+    git_run(repository, "archive", "--format=zip", "--output", str(archive), commit)
     destination.mkdir()
     with zipfile.ZipFile(archive) as package:
         for info in package.infolist():
@@ -269,9 +278,9 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
         body_file = output / "release-body.md"
         tag_file.write_text(tag_message, encoding="utf-8", newline="\n")
         body_file.write_text(body, encoding="utf-8", newline="\n")
-        run(["git", "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
-             "-F", str(tag_file)], cwd=repository)
-        run(["git", "push", "origin", f"refs/tags/{tag}"], cwd=repository)
+        git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
+                "-F", str(tag_file))
+        git_run(repository, "push", "origin", f"refs/tags/{tag}")
         run([gh, "release", "create", tag, *map(str, assets), "--draft", "--verify-tag",
              "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)
         return result
