@@ -243,11 +243,6 @@ def _local_git_entries(observation, paths):
         require(path not in indexes and stage == '0', 'MISMATCH_INDEX: unsupported index entry at ' + path)
         indexes[path] = (mode, oid)
 
-    dirty = set()
-    for record in _nul_records(observation.git('status', '--porcelain=v1', '-z', '--untracked-files=no', *arguments)):
-        require(len(record) > 3 and record[2:3] == b' ', 'Malformed Git status observation')
-        dirty.add(record[3:].decode('utf-8'))
-
     eols = {}
     for record in _nul_records(observation.git('ls-files', '--eol', '-z', *arguments)):
         detail, seen = record.split(b'\t', 1)
@@ -262,35 +257,25 @@ def _local_git_entries(observation, paths):
         attrs[path] = value
 
     result = {}
-    for path in paths:
-        require(path in heads, 'MISSING_PATH: local HEAD lacks ' + path)
-        require(path in indexes, 'MISSING_PATH: index lacks ' + path)
-        mode, oid = heads[path]['mode'], heads[path]['oid']
-        require(indexes[path] == (mode, oid), 'MISMATCH_INDEX: index differs from HEAD at ' + path)
-        require(path in eols and path in attrs, 'MISSING_PATH: Git metadata lacks ' + path)
-        eol = eols[path]
-        canonical_oid = None
-        external_filter = attrs[path] not in ('unspecified', 'unset')
-        is_dirty = path in dirty
-        if is_dirty and not external_filter:
-            # Git on Windows can report a stat-level CRLF change even though its
-            # text conversion recreates the index blob. Use Git's own path rules,
-            # but never execute a project-owned clean filter during status.
-            canonical_oid = observation.git('hash-object', '--path=' + path, path).decode('ascii').strip()
-            require(SHA.fullmatch(canonical_oid), 'MISSING_PATH: working file cannot be canonically hashed at ' + path)
-            is_dirty = canonical_oid != oid
-        if is_dirty and eol.startswith('i/lf'):
-            # A changed attribute file can make status want to run a project-owned
-            # clean filter. Do not run it. For an LF index text blob, byte-normalize
-            # CRLF solely to distinguish checkout conversion from a content edit.
-            with Tree(observation.root) as working:
-                working_raw = working.read(path, maximum=MAX_BYTES)
-            if blob_sha(working_raw.replace(b'\r\n', b'\n')) == oid:
-                is_dirty = False
-                canonical_oid = oid
-        require(not is_dirty, 'DIRTY_PATH: working tree differs from the index at ' + path)
-        conversion = (' w/crlf ' in (' ' + eol + ' ')) or canonical_oid == oid
-        result[path] = {'mode': mode, 'oid': oid, 'attribute_conversion': conversion, 'eol': eol}
+    with Tree(observation.root) as working:
+        for path in paths:
+            require(path in heads, 'MISSING_PATH: local HEAD lacks ' + path)
+            require(path in indexes, 'MISSING_PATH: index lacks ' + path)
+            mode, oid = heads[path]['mode'], heads[path]['oid']
+            require(indexes[path] == (mode, oid), 'MISMATCH_INDEX: index differs from HEAD at ' + path)
+            require(path in eols and path in attrs, 'MISSING_PATH: Git metadata lacks ' + path)
+            eol = eols[path]
+            # Git status/diff and path-aware hash-object can execute a
+            # project-owned clean filter. Compare direct Git blob identities,
+            # allowing only the built-in CRLF checkout conversion we can prove.
+            working_raw = working.read(path, maximum=MAX_BYTES)
+            direct_oid = blob_sha(working_raw)
+            canonical_oid = direct_oid
+            if canonical_oid != oid and eol.startswith('i/lf'):
+                canonical_oid = blob_sha(working_raw.replace(b'\r\n', b'\n'))
+            require(canonical_oid == oid, 'DIRTY_PATH: working tree differs from the index at ' + path)
+            conversion = (' w/crlf ' in (' ' + eol + ' ')) or direct_oid != canonical_oid
+            result[path] = {'mode': mode, 'oid': oid, 'attribute_conversion': conversion, 'eol': eol}
     return result
 
 

@@ -759,8 +759,21 @@ class AdoptionStatusTests(unittest.TestCase):
         subprocess.run([self.git, '-C', str(self.root), 'config', 'filter.awf-inert-marker.clean',
                         'echo executed > "' + str(marker).replace('\\', '/') + '"'], check=True, timeout=20)
         try:
-            result = self.observe()
+            # Force Git to inspect content instead of trusting an earlier index
+            # stat-cache observation. The read-only status path must remain safe
+            # in both states and must not launch the configured product filter.
+            target = self.root / 'AGENTS.md'
+            observed = target.stat()
+            os.utime(target, ns=(observed.st_atime_ns, observed.st_mtime_ns + 2_000_000_000))
+            git_calls = []
+            real_git = status.Observation.git
+            def observed_git(observation, *arguments):
+                git_calls.append(arguments)
+                return real_git(observation, *arguments)
+            with patch.object(status.Observation, 'git', new=observed_git):
+                result = self.observe()
             self.assertEqual(result['project_state'], 'ACTIVE', result)
+            self.assertNotIn('status', [arguments[0] for arguments in git_calls])
             self.assertFalse(marker.exists())
         finally:
             subprocess.run([self.git, '-C', str(self.root), 'config', '--unset', 'filter.awf-inert-marker.clean'], check=True, timeout=20)
