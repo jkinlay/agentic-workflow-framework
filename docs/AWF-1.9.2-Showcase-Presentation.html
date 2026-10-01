@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Agentic Workflow Framework 1.9.1: a 27-minute practical showcase built on the signal-lab demo repository and the framework's own review history.">
-  <title>AWF 1.9.1: Practical Showcase</title>
+  <meta name="description" content="Agentic Workflow Framework 1.9.2: a 27-minute practical showcase built on the signal-lab demo repository and the framework's own review history.">
+  <title>AWF 1.9.2: Practical Showcase</title>
   <style>
     :root {
       --ink: #f3f7fc;
@@ -170,21 +170,21 @@
 </head>
 <body>
   <a class="skip-link" href="#slide-content">Skip to presentation</a>
-  <main class="deck-shell" aria-label="AWF 1.9.1 practical showcase">
+  <main class="deck-shell" aria-label="AWF 1.9.2 practical showcase">
     <div id="slide-status" class="sr-only" aria-live="polite"></div>
 
     <!-- ===================== 1 TITLE ===================== -->
-    <section class="slide active" data-core="true" data-title="AWF 1.9.1" data-minutes="0.5" aria-roledescription="slide">
+    <section class="slide active" data-core="true" data-title="AWF 1.9.2" data-minutes="0.5" aria-roledescription="slide">
       <div class="slide-inner" id="slide-content" tabindex="-1">
         <div class="topline"><p class="eyebrow">Practical showcase</p><span class="slide-index"></span></div>
         <div class="content">
           <div class="cover-grid">
             <div>
-              <p class="release-kicker">Agentic Workflow Framework 1.9.1</p>
+              <p class="release-kicker">Agentic Workflow Framework 1.9.2</p>
               <h1>AI agents write the code. You sign the merge.</h1>
               <p class="lead">A separate critic checks every change against the ticket before it reaches you, and nothing merges without your approval of the exact commit that was reviewed.</p>
               <div class="chips" style="margin-top:26px">
-                <span class="chip teal">Release 1.9.1 · 21 September 2026</span>
+                <span class="chip teal">1.9.2 · merged 24 September 2026 · Release pending</span>
                 <span class="chip">Apache-2.0</span>
                 <span class="chip">github.com/jkinlay/agentic-workflow-framework</span>
               </div>
@@ -207,6 +207,7 @@
       <aside class="slide-notes" hidden>
         <p>"This is AWF, a framework for letting AI agents do real ticket work in a real repository without handing them the keys. The promise is simple: agents write the code, a separate critic checks it against the ticket, and nothing merges until I approve the exact commit that was reviewed."</p>
         <p>"I'll do it in three acts: set it up on a small quant repository, run tickets through it, and then show you what it costs, what went wrong, and what I'd like us to pilot."</p>
+        <p>Version note: the first rehearsal (adoption, SL-1) was captured on 1.9.1 on 23 September and is labelled that way; 1.9.2 was merged on 24 September after going through AWF itself (Appendix F), and signal-lab now runs it. The GitHub Release for 1.9.2 is still to be published; until then say "1.9.2, release pending".</p>
       </aside>
     </section>
 
@@ -392,7 +393,7 @@
         <div class="content">
           <div class="grid-2">
             <div class="term">
-              <div class="term-head"><span>PowerShell · rehearsal, 23 September 2026</span><span class="real-tag">real output</span></div>
+              <div class="term-head"><span>PowerShell · 23–24 September 2026</span><span class="real-tag">real output</span></div>
 <pre><span class="p">PS&gt;</span> Get-FileHash .\release-1.9.1\MANIFEST.json -Algorithm SHA256
 <span class="s">C3BED1CE03703661DE65B32F5A5071005E5DE27F4CE0D36F746315609D564D25</span>
 
@@ -401,8 +402,13 @@
 status : <span class="s">CONFIGURED</span>
 
 <span class="c"># the pin is written into each project's receipt</span>
-signal-lab      source_manifest_sha256 : <span class="s">c3bed1ce…d564d25</span>
-HFT-Strategies  source_manifest_sha256 : <span class="s">c3bed1ce…d564d25</span></pre>
+signal-lab      source_manifest_sha256 : <span class="s">c3bed1ce…d564d25</span>  (1.9.1)
+HFT-Strategies  source_manifest_sha256 : <span class="s">c3bed1ce…d564d25</span>  (1.9.1)
+
+<span class="c"># 24 Sep: signal-lab upgraded to 1.9.2 the same way</span>
+<span class="p">PS&gt;</span> python -B scripts/bootstrap_project.py --mode upgrade `
+       --expected-manifest-sha256 55cd1915…9d2b ...
+status : <span class="s">CONFIGURED</span></pre>
             </div>
             <div class="copy">
               <p><b>Why the check matters.</b> The release is not signed. A matching hash proves you have the bytes the pin describes; it only helps if the pin comes from somewhere you trust, such as a GitHub Release page.</p>
@@ -411,12 +417,12 @@ HFT-Strategies  source_manifest_sha256 : <span class="s">c3bed1ce…d564d25</spa
             </div>
           </div>
         </div>
-        <div class="footerline"><span>Release 1.9.1 = commit <strong>1f5f146</strong> (21 Sep 2026). The portable <code>$awf</code> skill for 1.9.1 is not yet packaged; see slide 14.</span><span>README.md · 20-NEW-PROJECT-SETUP.md</span></div>
+        <div class="footerline"><span>1.9.1 = commit <strong>1f5f146</strong> (21 Sep). 1.9.2 = merge <strong>9f2ad03</strong> (24 Sep), manifest 55cd1915…9d2b; GitHub Release pending.</span><span>README.md · 20-NEW-PROJECT-SETUP.md</span></div>
       </div>
       <aside class="slide-notes" hidden>
         <p>"Before anything runs, check the release. The release isn't signed, so be honest about what a hash buys you: it proves you have the same bytes as the pin, and nothing more. The pin has to come from somewhere you trust."</p>
         <p>"Bootstrap enforces it: with the wrong pin, or from a folder with extra files in it, it refuses to install. And the pin is recorded in every project's receipt: the demo repository and my live HFT project show the same one."</p>
-        <p class="note-source">Rehearsal files: awf-rehearsal-1.9.1\cap07-bootstrap-install.json. The 1.9.1 portable skill distribution could not be built from the public repo: build_skill_distribution.py needs a portable skill source (scripts/install_skill.py), which only exists for 1.7 to 1.8.9. Publish the v1.9.1 Release pin before presenting.</p>
+        <p class="note-source">Rehearsal files: awf-rehearsal-1.9.1\cap07-bootstrap-install.json. The 1.9.1 portable skill distribution could not be built from the public repo: build_skill_distribution.py needs a portable skill source (scripts/install_skill.py), which only exists for 1.7 to 1.8.9. 1.9.2 packages the portable skill from global/awf-portable. Publish the v1.9.2 Release with its manifest pin before presenting.</p>
       </aside>
     </section>
 
@@ -435,7 +441,7 @@ draft PR for owner review. Code owner @jkinlay.
 Test command: python -m pytest. Jira disabled.</pre>
               </div>
               <div class="term">
-                <div class="term-head"><span>After install · status</span><span class="real-tag">real output</span></div>
+                <div class="term-head"><span>After install · status · 1.9.1, 23 Sep</span><span class="real-tag">real output</span></div>
 <pre><span class="p">PS&gt;</span> python -B -I .agentic\scripts\workflow.py status
 AWF 1.9.1: <span class="s">CONFIGURED</span> — streams 3/6
 Next: verify the trusted host AWF skill or pass
@@ -468,7 +474,7 @@ next_step          : Proceed with the adoption PR; report
             </div>
           </div>
         </div>
-        <div class="footerline"><span>Missing CI or branch rules are <strong>warnings</strong>, not blockers. You merge the adoption PR yourself; that is what switches AWF on.</span><span>.agentic/docs/20-NEW-PROJECT-SETUP.md</span></div>
+        <div class="footerline"><span>Missing CI or branch rules are <strong>warnings</strong>, not blockers. Captured on 1.9.1; signal-lab now runs 1.9.2 (App. B).</span><span>.agentic/docs/20-NEW-PROJECT-SETUP.md</span></div>
       </div>
       <aside class="slide-notes" hidden>
         <p>"Adoption is one sentence in Codex. It explains first that it's about to change governance files, which is why it prepares a draft PR rather than committing anything."</p>
@@ -572,13 +578,13 @@ sandbox   workspace-write, this worktree only</pre>
     <section class="slide" data-core="true" data-title="Routed, then the budget gate" data-minutes="1.5" aria-roledescription="slide">
       <div class="slide-inner">
         <div class="topline"><p class="eyebrow">Act 2 · Run a ticket</p><span class="slide-index"></span></div>
-        <h2 class="slide-title">The route was ready. The budget ledger refused to admit the run.</h2>
+        <h2 class="slide-title">In 1.9.1 the ledger refused the run. 1.9.2 admits it on tokens.</h2>
         <div class="content">
           <div class="grid-2">
             <div style="display:grid; gap:12px; align-content:start">
               <div class="grid-3" style="gap:10px">
                 <div class="card teal"><span class="kicker">Stream A</span><h3>SL-1</h3><p class="small">z-score signal · tier 2 · <b>ran</b></p></div>
-                <div class="card amber"><span class="kicker">Stream B</span><h3>SL-2</h3><p class="small">transaction costs · not run in rehearsal</p></div>
+                <div class="card amber"><span class="kicker">Stream B</span><h3>SL-2</h3><p class="small">transaction costs · tier 2 · <b>ran on 1.9.2</b></p></div>
                 <div class="card amber"><span class="kicker">Stream C</span><h3>SL-3</h3><p class="small">gaps and late listings · not run in rehearsal</p></div>
               </div>
               <div class="term">
@@ -589,16 +595,20 @@ reasons: simple, low-risk, low-uncertainty work with
          strong verification; stream route pinned by user</pre>
               </div>
               <div class="term">
-                <div class="term-head"><span>route_model.py reserve</span><span class="real-tag">real · exit 2</span></div>
-<pre>status : <span class="r">blocked</span>
+                <div class="term-head"><span>route_model.py reserve</span><span class="real-tag">real</span></div>
+<pre><span class="c"># SL-1 on 1.9.1 · exit 2</span>
+status : <span class="r">blocked</span>
 reason : cost ceiling is configured but a verified
-         hard cost reservation is unavailable</pre>
+         hard cost reservation is unavailable
+<span class="c"># SL-2 on 1.9.2 · exit 0 · risk flag public_api</span>
+status : <span class="s">reserved</span>   model: gpt-5.6-sol / high
+reservation_tokens: 300000   cost_microusd: null</pre>
               </div>
             </div>
             <div class="copy">
               <p><b>Route.</b> The router proposes a model from the role, risk and any overrides. If the approved model isn't available, the run is refused, never quietly downgraded.</p>
-              <p><b>Reserve.</b> Before launch, the budget must be written to a ledger no agent can edit. 1.9.1 always carries a $10-per-ticket cap, so it demands a <b>verified dollar reservation</b>. Codex CLI reports tokens, not dollars, so the ledger said no.</p>
-              <p><b>What we did.</b> Ran SL-1 outside the ledger and recorded tokens directly (slide 15). The refusal is the right behaviour, and a gap: a subscription host needs token-only budgets.</p>
+              <p><b>Reserve.</b> Before launch, the budget must be written to a ledger no agent can edit. In 1.9.1 every project carried a $10-per-ticket cap, so the ledger demanded a <b>verified dollar reservation</b>. Codex CLI reports tokens, not dollars, so the ledger said no.</p>
+              <p><b>What changed.</b> SL-1 ran outside the ledger, with tokens recorded by hand (slide 15). 1.9.2 made budgets token-only: SL-2 was admitted with a token reservation and no dollar figure, and all ten of its runs were reserved and settled in the ledger.</p>
             </div>
           </div>
         </div>
@@ -606,7 +616,8 @@ reason : cost ceiling is configured but a verified
       </div>
       <aside class="slide-notes" hidden>
         <p>"In the rehearsal I ran SL-1 on stream A. The router was happy: Terra at high effort, pinned because I set that earlier. Then the budget ledger refused to admit the run. The project carries a ten-dollar cap per ticket, so the ledger wants a verified dollar reservation, and Codex only tells you tokens. It would rather refuse than guess."</p>
-        <p>"That's the right instinct and a real gap: on a subscription host you need token budgets, not dollar budgets. So I ran the ticket outside the ledger and counted tokens by hand; you'll see the bill on slide 15. The fix goes into the next release."</p>
+        <p>"That's the right instinct and a real gap: on a subscription host you need token budgets, not dollar budgets. So I ran SL-1 outside the ledger and counted tokens by hand; you'll see the bill on slide 15."</p>
+        <p>"The fix shipped in 1.9.2. The bottom terminal is SL-2, the next ticket, the next morning: same ledger, admitted with a three-hundred-thousand-token reservation and no dollar figure. Every one of its ten runs went through reserve and settle."</p>
       </aside>
     </section>
 
@@ -687,20 +698,21 @@ CI  test (py3.11) <span class="s">pass</span>   test (py3.12) <span class="s">pa
                 <p class="small">Owner decisions were stored as an unchecked data shape, so a worker could write a fake disposition that flipped the critic's verdict to PASS. <b>Blocker.</b> Fixed with an authenticated sign-off format; round 2 then found a subtler independence hole (a "verifier" sharing the worker's identity). Round 3 approved.</p>
               </div>
               <div class="card teal">
-                <span class="kicker">signal-lab PR #5 · today</span>
-                <h3>The critic would not approve without evidence</h3>
-                <p class="small">Round 1: <b>INCOMPLETE</b>, no findings. It could not run 4 tests or see CI from its read-only sandbox, so it refused to pass. Round 2, given CI results tied to head <code>77dd43c</code>: <b>APPROVE</b>, all six criteria PASS.</p>
+                <span class="kicker">signal-lab PR #9 · SL-2 · 24 Sep</span>
+                <h3>Three defects, all numerically invisible</h3>
+                <p class="small"><b>Critic 1:</b> new result fields placed before the old ones broke every existing caller. <b>Critic 2:</b> a partly built result could say net ≠ gross − costs. <b>Critic 3 approved.</b> Then the public-API <b>specialist</b> found <code>dataclasses.replace(result, returns=…)</code> now raised. Every backtest number was already correct.</p>
               </div>
             </div>
           </div>
         </div>
-        <div class="footerline"><span>Blocking findings must cite an acceptance criterion or a mandatory boundary. After the round cap, you decide: merge with notes, park, rescope or one more round.</span><span>PR #7 inline reviews · AWF-v1.9.0 review ledger · prompts/critic.md</span></div>
+        <div class="footerline"><span>Blocking findings must cite an acceptance criterion or a mandatory boundary. After the round cap, you decide: merge with notes, park, rescope or one more round.</span><span>PR #7 inline reviews · AWF-v1.9.0 review ledger · signal-lab PR #9</span></div>
       </div>
       <aside class="slide-notes" hidden>
         <p>"This is the reason the framework exists. Three real findings from the automated critic on the pull request you saw at the start. The first is my favourite: the worker agent had edited the reviewer's own instruction file and softened the list of things that count as blocking. The critic caught the agent weakening its own oversight."</p>
         <p>"The second will be familiar to anyone who's reviewed a backtest: a test that looked like evidence but could never fail."</p>
         <p>"On the right, the same thing happening at release scale. When 1.9.0 was built with AWF, the first review round found that an agent could forge my sign-off and flip a failing review to a pass. That was fixed, round two found a subtler version, and round three approved."</p>
-        <p class="note-source">If the signal-lab rehearsal critic raises a real finding (runbook step 5.5), put it first on this slide with its amendment diff and re-review. Do not stage one.</p>
+        <p>"Bottom right is SL-2, a transaction-cost change in the demo repository. All three defects were about the public API, not the arithmetic: the numbers were right from the first commit. The first critic round caught that the new fields broke existing callers; the second caught that a hand-built result could contradict itself; the third approved. Then the specialist that the public-API flag requires found that a standard Python operation on the result object had stopped working. One reviewer is not enough on public-API work, and the rules say so."</p>
+        <p>"For SL-1 the critic's contribution was different: round one refused to approve because it couldn't see CI from its sandbox. It wouldn't pass on evidence it didn't have."</p>
       </aside>
     </section>
 
@@ -724,7 +736,7 @@ CI  test (py3.11) <span class="s">pass</span>   test (py3.12) <span class="s">pa
             <div class="card green">
               <span class="kicker">3 · Merge and check</span>
               <h3>Prove the merged code is the reviewed code</h3>
-              <p class="small">SL-1, today: PR #5 merged by the owner at 14:53. Merge commit <code>bd0aaaf</code>, second parent <code>77dd43c</code> = the exact head the critic approved.</p>
+              <p class="small">SL-2: critic, public-API specialist and CI all on head <code>4650c88</code>; gate report posted on PR #9. Merged by the owner as <code>4d1212a</code>, second parent <code>4650c88</code> = the exact head both reviewers passed.</p>
             </div>
           </div>
         </div>
@@ -732,9 +744,9 @@ CI  test (py3.11) <span class="s">pass</span>   test (py3.12) <span class="s">pa
       </div>
       <aside class="slide-notes" hidden>
         <p>"Three steps to merge, and the point of all three is that a green tick is not permission. The gate checks that every piece of evidence is about the same commit. Then it comes to me, and my approval names that commit and expires. If the agent pushes one more commit, my approval doesn't carry over."</p>
-        <p>"Then after merge we check that what landed on main is exactly what was reviewed. For SL-1 you can see it in the merge record: the merge commit's second parent is the exact commit the critic approved."</p><p>"To be precise about the rehearsal: I merged SL-1 on the critic's approval and green CI. The formal final gate, the tier-2 specialist review and the signed approval record were not run, because the budget ledger had already refused the ticket. That's on the fix list."</p>
+        <p>"Then after merge we check that what landed on main is exactly what was reviewed. For SL-2 you can see it in the merge record: the merge commit's second parent is the exact commit both the critic and the specialist passed."</p><p>"To be precise: SL-1 was merged on the critic's approval and green CI, without the formal gate or the specialist. SL-2 ran the gate: both reviews and CI on the same head, posted on the PR. The signed approval record was not produced; I merged in GitHub. That's the remaining gap."</p>
         <p>"Jira in one line: only the controller updates tickets, it reads back every change, and if something else changes the ticket underneath it, it stops and tells you rather than fighting. I left Jira off for the demo."</p>
-        <p class="note-source">Optional rehearsal capture for this slide (not required): the SL-1 gate result, authorisation request and merged PR. If captured, show them in place of the PR #7 merge record.</p>
+        
       </aside>
     </section>
 
@@ -754,18 +766,20 @@ CI  test (py3.11) <span class="s">pass</span>   test (py3.12) <span class="s">pa
               <tr><td>Model decision pilots: <b>1/3, 5/12, 10/12 strict FAIL</b></td><td>Models are not reliable at the framework's own routine decisions</td><td>Gates, the critic and your approval don't rely on the model's judgement. Results are published unadjusted.</td></tr>
               <tr><td>This week: the 1.9.1 port merged with <b>no review on GitHub</b>; bootstrap refused to run from the repository checkout (manifest mismatch)</td><td>The framework's own repository isn't yet held to its own process</td><td>1.9.2 (PR #15) is going through AWF on GitHub: worker, publisher commit, independent critic, fix rounds, owner merge (Appendix F)</td></tr>
               <tr><td>PR #15, 23–24 Sep: critic found stale Jira rules in the new skill, and an acceptance criterion of <b>mine</b> that could not be met; a listed model was refused by the host</td><td>Review caught what worker and author missed; a listed capability is not an observed one</td><td>Fixed before merge; criterion amended on the record; routing table model used</td></tr>
-              <tr><td>Today: shipped budgets (1M tokens, 8 runs per ticket; 40 runs a day) would stop a 10–20 ticket day; the risk route pointed at that refused model, so <b>every high-risk ticket</b> was refused (SL-2)</td><td>A safe refusal still stops the work; defaults must fit real volume and the real host</td><td>Defaults raised in 1.9.2; signal-lab runs 2M / 12 runs per ticket, 30M / 250 a day (#7); risk route and specialist moved to <code>gpt-5.6-sol</code> (#8)</td></tr>
+              <tr><td>Today: shipped budgets (1M tokens, 8 runs per ticket; 40 runs a day) would stop a 10–20 ticket day; the risk route pointed at that refused model, so <b>every high-risk ticket</b> was refused (SL-2)</td><td>A safe refusal still stops the work; defaults must fit real volume and the real host</td><td>Defaults raised in 1.9.2; signal-lab runs 2M / 12 runs per ticket, 30M / 250 a day (#7); risk route and specialist moved to <code>gpt-5.6-sol</code> (#8, #10). SL-2 then ran end to end (#9)</td></tr>
+              <tr><td>SL-2, 24 Sep: the critic approved round 3, then the public-API specialist found a broken standard operation; the ticket used <b>10 of its 12 runs</b>. Recording a critic run as independently reviewed was refused by the ledger</td><td>One reviewer is not enough on public-API work; the run cap sits close to real need</td><td>Specialist held the merge until fixed and both re-reviews passed on the new head. Run cap per ticket under review for 1.9.3</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="footerline"><span>Top row and last two rows: signal-lab rehearsal and the 1.9.2 work, 23–24 September 2026.</span><span>CHANGELOG.md · PR #7, #13, #15 · signal-lab #7, #8</span></div>
+        <div class="footerline"><span>Top row and last three rows: signal-lab rehearsal and the 1.9.2 work, 23–24 September 2026.</span><span>CHANGELOG.md · PR #7, #13, #15, #16 · signal-lab #7–#10</span></div>
       </div>
       <aside class="slide-notes" hidden>
         <p>"I want to be straight about what's gone wrong, because each of these changed the design."</p>
         <p>"Early on, an assistant told me AWF was active in my HFT repository when the configuration had actually been rejected. So now status is always recomputed from checks, never taken from what an agent says. An unknown Jira automation was undoing ticket changes two seconds later, so now there is exactly one writer, it reads back every change, and it stops on a mismatch. Review rounds could run away, so there's now a cap that ends with me deciding."</p>
         <p>"The model pilots failed, and I publish that. It's why nothing important depends on the model's judgement. And this week: the framework's own latest port was merged without a review on GitHub. That's a fair criticism, and the next change, 1.9.2, is going through the full process."</p>
         <p>"And that process has already earned its keep on 1.9.2. The critic caught that the new portable skill still described the old Jira rules, and then caught that one of my own acceptance criteria couldn't be met as written. I amended it on the record. The model I planned for the review turned out not to be available on this account, even though our host record listed it, so we now treat capability lists as claims until observed."</p>
-        <p>"Two more from this morning. The shipped budgets were sized for a demo, not for my ten to twenty tickets a day, so they would have stopped real work; the defaults go up in 1.9.2. And because high-risk work was routed to that unavailable model, the router refused my next ticket outright. That's the right behaviour, it never downgrades silently, but it meant a governance change to point high-risk work at the strongest model this host can actually run."</p>
+        <p>"Three more from this morning. The shipped budgets were sized for a demo, not for my ten to twenty tickets a day, so they would have stopped real work; the defaults go up in 1.9.2. And because high-risk work was routed to that unavailable model, the router refused my next ticket outright. That's the right behaviour, it never downgrades silently, but it meant a governance change to point high-risk work at the strongest model this host can actually run."</p>
+        <p>"And SL-2 itself: the critic approved on its third round, and the specialist that the public-API flag requires still found a real break. It used ten of the twelve runs a ticket is allowed, which tells me the cap is about right but tight. The ledger also stopped me recording a critic run as if it vouched for its own independence. I got the field wrong; the tool didn't let me."</p>
       </aside>
     </section>
 
@@ -797,8 +811,8 @@ critic 2 gpt-5.6-sol / high     14:34–14:41   126,572  APPROVE
                 <li><b>Per ticket:</b> accept the contract, read the critic's findings, approve the exact commit.</li>
                 <li><b>Only when needed:</b> a decision at the round cap, reconciling an unknown outcome.</li>
               </ul>
-              <p class="small" style="margin-top:12px">Cost shown in tokens: the rehearsal ran outside the ledger (slide 10). Critic review used about twice the worker's tokens. We won't claim a productivity gain until the pilot measures one.</p>
-              <p class="small" style="margin-top:8px"><b>At scale.</b> SL-1: 283k tokens in 3 runs. The 1.9.2 release: 1.4M in 6 runs. A 10–20 ticket day needs up to about 30M tokens and 250 runs, the budgets signal-lab now runs with.</p>
+              <p class="small" style="margin-top:12px">Cost shown in tokens: SL-1 ran outside the ledger (slide 10); SL-2 ran inside it. Review used about twice the implementation tokens on both tickets. We won't claim a productivity gain until the pilot measures one.</p>
+              <p class="small" style="margin-top:8px"><b>At scale.</b> SL-1: 283k tokens in 3 runs. SL-2, three defects found: 834k in 10 runs, under two hours to the final gate (Appendix G). The 1.9.2 release: 1.8M in 9 runs. A 10–20 ticket day needs up to about 30M tokens and 250 runs, the budgets signal-lab now runs with.</p>
             </div>
           </div>
         </div>
@@ -807,6 +821,7 @@ critic 2 gpt-5.6-sol / high     14:34–14:41   126,572  APPROVE
       <aside class="slide-notes" hidden>
         <p>"Governance isn't free, so here's the bill for SL-1: about 283,000 tokens and 22 minutes from dispatch to approval. Notice where the tokens went: the reviews cost twice what the code did. That's the price of an independent check, and it's the number the pilot has to justify."</p>
         <p>"My time goes in three places: once per repository to adopt; per ticket to accept the contract, read the findings and approve; and occasionally to make a call at the review cap. I'm not claiming it makes us faster. The pilot is how we find out."</p>
+        <p>"SL-2 is what a harder ticket looks like: three real defects, ten runs, about eight hundred and thirty thousand tokens, and under two hours from dispatch to a ticket ready for me to merge. Six of the ten runs were reviews, and review took about two thirds of the tokens."</p>
         <p>"At my volume, ten to twenty tickets a day, the measured numbers put a day at up to about thirty million tokens. That's what the project budgets are now set to, and each project's owner sets their own through a reviewed change."</p>
       </aside>
     </section>
@@ -829,12 +844,12 @@ critic 2 gpt-5.6-sol / high     14:34–14:41   126,572  APPROVE
             </tbody>
           </table>
         </div>
-        <div class="footerline"><span>Running live on AWF 1.9.1 today: <strong>HFT Strategies</strong> (Codex) and <strong>Equities Entity Store</strong> (ChatGPT).</span><span>ARCHITECTURE.md · signal-lab docs/BACKLOG.md</span></div>
+        <div class="footerline"><span>Running live today: <strong>HFT Strategies</strong> (Codex) and <strong>Equities Entity Store</strong> (ChatGPT) on 1.9.1; <strong>signal-lab</strong> on 1.9.2.</span><span>ARCHITECTURE.md · signal-lab docs/BACKLOG.md</span></div>
       </div>
       <aside class="slide-notes" hidden>
         <p>"Most of our work isn't feature tickets, so where does this fit? The rule is simple: if you can write acceptance criteria that a reviewer can check, it fits. Library changes and data loaders fit well; the signal-lab tickets are examples of both."</p>
         <p>"Backtest and model-validation changes fit with care: you need fixed seeds and reproducible numbers, and the contract can declare known limitations. Open-ended research doesn't fit yet: explore by hand, then turn what you found into a ticket. And promotion to production is always ours."</p>
-        <p>"This isn't theoretical: 1.9.1 is running today in my HFT Strategies project through Codex and in the Equities Entity Store through ChatGPT."</p>
+        <p>"This isn't theoretical: AWF is running today in my HFT Strategies project through Codex and in the Equities Entity Store through ChatGPT, both on 1.9.1, and the demo repository is already on 1.9.2."</p>
       </aside>
     </section>
 
@@ -1030,7 +1045,7 @@ gh api --method POST repos/OWNER/REPO/rulesets --input .agentic/templates/awf-ma
       <div class="slide-inner">
         <div class="topline"><p class="eyebrow">Appendix F · Worked example</p><span class="slide-index">F</span></div>
         <h2 class="slide-title">AWF 1.9.2 through its own process: PR #15</h2>
-        <p class="subtitle">Merged by the owner on 24 September (merge 9f2ad03), with one finding carried to a follow-up PR. Every round below is a comment on the PR.</p>
+        <p class="subtitle">Merged by the owner on 24 September (merge 9f2ad03), with one finding carried to follow-up PR #16, also merged. Every round below is a comment on the PR.</p>
         <div class="content">
           <table class="t" style="font-size:clamp(11px,.92vw,15px)">
             <thead><tr><th style="width:16%">Step</th><th style="width:22%">Route</th><th>Outcome</th><th style="width:11%">Tokens</th></tr></thead>
@@ -1042,22 +1057,54 @@ gh api --method POST repos/OWNER/REPO/rulesets --input .agentic/templates/awf-ma
               <tr><td>Owner decision</td><td>Jonathan</td><td>AC4 amended on the record: every owner-set value preserved; only the version field may change.</td><td>–</td></tr>
               <tr><td>Fix round 2</td><td><code>gpt-5.6-sol</code> / high, worker</td><td>1.9.1 → 1.9.2 upgrade now changes only the version line, proven on a real 1.9.1 config; <code>.tmp-tests</code> hardened. 812 self-test cases pass.</td><td>167,402</td></tr>
               <tr><td>Critic round 3 (cap)</td><td><code>gpt-5.6-sol</code> / high, separate clone</td><td><b>REQUEST_CHANGES.</b> All earlier findings closed. MAJOR: portable guide still said upgrades are same-version only. At the cap, the owner merged and sent it to a follow-up PR.</td><td>199,827</td></tr>
-              <tr><td>Follow-up</td><td><code>gpt-5.6-sol</code> / high, worker</td><td>C3-F01 closed with a regression test (122,365 tokens). The same PR raises the default budgets on the owner's decision. One critic round to follow.</td><td>in progress</td></tr>
+              <tr><td>Follow-up PR #16</td><td><code>gpt-5.6-sol</code> / high, worker ×2, critic</td><td>C3-F01 closed with a regression test (122,365). Default budgets raised on the owner's decision (170,117). Critic, separate clone: <b>APPROVE</b>, no findings (140,858). 816 self-test cases pass. Merged 24 Sep.</td><td>433,340</td></tr>
             </tbody>
           </table>
         </div>
-        <div class="footerline"><span>Total 1,402,537 tokens; three real defects caught, two fixed before merge, one carried forward.</span><span>github.com/jkinlay/agentic-workflow-framework/pull/15</span></div>
+        <div class="footerline"><span>PR #15: 1,402,537 tokens; with #16: 1,835,877 in 9 runs. Three real defects caught, all fixed (one in the follow-up).</span><span>github.com/jkinlay/agentic-workflow-framework/pull/15</span></div>
       </div>
       <aside class="slide-notes" hidden>
         <p>"This is the framework reviewing its own next release. The worker built it; the critic, in a separate clone with no shared context, found a real problem each round: first that the new portable skill described the old Jira rules, then that one of my own acceptance criteria could not be satisfied as written. I changed the criterion on the record rather than letting the worker bend around it."</p>
         <p>"Two small honesty points. The model I planned for the review was refused by the host, so the critic ran on the model the routing table specifies. And the critic caught me passing it stale test counts. That's the point of an independent check: it checks me too."</p>
-        <p>"At the round cap the decision is mine, not the model's. I merged and sent the last finding to a small follow-up PR. That's the documented disposition, and it's on the record."</p>
+        <p>"At the round cap the decision is mine, not the model's. I merged and sent the last finding to a small follow-up PR. That's the documented disposition, and it's on the record. The follow-up fixed it, raised the default budgets, and its critic approved with no findings."</p>
       </aside>
     </section>
+
+    <!-- ===================== APPENDIX G: SL-2 / PR #9 ===================== -->
+    <section class="slide" data-appendix="true" data-label="G" data-title="Appendix G: SL-2 through AWF 1.9.2 (signal-lab PR #9)" aria-roledescription="slide">
+      <div class="slide-inner">
+        <div class="topline"><p class="eyebrow">Appendix G · Worked example</p><span class="slide-index">G</span></div>
+        <h2 class="slide-title">SL-2 end to end on 1.9.2: ten runs, three catches, one merge</h2>
+        <p class="subtitle">Transaction costs for the backtester, tier 2, risk flag <code>public_api</code>. Every run reserved and settled in the budget ledger; every review is a comment on PR #9. Merged by the owner on 24 September as <code>4d1212a</code>.</p>
+        <div class="content">
+          <table class="t" style="font-size:clamp(9.5px,.8vw,13.5px)">
+            <thead><tr><th style="width:17%">Step</th><th>Outcome</th><th style="width:11%">Tokens</th></tr></thead>
+            <tbody>
+              <tr><td>Route</td><td>First attempt <b>refused</b>: the risk route named <code>gpt-6-astra</code>, which the host refuses ("no fallback"). Owner governance PRs #8 and #10 moved it to <code>gpt-5.6-sol</code> / high. Reservation then admitted: 300,000 tokens, cost <code>null</code>.</td><td>–</td></tr>
+              <tr><td>Worker</td><td>Cost model, CLI option, README, 47 tests. BLOCKED for the commit only; publisher committed the tested tree (<code>5406c39</code>).</td><td>80,739</td></tr>
+              <tr><td>Critic 1</td><td><b>REQUEST_CHANGES.</b> C1-F01 MAJOR: new fields placed before the old ones broke existing positional and keyword construction of <code>BacktestResult</code>.</td><td>81,038</td></tr>
+              <tr><td>Fix 1 · critic 2</td><td>Field order restored (<code>18dfb67</code>). Critic 2: C1-F01 closed; <b>C2-F01 MAJOR</b>: a partly supplied result could state net ≠ gross − costs.</td><td>51,430 · 95,383</td></tr>
+              <tr><td>Fix 2 · critic 3</td><td>Missing series derived, inconsistent ones rejected (<code>9b230dc</code>). Critic 3: <b>APPROVE</b>, all six criteria PASS.</td><td>82,950 · 93,319</td></tr>
+              <tr><td>Specialist 1</td><td><b>FAIL.</b> S1-F01 MAJOR: <code>dataclasses.replace(result, returns=…)</code> worked before and now raised. Also noted old pickles loaded with <code>None</code> costs.</td><td>97,335</td></tr>
+              <tr><td>Fix 3 · re-reviews</td><td>Costs stored, gross recomputed on replace; old pickles restored (<code>4650c88</code>). Critic 4 <b>APPROVE</b> and specialist 2 <b>PASS</b>, in parallel on the same head.</td><td>75,998 · 83,508 · 92,435</td></tr>
+              <tr><td>Gate · merge</td><td>Both reviews, CI (3.11, 3.12) and scope on <code>4650c88</code>; gate report posted. Owner merged; second parent of <code>4d1212a</code> = <code>4650c88</code>.</td><td>–</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="footerline"><span>834,135 tokens in 10 of 12 allowed runs; under two hours from dispatch to the final gate. The ledger refused one bad record: a critic outcome claiming its own independence.</span><span>github.com/jkinlay/signal-lab/pull/9</span></div>
+      </div>
+      <aside class="slide-notes" hidden>
+        <p>"This is the whole of SL-2 on one page. Before any code ran, the router refused the ticket because high-risk work pointed at a model this host won't serve. It never downgrades quietly, so that took a governance change from me."</p>
+        <p>"Then three review catches, each of them about the public API rather than the arithmetic. The critic found two. The third critic round approved, and the specialist the risk flag requires found the third. After the fix, both reviewers re-ran on the new commit, in parallel, before I was asked to merge."</p>
+        <p>"Ten runs, about eight hundred and thirty thousand tokens, under two hours. One process note: I once recorded a critic run as having passed independent review. The ledger refused it, because a review can't vouch for its own independence."</p>
+      </aside>
+    </section>
+
 
     <div class="controls" aria-label="Presentation controls">
       <button class="control" id="toc-toggle" type="button" aria-label="Open slide overview (O)" aria-expanded="false">≡</button>
       <button class="control" id="notes-toggle" type="button" aria-label="Show speaker notes (N)" aria-expanded="false">◫</button>
+      <button class="control" id="presenter-open" type="button" aria-label="Open presenter window (P)" title="Presenter window (P): notes, timer, next slide">⧉</button>
       <button class="control" id="prev-slide" type="button" aria-label="Previous slide">‹</button>
       <button class="control" id="next-slide" type="button" aria-label="Next slide">›</button>
     </div>
@@ -1124,6 +1171,7 @@ gh api --method POST repos/OWNER/REPO/rulesets --input .agentic/templates/awf-ma
         prev.disabled = oi === 0;
         next.disabled = oi === order.length - 1;
         if (focus) s.querySelector('.slide-inner').focus({ preventScroll: true });
+        pushPresenter();
       }
       // Core slides first, then the appendices, in one sequence.
       const order = core.concat(appendix);
@@ -1149,6 +1197,61 @@ gh api --method POST repos/OWNER/REPO/rulesets --input .agentic/templates/awf-ma
         li.appendChild(b); tocList.appendChild(li);
       });
 
+
+      // ---- Presenter window: notes, timer and next slide in a separate window, so they stay private when you share only the deck.
+      let presenter = null, presenterStart = null, presenterTick = null;
+      const PCSS = "body{margin:0;font:16px/1.5 system-ui,Segoe UI,Arial,sans-serif;background:#07182c;color:#dbe6f3}"
+        + "header{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:12px 18px;background:#0b2340;border-bottom:1px solid #1d3c62}"
+        + "#pt-clock{font:700 28px/1 ui-monospace,Consolas,monospace;color:#5ad8d5}#pt-plan{color:#9fb3c8;font-size:14px}"
+        + "button{font:inherit;background:#123055;color:#dbe6f3;border:1px solid #2a4f7c;border-radius:8px;padding:6px 14px;cursor:pointer}button:hover{background:#1a3d69}"
+        + "main{padding:16px 22px 40px}h1{font-size:22px;margin:0 0 4px;color:#fff}#pt-pos{color:#9fb3c8;font-size:14px;margin-bottom:12px}"
+        + "#pt-notes p{margin:0 0 12px}#pt-notes .note-source{color:#9fb3c8;font-size:13px}#pt-next{margin-top:22px;padding-top:12px;border-top:1px solid #1d3c62;color:#9fb3c8}"
+        + "#pt-next b{color:#dbe6f3}.hint{font-size:12px;color:#7f95ad}";
+      function openPresenter() {
+        if (presenter && !presenter.closed) { presenter.focus(); return; }
+        presenter = window.open('', 'awf-presenter', 'width=980,height=760');
+        if (!presenter) { $('notes-content').innerHTML = '<p><b>The browser blocked the presenter window.</b> Allow pop-ups for this file, then press P again.</p>'; return; }
+        const d = presenter.document;
+        d.open();
+        d.write('<!doctype html><html><head><meta charset="utf-8"><title>Presenter · AWF showcase</title><style>' + PCSS + '</style></head><body>'
+          + '<header><div><span id="pt-clock">0:00</span> <span id="pt-plan"></span></div>'
+          + '<div><button id="pt-prev">‹ Prev</button> <button id="pt-next-btn">Next ›</button> <button id="pt-reset">Reset timer</button></div></header>'
+          + '<main><h1 id="pt-title"></h1><div id="pt-pos"></div><div id="pt-notes"></div><div id="pt-next"></div>'
+          + '<p class="hint">Keys here: → / Space next, ← previous, R reset timer. Share only the deck window, not this one.</p></main></body></html>');
+        d.close();
+        presenterStart = Date.now();
+        d.getElementById('pt-prev').onclick = () => step(-1);
+        d.getElementById('pt-next-btn').onclick = () => step(1);
+        d.getElementById('pt-reset').onclick = () => { presenterStart = Date.now(); tickPresenter(); };
+        d.addEventListener('keydown', e => {
+          if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); step(1); }
+          else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); step(-1); }
+          else if (e.key === 'r' || e.key === 'R') { presenterStart = Date.now(); tickPresenter(); }
+        });
+        clearInterval(presenterTick); presenterTick = setInterval(tickPresenter, 1000);
+        pushPresenter();
+      }
+      function tickPresenter() {
+        if (!presenter || presenter.closed) { clearInterval(presenterTick); return; }
+        const sec = Math.floor((Date.now() - presenterStart) / 1000);
+        presenter.document.getElementById('pt-clock').textContent = Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+      }
+      function pushPresenter() {
+        if (!presenter || presenter.closed) return;
+        const d = presenter.document, s = allSlides[current];
+        const oi = order.indexOf(s), nxt = order[oi + 1];
+        const ci = core.indexOf(s);
+        d.getElementById('pt-title').textContent = s.dataset.title;
+        d.getElementById('pt-pos').textContent = ci >= 0
+          ? 'Slide ' + (ci + 1) + ' of ' + core.length + ' · ' + s.dataset.minutes + ' min · planned ' + fmt(+s.dataset.start) + ' → ' + fmt(+s.dataset.end)
+          : 'Appendix · outside the timed core';
+        d.getElementById('pt-plan').textContent = ci >= 0 ? 'on plan at ' + fmt(+s.dataset.end) + ' of ' + fmt(elapsed) : '';
+        const notes = s.querySelector('.slide-notes');
+        d.getElementById('pt-notes').innerHTML = notes ? notes.innerHTML : '<p>No speaker notes.</p>';
+        d.getElementById('pt-next').innerHTML = nxt ? 'Next: <b>' + nxt.dataset.title + '</b>' : 'Last slide.';
+        tickPresenter();
+      }
+      $('presenter-open').addEventListener('click', openPresenter);
       tocToggle.addEventListener('click', () => toggle(tocPanel, tocToggle, $('toc-close')));
       notesToggle.addEventListener('click', () => toggle(notesPanel, notesToggle, $('notes-close')));
       $('toc-close').addEventListener('click', () => { closePanels(); tocToggle.focus(); });
@@ -1161,6 +1264,7 @@ gh api --method POST repos/OWNER/REPO/rulesets --input .agentic/templates/awf-ma
         if (e.key === 'Escape') { closePanels(); return; }
         if ((e.key === 'o' || e.key === 'O' || e.key === '0') && !onControl) { toggle(tocPanel, tocToggle, $('toc-close')); return; }
         if ((e.key === 'n' || e.key === 'N') && !onControl) { toggle(notesPanel, notesToggle, $('notes-close')); return; }
+        if ((e.key === 'p' || e.key === 'P') && !onControl) { openPresenter(); return; }
         if (tocPanel.classList.contains('open')) return;
         if (e.key === 'ArrowRight' || e.key === 'PageDown' || (e.key === ' ' && !onControl)) { e.preventDefault(); step(1); }
         if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); step(-1); }
