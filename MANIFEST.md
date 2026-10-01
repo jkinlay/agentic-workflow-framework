@@ -2,7 +2,7 @@
 
 320 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `1ba7dd6b0cc1e5b6d5f808108f27173bb637ceb9e38f406c78e84eb231f9897a`
+MANIFEST.json SHA-256: `4a72267f15bf99a375fd9fb864031891d9862e2240cd1e16375c2f629702e2f0`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -75,9 +75,9 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/operating_status.py` | `65725eb781376ac55d5f83f2168d3c9d882e3dd660d644eac6336c82eeaf790a` |
 | `.agentic/lib/agentic/policy.py` | `5e63d7f77c4bcef797a2c1e556d9ed3280b1e6958de7b46f29ce1bdc7789eca6` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
-| `.agentic/lib/agentic/providers/github.py` | `c9ac1eb15b55746fba1b1507aa5ccb8d9e09a06c57ca881da77961a32c2735e8` |
+| `.agentic/lib/agentic/providers/github.py` | `8746850d19e405b93c08daf957a16cff397bbcfb47f67d978cb4efda64339c91` |
 | `.agentic/lib/agentic/providers/github_review_host.py` | `2f40909fc0cd05c9f636e3abf1c9e9bcce9403641dc66851ea3427cde0e97ac1` |
-| `.agentic/lib/agentic/providers/github_status.py` | `9df0d2d6c56ad7c8658b27bd2b309fe3da34b80996322bf20d2e5ea472574eec` |
+| `.agentic/lib/agentic/providers/github_status.py` | `1285ec2cd3b7ccf794dec1a66001b2b1fc9f754c08b981588b4353c0f0ed607e` |
 | `.agentic/lib/agentic/publication.py` | `f72b5e66aa2617b9423224becfd54e08b791952fb3989e9a87083f37378b743d` |
 | `.agentic/lib/agentic/release_trust.py` | `52823764da8487f4c2d410b7979532c0ca2059706a9a09e1a0fb34302f2faebf` |
 | `.agentic/lib/agentic/repository_rules.py` | `6c04a815378ced7163dc763e3fb9a93889f8adde5461c4a58d5df13c20a27fcc` |
@@ -195,7 +195,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/work-dispatch.yaml` | `b5f2fc50348d04c7c1b217f3d842941df02833f8c9398bdfee3a23ae3f92cfdc` |
 | `.agentic/templates/worker-result.yaml` | `d770c07863bcd51bbb3dd1d913251e07e13099fd41580b2c8597c1f799bda569` |
 | `.agentic/tests/fixtures/fake_host_process.py` | `01c5f76eecd2a7453ca8cadee05914f588d3d27610b6a96aa306303dfedb5e12` |
-| `.agentic/tests/test_adoption_status.py` | `b316fbc40c7ac642356b60211760e1ef19af7b12193348c3d06c5d8dffb57446` |
+| `.agentic/tests/test_adoption_status.py` | `d13e1e4260b3e8bafd2ac299302b646670057c4c91148f04c997df39902deeeb` |
 | `.agentic/tests/test_adoption_validation.py` | `7390fd02b6fb37dcff31b81eda177feea7ff8c6d102e74ffd556f14ca2072389` |
 | `.agentic/tests/test_bootstrap_configuration.py` | `bb4537b1b491b6f38b396c26ac80e4ae3ef9b7acac0326551a6bf1c3cfa31a00` |
 | `.agentic/tests/test_child_process.py` | `4c6ff5ce3daa59d6ef03d80f6a6d33eb47512a6a033b023ba9e995fe9bf40e32` |
@@ -216,7 +216,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_publication.py` | `782f2be1c33d70fde80ef204bb3798053d19f7217fb33bc15103b1d4aa578ecf` |
 | `.agentic/tests/test_reference.py` | `3a0cec5e5889d5fefee72d3c70eca70984125ce486c1c2d2c075a656643c7cc5` |
 | `.agentic/tests/test_release_trust.py` | `aa0fea0255bc4b0610c8794e29c05d2180a3a1ef25e5bcf91a038adbbfaa8755` |
-| `.agentic/tests/test_repository_rules.py` | `ba801bc4a802617bb8a27e53d063a0c293468884b2c1e9916d7ba0695ee5de77` |
+| `.agentic/tests/test_repository_rules.py` | `80de8d3109fdcb08f5f0a037edf4fdab5bc90fd84691937972999c987a7ee5a4` |
 | `.agentic/tests/test_retry_authority.py` | `b3953a9ffe76aa2016e590ed6c03d7ffc1208445fab6c67ee1cb5e7d58e50b8e` |
 | `.agentic/tests/test_review_loop.py` | `82aceb8a7b1692ab1cf7a22ed91afaa3d570ffa6c9cfcaab18c25f9d7645ff0d` |
 | `.agentic/tests/test_review_policy.py` | `fc0e84e8e4ce603f145a922ab5fdcd5c00b01a0312c67658febb3c2527ec25c7` |
@@ -238,7 +238,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `AGENTS.md` | `fc05e15ab120c798f4f00fd7e8316a4d230d0beae65efa4f5001573da302e8cf` |
 | `ARCHITECTURE.md` | `761781e0581d5d2a75013bf5f131ff06f18180805f485c1e50dfbc0a9680042c` |
-| `CHANGELOG.md` | `b3d74745888e90619987bd80cd9c090f9ba974556c00baa3cfdfa0830662a612` |
+| `CHANGELOG.md` | `474662f4a59ec81c7c4a67537758d52ced6cd3a2c8df3051e2c64991852a5d85` |
 | `Claude outputs/AWF-1.9.1-Showcase-Presentation.html` | `5dbf524af67adee2327b33ac12064f63b5fc2314645e0a6cf306abccc8124386` |
 | `LICENSE` | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
 | `MIGRATION-to-v1.9.3.md` | `d75545597d671c7efa0ad37ed769e0f369e30cb4098d7cf05ac47b76674e9674` |

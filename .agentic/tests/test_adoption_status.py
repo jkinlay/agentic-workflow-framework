@@ -118,6 +118,7 @@ class AdoptionStatusTests(unittest.TestCase):
         self.api = copy.deepcopy(self.responses)
         self.graphql = copy.deepcopy(self.graphql_response)
         self.requests = []
+        self.projected_requests = []
         self.reader = None
 
     def tearDown(self):
@@ -126,8 +127,10 @@ class AdoptionStatusTests(unittest.TestCase):
             (self.root / name).write_bytes(raw)
 
     def observe(self, pr=7):
-        def read(endpoint, deadline, gh):
+        def read(endpoint, deadline, gh, pr_file_metadata=False):
             self.requests.append(endpoint)
+            if pr_file_metadata:
+                self.projected_requests.append(endpoint)
             value = self.reader(endpoint) if self.reader else self.api[endpoint]
             return copy.deepcopy(value), len(json_bytes(value))
         def read_graphql(repository, number, deadline, gh):
@@ -473,6 +476,22 @@ class AdoptionStatusTests(unittest.TestCase):
         result = self.observe()
         self.assertEqual(result['project_state'], 'CONFIGURED')
         self.assertIn('did not add or modify', result['next_action'])
+
+    def test_large_adoption_pr_projects_every_file_page(self):
+        endpoints = []
+        for page, count in enumerate((100, 100, 34), 1):
+            endpoint = self.base + f'/pulls/7/files?per_page=100&page={page}'
+            endpoints.append(endpoint)
+            start = (page - 1) * 100
+            entries = [{'filename': f'docs/fixture-{index}.md', 'status': 'added',
+                        'sha': 'f' * 40} for index in range(start, start + count)]
+            if page == 1:
+                entries[0] = {'filename': INSTALLED, 'status': 'added',
+                              'sha': status.blob_sha(self.files[INSTALLED])}
+            self.api[endpoint] = entries
+        result = self.observe()
+        self.assertEqual(result['project_state'], 'ACTIVE', result)
+        self.assertEqual(self.projected_requests, endpoints)
 
     def test_mutable_project_identity_must_match_receipt(self):
         config = copy.deepcopy(self.config)
