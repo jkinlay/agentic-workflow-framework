@@ -1020,6 +1020,146 @@ class RuntimeTransactionSelectorTests(unittest.TestCase):
             installer._validate_journal_marker(marker, altered)
 
 
+class InstallerTransactionPureRegressionTests(unittest.TestCase):
+    """Pure state-machine checks; no install/bootstrap/upgrade entry point runs."""
+
+    class MemoryTree:
+        def __init__(self, values=None):
+            self.values = dict(values or {})
+            self.root = Path("awf-pure-transaction-model")
+            self.snapshots = []
+            self.unlinks = []
+
+        def inspect(self, path):
+            return object() if path in self.values else None
+
+        def read(self, path):
+            return self.values[path]
+
+        def write(self, path, data):
+            self.values[path] = data
+            self.snapshots.append(dict(self.values))
+
+        def unlink(self, path):
+            self.values.pop(path, None)
+            self.unlinks.append(path)
+            self.snapshots.append(dict(self.values))
+
+    @staticmethod
+    def journal(transaction_id, *, phase="active"):
+        return {"format": "awf-install-journal-3", "transaction_id": transaction_id,
+                "phase": phase, "files": [], "runtime": None,
+                "managed_before": [], "managed_after": [] if phase == "commit_cleanup" else None}
+
+    def test_complete_inventory_proof_rejects_add_remove_rename_mode_bytes_and_type(self):
+        expected = [{"path": ".agentic/a.txt", "mode": 0o600, "sha256": "1" * 64}]
+        variants = {
+            "addition": expected + [{"path": ".agentic/b.txt", "mode": 0o600, "sha256": "2" * 64}],
+            "removal": [],
+            "rename": [{"path": ".agentic/c.txt", "mode": 0o600, "sha256": "1" * 64}],
+            "mode": [{"path": ".agentic/a.txt", "mode": 0o400, "sha256": "1" * 64}],
+            "bytes": [{"path": ".agentic/a.txt", "mode": 0o600, "sha256": "2" * 64}],
+        }
+        for name, observed in variants.items():
+            with self.subTest(name=name), patch.object(installer, "_managed_file_inventory", return_value=observed):
+                with self.assertRaisesRegex(ValidationError, "Managed-file inventory changed"):
+                    installer._verify_managed_inventory(object(), expected, "in pure proof")
+        with patch.object(installer, "_managed_file_inventory",
+                          side_effect=ValidationError("Managed inventory contains a non-regular file")):
+            with self.assertRaisesRegex(ValidationError, "non-regular"):
+                installer._verify_managed_inventory(object(), expected, "in pure proof")
+
+    def test_every_operating_guide_command_uses_the_target_isolated_runtime(self):
+        guide = (ROOT / ".agentic/docs/29-OPERATING-CONFIGURATION.md").read_text(encoding="utf-8")
+        separator = chr(92)
+        canonical = ("& '.agentic{0}.venv{0}Scripts{0}python.exe' -B -I "
+                     "'.agentic{0}scripts{0}workflow.py' --root '.'").format(separator)
+        command_lines = [line for line in guide.splitlines()
+                         if any(f"operating {action}" in line for action in ("show", "set", "recommend"))]
+        self.assertEqual(6, len(command_lines))
+        for line in command_lines:
+            self.assertIn(canonical, line)
+
+    def test_create_update_and_delete_single_artifact_boundaries(self):
+        transaction_id = str(uuid.uuid4())
+        active = self.journal(transaction_id)
+        tree = self.MemoryTree()
+        installer._publish_initial_intent(tree, active)
+        create_states = tree.snapshots[:2]
+        self.assertEqual({installer.JOURNAL}, set(create_states[0]))
+        self.assertEqual({installer.JOURNAL, installer.MARKER}, set(create_states[1]))
+        journal_only = self.MemoryTree(create_states[0])
+        with self.assertRaisesRegex(ValidationError, "must both be present"):
+            installer._read_bound_journal(journal_only)
+        marker_only = self.MemoryTree({installer.MARKER: create_states[1][installer.MARKER]})
+        with self.assertRaisesRegex(ValidationError, "must both be present"):
+            installer._read_bound_journal(marker_only)
+        self.assertEqual("active", installer._read_bound_journal(tree)[0]["phase"])
+
+        committed = self.journal(transaction_id, phase="commit_cleanup")
+        installer._write_bound_journal_update(tree, committed)
+        update_states = tree.snapshots[-3:]
+        for index, state in enumerate(update_states):
+            with self.subTest(update_boundary=index):
+                self.assertIn(installer.JOURNAL, state)
+                self.assertIn(installer.MARKER, state)
+                candidate = self.MemoryTree(state)
+                observed = installer._read_bound_journal(candidate)[0]
+                self.assertEqual("active" if index == 0 else "commit_cleanup", observed["phase"])
+
+        with patch.object(installer, "_managed_file_inventory", return_value=[]):
+            installer._finalize_committed(tree, committed)
+        self.assertEqual([installer.MARKER, installer.JOURNAL], tree.unlinks)
+        self.assertIn(installer.JOURNAL, tree.snapshots[-2])
+        self.assertNotIn(installer.MARKER, tree.snapshots[-2])
+        self.assertEqual({}, tree.snapshots[-1])
+
+    def test_journal_only_create_and_delete_endpoints_are_non_destructive(self):
+        transaction_id = str(uuid.uuid4())
+        for phase, expected in (("active", "ROLLED_BACK"), ("commit_cleanup", "COMMITTED")):
+            journal = self.journal(transaction_id, phase=phase)
+            tree = self.MemoryTree({installer.JOURNAL: installer.json_bytes(journal)})
+            with self.subTest(phase=phase), patch.object(installer, "_managed_file_inventory", return_value=[]):
+                self.assertEqual(expected, installer._finalize_journal_only(tree, journal))
+                self.assertEqual({}, tree.values)
+                self.assertEqual([installer.JOURNAL], tree.unlinks)
+
+    def test_structurally_valid_journal_substitution_and_identity_change_are_rejected(self):
+        transaction_id = str(uuid.uuid4())
+        journal = self.journal(transaction_id)
+        raw = installer.json_bytes(journal)
+        marker = installer.json_bytes(installer._journal_marker(transaction_id, sha256(raw)))
+        substituted = dict(journal, phase="commit_cleanup", managed_after=[])
+        tree = self.MemoryTree({installer.JOURNAL: installer.json_bytes(substituted), installer.MARKER: marker})
+        with self.assertRaisesRegex(ValidationError, "differs from its bound marker"):
+            installer._read_bound_journal(tree)
+
+        valid_tree = self.MemoryTree({installer.JOURNAL: raw, installer.MARKER: marker})
+        changed_identity = self.journal(str(uuid.uuid4()), phase="commit_cleanup")
+        with self.assertRaisesRegex(ValidationError, "identity changed"):
+            installer._write_bound_journal_update(valid_tree, changed_identity)
+
+    def test_authenticated_cleanup_failure_remains_pending_and_stable_success_finishes(self):
+        transaction_id = str(uuid.uuid4())
+        journal = self.journal(transaction_id, phase="commit_cleanup")
+        journal["runtime"] = {"path": installer.RUNTIME, "previous_sha256": "1" * 64,
+                              "new_sha256": "2" * 64,
+                              "stage": f".agentic/.venv.staging-{transaction_id}",
+                              "backup": f".agentic/.venv.backup-{transaction_id}"}
+        raw = installer.json_bytes(journal)
+        tree = self.MemoryTree({installer.JOURNAL: raw, installer.MARKER: installer.json_bytes(
+            installer._journal_marker(transaction_id, sha256(raw)))})
+        with patch.object(installer, "_remove_runtime_transaction_path",
+                          side_effect=OSError("injected cleanup failure")):
+            failures = installer._cleanup_committed_runtime(tree, journal)
+        self.assertEqual(1, len(failures))
+        self.assertEqual("OSError", failures[0]["error"])
+        self.assertEqual({installer.JOURNAL, installer.MARKER}, set(tree.values))
+        with patch.object(installer, "_remove_runtime_transaction_path") as remove:
+            self.assertEqual([], installer._cleanup_committed_runtime(tree, journal))
+        remove.assert_called_once_with(tree.root / journal["runtime"]["backup"])
+
+
 class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
     """Synthetic journal tests; no installer/bootstrap/upgrade entry point runs."""
 
@@ -1034,14 +1174,21 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         stage = f".agentic/.venv.staging-{transaction_id}"
         backup = f".agentic/.venv.backup-{transaction_id}"
         value = {
-            "format": "awf-install-journal-2",
+            "format": "awf-install-journal-3",
             "transaction_id": transaction_id,
+            "phase": "active",
             "files": [{"path": managed,
-                       "old": None if old is None else base64.b64encode(old).decode("ascii"),
-                       "new_sha256": sha256(new)}],
+                        "old": None if old is None else base64.b64encode(old).decode("ascii"),
+                        "old_mode": None if old is None else stat.S_IMODE((self.root / managed).stat().st_mode),
+                        "new_sha256": sha256(new),
+                        "new_mode": stat.S_IMODE((self.root / managed).stat().st_mode)}],
             "runtime": {"path": ".agentic/.venv",
                         "previous_sha256": previous_runtime,
                         "new_sha256": None, "stage": stage, "backup": backup},
+            "managed_before": ([] if old is None else [{"path": managed,
+                "mode": stat.S_IMODE((self.root / managed).stat().st_mode), "sha256": sha256(old)}]),
+            "managed_after": [{"path": managed,
+                "mode": stat.S_IMODE((self.root / managed).stat().st_mode), "sha256": sha256(new)}],
         }
         journal_raw = installer.json_bytes(value)
         (self.root / installer.JOURNAL).write_bytes(journal_raw)
@@ -1164,7 +1311,7 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         pending = installer._journal_marker(transaction_id, sha256(old_raw), sha256(new_raw))
         (self.root / installer.MARKER).write_bytes(installer.json_bytes(pending))
         with installer.Tree(self.root) as tree:
-            self.assertEqual(proposed, installer._read_bound_journal(tree)[0]["runtime"]["new_sha256"])
+            self.assertIsNone(installer._read_bound_journal(tree)[0]["runtime"]["new_sha256"])
         (self.root / installer.JOURNAL).write_bytes(new_raw)
         with installer.Tree(self.root) as tree:
             self.assertEqual(proposed, installer._read_bound_journal(tree)[0]["runtime"]["new_sha256"])
