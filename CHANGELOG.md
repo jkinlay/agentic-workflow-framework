@@ -8,7 +8,7 @@ Sets new-adoption risk and specialist routes to `gpt-5.6-sol` / high. Expiring c
 
 Adds settlement outcomes and `route_model.py outcome-template`; verdicts remain separate records.
 
-Adds byte-verified installation and upgrade from 1.8.3, 1.8.9, 1.9.1 and 1.9.2; unsafe inputs make no changes.
+Adds byte-verified install/upgrade from supported predecessors and GraphQL-bound adoption merge identity; unsafe evidence fails closed.
 
 Adds history-aware publication scanning of messages, patch lines, changed files, PR bodies and comments. Redacted findings block; receipts bind base, head and body digest. An ignored local mapping supplies aliases and deny entries alongside built-in path/network detectors and alias rendering.
 
