@@ -111,6 +111,29 @@ def _write_bound_journal_update(tree, journal):
     tree.write(MARKER, json_bytes(_journal_marker(transaction_id, updated_digest)))
 
 
+def _recover_pending_runtime_update(tree, journal, journal_raw, marker):
+    """Finish the one safe pending update whose bytes are proved by the stage."""
+    if (marker["pending_journal_sha256"] is None or
+            sha256(journal_raw) != marker["journal_sha256"]):
+        return journal
+    runtime = _validated_runtime_journal(journal)
+    if (journal["format"] != "awf-install-journal-3" or journal["phase"] != "active" or
+            runtime is None or runtime["new_sha256"] is not None):
+        return journal
+    stage = tree.root / runtime["stage"]
+    if not (stage.exists() or stage.is_symlink()):
+        raise ValidationError("Pending runtime journal update has no staged runtime; journal retained")
+    candidate = loads(json_bytes(journal).decode("utf-8"))
+    candidate["runtime"]["new_sha256"] = _runtime_tree_sha256(stage)
+    candidate_raw = json_bytes(candidate)
+    if sha256(candidate_raw) != marker["pending_journal_sha256"]:
+        raise ValidationError("Staged runtime does not prove the pending journal update; journal retained")
+    tree.write(JOURNAL, candidate_raw)
+    tree.write(MARKER, json_bytes(_journal_marker(
+        candidate["transaction_id"], sha256(candidate_raw))))
+    return candidate
+
+
 def managed(path):
     return path in {"AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md", CODEOWNERS} or path.startswith(".agentic/")
 
@@ -119,7 +142,7 @@ def _inventory_managed(path):
     """The managed-file proof excludes only intent and runtime transaction trees."""
     if path == MARKER or path == RUNTIME or path.startswith(RUNTIME + "/"):
         return False
-    if re.fullmatch(r"\.agentic/\.venv\.(?:staging|backup)-[0-9a-f-]+(?:/.*)?", path):
+    if re.fullmatch(r"\.agentic/\.venv\.(?:staging|backup|cleanup)-[0-9a-f-]+(?:/.*)?", path):
         return False
     return managed(path)
 
@@ -436,12 +459,18 @@ def _runtime_journal(root, transaction_id):
     previous = _runtime_tree_sha256(runtime) if runtime.exists() or runtime.is_symlink() else None
     stage = f".agentic/.venv.staging-{transaction_id}"
     backup = f".agentic/.venv.backup-{transaction_id}"
-    for relative in (stage, backup):
+    cleanup = f".agentic/.venv.cleanup-{transaction_id}"
+    for relative in (stage, backup, cleanup):
         target = root / relative
         if target.exists() or target.is_symlink():
             raise ValidationError("Runtime transaction path already exists: " + relative)
     return {"path": RUNTIME, "previous_sha256": previous, "new_sha256": None,
             "stage": stage, "backup": backup}
+
+
+def _runtime_cleanup_path(root, runtime):
+    """Return the v3-derived cleanup path without changing its journal schema."""
+    return Path(root) / runtime["backup"].replace(".venv.backup-", ".venv.cleanup-", 1)
 
 
 def ensure_usable(root):
@@ -551,7 +580,7 @@ def _validate_transaction_journal(journal):
         raise ValidationError("Non-canonical recovery transaction identity")
     _validated_runtime_journal(journal)
     if journal["format"] == "awf-install-journal-3":
-        if journal["phase"] not in {"active", "commit_cleanup"}:
+        if journal["phase"] not in {"active", "commit_cleanup", "commit_cleanup_authenticated"}:
             raise ValidationError("Invalid recovery journal phase")
         _validate_inventory(journal["managed_before"])
         _validate_inventory(journal["managed_after"], optional=True)
@@ -598,11 +627,16 @@ def _rollback_runtime(tree, runtime):
     canonical = root / runtime["path"]
     stage = root / runtime["stage"]
     backup = root / runtime["backup"]
+    cleanup = _runtime_cleanup_path(root, runtime)
     previous = runtime["previous_sha256"]
     proposed = runtime["new_sha256"]
 
+    if cleanup.exists() or cleanup.is_symlink():
+        raise ValidationError("Runtime recovery found an unauthenticated cleanup path; journal retained")
     if stage.exists() or stage.is_symlink():
-        if proposed is not None and _runtime_tree_sha256(stage) != proposed:
+        if proposed is None:
+            raise ValidationError("Runtime recovery cannot prove ownership of the staged runtime; journal retained")
+        if _runtime_tree_sha256(stage) != proposed:
             raise ValidationError("Runtime recovery found an external edit in the staged runtime; journal retained")
         _remove_runtime_transaction_path(stage)
 
@@ -711,13 +745,16 @@ class _RuntimeInstallTransaction:
         self.runtime_root = self.root / self.runtime["path"]
         self.stage = self.root / self.runtime["stage"]
         self.backup = self.root / self.runtime["backup"]
+        self.cleanup = _runtime_cleanup_path(self.root, self.runtime)
 
     @property
     def had_previous(self):
         return self.runtime["previous_sha256"] is not None
 
     def verify_initial(self):
-        if self.stage.exists() or self.stage.is_symlink() or self.backup.exists() or self.backup.is_symlink():
+        if (self.stage.exists() or self.stage.is_symlink() or
+                self.backup.exists() or self.backup.is_symlink() or
+                self.cleanup.exists() or self.cleanup.is_symlink()):
             raise ValidationError("Runtime transaction paths changed before canonical runtime creation")
         present = self.runtime_root.exists() or self.runtime_root.is_symlink()
         if self.had_previous:
@@ -745,6 +782,8 @@ class _RuntimeInstallTransaction:
                 raise ValidationError("Exact prior canonical runtime backup cannot be proved")
         elif self.backup.exists() or self.backup.is_symlink():
             raise ValidationError("Fresh runtime transaction created an unexpected backup")
+        if self.cleanup.exists() or self.cleanup.is_symlink():
+            raise ValidationError("Runtime cleanup path appeared before durable commit")
 
 
 def _verify_file_state(tree, journal, which):
@@ -772,6 +811,7 @@ def _verify_runtime_state(tree, runtime, which, *, require_cleanup=False):
     canonical = tree.root / runtime["path"]
     stage = tree.root / runtime["stage"]
     backup = tree.root / runtime["backup"]
+    cleanup = _runtime_cleanup_path(tree.root, runtime)
     expected = runtime["previous_sha256"] if which == "old" else runtime["new_sha256"]
     present = canonical.exists() or canonical.is_symlink()
     if expected is None:
@@ -781,21 +821,57 @@ def _verify_runtime_state(tree, runtime, which, *, require_cleanup=False):
         raise ValidationError(f"Canonical runtime differs from the exact {which} state")
     if stage.exists() or stage.is_symlink():
         raise ValidationError("Runtime staging path remains after transaction finalization")
-    if require_cleanup and (backup.exists() or backup.is_symlink()):
-        raise ValidationError("Prior runtime backup remains after transaction cleanup")
+    if require_cleanup and (backup.exists() or backup.is_symlink() or
+                            cleanup.exists() or cleanup.is_symlink()):
+        raise ValidationError("Prior runtime backup or authenticated cleanup path remains after transaction cleanup")
 
 
 def _cleanup_committed_runtime(tree, journal):
-    """Resume authenticated cleanup; a partially removed backup remains owned."""
+    """Authenticate by atomic rename, then resume deletion under a durable phase."""
     runtime = _validated_runtime_journal(journal)
+    if journal["phase"] not in {"commit_cleanup", "commit_cleanup_authenticated"}:
+        raise ValidationError("Runtime cleanup requires authenticated commit intent")
     if runtime is None:
+        if journal["phase"] == "commit_cleanup":
+            journal["phase"] = "commit_cleanup_authenticated"
+            _write_bound_journal_update(tree, journal)
         return []
     cleanup = []
     backup = tree.root / runtime["backup"]
+    cleanup_path = _runtime_cleanup_path(tree.root, runtime)
+    if journal["phase"] == "commit_cleanup":
+        if runtime["previous_sha256"] is None:
+            if (backup.exists() or backup.is_symlink() or
+                    cleanup_path.exists() or cleanup_path.is_symlink()):
+                raise ValidationError("Fresh runtime commit found an unexpected backup or cleanup path")
+        elif backup.exists() or backup.is_symlink():
+            if cleanup_path.exists() or cleanup_path.is_symlink():
+                raise ValidationError("Runtime backup and cleanup paths both exist; journal retained")
+            if _runtime_tree_sha256(backup) != runtime["previous_sha256"]:
+                raise ValidationError("Exact prior canonical runtime backup cannot be authenticated for cleanup")
+            os.replace(backup, cleanup_path)
+            if _runtime_tree_sha256(cleanup_path) != runtime["previous_sha256"]:
+                raise ValidationError("Prior runtime backup changed while being isolated for cleanup; journal retained")
+        elif cleanup_path.exists() or cleanup_path.is_symlink():
+            # A crash after the atomic rename but before the journal update is
+            # recoverable only while the complete cleanup tree still proves the
+            # exact prior-runtime digest.
+            if _runtime_tree_sha256(cleanup_path) != runtime["previous_sha256"]:
+                raise ValidationError("Pending runtime cleanup cannot be authenticated; journal retained")
+        else:
+            raise ValidationError("Exact prior canonical runtime backup is missing before cleanup")
+        journal["phase"] = "commit_cleanup_authenticated"
+        _write_bound_journal_update(tree, journal)
+    if backup.exists() or backup.is_symlink():
+        raise ValidationError("Prior runtime backup remains after authenticated cleanup transition")
+    if runtime["previous_sha256"] is None:
+        if cleanup_path.exists() or cleanup_path.is_symlink():
+            raise ValidationError("Fresh runtime commit found an unauthenticated cleanup path")
+        return []
     try:
-        _remove_runtime_transaction_path(backup)
+        _remove_runtime_transaction_path(cleanup_path)
     except (OSError, ValidationError) as exc:
-        cleanup.append({"path": str(backup), "error": type(exc).__name__})
+        cleanup.append({"path": str(cleanup_path), "error": type(exc).__name__})
     return cleanup
 
 
@@ -803,6 +879,13 @@ def _verify_committed_payload(tree, journal, context):
     _verify_managed_inventory(tree, journal["managed_after"], context)
     _verify_file_state(tree, journal, "new")
     _verify_runtime_state(tree, _validated_runtime_journal(journal), "new")
+
+
+def _verify_outer_commit_state(tree, journal, transaction):
+    """Jointly re-prove every governed surface before durable commit intent."""
+    _verify_managed_inventory(tree, journal["managed_after"], "immediately before outer commit")
+    _verify_file_state(tree, journal, "new")
+    transaction.verify_committed()
 
 
 def _finalize_committed(tree, journal):
@@ -848,17 +931,15 @@ def complete_runtime_transaction(destination, transaction_id, builder):
             transaction.verify_initial()
             result = builder(transaction)
             transaction.verify_committed()
-            # This is the outer commit proof. It is deliberately the last read
-            # before the authenticated commit-cleanup phase is published.
-            _verify_managed_inventory(tree, journal["managed_after"], "immediately before outer commit")
-            _verify_file_state(tree, journal, "new")
+            _verify_outer_commit_state(tree, journal, transaction)
         except BaseException as original:
             try:
                 rollback(tree, journal)
             except BaseException as rollback_error:
                 raise ValidationError(
                     "Bootstrap runtime failed and exact managed/runtime rollback cannot be proved; "
-                    "the recovery journal was retained") from rollback_error
+                    f"transaction {journal['transaction_id']} and backup "
+                    f"{journal['runtime']['backup'] if journal['runtime'] else '<none>'} were retained") from rollback_error
             raise original
 
         journal["phase"] = "commit_cleanup"
@@ -902,8 +983,10 @@ def recover(destination):
             except (UnicodeDecodeError, ValueError, ValidationError) as exc:
                 raise ValidationError("Unauthenticated journal-only recovery failed closed") from exc
             return {"status": _finalize_journal_only(tree, journal)}
-        journal, _raw, _marker = _read_bound_journal(tree)
-        if journal["format"] == "awf-install-journal-3" and journal["phase"] == "commit_cleanup":
+        journal, bound_raw, bound_marker = _read_bound_journal(tree)
+        journal = _recover_pending_runtime_update(tree, journal, bound_raw, bound_marker)
+        if journal["format"] == "awf-install-journal-3" and journal["phase"] in {
+                "commit_cleanup", "commit_cleanup_authenticated"}:
             _verify_committed_payload(tree, journal, "before resumed runtime backup cleanup")
             cleanup = _cleanup_committed_runtime(tree, journal)
             if cleanup:

@@ -1049,7 +1049,18 @@ class InstallerTransactionPureRegressionTests(unittest.TestCase):
     def journal(transaction_id, *, phase="active"):
         return {"format": "awf-install-journal-3", "transaction_id": transaction_id,
                 "phase": phase, "files": [], "runtime": None,
-                "managed_before": [], "managed_after": [] if phase == "commit_cleanup" else None}
+                "managed_before": [], "managed_after": [] if phase != "active" else None}
+
+    def test_v3_validator_accepts_old_and_authenticated_cleanup_phases_only(self):
+        transaction_id = str(uuid.uuid4())
+        for phase in ("active", "commit_cleanup", "commit_cleanup_authenticated"):
+            with self.subTest(phase=phase):
+                self.assertIsNotNone(installer._validate_transaction_journal(
+                    self.journal(transaction_id, phase=phase)))
+        invalid = self.journal(transaction_id, phase="commit_cleanup_authenticated")
+        invalid["phase"] = "cleanup_unproved"
+        with self.assertRaisesRegex(ValidationError, "Invalid recovery journal phase"):
+            installer._validate_transaction_journal(invalid)
 
     def test_complete_inventory_proof_rejects_add_remove_rename_mode_bytes_and_type(self):
         expected = [{"path": ".agentic/a.txt", "mode": 0o600, "sha256": "1" * 64}]
@@ -1116,7 +1127,9 @@ class InstallerTransactionPureRegressionTests(unittest.TestCase):
 
     def test_journal_only_create_and_delete_endpoints_are_non_destructive(self):
         transaction_id = str(uuid.uuid4())
-        for phase, expected in (("active", "ROLLED_BACK"), ("commit_cleanup", "COMMITTED")):
+        for phase, expected in (("active", "ROLLED_BACK"),
+                                ("commit_cleanup", "COMMITTED"),
+                                ("commit_cleanup_authenticated", "COMMITTED")):
             journal = self.journal(transaction_id, phase=phase)
             tree = self.MemoryTree({installer.JOURNAL: installer.json_bytes(journal)})
             with self.subTest(phase=phase), patch.object(installer, "_managed_file_inventory", return_value=[]):
@@ -1141,7 +1154,7 @@ class InstallerTransactionPureRegressionTests(unittest.TestCase):
 
     def test_authenticated_cleanup_failure_remains_pending_and_stable_success_finishes(self):
         transaction_id = str(uuid.uuid4())
-        journal = self.journal(transaction_id, phase="commit_cleanup")
+        journal = self.journal(transaction_id, phase="commit_cleanup_authenticated")
         journal["runtime"] = {"path": installer.RUNTIME, "previous_sha256": "1" * 64,
                               "new_sha256": "2" * 64,
                               "stage": f".agentic/.venv.staging-{transaction_id}",
@@ -1157,7 +1170,7 @@ class InstallerTransactionPureRegressionTests(unittest.TestCase):
         self.assertEqual({installer.JOURNAL, installer.MARKER}, set(tree.values))
         with patch.object(installer, "_remove_runtime_transaction_path") as remove:
             self.assertEqual([], installer._cleanup_committed_runtime(tree, journal))
-        remove.assert_called_once_with(tree.root / journal["runtime"]["backup"])
+        remove.assert_called_once_with(installer._runtime_cleanup_path(tree.root, journal["runtime"]))
 
 
 class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
@@ -1274,6 +1287,41 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         self.assertFalse((self.root / installer.MARKER).exists())
         self.assertEqual([], list((self.root / ".agentic").glob(".venv.*-*")))
 
+    def test_final_outer_commit_proof_detects_backup_edit_between_prior_proofs(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        old, new = b"old receipt\n", b"upgraded receipt\n"
+        (self.root / managed).write_bytes(new)
+        runtime = self.root / ".agentic/.venv"
+        runtime.mkdir()
+        (runtime / "runtime.txt").write_bytes(b"exact previous runtime\n")
+        previous_runtime = installer._runtime_tree_sha256(runtime)
+        journal = self.journal(transaction_id=transaction_id, managed=managed, old=old, new=new,
+                               previous_runtime=previous_runtime)
+
+        def successful_runtime(transaction):
+            transaction.stage.mkdir()
+            (transaction.stage / "runtime.txt").write_bytes(b"new canonical runtime\n")
+            transaction.record_staged_runtime()
+            os.replace(transaction.runtime_root, transaction.backup)
+            os.replace(transaction.stage, transaction.runtime_root)
+            return {"status": "BUILT"}
+
+        original_verify = installer._verify_file_state
+        def tamper_after_file_proof(tree, observed_journal, which):
+            original_verify(tree, observed_journal, which)
+            backup = self.root / observed_journal["runtime"]["backup"]
+            (backup / "runtime.txt").write_bytes(b"external edit between proofs\n")
+
+        with patch.object(installer, "_verify_file_state", side_effect=tamper_after_file_proof):
+            with self.assertRaises(ValidationError) as raised:
+                installer.complete_runtime_transaction(
+                    self.root, transaction_id, successful_runtime)
+        self.assertIn(f"transaction {transaction_id}", str(raised.exception))
+        self.assertIn(journal["runtime"]["backup"], str(raised.exception))
+        self.assertTrue((self.root / installer.JOURNAL).exists())
+        self.assertTrue((self.root / installer.MARKER).exists())
+
     def test_structurally_valid_journal_tamper_cannot_supply_different_old_bytes(self):
         transaction_id = str(uuid.uuid4())
         managed = ".agentic/installed-manifest.json"
@@ -1298,6 +1346,7 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
 
     def test_staged_journal_pending_marker_accepts_only_old_or_precommitted_bytes(self):
         transaction_id = str(uuid.uuid4())
+        (self.root / ".agentic/installed-manifest.json").write_bytes(b"new receipt\n")
         journal = self.journal(transaction_id=transaction_id,
                                managed=".agentic/installed-manifest.json",
                                old=None, new=b"new receipt\n", previous_runtime=None)
@@ -1320,6 +1369,250 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         with installer.Tree(self.root) as tree:
             with self.assertRaisesRegex(ValidationError, "differs from its bound marker"):
                 installer._read_bound_journal(tree)
+
+    def test_pending_marker_old_journal_reconstructs_stage_digest_before_rollback(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        (self.root / managed).write_bytes(b"new receipt\n")
+        journal = self.journal(transaction_id=transaction_id, managed=managed,
+                               old=None, new=b"new receipt\n", previous_runtime=None)
+        old_raw = (self.root / installer.JOURNAL).read_bytes()
+        stage = self.root / journal["runtime"]["stage"]
+        stage.mkdir()
+        (stage / "runtime.txt").write_bytes(b"staged canonical runtime\n")
+        candidate = json.loads(json.dumps(journal))
+        candidate["runtime"]["new_sha256"] = installer._runtime_tree_sha256(stage)
+        candidate_raw = installer.json_bytes(candidate)
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(
+            installer._journal_marker(transaction_id, sha256(old_raw), sha256(candidate_raw))))
+
+        self.assertEqual("ROLLED_BACK", installer.recover(self.root)["status"])
+        self.assertFalse(stage.exists())
+        self.assertFalse((self.root / managed).exists())
+        self.assertFalse((self.root / installer.JOURNAL).exists())
+        self.assertFalse((self.root / installer.MARKER).exists())
+
+    def test_pending_marker_stage_tamper_fails_closed_without_deleting_stage(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        (self.root / managed).write_bytes(b"new receipt\n")
+        journal = self.journal(transaction_id=transaction_id, managed=managed,
+                               old=None, new=b"new receipt\n", previous_runtime=None)
+        old_raw = (self.root / installer.JOURNAL).read_bytes()
+        stage = self.root / journal["runtime"]["stage"]
+        stage.mkdir()
+        runtime_file = stage / "runtime.txt"
+        runtime_file.write_bytes(b"trusted staged runtime\n")
+        candidate = json.loads(json.dumps(journal))
+        candidate["runtime"]["new_sha256"] = installer._runtime_tree_sha256(stage)
+        candidate_raw = installer.json_bytes(candidate)
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(
+            installer._journal_marker(transaction_id, sha256(old_raw), sha256(candidate_raw))))
+        runtime_file.write_bytes(b"externally changed staged runtime\n")
+
+        with self.assertRaisesRegex(ValidationError, "does not prove the pending journal"):
+            installer.recover(self.root)
+        self.assertTrue(stage.exists())
+        self.assertTrue((self.root / installer.JOURNAL).exists())
+        self.assertTrue((self.root / installer.MARKER).exists())
+
+    def test_backup_cleanup_authenticates_before_delete_and_resumes_partial_removal(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        new = b"upgraded receipt\n"
+        (self.root / managed).write_bytes(new)
+        runtime = self.root / ".agentic/.venv"
+        runtime.mkdir()
+        (runtime / "runtime.txt").write_bytes(b"new canonical runtime\n")
+        backup_bytes = b"exact previous runtime\n"
+        backup = self.root / f".agentic/.venv.backup-{transaction_id}"
+        backup.mkdir()
+        (backup / "runtime.txt").write_bytes(backup_bytes)
+        previous = installer._runtime_tree_sha256(backup)
+        journal = self.journal(transaction_id=transaction_id, managed=managed,
+                               old=b"old receipt\n", new=new, previous_runtime=previous)
+        journal["runtime"]["new_sha256"] = installer._runtime_tree_sha256(runtime)
+        journal["phase"] = "commit_cleanup"
+        raw = installer.json_bytes(journal)
+        (self.root / installer.JOURNAL).write_bytes(raw)
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(
+            installer._journal_marker(transaction_id, sha256(raw))))
+        cleanup = self.root / f".agentic/.venv.cleanup-{transaction_id}"
+
+        def partial_remove(path):
+            self.assertEqual(cleanup, path)
+            (path / "runtime.txt").unlink()
+            raise OSError("injected partial cleanup")
+
+        with installer.Tree(self.root) as tree, patch.object(
+                installer, "_remove_runtime_transaction_path", side_effect=partial_remove):
+            failures = installer._cleanup_committed_runtime(tree, journal)
+        self.assertEqual("commit_cleanup_authenticated", journal["phase"])
+        self.assertEqual(1, len(failures))
+        self.assertFalse(backup.exists())
+        self.assertTrue(cleanup.exists())
+
+        self.assertEqual("COMMITTED", installer.recover(self.root)["status"])
+        self.assertFalse(cleanup.exists())
+        self.assertFalse((self.root / installer.JOURNAL).exists())
+        self.assertFalse((self.root / installer.MARKER).exists())
+
+    def test_backup_rename_crash_before_authenticated_phase_recovers_by_exact_digest(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        new = b"upgraded receipt\n"
+        (self.root / managed).write_bytes(new)
+        runtime = self.root / ".agentic/.venv"
+        runtime.mkdir()
+        (runtime / "runtime.txt").write_bytes(b"new canonical runtime\n")
+        backup = self.root / f".agentic/.venv.backup-{transaction_id}"
+        backup.mkdir()
+        (backup / "runtime.txt").write_bytes(b"exact previous runtime\n")
+        previous = installer._runtime_tree_sha256(backup)
+        journal = self.journal(transaction_id=transaction_id, managed=managed,
+                               old=b"old receipt\n", new=new, previous_runtime=previous)
+        journal["runtime"]["new_sha256"] = installer._runtime_tree_sha256(runtime)
+        journal["phase"] = "commit_cleanup"
+        raw = installer.json_bytes(journal)
+        (self.root / installer.JOURNAL).write_bytes(raw)
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(
+            installer._journal_marker(transaction_id, sha256(raw))))
+        cleanup = installer._runtime_cleanup_path(self.root, journal["runtime"])
+        os.replace(backup, cleanup)
+
+        self.assertEqual("COMMITTED", installer.recover(self.root)["status"])
+        self.assertFalse(cleanup.exists())
+        self.assertFalse((self.root / installer.JOURNAL).exists())
+        self.assertFalse((self.root / installer.MARKER).exists())
+
+    def test_backup_edit_during_authentication_rename_fails_closed(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        new = b"upgraded receipt\n"
+        (self.root / managed).write_bytes(new)
+        runtime = self.root / ".agentic/.venv"
+        runtime.mkdir()
+        (runtime / "runtime.txt").write_bytes(b"new canonical runtime\n")
+        backup = self.root / f".agentic/.venv.backup-{transaction_id}"
+        backup.mkdir()
+        backup_file = backup / "runtime.txt"
+        backup_file.write_bytes(b"exact previous runtime\n")
+        previous = installer._runtime_tree_sha256(backup)
+        journal = self.journal(transaction_id=transaction_id, managed=managed,
+                               old=b"old receipt\n", new=new, previous_runtime=previous)
+        journal["runtime"]["new_sha256"] = installer._runtime_tree_sha256(runtime)
+        journal["phase"] = "commit_cleanup"
+        raw = installer.json_bytes(journal)
+        (self.root / installer.JOURNAL).write_bytes(raw)
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(
+            installer._journal_marker(transaction_id, sha256(raw))))
+        cleanup = installer._runtime_cleanup_path(self.root, journal["runtime"])
+        replace = os.replace
+
+        def tamper_then_rename(source, destination):
+            backup_file.write_bytes(b"changed between proof and rename\n")
+            replace(source, destination)
+
+        with installer.Tree(self.root) as tree, patch.object(
+                installer.os, "replace", side_effect=tamper_then_rename):
+            with self.assertRaisesRegex(ValidationError, "changed while being isolated"):
+                installer._cleanup_committed_runtime(tree, journal)
+        self.assertFalse(backup.exists())
+        self.assertTrue(cleanup.exists())
+        self.assertEqual("commit_cleanup", installer.loads(
+            (self.root / installer.JOURNAL).read_text(encoding="utf-8"))["phase"])
+        with self.assertRaisesRegex(ValidationError, "cannot be authenticated"):
+            installer.recover(self.root)
+        self.assertTrue(cleanup.exists())
+        self.assertTrue((self.root / installer.JOURNAL).exists())
+        self.assertTrue((self.root / installer.MARKER).exists())
+
+    def test_pending_authenticated_phase_after_backup_rename_recovers(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        new = b"upgraded receipt\n"
+        (self.root / managed).write_bytes(new)
+        runtime = self.root / ".agentic/.venv"
+        runtime.mkdir()
+        (runtime / "runtime.txt").write_bytes(b"new canonical runtime\n")
+        backup = self.root / f".agentic/.venv.backup-{transaction_id}"
+        backup.mkdir()
+        (backup / "runtime.txt").write_bytes(b"exact previous runtime\n")
+        previous = installer._runtime_tree_sha256(backup)
+        journal = self.journal(transaction_id=transaction_id, managed=managed,
+                               old=b"old receipt\n", new=new, previous_runtime=previous)
+        journal["runtime"]["new_sha256"] = installer._runtime_tree_sha256(runtime)
+        journal["phase"] = "commit_cleanup"
+        raw = installer.json_bytes(journal)
+        authenticated = json.loads(json.dumps(journal))
+        authenticated["phase"] = "commit_cleanup_authenticated"
+        authenticated_raw = installer.json_bytes(authenticated)
+        (self.root / installer.JOURNAL).write_bytes(raw)
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(
+            installer._journal_marker(
+                transaction_id, sha256(raw), sha256(authenticated_raw))))
+        cleanup = installer._runtime_cleanup_path(self.root, journal["runtime"])
+        os.replace(backup, cleanup)
+
+        self.assertEqual("COMMITTED", installer.recover(self.root)["status"])
+        self.assertFalse(cleanup.exists())
+        self.assertFalse((self.root / installer.JOURNAL).exists())
+        self.assertFalse((self.root / installer.MARKER).exists())
+
+    def test_fresh_authenticated_commit_refuses_unowned_cleanup_path(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        new = b"new receipt\n"
+        (self.root / managed).write_bytes(new)
+        runtime = self.root / ".agentic/.venv"
+        runtime.mkdir()
+        (runtime / "runtime.txt").write_bytes(b"new canonical runtime\n")
+        journal = self.journal(transaction_id=transaction_id, managed=managed,
+                               old=None, new=new, previous_runtime=None)
+        journal["runtime"]["new_sha256"] = installer._runtime_tree_sha256(runtime)
+        journal["phase"] = "commit_cleanup_authenticated"
+        raw = installer.json_bytes(journal)
+        (self.root / installer.JOURNAL).write_bytes(raw)
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(
+            installer._journal_marker(transaction_id, sha256(raw))))
+        cleanup = installer._runtime_cleanup_path(self.root, journal["runtime"])
+        cleanup.mkdir()
+        sentinel = cleanup / "not-transaction-owned.txt"
+        sentinel.write_bytes(b"preserve\n")
+
+        with self.assertRaisesRegex(ValidationError, "unauthenticated cleanup path"):
+            installer.recover(self.root)
+        self.assertEqual(b"preserve\n", sentinel.read_bytes())
+        self.assertTrue((self.root / installer.JOURNAL).exists())
+        self.assertTrue((self.root / installer.MARKER).exists())
+
+    def test_backup_tamper_before_cleanup_fails_closed(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        new = b"upgraded receipt\n"
+        (self.root / managed).write_bytes(new)
+        runtime = self.root / ".agentic/.venv"
+        runtime.mkdir()
+        (runtime / "runtime.txt").write_bytes(b"new canonical runtime\n")
+        backup = self.root / f".agentic/.venv.backup-{transaction_id}"
+        backup.mkdir()
+        (backup / "runtime.txt").write_bytes(b"exact previous runtime\n")
+        previous = installer._runtime_tree_sha256(backup)
+        journal = self.journal(transaction_id=transaction_id, managed=managed,
+                               old=b"old receipt\n", new=new, previous_runtime=previous)
+        journal["runtime"]["new_sha256"] = installer._runtime_tree_sha256(runtime)
+        journal["phase"] = "commit_cleanup"
+        raw = installer.json_bytes(journal)
+        (self.root / installer.JOURNAL).write_bytes(raw)
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(
+            installer._journal_marker(transaction_id, sha256(raw))))
+        (backup / "runtime.txt").write_bytes(b"externally changed prior runtime\n")
+
+        with self.assertRaisesRegex(ValidationError, "cannot be authenticated"):
+            installer.recover(self.root)
+        self.assertTrue(backup.exists())
+        self.assertTrue((self.root / installer.JOURNAL).exists())
+        self.assertTrue((self.root / installer.MARKER).exists())
 
 
 class BootstrapMainTests(unittest.TestCase):
