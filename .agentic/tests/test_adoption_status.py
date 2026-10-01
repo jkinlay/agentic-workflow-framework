@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION, ValidationError
 from agentic.providers import github_status as status
+from agentic.providers.github import PR_FILES_PROJECTION
 from agentic.canonical import load, sha256
 from agentic.installer import CONFIG, INSTALLED, PROVENANCE, json_bytes
 from agentic.lifecycle import definition
@@ -156,12 +157,19 @@ class AdoptionStatusTests(unittest.TestCase):
                 self.projected_requests.append(endpoint)
             value = self.reader(endpoint) if self.reader else self.api[endpoint]
             return copy.deepcopy(value), len(json_bytes(value))
+        def read_pr_files(endpoint, deadline, gh):
+            self.requests.append(endpoint)
+            value = self.reader(endpoint) if self.reader else self.api[endpoint]
+            projected = [{field: entry.get(field) for field in ('filename', 'status', 'sha')}
+                         if isinstance(entry, dict) else entry for entry in value]
+            return copy.deepcopy(projected), len(json_bytes(projected))
         def read_graphql(repository, number, deadline, gh):
             self.requests.append(('graphql', repository, number))
             return copy.deepcopy(self.graphql), len(json_bytes(self.graphql))
         # Keep the real bounded Git implementation and real adapter tuple contract.
         with patch.object(status, 'host_executable', side_effect=lambda name, root: self.git if name == 'git' else sys.executable), \
                 patch.object(status, '_gh_get', side_effect=read), \
+                patch.object(status, '_gh_get_pr_files', side_effect=read_pr_files), \
                 patch.object(status, '_gh_graphql', side_effect=read_graphql):
             return status.project_status(self.root, adoption_pr=pr, release_source=self.source,
                                          expected_manifest_sha256=self.manifest_pin,
@@ -582,6 +590,154 @@ class AdoptionStatusTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, 'deadline exhausted'):
                 status._gh_graphql('fixture/example', 7, status.time.monotonic() + 0.01,
                                    gh='/trusted/gh')
+
+    def test_pr_files_boundary_projects_oversized_patch_before_accounting(self):
+        marker = 'UNNEEDED_PATCH_MUST_NOT_BE_RECORDED'
+        raw_inventory = [{'filename': INSTALLED, 'status': 'added',
+                          'sha': status.blob_sha(self.files[INSTALLED]),
+                          'patch': marker + ('x' * (status.MAX_BYTES + 1))}]
+        self.assertGreater(len(json_bytes(raw_inventory)), status.MAX_BYTES)
+        projected = [{key: raw_inventory[0][key] for key in ('filename', 'status', 'sha')}]
+        calls = []
+
+        class Process:
+            def __init__(self, command, stdin, stdout, stderr, env):
+                calls.append((command, env))
+                stdout.write(json_bytes(projected))
+                self.returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        endpoint = self.base + '/pulls/7/files?per_page=100&page=1'
+        with patch('agentic.providers.github.subprocess.Popen', side_effect=Process):
+            value, count = status._gh_get_pr_files(endpoint, status.time.monotonic() + 5,
+                                                   gh='/trusted/gh')
+        self.assertEqual(value, projected)
+        self.assertEqual(count, len(json_bytes(projected)))
+        command, env = calls[0]
+        self.assertEqual(command, ['/trusted/gh', 'api', '--hostname', 'github.com', '--method', 'GET',
+                                   '-H', 'Accept: application/vnd.github+json',
+                                   '-H', 'X-GitHub-Api-Version: 2022-11-28',
+                                   '--jq', PR_FILES_PROJECTION, endpoint])
+        self.assertEqual((env['GH_PROMPT_DISABLED'], env['GH_PAGER']), ('1', 'cat'))
+        self.assertNotIn(marker, json_bytes(value).decode())
+
+        class Observation:
+            def get_pr_files(self, requested):
+                self.requested = requested
+                return copy.deepcopy(value)
+
+        observation = Observation()
+        status.receipt_changed(observation, 'fixture/example', 7, self.files[INSTALLED])
+        self.assertEqual(observation.requested, endpoint)
+        value[0]['sha'] = 'f' * 40
+        with self.assertRaisesRegex(ValidationError, 'exact installation receipt'):
+            status.receipt_changed(Observation(), 'fixture/example', 7, self.files[INSTALLED])
+
+    def test_pr_files_boundary_retains_response_and_observation_limits(self):
+        class Process:
+            def __init__(self, command, stdin, stdout, stderr, env):
+                stdout.write(b'x' * (status.MAX_BYTES + 1))
+                self.returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        endpoint = self.base + '/pulls/7/files?per_page=100&page=1'
+        with patch('agentic.providers.github.subprocess.Popen', side_effect=Process):
+            with self.assertRaisesRegex(ValidationError, 'Projected PR file response exceeds byte limit'):
+                status._gh_get_pr_files(endpoint, status.time.monotonic() + 5, gh='/trusted/gh')
+
+        observation = status.Observation.__new__(status.Observation)
+        observation.deadline = status.time.monotonic() + 5
+        observation.gh = '/trusted/gh'
+        observation.requests = 20
+        observation.total = 0
+        with patch.object(status, '_gh_get_pr_files') as reader:
+            with self.assertRaisesRegex(ValidationError, 'request/time limit'):
+                observation.get_pr_files(endpoint)
+            reader.assert_not_called()
+
+        observation.requests = 0
+        observation.total = status.MAX_TOTAL
+        with patch.object(status, '_gh_get_pr_files', return_value=([], 1)):
+            with self.assertRaisesRegex(ValidationError, 'aggregate byte limit'):
+                observation.get_pr_files(endpoint)
+
+    def test_pr_file_inventory_pagination_is_complete_and_deterministic(self):
+        receipt = {'filename': INSTALLED, 'status': 'modified',
+                   'sha': status.blob_sha(self.files[INSTALLED])}
+        first = [receipt] + [{'filename': f'product/file-{index}.txt', 'status': 'modified',
+                              'sha': f'{index + 1:040x}'} for index in range(99)]
+        second = [{'filename': 'product/terminal.txt', 'status': 'added', 'sha': 'a' * 40}]
+        endpoints = [self.base + f'/pulls/7/files?per_page=100&page={page}' for page in (1, 2)]
+
+        class Observation:
+            def __init__(self, pages):
+                self.pages = pages
+                self.calls = []
+
+            def get_pr_files(self, endpoint):
+                self.calls.append(endpoint)
+                if endpoint not in self.pages:
+                    raise ValidationError('Synthetic missing page')
+                return copy.deepcopy(self.pages[endpoint])
+
+        complete = Observation(dict(zip(endpoints, (first, second))))
+        status.receipt_changed(complete, 'fixture/example', 7, self.files[INSTALLED])
+        self.assertEqual(complete.calls, endpoints)
+
+        missing = Observation({endpoints[0]: first})
+        with self.assertRaisesRegex(ValidationError, 'missing page'):
+            status.receipt_changed(missing, 'fixture/example', 7, self.files[INSTALLED])
+
+        duplicate = Observation(dict(zip(endpoints, (first, [copy.deepcopy(first[-1])] ))))
+        with self.assertRaisesRegex(ValidationError, 'Duplicate'):
+            status.receipt_changed(duplicate, 'fixture/example', 7, self.files[INSTALLED])
+
+        full_pages = {}
+        for page in range(1, 6):
+            full_pages[self.base + f'/pulls/7/files?per_page=100&page={page}'] = [
+                {'filename': f'page-{page}/file-{index}.txt', 'status': 'added',
+                 'sha': f'{page * 100 + index:040x}'} for index in range(100)]
+        full_pages[endpoints[0]][0] = receipt
+        with self.assertRaisesRegex(ValidationError, 'complete observation limit'):
+            status.receipt_changed(Observation(full_pages), 'fixture/example', 7, self.files[INSTALLED])
+
+    def test_pr_file_inventory_rejects_malformed_projected_fields(self):
+        valid = {'filename': 'product/other.txt', 'status': 'modified', 'sha': 'a' * 40}
+        malformed = [
+            {'filename': 'product/other.txt', 'status': 'modified'},
+            {**valid, 'filename': 7},
+            {**valid, 'status': 7},
+            {**valid, 'sha': 7},
+            {**valid, 'sha': 'a' * 39},
+            {**valid, 'patch': 'must not cross projection'},
+        ]
+
+        class Observation:
+            def __init__(self, entry):
+                self.entry = entry
+
+            def get_pr_files(self, endpoint):
+                return [copy.deepcopy(self.entry)]
+
+        for entry in malformed:
+            with self.subTest(entry=entry), self.assertRaisesRegex(ValidationError, 'Malformed|Unsafe'):
+                status.receipt_changed(Observation(entry), 'fixture/example', 7, self.files[INSTALLED])
 
     def test_status_denominator_uses_enabled_broker_ceiling(self):
         config = copy.deepcopy(self.config)

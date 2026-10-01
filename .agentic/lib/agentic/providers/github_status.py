@@ -19,8 +19,8 @@ from ..child_process import child_env
 from ..configuration import inspect_config
 from ..contracts import Contracts
 from ..installer import CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed, verify_installed
-from .github import (GITHUB_REST_API_VERSION, _gh_get, _gh_graphql, branch_name,
-                     repository_name)
+from .github import (GITHUB_REST_API_VERSION, _gh_get, _gh_get_pr_files, _gh_graphql,
+                     branch_name, repository_name)
 from ..release_trust import approved_manifest
 from ..safeio import Tree, relative_parts
 
@@ -130,6 +130,15 @@ class Observation:
         self.requests += 1
         require(self.requests <= 20 and time.monotonic() < self.deadline, 'Acceptance observation exceeds its request/time limit')
         value, count = _gh_get(endpoint, self.deadline, gh=self.gh, pr_file_metadata=pr_file_metadata)
+        self.total += count
+        require(self.total <= MAX_TOTAL, 'Acceptance observation exceeds aggregate byte limit')
+        return value
+
+    def get_pr_files(self, endpoint):
+        self.requests += 1
+        require(self.requests <= 20 and time.monotonic() < self.deadline,
+                'Acceptance observation exceeds its request/time limit')
+        value, count = _gh_get_pr_files(endpoint, self.deadline, gh=self.gh)
         self.total += count
         require(self.total <= MAX_TOTAL, 'Acceptance observation exceeds aggregate byte limit')
         return value
@@ -308,13 +317,17 @@ def receipt_changed(observation, repository, number, raw):
     seen = set()
     receipt = None
     for page in range(1, 6):
-        entries = observation.get(f'repos/{repository}/pulls/{number}/files?per_page=100&page={page}',
-                                  pr_file_metadata=True)
+        entries = observation.get_pr_files(f'repos/{repository}/pulls/{number}/files?per_page=100&page={page}')
         require(isinstance(entries, list) and len(entries) <= 100, 'Malformed adoption PR file inventory')
         for entry in entries:
             entry = object_value(entry)
+            require(set(entry) == {'filename', 'status', 'sha'},
+                    'Malformed adoption PR file inventory entry')
             name = entry.get('filename')
             relative_parts(name)
+            require(isinstance(entry.get('status'), str) and entry['status']
+                    and isinstance(entry.get('sha'), str) and SHA.fullmatch(entry['sha']),
+                    'Malformed adoption PR file inventory entry')
             require(name not in seen, 'Duplicate adoption PR file inventory entry')
             seen.add(name)
             if name == INSTALLED:
