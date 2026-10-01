@@ -353,7 +353,7 @@ def load_observation_report(path=None, expected_sha256=None, **binding):
         return result
 
 
-def _gh_get(endpoint, deadline, *, gh="gh", pr_file_metadata=False):
+def _gh_get(endpoint, deadline, *, gh="gh"):
     """Bounded GET-only child; raw stderr/provider error content is never reported."""
     remaining = deadline - time.monotonic()
     require(remaining > 0, "Rules observation deadline exhausted")

@@ -126,10 +126,10 @@ class Observation:
         require(len(raw) <= MAX_BYTES and self.total <= MAX_TOTAL, 'Acceptance observation exceeds its byte limit')
         return raw
 
-    def get(self, endpoint, *, pr_file_metadata=False):
+    def get(self, endpoint):
         self.requests += 1
         require(self.requests <= 20 and time.monotonic() < self.deadline, 'Acceptance observation exceeds its request/time limit')
-        value, count = _gh_get(endpoint, self.deadline, gh=self.gh, pr_file_metadata=pr_file_metadata)
+        value, count = _gh_get(endpoint, self.deadline, gh=self.gh)
         self.total += count
         require(self.total <= MAX_TOTAL, 'Acceptance observation exceeds aggregate byte limit')
         return value
