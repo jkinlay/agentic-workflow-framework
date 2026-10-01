@@ -349,12 +349,16 @@ def load_observation_report(path=None, expected_sha256=None, **binding):
         return result
 
 
-def _gh_get(endpoint, deadline, *, gh="gh"):
+def _gh_get(endpoint, deadline, *, gh="gh", pr_file_metadata=False):
     """Bounded GET-only child; raw stderr/provider error content is never reported."""
     remaining = deadline - time.monotonic()
     require(remaining > 0, "Rules observation deadline exhausted")
     command = [str(gh), "api", "--hostname", HOST, "--method", "GET", "-H", "Accept: application/vnd.github+json",
                "-H", "X-GitHub-Api-Version: 2026-03-10", endpoint]
+    if pr_file_metadata:
+        # PR file patches can exceed the bounded stdout even for a modest PR.
+        # Keep the complete page's identity fields and discard patch bodies in gh.
+        command.extend(["--jq", "map({filename,status,sha})"])
     env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_PAGER="cat")
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err,

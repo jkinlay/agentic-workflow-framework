@@ -121,10 +121,10 @@ class Observation:
         require(len(raw) <= MAX_BYTES and self.total <= MAX_TOTAL, 'Acceptance observation exceeds its byte limit')
         return raw
 
-    def get(self, endpoint):
+    def get(self, endpoint, *, pr_file_metadata=False):
         self.requests += 1
         require(self.requests <= 20 and time.monotonic() < self.deadline, 'Acceptance observation exceeds its request/time limit')
-        value, count = _gh_get(endpoint, self.deadline, gh=self.gh)
+        value, count = _gh_get(endpoint, self.deadline, gh=self.gh, pr_file_metadata=pr_file_metadata)
         self.total += count
         require(self.total <= MAX_TOTAL, 'Acceptance observation exceeds aggregate byte limit')
         return value
@@ -232,7 +232,8 @@ def receipt_changed(observation, repository, number, raw):
     seen = set()
     receipt = None
     for page in range(1, 6):
-        entries = observation.get(f'repos/{repository}/pulls/{number}/files?per_page=100&page={page}')
+        entries = observation.get(f'repos/{repository}/pulls/{number}/files?per_page=100&page={page}',
+                                  pr_file_metadata=True)
         require(isinstance(entries, list) and len(entries) <= 100, 'Malformed adoption PR file inventory')
         for entry in entries:
             entry = object_value(entry)
