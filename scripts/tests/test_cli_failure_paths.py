@@ -42,6 +42,16 @@ class ValidatorCommandContractTests(unittest.TestCase):
         self.assertIn(str(Path('.agentic') / '.venv'), expected[0][0])
         self.assertFalse(destination.exists())
 
+    def test_installed_acceptance_stage_selectors_never_return_developer_python(self):
+        destination = ROOT / '.tmp-tests' / 'another nonexistent installed project'
+        expected = validate_archive.installed_paths(destination)[1]
+        for selector in (validate_archive.installed_stage_python,
+                         validate_git_checkout.installed_stage_python):
+            with self.subTest(module=selector.__module__):
+                self.assertEqual(expected, selector(destination))
+                self.assertNotEqual(Path(sys.executable).resolve(), selector(destination))
+        self.assertFalse(destination.exists())
+
 
 class CliFailurePathTests(unittest.TestCase):
     def setUp(self):

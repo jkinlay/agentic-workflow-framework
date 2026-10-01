@@ -1002,6 +1002,81 @@ class ConfiguredInstallerTests(unittest.TestCase):
                 path.unlink()
 
 
+class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
+    """Synthetic journal tests; no installer/bootstrap/upgrade entry point runs."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="awf-bootstrap-transaction-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        (self.root / ".agentic-install").mkdir()
+        (self.root / ".agentic").mkdir()
+
+    def journal(self, *, transaction_id, managed, old, new, previous_runtime):
+        stage = f".agentic/.venv.staging-{transaction_id}"
+        backup = f".agentic/.venv.backup-{transaction_id}"
+        value = {
+            "format": "awf-install-journal-2",
+            "transaction_id": transaction_id,
+            "files": [{"path": managed,
+                       "old": None if old is None else base64.b64encode(old).decode("ascii"),
+                       "new_sha256": sha256(new)}],
+            "runtime": {"path": ".agentic/.venv",
+                        "previous_sha256": previous_runtime,
+                        "new_sha256": None, "stage": stage, "backup": backup},
+        }
+        (self.root / installer.JOURNAL).write_bytes(installer.json_bytes(value))
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes({"transaction_id": transaction_id}))
+        return value
+
+    @staticmethod
+    def failing_runtime(transaction):
+        transaction.stage.mkdir()
+        (transaction.stage / "runtime.txt").write_bytes(b"new canonical runtime\n")
+        transaction.record_staged_runtime()
+        if transaction.had_previous:
+            os.replace(transaction.runtime_root, transaction.backup)
+        os.replace(transaction.stage, transaction.runtime_root)
+        raise ValidationError("injected canonical runtime failure")
+
+    def test_fresh_install_runtime_failure_removes_new_receipt_managed_files_and_runtime(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        new = b"new receipt\n"
+        (self.root / managed).write_bytes(new)
+        self.journal(transaction_id=transaction_id, managed=managed, old=None, new=new,
+                     previous_runtime=None)
+        with self.assertRaisesRegex(ValidationError, "injected canonical runtime failure"):
+            installer.complete_runtime_transaction(
+                self.root, transaction_id, self.failing_runtime)
+        self.assertFalse((self.root / managed).exists())
+        self.assertFalse((self.root / ".agentic/.venv").exists())
+        self.assertFalse((self.root / installer.JOURNAL).exists())
+        self.assertFalse((self.root / installer.MARKER).exists())
+        self.assertEqual([], list((self.root / ".agentic").glob(".venv.*-*")))
+
+    def test_upgrade_runtime_failure_restores_exact_receipt_managed_and_runtime_bytes(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        old, new = b"old receipt\n", b"upgraded receipt\n"
+        (self.root / managed).write_bytes(new)
+        runtime = self.root / ".agentic/.venv"
+        runtime.mkdir()
+        (runtime / "runtime.txt").write_bytes(b"exact previous runtime\n")
+        previous_runtime = installer._runtime_tree_sha256(runtime)
+        self.journal(transaction_id=transaction_id, managed=managed, old=old, new=new,
+                     previous_runtime=previous_runtime)
+        with self.assertRaisesRegex(ValidationError, "injected canonical runtime failure"):
+            installer.complete_runtime_transaction(
+                self.root, transaction_id, self.failing_runtime)
+        self.assertEqual(old, (self.root / managed).read_bytes())
+        self.assertEqual(b"exact previous runtime\n", (runtime / "runtime.txt").read_bytes())
+        self.assertEqual(previous_runtime, installer._runtime_tree_sha256(runtime))
+        self.assertFalse((self.root / installer.JOURNAL).exists())
+        self.assertFalse((self.root / installer.MARKER).exists())
+        self.assertEqual([], list((self.root / ".agentic").glob(".venv.*-*")))
+
+
 class BootstrapMainTests(unittest.TestCase):
     @unittest.skipUnless((ROOT / "scripts/bootstrap_project.py").is_file(),
                          "Source bootstrap entry point is not shipped in installed runtimes")
@@ -1019,12 +1094,20 @@ class BootstrapMainTests(unittest.TestCase):
                 return prepared
             def install_result(*args, **kwargs):
                 events.append("install")
-                return {"status": "INSTALLED", "source_manifest_sha256": pin}
+                return {"status": "INSTALLED", "source_manifest_sha256": pin,
+                        "_runtime_transaction_id": "fixture-transaction"}
             def runtime_result(*args, **kwargs):
                 events.append("runtime")
                 self.assertEqual(args, (ROOT,))
                 self.assertIs(kwargs["prepared_wheelhouse"], prepared)
+                self.assertIs(kwargs["transaction"], transaction)
                 return {"interpreter": "fixture", "entry_point": "fixture"}
+            transaction = object()
+            def complete(destination, transaction_id, builder):
+                events.append("complete")
+                self.assertEqual(destination, ROOT)
+                self.assertEqual(transaction_id, "fixture-transaction")
+                return builder(transaction)
             def checked(*args):
                 events.append("postcheck")
                 return {"status": state}
@@ -1033,14 +1116,16 @@ class BootstrapMainTests(unittest.TestCase):
             with patch.object(sys, "argv", argv), patch.object(
                     module, "prevalidate_runtime_wheelhouse", side_effect=prevalidate) as prevalidate_call, patch.object(
                     module, "install", side_effect=install_result) as install_call, patch.object(
+                    module, "complete_runtime_transaction", side_effect=complete), patch.object(
                     module, "ensure_installed_runtime", side_effect=runtime_result), patch.object(
                     module, "post_install_checks", side_effect=checked), patch(
                     "sys.stdout", new_callable=io.StringIO) as out:
                 self.assertEqual(module.main(), expected)
                 self.assertEqual(json.loads(out.getvalue())["status"], state)
                 self.assertTrue(install_call.call_args.kwargs["configure"])
+                self.assertTrue(install_call.call_args.kwargs["defer_runtime"])
                 self.assertEqual(prevalidate_call.call_args.args, (ROOT, pin, wheelhouse))
-                self.assertEqual(events, ["prevalidate", "install", "runtime", "postcheck"])
+                self.assertEqual(events, ["prevalidate", "install", "complete", "runtime", "postcheck"])
         with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--dry-run"]), patch.object(module, "prevalidate_runtime_wheelhouse", side_effect=AssertionError("dryrun must not prevalidate runtime")), patch.object(module, "install", return_value={"status": "PLAN"}), patch.object(module, "ensure_installed_runtime", side_effect=AssertionError("dryrun must not build runtime")), patch.object(module, "post_install_checks", side_effect=AssertionError("dryrun must not execute")), patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(module.main(), 0)
         with patch.object(sys, "argv", ["bootstrap", "--dest", str(ROOT), "--mode", "upgrade", "--propose-operating-capacity", "--dry-run"]), patch.object(module, "prevalidate_runtime_wheelhouse", side_effect=AssertionError("dryrun must not prevalidate runtime")), patch.object(module, "install", return_value={"status": "PLAN"}) as install_call, patch("sys.stdout", new_callable=io.StringIO):

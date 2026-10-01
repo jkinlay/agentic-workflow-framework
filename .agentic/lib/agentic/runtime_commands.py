@@ -57,8 +57,8 @@ def command_catalog(root, *, platform=None):
             for purpose, arguments, expected in commands
         ],
         "long_argument_transport": {
-            "method": "json_or_response_file",
-            "detail": "Put long hashes and paths in command-supported JSON or response files; do not add line continuations.",
+            "method": "literal_argv",
+            "detail": "These generated commands pass each supported argument literally with PowerShell single-quote escaping. No generic JSON carrier or argparse response-file support is claimed.",
         },
         # Extension point for PR 4: doctor deliberately does not aggregate activation blockers.
         "activation_summary": {

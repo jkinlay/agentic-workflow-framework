@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -126,6 +127,14 @@ class RuntimeCommandTests(unittest.TestCase):
         for unsafe in ("two\nlines", "two\rlines", "nul\x00value"):
             with self.subTest(unsafe=repr(unsafe)), self.assertRaisesRegex(ValueError, "one line"):
                 powershell_quote(unsafe)
+
+    def test_doctor_claims_only_the_literal_transport_it_generates(self):
+        transport = command_catalog(ROOT, platform="nt")["long_argument_transport"]
+        self.assertEqual("literal_argv", transport["method"])
+        self.assertIn("PowerShell single-quote", transport["detail"])
+        self.assertIn("No generic JSON carrier", transport["detail"])
+        self.assertIn("no generic json carrier", transport["detail"].lower())
+        self.assertIn("response-file", transport["detail"])
 
     def test_ac36_bootstrap_command_cannot_drop_the_offline_wheelhouse(self):
         base = (ROOT.parent / "AC36 fixture with spaces").resolve()
@@ -393,6 +402,82 @@ class HonestPreflightTests(unittest.TestCase):
         self.assertIsNone(observed["exit_code"])
         self.assertEqual("TIMEOUT", observed["diagnostic_category"])
         self.assertIn("deadline", observed["output"])
+
+    def test_repeated_timeouts_close_descendants_pipes_and_reader_threads(self):
+        baseline = {thread.ident for thread in threading.enumerate()}
+        sentinels = [ROOT / ".tmp-tests" / f"timeout-descendant-{uuid.uuid4().hex}.txt"
+                     for _ in range(4)]
+        try:
+            for sentinel in sentinels:
+                child = ("import pathlib,time; time.sleep(.6); "
+                         f"pathlib.Path({str(sentinel)!r}).write_text('leaked',encoding='utf-8')")
+                parent = ("import subprocess,sys,time; "
+                          "p=subprocess.Popen([sys.executable,'-B','-c'," + repr(child) +
+                          "],stdout=sys.stdout,stderr=sys.stderr); "
+                          "print(p.pid,flush=True); time.sleep(5)")
+                with patch("agentic.providers.github_status.host_executable", return_value=sys.executable), \
+                        patch.object(host_preflight, "HOST_COMMAND_TIMEOUT_SECONDS", 0.08):
+                    observed = host_preflight.run(["python", "-c", parent])
+                self.assertEqual("TIMEOUT", observed["diagnostic_category"], observed)
+                self.assertTrue(observed["resource_cleanup_complete"], observed)
+                self.assertEqual([], observed["cleanup_errors"])
+            time.sleep(.8)
+            leaked_threads = [thread for thread in threading.enumerate()
+                              if thread.ident not in baseline and thread.is_alive()]
+            self.assertEqual([], leaked_threads)
+            self.assertFalse(any(path.exists() for path in sentinels))
+        finally:
+            for path in sentinels:
+                path.unlink(missing_ok=True)
+
+    def test_timeout_cleanup_failures_are_structured_and_fail_closed(self):
+        class Process:
+            def __init__(self):
+                self.stdout, self.stderr = io.BytesIO(b"partial"), io.BytesIO()
+                self.returncode = None
+                self.waits = 0
+
+            def wait(self, timeout):
+                self.waits += 1
+                if self.waits < 3:
+                    raise subprocess.TimeoutExpired(["synthetic"], timeout)
+                raise OSError("synthetic wait failure")
+
+            def terminate(self):
+                raise OSError("synthetic terminate failure")
+
+            def kill(self):
+                raise OSError("synthetic kill failure")
+
+            def poll(self):
+                return None
+
+        class Tree:
+            @staticmethod
+            def terminate_and_wait(_timeout):
+                return ["tree_kill:SYNTHETIC_FAILURE"]
+
+        with patch("agentic.providers.github_status.host_executable", return_value=sys.executable), \
+                patch.object(host_preflight, "_spawn_tree", return_value=(Process(), Tree())):
+            observed = host_preflight.run(["python", "-c", "pass"])
+        self.assertEqual("TIMEOUT", observed["diagnostic_category"])
+        self.assertFalse(observed["resource_cleanup_complete"])
+        self.assertTrue(any(item.startswith("terminate:") for item in observed["cleanup_errors"]))
+        self.assertTrue(any(item.startswith("kill:") for item in observed["cleanup_errors"]))
+        self.assertIn("tree_kill:SYNTHETIC_FAILURE", observed["cleanup_errors"])
+        self.assertIn("child cleanup failed", observed["output"])
+
+    def test_markdown_diagnostics_escape_table_metacharacters_and_normalize_lines(self):
+        rendered = host_preflight.render_markdown({
+            "platform": "windows",
+            "rows": [{"check": "repository_config", "status": "WARN",
+                      "detail": "owner|value\r\nsecond\rthird",
+                      "remedy": "set a|b\nthen <review>"}],
+        })
+        self.assertIn("owner&#124;value<br>second<br>third", rendered)
+        self.assertIn("set a&#124;b<br>then &lt;review&gt;", rendered)
+        self.assertNotIn("\r", rendered)
+        self.assertEqual(7, len(rendered.splitlines()))
 
 
 def synthetic_pass():

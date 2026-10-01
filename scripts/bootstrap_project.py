@@ -7,7 +7,7 @@ import sys
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
-from agentic.installer import install, recover
+from agentic.installer import complete_runtime_transaction, install, recover
 from agentic import ValidationError
 from agentic.adoption_config import (ensure_installed_runtime, post_install_checks,
                                      prevalidate_runtime_wheelhouse)
@@ -57,12 +57,25 @@ def main():
                 codeowner=args.codeowner, rules_observation=args.rules_observation,
                 expected_rules_observation_sha256=args.expected_rules_observation_sha256,
                 default_branch=args.default_branch, review_app_id=args.review_app_id, configure=True,
-                propose_operating_capacity=args.propose_operating_capacity)
+                propose_operating_capacity=args.propose_operating_capacity,
+                defer_runtime=not args.dry_run)
             if not args.dry_run:
-                if result.get("source_manifest_sha256") != prepared_wheelhouse.source_manifest_sha256:
-                    raise ValidationError("Installed release identity changed after runtime prevalidation")
-                result["runtime"] = ensure_installed_runtime(
-                    args.dest, prepared_wheelhouse=prepared_wheelhouse)
+                transaction_id = result.pop("_runtime_transaction_id", None)
+                if transaction_id is None:
+                    try:
+                        recover(args.dest)
+                    except (ValidationError, OSError, ValueError) as rollback_error:
+                        raise ValidationError(
+                            "Installer lost the bootstrap transaction identity and rollback could not be proved") from rollback_error
+                    raise ValidationError("Installer did not retain the bootstrap runtime transaction; managed files were rolled back")
+                def build_runtime(transaction):
+                    if result.get("source_manifest_sha256") != prepared_wheelhouse.source_manifest_sha256:
+                        raise ValidationError("Installed release identity changed after runtime prevalidation")
+                    return ensure_installed_runtime(
+                        args.dest, prepared_wheelhouse=prepared_wheelhouse,
+                        transaction=transaction)
+                result["runtime"] = complete_runtime_transaction(
+                    args.dest, transaction_id, build_runtime)
                 result.update(post_install_checks(args.dest, result))
         print(json.dumps(result, indent=2))
         return 1 if result["status"] == "INSTALLED_UNCONFIGURED" else 2 if result["status"] == "INSTALLATION_VERIFICATION_FAILED" else 0

@@ -6,12 +6,15 @@ of this host; they grant nothing and are recorded in the adoption PR.
 from __future__ import annotations
 import configparser
 from datetime import datetime, timezone
+import html
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import threading
+import time
 import tomllib
 
 from .child_process import child_env
@@ -88,6 +91,183 @@ def _decode_captured(stdout, stderr, states):
     return observed, output, bool(invalid), bool(truncated), bool(failures)
 
 
+class _PosixProcessTree:
+    def __init__(self, process):
+        self.process_group = process.pid
+
+    def terminate_and_wait(self, _timeout):
+        try:
+            os.killpg(self.process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            return []
+        except OSError as exc:
+            return ["tree_kill:" + type(exc).__name__]
+        return []
+
+
+class _WindowsJob:
+    """Kill-on-close Job Object assigned before a suspended child can spawn."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in
+                        ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                         "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BasicLimits),
+                        ("IoInfo", IoCounters),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        class Accounting(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_int64) for name in
+                        ("TotalUserTime", "TotalKernelTime", "ThisPeriodTotalUserTime",
+                         "ThisPeriodTotalKernelTime")] + [
+                        ("TotalPageFaultCount", wintypes.DWORD),
+                        ("TotalProcesses", wintypes.DWORD),
+                        ("ActiveProcesses", wintypes.DWORD),
+                        ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                      ctypes.c_void_p, wintypes.DWORD]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                        ctypes.c_void_p, wintypes.DWORD,
+                                                        ctypes.c_void_p]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        self._ctypes = ctypes
+        self._kernel32 = kernel32
+        self._Accounting = Accounting
+        self.handle = kernel32.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+        limits = ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            error = ctypes.get_last_error()
+            kernel32.CloseHandle(self.handle)
+            self.handle = None
+            raise OSError(error, "SetInformationJobObject failed")
+
+    def assign_and_resume(self, process):
+        ctypes = self._ctypes
+        if not self._kernel32.AssignProcessToJobObject(self.handle, int(process._handle)):
+            raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject failed")
+        ntdll = ctypes.WinDLL("ntdll")
+        ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+        ntdll.NtResumeProcess.restype = ctypes.c_long
+        status = ntdll.NtResumeProcess(int(process._handle))
+        if status != 0:
+            raise OSError(status, "NtResumeProcess failed")
+
+    def terminate_and_wait(self, timeout):
+        errors = []
+        if self.handle is None:
+            return ["job_handle:UNAVAILABLE"]
+        try:
+            if not self._kernel32.TerminateJobObject(self.handle, 1):
+                errors.append("tree_kill:WinError" + str(self._ctypes.get_last_error()))
+            deadline = time.monotonic() + timeout
+            while True:
+                accounting = self._Accounting()
+                if not self._kernel32.QueryInformationJobObject(
+                        self.handle, 1, self._ctypes.byref(accounting),
+                        self._ctypes.sizeof(accounting), None):
+                    errors.append("tree_wait:WinError" + str(self._ctypes.get_last_error()))
+                    break
+                if accounting.ActiveProcesses == 0:
+                    break
+                if time.monotonic() >= deadline:
+                    errors.append("tree_wait:PROCESS_TREE_DID_NOT_EXIT")
+                    break
+                time.sleep(.01)
+        finally:
+            if not self._kernel32.CloseHandle(self.handle):
+                errors.append("job_close:WinError" + str(self._ctypes.get_last_error()))
+            self.handle = None
+        return errors
+
+
+def _spawn_tree(command, **kwargs):
+    if os.name == "nt":
+        job = _WindowsJob()
+        process = None
+        try:
+            flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200) |
+                     getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | 0x00000004)
+            process = subprocess.Popen(command, creationflags=flags, **kwargs)
+            job.assign_and_resume(process)
+            return process, job
+        except BaseException:
+            job.terminate_and_wait(2)
+            if process is not None:
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                for stream in (process.stdout, process.stderr):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except (OSError, ValueError):
+                            pass
+            raise
+    process = subprocess.Popen(command, start_new_session=True, **kwargs)
+    return process, _PosixProcessTree(process)
+
+
+def _cancel_reader_io(thread):
+    if os.name != "nt" or thread.native_id is None:
+        return None
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.CancelSynchronousIo.argtypes = [wintypes.HANDLE]
+    kernel32.CancelSynchronousIo.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenThread(0x0001, False, thread.native_id)  # THREAD_TERMINATE
+    if not handle:
+        return "reader_open:WinError" + str(ctypes.get_last_error())
+    try:
+        if not kernel32.CancelSynchronousIo(handle):
+            error = ctypes.get_last_error()
+            if error != 1168:  # ERROR_NOT_FOUND: the blocking operation already completed.
+                return "reader_cancel:WinError" + str(error)
+    finally:
+        kernel32.CloseHandle(handle)
+    return None
+
+
 def run(args, cwd=None):
     """Trusted-host executables only: never a file inside the checkout or a script wrapper."""
     from . import ValidationError
@@ -97,8 +277,9 @@ def run(args, cwd=None):
         executable = host_executable(args[0], Path(cwd or os.getcwd()))
         env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
         env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
-        process = subprocess.Popen([executable, *args[1:]], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   cwd=cwd, env=child_env(env), stdin=subprocess.DEVNULL, bufsize=0)
+        process, process_tree = _spawn_tree(
+            [executable, *args[1:]], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=cwd, env=child_env(env), stdin=subprocess.DEVNULL, bufsize=0)
     except FileNotFoundError as exc:
         return {"executable": executable, "exit_code": None, "output": _bounded(str(exc)),
                 "diagnostic_category": "MISSING_EXECUTABLE"}
@@ -115,33 +296,66 @@ def run(args, cwd=None):
         thread.start()
         threads.append((thread, stream, name))
     timed_out = False
+    cleanup_errors = []
     try:
         process.wait(timeout=HOST_COMMAND_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         timed_out = True
-        process.kill()
         try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            states["stderr"]["error"] = "PROCESS_DID_NOT_EXIT"
+            process.terminate()
+        except (OSError, subprocess.SubprocessError) as exc:
+            cleanup_errors.append("terminate:" + type(exc).__name__)
+    except (OSError, subprocess.SubprocessError) as exc:
+        cleanup_errors.append("wait:" + type(exc).__name__)
     finally:
+        cleanup_errors.extend(process_tree.terminate_and_wait(2))
+        if process.poll() is None:
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                cleanup_errors.append("wait:PROCESS_DID_NOT_EXIT")
+                try:
+                    process.kill()
+                except (OSError, subprocess.SubprocessError) as exc:
+                    cleanup_errors.append("kill:" + type(exc).__name__)
+                try:
+                    process.wait(timeout=2)
+                except (OSError, subprocess.SubprocessError) as exc:
+                    cleanup_errors.append("wait_after_kill:" + type(exc).__name__)
         for thread, stream, name in threads:
             thread.join(timeout=2)
             if thread.is_alive():
-                states[name]["error"] = states[name]["error"] or "PIPE_DID_NOT_CLOSE"
+                cancellation = _cancel_reader_io(thread)
+                if cancellation:
+                    cleanup_errors.append(name + "_" + cancellation)
             try:
                 stream.close()
-            except OSError:
-                states[name]["error"] = states[name]["error"] or "PIPE_CLOSE_FAILED"
+            except (OSError, ValueError) as exc:
+                cleanup_errors.append(name + "_close:" + type(exc).__name__)
             if thread.is_alive():
                 thread.join(timeout=2)
+            if thread.is_alive():
+                cleanup_errors.append(name + "_reader:READER_JOIN_DEADLINE")
+                # Never return while a daemon reader still owns pending pipe I/O.
+                # Tree termination plus synchronous-I/O cancellation makes this
+                # final join finite on supported hosts; an OS that violates that
+                # contract must stop the probe rather than leak repeated readers.
+                thread.join()
+            elif states[name]["error"]:
+                cleanup_errors.append(name + "_reader:" + states[name]["error"])
     observed, output, invalid, truncated, capture_failed = _decode_captured(
         captured["stdout"], captured["stderr"], states)
+    if cleanup_errors:
+        output = _bounded("child cleanup failed: " + ", ".join(cleanup_errors) +
+                          (("\n" + output) if output else ""))
     if timed_out:
         category = "TIMEOUT"
         prefix = f"child exceeded {HOST_COMMAND_TIMEOUT_SECONDS}-second deadline"
         output = _bounded(prefix + (("\n" + output) if output else ""))
         exit_code = None
+    elif cleanup_errors:
+        category = "RESOURCE_CLEANUP_FAILURE"
+        exit_code = process.returncode
     elif capture_failed:
         category = "OUTPUT_CAPTURE_FAILURE"
         exit_code = process.returncode
@@ -155,7 +369,8 @@ def run(args, cwd=None):
         category = "OK" if process.returncode == 0 else _nonzero_category(observed)
         exit_code = process.returncode
     return {"executable": executable, "exit_code": exit_code, "output": output,
-            "diagnostic_category": category}
+            "diagnostic_category": category, "cleanup_errors": cleanup_errors,
+            "resource_cleanup_complete": not cleanup_errors}
 
 
 def git_config(root, key):
@@ -435,5 +650,13 @@ def render_markdown(report):
     lines = ["## Host preflight", "", f"Platform: {report['platform']}. Rows never block INSTALLED; WARN rows are the next action.", "",
              "| Check | Status | Observed | Remedy |", "| --- | --- | --- | --- |"]
     for r in report["rows"]:
-        lines.append(f"| {r['check']} | {r['status']} | {r['detail']} | {r['remedy'] or '—'} |")
+        detail = _markdown_cell(r["detail"])
+        remedy = _markdown_cell(r["remedy"]) if r["remedy"] else "—"
+        lines.append(f"| {r['check']} | {r['status']} | {detail} | {remedy} |")
     return "\n".join(lines) + "\n"
+
+
+def _markdown_cell(value):
+    """Render repository-controlled diagnostics as one inert table cell."""
+    normalized = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    return html.escape(normalized, quote=False).replace("|", "&#124;").replace("\n", "<br>")

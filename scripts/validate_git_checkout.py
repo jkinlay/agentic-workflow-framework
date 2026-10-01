@@ -55,6 +55,11 @@ def expected_post_install_commands(destination):
             for action in ("verify-installation", "validate-config")]
 
 
+def installed_stage_python(destination):
+    """Select only the target installation's canonical interpreter."""
+    return installed_paths(destination)[1]
+
+
 def _pairs(items):
     value = {}
     for key, child in items:
@@ -215,8 +220,12 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
             require(condition, name)
             report["checks"].append({"check": name, "status": "PASS", **evidence})
 
-        def verify(name, directory, expected=0):
-            result = command(name, [python, "-B", WORKFLOW, "verify-installation"], directory, expected)
+        def verify(name, directory, expected=0, *, installed_runtime=False):
+            runtime = installed_stage_python(directory) if installed_runtime else Path(python)
+            require(runtime.is_file(), name + ": canonical Python runtime is unavailable")
+            isolation = ["-I"] if installed_runtime else []
+            result = command(name, [runtime, "-B", *isolation, WORKFLOW, "--root", directory,
+                                    "verify-installation"], directory, expected)
             if expected == 0:
                 _json(result.stdout)
             return result
@@ -348,7 +357,7 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
         merged_attributes = original_attributes + b"\n" + scoped
         (installed / ".gitattributes").write_bytes(merged_attributes)
         check("Disposable manual merge retains the existing policy prefix", merged_attributes.startswith(original_attributes))
-        verify("Installed fixture integrity passes before Git", installed)
+        verify("Installed fixture integrity passes before Git", installed, installed_runtime=True)
         expected_installed = {name: data for name, data in _files(installed).items() if _managed(name)}
         require(".agentic/installed-manifest.json" in expected_installed and ".agentic/workflow-version.yaml" in expected_installed,
                 "Installed manifest/provenance missing from comparison inventory")
@@ -365,7 +374,7 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
               (installed_clone / "existing.bat").read_bytes() == batch_bytes and "text: set" in batch_attr and "eol: crlf" in batch_attr)
         check("Git retains all manually merged project attribute rules",
               (installed_clone / ".gitattributes").read_bytes().replace(b"\r\n", b"\n") == merged_attributes.replace(b"\r\n", b"\n"))
-        verify("Installed Git checkout integrity CLI passes", installed_clone)
+        verify("Installed Git checkout integrity CLI passes", installed_clone, installed_runtime=True)
 
         dirty = run / "d"
         _copy(payload, dirty)

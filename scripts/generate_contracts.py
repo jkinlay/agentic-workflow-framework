@@ -218,7 +218,7 @@ def catalog():
                             {"contains": {"properties": {"purpose": const(purpose)}, "required": ["purpose"]},
                              "minContains": 1, "maxContains": 1}
                             for purpose in ("adoption", "verification", "validation", "status", "operating")]),
-        "long_argument_transport": obj({"method": const("json_or_response_file"), "detail": text()}),
+        "long_argument_transport": obj({"method": const("literal_argv"), "detail": text()}),
         "activation_summary": obj({"status": const("EXTENSION_POINT"), "detail": text()}),
         "execution_authority": FALSE})
     gate_results = obj({name: obj({"result": enum("PASS", "FAIL", "N_A"), "evidence": EVIDENCE}) for name in GATE_NAMES})

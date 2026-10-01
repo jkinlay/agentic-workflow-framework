@@ -172,7 +172,7 @@
       ],
       "properties": {
         "method": {
-          "const": "json_or_response_file"
+          "const": "literal_argv"
         },
         "detail": {
           "type": "string",

@@ -2,9 +2,11 @@
 from __future__ import annotations
 import base64
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 from pathlib import Path
 import uuid
@@ -21,6 +23,7 @@ MARKER = ".agentic/INSTALLING.json"
 INSTALLED = ".agentic/installed-manifest.json"
 CONFIG = ".agentic/PROJECT_CONFIG.yaml"
 PROVENANCE = ".agentic/workflow-version.yaml"
+RUNTIME = ".agentic/.venv"
 CODEOWNERS = ".github/CODEOWNERS"
 GITIGNORE = ".gitignore"
 GITIGNORE_TEMPLATE = ".agentic/templates/operating.gitignore"
@@ -158,6 +161,90 @@ def assert_quiescent(config_bytes):
         raise ValidationError("Cannot verify existing configuration quiescence") from exc
 
 
+def _runtime_tree_sha256(path):
+    """Bind a runtime tree without following links or reparse-point directories."""
+    path = Path(path)
+    metadata = os.lstat(path)
+    reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    junction = getattr(path, "is_junction", lambda: False)()
+    if stat.S_ISLNK(metadata.st_mode) or reparse or junction or not stat.S_ISDIR(metadata.st_mode):
+        raise ValidationError("Canonical runtime transaction root is linked or not a directory")
+    digest = hashlib.sha256()
+
+    def add(value):
+        raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        digest.update(len(raw).to_bytes(8, "big"))
+        digest.update(raw)
+
+    def visit(directory, prefix=""):
+        try:
+            entries = sorted(os.scandir(directory), key=lambda item: item.name)
+        except OSError as exc:
+            raise ValidationError("Canonical runtime transaction inventory is unreadable") from exc
+        for entry in entries:
+            relative = entry.name if not prefix else prefix + "/" + entry.name
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise ValidationError("Canonical runtime transaction entry is unreadable: " + relative) from exc
+            entry_reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            mode = stat.S_IMODE(info.st_mode)
+            if stat.S_ISLNK(info.st_mode):
+                try:
+                    target = os.readlink(entry.path)
+                except OSError as exc:
+                    raise ValidationError("Canonical runtime link is unreadable: " + relative) from exc
+                add([relative, "link", mode, target])
+            elif entry_reparse:
+                raise ValidationError("Canonical runtime contains a reparse point: " + relative)
+            elif stat.S_ISDIR(info.st_mode):
+                add([relative, "directory", mode])
+                visit(entry.path, relative)
+            elif stat.S_ISREG(info.st_mode):
+                file_digest = hashlib.sha256()
+                try:
+                    with open(entry.path, "rb") as stream:
+                        while True:
+                            block = stream.read(1024 * 1024)
+                            if not block:
+                                break
+                            file_digest.update(block)
+                except OSError as exc:
+                    raise ValidationError("Canonical runtime file is unreadable: " + relative) from exc
+                add([relative, "file", mode, info.st_size, file_digest.hexdigest()])
+            else:
+                raise ValidationError("Canonical runtime contains a special file: " + relative)
+
+    add([".", "directory", stat.S_IMODE(metadata.st_mode)])
+    visit(path)
+    return digest.hexdigest()
+
+
+def _remove_runtime_transaction_path(path):
+    path = Path(path)
+    if not path.exists() and not path.is_symlink():
+        return
+    metadata = os.lstat(path)
+    reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    junction = getattr(path, "is_junction", lambda: False)()
+    if stat.S_ISLNK(metadata.st_mode) or reparse or junction or not stat.S_ISDIR(metadata.st_mode):
+        raise ValidationError("Refusing to clean an unsafe runtime transaction path")
+    shutil.rmtree(path)
+
+
+def _runtime_journal(root, transaction_id):
+    runtime = root / RUNTIME
+    previous = _runtime_tree_sha256(runtime) if runtime.exists() or runtime.is_symlink() else None
+    stage = f".agentic/.venv.staging-{transaction_id}"
+    backup = f".agentic/.venv.backup-{transaction_id}"
+    for relative in (stage, backup):
+        target = root / relative
+        if target.exists() or target.is_symlink():
+            raise ValidationError("Runtime transaction path already exists: " + relative)
+    return {"path": RUNTIME, "previous_sha256": previous, "new_sha256": None,
+            "stage": stage, "backup": backup}
+
+
 def ensure_usable(root):
     with Tree(root) as tree:
         if tree.inspect(MARKER) is not None or tree.inspect(JOURNAL) is not None:
@@ -221,20 +308,92 @@ def migrate_config_version(raw, previous="1.9.2", current=VERSION):
     return migrated
 
 
-def rollback(tree, journal):
-    if not isinstance(journal, dict) or set(journal) != {"format", "transaction_id", "files"} or journal["format"] != "awf-install-journal-1":
+def _validated_runtime_journal(journal):
+    if journal["format"] == "awf-install-journal-1":
+        if set(journal) != {"format", "transaction_id", "files"}:
+            raise ValidationError("Invalid recovery journal")
+        return None
+    if journal["format"] != "awf-install-journal-2" or set(journal) != {
+            "format", "transaction_id", "files", "runtime"}:
         raise ValidationError("Invalid recovery journal")
-    uuid.UUID(journal["transaction_id"])
+    transaction_id = str(uuid.UUID(journal["transaction_id"]))
+    runtime = journal["runtime"]
+    if not isinstance(runtime, dict) or set(runtime) != {
+            "path", "previous_sha256", "new_sha256", "stage", "backup"}:
+        raise ValidationError("Invalid runtime recovery journal")
+    expected_stage = f".agentic/.venv.staging-{transaction_id}"
+    expected_backup = f".agentic/.venv.backup-{transaction_id}"
+    valid_digest = lambda value: value is None or (
+        isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None)
+    if (runtime["path"] != RUNTIME or runtime["stage"] != expected_stage or
+            runtime["backup"] != expected_backup or
+            not valid_digest(runtime["previous_sha256"]) or
+            not valid_digest(runtime["new_sha256"])):
+        raise ValidationError("Invalid runtime recovery paths or digests")
+    return runtime
+
+
+def _rollback_runtime(tree, runtime):
+    if runtime is None:
+        return
+    root = tree.root
+    canonical = root / runtime["path"]
+    stage = root / runtime["stage"]
+    backup = root / runtime["backup"]
+    previous = runtime["previous_sha256"]
+    proposed = runtime["new_sha256"]
+
+    if stage.exists() or stage.is_symlink():
+        if proposed is not None and _runtime_tree_sha256(stage) != proposed:
+            raise ValidationError("Runtime recovery found an external edit in the staged runtime; journal retained")
+        _remove_runtime_transaction_path(stage)
+
+    if previous is None:
+        if backup.exists() or backup.is_symlink():
+            raise ValidationError("Fresh runtime recovery found an unexpected backup; journal retained")
+        if canonical.exists() or canonical.is_symlink():
+            if proposed is None or _runtime_tree_sha256(canonical) != proposed:
+                raise ValidationError("Fresh runtime recovery cannot prove the canonical runtime is transaction-owned; journal retained")
+            _remove_runtime_transaction_path(canonical)
+        return
+
+    if backup.exists() or backup.is_symlink():
+        if _runtime_tree_sha256(backup) != previous:
+            raise ValidationError("Runtime recovery backup differs from the exact prior runtime; journal retained")
+        if canonical.exists() or canonical.is_symlink():
+            if proposed is None or _runtime_tree_sha256(canonical) != proposed:
+                raise ValidationError("Runtime recovery found an external canonical-runtime edit; journal retained")
+            _remove_runtime_transaction_path(canonical)
+        os.replace(backup, canonical)
+    elif not (canonical.exists() or canonical.is_symlink()) or _runtime_tree_sha256(canonical) != previous:
+        raise ValidationError("Runtime recovery cannot prove or restore the exact prior runtime; journal retained")
+    if _runtime_tree_sha256(canonical) != previous:
+        raise ValidationError("Runtime recovery verification failed; journal retained")
+
+
+def rollback(tree, journal):
+    if not isinstance(journal, dict) or "format" not in journal or "transaction_id" not in journal:
+        raise ValidationError("Invalid recovery journal")
+    try:
+        uuid.UUID(journal["transaction_id"])
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValidationError("Invalid recovery transaction identity") from exc
+    runtime = _validated_runtime_journal(journal)
     if not isinstance(journal["files"], list) or len(journal["files"]) > 10000:
         raise ValidationError("Invalid recovery file inventory")
     seen = set()
+    backup_prefix = f".agentic-backup/{journal['transaction_id']}/"
     for item in journal["files"]:
         if not isinstance(item, dict) or set(item) != {"path", "old", "new_sha256"}:
             raise ValidationError("Invalid recovery file entry")
         relative_parts(item["path"])
         state_path = item["path"].startswith(".agentic-state/")
         valid_new = item["new_sha256"] is None or re.fullmatch(r"[0-9a-f]{64}", item["new_sha256"])
-        if (not managed(item["path"]) and item["path"] not in {GITIGNORE, "OPERATING_CONFIG.yaml"} and not state_path) or item["path"] == MARKER or item["path"].casefold() in seen or not valid_new:
+        transaction_backup = item["path"].startswith(backup_prefix)
+        safe_path = (managed(item["path"]) or item["path"] in {GITIGNORE, "OPERATING_CONFIG.yaml"}
+                     or state_path or transaction_backup)
+        if (not safe_path or item["path"] == MARKER or item["path"].casefold() in seen or not valid_new or
+                (transaction_backup and (item["old"] is not None or item["new_sha256"] is None))):
             raise ValidationError("Unsafe or duplicate recovery path/digest")
         seen.add(item["path"].casefold())
         if item["old"] is not None:
@@ -249,13 +408,122 @@ def rollback(tree, journal):
                     raise ValidationError(f"Recovery found an external edit at {item['path']}; marker retained")
             elif current is None or sha256(current) != item["new_sha256"]:
                 raise ValidationError(f"Recovery found an external edit at {item['path']}; marker retained")
+    expected_backups = {item["path"] for item in journal["files"]
+                        if item["path"].startswith(backup_prefix)}
+    backup_root = tree.root / backup_prefix.rstrip("/")
+    if backup_root.exists() or backup_root.is_symlink():
+        metadata = os.lstat(backup_root)
+        reparse = getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if stat.S_ISLNK(metadata.st_mode) or reparse or not stat.S_ISDIR(metadata.st_mode):
+            raise ValidationError("Recovery backup root is unsafe; marker retained")
+        actual_backups = set()
+        for directory, directories, files in os.walk(backup_root, followlinks=False):
+            for name in [*directories, *files]:
+                path = Path(directory) / name
+                info = os.lstat(path)
+                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise ValidationError("Recovery backup contains a link or reparse point; marker retained")
+            for name in files:
+                actual_backups.add((Path(directory) / name).relative_to(tree.root).as_posix())
+        if not actual_backups.issubset(expected_backups):
+            raise ValidationError("Recovery backup contains an external file; marker retained")
+    # Restore or remove the canonical runtime before changing the managed files
+    # that it executes. A runtime proof failure retains the whole transaction.
+    _rollback_runtime(tree, runtime)
     for item in reversed(journal["files"]):
         if item["old"] is None:
             tree.unlink(item["path"])
         else:
             tree.write(item["path"], base64.b64decode(item["old"], validate=True))
+    if backup_root.exists():
+        shutil.rmtree(backup_root)
     tree.unlink(MARKER)
     tree.unlink(JOURNAL)
+
+
+class _RuntimeInstallTransaction:
+    def __init__(self, tree, journal):
+        self.tree = tree
+        self.journal = journal
+        self.runtime = journal["runtime"]
+        self.root = tree.root
+        self.runtime_root = self.root / self.runtime["path"]
+        self.stage = self.root / self.runtime["stage"]
+        self.backup = self.root / self.runtime["backup"]
+
+    @property
+    def had_previous(self):
+        return self.runtime["previous_sha256"] is not None
+
+    def verify_initial(self):
+        if self.stage.exists() or self.stage.is_symlink() or self.backup.exists() or self.backup.is_symlink():
+            raise ValidationError("Runtime transaction paths changed before canonical runtime creation")
+        present = self.runtime_root.exists() or self.runtime_root.is_symlink()
+        if self.had_previous:
+            if not present or _runtime_tree_sha256(self.runtime_root) != self.runtime["previous_sha256"]:
+                raise ValidationError("Canonical runtime changed after installation planning")
+        elif present:
+            raise ValidationError("A canonical runtime appeared after fresh-install planning")
+
+    def record_staged_runtime(self):
+        proposed = _runtime_tree_sha256(self.stage)
+        if self.runtime["new_sha256"] not in {None, proposed}:
+            raise ValidationError("Staged canonical runtime identity changed")
+        self.runtime["new_sha256"] = proposed
+        self.tree.write(JOURNAL, json_bytes(self.journal))
+        return proposed
+
+    def verify_committed(self):
+        proposed = self.runtime["new_sha256"]
+        if proposed is None or not self.runtime_root.exists() or _runtime_tree_sha256(self.runtime_root) != proposed:
+            raise ValidationError("Canonical runtime commit cannot be proved")
+        if self.had_previous:
+            if not self.backup.exists() or _runtime_tree_sha256(self.backup) != self.runtime["previous_sha256"]:
+                raise ValidationError("Exact prior canonical runtime backup cannot be proved")
+        elif self.backup.exists() or self.backup.is_symlink():
+            raise ValidationError("Fresh runtime transaction created an unexpected backup")
+
+
+def complete_runtime_transaction(destination, transaction_id, builder):
+    """Build the canonical runtime, committing or proving complete rollback."""
+    destination = Path(destination).absolute()
+    cleanup = []
+    with Tree(destination) as tree, install_lock(tree):
+        raw = _exists_read(tree, JOURNAL)
+        if raw is None:
+            raise ValidationError("Bootstrap runtime transaction journal is unavailable")
+        journal = loads(raw.decode("utf-8"))
+        runtime = _validated_runtime_journal(journal)
+        if runtime is None or journal["transaction_id"] != str(transaction_id):
+            raise ValidationError("Bootstrap runtime transaction identity changed")
+        marker = loads(tree.read(MARKER).decode("utf-8"))
+        if marker != {"transaction_id": journal["transaction_id"]}:
+            raise ValidationError("Bootstrap installation marker differs from its journal")
+        transaction = _RuntimeInstallTransaction(tree, journal)
+        try:
+            transaction.verify_initial()
+            result = builder(transaction)
+            transaction.verify_committed()
+            tree.unlink(MARKER)
+            tree.unlink(JOURNAL)
+        except BaseException as original:
+            try:
+                rollback(tree, journal)
+            except BaseException as rollback_error:
+                raise ValidationError(
+                    "Bootstrap runtime failed and exact managed/runtime rollback cannot be proved; "
+                    "the recovery journal was retained") from rollback_error
+            raise original
+    for path in (transaction.stage, transaction.backup):
+        try:
+            _remove_runtime_transaction_path(path)
+        except (OSError, ValidationError) as exc:
+            cleanup.append({"path": str(path), "error": type(exc).__name__})
+    if isinstance(result, dict):
+        result = dict(result)
+        result["transaction_cleanup"] = "COMPLETE" if not cleanup else "COMMITTED_CLEANUP_PENDING"
+        result["transaction_cleanup_failures"] = cleanup
+    return result
 
 
 def recover(destination):
@@ -272,12 +540,15 @@ def recover(destination):
 def install(source, destination, expected_digest, mode="install", conflict="error", overrides=None,
             dry_run=False, fail_after=None, *, codeowner="@maintainer", rules_observation=None,
             expected_rules_observation_sha256=None, default_branch=None, review_app_id=None,
-            configure=False, discover=True, propose_operating_capacity=False):
+            configure=False, discover=True, propose_operating_capacity=False,
+            defer_runtime=False):
     validate_codeowner(codeowner)
     if mode not in {"install", "upgrade"} or conflict not in {"error", "backup"}:
         raise ValidationError("Only install/upgrade and error/backup are supported; skip was removed")
     if type(propose_operating_capacity) is not bool or (propose_operating_capacity and not configure):
         raise ValidationError("A capacity governance proposal requires explicit configured adoption")
+    if type(defer_runtime) is not bool or (defer_runtime and dry_run):
+        raise ValidationError("Deferred runtime commit is available only for a writing bootstrap transaction")
     if not expected_digest or len(expected_digest) != 64:
         raise ValidationError("Provide the externally approved manifest SHA-256")
     source, destination = Path(source).absolute(), Path(destination).absolute()
@@ -535,19 +806,30 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 if _exists_read(dst, path) != old:
                     raise ValidationError("Destination changed after preflight")
             transaction_id = str(uuid.uuid4())
-            journal = {"format": "awf-install-journal-1", "transaction_id": transaction_id,
-                "files": [{"path": path, "old": base64.b64encode(originals[path]).decode() if originals[path] is not None else None,
-                           "new_sha256": sha256(data)} for path, data in sorted(planned.items())]
-                         + [{"path": path, "old": base64.b64encode(originals[path]).decode(), "new_sha256": None}
-                            for path in deletions]}
+            backup_plan = {}
             if conflict == "backup":
                 for path, old in originals.items():
                     proposed = planned.get(path)
                     if old is not None and old != proposed:
-                        dst.write(f".agentic-backup/{transaction_id}/{path}", old)
+                        backup_path = f".agentic-backup/{transaction_id}/{path}"
+                        if dst.inspect(backup_path) is not None:
+                            raise ValidationError("Transaction backup path appeared after preflight")
+                        backup_plan[backup_path] = old
+            journal = {"format": "awf-install-journal-2" if defer_runtime else "awf-install-journal-1",
+                "transaction_id": transaction_id,
+                "files": [{"path": path, "old": base64.b64encode(originals[path]).decode() if originals[path] is not None else None,
+                            "new_sha256": sha256(data)} for path, data in sorted(planned.items())]
+                          + [{"path": path, "old": base64.b64encode(originals[path]).decode(), "new_sha256": None}
+                             for path in deletions]
+                          + [{"path": path, "old": None, "new_sha256": sha256(data)}
+                             for path, data in sorted(backup_plan.items())]}
+            if defer_runtime:
+                journal["runtime"] = _runtime_journal(destination, transaction_id)
             dst.write(JOURNAL, json_bytes(journal))
             dst.write(MARKER, json_bytes({"transaction_id": transaction_id}))
             try:
+                for path, data in sorted(backup_plan.items()):
+                    dst.write(path, data)
                 for count, (path, data) in enumerate(sorted(planned.items()), 1):
                     dst.write(path, data)
                     if fail_after == count:
@@ -571,13 +853,15 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 for path in archive_paths:
                     if originals[path] is None:
                         (destination / Path(path)).chmod(stat.S_IREAD)
-                # Journal remains a fail-closed marker until its final removal.
-                dst.unlink(MARKER)
-                dst.unlink(JOURNAL)
+                # Bootstrap keeps the same journal/marker until the canonical
+                # runtime has been staged, swapped and validated.
+                if not defer_runtime:
+                    dst.unlink(MARKER)
+                    dst.unlink(JOURNAL)
             except Exception:
                 rollback(dst, journal)
                 raise
-        return {"status": "INSTALLED" if mode == "install" else "UPGRADED", "template_version": VERSION,
+        result = {"status": "INSTALLED" if mode == "install" else "UPGRADED", "template_version": VERSION,
                 "install_id": install_id, "source_manifest_sha256": digest, "managed_files": len(planned),
                 "profile": "manual_reference", "live_automation_enabled": False,
                 "live_automation_enabled_scope": "reference controller and installed background services",
@@ -586,3 +870,6 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 "governance_proposal": governance_proposal, "gitignore": ignore_report,
                 "operating": operating_report, "write_plan": write_plan,
                 "codeowners": owner_report, "upgrade": upgrade_report, **adoption_rules}
+        if defer_runtime:
+            result["_runtime_transaction_id"] = transaction_id
+        return result

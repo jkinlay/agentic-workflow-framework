@@ -51,7 +51,7 @@
       }
     ],
     "long_argument_transport": {
-      "method": "json_or_response_file",
+      "method": "literal_argv",
       "detail": "UNFILLED"
     },
     "activation_summary": {

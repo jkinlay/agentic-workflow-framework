@@ -511,7 +511,8 @@ def _transaction_sibling(runtime_root, kind):
     raise ValidationError("Could not allocate a unique runtime transaction path")
 
 
-def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhouse=None):
+def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhouse=None,
+                             transaction=None):
     """Build a hash-bound offline runtime and atomically replace the canonical runtime."""
     from .runtime_commands import installed_paths
     root, interpreter, entry_point = installed_paths(destination)
@@ -538,9 +539,17 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
             raise ValidationError("Installed runtime dependency lock changed after wheelhouse prevalidation")
         artifacts = prepared_wheelhouse.artifacts
     expected_versions = {name: dependencies[name]["version"] for name in sorted(dependencies)}
-    stage = _transaction_sibling(runtime_root, "staging")
-    backup = _transaction_sibling(runtime_root, "backup")
-    had_previous = runtime_root.exists()
+    if transaction is None:
+        stage = _transaction_sibling(runtime_root, "staging")
+        backup = _transaction_sibling(runtime_root, "backup")
+        had_previous = runtime_root.exists()
+    else:
+        if (Path(transaction.root).resolve() != root or
+                Path(transaction.runtime_root) != runtime_root):
+            raise ValidationError("Canonical runtime transaction is bound to another destination")
+        stage = Path(transaction.stage)
+        backup = Path(transaction.backup)
+        had_previous = transaction.had_previous
     committed = False
     try:
         venv.EnvBuilder(with_pip=False, system_site_packages=False, clear=False).create(stage)
@@ -551,6 +560,8 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
         site_packages.mkdir(parents=True, exist_ok=True)
         expected_files = _extract_locked_wheels(artifacts, site_packages)
         _validate_runtime(stage_interpreter, root, stage, expected_versions, expected_files)
+        if transaction is not None:
+            transaction.record_staged_runtime()
         if had_previous:
             os.replace(runtime_root, backup)
         os.replace(stage, runtime_root)
@@ -562,6 +573,10 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
         if backup.exists():
             _remove_runtime_tree(backup)
     except BaseException as original:
+        if transaction is not None:
+            # The outer installer transaction restores runtime and managed files
+            # from its still-durable journal under the destination lock.
+            raise
         if not committed:
             try:
                 # Filesystem state, rather than flags set after os.replace(),
@@ -579,10 +594,11 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
                     "the uniquely named backup was retained for recovery: " + str(backup)) from rollback_error
         raise
     finally:
-        if stage.exists() or stage.is_symlink():
-            _remove_runtime_tree(stage)
-        if committed and (backup.exists() or backup.is_symlink()):
-            _remove_runtime_tree(backup)
+        if transaction is None:
+            if stage.exists() or stage.is_symlink():
+                _remove_runtime_tree(stage)
+            if committed and (backup.exists() or backup.is_symlink()):
+                _remove_runtime_tree(backup)
     return {"interpreter": str(interpreter), "entry_point": str(entry_point),
             "dependency_source": "operator-supplied offline wheelhouse; complete wheel SHA-256 pinned by requirements.lock; RECORD and extracted inventory verified",
             "requirements_lock_sha256": lock_sha256,
