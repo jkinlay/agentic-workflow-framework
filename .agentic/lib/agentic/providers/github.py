@@ -421,13 +421,17 @@ def _gh_get_pr_files(endpoint, deadline, *, gh="gh"):
 def _gh_graphql(query, variables, deadline, *, gh="gh"):
     """Bounded official GraphQL call through gh; provider diagnostics stay private."""
     require(deadline - time.monotonic() > 0, "GraphQL observation deadline exhausted")
-    command = [str(gh), "api", "graphql", "--hostname", HOST, "--method", "POST",
-               "-f", "query=" + query]
-    for name, value in sorted(variables.items()):
-        command.extend(["-F" if isinstance(value, int) else "-f", f"{name}={value}"])
+    require(isinstance(query, str) and isinstance(variables, dict),
+            "GraphQL request is malformed")
+    request = canonical({"query": query, "variables": variables})
+    require(len(request) <= MAX_BYTES, "GraphQL request exceeds byte limit")
+    command = [str(gh), "api", "--hostname", HOST, "--method", "POST",
+               "graphql", "--input", "-"]
     env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_PAGER="cat")
-    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+    with tempfile.TemporaryFile() as incoming, tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        incoming.write(request)
+        incoming.seek(0)
+        process = subprocess.Popen(command, stdin=incoming, stdout=out, stderr=err,
                                    env=child_env(env))
         try:
             while process.poll() is None:
@@ -440,6 +444,8 @@ def _gh_graphql(query, variables, deadline, *, gh="gh"):
                     pass
             require(time.monotonic() <= deadline and process.returncode == 0,
                     "GraphQL query did not complete successfully")
+            require(os.fstat(err.fileno()).st_size <= MAX_BYTES,
+                    "GraphQL stderr exceeds byte limit")
             out.seek(0)
             raw = out.read(MAX_BYTES + 1)
             require(len(raw) <= MAX_BYTES, "GraphQL response exceeds byte limit")

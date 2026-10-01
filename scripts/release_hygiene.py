@@ -44,7 +44,14 @@ SHOWCASE_PREFIXES = ('docs/showcase/',)
 SHOWCASE_PATHS = {
     'docs/AWF-1.8.9-Showcase-Presentation.html',
     'docs/AWF-1.9.1-Showcase-Presentation.html',
+    'docs/AWF-1.9.2-Speaker-Script.md',
     'docs/AWF-Showcase-Presentation-Plan.md',
+    'Claude outputs/AWF-1.9.2-Speaker-Script.md',
+}
+HISTORICAL_RELEASE_ARTIFACTS = {
+    'Claude outputs/awf192-critic-prompt.md',
+    'Claude outputs/awf192-fix1-prompt.md',
+    'Claude outputs/awf192-fix2-prompt.md',
 }
 VERSION_TOKEN = r'(?P<version>\d+\.\d+(?:\.\d+)?)(?!\d|\.\d)'
 # Match release meaning, not bare numbers: requirements such as PyYAML==6.0.2,
@@ -136,6 +143,7 @@ def check_release(root=ROOT, version=None):
         historical_validation = rel.parts[:3] == ('.agentic', 'validation', 'history') and path.suffix == '.json'
         if showcase_material(rel) or ('tests' in rel.parts or historical_validation or path.name in HISTORY
                 or rel.as_posix() in HISTORICAL_PILOT_DOCUMENTS
+                or rel.as_posix() in HISTORICAL_RELEASE_ARTIFACTS
                 or path.name.startswith(('MIGRATION-', 'RED-TEAM-DISPOSITION-'))):
             continue
         stale = stale_versions(body, current)

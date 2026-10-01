@@ -18,7 +18,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION, ValidationError
-from agentic.providers import github_status as status
+from agentic.providers import github, github_status as status
 from agentic.providers.github import PR_FILES_PROJECTION
 from agentic.canonical import load, sha256
 from agentic.installer import CONFIG, INSTALLED, PROVENANCE, json_bytes
@@ -164,8 +164,10 @@ class AdoptionStatusTests(unittest.TestCase):
             projected = [{field: entry.get(field) for field in ('filename', 'status', 'sha')}
                          if isinstance(entry, dict) else entry for entry in value]
             return copy.deepcopy(projected), len(json_bytes(projected))
-        def read_graphql(repository, number, deadline, gh):
-            self.requests.append(('graphql', repository, number))
+        def read_graphql(query, variables, deadline, gh):
+            self.assertEqual(query, status.MERGE_IDENTITY_QUERY)
+            self.requests.append(('graphql', variables['owner'] + '/' + variables['name'],
+                                  variables['number']))
             return copy.deepcopy(self.graphql), len(json_bytes(self.graphql))
         # Keep the real bounded Git implementation and real adapter tuple contract.
         with patch.object(status, 'host_executable', side_effect=lambda name, root: self.git if name == 'git' else sys.executable), \
@@ -498,8 +500,10 @@ class AdoptionStatusTests(unittest.TestCase):
         self.assertEqual(result['adoption_receipt_commit_sha'], receipt_commit)
         self.assertEqual(result['adoption_merge_sha'], integration)
 
-    def test_graphql_helper_sends_encoded_json_on_stdin_and_bounds_output(self):
+    def test_shared_graphql_helper_sends_encoded_json_on_stdin_and_bounds_output(self):
         calls = []
+        self.assertIs(status._gh_graphql, github._gh_graphql)
+        variables = {'owner': 'fixture', 'name': 'example', 'number': 7}
 
         class Process:
             def __init__(self, command, stdin, stdout, stderr, env, *, raw=None, returncode=0):
@@ -526,7 +530,8 @@ class AdoptionStatusTests(unittest.TestCase):
             return process
 
         with patch.object(status.subprocess, 'Popen', side_effect=completed):
-            value, count = status._gh_graphql('fixture/example', 7, status.time.monotonic() + 5,
+            value, count = status._gh_graphql(status.MERGE_IDENTITY_QUERY, variables,
+                                              status.time.monotonic() + 5,
                                               gh='/trusted/gh')
         self.assertEqual(value, response)
         self.assertEqual(count, len(json_bytes(response)))
@@ -536,7 +541,7 @@ class AdoptionStatusTests(unittest.TestCase):
         self.assertEqual(command, ['/trusted/gh', 'api', '--hostname', 'github.com', '--method', 'POST',
                                    'graphql', '--input', '-'])
         self.assertEqual(json.loads(payload), {'query': status.MERGE_IDENTITY_QUERY,
-                                               'variables': {'owner': 'fixture', 'name': 'example', 'number': 7}})
+                                               'variables': variables})
         self.assertEqual((env['GH_PROMPT_DISABLED'], env['GH_PAGER']), ('1', 'cat'))
 
         def oversized(command, stdin, stdout, stderr, env):
@@ -547,7 +552,8 @@ class AdoptionStatusTests(unittest.TestCase):
 
         with patch.object(status.subprocess, 'Popen', side_effect=oversized):
             with self.assertRaises(ValidationError):
-                status._gh_graphql('fixture/example', 7, status.time.monotonic() + 5,
+                status._gh_graphql(status.MERGE_IDENTITY_QUERY, variables,
+                                   status.time.monotonic() + 5,
                                    gh='/trusted/gh')
 
         def failed(command, stdin, stdout, stderr, env):
@@ -558,7 +564,8 @@ class AdoptionStatusTests(unittest.TestCase):
 
         with patch.object(status.subprocess, 'Popen', side_effect=failed):
             with self.assertRaisesRegex(ValidationError, 'did not complete successfully'):
-                status._gh_graphql('fixture/example', 7, status.time.monotonic() + 5,
+                status._gh_graphql(status.MERGE_IDENTITY_QUERY, variables,
+                                   status.time.monotonic() + 5,
                                    gh='/trusted/gh')
 
         def oversized_stderr(command, stdin, stdout, stderr, env):
@@ -569,7 +576,8 @@ class AdoptionStatusTests(unittest.TestCase):
 
         with patch.object(status.subprocess, 'Popen', side_effect=oversized_stderr):
             with self.assertRaisesRegex(ValidationError, 'stderr exceeds byte limit'):
-                status._gh_graphql('fixture/example', 7, status.time.monotonic() + 5,
+                status._gh_graphql(status.MERGE_IDENTITY_QUERY, variables,
+                                   status.time.monotonic() + 5,
                                    gh='/trusted/gh')
 
         class TimedOut:
@@ -589,7 +597,8 @@ class AdoptionStatusTests(unittest.TestCase):
 
         with patch.object(status.subprocess, 'Popen', return_value=TimedOut()):
             with self.assertRaisesRegex(ValidationError, 'deadline exhausted'):
-                status._gh_graphql('fixture/example', 7, status.time.monotonic() + 0.01,
+                status._gh_graphql(status.MERGE_IDENTITY_QUERY, variables,
+                                   status.time.monotonic() + 0.01,
                                    gh='/trusted/gh')
 
     def test_pr_files_boundary_projects_oversized_patch_before_accounting(self):

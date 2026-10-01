@@ -14,7 +14,7 @@ import uuid
 from urllib.parse import quote
 
 from .. import ValidationError, VERSION
-from ..canonical import canonical, load_yaml, loads, now_text, sha256, timestamp
+from ..canonical import load_yaml, loads, now_text, sha256, timestamp
 from ..child_process import child_env
 from ..configuration import inspect_config
 from ..contracts import Contracts
@@ -64,45 +64,6 @@ def object_value(value):
     return value
 
 
-def _gh_graphql(repository, number, deadline, *, gh='gh'):
-    """Run the fixed, bounded read-only merge-identity query."""
-    remaining = deadline - time.monotonic()
-    require(remaining > 0, 'Acceptance observation deadline exhausted')
-    owner, name = repository_name(repository).split('/', 1)
-    require(type(number) is int and number > 0, 'Use a positive adoption PR number')
-    request = canonical({'query': MERGE_IDENTITY_QUERY,
-                         'variables': {'owner': owner, 'name': name, 'number': number}})
-    require(len(request) <= MAX_BYTES, 'GraphQL acceptance request exceeds byte limit')
-    command = [str(gh), 'api', '--hostname', 'github.com', '--method', 'POST', 'graphql', '--input', '-']
-    env = dict(os.environ, GH_PROMPT_DISABLED='1', GH_PAGER='cat')
-    with tempfile.TemporaryFile() as incoming, tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        incoming.write(request)
-        incoming.seek(0)
-        process = subprocess.Popen(command, stdin=incoming, stdout=out, stderr=err,
-                                   env=child_env(env))
-        try:
-            while process.poll() is None:
-                require(time.monotonic() < deadline, 'Acceptance observation deadline exhausted')
-                require(os.fstat(out.fileno()).st_size <= MAX_BYTES and os.fstat(err.fileno()).st_size <= MAX_BYTES,
-                        'GraphQL acceptance response exceeds byte limit')
-                try:
-                    process.wait(timeout=min(0.05, max(0.001, deadline - time.monotonic())))
-                except subprocess.TimeoutExpired:
-                    pass
-            require(time.monotonic() <= deadline and process.returncode == 0,
-                    'GraphQL acceptance query did not complete successfully')
-            require(os.fstat(err.fileno()).st_size <= MAX_BYTES,
-                    'GraphQL acceptance stderr exceeds byte limit')
-            out.seek(0)
-            raw = out.read(MAX_BYTES + 1)
-            require(len(raw) <= MAX_BYTES, 'GraphQL acceptance response exceeds byte limit')
-            return loads(raw.decode('utf-8')), len(raw)
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=2)
-
-
 def host_executable(name, root):
     resolved = shutil.which(name)
     require(resolved is not None, 'Trusted host ' + name + ' executable is unavailable')
@@ -147,7 +108,11 @@ class Observation:
         self.requests += 1
         require(self.requests <= 20 and time.monotonic() < self.deadline,
                 'Acceptance observation exceeds its request/time limit')
-        value, count = _gh_graphql(repository, number, self.deadline, gh=self.gh)
+        owner, name = repository_name(repository).split('/', 1)
+        require(type(number) is int and number > 0, 'Use a positive adoption PR number')
+        value, count = _gh_graphql(MERGE_IDENTITY_QUERY,
+                                   {'owner': owner, 'name': name, 'number': number},
+                                   self.deadline, gh=self.gh)
         self.total += count
         require(self.total <= MAX_TOTAL, 'Acceptance observation exceeds aggregate byte limit')
         return value
