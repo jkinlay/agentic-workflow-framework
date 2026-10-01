@@ -40,6 +40,86 @@ def json_bytes(value):
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
+def _journal_marker(transaction_id, journal_digest, pending_digest=None):
+    """Bind recovery authority to one exact journal, with one precommitted update."""
+    return {"format": "awf-install-marker-1", "transaction_id": transaction_id,
+            "journal_sha256": journal_digest, "pending_journal_sha256": pending_digest}
+
+
+def _validate_journal_marker(marker, journal_raw):
+    if not isinstance(marker, dict) or set(marker) != {
+            "format", "transaction_id", "journal_sha256", "pending_journal_sha256"}:
+        raise ValidationError("Invalid installation recovery marker")
+    if marker["format"] != "awf-install-marker-1":
+        raise ValidationError("Unsupported installation recovery marker")
+    try:
+        transaction_id = str(uuid.UUID(marker["transaction_id"]))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValidationError("Invalid installation recovery marker identity") from exc
+    digest_pattern = r"[0-9a-f]{64}"
+    if (transaction_id != marker["transaction_id"] or
+            not isinstance(marker["journal_sha256"], str) or
+            re.fullmatch(digest_pattern, marker["journal_sha256"]) is None or
+            (marker["pending_journal_sha256"] is not None and (
+                not isinstance(marker["pending_journal_sha256"], str) or
+                re.fullmatch(digest_pattern, marker["pending_journal_sha256"]) is None))):
+        raise ValidationError("Invalid installation recovery marker digest")
+    observed = sha256(journal_raw)
+    if observed not in {marker["journal_sha256"], marker["pending_journal_sha256"]}:
+        raise ValidationError("Installation recovery journal differs from its bound marker")
+    return transaction_id
+
+
+def _read_bound_journal(tree):
+    journal_raw = _exists_read(tree, JOURNAL)
+    marker_raw = _exists_read(tree, MARKER)
+    if journal_raw is None or marker_raw is None:
+        raise ValidationError("Installation recovery marker and journal must both be present")
+    marker = loads(marker_raw.decode("utf-8"))
+    transaction_id = _validate_journal_marker(marker, journal_raw)
+    journal = loads(journal_raw.decode("utf-8"))
+    if not isinstance(journal, dict) or journal.get("transaction_id") != transaction_id:
+        raise ValidationError("Installation recovery marker and journal identities differ")
+    observed = sha256(journal_raw)
+    pending = marker["pending_journal_sha256"]
+    if pending is not None and observed == marker["journal_sha256"]:
+        # A crash after precommitting the next digest but before replacing the
+        # journal leaves the old bytes on disk. Reconstruct the one permitted
+        # staged-runtime update from the stage itself and require its exact
+        # serialization to match the precommitted digest before using it.
+        runtime = _validated_runtime_journal(journal)
+        if runtime is None or runtime["new_sha256"] is not None:
+            raise ValidationError("Pending installation journal update is not reconstructable")
+        stage = tree.root / runtime["stage"]
+        if not (stage.exists() or stage.is_symlink()):
+            raise ValidationError("Pending installation journal stage is unavailable")
+        journal["runtime"]["new_sha256"] = _runtime_tree_sha256(stage)
+        reconstructed = json_bytes(journal)
+        if sha256(reconstructed) != pending:
+            raise ValidationError("Pending installation journal differs from its staged runtime")
+        return journal, reconstructed, marker
+    return journal, journal_raw, marker
+
+
+def _write_bound_journal_update(tree, journal):
+    """Publish a journal update without an unauthenticated cross-file crash window."""
+    current, current_raw, _marker = _read_bound_journal(tree)
+    if current["transaction_id"] != journal["transaction_id"]:
+        raise ValidationError("Installation recovery journal identity changed during update")
+    updated_raw = json_bytes(journal)
+    updated_digest = sha256(updated_raw)
+    current_digest = sha256(current_raw)
+    if updated_digest == current_digest:
+        return
+    transaction_id = journal["transaction_id"]
+    # Precommit the exact next digest. A crash before the journal write leaves
+    # the old digest valid; a crash after it leaves only the precommitted digest
+    # valid. The final marker collapses the state back to one accepted digest.
+    tree.write(MARKER, json_bytes(_journal_marker(transaction_id, current_digest, updated_digest)))
+    tree.write(JOURNAL, updated_raw)
+    tree.write(MARKER, json_bytes(_journal_marker(transaction_id, updated_digest)))
+
+
 def managed(path):
     return path in {"AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md", CODEOWNERS} or path.startswith(".agentic/")
 
@@ -470,7 +550,7 @@ class _RuntimeInstallTransaction:
         if self.runtime["new_sha256"] not in {None, proposed}:
             raise ValidationError("Staged canonical runtime identity changed")
         self.runtime["new_sha256"] = proposed
-        self.tree.write(JOURNAL, json_bytes(self.journal))
+        _write_bound_journal_update(self.tree, self.journal)
         return proposed
 
     def verify_committed(self):
@@ -489,16 +569,10 @@ def complete_runtime_transaction(destination, transaction_id, builder):
     destination = Path(destination).absolute()
     cleanup = []
     with Tree(destination) as tree, install_lock(tree):
-        raw = _exists_read(tree, JOURNAL)
-        if raw is None:
-            raise ValidationError("Bootstrap runtime transaction journal is unavailable")
-        journal = loads(raw.decode("utf-8"))
+        journal, _raw, _marker = _read_bound_journal(tree)
         runtime = _validated_runtime_journal(journal)
         if runtime is None or journal["transaction_id"] != str(transaction_id):
             raise ValidationError("Bootstrap runtime transaction identity changed")
-        marker = loads(tree.read(MARKER).decode("utf-8"))
-        if marker != {"transaction_id": journal["transaction_id"]}:
-            raise ValidationError("Bootstrap installation marker differs from its journal")
         transaction = _RuntimeInstallTransaction(tree, journal)
         try:
             transaction.verify_initial()
@@ -528,12 +602,12 @@ def complete_runtime_transaction(destination, transaction_id, builder):
 
 def recover(destination):
     with Tree(destination) as tree, install_lock(tree):
-        journal = _exists_read(tree, JOURNAL)
-        if journal is None:
-            if tree.inspect(MARKER) is not None:
-                raise ValidationError("Marker has no journal; restore from verified backup")
+        journal_raw = _exists_read(tree, JOURNAL)
+        marker_raw = _exists_read(tree, MARKER)
+        if journal_raw is None and marker_raw is None:
             return {"status": "NO_PENDING_INSTALL"}
-        rollback(tree, loads(journal.decode()))
+        journal, _raw, _marker = _read_bound_journal(tree)
+        rollback(tree, journal)
         return {"status": "ROLLED_BACK"}
 
 
@@ -825,8 +899,16 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                              for path, data in sorted(backup_plan.items())]}
             if defer_runtime:
                 journal["runtime"] = _runtime_journal(destination, transaction_id)
-            dst.write(JOURNAL, json_bytes(journal))
-            dst.write(MARKER, json_bytes({"transaction_id": transaction_id}))
+            journal_raw = json_bytes(journal)
+            try:
+                dst.write(JOURNAL, journal_raw)
+                dst.write(MARKER, json_bytes(_journal_marker(transaction_id, sha256(journal_raw))))
+            except BaseException:
+                # No destination payload has changed yet. Remove any partially
+                # published intent rather than leaving unauthenticated fresh state.
+                dst.unlink(MARKER)
+                dst.unlink(JOURNAL)
+                raise
             try:
                 for path, data in sorted(backup_plan.items()):
                     dst.write(path, data)

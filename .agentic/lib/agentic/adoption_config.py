@@ -511,6 +511,11 @@ def _transaction_sibling(runtime_root, kind):
     raise ValidationError("Could not allocate a unique runtime transaction path")
 
 
+def _builder_owns_backup_cleanup(transaction):
+    """Only a standalone runtime build may discard its rollback backup."""
+    return transaction is None
+
+
 def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhouse=None,
                              transaction=None):
     """Build a hash-bound offline runtime and atomically replace the canonical runtime."""
@@ -566,11 +571,11 @@ def ensure_installed_runtime(destination, wheelhouse=None, *, prepared_wheelhous
             os.replace(runtime_root, backup)
         os.replace(stage, runtime_root)
         _validate_runtime(interpreter, root, runtime_root, expected_versions, expected_files)
-        # Final-path validation is the commit point.  From here onward the new
-        # canonical runtime is the known-good copy; a backup-cleanup error must
-        # never roll it back to a possibly partially removed backup.
+        # Final-path validation is the standalone commit point. A coordinated
+        # install hands the intact backup to the outer transaction, which must
+        # prove managed/runtime commit before it may perform cleanup.
         committed = True
-        if backup.exists():
+        if _builder_owns_backup_cleanup(transaction) and backup.exists():
             _remove_runtime_tree(backup)
     except BaseException as original:
         if transaction is not None:

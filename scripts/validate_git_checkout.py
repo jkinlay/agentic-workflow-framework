@@ -104,7 +104,16 @@ def _copy(files, destination):
 
 
 def _managed(name):
-    return name.startswith(".agentic/") or name in {"AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md"}
+    normalized = name.replace("\\", "/")
+    runtime = normalized == ".agentic/.venv" or normalized.startswith(".agentic/.venv/")
+    return (normalized.startswith(".agentic/") and not runtime) or normalized in {
+        "AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md"}
+
+
+def provision_installed_clone_runtime(destination, runtime_wheelhouse):
+    """Provision only the clone's ignored canonical runtime from pinned wheels."""
+    from agentic.adoption_config import ensure_installed_runtime
+    return ensure_installed_runtime(destination, wheelhouse=runtime_wheelhouse)
 
 
 def _locations(source, workdir, report=None):
@@ -232,7 +241,7 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
 
         def create_repo(name, directory):
             git_command(f"{name}: initialize isolated repository", ["init", directory])
-            git_command(f"{name}: stage complete fixture", ["add", "--all", "--force", "--", "."], directory)
+            git_command(f"{name}: stage complete fixture", ["add", "--all", "--", "."], directory)
             git_command(f"{name}: commit with hooks and signing disabled", ["commit", "--no-gpg-sign", "-m", "Local AWF checkout fixture"], directory)
 
         def clone_repo(name, repository, destination, no_lf=False):
@@ -362,6 +371,9 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
         require(".agentic/installed-manifest.json" in expected_installed and ".agentic/workflow-version.yaml" in expected_installed,
                 "Installed manifest/provenance missing from comparison inventory")
         create_repo("Installed project", installed)
+        tracked_runtime = git_command("Installed project excludes ignored canonical runtime from Git inventory",
+                                      ["ls-files", "--", ".agentic/.venv"], installed).stdout
+        check("Installed project Git inventory contains no canonical runtime", tracked_runtime == b"")
         clone_repo("Installed project", installed, installed_clone)
         actual_installed = {name: data for name, data in _files(installed_clone).items() if _managed(name)}
         installed_changes = sorted(name for name in set(expected_installed) | set(actual_installed)
@@ -374,6 +386,15 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
               (installed_clone / "existing.bat").read_bytes() == batch_bytes and "text: set" in batch_attr and "eol: crlf" in batch_attr)
         check("Git retains all manually merged project attribute rules",
               (installed_clone / ".gitattributes").read_bytes().replace(b"\r\n", b"\n") == merged_attributes.replace(b"\r\n", b"\n"))
+        require(not installed_stage_python(installed_clone).exists(),
+                "Fresh installed clone unexpectedly contains the ignored canonical runtime")
+        clone_runtime = provision_installed_clone_runtime(installed_clone, runtime_wheelhouse)
+        require(Path(clone_runtime["interpreter"]) == installed_stage_python(installed_clone)
+                and installed_stage_python(installed_clone).is_file(),
+                "Installed clone runtime was not provisioned at its canonical target path")
+        check("Fresh installed clone provisions its own ignored runtime from the pinned offline wheelhouse",
+              True, requirements_lock_sha256=clone_runtime["requirements_lock_sha256"],
+              interpreter=clone_runtime["interpreter"])
         verify("Installed Git checkout integrity CLI passes", installed_clone, installed_runtime=True)
 
         dirty = run / "d"

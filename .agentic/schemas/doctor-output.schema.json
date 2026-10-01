@@ -175,8 +175,7 @@
           "const": "literal_argv"
         },
         "detail": {
-          "type": "string",
-          "minLength": 1
+          "const": "Every supported value, including long hashes and paths, is passed as one literal argv element with PowerShell single-quote escaping. No generic JSON carrier or response-file transport is implemented."
         }
       }
     },

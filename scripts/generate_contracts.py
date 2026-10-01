@@ -218,7 +218,8 @@ def catalog():
                             {"contains": {"properties": {"purpose": const(purpose)}, "required": ["purpose"]},
                              "minContains": 1, "maxContains": 1}
                             for purpose in ("adoption", "verification", "validation", "status", "operating")]),
-        "long_argument_transport": obj({"method": const("literal_argv"), "detail": text()}),
+        "long_argument_transport": obj({"method": const("literal_argv"),
+            "detail": const("Every supported value, including long hashes and paths, is passed as one literal argv element with PowerShell single-quote escaping. No generic JSON carrier or response-file transport is implemented.")}),
         "activation_summary": obj({"status": const("EXTENSION_POINT"), "detail": text()}),
         "execution_authority": FALSE})
     gate_results = obj({name: obj({"result": enum("PASS", "FAIL", "N_A"), "evidence": EVIDENCE}) for name in GATE_NAMES})

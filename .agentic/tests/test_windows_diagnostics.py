@@ -467,15 +467,77 @@ class HonestPreflightTests(unittest.TestCase):
         self.assertIn("tree_kill:SYNTHETIC_FAILURE", observed["cleanup_errors"])
         self.assertIn("child cleanup failed", observed["output"])
 
-    def test_markdown_diagnostics_escape_table_metacharacters_and_normalize_lines(self):
+    def test_windows_assignment_failure_reports_every_setup_cleanup_failure(self):
+        class BrokenStream:
+            @staticmethod
+            def close():
+                raise OSError("synthetic close failure")
+
+        class Process:
+            stdout, stderr = BrokenStream(), io.BytesIO()
+
+            @staticmethod
+            def poll():
+                return None
+
+            @staticmethod
+            def kill():
+                raise OSError("synthetic kill failure")
+
+            @staticmethod
+            def wait(timeout):
+                raise subprocess.TimeoutExpired(["synthetic"], timeout)
+
+        class Job:
+            @staticmethod
+            def assign_and_resume(_process):
+                raise OSError("synthetic assignment failure")
+
+            @staticmethod
+            def terminate_and_wait(_timeout):
+                return ["tree_kill:SYNTHETIC_FAILURE", "job_close:SYNTHETIC_FAILURE"]
+
+        with patch("agentic.providers.github_status.host_executable", return_value=sys.executable), \
+                patch.object(host_preflight.os, "name", "nt"), \
+                patch.object(host_preflight, "_WindowsJob", return_value=Job()), \
+                patch.object(host_preflight.subprocess, "Popen", return_value=Process()):
+            observed = host_preflight.run(["python", "-c", "pass"])
+        self.assertEqual("RESOURCE_CLEANUP_FAILURE", observed["diagnostic_category"])
+        self.assertFalse(observed["resource_cleanup_complete"])
+        self.assertIn("tree_kill:SYNTHETIC_FAILURE", observed["cleanup_errors"])
+        self.assertIn("job_close:SYNTHETIC_FAILURE", observed["cleanup_errors"])
+        self.assertIn("kill:OSError", observed["cleanup_errors"])
+        self.assertIn("wait:PROCESS_DID_NOT_EXIT", observed["cleanup_errors"])
+        self.assertIn("stdout_close:OSError", observed["cleanup_errors"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX process-group proof requires a POSIX host")
+    def test_posix_timeout_kills_and_proves_descendant_group_absent(self):
+        code = ("import subprocess,sys,time; "
+                "subprocess.Popen([sys.executable,'-B','-c','import time; time.sleep(30)']); "
+                "time.sleep(30)")
+        with patch("agentic.providers.github_status.host_executable", return_value=sys.executable), \
+                patch.object(host_preflight, "HOST_COMMAND_TIMEOUT_SECONDS", 0.05):
+            observed = host_preflight.run(["python", "-c", code])
+        self.assertEqual("TIMEOUT", observed["diagnostic_category"], observed)
+        self.assertTrue(observed["resource_cleanup_complete"], observed)
+        self.assertEqual([], observed["cleanup_errors"])
+
+    def test_markdown_diagnostics_render_hostile_commonmark_as_inert_cell_text(self):
         rendered = host_preflight.render_markdown({
             "platform": "windows",
             "rows": [{"check": "repository_config", "status": "WARN",
-                      "detail": "owner|value\r\nsecond\rthird",
-                      "remedy": "set a|b\nthen <review>"}],
+                      "detail": "[link](target) ![image](x) `code` \\*escape* owner|value\r\nsecond\rthird",
+                      "remedy": "<script>x</script> https://example.invalid/a_b#c"}],
         })
-        self.assertIn("owner&#124;value<br>second<br>third", rendered)
-        self.assertIn("set a&#124;b<br>then &lt;review&gt;", rendered)
+        self.assertIn("&#91;link&#93;&#40;target&#41;", rendered)
+        self.assertIn("&#33;&#91;image&#93;&#40;x&#41;", rendered)
+        self.assertIn("&#96;code&#96;", rendered)
+        self.assertIn("&#92;&#42;escape&#42;", rendered)
+        self.assertIn("owner&#124;value second third", rendered)
+        self.assertIn("&#60;script&#62;x&#60;&#47;script&#62;", rendered)
+        self.assertNotIn("[link](target)", rendered)
+        self.assertNotIn("https://", rendered)
+        self.assertNotIn("<script>", rendered)
         self.assertNotIn("\r", rendered)
         self.assertEqual(7, len(rendered.splitlines()))
 

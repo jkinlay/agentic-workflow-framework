@@ -1002,6 +1002,24 @@ class ConfiguredInstallerTests(unittest.TestCase):
                 path.unlink()
 
 
+class RuntimeTransactionSelectorTests(unittest.TestCase):
+    def test_outer_transaction_exclusively_owns_prior_runtime_backup_cleanup(self):
+        self.assertTrue(adoption._builder_owns_backup_cleanup(None))
+        self.assertFalse(adoption._builder_owns_backup_cleanup(object()))
+
+    def test_recovery_marker_binds_exact_journal_and_one_precommitted_update(self):
+        transaction_id = str(uuid.uuid4())
+        original = installer.json_bytes({"transaction_id": transaction_id, "old": "trusted"})
+        updated = installer.json_bytes({"transaction_id": transaction_id, "old": "trusted",
+                                        "runtime": "staged"})
+        marker = installer._journal_marker(transaction_id, sha256(original), sha256(updated))
+        self.assertEqual(transaction_id, installer._validate_journal_marker(marker, original))
+        self.assertEqual(transaction_id, installer._validate_journal_marker(marker, updated))
+        altered = installer.json_bytes({"transaction_id": transaction_id, "old": "injected"})
+        with self.assertRaisesRegex(ValidationError, "differs from its bound marker"):
+            installer._validate_journal_marker(marker, altered)
+
+
 class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
     """Synthetic journal tests; no installer/bootstrap/upgrade entry point runs."""
 
@@ -1025,8 +1043,10 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
                         "previous_sha256": previous_runtime,
                         "new_sha256": None, "stage": stage, "backup": backup},
         }
-        (self.root / installer.JOURNAL).write_bytes(installer.json_bytes(value))
-        (self.root / installer.MARKER).write_bytes(installer.json_bytes({"transaction_id": transaction_id}))
+        journal_raw = installer.json_bytes(value)
+        (self.root / installer.JOURNAL).write_bytes(journal_raw)
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(
+            installer._journal_marker(transaction_id, sha256(journal_raw))))
         return value
 
     @staticmethod
@@ -1075,6 +1095,84 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
         self.assertFalse((self.root / installer.JOURNAL).exists())
         self.assertFalse((self.root / installer.MARKER).exists())
         self.assertEqual([], list((self.root / ".agentic").glob(".venv.*-*")))
+
+    def test_upgrade_success_proves_old_backup_before_durable_intent_cleanup(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        old, new = b"old receipt\n", b"upgraded receipt\n"
+        (self.root / managed).write_bytes(new)
+        runtime = self.root / ".agentic/.venv"
+        runtime.mkdir()
+        (runtime / "runtime.txt").write_bytes(b"exact previous runtime\n")
+        previous_runtime = installer._runtime_tree_sha256(runtime)
+        self.journal(transaction_id=transaction_id, managed=managed, old=old, new=new,
+                     previous_runtime=previous_runtime)
+        observed = {}
+
+        def successful_runtime(transaction):
+            transaction.stage.mkdir()
+            (transaction.stage / "runtime.txt").write_bytes(b"new canonical runtime\n")
+            transaction.record_staged_runtime()
+            os.replace(transaction.runtime_root, transaction.backup)
+            os.replace(transaction.stage, transaction.runtime_root)
+            observed["backup_during_builder"] = installer._runtime_tree_sha256(transaction.backup)
+            return {"status": "BUILT"}
+
+        result = installer.complete_runtime_transaction(self.root, transaction_id, successful_runtime)
+        self.assertEqual(previous_runtime, observed["backup_during_builder"])
+        self.assertEqual(b"upgraded receipt\n", (self.root / managed).read_bytes())
+        self.assertEqual(b"new canonical runtime\n", (runtime / "runtime.txt").read_bytes())
+        self.assertEqual("COMPLETE", result["transaction_cleanup"])
+        self.assertFalse((self.root / installer.JOURNAL).exists())
+        self.assertFalse((self.root / installer.MARKER).exists())
+        self.assertEqual([], list((self.root / ".agentic").glob(".venv.*-*")))
+
+    def test_structurally_valid_journal_tamper_cannot_supply_different_old_bytes(self):
+        transaction_id = str(uuid.uuid4())
+        managed = ".agentic/installed-manifest.json"
+        old, new = b"trusted old receipt\n", b"upgraded receipt\n"
+        (self.root / managed).write_bytes(new)
+        journal = self.journal(transaction_id=transaction_id, managed=managed, old=old, new=new,
+                               previous_runtime=None)
+        journal["files"][0]["old"] = base64.b64encode(b"attacker-selected bytes\n").decode("ascii")
+        (self.root / installer.JOURNAL).write_bytes(installer.json_bytes(journal))
+        called = False
+
+        def builder(_transaction):
+            nonlocal called
+            called = True
+
+        with self.assertRaisesRegex(ValidationError, "differs from its bound marker"):
+            installer.complete_runtime_transaction(self.root, transaction_id, builder)
+        self.assertFalse(called)
+        self.assertEqual(new, (self.root / managed).read_bytes())
+        self.assertTrue((self.root / installer.JOURNAL).exists())
+        self.assertTrue((self.root / installer.MARKER).exists())
+
+    def test_staged_journal_pending_marker_accepts_only_old_or_precommitted_bytes(self):
+        transaction_id = str(uuid.uuid4())
+        journal = self.journal(transaction_id=transaction_id,
+                               managed=".agentic/installed-manifest.json",
+                               old=None, new=b"new receipt\n", previous_runtime=None)
+        old_raw = (self.root / installer.JOURNAL).read_bytes()
+        stage = self.root / journal["runtime"]["stage"]
+        stage.mkdir()
+        (stage / "runtime.txt").write_bytes(b"staged canonical runtime\n")
+        proposed = installer._runtime_tree_sha256(stage)
+        journal["runtime"]["new_sha256"] = proposed
+        new_raw = installer.json_bytes(journal)
+        pending = installer._journal_marker(transaction_id, sha256(old_raw), sha256(new_raw))
+        (self.root / installer.MARKER).write_bytes(installer.json_bytes(pending))
+        with installer.Tree(self.root) as tree:
+            self.assertEqual(proposed, installer._read_bound_journal(tree)[0]["runtime"]["new_sha256"])
+        (self.root / installer.JOURNAL).write_bytes(new_raw)
+        with installer.Tree(self.root) as tree:
+            self.assertEqual(proposed, installer._read_bound_journal(tree)[0]["runtime"]["new_sha256"])
+        journal["runtime"]["new_sha256"] = "2" * 64
+        (self.root / installer.JOURNAL).write_bytes(installer.json_bytes(journal))
+        with installer.Tree(self.root) as tree:
+            with self.assertRaisesRegex(ValidationError, "differs from its bound marker"):
+                installer._read_bound_journal(tree)
 
 
 class BootstrapMainTests(unittest.TestCase):

@@ -9,7 +9,7 @@ The runtime excludes system and user site-packages. Bootstrap builds it in a sib
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' doctor --json
 ```
 
-The generated commands quote every path as a PowerShell literal, including repositories with spaces or apostrophes. They contain no Markdown links, filename escaping or line continuations. Put long hashes and paths in a command-supported JSON or response file. Doctor exposes an `activation_summary` extension point but does not aggregate blockers; `status` owns activation decisions.
+The generated commands quote every path as a PowerShell literal, including repositories with spaces or apostrophes. They contain no Markdown links, filename escaping or line continuations. Every supported value, including long hashes and paths, is passed as one literal argv element; these commands implement no generic JSON carrier or response-file transport. Doctor exposes an `activation_summary` extension point but does not aggregate blockers; `status` owns activation decisions.
 
 ## Preflight
 

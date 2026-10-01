@@ -6,7 +6,6 @@ of this host; they grant nothing and are recorded in the adoption PR.
 from __future__ import annotations
 import configparser
 from datetime import datetime, timezone
-import html
 import json
 import os
 from pathlib import Path
@@ -93,16 +92,40 @@ def _decode_captured(stdout, stderr, states):
 
 class _PosixProcessTree:
     def __init__(self, process):
+        self.process = process
         self.process_group = process.pid
 
-    def terminate_and_wait(self, _timeout):
+    def terminate_and_wait(self, timeout):
+        errors = []
+        deadline = time.monotonic() + timeout
         try:
             os.killpg(self.process_group, signal.SIGKILL)
         except ProcessLookupError:
-            return []
+            pass
         except OSError as exc:
-            return ["tree_kill:" + type(exc).__name__]
-        return []
+            errors.append("tree_kill:" + type(exc).__name__)
+        try:
+            if self.process.poll() is None:
+                self.process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            errors.append("tree_wait:PROCESS_DID_NOT_EXIT")
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append("tree_wait:" + type(exc).__name__)
+        # Reaping the group leader before this probe avoids mistaking its zombie
+        # for a live descendant. killpg(..., 0) then proves the group is absent.
+        while True:
+            try:
+                os.killpg(self.process_group, 0)
+            except ProcessLookupError:
+                break
+            except OSError as exc:
+                errors.append("tree_wait:" + type(exc).__name__)
+                break
+            if time.monotonic() >= deadline:
+                errors.append("tree_wait:PROCESS_GROUP_DID_NOT_EXIT")
+                break
+            time.sleep(.01)
+        return errors
 
 
 class _WindowsJob:
@@ -171,9 +194,13 @@ class _WindowsJob:
         limits.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if not kernel32.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
             error = ctypes.get_last_error()
-            kernel32.CloseHandle(self.handle)
+            cleanup_errors = []
+            if not kernel32.CloseHandle(self.handle):
+                cleanup_errors.append("job_close:WinError" + str(ctypes.get_last_error()))
             self.handle = None
-            raise OSError(error, "SetInformationJobObject failed")
+            failure = OSError(error, "SetInformationJobObject failed")
+            failure.cleanup_errors = cleanup_errors
+            raise failure
 
     def assign_and_resume(self, process):
         ctypes = self._ctypes
@@ -214,31 +241,55 @@ class _WindowsJob:
         return errors
 
 
+class _SpawnSetupError(Exception):
+    def __init__(self, original, cleanup_errors):
+        super().__init__(str(original))
+        self.original = original
+        self.cleanup_errors = cleanup_errors
+
+
 def _spawn_tree(command, **kwargs):
     if os.name == "nt":
-        job = _WindowsJob()
+        job = None
         process = None
         try:
+            job = _WindowsJob()
             flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200) |
                      getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | 0x00000004)
             process = subprocess.Popen(command, creationflags=flags, **kwargs)
             job.assign_and_resume(process)
             return process, job
-        except BaseException:
-            job.terminate_and_wait(2)
+        except BaseException as original:
+            cleanup_errors = list(getattr(original, "cleanup_errors", []))
+            if job is not None:
+                try:
+                    cleanup_errors.extend(job.terminate_and_wait(2))
+                except BaseException as exc:
+                    cleanup_errors.append("job_cleanup:" + type(exc).__name__)
             if process is not None:
                 try:
-                    process.kill()
+                    alive = process.poll() is None
+                except BaseException as exc:
+                    cleanup_errors.append("poll:" + type(exc).__name__)
+                    alive = True
+                if alive:
+                    try:
+                        process.kill()
+                    except BaseException as exc:
+                        cleanup_errors.append("kill:" + type(exc).__name__)
+                try:
                     process.wait(timeout=2)
-                except (OSError, subprocess.SubprocessError):
-                    pass
-                for stream in (process.stdout, process.stderr):
+                except subprocess.TimeoutExpired:
+                    cleanup_errors.append("wait:PROCESS_DID_NOT_EXIT")
+                except BaseException as exc:
+                    cleanup_errors.append("wait:" + type(exc).__name__)
+                for label, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
                     if stream is not None:
                         try:
                             stream.close()
-                        except (OSError, ValueError):
-                            pass
-            raise
+                        except BaseException as exc:
+                            cleanup_errors.append(label + "_close:" + type(exc).__name__)
+            raise _SpawnSetupError(original, cleanup_errors) from original
     process = subprocess.Popen(command, start_new_session=True, **kwargs)
     return process, _PosixProcessTree(process)
 
@@ -264,7 +315,8 @@ def _cancel_reader_io(thread):
             if error != 1168:  # ERROR_NOT_FOUND: the blocking operation already completed.
                 return "reader_cancel:WinError" + str(error)
     finally:
-        kernel32.CloseHandle(handle)
+        if not kernel32.CloseHandle(handle):
+            return "reader_handle_close:WinError" + str(ctypes.get_last_error())
     return None
 
 
@@ -280,14 +332,24 @@ def run(args, cwd=None):
         process, process_tree = _spawn_tree(
             [executable, *args[1:]], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             cwd=cwd, env=child_env(env), stdin=subprocess.DEVNULL, bufsize=0)
+    except _SpawnSetupError as exc:
+        original = exc.original
+        text = f"{type(original).__name__}: {original}"
+        category = ("MISSING_EXECUTABLE" if isinstance(original, FileNotFoundError) else
+                    "RESOURCE_CLEANUP_FAILURE" if exc.cleanup_errors else "EXECUTION_UNAVAILABLE")
+        return {"executable": executable, "exit_code": None, "output": _bounded(text),
+                "diagnostic_category": category, "cleanup_errors": exc.cleanup_errors,
+                "resource_cleanup_complete": not exc.cleanup_errors}
     except FileNotFoundError as exc:
         return {"executable": executable, "exit_code": None, "output": _bounded(str(exc)),
-                "diagnostic_category": "MISSING_EXECUTABLE"}
+                "diagnostic_category": "MISSING_EXECUTABLE", "cleanup_errors": [],
+                "resource_cleanup_complete": True}
     except (OSError, subprocess.SubprocessError, ValidationError) as exc:
         text = f"{type(exc).__name__}: {exc}"
         category = "MISSING_EXECUTABLE" if "unavailable" in str(exc).casefold() else "EXECUTION_UNAVAILABLE"
         return {"executable": executable, "exit_code": None, "output": _bounded(text),
-                "diagnostic_category": category}
+                "diagnostic_category": category, "cleanup_errors": [],
+                "resource_cleanup_complete": True}
     captured = {"stdout": bytearray(), "stderr": bytearray()}
     states = {name: {"truncated": False, "error": None} for name in captured}
     threads = []
@@ -658,5 +720,10 @@ def render_markdown(report):
 
 def _markdown_cell(value):
     """Render repository-controlled diagnostics as one inert table cell."""
-    normalized = str(value).replace("\r\n", "\n").replace("\r", "\n")
-    return html.escape(normalized, quote=False).replace("|", "&#124;").replace("\n", "<br>")
+    normalized = str(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    # CommonMark recognizes ASCII punctuation for links, images, code spans,
+    # escapes, emphasis, raw HTML and extensions such as bare URLs. Emit every
+    # punctuation character as an atomic numeric character reference so the
+    # rendered text is unchanged but none of those delimiters can be parsed.
+    return "".join(character if character.isalnum() or character == " "
+                   else f"&#{ord(character)};" for character in normalized)

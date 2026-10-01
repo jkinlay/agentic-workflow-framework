@@ -52,6 +52,27 @@ class ValidatorCommandContractTests(unittest.TestCase):
                 self.assertNotEqual(Path(sys.executable).resolve(), selector(destination))
         self.assertFalse(destination.exists())
 
+    def test_installed_git_inventory_excludes_only_the_ignored_canonical_runtime(self):
+        managed = validate_git_checkout._managed
+        self.assertTrue(managed('.agentic/scripts/workflow.py'))
+        self.assertTrue(managed('.agentic/installed-manifest.json'))
+        self.assertTrue(managed('AGENTS.md'))
+        self.assertFalse(managed('.agentic/.venv'))
+        self.assertFalse(managed('.agentic/.venv/Scripts/python.exe'))
+        windows_path = chr(92).join((".agentic", ".venv", "bin", "python"))
+        self.assertFalse(managed(windows_path))
+
+    def test_installed_clone_runtime_provisioner_uses_target_and_pinned_wheelhouse(self):
+        destination = ROOT / '.tmp-tests' / 'pure clone selector'
+        wheelhouse = ROOT / '.tmp-tests' / 'pinned wheelhouse'
+        expected = {'interpreter': str(validate_git_checkout.installed_stage_python(destination))}
+        with mock.patch('agentic.adoption_config.ensure_installed_runtime', return_value=expected) as ensure:
+            observed = validate_git_checkout.provision_installed_clone_runtime(destination, wheelhouse)
+        self.assertEqual(expected, observed)
+        ensure.assert_called_once_with(destination, wheelhouse=wheelhouse)
+        self.assertFalse(destination.exists())
+        self.assertFalse(wheelhouse.exists())
+
 
 class CliFailurePathTests(unittest.TestCase):
     def setUp(self):

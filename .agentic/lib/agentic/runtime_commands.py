@@ -58,7 +58,7 @@ def command_catalog(root, *, platform=None):
         ],
         "long_argument_transport": {
             "method": "literal_argv",
-            "detail": "These generated commands pass each supported argument literally with PowerShell single-quote escaping. No generic JSON carrier or argparse response-file support is claimed.",
+            "detail": "Every supported value, including long hashes and paths, is passed as one literal argv element with PowerShell single-quote escaping. No generic JSON carrier or response-file transport is implemented.",
         },
         # Extension point for PR 4: doctor deliberately does not aggregate activation blockers.
         "activation_summary": {
