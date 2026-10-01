@@ -1,0 +1,9 @@
+# Synthetic owner rules before AWF
+build-output/
+# AWF operating recovery files are local; changes/ is versioned audit evidence.
+.agentic-state/**/lock
+.agentic-state/operating/pending.json
+*.awf-operating-*.tmp
+.awf-*.tmp
+# Synthetic owner rules after AWF
+!keep-output.txt

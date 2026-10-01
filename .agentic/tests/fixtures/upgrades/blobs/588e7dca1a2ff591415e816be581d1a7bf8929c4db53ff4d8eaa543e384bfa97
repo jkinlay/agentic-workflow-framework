@@ -1,0 +1,15 @@
+{
+  "template_for": "checkpoint",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "record_id": "00000000-0000-0000-0000-000000000000",
+    "created_at": "1970-01-01T00:00:00Z",
+    "project_id": "00000000-0000-0000-0000-000000000000",
+    "sequence": 0,
+    "event_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "snapshot_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "database_backup_uri": "urn:awf:UNFILLED"
+  }
+}

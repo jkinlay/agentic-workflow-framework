@@ -1,0 +1,402 @@
+{
+  "version": 3,
+  "template": {
+    "expected_workflow_version": "1.8.9"
+  },
+  "project": {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "name": "CHANGE_ME_PROJECT",
+    "short_name": "CHANGE_ME"
+  },
+  "jira": {
+    "enabled": false,
+    "site": null,
+    "project_key": null,
+    "scope": {
+      "allow_entire_project": false,
+      "selector_mode": "all",
+      "included_epics": [],
+      "labels_any": [],
+      "components_any": [],
+      "additional_jql": "",
+      "ownership_required": true
+    },
+    "status_map": {
+      "backlog": "Backlog",
+      "ready": "Ready",
+      "in_progress": "In Progress",
+      "in_review": "In Review",
+      "done": "Done"
+    },
+    "dependency_direction": "requires",
+    "mutations_owner": "controller"
+  },
+  "github": {
+    "host": "https://github.com",
+    "repository_id": null,
+    "repository": "CHANGE_ME/CHANGE_ME",
+    "base_branch": "main",
+    "branch_pattern": "codex/{ticket}-{slug}",
+    "merge_method": "squash",
+    "draft_pr_first": true,
+    "one_repository_per_controller": true
+  },
+  "execution": {
+    "profile": "manual_reference",
+    "max_parallel_tickets": 6,
+    "max_parallel_tickets_per_stream": 1,
+    "native_streams": {
+      "enabled": true,
+      "dispatch_policy": "ready_independent"
+    },
+    "independent_reviewers": {
+      "allocation": "one_per_stream"
+    },
+    "max_agent_runs_per_ticket": 8,
+    "max_spawn_depth": 1,
+    "max_amendment_cycles": 3,
+    "transient_retry_limit": 2,
+    "max_run_seconds": 3600,
+    "max_tool_calls_per_run": 100,
+    "max_tokens_per_ticket": 100000,
+    "max_cost_microusd_per_ticket": 10000000,
+    "daily_project_cost_microusd": 50000000,
+    "one_writer_per_ticket": true,
+    "roles": {
+      "controller": {
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "medium",
+        "fallback": "deny",
+        "approved_model_ids": [
+          "gpt-5.6-luna",
+          "gpt-5.6-terra",
+          "gpt-5.6-sol",
+          "gpt-6-astra"
+        ],
+        "permission_profile": "documented-reference-profile",
+        "network_allowlist": []
+      },
+      "worker": {
+        "model": "gpt-5.6-terra",
+        "reasoning_effort": "medium",
+        "fallback": "deny",
+        "approved_model_ids": [
+          "gpt-5.6-luna",
+          "gpt-5.6-terra",
+          "gpt-5.6-sol",
+          "gpt-6-astra"
+        ],
+        "permission_profile": "documented-reference-profile",
+        "network_allowlist": []
+      },
+      "critic": {
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "high",
+        "fallback": "deny",
+        "approved_model_ids": [
+          "gpt-5.6-luna",
+          "gpt-5.6-terra",
+          "gpt-5.6-sol",
+          "gpt-6-astra"
+        ],
+        "permission_profile": "documented-reference-profile",
+        "network_allowlist": []
+      },
+      "specialist": {
+        "model": "gpt-6-astra",
+        "reasoning_effort": "high",
+        "fallback": "deny",
+        "approved_model_ids": [
+          "gpt-5.6-luna",
+          "gpt-5.6-terra",
+          "gpt-5.6-sol",
+          "gpt-6-astra"
+        ],
+        "permission_profile": "documented-reference-profile",
+        "network_allowlist": []
+      }
+    },
+    "host_broker": {
+      "enabled": false,
+      "broker_id": "",
+      "lease_before_dispatch": true,
+      "max_workers": 3,
+      "max_heavy_jobs": 1,
+      "max_gpu_jobs": 0
+    },
+    "model_routing": {
+      "schema_version": 1,
+      "profile": "balanced",
+      "model_order": [
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "gpt-6-astra"
+      ],
+      "models": {
+        "gpt-5.6-luna": {
+          "reasoning_efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "gpt-5.6-terra": {
+          "reasoning_efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        "gpt-5.6-sol": {
+          "reasoning_efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        "gpt-6-astra": {
+          "reasoning_efforts": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        }
+      },
+      "role_defaults": {
+        "controller": {
+          "model": "gpt-5.6-sol",
+          "reasoning_effort": "medium"
+        },
+        "worker": {
+          "model": "gpt-5.6-terra",
+          "reasoning_effort": "medium"
+        },
+        "critic": {
+          "model": "gpt-5.6-sol",
+          "reasoning_effort": "high"
+        },
+        "specialist": {
+          "model": "gpt-6-astra",
+          "reasoning_effort": "high"
+        }
+      },
+      "role_allowed_models": {
+        "controller": [
+          "gpt-5.6-luna",
+          "gpt-5.6-terra",
+          "gpt-5.6-sol",
+          "gpt-6-astra"
+        ],
+        "worker": [
+          "gpt-5.6-luna",
+          "gpt-5.6-terra",
+          "gpt-5.6-sol",
+          "gpt-6-astra"
+        ],
+        "critic": [
+          "gpt-5.6-luna",
+          "gpt-5.6-terra",
+          "gpt-5.6-sol",
+          "gpt-6-astra"
+        ],
+        "specialist": [
+          "gpt-5.6-luna",
+          "gpt-5.6-terra",
+          "gpt-5.6-sol",
+          "gpt-6-astra"
+        ]
+      },
+      "simple_worker": {
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "low"
+      },
+      "review_floor": {
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "high"
+      },
+      "risk_route": {
+        "model": "gpt-6-astra",
+        "reasoning_effort": "high"
+      },
+      "high_risk_flags": [
+        "security",
+        "permissions",
+        "schema_or_migration",
+        "data_loss",
+        "concurrency",
+        "production",
+        "public_api",
+        "architecture"
+      ],
+      "agent_overrides": {},
+      "ticket_overrides": {},
+      "escalation": {
+        "enabled": true,
+        "max_escalations_per_ticket": 2,
+        "max_reasoning_failures_per_phase": 3,
+        "effort_ceiling": "high"
+      },
+      "budgets": {
+        "max_runs_per_ticket": 8,
+        "max_runs_per_project_day": 40,
+        "max_tokens_per_ticket": 100000,
+        "max_tokens_per_project_day": 500000,
+        "max_cost_microusd_per_ticket": null,
+        "max_cost_microusd_per_project_day": null
+      },
+      "adaptive": {
+        "mode": "shadow",
+        "min_reviewed_samples": 20,
+        "min_success_rate_percent": 95
+      },
+      "reconciliation": {
+        "enabled": false,
+        "authorized_operator_ids": [],
+        "max_reconciled_incident_retries_per_ticket": 2
+      }
+    }
+  },
+  "validation": {
+    "commands": [
+      "CHANGE_ME_TEST_COMMAND"
+    ],
+    "ci_candidate_policy": "synthetic_merge_required",
+    "require_candidate_bound_ci_evidence": true,
+    "required_ci_checks": [],
+    "max_evidence_age_seconds": 1800,
+    "test_timeout_seconds": 1800
+  },
+  "scope": {
+    "protected_paths": [
+      "AGENTS.md",
+      "**/AGENTS.md",
+      ".agentic/**",
+      ".codex/**",
+      ".github/workflows/**",
+      ".github/CODEOWNERS",
+      "CODEOWNERS",
+      "scripts/bootstrap_project.py"
+    ],
+    "generated_paths": [],
+    "architecture_docs": [],
+    "product_docs": []
+  },
+  "critic": {
+    "required": true,
+    "independent_context": true,
+    "blocking_severities": [
+      "BLOCKER",
+      "MAJOR"
+    ],
+    "require_re_review_after_any_head_change": true,
+    "require_re_review_after_any_target_base_change": true,
+    "require_full_final_review": true
+  },
+  "specialist_reviews": {
+    "security": {
+      "required_when_triggered": true,
+      "paths": [
+        "auth/**",
+        "security/**"
+      ],
+      "keywords": [
+        "credential",
+        "authentication",
+        "secret"
+      ],
+      "risk_flags": [
+        "security"
+      ],
+      "reviewer_identity": "CHANGE_ME_SECURITY_REVIEWER"
+    },
+    "data_migration": {
+      "required_when_triggered": true,
+      "paths": [
+        "migrations/**",
+        "schema/**"
+      ],
+      "keywords": [
+        "migration",
+        "schema"
+      ],
+      "risk_flags": [
+        "schema_or_migration",
+        "data_loss"
+      ],
+      "reviewer_identity": "CHANGE_ME_DATA_REVIEWER"
+    },
+    "public_api": {
+      "required_when_triggered": true,
+      "paths": [
+        "api/**",
+        "openapi/**"
+      ],
+      "keywords": [
+        "breaking interface",
+        "public API"
+      ],
+      "risk_flags": [
+        "public_api"
+      ],
+      "reviewer_identity": "CHANGE_ME_API_REVIEWER"
+    },
+    "operations": {
+      "required_when_triggered": true,
+      "paths": [
+        "infra/**",
+        "deploy/**"
+      ],
+      "keywords": [
+        "production",
+        "race condition"
+      ],
+      "risk_flags": [
+        "concurrency",
+        "production"
+      ],
+      "reviewer_identity": "CHANGE_ME_OPERATIONS_REVIEWER"
+    }
+  },
+  "merge_gate": {
+    "human_authorization_required": true,
+    "execution_after_authorization": "owner_manual",
+    "automatic_merge_enabled": false,
+    "require_critic_approval_current_tuple": true,
+    "require_specialist_reviews_current_tuple": true,
+    "require_required_ci_green": true,
+    "require_zero_unresolved_blocking_threads": true,
+    "invalidate_on_head_change": true,
+    "invalidate_on_target_base_change": true,
+    "authorization_ttl_seconds": 900,
+    "trusted_owner_ids": [],
+    "high_risk_owner_quorum": 1
+  },
+  "controller": {
+    "dispatch_enabled": false,
+    "auto_dispatch": false,
+    "auto_request_critic": false,
+    "auto_resume_amendments": false,
+    "auto_transition_jira": false
+  },
+  "audit": {
+    "store_must_be_outside_worktrees": true,
+    "retention_days": 90,
+    "redact_secrets": true
+  },
+  "portfolio": {
+    "read_only": true,
+    "cross_project_dispatch": false
+  }
+}

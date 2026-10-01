@@ -1,0 +1,259 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "created_at",
+    "producer_id",
+    "run_id",
+    "binding",
+    "contract_id",
+    "contract_version",
+    "role",
+    "branch",
+    "worktree_id",
+    "lease",
+    "collision_check",
+    "collision_evidence",
+    "disposition",
+    "control_generation"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "producer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "repository_id",
+        "issue_id",
+        "requirements_hash",
+        "contract_hash",
+        "policy_hash",
+        "candidate_id"
+      ],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "issue_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requirements_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "contract_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "contract_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "contract_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "role": {
+      "enum": [
+        "worker",
+        "amendment"
+      ]
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "worktree_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "lease_id",
+        "fencing_token",
+        "expires_at"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "lease_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fencing_token": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expires_at": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": true
+              }
+            },
+            "required": [
+              "required"
+            ]
+          },
+          "then": {
+            "properties": {
+              "lease_id": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uuid"
+              },
+              "fencing_token": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "expires_at": {
+                "type": "string",
+                "minLength": 1,
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "collision_check": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "UNKNOWN"
+      ]
+    },
+    "collision_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "format": "uri"
+      },
+      "minItems": 0
+    },
+    "disposition": {
+      "enum": [
+        "PROPOSAL",
+        "DENIED",
+        "PERMITTED"
+      ]
+    },
+    "control_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "disposition": {
+            "const": "PERMITTED"
+          }
+        },
+        "required": [
+          "disposition"
+        ]
+      },
+      "then": {
+        "properties": {
+          "collision_check": {
+            "const": "PASS"
+          },
+          "collision_evidence": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:work-dispatch",
+  "title": "Agentic Workflow 1.2 \u2014 work-dispatch"
+}

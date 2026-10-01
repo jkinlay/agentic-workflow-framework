@@ -66,7 +66,62 @@ class RoutingCLITests(unittest.TestCase):
 
     def test_real_cli_routing_and_defaults(self):
         self.assertEqual(self.route()["model"], MODELS[1])
-        self.assertEqual(self.invoke("defaults")["reconciliation"]["enabled"], False)
+        defaults = self.invoke("defaults")
+        self.assertEqual(defaults["reconciliation"]["enabled"], False)
+        self.assertEqual(12, defaults["budgets"]["max_runs_per_ticket"])
+        self.assertEqual(250, defaults["budgets"]["max_runs_per_project_day"])
+        self.assertEqual(2000000, defaults["budgets"]["max_tokens_per_ticket"])
+        self.assertEqual(30000000, defaults["budgets"]["max_tokens_per_project_day"])
+
+    def test_token_only_cli_reserves_and_settles_with_null_cost(self):
+        reserved = self.route("reserve")
+        self.assertIsNone(reserved["reservation_cost_microusd"])
+        observed = {"actual_model": reserved["model"], "actual_reasoning_effort": reserved["reasoning_effort"],
+                    "actual_context_id": "cli-context", "actual_tokens": 321, "actual_cost_microusd": None,
+                    "success": True, "validation_passed": True, "independent_review_passed": True,
+                    "reviewer_context_id": "reviewer-context", "escaped_defect": False}
+        path = self.document("outcome.json", observed)
+        settled = self.ledger_command("settle", "--run-id", reserved["run_id"], "--outcome", path)
+        self.assertEqual("settled", settled["status"])
+        with closing(sqlite3.connect(self.root / "ledger.sqlite")) as connection:
+            row = connection.execute("SELECT reserved_cost,actual_tokens,actual_cost FROM model_runs WHERE run_id=?",
+                                     (reserved["run_id"],)).fetchone()
+        self.assertEqual((None, 321, None), row)
+
+    def test_outcome_templates_for_every_role_settle_reserved_runs(self):
+        for index, role in enumerate(("worker", "fix", "critic", "specialist")):
+            with self.subTest(role=role):
+                request = {**self.request, "ticket_id": "LOCAL-" + str(index + 10), "role": role,
+                           "phase": "review" if role in ("critic", "specialist") else "implementation"}
+                if role in ("critic", "specialist"):
+                    request.update(context_id=role + "-context", worker_context_id="worker-context")
+                self.document("request.json", request)
+                reserved = self.route("reserve")
+                template = self.invoke("outcome-template", "--role", role)
+                self.assertFalse(template["independent_review_passed"])
+                template.update(actual_model=reserved["model"], actual_reasoning_effort=reserved["reasoning_effort"],
+                                actual_context_id=request.get("context_id") or role + "-context", actual_tokens=17)
+                path = self.document("outcome.json", template)
+                settled = self.ledger_command("settle", "--run-id", reserved["run_id"], "--outcome", path)
+                self.assertEqual("settled", settled["status"])
+
+    def test_review_settlement_self_attestation_points_to_documented_shapes(self):
+        self.request.update(role="critic", context_id="critic-context", worker_context_id="worker-context")
+        self.document("request.json", self.request)
+        reserved = self.route("reserve")
+        value = self.invoke("outcome-template", "--role", "critic")
+        value.update(actual_model=reserved["model"], actual_reasoning_effort=reserved["reasoning_effort"],
+                     actual_context_id="critic-context", actual_tokens=1,
+                     independent_review_passed=True, reviewer_context_id="other-context")
+        path = self.document("outcome.json", value)
+        refused = self.ledger_command("settle", "--run-id", reserved["run_id"], "--outcome", path, expected=2)
+        self.assertIn("27-MODEL-ROUTING.md#settlement-outcome-shapes", refused["reason"])
+
+    def test_cli_monetary_cap_keeps_exact_verified_cost_refusal(self):
+        self.policy["budgets"]["max_cost_microusd_per_ticket"] = 100
+        self.document("config.json", self.config)
+        result = self.route("reserve", expected=2)
+        self.assertEqual("cost ceiling is configured but a verified hard cost reservation is unavailable", result["reason"])
 
     def project_route(self, command="suggest", expected=0, *extra):
         args = [command, "--config", self.project / ".agentic/PROJECT_CONFIG.yaml", "--project-root", self.project,
@@ -156,7 +211,7 @@ class RoutingCLITests(unittest.TestCase):
         self.policy["escalation"]["effort_ceiling"] = "xhigh"
         self.document("config.json", self.config)
         result = self.route()
-        self.assertEqual((result["model"], result["reasoning_effort"]), (MODELS[3], "xhigh"))
+        self.assertEqual((result["model"], result["reasoning_effort"]), (MODELS[2], "xhigh"))
 
     def test_real_cli_reserve_reconcile_history_and_idempotence(self):
         self.policy["reconciliation"] = {"enabled": True, "authorized_operator_ids": ["test-operator"]}

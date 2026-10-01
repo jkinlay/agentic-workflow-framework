@@ -1,0 +1,269 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "base_sha",
+    "head_sha",
+    "pr_body_sha256",
+    "additional_pr_body_sha256",
+    "comment_sha256",
+    "mapping_sha256",
+    "project_config_sha256",
+    "mapping_loaded",
+    "mapping_location",
+    "commits_scanned",
+    "findings",
+    "unscanned",
+    "coverage",
+    "execution_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "status": {
+      "enum": [
+        "PASS",
+        "BLOCKED"
+      ]
+    },
+    "base_sha": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "head_sha": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "pr_body_sha256": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "additional_pr_body_sha256": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "minItems": 0
+    },
+    "comment_sha256": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "minItems": 0
+    },
+    "mapping_sha256": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "project_config_sha256": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mapping_loaded": {
+      "type": "boolean"
+    },
+    "mapping_location": {
+      "const": ".agentic-state/publication-deny.json"
+    },
+    "commits_scanned": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+      },
+      "minItems": 0
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "commit",
+          "path",
+          "line",
+          "source",
+          "change",
+          "detector_id",
+          "redacted_excerpt"
+        ],
+        "properties": {
+          "commit": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "line": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "change": {
+            "oneOf": [
+              {
+                "enum": [
+                  "added",
+                  "deleted"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "detector_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "redacted_excerpt": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "minItems": 0
+    },
+    "unscanned": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "commit",
+          "path",
+          "source",
+          "reason",
+          "parent"
+        ],
+        "properties": {
+          "commit": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "enum": [
+              "binary",
+              "oversize"
+            ]
+          },
+          "parent": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "minItems": 0
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "current_files",
+        "commit_messages",
+        "every_patch",
+        "generated_reports",
+        "captured_command_output",
+        "pr_bodies",
+        "pr_comments"
+      ],
+      "properties": {
+        "current_files": {
+          "const": true
+        },
+        "commit_messages": {
+          "const": true
+        },
+        "every_patch": {
+          "const": true
+        },
+        "generated_reports": {
+          "type": "string",
+          "minLength": 1
+        },
+        "captured_command_output": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pr_bodies": {
+          "type": "boolean"
+        },
+        "pr_comments": {
+          "type": "boolean"
+        }
+      }
+    },
+    "execution_authority": {
+      "const": false
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:publication-scan",
+  "title": "Agentic Workflow 1.2 \u2014 publication-scan"
+}

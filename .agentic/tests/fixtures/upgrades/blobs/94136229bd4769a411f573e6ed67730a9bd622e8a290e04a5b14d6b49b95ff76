@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:operating-epics",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "epics": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              }
+            ]
+          },
+          "risk_flags": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "complexity": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "uncertainty": {
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "verification": {
+            "enum": [
+              "strong",
+              "weak",
+              "none"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "scope"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "epics"
+  ],
+  "additionalProperties": false
+}

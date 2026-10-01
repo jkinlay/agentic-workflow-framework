@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "source": "synthetic_fixture",
+  "project": "Synthetic ongoing project",
+  "observed_at": "2026-09-11T10:00:00Z",
+  "evidence": ["Synthetic local fixture, not live Jira, GitHub, agent or approval evidence."],
+  "scope_complete": false,
+  "cancelled": false,
+  "streams": [
+    {"label": "A", "state": "READY", "agent_id": null, "summary": "Service work is ready within the observed writer capacity.", "next_action": "Assign the admitted service ticket and run its focused checks.", "owner": "native coordinator", "resume_trigger": "now after current ownership and admission checks", "authorization_id": null},
+    {"label": "B", "state": "BLOCKED", "agent_id": null, "summary": "The synthetic staging deployment needs a separate decision.", "next_action": "Present the prepared staging decision; keep A and C progressing.", "owner": "project owner", "resume_trigger": "the actual staging authorization is received and verified", "authorization_id": "staging-fixture-42"},
+    {"label": "C", "state": "READY", "agent_id": null, "summary": "Independent operator guide work is ready.", "next_action": "Assign the admitted documentation ticket and validate the guide.", "owner": "native coordinator", "resume_trigger": "now after current ownership and admission checks", "authorization_id": null}
+  ],
+  "pull_requests": [
+    {"url": "https://github.com/fixture-only/awf-demo/pull/42", "stream": "A", "state": "REVIEW_REQUIRED", "summary": "An earlier scoped change is ready for independent review.", "next_action": "Dispatch an independent critic on the current candidate and preserve finding IDs.", "owner": "native coordinator and critic", "resume_trigger": "now after checking current head and review capacity", "authorization_id": null}
+  ],
+  "authorizations": [
+    {
+      "id": "staging-fixture-42",
+      "kind": "action",
+      "expires_at": "2026-09-11T11:00:00Z",
+      "decision": {
+        "kind": "deploy", "target": "synthetic build fixture-42 in the synthetic staging environment",
+        "scope_authorized": true, "already_authorized": false,
+        "authorization": {"required": true, "reason": "This synthetic deployment has not been authorized.", "source": "Synthetic owner staging-deployment policy; this is not real approval evidence.", "phrase": "Authorize synthetic build fixture-42 for the synthetic staging environment only."}
+      }
+    }
+  ],
+  "wakeup": {"kind": "foreground", "reference": null, "evidence": "Synthetic demonstration of a foreground coordinator, not a registered scheduler."}
+}

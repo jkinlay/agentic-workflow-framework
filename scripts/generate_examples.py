@@ -52,11 +52,12 @@ def config(example=True):
         "execution": {"profile": "manual_reference", "max_parallel_tickets": 6, "max_parallel_tickets_per_stream": 1,
             "native_streams": {"enabled": True, "dispatch_policy": "ready_independent"},
             "independent_reviewers": {"allocation": "one_per_stream"},
-            "max_agent_runs_per_ticket": 8, "max_spawn_depth": 1, "max_amendment_cycles": 3, "max_cap_extensions": 2,
+            "max_agent_runs_per_ticket": 12, "max_spawn_depth": 1, "max_amendment_cycles": 3, "max_cap_extensions": 2,
             "risk_tiers": copy.deepcopy(DEFAULT_RISK_TIERS), "transient_retry_limit": 2,
-            "max_run_seconds": 3600, "max_tool_calls_per_run": 100, "max_tokens_per_ticket": 100000,
-            "max_cost_microusd_per_ticket": 10000000, "daily_project_cost_microusd": 50000000, "one_writer_per_ticket": True,
+            "max_run_seconds": 3600, "max_tool_calls_per_run": 100, "max_tokens_per_ticket": 2000000,
+            "max_cost_microusd_per_ticket": None, "daily_project_cost_microusd": None, "one_writer_per_ticket": True,
             "roles": {name: copy.deepcopy(role) for name in ["controller", "worker", "critic", "specialist"]},
+            "route_capabilities": {"observation_path": ".agentic/route-capabilities.json", "max_age_days": 30},
             "host_broker": {"enabled": False, "broker_id": "", "lease_before_dispatch": True, "max_workers": 3, "max_heavy_jobs": 1, "max_gpu_jobs": 0, "resources": {}}},
         "validation": {"commands": ["python -m unittest discover -s tests" if example else "CHANGE_ME_TEST_COMMAND"], "ci_candidate_policy": "synthetic_merge_required", "require_candidate_bound_ci_evidence": True,
             "required_ci_checks": [{"name": "unit-tests", "app_id": 42, "workflow_path": ".github/workflows/test.yml", "workflow_sha": "a" * 40, "min_tests_executed": 1, "verifies_history": False}] if example else [],
@@ -118,7 +119,8 @@ def example_bundle(cfg):
     from agentic.operating import default_operating, validate_operating
     dispatch["operating_hash"] = validate_operating(default_operating(), cfg).operating_hash
     results = [{"id": item["id"], "verdict": "PASS", "evidence": evidence} for item in ac]
-    worker = record("worker-result", "worker", status="COMPLETE", dispatch_id=dispatch["record_id"], files_changed=["src/example.py"], acceptance_criteria=results,
+    worker = record("worker-result", "worker", status="COMPLETE", commit_route="WORKER", dispatch_id=dispatch["record_id"], files_changed=["src/example.py"],
+        tested_tree=candidate["head_tree_sha"], changes=[{"path": "src/example.py", "action": "modified"}], ignored_untracked=[], acceptance_criteria=results,
         validation=[{"command": cfg["validation"]["commands"][0], "started_at": "2026-09-09T11:59:59Z", "finished_at": NOW,
             "exit_code": 0, "tested_tree_sha": candidate["head_tree_sha"], "clean_checkout": True, "evidence": evidence,
             "tests_discovered": 2, "tests_executed": 2, "declared_skips": [], "unevaluable_files": []}],
@@ -129,10 +131,21 @@ def example_bundle(cfg):
     ci = record("ci", "collector", retrieval_complete=True, candidate_type="synthetic_merge", checks=[{"name": "unit-tests", "check_id": "check-1", "app_id": 42,
         "workflow_path": ".github/workflows/test.yml", "workflow_sha": "a" * 40, "attempt": 1, "event": "pull_request", "conclusion": "success",
         "tested_tree_sha": candidate["integration_tree_sha"], "tested_commit_sha": candidate["tested_merge_sha"], "tests_executed": 2, "completed_at": NOW, "evidence": evidence, "checkout_depth": "full"}], collector_attestation_id=uid("attestation-collector"))
-    pr = record("pr", "collector", state="OPEN", draft=False, mergeable=True, retrieval_complete=True, file_manifest=files, blocking_threads=[], scope_pass=True,
+    pr_body = "Synthetic draft body.\n"
+    pr = record("pr", "collector", state="OPEN", draft=False, mergeable=True, retrieval_complete=True, file_manifest=files,
+        body_sha256=sha256(pr_body.encode("utf-8")), blocking_threads=[], scope_pass=True,
         dependency_compatibility_pass=True, ruleset_verified=True, specialist_domains=[], classification_complete=True, collector_attestation_id=uid("attestation-collector"), evidence=evidence)
+    publication_scan = {"schema_version": 3, "status": "PASS", "base_sha": candidate["target_base_sha"],
+        "head_sha": candidate["head_sha"], "pr_body_sha256": pr["body_sha256"], "additional_pr_body_sha256": [],
+        "comment_sha256": [], "mapping_sha256": None, "project_config_sha256": None, "mapping_loaded": False,
+        "mapping_location": ".agentic-state/publication-deny.json", "commits_scanned": [candidate["head_sha"]],
+        "findings": [], "unscanned": [], "coverage": {"current_files": True, "commit_messages": True,
+            "every_patch": True, "generated_reports": "when committed or passed as provider text",
+            "captured_command_output": "when committed or passed as provider text", "pr_bodies": True, "pr_comments": False},
+        "execution_authority": False}
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,
-            "specialists": [], "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None, "evidence_registry": [{"uri": evidence[0],
+            "specialists": [], "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,
+            "publication_scan": publication_scan, "evidence_registry": [{"uri": evidence[0],
                 "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"}], "provenance_mode": "offline_fixture"}
 
 

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic import ValidationError
 from agentic.canonical import MAX_DOCUMENT_BYTES, loads, load_yaml
-from agentic.model_routing import RoutingLedger, default_policy, policy_from_config, select_route
+from agentic.model_routing import RoutingLedger, default_policy, outcome_template, policy_from_config, select_route
 
 
 class RoutingParser(argparse.ArgumentParser):
@@ -46,7 +46,8 @@ def admission_snapshot(args, config):
 
 def main(argv=None):
     parser = RoutingParser(description=__doc__)
-    parser.add_argument("command", choices=("defaults", "suggest", "reserve", "settle", "evidence", "resolve-failure", "record-defect", "reconcile", "reconciliation-history"))
+    parser.add_argument("command", choices=("defaults", "outcome-template", "suggest", "reserve", "settle", "evidence", "resolve-failure", "record-defect", "reconcile", "reconciliation-history"))
+    parser.add_argument("--role", choices=("worker", "fix", "critic", "specialist"))
     parser.add_argument("--config", type=Path)
     parser.add_argument("--request", type=Path)
     parser.add_argument("--capabilities", type=Path, help="Observed host model IDs mapped to supported effort lists under models")
@@ -60,6 +61,10 @@ def main(argv=None):
         args = parser.parse_args(argv)
         if args.command == "defaults":
             result = default_policy()
+        elif args.command == "outcome-template":
+            if args.role is None:
+                raise ValidationError("outcome-template requires --role")
+            result = outcome_template(args.role)
         else:
             if args.config is None:
                 raise ValidationError("--config is required")

@@ -1,0 +1,99 @@
+"""Baseline policy invariants and deterministic scope/trigger classification."""
+from __future__ import annotations
+import fnmatch
+
+from . import CapabilityUnavailable, ValidationError
+from .canonical import fingerprint, unique
+
+PROTECTED_PATHS = ["AGENTS.md", "**/AGENTS.md", ".agentic/**", ".codex/**", ".github/workflows/**",
+                   ".github/CODEOWNERS", "CODEOWNERS", "scripts/bootstrap_project.py"]
+CAPABILITIES = {
+    "controller": {"read_evidence", "write_evidence", "propose_dispatch", "propose_jira_transition"},
+    "worker": {"read_evidence", "write_assigned_worktree", "run_isolated_tests", "submit_worker_result"},
+    "critic": {"read_evidence", "run_isolated_tests", "submit_review"},
+    "specialist": {"read_evidence", "run_isolated_tests", "submit_review"},
+    "collector": {"read_external_state", "write_evidence"},
+    "owner": {"authorize_candidate", "deny_candidate", "revoke_authorization"},
+    "verifier": {"read_evidence", "verify_source_event"},
+}
+
+
+def require_reference_capability(action):
+    if action not in {"validate", "evaluate", "parse_authorization", "simulate", "local_state"}:
+        raise CapabilityUnavailable(f"Capability {action!r} is not supplied by the offline reference tools")
+
+
+def safe_path(value):
+    from .safeio import relative_parts
+    relative_parts(value)
+    return value
+
+
+def inspect_config(config, workflow, contracts):
+    from .configuration import inspect_config as inspect
+    return inspect(config, workflow, contracts)
+
+
+def validate_config(config, workflow, contracts):
+    report = inspect_config(config, workflow, contracts)
+    if report['status'] != 'ACCEPTED':
+        raise ValidationError('Unresolved configuration values: ' + '; '.join(
+            item['path'] + ': ' + item['reason'] for item in report['unresolved']))
+    return report['policy_sha256']
+
+
+def policy_hash(config, workflow):
+    return fingerprint("policy", {"config": config, "workflow": workflow})
+
+
+def inside_scope(snapshot, config):
+    if config["jira"].get("enabled", True) is False:
+        return False
+    if snapshot["project_key"] != config["jira"]["project_key"]:
+        return False
+    scope = config["jira"]["scope"]
+    if scope["allow_entire_project"]:
+        return True
+    tests = []
+    for selector, field in [("included_epics", "epic_ids"), ("labels_any", "labels"), ("components_any", "component_ids")]:
+        if scope[selector]:
+            tests.append(bool(set(scope[selector]) & set(snapshot[field])))
+    return bool(tests) and (all(tests) if scope["selector_mode"] == "all" else any(tests))
+
+
+def specialist_domains(config, contract, paths, text, declared):
+    result = set(contract["specialist_domains"]) | set(declared)
+    for name, rule in config["specialist_reviews"].items():
+        flags = any(contract["risk_flags"].get(flag, False) for flag in rule["risk_flags"])
+        matches = any(fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in rule["paths"])
+        keywords = any(word.casefold() in text.casefold() for word in rule["keywords"])
+        if flags or matches or keywords:
+            result.add(name)
+    if not result.issubset(config["specialist_reviews"]):
+        raise ValidationError("Required specialist domain has no configured reviewer")
+    return result
+
+
+def dependencies_satisfied(dependencies):
+    unique(dependencies, "issue_id", "dependency issue")
+    return all(item["satisfied"] and item["evidence"] for item in dependencies)
+
+
+def topological_order(graph):
+    visiting, visited, output = set(), set(), []
+    def visit(node):
+        if node in visiting:
+            raise ValidationError(f"Dependency cycle involving {node}")
+        if node in visited:
+            return
+        if node not in graph:
+            raise ValidationError(f"Missing dependency node: {node}")
+        visiting.add(node)
+        for dependency in sorted(graph[node]):
+            visit(dependency)
+        visiting.remove(node)
+        visited.add(node)
+        output.append(node)
+    for node in sorted(graph):
+        visit(node)
+    return output

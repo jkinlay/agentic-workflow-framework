@@ -1,0 +1,313 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "created_at",
+    "producer_id",
+    "run_id",
+    "binding",
+    "status",
+    "dispatch_id",
+    "files_changed",
+    "acceptance_criteria",
+    "validation",
+    "self_review_complete",
+    "findings_addressed",
+    "blockers",
+    "closure"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "producer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "repository_id",
+        "issue_id",
+        "requirements_hash",
+        "contract_hash",
+        "policy_hash",
+        "candidate_id"
+      ],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "issue_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requirements_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "contract_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "COMPLETE",
+        "BLOCKED",
+        "FAILED"
+      ]
+    },
+    "commit_route": {
+      "enum": [
+        "WORKER",
+        "PUBLISHER"
+      ]
+    },
+    "dispatch_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "verdict",
+          "evidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "verdict": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "UNKNOWN"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "validation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command",
+          "started_at",
+          "finished_at",
+          "exit_code",
+          "tested_tree_sha",
+          "clean_checkout",
+          "evidence",
+          "tests_discovered",
+          "tests_executed",
+          "declared_skips",
+          "unevaluable_files"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "started_at": {
+            "type": "string",
+            "minLength": 1,
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": "string",
+            "minLength": 1,
+            "format": "date-time"
+          },
+          "exit_code": {
+            "type": "integer",
+            "minimum": -2147483648,
+            "maximum": 9007199254740991
+          },
+          "tested_tree_sha": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "clean_checkout": {
+            "type": "boolean"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "tests_discovered": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "tests_executed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "declared_skips": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "reason_code"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reason_code": {
+                  "enum": [
+                    "PLATFORM_PRIVILEGE",
+                    "EXTERNAL_DATA",
+                    "LICENCE_ABSENT",
+                    "TOOLCHAIN_ABSENT"
+                  ]
+                }
+              }
+            },
+            "minItems": 0
+          },
+          "unevaluable_files": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "self_review_complete": {
+      "type": "boolean"
+    },
+    "findings_addressed": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "evidence"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "MET",
+            "NOT_MET",
+            "UNKNOWN"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "format": "uri"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:amendment-result",
+  "title": "Agentic Workflow 1.2 \u2014 amendment-result"
+}

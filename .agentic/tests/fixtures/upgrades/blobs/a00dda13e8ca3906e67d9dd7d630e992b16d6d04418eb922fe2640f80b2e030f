@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:operating-change",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^C-[0-9a-f]{32}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
+    },
+    "instruction": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 65536
+    },
+    "before_hash": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "after_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "changes": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "before": {},
+          "after": {}
+        },
+        "required": [
+          "path",
+          "before",
+          "after"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^(default|user|recommendation:R-[0-9a-f]{24})$"
+    },
+    "applied_from": {
+      "enum": [
+        "chat",
+        "bootstrap"
+      ]
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "previous_change_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^C-[0-9a-f]{32}$"
+    },
+    "governance_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "id",
+    "created_at",
+    "instruction",
+    "before_hash",
+    "after_hash",
+    "changes",
+    "source",
+    "applied_from",
+    "sequence",
+    "previous_change_id",
+    "governance_hash"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "applied_from": {
+            "const": "chat"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "instruction": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "instruction": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

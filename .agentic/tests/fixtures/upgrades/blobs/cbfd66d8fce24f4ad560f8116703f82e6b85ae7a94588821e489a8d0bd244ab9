@@ -1,0 +1,215 @@
+"""Project-owned CODEOWNERS and adoption-report installer regressions."""
+from __future__ import annotations
+
+from contextlib import contextmanager
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+from agentic import ValidationError, VERSION
+from agentic import installer
+from agentic.canonical import sha256
+from agentic.installer import CODEOWNERS, CONFIG, INSTALLED, JOURNAL, MARKER, install, json_bytes, verify_installed
+from agentic.repository_rules import synthetic_observation
+
+
+class CodeownersInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="awf-codeowners-")
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.source = self.base / "source"
+        self.dest = self.base / "project"
+        self.source.mkdir()
+        # This synthetic source must not inherit the installed project's owners.
+        owners = b"# Synthetic source ownership\n" + b"".join(
+            path + b" @jkinlay\n" for path in (
+                b"/AGENTS.md", b"/PROJECT_INSTRUCTIONS.md", b"/.agentic/", b"/.github/",
+                b"/.codex/", b"/SECURITY.md", b"/CODEOWNERS"))
+        self.files = {"AGENTS.md": b"Synthetic governance\n", CODEOWNERS: owners,
+                      CONFIG: json_bytes({"project": {"name": "fixture"}, "github": {"repository": "fixture/project"},
+                         "controller": {key: False for key in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments", "auto_transition_jira"]}}),
+                      ".agentic/workflow-version.yaml": b"{}\n", ".agentic/docs/fixture.md": b"Synthetic docs\n"}
+        for name, raw in self.files.items():
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+        raw = json_bytes({"format": "awf-manifest-1", "template_version": VERSION,
+                          "files": {name: sha256(body) for name, body in self.files.items()}})
+        (self.source / "MANIFEST.json").write_bytes(raw)
+        (self.source / "MANIFEST.md").write_text("Synthetic inventory\n")
+        self.pin = sha256(raw)
+
+    def perform(self, **kwargs):
+        return install(self.source, self.dest, self.pin, **kwargs)
+
+    def test_default_seed_and_mutable_exact_path(self):
+        result = self.perform()
+        self.assertEqual((self.dest / CODEOWNERS).read_bytes(), self.files[CODEOWNERS])
+        self.assertIn(b"@jkinlay", self.files[CODEOWNERS])
+        receipt = json.loads((self.dest / INSTALLED).read_bytes())
+        self.assertNotIn(CODEOWNERS, receipt["immutable_files"])
+        self.assertEqual(set(receipt["mutable_paths"]), {CONFIG, CODEOWNERS})
+        self.assertEqual(result["codeowners"]["status"], "SEEDED")
+        self.assertEqual(result["repository_rules"], "UNOBSERVED")
+        self.assertTrue(result["adoption_allowed"])
+        (self.dest / CODEOWNERS).write_bytes(b"* @project-owner\n")
+        self.assertEqual(verify_installed(self.dest), self.pin)
+        (self.dest / "AGENTS.md").write_bytes(b"Changed protected governance\n")
+        with self.assertRaises(ValidationError):
+            verify_installed(self.dest)
+
+    def test_custom_owner_is_substituted_without_source_mutation(self):
+        self.perform(codeowner="@example-team/reviewers")
+        installed = (self.dest / CODEOWNERS).read_bytes()
+        self.assertNotIn(b"@jkinlay", installed)
+        self.assertEqual(installed.count(b"@example-team/reviewers"), 7)
+        self.assertEqual((self.source / CODEOWNERS).read_bytes(), self.files[CODEOWNERS])
+
+    def test_existing_owners_preserved_on_install_and_upgrade(self):
+        target = self.dest / CODEOWNERS
+        target.parent.mkdir(parents=True)
+        original = b"# Existing ownership\n* @maintainer\n"
+        target.write_bytes(original)
+        first = self.perform(codeowner="@other")
+        self.assertEqual(first["codeowners"]["status"], "PRESERVED")
+        self.assertFalse(first["codeowners"]["requested_owner_applied"])
+        self.assertEqual(target.read_bytes(), original)
+        changed = b"* @maintainer @second\n"
+        target.write_bytes(changed)
+        second = self.perform(mode="upgrade", codeowner="@new-owner")
+        self.assertEqual(second["install_id"], first["install_id"])
+        self.assertEqual(target.read_bytes(), changed)
+
+    def test_existing_root_or_docs_ownership_is_not_shadowed(self):
+        for name in ("CODEOWNERS", "docs/CODEOWNERS"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory(dir=self.base) as temporary:
+                destination = Path(temporary)
+                target = destination / name
+                target.parent.mkdir(exist_ok=True)
+                target.write_bytes(b"* @existing\n")
+                result = install(self.source, destination, self.pin)
+                self.assertEqual(result["codeowners"]["path"], name)
+                self.assertFalse((destination / CODEOWNERS).exists())
+                self.assertEqual(target.read_bytes(), b"* @existing\n")
+                self.assertEqual(verify_installed(destination), self.pin)
+
+    def test_preserving_owners_does_not_swallow_other_conflicts(self):
+        (self.dest / ".github").mkdir(parents=True)
+        (self.dest / CODEOWNERS).write_bytes(b"* @existing\n")
+        (self.dest / "AGENTS.md").write_bytes(b"Existing governance\n")
+        with self.assertRaisesRegex(ValidationError, "Conflicting files"):
+            self.perform()
+        self.assertEqual((self.dest / CODEOWNERS).read_bytes(), b"* @existing\n")
+        self.assertFalse((self.dest / ".agentic").exists())
+
+    def test_owner_injection_rejected_before_any_destination_write(self):
+        for owner in ("other", "@a\n* @attacker", "@one @two", "@bad--name", "@bad/../name", "@a\x00", "@a;echo"):
+            with self.subTest(owner=owner), self.assertRaises(ValidationError):
+                self.perform(codeowner=owner)
+            self.assertFalse(self.dest.exists())
+
+    def test_new_codeowners_is_rolled_back_after_fault(self):
+        with self.assertRaises(OSError):
+            self.perform(fail_after=5)
+        self.assertFalse((self.dest / CODEOWNERS).exists())
+        self.assertFalse((self.dest / JOURNAL).exists())
+        self.assertFalse((self.dest / MARKER).exists())
+
+    def test_existing_owner_hardlink_is_rejected_without_external_change(self):
+        (self.dest / ".github").mkdir(parents=True)
+        sentinel = self.base / "sentinel"
+        sentinel.write_bytes(b"* @external\n")
+        os.link(sentinel, self.dest / CODEOWNERS)
+        with self.assertRaises(ValidationError):
+            self.perform(conflict="backup")
+        self.assertEqual(sentinel.read_bytes(), b"* @external\n")
+        self.assertFalse((self.dest / ".agentic").exists())
+
+    def test_source_codeowners_remains_manifest_verified(self):
+        (self.source / CODEOWNERS).write_bytes(b"* @modified-source\n")
+        with self.assertRaisesRegex(ValidationError, "Source digest mismatch"):
+            self.perform()
+        self.assertFalse(self.dest.exists())
+
+    def test_missing_rules_installs_and_reports_adoption_decisions(self):
+        observation = self.base / "none.json"
+        raw = json_bytes(synthetic_observation("fixture/project", "trunk"))
+        observation.write_bytes(raw)
+        result = self.perform(rules_observation=observation, expected_rules_observation_sha256=sha256(raw))
+        self.assertEqual(result["status"], "INSTALLED")
+        self.assertEqual(result["repository_rules"], "MISSING")
+        self.assertEqual(set(result["decision_codes"]), {"prepare_adoption_pr", "report_missing_ruleset"})
+        self.assertTrue(result["adoption_allowed"])
+        self.assertFalse(result["rules_enablement_ready"])
+        self.assertFalse(result["live_automation_enabled"])
+
+    def test_bad_observation_never_blocks_installation(self):
+        observation = self.base / "bad.json"
+        observation.write_bytes(b'{"duplicate":1,"duplicate":2}')
+        result = self.perform(rules_observation=observation, expected_rules_observation_sha256=sha256(observation.read_bytes()))
+        self.assertEqual(result["status"], "INSTALLED")
+        self.assertEqual(result["repository_rules"], "UNOBSERVED")
+        self.assertTrue(result["adoption_allowed"])
+
+    def test_dry_run_maps_repository_and_does_not_create_project(self):
+        observation = self.base / "none.json"
+        raw = json_bytes(synthetic_observation("another/project", "develop"))
+        observation.write_bytes(raw)
+        result = self.perform(dry_run=True, overrides={"repository": "another/project"}, codeowner="@other",
+                              rules_observation=observation, expected_rules_observation_sha256=sha256(raw))
+        self.assertEqual(result["status"], "PLAN")
+        self.assertEqual(result["repository_rules"], "MISSING")
+        self.assertEqual(result["default_branch"], "develop")
+        self.assertFalse(self.dest.exists())
+
+    def race_owner(self, action, location):
+        self.dest = self.base / (action + "-" + location.replace("/", "-"))
+        target = self.dest / location
+        if action != "create":
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"* @existing\n")
+        original_lock = installer.install_lock
+        @contextmanager
+        def raced_lock(tree):
+            if action == "delete":
+                target.unlink()
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"* @concurrent-owner\n")
+            with original_lock(tree):
+                yield
+        with patch.object(installer, "install_lock", raced_lock), self.assertRaisesRegex(ValidationError, "CODEOWNERS selection changed"):
+            self.perform()
+        self.assertFalse((self.dest / CODEOWNERS).exists())
+        self.assertFalse((self.dest / "AGENTS.md").exists())
+        self.assertFalse((self.dest / JOURNAL).exists())
+        if action == "delete":
+            self.assertFalse(target.exists())
+        else:
+            self.assertEqual(target.read_bytes(), b"* @concurrent-owner\n")
+
+    def test_late_root_or_docs_owner_is_not_shadowed(self):
+        for location in ("CODEOWNERS", "docs/CODEOWNERS"):
+            with self.subTest(location=location):
+                self.race_owner("create", location)
+
+    def test_changed_root_or_docs_owner_cannot_report_stale_preservation(self):
+        for location in ("CODEOWNERS", "docs/CODEOWNERS"):
+            with self.subTest(location=location):
+                self.race_owner("change", location)
+
+    def test_removed_root_or_docs_owner_is_replanned(self):
+        for location in ("CODEOWNERS", "docs/CODEOWNERS"):
+            with self.subTest(location=location):
+                self.race_owner("delete", location)
+
+
+if __name__ == "__main__":
+    unittest.main()

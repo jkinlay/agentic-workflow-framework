@@ -196,6 +196,21 @@ class RepositoryRulesTests(unittest.TestCase):
         self.assertEqual(commands[0][commands[0].index("--hostname") + 1], "github.com")
         self.assertNotIn("secret-provider-value", json.dumps(self.assess(value)))
 
+    def test_pr_file_projection_keeps_bounded_identity_fields(self):
+        commands = []
+        projected = [{"filename": ".agentic/installed-manifest.json", "status": "added", "sha": "a" * 40}]
+        def launch(command, **kwargs):
+            commands.append(command)
+            kwargs["stdout"].write(json.dumps(projected).encode())
+            return Mock(poll=Mock(return_value=0), returncode=0)
+        with patch.object(rules.subprocess, "Popen", side_effect=launch):
+            value, count = rules._gh_get("repos/fixture/example/pulls/7/files?per_page=100&page=1",
+                                         rules.time.monotonic() + 5, pr_file_metadata=True)
+        self.assertEqual(value, projected)
+        self.assertLess(count, rules.MAX_BYTES)
+        self.assertEqual(commands[0][commands[0].index("--jq") + 1], "map({filename,status,sha})")
+        self.assertEqual(commands[0][commands[0].index("--method") + 1], "GET")
+
     def test_transport_deadline_cleanup_failure_remains_unobserved(self):
         child = Mock(poll=Mock(return_value=None), kill=Mock(side_effect=OSError("synthetic")))
         with patch.object(rules.subprocess, "Popen", return_value=child), patch.object(rules.time, "monotonic", side_effect=[0, 0, 61]):

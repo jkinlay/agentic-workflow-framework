@@ -11,6 +11,7 @@ import re
 import subprocess
 
 from ..canonical import loads, sha256
+from ..child_process import child_env
 from ..review_loop import require
 
 
@@ -104,7 +105,7 @@ class HostDriver:
         env = dict(os.environ)
         # Neither candidate Git overrides nor paid API auth is inherited.
         for key in list(env):
-            if key.startswith('GIT_') or key in {'CODEX_API_KEY','OPENAI_API_KEY'}:
+            if key.startswith('GIT_'):
                 env.pop(key)
         if name == 'codex':
             for key in ['GH_TOKEN','GITHUB_TOKEN']:
@@ -115,11 +116,11 @@ class HostDriver:
         # File output keeps arbitrarily large agent logs out of process memory.
         if log:
             with Path(log).open('xb') as stream:
-                result = subprocess.run(command, cwd=cwd, env=env, input=stdin.encode('utf-8') if stdin else None,
+                result = subprocess.run(command, cwd=cwd, env=child_env(env), input=stdin.encode('utf-8') if stdin else None,
                     stdout=stream, stderr=subprocess.STDOUT, timeout=timeout or self.c['command_timeout_seconds'])
             require(result.returncode == 0, f'{name} failed; inspect retained run log')
             return ''
-        result = subprocess.run(command, cwd=cwd, env=env, input=stdin, text=True, encoding='utf-8', errors='strict',
+        result = subprocess.run(command, cwd=cwd, env=child_env(env), input=stdin, text=True, encoding='utf-8', errors='strict',
             capture_output=True, timeout=timeout or self.c['command_timeout_seconds'])
         require(result.returncode == 0, f'{name} failed with exit {result.returncode}; reconcile before retry')
         require(len(result.stdout) <= 8 * 1024 * 1024, 'Command output exceeds record limit')
@@ -229,12 +230,18 @@ class HostDriver:
         self.git(self.worker,'add','--',*paths)
         staged = self.git(self.worker,'diff','--cached','--name-only','-z').split('\0')
         require(set(x for x in staged if x) == set(paths), 'Staged inventory differs from validated amendment')
+        # Whitespace hygiene only; publication safety is the history-aware scan below.
         self.git(self.worker,'diff','--cached','--check')
         self.git(self.worker,'commit','-m',f'AWF: address independent review ({run_id})')
         new_head = self.git(self.worker,'rev-parse','HEAD')
         require(self.git(self.worker,'rev-parse','HEAD^') == candidate['head'], 'Amendment parent mismatch')
         require(not self.git(self.worker,'status','--porcelain','--untracked-files=all'), 'Uncommitted changes remain after amendment')
         require(self.snapshot() == candidate, 'PR moved before push; local commit retained for reconciliation')
+        from ..publication import scan_repository
+        pr = self.api(f'pulls/{self.c["pr"]}')
+        scan = scan_repository(self.worker, candidate['base'], new_head,
+            pr_body_texts=[pr.get('body') or ''], mapping_path=self.state / 'publication-deny.json')
+        require(scan['status'] == 'PASS', 'Publication scan blocked amendment push; rewrite contaminated unpublished history or redact provider text')
         # Normal push only. A divergent remote rejects; no destructive force retry.
         self.git(self.worker,'push','origin',new_head+':refs/heads/'+candidate['head_ref'])
         return {**candidate,'head':new_head}

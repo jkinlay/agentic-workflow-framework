@@ -51,7 +51,7 @@
     "issue_id": "2001",
     "ticket": "EX-1",
     "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-    "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+    "policy_hash": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
     "objective": "Validate one label",
     "acceptance_criteria": [
       {
@@ -128,8 +128,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-      "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+      "contract_hash": "f8bfd4a5c4228cbfa5dce4e180b81ce8e0e84982b8ebf3e4766538f50a13f9c3",
+      "policy_hash": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "contract_id": "9cd18fb5-8aee-5e37-bbda-348cfc9a7cff",
@@ -150,7 +150,7 @@
     "disposition": "PERMITTED",
     "control_generation": 1,
     "required_resources": [],
-    "operating_hash": "1a598a0c0ffc7face1a372c1ce53a05c1a38b339abfc29dcef16d54408366b04"
+    "operating_hash": "323516e9ec8868ff6d0e6f9d94a5137fd703f82745364e63e660c73d24b80593"
   },
   "worker": {
     "schema_version": 3,
@@ -163,15 +163,24 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-      "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+      "contract_hash": "f8bfd4a5c4228cbfa5dce4e180b81ce8e0e84982b8ebf3e4766538f50a13f9c3",
+      "policy_hash": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "status": "COMPLETE",
+    "commit_route": "WORKER",
     "dispatch_id": "ed026ea5-c0a7-567c-89ec-39dcf62c9bea",
     "files_changed": [
       "src/example.py"
     ],
+    "tested_tree": "dddddddddddddddddddddddddddddddddddddddd",
+    "changes": [
+      {
+        "path": "src/example.py",
+        "action": "modified"
+      }
+    ],
+    "ignored_untracked": [],
     "acceptance_criteria": [
       {
         "id": "AC1",
@@ -226,8 +235,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-      "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+      "contract_hash": "f8bfd4a5c4228cbfa5dce4e180b81ce8e0e84982b8ebf3e4766538f50a13f9c3",
+      "policy_hash": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "verdict": "APPROVE",
@@ -279,8 +288,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-      "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+      "contract_hash": "f8bfd4a5c4228cbfa5dce4e180b81ce8e0e84982b8ebf3e4766538f50a13f9c3",
+      "policy_hash": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "retrieval_complete": true,
@@ -318,8 +327,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-      "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+      "contract_hash": "f8bfd4a5c4228cbfa5dce4e180b81ce8e0e84982b8ebf3e4766538f50a13f9c3",
+      "policy_hash": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "state": "OPEN",
@@ -332,6 +341,7 @@
         "blob_sha": "1111111111111111111111111111111111111111"
       }
     ],
+    "body_sha256": "1d5e587dac06f7f47ccd3a5f96972d5f55fcbe7db44f39f7abe54071fb24f75b",
     "blocking_threads": [],
     "scope_pass": true,
     "dependency_compatibility_pass": true,
@@ -355,8 +365,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-        "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+        "contract_hash": "f8bfd4a5c4228cbfa5dce4e180b81ce8e0e84982b8ebf3e4766538f50a13f9c3",
+        "policy_hash": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "controller",
@@ -389,8 +399,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-        "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+        "contract_hash": "f8bfd4a5c4228cbfa5dce4e180b81ce8e0e84982b8ebf3e4766538f50a13f9c3",
+        "policy_hash": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "worker",
@@ -423,8 +433,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-        "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+        "contract_hash": "f8bfd4a5c4228cbfa5dce4e180b81ce8e0e84982b8ebf3e4766538f50a13f9c3",
+        "policy_hash": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "critic",
@@ -456,8 +466,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "776d48d52ef96ba444a9e1b15c206fc7405c1b406c401eb331addbe05a513c83",
-        "policy_hash": "af74bce88577d6b3b64a1dec16d99baf293a65fd38e7fb7e0bca6a8d09bc77a3",
+        "contract_hash": "f8bfd4a5c4228cbfa5dce4e180b81ce8e0e84982b8ebf3e4766538f50a13f9c3",
+        "policy_hash": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "collector",
@@ -481,6 +491,34 @@
   "prior_findings": [],
   "finding_dispositions": [],
   "cap_disposition": null,
+  "publication_scan": {
+    "schema_version": 3,
+    "status": "PASS",
+    "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "pr_body_sha256": "1d5e587dac06f7f47ccd3a5f96972d5f55fcbe7db44f39f7abe54071fb24f75b",
+    "additional_pr_body_sha256": [],
+    "comment_sha256": [],
+    "mapping_sha256": null,
+    "project_config_sha256": null,
+    "mapping_loaded": false,
+    "mapping_location": ".agentic-state/publication-deny.json",
+    "commits_scanned": [
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "findings": [],
+    "unscanned": [],
+    "coverage": {
+      "current_files": true,
+      "commit_messages": true,
+      "every_patch": true,
+      "generated_reports": "when committed or passed as provider text",
+      "captured_command_output": "when committed or passed as provider text",
+      "pr_bodies": true,
+      "pr_comments": false
+    },
+    "execution_authority": false
+  },
   "evidence_registry": [
     {
       "uri": "urn:awf:fixture:example-evidence",

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "project": {"key": "DEMO", "name": "Synthetic three-stream planning example", "repository": "fixture-only/awf-demo"},
+  "inventory": {
+    "source": "synthetic_fixture",
+    "complete": true,
+    "snapshot_id": "synthetic-2026-09-11",
+    "captured_at": "2026-09-11T10:00:00Z",
+    "scope": "Synthetic Epics DEMO-1, DEMO-2 and DEMO-3, all their tickets and prerequisites; no real Jira issues are asserted.",
+    "verified_by": "synthetic-test-coordinator",
+    "verification_evidence": "Locally authored test inventory; no external Jira or acceptance evidence exists."
+  },
+  "epics": [
+    {"id": "DEMO-1", "title": "Service interface", "scope": "Implement and validate the isolated service component."},
+    {"id": "DEMO-2", "title": "Command-line product", "scope": "Implement and validate a CLI against an existing stable interface."},
+    {"id": "DEMO-3", "title": "Operator guides", "scope": "Document installation and operations independently from component internals."}
+  ],
+  "tickets": [
+    {"id": "DEMO-11", "epic_id": "DEMO-1", "dispatch_scope": "in_scope", "title": "Implement service validation", "scope": "Service-side input handling and focused tests.", "status": "todo", "estimate": 3, "dependencies": [], "write_paths": ["src/service", "tests/service"], "ownership": null, "history": []},
+    {"id": "DEMO-12", "epic_id": "DEMO-1", "dispatch_scope": "in_scope", "title": "Exercise service error cases", "scope": "Validate accepted service behavior after implementation.", "status": "todo", "estimate": 2, "dependencies": [{"ticket_id": "DEMO-11", "state": "unresolved", "evidence": [], "verified_by": null, "verified_at": null}], "write_paths": ["tests/service"], "ownership": null, "history": []},
+    {"id": "DEMO-21", "epic_id": "DEMO-2", "dispatch_scope": "in_scope", "title": "Implement CLI input handling", "scope": "CLI parsing and focused tests against the established service contract.", "status": "todo", "estimate": 3, "dependencies": [], "write_paths": ["src/cli", "tests/cli"], "ownership": null, "history": []},
+    {"id": "DEMO-31", "epic_id": "DEMO-3", "dispatch_scope": "in_scope", "title": "Write installation guide", "scope": "Operator installation procedure and command examples.", "status": "todo", "estimate": 2, "dependencies": [], "write_paths": ["docs/installation.md"], "ownership": null, "history": []}
+  ]
+}

@@ -1,0 +1,497 @@
+"""Protected retry ceiling and narrowly equivalent legacy-cohort regressions."""
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+import sqlite3
+import json
+from pathlib import Path
+import tempfile
+import threading
+import unittest
+from unittest.mock import patch
+
+from agentic import ValidationError
+from agentic.model_routing import RoutingLedger, default_policy, _fingerprint, _raw_fingerprint
+from test_model_routing import capabilities, outcome, request
+
+
+class RetryAuthorityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="awf-retry-ceiling-")
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "routing.sqlite"
+        self.ledger = RoutingLedger(self.path)
+        self.policy = default_policy()
+        self.policy["reconciliation"].update(enabled=True, authorized_operator_ids=["owner-host"])
+
+    def reserve(self, **changes):
+        return self.ledger.reserve("project", self.policy, request(**changes), capabilities())
+
+    def authorization(self, expected=2, new=3, **changes):
+        if self.ledger.retry_limit_history("project")["retry_ceiling"] is None:
+            initial = deepcopy(self.policy)
+            initial["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+            self.ledger.reserve("project", initial, request(), capabilities())
+        value = {"operation_id": "approval-1", "expected_limit": expected, "new_limit": new,
+                 "expected_revision": self.ledger.retry_limit_history("project")["retry_ceiling_revision"],
+                 "approved_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+                 "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                 "policy_sha256": _fingerprint(self.policy), "operator_id": "owner-host",
+                 "authorization_ref": "human-approval-ref", "evidence_ref": "incident-review-ref",
+                 "reason": "Host verified this exact bounded increase"}
+        value.update(changes)
+        return value
+
+    def close_orphan(self, run):
+        return self.ledger.reconcile("project", self.policy, run["run_id"], {
+            "reconciliation_id": "close-" + run["run_id"], "operator_id": "owner-host",
+            "authorization_ref": "closure-authority", "reason": "Observed host termination",
+            "evidence_ref": "termination-proof", "remediation_ref": "remediation-proof",
+            "host_stopped": True, "remediation_verified": True})
+
+    def test_new_or_legacy_ledger_cannot_bootstrap_raised_cap_from_config(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        blocked = self.reserve()
+        self.assertEqual(blocked["code"], "RETRY_LIMIT_INCREASE_REQUIRES_AUTHORIZATION")
+        self.assertEqual(blocked["authorized_retry_ceiling"], 2)
+        self.assertEqual(self.ledger.retry_limit_history("project")["retry_ceiling"], 2)
+        self.assertEqual(self.ledger.evidence("project", self.policy)["groups"], [])
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 2
+        self.assertEqual(self.reserve()["status"], "reserved")
+
+    def test_lowered_ceiling_survives_reopen_ticket_role_and_policy_changes(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 0
+        first = self.reserve()
+        self.ledger.settle(first["run_id"], outcome(first))
+        self.ledger = RoutingLedger(self.path)
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 1
+        self.policy["adaptive"]["min_reviewed_samples"] += 1
+        for change in ({"ticket_id": "other"}, {"phase": "other"},
+                       {"role": "critic", "worker_context_id": "separate"}):
+            self.assertEqual(self.reserve(**change)["code"], "RETRY_LIMIT_INCREASE_REQUIRES_AUTHORIZATION")
+        self.assertEqual(self.ledger.retry_limit_history("project")["retry_ceiling"], 0)
+
+    def test_blocked_cap_change_does_not_prevent_safe_closure(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 0
+        first = self.reserve()
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        self.assertEqual(self.reserve(phase="new")["status"], "blocked")
+        self.assertEqual(self.close_orphan(first)["status"], "reconciled")
+        self.assertEqual(self.ledger.retry_limit_history("project")["retry_ceiling"], 0)
+
+    def test_bound_host_authorization_allows_increase_without_refunds(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 0
+        first = self.reserve()
+        self.close_orphan(first)
+        self.assertEqual(self.reserve()["code"], "RECONCILED_INCIDENT_RETRY_LIMIT")
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 2
+        observation = self.authorization(expected=0, new=2)
+        saved = self.ledger.authorize_retry_limit("project", self.policy, observation)
+        self.assertFalse(saved["human_authenticated_by_helper"])
+        self.assertFalse(saved["budgets_refunded"])
+        self.assertEqual(self.ledger.authorize_retry_limit("project", self.policy, observation), saved)
+        self.assertEqual(self.reserve()["status"], "reserved")
+        self.assertEqual(self.ledger.evidence("project", self.policy)["groups"], [])  # cap0 is a distinct cohort
+        self.assertEqual(len(self.ledger.reconciliation_history("project")["reconciliations"]), 1)
+        history = self.ledger.retry_limit_history("project")
+        self.assertEqual(history["retry_ceiling"], 2)
+        self.assertEqual(len(history["authorizations"]), 1)
+
+    def test_stale_mismatched_and_replayed_authorization_is_rejected(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        for changed in ({"expected_limit": 1}, {"new_limit": 4}, {"policy_sha256": "0" * 64},
+                        {"operator_id": "worker"}, {"new_limit": True}, {"unknown": "value"}):
+            with self.subTest(changed=changed), self.assertRaises(ValidationError):
+                self.ledger.authorize_retry_limit("project", self.policy, self.authorization(**changed))
+        approved = self.authorization()
+        self.ledger.authorize_retry_limit("project", self.policy, approved)
+        with self.assertRaisesRegex(ValidationError, "conflicts"):
+            self.ledger.authorize_retry_limit("project", self.policy, {**approved, "reason": "different"})
+        with self.assertRaisesRegex(ValidationError, "conflicts"):
+            self.ledger.authorize_retry_limit("other-project", self.policy, approved)
+
+    def test_concurrent_cap_changes_use_compare_and_swap(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        approved = self.authorization()
+        def attempt(index):
+            try:
+                return RoutingLedger(self.path).authorize_retry_limit("project", self.policy,
+                    {**approved, "operation_id": "approval-" + str(index)})["status"]
+            except ValidationError:
+                return "denied"
+        with ThreadPoolExecutor(max_workers=3) as workers:
+            results = list(workers.map(attempt, range(3)))
+        self.assertEqual(results.count("retry_limit_authorization_recorded"), 1)
+        self.assertEqual(results.count("denied"), 2)
+
+    def test_old_authorization_retry_cannot_undo_subsequent_lowering(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        approved = self.authorization()
+        saved = self.ledger.authorize_retry_limit("project", self.policy, approved)
+        higher_policy = deepcopy(self.policy)
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 1
+        self.reserve()
+        self.assertEqual(self.ledger.authorize_retry_limit("project", higher_policy, approved), saved)
+        self.assertEqual(self.ledger.retry_limit_history("project")["retry_ceiling"], 1)
+
+    def test_authorization_audit_is_append_only(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        self.ledger.authorize_retry_limit("project", self.policy, self.authorization())
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            for sql in ("DELETE FROM model_retry_limit_authorizations", "UPDATE model_retry_limit_authorizations SET observation='{}'",
+                        "INSERT OR REPLACE INTO model_retry_limit_authorizations SELECT * FROM model_retry_limit_authorizations",
+                        "INSERT OR REPLACE INTO model_retry_limit_authorizations (rowid,operation_id,project_id,request_hash,observation,result) SELECT rowid,'new',project_id,request_hash,observation,result FROM model_retry_limit_authorizations"):
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                    connection.execute(sql)
+
+    def test_reductions_are_bound_audited_and_not_repeated(self):
+        first = self.reserve()
+        self.ledger.settle(first["run_id"], outcome(first))
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 1
+        second = self.reserve(ticket_id="next")
+        self.ledger.settle(second["run_id"], outcome(second))
+        self.reserve(ticket_id="third")
+        history = RoutingLedger(self.path).retry_limit_history("project")
+        self.assertEqual(history["retry_ceiling_revision"], 2)
+        self.assertEqual([e["kind"] for e in history["events"]], ["seed", "configuration_reduction"])
+        event = history["events"][-1]
+        self.assertEqual((event["previous_limit"], event["new_limit"], event["ticket_id"]), (2, 1, "next"))
+        self.assertEqual(event["policy_sha256"], _fingerprint(self.policy))
+        self.assertEqual(event["project_id"], "project")
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            for sql in ("UPDATE model_retry_ceiling_events SET retry_limit=9", "DELETE FROM model_retry_ceiling_events",
+                        "INSERT OR REPLACE INTO model_retry_ceiling_events SELECT event_id,project_id,revision,previous_limit,9,kind,observation FROM model_retry_ceiling_events",
+                        "INSERT INTO model_retry_ceiling_events SELECT * FROM model_retry_ceiling_events WHERE true ON CONFLICT(project_id,revision) DO UPDATE SET retry_limit=9",
+                        "INSERT INTO model_retry_ceilings VALUES ('project',9)"):
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                    connection.execute(sql)
+
+    def test_migration_preserves_legacy_ceiling_and_seals_old_table(self):
+        path = Path(self.temp.name) / "legacy.sqlite"
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("CREATE TABLE model_retry_ceilings (project_id TEXT PRIMARY KEY, retry_limit INTEGER NOT NULL)")
+            connection.execute("INSERT INTO model_retry_ceilings VALUES ('legacy',7)")
+        ledger = RoutingLedger(path)
+        first = ledger.retry_limit_history("legacy")
+        self.assertEqual(first["retry_ceiling"], 7)
+        self.assertEqual(first["events"][0]["kind"], "legacy_migration")
+        self.assertIsNone(first["events"][0]["policy_sha256"])
+        self.assertEqual(RoutingLedger(path).retry_limit_history("legacy"), first)
+        with closing(sqlite3.connect(path)) as connection, connection:
+            for sql in ("UPDATE model_retry_ceilings SET retry_limit=8", "DELETE FROM model_retry_ceilings"):
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "sealed"):
+                    connection.execute(sql)
+
+    def test_expired_naive_long_and_missing_expiry_cannot_authorize(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        for expiry in ("invalid", "2026-01-01T00:00:00", (datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat(),
+                       (datetime.now(timezone.utc)+timedelta(days=2)).isoformat()):
+            with self.subTest(expiry=expiry), self.assertRaisesRegex(ValidationError, "expiry"):
+                self.ledger.authorize_retry_limit("project", self.policy, self.authorization(expires_at=expiry))
+        missing = self.authorization()
+        del missing["expires_at"]
+        with self.assertRaises(ValidationError):
+            self.ledger.authorize_retry_limit("project", self.policy, missing)
+        self.assertEqual(self.ledger.retry_limit_history("project")["retry_ceiling"], 2)
+
+    def test_revision_prevents_aba_and_expired_replay_is_read_only(self):
+        from unittest.mock import patch
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        approved = self.authorization()
+        stale = {**approved, "operation_id": "unused-stale"}
+        saved = self.ledger.authorize_retry_limit("project", self.policy, approved)
+        higher = deepcopy(self.policy)
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 2
+        self.reserve()
+        with self.assertRaisesRegex(ValidationError, "changed"):
+            self.ledger.authorize_retry_limit("project", higher, stale)
+        with patch("agentic.model_routing.datetime") as clock:
+            clock.now.return_value = datetime.now(timezone.utc) + timedelta(days=2)
+            self.assertEqual(self.ledger.authorize_retry_limit("project", higher, approved), saved)
+        self.assertEqual(self.ledger.retry_limit_history("project")["retry_ceiling"], 2)
+
+    def test_exact_default_aliases_include_legacy_rows_without_rewriting_them(self):
+        self.policy["reconciliation"].update(enabled=False, authorized_operator_ids=[])
+        explicit = deepcopy(self.policy)
+        omitted_cap = deepcopy(explicit)
+        del omitted_cap["reconciliation"]["max_reconciled_incident_retries_per_ticket"]
+        omitted_block = deepcopy(explicit)
+        del omitted_block["reconciliation"]
+        versions = [explicit, omitted_cap, omitted_block]
+        raw_hashes = []
+        for index, version in enumerate(versions):
+            self.policy = version
+            run = self.reserve(ticket_id="legacy-" + str(index), complexity="low")
+            self.ledger.settle(run["run_id"], outcome(run))
+            legacy_hash = _raw_fingerprint(version)
+            raw_hashes.append(legacy_hash)
+            with closing(sqlite3.connect(self.path)) as connection, connection:
+                connection.execute("UPDATE model_runs SET policy_hash=? WHERE run_id=?", (legacy_hash, run["run_id"]))
+        for version in versions:
+            before = deepcopy(version)
+            evidence = self.ledger.evidence("project", version)
+            self.assertEqual(evidence["policy_sha256"], _fingerprint(explicit))
+            self.assertEqual(evidence["groups"][0]["samples"], 3)
+            self.assertEqual(evidence["included_stored_policy_sha256"], sorted(raw_hashes))
+            self.assertEqual(version, before)
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            self.assertEqual([r[0] for r in connection.execute("SELECT policy_hash FROM model_runs ORDER BY rowid")], raw_hashes)
+        changed = deepcopy(explicit)
+        changed["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        self.assertEqual(self.ledger.evidence("project", changed)["groups"], [])
+        changed = deepcopy(explicit)
+        changed["adaptive"]["min_reviewed_samples"] += 1
+        self.assertEqual(self.ledger.evidence("project", changed)["groups"], [])
+
+    def test_consumed_approval_or_evidence_cannot_raise_again_with_new_operation(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        self.ledger.authorize_retry_limit("project", self.policy, self.authorization())
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 4
+        for refs in ({"authorization_ref": "human-approval-ref", "evidence_ref": "new-evidence"},
+                     {"authorization_ref": "new-approval", "evidence_ref": "incident-review-ref"},
+                     {"authorization_ref": "incident-review-ref", "evidence_ref": "new-evidence"}):
+            with self.subTest(refs=refs), self.assertRaisesRegex(ValidationError, "already consumed"):
+                self.ledger.authorize_retry_limit("project", self.policy,
+                    self.authorization(expected=3, new=4, operation_id="fresh-operation", **refs))
+        self.assertEqual(3, self.ledger.retry_limit_history("project")["retry_ceiling"])
+        self.assertEqual(1, len(self.ledger.retry_limit_history("project")["authorizations"]))
+
+    def test_canonical_consumption_spans_projects_and_reference_fields(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        original = self.authorization(authorization_ref="approval-caf\u00e9", evidence_ref="same-original")
+        self.ledger.authorize_retry_limit("project", self.policy, original)
+        other = RoutingLedger(self.path.parent / "." / self.path.name)
+        other.reserve("second-project", self.policy, request(), capabilities())
+        grant = self.authorization(operation_id="new-project-operation", authorization_ref="unrelated-approval",
+                                   evidence_ref="approval-cafe\u0301", expected_revision=1)
+        with self.assertRaisesRegex(ValidationError, "already consumed"):
+            other.authorize_retry_limit("second-project", self.policy, grant)
+        self.assertEqual(2, other.retry_limit_history("second-project")["retry_ceiling"])
+
+    def test_one_reference_can_fill_both_fields_once_and_index_is_append_only(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        grant = self.authorization(authorization_ref="one-receipt", evidence_ref="one-receipt")
+        result = self.ledger.authorize_retry_limit("project", self.policy, grant)
+        self.assertEqual(["one-receipt"], result["consumed_references"])
+        self.assertEqual(result, self.ledger.authorize_retry_limit("project", self.policy, grant))
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            self.assertEqual(1, connection.execute("SELECT count(*) FROM model_retry_approval_consumptions").fetchone()[0])
+            for sql in ("DELETE FROM model_retry_approval_consumptions",
+                        "UPDATE model_retry_approval_consumptions SET reference_id='replacement'",
+                        "INSERT OR REPLACE INTO model_retry_approval_consumptions SELECT * FROM model_retry_approval_consumptions",
+                        "REPLACE INTO model_retry_approval_consumptions SELECT * FROM model_retry_approval_consumptions",
+                        "INSERT INTO model_retry_approval_consumptions SELECT * FROM model_retry_approval_consumptions WHERE true ON CONFLICT(reference_id) DO UPDATE SET first_operation_id='replacement'",
+                        "INSERT INTO model_retry_approval_consumptions (rowid,reference_id,first_operation_id,first_project_id,provenance) SELECT rowid,'different',first_operation_id,first_project_id,provenance FROM model_retry_approval_consumptions"):
+                with self.subTest(sql=sql), self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                    connection.execute(sql)
+
+    def test_approval_age_cannot_be_reset_by_call_time_or_expiry(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        now = datetime.now(timezone.utc)
+        cases = [{"approved_at": (now-timedelta(days=2)).isoformat()},
+                 {"approved_at": (now+timedelta(minutes=1)).isoformat()},
+                 {"approved_at": "2026-01-01T00:00:00"}, {"approved_at": "invalid"},
+                 {"approved_at": (now-timedelta(hours=23)).isoformat(),
+                  "expires_at": (now+timedelta(hours=2)).isoformat()},
+                 {"authorization_ref": "approval\x00suffix"}, {"evidence_ref": "approval\u200b"}]
+        for changed in cases:
+            with self.subTest(changed=changed), self.assertRaises(ValidationError):
+                self.ledger.authorize_retry_limit("project", self.policy, self.authorization(**changed))
+        self.assertEqual(2, self.ledger.retry_limit_history("project")["retry_ceiling"])
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(0, connection.execute("SELECT count(*) FROM model_retry_approval_consumptions").fetchone()[0])
+        grant = self.authorization(approved_at=(now-timedelta(hours=23)).isoformat(),
+                                   expires_at=(now+timedelta(minutes=30)).isoformat())
+        self.assertFalse(self.ledger.authorize_retry_limit("project", self.policy, grant)["approval_time_authenticated_by_helper"])
+
+    def test_expiry_is_rechecked_before_atomic_consumption(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        now = datetime.now(timezone.utc)
+        grant = self.authorization(approved_at=(now-timedelta(minutes=1)).isoformat(),
+                                   expires_at=(now+timedelta(seconds=1)).isoformat())
+        with patch("agentic.model_routing.datetime") as clock:
+            clock.fromisoformat.side_effect = datetime.fromisoformat
+            clock.now.side_effect = [now, now+timedelta(seconds=2)]
+            with self.assertRaisesRegex(ValidationError, "expiry passed"):
+                self.ledger.authorize_retry_limit("project", self.policy, grant)
+        self.assertEqual(2, self.ledger.retry_limit_history("project")["retry_ceiling"])
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(0, connection.execute("SELECT count(*) FROM model_retry_approval_consumptions").fetchone()[0])
+
+    def test_historical_duplicates_migrate_without_rewriting_and_exact_replays_survive(self):
+        path = Path(self.temp.name) / "historic-grants.sqlite"
+        saved = []
+        with closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("CREATE TABLE model_retry_ceilings (project_id TEXT PRIMARY KEY,retry_limit INTEGER NOT NULL)")
+            connection.execute("INSERT INTO model_retry_ceilings VALUES ('historic',4)")
+            connection.execute("CREATE TABLE model_retry_limit_authorizations (operation_id TEXT PRIMARY KEY,project_id TEXT NOT NULL,request_hash TEXT NOT NULL,observation TEXT NOT NULL,result TEXT NOT NULL)")
+            for index in range(2):
+                policy = deepcopy(self.policy)
+                policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3+index
+                grant = {"operation_id": "legacy-"+str(index), "expected_limit": 2+index,
+                         "new_limit": 3+index, "policy_sha256": _fingerprint(policy), "operator_id": "owner-host",
+                         "authorization_ref": "approval-caf\u00e9" if index == 0 else "approval-cafe\u0301",
+                         "evidence_ref": "duplicate-historical-evidence", "reason": "Historical host assertion"}
+                if index:  # Exact v1.8.2 shape, including its now-expired assertion.
+                    grant.update(expected_revision=2, expires_at="2026-01-01T01:00:00+00:00")
+                result = {"status": "retry_limit_authorization_recorded", "previous_limit": 2+index, "new_limit": 3+index}
+                audit = {**grant, "recorded_at": "2026-01-01T00:00:00+00:00"}
+                row = (grant["operation_id"], "historic", _raw_fingerprint({"project_id":"historic", "observation":grant}), json.dumps(audit), json.dumps(result))
+                connection.execute("INSERT INTO model_retry_limit_authorizations VALUES (?,?,?,?,?)", row)
+                saved.append((policy, grant, result, row))
+        ledger = RoutingLedger(path)
+        for policy, grant, result, _ in saved:
+            self.assertEqual(result, ledger.authorize_retry_limit("historic", policy, grant))
+        self.assertEqual(4, ledger.retry_limit_history("historic")["retry_ceiling"])
+        RoutingLedger(path)  # Repeated migration does not rewrite either old row.
+        with closing(sqlite3.connect(path)) as connection:
+            self.assertEqual([item[3] for item in saved], connection.execute("SELECT * FROM model_retry_limit_authorizations ORDER BY rowid").fetchall())
+            self.assertEqual(2, connection.execute("SELECT count(*) FROM model_retry_approval_consumptions").fetchone()[0])
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 9
+        grant = self.authorization(expected=4, new=9, expected_revision=1, operation_id="fresh-legacy-citation",
+                                   authorization_ref="approval-cafe\u0301", evidence_ref="new-evidence")
+        with self.assertRaisesRegex(ValidationError, "already consumed"):
+            ledger.authorize_retry_limit("historic", self.policy, grant)
+        for _, old, _, _ in saved:
+            with self.assertRaisesRegex(ValidationError, "approved_at"):
+                ledger.authorize_retry_limit("historic", saved[0 if "expected_revision" not in old else 1][0], {**old, "operation_id": "new-old-shape"})
+
+    def test_concurrent_cross_project_consumption_has_exactly_one_winner(self):
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        grant = self.authorization()
+        projects = ["project", "second", "third"]
+        for project in projects[1:]:
+            self.ledger.reserve(project, self.policy, request(), capabilities())
+        def attempt(index):
+            try:
+                return RoutingLedger(self.path).authorize_retry_limit(projects[index], self.policy,
+                    {**grant, "operation_id": "cross-"+str(index), "expected_revision":1})["status"]
+            except ValidationError:
+                return "denied"
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            results = list(pool.map(attempt, range(3)))
+        self.assertEqual(1, results.count("retry_limit_authorization_recorded"))
+        self.assertEqual(2, results.count("denied"))
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(1, connection.execute("SELECT count(*) FROM model_retry_limit_authorizations").fetchone()[0])
+            self.assertEqual(2, connection.execute("SELECT count(*) FROM model_retry_approval_consumptions").fetchone()[0])
+
+    def test_reduction_survives_outstanding_quarantine_budget_and_cost_denials(self):
+        for kind in ("outstanding", "quarantine", "budget", "missing-cost"):
+            with self.subTest(kind=kind):
+                ledger = RoutingLedger(Path(self.temp.name) / (kind+".sqlite"))
+                policy = deepcopy(self.policy)
+                first = ledger.reserve("project", policy, request(), capabilities())
+                if kind == "quarantine":
+                    ledger.settle(first["run_id"], outcome(first, actual_tokens=2000))
+                elif kind != "outstanding":
+                    ledger.settle(first["run_id"], outcome(first))
+                policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 1
+                if kind == "budget":
+                    policy["budgets"]["max_runs_per_ticket"] = 1
+                if kind == "missing-cost":
+                    policy["budgets"]["max_cost_microusd_per_ticket"] = 100
+                with self.assertRaises(ValidationError) as denied:
+                    ledger.reserve("project", policy, request(), capabilities())
+                event = RoutingLedger(ledger.path).retry_limit_history("project")["events"][-1]
+                self.assertEqual(("configuration_reduction",1), (event["kind"],event["new_limit"]))
+                self.assertEqual(denied.exception.admission_attempt["attempted_run_id"], event["attempted_run_id"])
+                self.assertFalse(denied.exception.admission_attempt["admitted"])
+                self.assertIsNone(denied.exception.admission_attempt["operating_hash"])
+                self.assertEqual(_raw_fingerprint({"project_id":"project", "policy_sha256":_fingerprint(policy),
+                                                   "request":request(), "capabilities":capabilities(),
+                                                   "operating_hash":None}), event["request_sha256"])
+                with closing(sqlite3.connect(ledger.path)) as connection:
+                    self.assertEqual(1, connection.execute("SELECT count(*) FROM model_runs").fetchone()[0])
+                    self.assertIsNone(connection.execute("SELECT run_id FROM model_runs WHERE run_id=?", (event["attempted_run_id"],)).fetchone())
+
+    def test_successful_reduction_event_uses_actual_reserved_run_id(self):
+        first = self.reserve()
+        self.ledger.settle(first["run_id"], outcome(first))
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 1
+        admitted = self.reserve(ticket_id="new-ticket")
+        event = self.ledger.retry_limit_history("project")["events"][-1]
+        self.assertTrue(admitted["admitted"])
+        self.assertEqual(admitted["run_id"], event["attempted_run_id"])
+        self.assertEqual(admitted["request_sha256"], event["request_sha256"])
+
+    def test_admission_savepoint_removes_partial_run_but_commits_reduction(self):
+        first = self.reserve()
+        self.ledger.settle(first["run_id"], outcome(first))
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 1
+        real_admit = self.ledger._admit
+        def partial_failure(*args, **kwargs):
+            admitted = real_admit(*args, **kwargs)
+            self.assertEqual("reserved", admitted["status"])
+            self.assertIsNotNone(args[0].execute("SELECT run_id FROM model_runs WHERE run_id=?", (admitted["run_id"],)).fetchone())
+            raise ValidationError("Synthetic failure after reservation insertion")
+        with patch.object(self.ledger, "_admit", side_effect=partial_failure), self.assertRaisesRegex(ValidationError, "Synthetic"):
+            self.reserve(ticket_id="partial")
+        self.assertEqual(1, self.ledger.retry_limit_history("project")["retry_ceiling"])
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual([first["run_id"]], [row[0] for row in connection.execute("SELECT run_id FROM model_runs")])
+
+    def test_reduction_commits_when_host_route_is_unavailable_without_fake_run(self):
+        first = self.reserve()
+        self.ledger.settle(first["run_id"], outcome(first))
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 1
+        result = self.ledger.reserve("project", self.policy, request(), {"models": {}})
+        event = self.ledger.retry_limit_history("project")["events"][-1]
+        self.assertEqual("unavailable", result["status"])
+        self.assertFalse(result["admitted"])
+        self.assertNotIn("run_id", result)
+        self.assertEqual(result["attempted_run_id"], event["attempted_run_id"])
+
+    def test_commit_failure_is_not_reported_as_a_durable_observation(self):
+        first = self.reserve()
+        self.ledger.settle(first["run_id"], outcome(first))
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 1
+        connection = self.ledger._connect()
+        from unittest.mock import Mock
+        wrapped = Mock(wraps=connection)
+        wrapped.commit.side_effect = sqlite3.OperationalError("synthetic commit failure")
+        with patch.object(self.ledger, "_connect", return_value=wrapped), self.assertRaisesRegex(sqlite3.OperationalError, "commit failure") as failure:
+            self.reserve()
+        self.assertFalse(hasattr(failure.exception, "admission_attempt"))
+        self.assertEqual(2, self.ledger.retry_limit_history("project")["retry_ceiling"])
+
+    def test_reduction_and_denial_remain_locked_against_interleaved_stale_approval(self):
+        self.reserve()  # A later request for the same phase will be denied.
+        proposed = deepcopy(self.policy)
+        proposed["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 3
+        approved = self.authorization(policy_sha256=_fingerprint(proposed))
+        self.policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"] = 1
+        observing, raising, release = threading.Event(), threading.Event(), threading.Event()
+        real_admit = self.ledger._admit
+        def held_admit(*args, **kwargs):
+            observing.set()
+            if not release.wait(5):
+                raise RuntimeError("Test coordinator failed to release admission")
+            return real_admit(*args, **kwargs)
+        def lower():
+            try:
+                self.reserve()
+            except ValidationError as error:
+                return str(error)
+        def raise_limit():
+            raising.set()
+            try:
+                RoutingLedger(self.path).authorize_retry_limit("project", proposed, approved)
+            except ValidationError as error:
+                return str(error)
+        with patch.object(self.ledger, "_admit", side_effect=held_admit), ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(lower)
+            self.assertTrue(observing.wait(5))
+            second = pool.submit(raise_limit)
+            self.assertTrue(raising.wait(5))
+            self.assertFalse(second.done())
+            release.set()
+            self.assertIn("outstanding", first.result(timeout=5))
+            self.assertIn("changed", second.result(timeout=5))
+        self.assertEqual(1, self.ledger.retry_limit_history("project")["retry_ceiling"])
+        self.assertEqual([], self.ledger.retry_limit_history("project")["authorizations"])
+
+
+if __name__ == "__main__":
+    unittest.main()

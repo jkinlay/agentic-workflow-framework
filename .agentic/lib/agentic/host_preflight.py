@@ -4,13 +4,20 @@ Each row is PASS, WARN, SKIP or N_A with a remedy line. Rows are observations
 of this host; they grant nothing and are recorded in the adoption PR.
 """
 from __future__ import annotations
+import configparser
+from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
+
+from .child_process import child_env
 
 PATH_WARN_LENGTH = 180
 MANAGED_PATHS = ("/.agentic/**", "/AGENTS.md", "/.github/PULL_REQUEST_TEMPLATE.md")
+ROUTE_OBSERVATION_DEFAULT_DAYS = 30
 
 
 def row(check, status, detail, remedy=""):
@@ -26,7 +33,7 @@ def run(args, cwd=None):
         env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
         env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
         result = subprocess.run([executable, *args[1:]], capture_output=True, text=True, timeout=30, cwd=cwd,
-                                env=env, stdin=subprocess.DEVNULL)
+                                env=child_env(env), stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError, ValidationError) as exc:
         return None, f"{type(exc).__name__}: {exc}"
     return result.returncode, (result.stdout or result.stderr).strip()
@@ -64,6 +71,158 @@ def symlink_privilege():
         return "WARN", f"symlink probe failed: {type(exc).__name__}", "Inspect filesystem permissions."
 
 
+def _excludes_agentic(value):
+    if isinstance(value, str):
+        values = [item.strip() for item in value.replace("\n", ",").split(",")]
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        values = value
+    else:
+        return False
+    for item in values:
+        normalized = item.strip().replace("\\", "/").removeprefix("./").rstrip("/")
+        if normalized == ".agentic" or normalized.startswith(".agentic/"):
+            return True
+    return False
+
+
+def project_lint_scope(root):
+    """Report whether project-owned lint configuration excludes managed files."""
+    root = Path(root)
+    configured = []
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            tool = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("tool", {})
+            ruff = tool.get("ruff") if isinstance(tool, dict) else None
+            if isinstance(ruff, dict):
+                excluded = _excludes_agentic(ruff.get("exclude")) or _excludes_agentic(ruff.get("extend-exclude"))
+                configured.append(("ruff", excluded, None))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            if "[tool.ruff" in pyproject.read_text(encoding="utf-8", errors="replace"):
+                configured.append(("ruff", False, f"unreadable configuration ({type(exc).__name__})"))
+    for name in ("setup.cfg", ".flake8"):
+        path = root / name
+        if not path.is_file():
+            continue
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read(path, encoding="utf-8")
+            section = next((item for item in parser.sections() if item.lower() == "flake8"), None)
+            if section:
+                excluded = _excludes_agentic(parser.get(section, "exclude", fallback=None)) or _excludes_agentic(parser.get(section, "extend-exclude", fallback=None))
+                configured.append((f"flake8 ({name})", excluded, None))
+        except (OSError, UnicodeError, configparser.Error) as exc:
+            if "[flake8" in path.read_text(encoding="utf-8", errors="replace").lower():
+                configured.append((f"flake8 ({name})", False, f"unreadable configuration ({type(exc).__name__})"))
+    if not configured:
+        return row("project_lint_scope", "N_A", "no root Ruff or flake8 configuration found", "")
+    missing = [name for name, excluded, _ in configured if not excluded]
+    detail = "; ".join(f"{name}: {error or ('excludes .agentic' if excluded else 'does not exclude .agentic')}"
+                       for name, excluded, error in configured)
+    if missing:
+        remedy = ('Add `extend-exclude = [".agentic"]` under `[tool.ruff]` for Ruff, '
+                  'or `extend-exclude = .agentic` under `[flake8]` for flake8.')
+        return row("project_lint_scope", "WARN", detail, remedy)
+    return row("project_lint_scope", "PASS", detail, "")
+
+
+def _configured_routes(value):
+    routes = set()
+    def visit(item):
+        if isinstance(item, dict):
+            if isinstance(item.get("model"), str) and isinstance(item.get("reasoning_effort"), str):
+                routes.add((item["model"], item["reasoning_effort"]))
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+    visit(value)
+    return routes
+
+
+def _load_json_or_yaml(path):
+    from .canonical import load_yaml, loads
+    raw = path.read_bytes()
+    return loads(raw.decode("utf-8-sig")) if raw.lstrip().startswith((b"{", b"[")) else load_yaml(raw)
+
+
+def route_models_observed(root, *, config=None, capabilities=None, now=None):
+    """Return the warning-only route observation row for configured routes."""
+    from . import ValidationError
+    from .canonical import timestamp
+    root = Path(root).resolve()
+    try:
+        if config is None:
+            config_path = root / ".agentic/PROJECT_CONFIG.yaml"
+            if not config_path.is_file():
+                return row("route_models_observed", "N_A", "no project routing configuration found", "")
+            config = _load_json_or_yaml(config_path)
+        execution = config.get("execution", {})
+        routes = _configured_routes({"roles": execution.get("roles", {}),
+                                     "model_routing": execution.get("model_routing", {})})
+        operating = root / "OPERATING_CONFIG.yaml"
+        if operating.is_file():
+            routes |= _configured_routes(_load_json_or_yaml(operating))
+        settings = execution.get("route_capabilities", {})
+        max_age_days = settings.get("max_age_days", ROUTE_OBSERVATION_DEFAULT_DAYS)
+        if type(max_age_days) is not int or max_age_days < 1:
+            raise ValidationError("execution.route_capabilities.max_age_days must be an integer >= 1")
+        if capabilities is None:
+            relative = settings.get("observation_path", ".agentic/route-capabilities.json")
+            if not isinstance(relative, str) or not relative:
+                raise ValidationError("route capability observation_path must be a nonempty relative path")
+            path = (root / relative).resolve()
+            if not path.is_relative_to(root):
+                raise ValidationError("route capability observation_path escapes the project root")
+            if not path.is_file():
+                names = ", ".join(sorted(model + "/" + effort for model, effort in routes)) or "none"
+                return row("route_models_observed", "WARN", "observation record missing; configured routes: " + names,
+                           "Record successful probes/refusals with host provenance at " + relative + ".")
+            capabilities = _load_json_or_yaml(path)
+        if not isinstance(capabilities, dict) or not isinstance(capabilities.get("models"), dict):
+            raise ValidationError("route capability record requires a models object")
+        observed, refused, stale, unproven = set(), set(), set(), set()
+        reference_now = timestamp(now) if now else datetime.now(timezone.utc)
+        for model, value in capabilities["models"].items():
+            provenance = value if isinstance(value, dict) else capabilities
+            efforts = value.get("reasoning_efforts", []) if isinstance(value, dict) else value
+            status = value.get("status", "observed") if isinstance(value, dict) else "observed"
+            required = ("host_id", "host_software", "host_software_version", "method", "observed_at")
+            if not all(isinstance(provenance.get(field), str) and provenance[field].strip() for field in required):
+                unproven.add(model)
+                continue
+            if provenance["method"] not in {"successful_probe", "recorded_refusal"}:
+                unproven.add(model)
+                continue
+            observed_at = timestamp(provenance["observed_at"])
+            if (reference_now - observed_at).total_seconds() > max_age_days * 86400 or observed_at > reference_now:
+                stale.add(model)
+            if status == "refused" or provenance["method"] == "recorded_refusal":
+                refused.add(model)
+            elif status == "observed" and isinstance(efforts, list) and all(isinstance(e, str) for e in efforts):
+                observed.update((model, effort) for effort in efforts)
+            else:
+                unproven.add(model)
+        missing = sorted(route for route in routes if route not in observed and route[0] not in refused)
+        refused_routes = sorted(route for route in routes if route[0] in refused)
+        stale_routes = sorted(route for route in routes if route[0] in stale)
+        unproven_routes = sorted(route for route in routes if route[0] in unproven)
+        problems = []
+        for label, values in (("missing", missing), ("refused", refused_routes),
+                              ("stale", stale_routes), ("unproven", unproven_routes)):
+            if values:
+                problems.append(label + ": " + ", ".join(model + "/" + effort for model, effort in values))
+        if problems:
+            return row("route_models_observed", "WARN", "; ".join(problems),
+                       "Probe configured routes on the actual host and refresh the provenance record; listed capabilities are claims until observed.")
+        detail = f"{len(routes)} configured model/effort route(s) freshly observed (max age {max_age_days} days)"
+        return row("route_models_observed", "PASS", detail, "")
+    except (OSError, UnicodeError, ValueError, KeyError, ValidationError, json.JSONDecodeError) as exc:
+        return row("route_models_observed", "WARN", "observation record invalid: " + str(exc),
+                   "Replace it with a current host-provenance record; this warning never blocks installation.")
+
+
 def preflight(root, *, platform=None):
     root = Path(root)
     windows = (platform or os.name) == "nt"
@@ -71,6 +230,8 @@ def preflight(root, *, platform=None):
     depth = len(str(root.resolve()))
     rows.append(row("checkout_path_length", "WARN" if depth > PATH_WARN_LENGTH else "PASS",
                     f"{depth} characters", "Relocate the checkout below a shorter path; nested evidence copies exceeded 260 characters on PR #11." if depth > PATH_WARN_LENGTH else ""))
+    rows.append(project_lint_scope(root))
+    rows.append(route_models_observed(root))
     if windows:
         longpaths = git_config(root, "core.longpaths")
         rows.append(row("core.longpaths", "PASS" if longpaths == "true" else "WARN", f"core.longpaths={longpaths or 'unset'}",

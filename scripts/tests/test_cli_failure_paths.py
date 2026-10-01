@@ -216,6 +216,24 @@ class CliFailurePathTests(unittest.TestCase):
         self.assertEqual(before, snapshot(self.root))
         self.assertFalse(resolved[1].exists())
 
+    def test_archive_rejects_linked_tmp_tests_before_outputs(self):
+        source = self.root / 'source-root'
+        outside = self.root / 'outside-scratch'
+        source.mkdir()
+        outside.mkdir()
+        scratch = source / '.tmp-tests'
+        try:
+            scratch.symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('PLATFORM_PRIVILEGE: Windows symlink creation privilege unavailable (WinError 1314)')
+            raise
+        archive, pin = self.archive()
+        before = snapshot(self.root)
+        with mock.patch.object(validate_archive, 'ROOT', source), self.assertRaisesRegex(ValueError, 'reparse-point'):
+            preflight(archive, pin, scratch / 'work', scratch / 'report.json')
+        self.assertEqual(before, snapshot(self.root))
+
     def test_archive_invalid_self_test_deadline_rejects_before_any_outputs(self):
         archive, pin = self.archive()
         before = snapshot(self.root)
@@ -342,6 +360,24 @@ class CliFailurePathTests(unittest.TestCase):
         self.assertFalse(data['network_used'])
         self.assertFalse(work.exists())
         self.assertEqual(before, snapshot(source))
+
+    def test_release_builder_rejects_ignored_local_residue_before_rewriting_manifest(self):
+        source = self.root / 'source'
+        shutil.copytree(ROOT, source,
+                        ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc', '.tmp', 'tmp', '.tmp-tests'))
+        residue = source / '.tmp' / 'legacy-provider.patch'
+        residue.parent.mkdir()
+        residue.write_text('historical provider adapter material\n', encoding='utf-8')
+        manifests = {name: (source / name).read_bytes() for name in ('MANIFEST.json', 'MANIFEST.md')}
+        archive = self.root / 'candidate.zip'
+        done = subprocess.run([sys.executable, '-B', str(source / 'scripts/build_release.py'), '--output', str(archive)],
+                              cwd=source, env=self.env, capture_output=True, timeout=30)
+        output = (done.stdout + done.stderr).decode('utf-8', errors='replace')
+        self.assertNotEqual(0, done.returncode, output)
+        self.assertIn('runtime/build residue', output)
+        self.assertFalse(archive.exists())
+        self.assertEqual(manifests['MANIFEST.json'], (source / 'MANIFEST.json').read_bytes())
+        self.assertEqual(manifests['MANIFEST.md'], (source / 'MANIFEST.md').read_bytes())
 
 
 if __name__ == '__main__':

@@ -64,8 +64,37 @@ def _stream():
 
 def default_operating():
     return {"version": 1, "source": "default", "streams": {"count": 3, **{s: _stream() for s in LABELS[:3]}},
-            "controller": _pair("gpt-5.6-sol", "medium"), "specialist": _pair("gpt-6-astra", "high"),
+            "controller": _pair("gpt-5.6-sol", "medium"), "specialist": _pair("gpt-5.6-sol", "high"),
             "simple_worker": {"enabled": True, **_pair("gpt-5.6-luna", "low")}}
+
+
+def operating_applicability(governance):
+    """Report whether project governance supplies the policy operating choices bind to."""
+    execution = governance.get("execution") if isinstance(governance, dict) else None
+    if not isinstance(execution, dict) or "model_routing" not in execution:
+        return {"status": "NOT_APPLICABLE",
+                "reason": "Project configuration does not define a governing execution.model_routing policy; operating initialization is not applicable",
+                "governance_path": "$.execution.model_routing"}
+    return {"status": "APPLICABLE",
+            "reason": "Project configuration defines execution.model_routing; operating initialization and semantic validation apply",
+            "governance_path": "$.execution.model_routing"}
+
+
+def _upgrade_safe_operating(governance):
+    """Derive initial choices from retained governance; never broaden an older role allowlist."""
+    execution = governance.get("execution", {}) if isinstance(governance, dict) else {}
+    policy = execution.get("model_routing", {}) if isinstance(execution, dict) else {}
+    defaults = policy.get("role_defaults", {}) if isinstance(policy, dict) else {}
+    simple = policy.get("simple_worker") if isinstance(policy, dict) else None
+    if not all(isinstance(defaults.get(role), dict)
+               for role in ("controller", "worker", "critic", "specialist")) or not isinstance(simple, dict):
+        return default_operating()
+    stream = {"worker": dict(defaults["worker"]), "reviewer": dict(defaults["critic"])}
+    return {"version": 1, "source": "default",
+            "streams": {"count": 3, **{label: deepcopy(stream) for label in LABELS[:3]}},
+            "controller": dict(defaults["controller"]),
+            "specialist": dict(defaults["specialist"]),
+            "simple_worker": {"enabled": True, **dict(simple)}}
 
 
 def operating_ceiling(governance):
@@ -433,6 +462,54 @@ def _commit(tree, governance, before, value, instruction, changed, applied_from,
     return _snapshot(tree, governance)
 
 
+def plan_initialize_operating(project_root, governance, *, change_id=None, created_at=None):
+    """Validate operating semantics and return the exact bootstrap writes without mutating the tree."""
+    with Tree(project_root) as tree:
+        if _read(tree, JOURNAL) is not None:
+            fail("$", "Pending operating transaction: inspect and recover before upgrade")
+        before = _read(tree, CONFIG)
+        events = _events(tree)
+        if before is None:
+            value = _upgrade_safe_operating(governance)
+        else:
+            snapshot = validate_operating(load_yaml(before), governance)
+            if events and events[-1]["after_hash"] != snapshot.operating_hash:
+                fail("$", "Operating file differs from the last audited change; reconcile the external edit before upgrade")
+            if events:
+                files = {} if tree.inspect(LOCK) is not None else {LOCK: b"0" if os.name == "nt" else b""}
+                return {"files": files,
+                        "actions": [{"path": path, "action": "create"} for path in sorted(files)], "inspection": {
+                    "status": "ACCEPTED", "hash": snapshot.operating_hash,
+                    "source": snapshot.source, "streams": snapshot.count,
+                    "last_change_id": events[-1]["id"], "refusals": [],
+                    **operating_ceiling(governance)}}
+            value = snapshot.config
+        after = validate_operating(value, governance)
+        raw = before if before is not None and canonical(load_yaml(before)) == canonical(value) else _json(value)
+        identifier = change_id or ("C-" + uuid.uuid4().hex)
+        event = {"id": identifier, "created_at": created_at or now_text(), "instruction": None,
+                 "before_hash": fingerprint("operating", load_yaml(before)) if before is not None else None,
+                 "after_hash": after.operating_hash, "changes": [], "source": value["source"],
+                 "applied_from": "bootstrap", "sequence": 1, "previous_change_id": None,
+                 "governance_hash": after.governance_hash}
+        errors = _schema("operating-change", event)
+        if errors:
+            raise OperatingError(errors)
+        event_path = STATE + "/changes/" + identifier + ".json"
+        if tree.inspect(event_path) is not None:
+            fail("$", "Planned operating audit identity already exists")
+        files = {event_path: _json(event)}
+        if before is None:
+            files[CONFIG] = raw
+        if tree.inspect(LOCK) is None:
+            files[LOCK] = b"0" if os.name == "nt" else b""
+        actions = [{"path": path, "action": "create"} for path in sorted(files)]
+        return {"files": files, "actions": actions, "inspection": {
+            "status": "ACCEPTED", "hash": after.operating_hash, "source": after.source,
+            "streams": after.count, "last_change_id": identifier, "refusals": [],
+            **operating_ceiling(governance)}}
+
+
 def initialize_operating(project_root, governance):
     """Preserve valid project choices; honestly audit bootstrap initialization."""
     with Tree(project_root) as tree, _lock(tree):
@@ -779,7 +856,7 @@ def recommend_operating(epics_raw, snapshot, governance, *, inventory_raw=None, 
                 reviewer = _governing_route("reviewer", policy)
                 if high:
                     from .model_routing import EFFORTS
-                    reviewer["model"] = max((reviewer["model"], "gpt-6-astra"), key=policy["model_order"].index)
+                    reviewer["model"] = max((reviewer["model"], policy["risk_route"]["model"]), key=policy["model_order"].index)
                     reviewer["reasoning_effort"] = max((reviewer["reasoning_effort"], "high"), key=EFFORTS.index)
                 why = ("High-risk flags " + ", ".join(high) if high else "Specialist triggers " + ", ".join(specialists)
                        if specialists else "Entire scope is simple with strong verification; retain the default worker ceiling"

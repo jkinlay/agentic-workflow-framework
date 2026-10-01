@@ -14,7 +14,8 @@ import uuid
 from urllib.parse import quote
 
 from .. import ValidationError, VERSION
-from ..canonical import load_yaml, loads, now_text, sha256
+from ..canonical import canonical, load_yaml, loads, now_text, sha256, timestamp
+from ..child_process import child_env
 from ..configuration import inspect_config
 from ..contracts import Contracts
 from ..installer import CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed, verify_installed
@@ -26,6 +27,22 @@ MAX_BYTES = 1024 * 1024
 MAX_TOTAL = 8 * MAX_BYTES
 MAX_SECONDS = 60
 SHA = re.compile(r'[0-9a-f]{40}')
+MERGE_IDENTITY_QUERY = '''query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    id
+    nameWithOwner
+    defaultBranchRef{name target{... on Commit{oid}}}
+    pullRequest(number:$number){
+      id
+      number
+      baseRefName
+      state
+      merged
+      mergedAt
+      mergeCommit{oid repository{id nameWithOwner}}
+    }
+  }
+}'''
 
 
 def require(condition, message):
@@ -40,6 +57,45 @@ def blob_sha(raw):
 def object_value(value):
     require(isinstance(value, dict), 'Malformed acceptance observation: expected an object')
     return value
+
+
+def _gh_graphql(repository, number, deadline, *, gh='gh'):
+    """Run the fixed, bounded read-only merge-identity query."""
+    remaining = deadline - time.monotonic()
+    require(remaining > 0, 'Acceptance observation deadline exhausted')
+    owner, name = repository_name(repository).split('/', 1)
+    require(type(number) is int and number > 0, 'Use a positive adoption PR number')
+    request = canonical({'query': MERGE_IDENTITY_QUERY,
+                         'variables': {'owner': owner, 'name': name, 'number': number}})
+    require(len(request) <= MAX_BYTES, 'GraphQL acceptance request exceeds byte limit')
+    command = [str(gh), 'api', '--hostname', 'github.com', '--method', 'POST', 'graphql', '--input', '-']
+    env = dict(os.environ, GH_PROMPT_DISABLED='1', GH_PAGER='cat')
+    with tempfile.TemporaryFile() as incoming, tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        incoming.write(request)
+        incoming.seek(0)
+        process = subprocess.Popen(command, stdin=incoming, stdout=out, stderr=err,
+                                   env=child_env(env))
+        try:
+            while process.poll() is None:
+                require(time.monotonic() < deadline, 'Acceptance observation deadline exhausted')
+                require(os.fstat(out.fileno()).st_size <= MAX_BYTES and os.fstat(err.fileno()).st_size <= MAX_BYTES,
+                        'GraphQL acceptance response exceeds byte limit')
+                try:
+                    process.wait(timeout=min(0.05, max(0.001, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    pass
+            require(time.monotonic() <= deadline and process.returncode == 0,
+                    'GraphQL acceptance query did not complete successfully')
+            require(os.fstat(err.fileno()).st_size <= MAX_BYTES,
+                    'GraphQL acceptance stderr exceeds byte limit')
+            out.seek(0)
+            raw = out.read(MAX_BYTES + 1)
+            require(len(raw) <= MAX_BYTES, 'GraphQL acceptance response exceeds byte limit')
+            return loads(raw.decode('utf-8')), len(raw)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
 
 
 def host_executable(name, root):
@@ -65,10 +121,19 @@ class Observation:
         require(len(raw) <= MAX_BYTES and self.total <= MAX_TOTAL, 'Acceptance observation exceeds its byte limit')
         return raw
 
-    def get(self, endpoint):
+    def get(self, endpoint, *, pr_file_metadata=False):
         self.requests += 1
         require(self.requests <= 20 and time.monotonic() < self.deadline, 'Acceptance observation exceeds its request/time limit')
-        value, count = _gh_get(endpoint, self.deadline, gh=self.gh)
+        value, count = _gh_get(endpoint, self.deadline, gh=self.gh, pr_file_metadata=pr_file_metadata)
+        self.total += count
+        require(self.total <= MAX_TOTAL, 'Acceptance observation exceeds aggregate byte limit')
+        return value
+
+    def graphql(self, repository, number):
+        self.requests += 1
+        require(self.requests <= 20 and time.monotonic() < self.deadline,
+                'Acceptance observation exceeds its request/time limit')
+        value, count = _gh_graphql(repository, number, self.deadline, gh=self.gh)
         self.total += count
         require(self.total <= MAX_TOTAL, 'Acceptance observation exceeds aggregate byte limit')
         return value
@@ -81,7 +146,8 @@ class Observation:
         command = [self.git_exe, '--no-replace-objects', '-c', 'core.fsmonitor=false',
                    '-c', 'core.hooksPath=' + os.devnull, '-C', str(self.root), *arguments]
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env)
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                       env=child_env(env))
             try:
                 while process.poll() is None:
                     require(time.monotonic() < self.deadline, 'Git acceptance observation timed out')
@@ -166,7 +232,8 @@ def receipt_changed(observation, repository, number, raw):
     seen = set()
     receipt = None
     for page in range(1, 6):
-        entries = observation.get(f'repos/{repository}/pulls/{number}/files?per_page=100&page={page}')
+        entries = observation.get(f'repos/{repository}/pulls/{number}/files?per_page=100&page={page}',
+                                  pr_file_metadata=True)
         require(isinstance(entries, list) and len(entries) <= 100, 'Malformed adoption PR file inventory')
         for entry in entries:
             entry = object_value(entry)
@@ -182,6 +249,45 @@ def receipt_changed(observation, repository, number, raw):
         raise ValidationError('Adoption PR file inventory exceeds the complete observation limit')
     require(receipt and receipt.get('status') in ('added', 'modified') and receipt.get('sha') == blob_sha(raw),
             'Selected adoption PR did not add or modify this exact installation receipt')
+
+
+def merge_identity(value, repository, repository_node_id, default, head, number, rest_pr):
+    """Cross-bind GraphQL's integration commit to the REST observation."""
+    require(isinstance(value, dict) and set(value) == {'data'},
+            'GraphQL merge-identity observation is incomplete')
+    graph_repository = object_value(object_value(value['data']).get('repository'))
+    graph_id = graph_repository.get('id')
+    require(isinstance(repository_node_id, str) and repository_node_id
+            and isinstance(graph_id, str) and graph_id == repository_node_id
+            and isinstance(graph_repository.get('nameWithOwner'), str)
+            and graph_repository['nameWithOwner'].casefold() == repository.casefold(),
+            'GraphQL repository identity differs from the REST observation')
+    graph_default = object_value(graph_repository.get('defaultBranchRef'))
+    graph_target = object_value(graph_default.get('target'))
+    require(graph_default.get('name') == default and graph_target.get('oid') == head,
+            'GraphQL default branch differs from the REST observation')
+    graph_pr = object_value(graph_repository.get('pullRequest'))
+    require(isinstance(rest_pr.get('node_id'), str) and rest_pr['node_id']
+            and graph_pr.get('id') == rest_pr['node_id']
+            and type(graph_pr.get('number')) is int and graph_pr['number'] == number
+            and graph_pr.get('baseRefName') == default
+            and graph_pr.get('state') == 'MERGED' and graph_pr.get('merged') is True
+            and isinstance(graph_pr.get('mergedAt'), str) and graph_pr['mergedAt'],
+            'GraphQL adoption PR identity or merged state differs from REST')
+    timestamp(graph_pr['mergedAt'])
+    graph_merge = object_value(graph_pr.get('mergeCommit'))
+    merge = graph_merge.get('oid')
+    merge_repository = object_value(graph_merge.get('repository'))
+    require(isinstance(merge, str) and SHA.fullmatch(merge)
+            and merge_repository.get('id') == graph_id
+            and isinstance(merge_repository.get('nameWithOwner'), str)
+            and merge_repository['nameWithOwner'].casefold() == repository.casefold(),
+            'GraphQL adoption merge identity is missing or malformed')
+    legacy = rest_pr.get('merge_commit_sha')
+    if legacy is not None:
+        require(isinstance(legacy, str) and SHA.fullmatch(legacy) and legacy == merge,
+                'REST and GraphQL adoption merge identities differ')
+    return merge
 
 
 def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expected_manifest_sha256=None):
@@ -270,8 +376,9 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
             return result
         require(local_branch == default and local_head == head, 'Check out the observed default branch ' + default + ' at ' + head)
         receipt_changed(observation, repository, adoption_pr, files[INSTALLED])
-        merge = pr.get('merge_commit_sha', '')
-        require(SHA.fullmatch(merge), 'Merged adoption PR has no accepted commit identity')
+        merge = merge_identity(observation.graphql(repository, adoption_pr), repository,
+                               meta.get('node_id'), default, head, adoption_pr, pr)
+        observation.git('merge-base', '--is-ancestor', receipt_commit, merge)
         observation.git('merge-base', '--is-ancestor', merge, head)
         accepted_receipt = object_value(observation.get(f'repos/{repository}/contents/{INSTALLED}?ref={merge}'))
         require(accepted_receipt.get('type') == 'file' and accepted_receipt.get('path') == INSTALLED
@@ -297,7 +404,10 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
         require(inspect_operating(root, config) == result['operating'],
                 'Operating configuration changed during observation; run status again for its current snapshot')
         result.update(project_state='ACTIVE', line=f'AWF {VERSION}: ACTIVE' + stream_suffix, accepted_checkout='VERIFIED',
-                      accepted_head_sha=head, adoption_merge_sha=merge, observed_at=now_text(),
+                      accepted_head_sha=head, adoption_acceptance_sha=merge,
+                      adoption_acceptance_basis='github_graphql_merge_commit', adoption_merge_sha=merge,
+                      adoption_receipt_commit_sha=receipt_commit, merge_identity_source='github_graphql',
+                      observed_at=now_text(),
                       next_action=None, decision_codes=['report_active'])
     except (ValidationError, OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError, subprocess.SubprocessError) as exc:
         remedy = (str(exc) if isinstance(exc, ValidationError) else

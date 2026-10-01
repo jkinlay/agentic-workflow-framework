@@ -1,0 +1,28 @@
+{
+  "template_for": "recovery",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "record_id": "00000000-0000-0000-0000-000000000000",
+    "created_at": "1970-01-01T00:00:00Z",
+    "producer_id": "UNFILLED",
+    "run_id": "00000000-0000-0000-0000-000000000000",
+    "binding": {
+      "project_id": "00000000-0000-0000-0000-000000000000",
+      "repository_id": 1,
+      "issue_id": "UNFILLED",
+      "requirements_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "candidate_id": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "previous_state": "BACKLOG",
+    "resume_state": "BACKLOG",
+    "blocker_id": "00000000-0000-0000-0000-000000000000",
+    "reconciliation_id": "00000000-0000-0000-0000-000000000000",
+    "evidence": [
+      "urn:awf:UNFILLED"
+    ]
+  }
+}

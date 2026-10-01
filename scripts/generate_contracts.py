@@ -50,6 +50,7 @@ def when(field, value, condition):
 
 
 SHA = text(pattern="^[0-9a-f]{40}$")
+OBJECT_ID = text(pattern="^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 DIGEST = text(pattern="^[0-9a-f]{64}$")
 UUID = text(format="uuid")
 TIME = text(format="date-time")
@@ -97,7 +98,8 @@ NO_BLOCKERS = {"not": {"contains": {"type": "object", "required": ["severity", "
 AC_RESULT = obj({"id": text(), "verdict": enum("PASS", "FAIL", "UNKNOWN"), "evidence": EVIDENCE})
 GATE_NAMES = ["acceptance_criteria", "scope", "critic_current_tuple", "specialist_reviews",
               "required_ci", "ci_candidate_binding", "blocking_threads_zero", "dependencies",
-              "merge_compatibility", "ticket_snapshot_current", "review_coverage", "provenance", "local_ci_parity"]
+              "merge_compatibility", "ticket_snapshot_current", "review_coverage", "provenance", "local_ci_parity",
+              "publication_safety"]
 
 
 def catalog():
@@ -151,15 +153,21 @@ def catalog():
         "capabilities": STRINGS, "status": enum("COMPLETE", "FAILED", "CANCELLED"),
         "attestation_evidence": EVIDENCE,
         "resources_held": arr(obj({"name": text(pattern="^[a-z][a-z0-9_]*$"), "slots": integer(1), "from": TIME, "until": TIME}))})
-    schemas["worker-result"] = bound({"status": enum("COMPLETE", "BLOCKED", "FAILED"), "dispatch_id": UUID,
-        "files_changed": STRINGS, "acceptance_criteria": arr(AC_RESULT, 1),
+    change = obj({"path": text(), "action": enum("added", "modified", "deleted")})
+    schemas["worker-result"] = bound({"status": enum("COMPLETE", "BLOCKED", "FAILED"), "commit_route": enum("WORKER", "PUBLISHER"), "dispatch_id": UUID,
+        "files_changed": STRINGS, "tested_tree": OBJECT_ID, "changes": arr(change, 1, uniqueItems=True),
+        "ignored_untracked": STRINGS, "acceptance_criteria": arr(AC_RESULT, 1),
         "validation": arr(obj({"command": text(), "started_at": TIME, "finished_at": TIME, "exit_code": integer(-2147483648),
             "tested_tree_sha": SHA, "clean_checkout": BOOL, "evidence": EVIDENCE,
             "tests_discovered": integer(), "tests_executed": integer(),
             "declared_skips": arr(obj({"id": text(), "reason_code": enum(*SKIP_REASONS)})),
             "unevaluable_files": STRINGS}), 1),
-        "self_review_complete": BOOL, "findings_addressed": STRINGS, "blockers": STRINGS, "closure": CLOSURE})
+        "self_review_complete": BOOL, "findings_addressed": STRINGS, "blockers": STRINGS, "closure": CLOSURE},
+        allOf=[when("commit_route", "PUBLISHER", {"required": ["tested_tree", "changes"]})])
     schemas["amendment-result"] = copy.deepcopy(schemas["worker-result"])
+    for name in ("worker-result", "amendment-result"):
+        for field in ("commit_route", "tested_tree", "changes", "ignored_untracked"):
+            schemas[name]["required"].remove(field)
     review = {"verdict": enum("APPROVE", "REQUEST_CHANGES", "INCOMPLETE"), "acceptance_criteria": arr(AC_RESULT, 1),
               "findings": arr(FINDING), "prior_finding_ids": STRINGS, "closure": CLOSURE,
               "coverage": obj({"complete": BOOL, "file_manifest_sha256": DIGEST, "reviewed_paths": STRINGS, "omissions": STRINGS}),
@@ -181,10 +189,24 @@ def catalog():
         "collector_attestation_id": UUID})
     schemas["pr-snapshot"] = bound({"state": enum("OPEN", "CLOSED", "MERGED"), "draft": BOOL, "mergeable": BOOL,
         "retrieval_complete": BOOL, "file_manifest": arr(obj({"path": text(), "blob_sha": SHA}), 1),
+        "body_sha256": DIGEST,
         "blocking_threads": arr(obj({"id": text(), "status": enum("OPEN", "RESOLVED"), "evidence": EVIDENCE})),
         "scope_pass": BOOL, "dependency_compatibility_pass": BOOL, "ruleset_verified": BOOL,
         "specialist_domains": STRINGS, "classification_complete": BOOL, "collector_attestation_id": UUID,
         "evidence": EVIDENCE})
+    scan_finding = obj({"commit": OBJECT_ID, "path": text(), "line": nullable(integer(1)), "source": text(),
+        "change": nullable(enum("added", "deleted")), "detector_id": text(), "redacted_excerpt": text()})
+    unscanned = obj({"commit": OBJECT_ID, "path": text(), "source": text(), "reason": enum("binary", "oversize"),
+        "parent": nullable(OBJECT_ID)})
+    schemas["publication-scan"] = obj({"schema_version": const(3), "status": enum("PASS", "BLOCKED"),
+        "base_sha": OBJECT_ID, "head_sha": OBJECT_ID, "pr_body_sha256": nullable(DIGEST),
+        "additional_pr_body_sha256": arr(DIGEST), "comment_sha256": arr(DIGEST),
+        "mapping_sha256": nullable(DIGEST), "project_config_sha256": nullable(DIGEST),
+        "mapping_loaded": BOOL, "mapping_location": const(".agentic-state/publication-deny.json"),
+        "commits_scanned": arr(OBJECT_ID), "findings": arr(scan_finding), "unscanned": arr(unscanned),
+        "coverage": obj({"current_files": TRUE, "commit_messages": TRUE, "every_patch": TRUE,
+            "generated_reports": text(), "captured_command_output": text(), "pr_bodies": BOOL, "pr_comments": BOOL}),
+        "execution_authority": FALSE})
     gate_results = obj({name: obj({"result": enum("PASS", "FAIL", "N_A"), "evidence": EVIDENCE}) for name in GATE_NAMES})
     gate_pass = {"properties": {"gates": {"properties": {name: {"properties": {"result": const("PASS")}}
                     for name in GATE_NAMES if name != "specialist_reviews"}}, "execution_authority": FALSE}}
@@ -275,7 +297,8 @@ def catalog():
         "worker": ref("worker-result"), "critic": ref("critic-review"), "specialists": arr(ref("specialist-review")),
         "ci": ref("ci-evidence"), "pr": ref("pr-snapshot"), "runs": arr(ref("run-attestation"), 3),
         "prior_findings": arr(FINDING), "finding_dispositions": arr(ref("finding-disposition")),
-        "cap_disposition": nullable(ref("review-cap-disposition")), "evidence_registry": arr(obj({"uri": text(format="uri"), "sha256": DIGEST,
+        "cap_disposition": nullable(ref("review-cap-disposition")), "publication_scan": ref("publication-scan"),
+        "evidence_registry": arr(obj({"uri": text(format="uri"), "sha256": DIGEST,
             "producer_id": text(), "retained_until": TIME}), 1), "provenance_mode": const("offline_fixture")})
     role_policy = obj({"model": text(), "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
         "fallback": const("deny"), "approved_model_ids": arr(text(), 1, uniqueItems=True),
@@ -304,8 +327,9 @@ def catalog():
                "tier2_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking")})}),
            "transient_retry_limit": integer(0, maximum=5), "max_run_seconds": integer(1),
            "max_tool_calls_per_run": integer(1), "max_tokens_per_ticket": integer(1),
-           "max_cost_microusd_per_ticket": integer(1), "daily_project_cost_microusd": integer(1),
+           "max_cost_microusd_per_ticket": nullable(integer(1)), "daily_project_cost_microusd": nullable(integer(1)),
            "one_writer_per_ticket": TRUE, "roles": obj({r: role_policy for r in ["controller", "worker", "critic", "specialist"]}),
+           "route_capabilities": obj({"observation_path": text(), "max_age_days": integer(1)}),
            "host_broker": obj({"enabled": BOOL, "broker_id": text(0), "lease_before_dispatch": TRUE,
                               "max_workers": integer(1), "max_heavy_jobs": integer(), "max_gpu_jobs": integer(),
                               "resources": {"type": "object", "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
@@ -336,7 +360,7 @@ def catalog():
     # Current governance keys are optional for upgraded 1.8.9 configurations; the
     # code applies the documented defaults when they are absent. Bootstrap writes them.
     execution = schemas["project-config"]["properties"]["execution"]
-    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions"]),
+    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions", "route_capabilities"]),
                             (execution["properties"]["host_broker"], ["resources"]),
                             (jira, ["lifecycle_writes", "owner_closure_keywords"]),
                             (schemas["project-config"]["properties"]["validation"]["properties"]["required_ci_checks"]["items"], ["verifies_history", "local_command"])):
@@ -357,6 +381,12 @@ def catalog():
     # operating changes never rewrite this protected governance field.
     schemas["project-config"]["properties"]["execution"]["properties"]["independent_reviewers"] = obj({
         "count": integer(0), "allocation": const("one_per_stream")}, required=["allocation"])
+    # Optional and append-only for upgrades: tracked declarations add detectors;
+    # built-ins can be tuned only by the ignored operator-local mapping.
+    schemas["project-config"]["properties"]["publication"] = obj({
+        "deny_literals": arr(text(), uniqueItems=True),
+        "deny_regexes": arr(obj({"id": text(pattern="^[a-z][a-z0-9_]*$"), "pattern": text(format="regex")}), uniqueItems=True),
+        "internal_hostnames": arr(text(pattern="^[A-Za-z0-9][A-Za-z0-9.-]*$"), uniqueItems=True)})
     # Additive evidence: new producers bind their separately observed operating
     # snapshot; historical records can remain absent/null, never relabelled.
     for name in ("work-dispatch", "specialist-dispatch"):

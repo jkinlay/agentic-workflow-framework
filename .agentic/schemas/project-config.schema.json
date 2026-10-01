@@ -29,7 +29,7 @@
       ],
       "properties": {
         "expected_workflow_version": {
-          "const": "1.9.1"
+          "const": "1.9.3"
         }
       }
     },
@@ -500,14 +500,28 @@
           "maximum": 9007199254740991
         },
         "max_cost_microusd_per_ticket": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "daily_project_cost_microusd": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "one_writer_per_ticket": {
           "const": true
@@ -733,6 +747,25 @@
                   "uniqueItems": true
                 }
               }
+            }
+          }
+        },
+        "route_capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "observation_path",
+            "max_age_days"
+          ],
+          "properties": {
+            "observation_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "max_age_days": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
             }
           }
         },
@@ -1165,6 +1198,61 @@
         },
         "cross_project_dispatch": {
           "const": false
+        }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deny_literals",
+        "deny_regexes",
+        "internal_hostnames"
+      ],
+      "properties": {
+        "deny_literals": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "deny_regexes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "pattern"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "format": "regex"
+              }
+            }
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "internal_hostnames": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]*$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
         }
       }
     }

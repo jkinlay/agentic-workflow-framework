@@ -1,0 +1,218 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "created_at",
+    "producer_id",
+    "run_id",
+    "binding",
+    "request_id",
+    "gate_id",
+    "gate_hash",
+    "source",
+    "decision",
+    "parser_version",
+    "candidate",
+    "expires_at",
+    "execution_authority"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "producer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "repository_id",
+        "issue_id",
+        "requirements_hash",
+        "contract_hash",
+        "policy_hash",
+        "candidate_id"
+      ],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "issue_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requirements_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "contract_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "gate_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "gate_hash": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "channel",
+        "event_id",
+        "comment_id",
+        "repository_id",
+        "pr_number",
+        "created_at",
+        "updated_at",
+        "raw_body",
+        "raw_body_sha256",
+        "actor_id",
+        "actor_login",
+        "deleted",
+        "authentication_evidence"
+      ],
+      "properties": {
+        "channel": {
+          "const": "github_pr_comment"
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "comment_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "pr_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "created_at": {
+          "type": "string",
+          "minLength": 1,
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "minLength": 1,
+          "format": "date-time"
+        },
+        "raw_body": {
+          "type": "string",
+          "minLength": 1
+        },
+        "raw_body_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "actor_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "actor_login": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deleted": {
+          "const": false
+        },
+        "authentication_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "format": "uri"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "decision": {
+      "enum": [
+        "AUTHORIZE",
+        "DENY",
+        "REVOKE"
+      ]
+    },
+    "parser_version": {
+      "const": "awf-auth-1"
+    },
+    "candidate": {
+      "$ref": "urn:awf:1.2:candidate"
+    },
+    "expires_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "execution_authority": {
+      "const": false
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:owner-authorization",
+  "title": "Agentic Workflow 1.2 \u2014 owner-authorization"
+}

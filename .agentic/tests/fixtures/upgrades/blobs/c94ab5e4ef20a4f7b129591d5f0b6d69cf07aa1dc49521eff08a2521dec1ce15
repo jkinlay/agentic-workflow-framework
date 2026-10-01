@@ -1,0 +1,424 @@
+name: AWF independent review gate
+
+# Verifies that the project's ONE required external engine has reviewed the
+# pull request's current head SHA. Restricts the PR target to the protected
+# default branch, never checks out or executes pull-request content, reads through the
+# API, and re-evaluates on every eligible PR push. The separately permissioned
+# workflow_run wake job reruns only its verified original current-head gate.
+# Do not add pull_request_review: its workflow may come from candidate code.
+#
+# Engine and reviewer identity come from the protected policy file
+# `.agentic/project.yaml` on the base branch:
+#   - copilot: identity is the adapter constant copilot-pull-request-reviewer[bot]
+#   - claude:  identity is review.reviewer_identities.claude (the dedicated
+#              AWF Reviewer App); its COMMENT review must carry the
+#              `awf-review-status: no_findings|findings` marker written by the
+#              deterministic publisher, so an error report can never pass.
+# The engine must be qualified: every flag under review.qualification must be
+# true (including environment_secret_boundaries_verified for Claude), as
+# `.agentic/docs/28-EXTERNAL-REVIEW.md` requires, or the gate fails closed. A repository
+# without a policy file fails closed too: availability is never inferred, so
+# there is no default engine.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_run:
+    workflows: [AWF Claude independent review]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    name: awf/review
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify the required external engine reviewed the current head
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          POLICY_PATH: .agentic/project.yaml
+          COPILOT_IDENTITY: copilot-pull-request-reviewer[bot]
+        run: |
+          python3 - <<'AWF_GATE'
+          import base64, json, os, re, sys, urllib.error, urllib.parse, urllib.request
+
+          API = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          TOKEN = os.environ["GITHUB_TOKEN"]
+          PR = os.environ["PR_NUMBER"]
+          BASE_REF = os.environ["BASE_REF"]
+          POLICY_PATH = os.environ["POLICY_PATH"]
+          COPILOT_IDENTITY = os.environ["COPILOT_IDENTITY"]
+          BOT_LOGIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*\[bot\]$")
+          MARKER = re.compile(r"awf-review-status:\s*(no_findings|findings)\b")
+          PLACEHOLDER = re.compile(r"__AWF_[A-Z0-9_]+__")
+
+          def get(url):
+              req = urllib.request.Request(url, headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {TOKEN}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  "User-Agent": "awf-review-gate"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      return resp.status, json.loads(resp.read().decode("utf-8")), dict(resp.headers)
+              except urllib.error.HTTPError as err:
+                  body = err.read().decode("utf-8", errors="replace")
+                  try:
+                      return err.code, json.loads(body), dict(err.headers or {})
+                  except json.JSONDecodeError:
+                      return err.code, body, dict(err.headers or {})
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+          # --- minimal YAML reader for the policy file (block mappings, scalar lists, scalars) ---
+          def scalar(t):
+              t = t.strip()
+              if t in ("", "~", "null"): return None
+              if t == "[]": return []
+              if len(t) >= 2 and t[0] == t[-1] and t[0] in "'\"": return t[1:-1]
+              if t.lower() in ("true", "yes"): return True
+              if t.lower() in ("false", "no"): return False
+              if re.fullmatch(r"-?\d+", t): return int(t)
+              if t.startswith("[") and t.endswith("]"):
+                  inner = t[1:-1].strip()
+                  return [scalar(p) for p in inner.split(",")] if inner else []
+              return t
+
+          def strip_comment(line):
+              q = None
+              for i, ch in enumerate(line):
+                  if q:
+                      if ch == q: q = None
+                  elif ch in "'\"": q = ch
+                  elif ch == "#" and (i == 0 or line[i-1] in " \t"): return line[:i]
+              return line
+
+          def load_yaml_lite(text):
+              lines = []
+              for raw in text.splitlines():
+                  c = strip_comment(raw).rstrip()
+                  if not c.strip(): continue
+                  lines.append((len(c) - len(c.lstrip(" ")), c.strip()))
+              def block(start, indent):
+                  result, i = None, start
+                  while i < len(lines):
+                      ind, content = lines[i]
+                      if ind < indent: break
+                      if ind > indent: fail(f"policy parse error near: {content}")
+                      if content.startswith("- "):
+                          result = result if isinstance(result, list) else ([] if result is None else fail("mixed list/mapping"))
+                          result.append(scalar(content[2:])); i += 1; continue
+                      m = re.match(r"^([^\s'\"][^:]*?|'[^']*'|\"[^\"]*\"):(\s+(.*))?$", content)
+                      if not m: fail(f"policy parse error near: {content}")
+                      key, value = scalar(m.group(1)), (m.group(3) or "").strip()
+                      result = result if isinstance(result, dict) else ({} if result is None else fail("mixed list/mapping"))
+                      if value:
+                          result[key] = scalar(value); i += 1
+                      elif i + 1 < len(lines) and lines[i+1][0] > indent:
+                          result[key], i = block(i + 1, lines[i+1][0])
+                      else:
+                          result[key] = None; i += 1
+                  return result, i
+              parsed, _ = block(0, lines[0][0] if lines else 0)
+              return parsed or {}
+
+          # --- resolve engine and identity from protected policy on the base branch ---
+          status, policy_doc, _ = get(f"{API}/repos/{REPO}/contents/{urllib.parse.quote(POLICY_PATH)}?ref={urllib.parse.quote(BASE_REF)}")
+          if status == 404:
+              fail(f"{POLICY_PATH} not found on {BASE_REF}: no protected review policy, so no engine is qualified (fail closed)")
+          elif status == 200 and isinstance(policy_doc, dict) and policy_doc.get("encoding") == "base64":
+              policy = load_yaml_lite(base64.b64decode(policy_doc.get("content", "")).decode("utf-8"))
+              review = policy.get("review") if isinstance(policy, dict) else None
+              if not isinstance(review, dict): fail("policy has no review block")
+              engine = str(review.get("required_external_engine") or "")
+              if PLACEHOLDER.search(engine) or not engine: fail("review.required_external_engine is unset or a placeholder")
+              flags = review.get("qualification")
+              baseline = ("effective_permissions_verified", "instruction_paths_protected", "head_binding_verified")
+              if engine != "copilot": baseline += ("environment_secret_boundaries_verified",)
+              if not isinstance(flags, dict) or not flags: fail("review.qualification is missing or empty")
+              missing = [f for f in baseline if f not in flags]
+              if missing: fail(f"review.qualification lacks baseline flags: {', '.join(missing)}")
+              # Only the secret-environment flag is irrelevant to Copilot.
+              unmet = [k for k, v in flags.items() if v is not True and
+                       not (engine == "copilot" and k == "environment_secret_boundaries_verified")]
+              if unmet: fail(f"required engine {engine} is not qualified; review.qualification flags not true: {', '.join(unmet)}")
+              if engine == "copilot":
+                  identity = COPILOT_IDENTITY
+              else:
+                  ids = review.get("reviewer_identities") or {}
+                  identity = str(ids.get(engine) or "") if isinstance(ids, dict) else ""
+                  if PLACEHOLDER.search(identity) or not BOT_LOGIN.match(identity):
+                      fail(f"review.reviewer_identities.{engine} must be a GitHub App bot login")
+          else:
+              fail(f"could not read {POLICY_PATH} from {BASE_REF}: HTTP {status}")
+
+          # --- live head and reviews ---
+          status, pr, _ = get(f"{API}/repos/{REPO}/pulls/{PR}")
+          if status != 200: fail(f"could not read pull request #{PR}: HTTP {status}")
+          head = pr["head"]["sha"]
+          matching, page = [], 1
+          while page <= 10:
+              status, reviews, _ = get(f"{API}/repos/{REPO}/pulls/{PR}/reviews?per_page=100&page={page}")
+              if status != 200 or not isinstance(reviews, list): fail(f"could not list reviews: HTTP {status}")
+              for r in reviews:
+                  login = str((r.get("user") or {}).get("login", ""))
+                  if login.lower() != identity.lower(): continue
+                  if str(r.get("commit_id", "")).lower() != head.lower(): continue
+                  if r.get("state") == "DISMISSED": continue
+                  if engine != "copilot" and not MARKER.search(r.get("body") or ""): continue
+                  matching.append(r)
+              if len(reviews) < 100: break
+              page += 1
+          if not matching:
+              fail(f"No qualifying review by {identity} (engine {engine}) covers current head {head}.")
+          print(f"engine={engine} reviewer={identity} head_sha={head} reviews={len(matching)}")
+          AWF_GATE
+
+  wake:
+    name: awf/review-wake
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.action == 'completed' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      vars.AWF_ENABLE_CLAUDE_REVIEW == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: awf-review-wake-${{ github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.id }}
+      cancel-in-progress: false
+    # github.token can administer other repository workflows with this scope;
+    # trusted code, not token scope, restricts this job to the verified gate rerun.
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Rerun only the verified current-head trusted gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'AWF_WAKE'
+          import json, os, re, sys, urllib.error, urllib.parse, urllib.request
+          from pathlib import Path
+
+          # Only GitHub API observations determine the one permitted mutation. Never read
+          # artifacts, check names, candidate files or branch-name guesses as authority.
+          PRODUCER = ".github/workflows/awf-review-claude.yml"
+          GATE = ".github/workflows/awf-review-gate.yml"
+          NAMES = {PRODUCER: "AWF Claude independent review", GATE: "AWF independent review gate"}
+          API = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          TOKEN = os.environ["GITHUB_TOKEN"]
+          SOURCE = os.environ["GITHUB_SHA"]
+          SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+          def fail(message):
+              print(f"::error::{message}. Next: coordinator reconcile the trusted gate/PR association and rerun that gate when bound; no model rerun or new routine authorization.")
+              raise SystemExit(1)
+
+
+          def require(condition, message):
+              if not condition: fail(message)
+
+
+          def positive(value):
+              return type(value) is int and value > 0
+
+
+          def api(path, method="GET"):
+              require(path == "" or (path.startswith("/") and not path.startswith("//")), "invalid API path")
+              request = urllib.request.Request(API + "/repos/" + REPO + path,
+                  data=b"{}" if method == "POST" else None, method=method, headers={
+                      "Accept": "application/vnd.github+json", "Authorization": f"Bearer {TOKEN}",
+                      "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "awf-review-wake", "Content-Type": "application/json"})
+              # Redirects are not accepted: a changed repository must be reconciled first.
+              class NoRedirect(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self, *args, **kwargs): return None
+              with urllib.request.build_opener(NoRedirect).open(request, timeout=20) as response:
+                  expected = 201 if method == "POST" else 200
+                  require(response.status == expected, "unexpected API result")
+                  raw = response.read(1_000_001)
+                  require(len(raw) <= 1_000_000, "API response exceeds bound")
+                  return json.loads(raw) if raw.strip() else {}
+
+
+          def same_repo(value):
+              return isinstance(value, dict) and value.get("id") == REPO_ID and value.get("full_name") == REPO
+
+
+          def association(run):
+              prs = run.get("pull_requests")
+              require(isinstance(prs, list) and len(prs) == 1, "missing or ambiguous producer/gate PR association")
+              pr = prs[0]
+              require(isinstance(pr, dict) and isinstance(pr.get("head"), dict) and isinstance(pr.get("base"), dict), "malformed PR association")
+              require(positive(pr.get("number")) and positive(pr.get("id")), "invalid PR identity")
+              require(SHA.fullmatch(str(pr.get("head", {}).get("sha", ""))), "invalid candidate SHA")
+              require(pr.get("head", {}).get("repo", {}).get("id") == REPO_ID and
+                      pr.get("base", {}).get("repo", {}).get("id") == REPO_ID and
+                      pr.get("base", {}).get("ref") == DEFAULT, "foreign repository or untrusted PR target")
+              return (pr["number"], pr["id"], pr["head"]["sha"])
+
+
+          source_cache = set()
+
+          def trusted_source(commit, path):
+              require(SHA.fullmatch(str(commit)), "invalid workflow execution SHA")
+              if (commit, path) in source_cache: return
+              if commit != SOURCE:
+                  comparison = api(f"/compare/{commit}...{SOURCE}")
+                  require(comparison.get("status") in ("ahead", "identical") and
+                          comparison.get("base_commit", {}).get("sha") == commit, "workflow execution is outside protected source history")
+              blobs = []
+              for ref in (commit, SOURCE):
+                  data = api(f"/contents/{path}?ref={ref}")
+                  require(data.get("type") == "file" and SHA.fullmatch(str(data.get("sha", ""))), "workflow source missing")
+                  blobs.append(data["sha"])
+              require(blobs[0] == blobs[1], "historical workflow differs from current protected workflow")
+              source_cache.add((commit, path))
+
+
+          def workflow(path):
+              value = api("/actions/workflows/" + path.rsplit("/", 1)[1])
+              require(positive(value.get("id")) and value.get("path") == path and
+                      value.get("name") == NAMES[path] and value.get("state") == "active", "workflow identity/path is not the expected active workflow")
+              return value
+
+
+          def verified_run(run, metadata, path):
+              require(positive(run.get("id")) and run.get("workflow_id") == metadata["id"] and
+                      run.get("name") == NAMES[path] and run.get("event") == "pull_request_target",
+                      "unexpected workflow run identity or event")
+              require(same_repo(run.get("repository")) and same_repo(run.get("head_repository")), "workflow repository mismatch")
+              require(positive(run.get("run_attempt")), "missing workflow attempt")
+              source = run.get("head_sha")  # Execution SHA, never the candidate SHA.
+              require(run.get("path") in (path, path + "@" + DEFAULT, path + "@refs/heads/" + DEFAULT, path + "@" + str(source)),
+                      "unexpected workflow source path/ref")
+              trusted_source(source, path)
+              return association(run)
+
+
+          def live_pr(binding):
+              number, identity, head = binding
+              value = api(f"/pulls/{number}")
+              require(value.get("number") == number and value.get("id") == identity and
+                      value.get("state") == "open" and value.get("draft") is False and
+                      value.get("head", {}).get("sha") == head and same_repo(value.get("head", {}).get("repo")) and
+                      same_repo(value.get("base", {}).get("repo")) and value.get("base", {}).get("ref") == DEFAULT,
+                      "PR identity, current head or protected target changed")
+
+
+          def successful_producer_jobs(run):
+              # The endpoint binds the exact attempt; older GitHub job objects may
+              # omit run_attempt, so require it to match only when supplied.
+              result = api(f"/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100")
+              jobs = result.get("jobs")
+              require(isinstance(jobs, list) and type(result.get("total_count")) is int and
+                      0 < result["total_count"] == len(jobs) <= 100, "producer jobs unavailable, incomplete or oversized")
+              require(all(isinstance(item, dict) and positive(item.get("id")) for item in jobs) and
+                      len({item["id"] for item in jobs}) == len(jobs), "producer job identity is malformed or duplicated")
+              for name in ("awf/review-claude-model", "awf/review-claude-publish"):
+                  matching = [item for item in jobs if item.get("name") == name]
+                  require(len(matching) == 1, "required producer job missing or ambiguous")
+                  item = matching[0]
+                  require(item.get("run_id") == run["id"] and item.get("head_sha") == run["head_sha"] and
+                          ("run_attempt" not in item or (type(item["run_attempt"]) is int and item["run_attempt"] == run["run_attempt"])) and
+                          item.get("status") == "completed" and item.get("conclusion") == "success",
+                          "required producer job skipped, failed, cancelled or bound to another run/attempt/source")
+
+
+          def main():
+              global REPO_ID, DEFAULT
+              require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", REPO) and SHA.fullmatch(SOURCE), "invalid host repository/source")
+              require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_run", "unsupported wake event")
+              raw = Path(os.environ["GITHUB_EVENT_PATH"]).read_bytes()
+              require(len(raw) <= 1_000_000, "event exceeds bound")
+              event = json.loads(raw)
+              repository = api("")
+              REPO_ID, DEFAULT = repository.get("id"), repository.get("default_branch")
+              require(positive(REPO_ID) and repository.get("full_name") == REPO and isinstance(DEFAULT, str) and DEFAULT,
+                      "invalid live repository identity")
+              require(same_repo(event.get("repository")) and os.environ.get("GITHUB_REF") == "refs/heads/" + DEFAULT,
+                      "wake is outside the protected default context")
+              require(event.get("action") == "completed", "producer event is not completed")
+              notice = event.get("workflow_run", {})
+              require(positive(notice.get("id")), "missing producer run ID")
+              producer = api(f"/actions/runs/{notice['id']}")
+              producer_meta, gate_meta = workflow(PRODUCER), workflow(GATE)
+              binding = verified_run(producer, producer_meta, PRODUCER)
+              require(verified_run(notice, producer_meta, PRODUCER) == binding and
+                      all(notice.get(key) == producer.get(key) for key in ("id", "head_sha", "run_attempt", "status", "conclusion")),
+                      "event and authoritative producer run disagree")
+              require(producer.get("status") == "completed" and producer.get("conclusion") == "success", "producer did not finish successfully")
+              successful_producer_jobs(producer)
+              live_pr(binding)
+              candidates = []
+              for page in range(1, 4):
+                  listing = api(f"/actions/workflows/{gate_meta['id']}/runs?event=pull_request_target&per_page=100&page={page}")
+                  runs = listing.get("workflow_runs")
+                  require(isinstance(runs, list), "invalid gate run listing")
+                  for run in runs:
+                      prs = run.get("pull_requests")
+                      if isinstance(prs, list) and len(prs) == 1 and isinstance(prs[0], dict) and prs[0].get("number") == binding[0] and prs[0].get("head", {}).get("sha") == binding[2]:
+                          candidates.append(run)
+                  if len(runs) < 100: break
+                  require(page < 3, "gate search exceeded bound; cannot exclude ambiguous runs")
+              require(0 < len(candidates) <= 10, "missing matching gate or matching-run search exceeds bound")
+              verified = {}
+              for candidate in candidates:
+                  candidate_id = candidate.get("id")
+                  require(positive(candidate_id), "invalid listed gate ID")
+                  value = api(f"/actions/runs/{candidate_id}")
+                  require(verified_run(value, gate_meta, GATE) == binding and value.get("id") == candidate_id and
+                          positive(value.get("run_number")), "gate candidate/source identity mismatch")
+                  verified[candidate_id] = value
+              numbers = [value["run_number"] for value in verified.values()]
+              require(len(set(numbers)) == len(numbers), "ambiguous workflow run ordering")
+              gate = max(verified.values(), key=lambda value: value["run_number"])
+              gate_id = gate["id"]
+              require(gate.get("status") == "completed", "matching gate still running; await completion")
+              jobs = api(f"/actions/runs/{gate_id}/attempts/{gate['run_attempt']}/jobs?per_page=100")
+              require(isinstance(jobs.get("jobs"), list) and type(jobs.get("total_count")) is int and
+                      jobs["total_count"] <= 100, "gate jobs exceed bound or are unavailable")
+              reviews = [item for item in jobs["jobs"] if isinstance(item, dict) and item.get("name") == "awf/review"]
+              require(len(reviews) == 1 and reviews[0].get("run_id") == gate_id and
+                      reviews[0].get("status") == "completed" and reviews[0].get("conclusion") in ("success", "failure") and
+                      reviews[0]["conclusion"] == gate.get("conclusion"), "current gate review job skipped, ambiguous or incomplete")
+              if gate.get("conclusion") == "success":
+                  print(f"Gate run {gate_id} already succeeded for PR {binding[0]} head {binding[2]}; no rerun requested.")
+                  return
+              require(gate.get("conclusion") == "failure" and gate.get("run_attempt") == 1,
+                      "automatic gate rerun exhausted or prior result needs reconciliation")
+              current_gate = api(f"/actions/runs/{gate_id}")
+              require(verified_run(current_gate, gate_meta, GATE) == binding and current_gate.get("id") == gate_id and
+                      all(current_gate.get(key) == gate.get(key) for key in ("run_attempt", "status", "conclusion", "head_sha")),
+                      "gate changed while preparing rerun")
+              current_producer = api(f"/actions/runs/{producer['id']}")
+              require(verified_run(current_producer, producer_meta, PRODUCER) == binding and
+                      all(current_producer.get(key) == producer.get(key) for key in ("id", "run_attempt", "status", "conclusion", "head_sha")),
+                      "producer changed while preparing rerun")
+              successful_producer_jobs(current_producer)
+              live_pr(binding)  # Recheck immediately before the only permitted mutation.
+              api(f"/actions/runs/{gate_id}/rerun-failed-jobs", "POST")
+              print(f"Requested one trusted gate rerun: run={gate_id} PR={binding[0]} head={binding[2]}. Next: coordinator observe its result and independently resolve findings; this request is not a passing check.")
+
+
+          try:
+              main()
+          except (AttributeError, KeyError, TypeError, ValueError, OSError, urllib.error.URLError):
+              fail("wake metadata or API operation failed; remote mutation outcome may require reconciliation")
+          AWF_WAKE

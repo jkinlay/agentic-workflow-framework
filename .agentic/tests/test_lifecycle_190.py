@@ -15,7 +15,7 @@ from agentic import ValidationError
 from agentic.canonical import load
 from agentic.closeout import render_markdown, validate_closeout
 from agentic.contracts import Contracts
-from agentic.host_preflight import preflight, render_markdown as render_preflight
+from agentic.host_preflight import preflight, render_markdown as render_preflight, route_models_observed
 from agentic.interaction import decide_action, jira_write_classification
 from agentic.jira_lifecycle import apply_read_back, closing_comment, owner_closure_required, planned_write, transition_record
 from agentic.lifecycle import JIRA_WRITES, definition, transition
@@ -255,6 +255,56 @@ class BootstrapPreflightTests(unittest.TestCase):
 
 
 class PreflightTests(unittest.TestCase):
+    def route_config(self, model="gpt-5.6-sol", effort="high", age=30):
+        return {"execution": {"roles": {}, "model_routing": {"risk_route": {"model": model, "reasoning_effort": effort}},
+                              "route_capabilities": {"observation_path": ".agentic/route-capabilities.json", "max_age_days": age}}}
+
+    def test_route_models_observed_passes_reference_defaults_and_warns_missing_refused_stale(self):
+        observed = load(ROOT / ".agentic/examples/routing-capabilities.json")
+        passed = route_models_observed(ROOT, config=self.route_config(), capabilities=observed,
+                                       now="2026-09-24T12:00:00Z")
+        self.assertEqual("PASS", passed["status"])
+
+        missing = route_models_observed(ROOT, config=self.route_config("gpt-missing"), capabilities=observed,
+                                        now="2026-09-24T12:00:00Z")
+        self.assertEqual("WARN", missing["status"])
+        self.assertIn("missing", missing["detail"])
+
+        refused = route_models_observed(ROOT, config=self.route_config("gpt-6-astra"), capabilities=observed,
+                                        now="2026-09-24T12:00:00Z")
+        self.assertEqual("WARN", refused["status"])
+        self.assertIn("refused", refused["detail"])
+
+        stale = route_models_observed(ROOT, config=self.route_config(), capabilities=observed,
+                                      now="2026-11-01T00:00:00Z")
+        self.assertEqual("WARN", stale["status"])
+        self.assertIn("stale", stale["detail"])
+        self.assertTrue(all(field in observed["models"]["gpt-5.6-sol"] for field in
+                            ("host_id", "host_software", "host_software_version", "method", "observed_at")))
+
+    def test_project_lint_scope_ruff_warn_pass_and_not_applicable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            row = {item["check"]: item for item in preflight(root, platform="posix")["rows"]}["project_lint_scope"]
+            self.assertEqual("N_A", row["status"])
+            (root / "pyproject.toml").write_text('[tool.ruff]\nline-length = 100\n', encoding="utf-8")
+            row = {item["check"]: item for item in preflight(root, platform="posix")["rows"]}["project_lint_scope"]
+            self.assertEqual("WARN", row["status"])
+            self.assertIn('extend-exclude = [".agentic"]', row["remedy"])
+            (root / "pyproject.toml").write_text('[tool.ruff]\nextend-exclude = [".agentic"]\n', encoding="utf-8")
+            row = {item["check"]: item for item in preflight(root, platform="posix")["rows"]}["project_lint_scope"]
+            self.assertEqual("PASS", row["status"])
+
+    def test_project_lint_scope_flake8_warns_if_any_config_does_not_exclude(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".flake8").write_text("[flake8]\nextend-exclude = .agentic\n", encoding="utf-8")
+            row = {item["check"]: item for item in preflight(root, platform="posix")["rows"]}["project_lint_scope"]
+            self.assertEqual("PASS", row["status"])
+            (root / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n", encoding="utf-8")
+            row = {item["check"]: item for item in preflight(root, platform="posix")["rows"]}["project_lint_scope"]
+            self.assertEqual("WARN", row["status"])
+
     def test_posix_rows_are_not_applicable_and_never_block(self):
         report = preflight(ROOT, platform="posix")
         rows = {row["check"]: row for row in report["rows"]}

@@ -1,0 +1,37 @@
+{
+  "schema_version": 3,
+  "record_id": "20000000-0000-4000-8000-000000000001",
+  "created_at": "1970-01-01T00:00:00Z",
+  "producer_id": "synthetic-critic",
+  "run_id": "30000000-0000-4000-8000-000000000001",
+  "binding": {
+    "project_id": "40000000-0000-4000-8000-000000000001",
+    "repository_id": 1,
+    "issue_id": "EX-1",
+    "requirements_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "candidate_id": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "verdict": "INCOMPLETE",
+  "acceptance_criteria": [
+    {
+      "id": "UNFILLED",
+      "verdict": "UNKNOWN",
+      "evidence": [
+        "urn:awf:UNFILLED"
+      ]
+    }
+  ],
+  "findings": [],
+  "prior_finding_ids": [],
+  "coverage": {
+    "complete": false,
+    "file_manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "reviewed_paths": [],
+    "omissions": []
+  },
+  "evidence_checked": [
+    "urn:awf:UNFILLED"
+  ]
+}

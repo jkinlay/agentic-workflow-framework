@@ -1,0 +1,13 @@
+{
+  "id": "C-00000000000000000000000000000001",
+  "created_at": "2025-01-01T00:00:00Z",
+  "instruction": null,
+  "before_hash": null,
+  "after_hash": "7777777777777777777777777777777777777777777777777777777777777777",
+  "changes": [],
+  "source": "default",
+  "applied_from": "bootstrap",
+  "sequence": 1,
+  "previous_change_id": null,
+  "governance_hash": "8888888888888888888888888888888888888888888888888888888888888888"
+}

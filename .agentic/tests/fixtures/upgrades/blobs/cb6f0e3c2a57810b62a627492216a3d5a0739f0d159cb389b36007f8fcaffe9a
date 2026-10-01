@@ -1,0 +1,54 @@
+{
+  "type": "object",
+  "properties": {
+    "candidate": {
+      "type": "object",
+      "properties": {
+        "repository_id": {
+          "type": "integer"
+        },
+        "pr": {
+          "type": "integer"
+        },
+        "head": {
+          "type": "string"
+        },
+        "base": {
+          "type": "string"
+        },
+        "head_ref": {
+          "type": "string"
+        },
+        "base_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "pr",
+        "head",
+        "base",
+        "head_ref",
+        "base_ref"
+      ],
+      "additionalProperties": false
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "CHANGED",
+        "NO_CHANGE",
+        "BLOCKED"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate",
+    "outcome",
+    "summary"
+  ],
+  "additionalProperties": false
+}

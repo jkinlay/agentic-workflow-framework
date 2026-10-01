@@ -1,5 +1,23 @@
 # Change history
 
+## 1.9.3 — 24 September 2026
+
+Adds Git-format-aware `tested_tree` for publisher-routed workers. Declared changes form the candidate; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match exactly.
+
+Sets new-adoption risk and specialist routes to `gpt-5.6-sol` / high. Expiring capability observations feed warning-only route preflight; existing owner-set routes persist.
+
+Adds settlement outcomes and `route_model.py outcome-template`; verdicts remain separate records.
+
+Adds byte-verified install/upgrade, GraphQL-bound adoption merge identity and compact PR file observation; unsafe evidence fails closed.
+
+Adds history-aware publication scanning of messages, patch lines, changed files, PR bodies and comments. Redacted findings block; receipts bind base, head and body digest. An ignored local mapping supplies aliases and deny entries alongside built-in path/network detectors and alias rendering.
+
+Adds an atomic one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, scanning the replacement and checking old ref reachability. It refuses published evidence or unsupported counts and reports reflog retention. This covers L1, L2 and L9 scanning; producer retrofits remain P1.
+
+## 1.9.2 — 23 September 2026
+
+Adds token-only host budgets with larger new-project token/run defaults, an exact-tree publisher commit route for workers unable to write Git metadata, project lint-scope preflight, and the repository-owned portable skill source. Host child processes now consistently exclude Anthropic, Codex and OpenAI API keys. Release builds reject `.tmp`/`tmp` path components and `*.tmp` files before rewriting manifests or creating an archive, while retaining `.tmp-tests` as an excluded local test area whose links remain forbidden. The defaults reflect an owner workload of 10–20 tickets a day, signal-lab SL-1's 282,975 tokens in 3 runs, the 77-file AWF 1.9.2 PR's 1,402,537 tokens in 6 runs across three critic rounds, and 8–9 runs for a full ticket. Existing project configuration remains preserved on upgrade; review, merge, reconciliation and Jira boundaries are unchanged. No new model pilot.
+
 ## 1.9.1 — 21 September 2026
 
 Corrects the adoption-status regression test for Windows host-preflight WARN rows. Runtime behavior is unchanged: those rows remain non-blocking and remain the status next action. No new model pilot.

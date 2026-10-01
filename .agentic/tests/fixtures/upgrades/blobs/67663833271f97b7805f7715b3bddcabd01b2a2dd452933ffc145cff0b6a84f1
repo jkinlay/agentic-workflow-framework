@@ -1,0 +1,15 @@
+{
+  "ticket_id": "LOCAL-DEMO-1",
+  "role": "worker",
+  "agent_id": "synthetic-worker",
+  "context_id": null,
+  "phase": "implementation",
+  "task_class": "bounded-unit-fix",
+  "complexity": "low",
+  "risk": "low",
+  "uncertainty": "low",
+  "verification": "strong",
+  "risk_flags": [],
+  "reservation_tokens": 1000,
+  "reservation_cost_microusd": null
+}

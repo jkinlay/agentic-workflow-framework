@@ -1,12 +1,14 @@
 # Ticket lifecycle
 
-This renders the normal transitions in [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/lifecycle.py) is the exact guard/control authority. These are AWF states; Jira writes are mirrored per event below. The reference state machine has no external side effects.
+This renders [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/lifecycle.py) is authoritative. These are AWF states; Jira writes are mirrored below. The reference state machine has no external side effects.
 
 ## Routine work
 
-On worker COMPLETE, the assigned publisher pushes the scoped feature branch and opens a draft PR against `github.base_branch`. Observe its repository, PR, head/base and target, then finalize candidate-bound records with that identity; a local worktree is not a PR. With current validation and requirements, mark ready, then dispatch the independent critic against that observed head. A changed head needs fresh review. Review-ready means READY_FOR_CRITIC; owner-ready means READY_FOR_OWNER_AUTHORIZATION after critic, required specialists and final gate. Neither authorizes merge.
+On COMPLETE, publish a draft PR. A Git-blocked worker leaves the tree uncommitted and reports only commit BLOCKED with `commit_route: PUBLISHER`, `tested_tree`, `changes`, and excluded `ignored_untracked`. The publisher commits without edits, compares `HEAD^{tree}`, and rejects differences. Absent `commit_route` means `WORKER`. Observe PR/head/base/target before PR-bound records. Mark-ready precedes critic review; changes require re-review. Owner-ready requires critic, specialists and final gate. Neither authorizes merge.
 
-Routine publication classification requires accepted repository/ID/default/ref bindings, the ticket/slug's `github.branch_pattern` and fresh live APPLIED rules evidence. It is presentation only: retain task scope, platform permissions, non-force feature refs and secret/adapter prerequisites. Reuse existing authorization; where missing, report the concrete action/owner.
+Before push or PR creation, the publisher runs the [publication scan](31-PUBLICATION-SAFETY.md) on the exact base, head and final body. Require exit 0 and a matching PASS receipt; the final gate binds it to the candidate and observed body digest. Repeat for amendments; scan body edits and comments before posting. `diff --check` is whitespace-only.
+
+Routine publication requires accepted repository/ref bindings, branch pattern and fresh APPLIED rules. Classification is presentation only: retain scope, permissions, non-force refs and secret/adapter prerequisites. Report missing action and owner.
 
 | From | Event → To | Required evidence |
 | --- | --- | --- |
@@ -40,12 +42,12 @@ Routine publication classification requires accepted repository/ID/default/ref b
 
 ## Jira boundary
 
-The controller is the sole Jira writer, one mapped write per event: WORKER_STARTED writes `status_map.in_progress`; PR_READY writes `in_review`; OWNER_CHANGES_REQUESTED or HEAD_CHANGED in review writes `in_progress`; JIRA_RECONCILED after the observed merge writes `done` with a closing comment naming PR, reviewed head and merge commit. BLOCK and PARK never write. A ticket matching `jira.owner_closure_keywords` waits in `MERGED_PENDING_OWNER_CLOSURE` for an owner-closure record. Never transition an Epic. `jira.lifecycle_writes` turns mappings off, never adds one. Already at target is a no-op. Disabled Jira permits no writes.
+Only the controller writes Jira: WORKER_STARTED=`in_progress`; PR_READY=`in_review`; owner changes=`in_progress`; post-merge JIRA_RECONCILED=`done` with PR/head/merge. BLOCK/PARK never write. Owner-closure tickets wait for that record. Never transition Epics. `jira.lifecycle_writes` can disable mappings. Already-target is a no-op; disabled Jira forbids writes.
 
 Read back after every write; keep actor/timestamp only when observed. A mismatch or unknown result stops that ticket's writes, not unaffected streams: report a suspected external automation conflict, never reissue. Comments are digests bound by `digest_sha256` (`evidence_comment`), never transitions. The shipped adapter performs no Jira writes.
 
 ## Control and recovery
 
-Unspecified events reject. Requirements/policy changes block and invalidate evidence; unavailable CI blocks. Candidate changes invalidate review; failed CI, reopened threads, dismissed reviews or OWNER_CHANGES_REQUESTED return review states to CHANGES_REQUESTED. Revoked authorization invalidates its evidence. Terminal invalidations audit without changing state. POST_MERGE_FINDING records the finding and a successor ticket (`corrects`) without changing merged state.
+Unspecified events reject. Requirements/policy changes invalidate evidence and block, as does unavailable CI. Candidate changes invalidate review; failed CI, reopened threads, dismissed reviews or OWNER_CHANGES_REQUESTED return to CHANGES_REQUESTED. Revoked authorization invalidates its evidence. Terminal invalidations only audit. POST_MERGE_FINDING records the finding and successor (`corrects`) without changing merged state.
 
 BLOCK/FAIL record evidence; RECOVER needs resolved blocker, current external state, verified resume guards and revoked old permit, into a listed `resume_states` value. Cancellation/closure/supersession needs source/owner disposition, current state and revoked tasks. During MERGING/MERGE_UNKNOWN, disruptive events record uncertainty and reconcile before retry. Confirmed manual merges require matched candidate/authorization. Confirmed reverts reopen merged work; merged work cannot simply be cancelled. See [native coordination](24-STREAM-STARTUP.md) and [scheduled recovery](22-AUTOMATED-REVIEW-LOOP.md).

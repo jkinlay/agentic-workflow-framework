@@ -17,6 +17,7 @@ from agentic import ValidationError
 from agentic.canonical import validate_value
 
 ROLES = ("controller", "worker", "critic", "specialist")
+RUN_ROLES = ("controller", "worker", "fix", "critic", "specialist")
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
 RISK_FLAGS = ("security", "permissions", "schema_or_migration", "data_loss",
@@ -27,6 +28,22 @@ NON_REASONING_FAILURES = ("credentials", "infrastructure", "rate_limit", "cancel
 
 def _pair(model, effort):
     return {"model": model, "reasoning_effort": effort}
+
+
+def outcome_template(role):
+    """Return the documented settlement shape; hosts replace observed placeholders."""
+    _require(role in ("worker", "fix", "critic", "specialist"), "unsupported outcome template role")
+    return {
+        "actual_model": "REPLACE_WITH_OBSERVED_MODEL",
+        "actual_reasoning_effort": "REPLACE_WITH_OBSERVED_EFFORT",
+        "actual_context_id": "REPLACE_WITH_OBSERVED_CONTEXT_ID",
+        "actual_tokens": 0,
+        "actual_cost_microusd": None,
+        "success": True,
+        "validation_passed": role in ("worker", "fix"),
+        "independent_review_passed": False,
+        "escaped_defect": False,
+    }
 
 
 def default_policy():
@@ -40,19 +57,19 @@ def default_policy():
         "role_defaults": {"controller": _pair(MODELS[2], "medium"),
                           "worker": _pair(MODELS[1], "medium"),
                           "critic": _pair(MODELS[2], "high"),
-                          "specialist": _pair(MODELS[3], "high")},
+                          "specialist": _pair(MODELS[2], "high")},
         "role_allowed_models": {role: list(MODELS) for role in ROLES},
         "simple_worker": _pair(MODELS[0], "low"),
         "review_floor": _pair(MODELS[2], "high"),
-        "risk_route": _pair(MODELS[3], "high"),
+        "risk_route": _pair(MODELS[2], "high"),
         "high_risk_flags": list(RISK_FLAGS),
         "agent_overrides": {},
         "ticket_overrides": {},
         "escalation": {"enabled": True, "max_escalations_per_ticket": 2,
                        "max_reasoning_failures_per_phase": 3,
                        "effort_ceiling": "high"},
-        "budgets": {"max_runs_per_ticket": 8, "max_runs_per_project_day": 40,
-                    "max_tokens_per_ticket": 100000, "max_tokens_per_project_day": 500000,
+        "budgets": {"max_runs_per_ticket": 12, "max_runs_per_project_day": 250,
+                    "max_tokens_per_ticket": 2000000, "max_tokens_per_project_day": 30000000,
                     "max_cost_microusd_per_ticket": None,
                     "max_cost_microusd_per_project_day": None},
         "adaptive": {"mode": "shadow", "min_reviewed_samples": 20,
@@ -197,9 +214,11 @@ def policy_from_config(config):
     for existing, routing in caps.items():
         if existing in execution:
             value = execution[existing]
-            _integer(value, existing, 1)
+            monetary = "cost" in existing
+            _integer(value, existing, 1, nullable=monetary)
             configured = policy["budgets"][routing]
-            policy["budgets"][routing] = value if configured is None else min(value, configured)
+            if value is not None:
+                policy["budgets"][routing] = value if configured is None else min(value, configured)
     roles = execution.get("roles", {})
     _require(isinstance(roles, dict), "execution.roles must be an object")
     for role in ROLES:
@@ -256,7 +275,7 @@ def _request(request):
         _name(request.get(field), field)
     if request.get("context_id") is not None:
         _name(request["context_id"], "context_id")
-    _require(request.get("role") in ROLES, "unknown routing role")
+    _require(request.get("role") in RUN_ROLES, "unknown routing role")
     for field in ("complexity", "risk", "uncertainty"):
         _require(request.get(field) in ("low", "medium", "high"), field + " must be low, medium, or high")
     _require(request.get("verification") in ("strong", "limited", "none"), "verification must be strong, limited, or none")
@@ -302,16 +321,23 @@ def _select_route(policy, request, capabilities, operating_config):
     _request(request)
     _object(capabilities, "capabilities")
     _require(isinstance(capabilities.get("models"), dict), "observed host capabilities.models must be an object")
-    for model, efforts in capabilities["models"].items():
+    normalized_capabilities = {}
+    for model, observation in capabilities["models"].items():
         _name(model, "capability model")
+        if isinstance(observation, dict):
+            efforts = observation.get("reasoning_efforts", []) if observation.get("status", "observed") == "observed" else []
+        else:
+            efforts = observation
         _require(isinstance(efforts, list) and all(isinstance(e, str) and e in EFFORTS for e in efforts),
                  "host model capabilities must be effort lists")
+        normalized_capabilities[model] = efforts
     role = request["role"]
+    policy_role = "worker" if role == "fix" else role
     risk_flags = set(request["risk_flags"]) | set(request.get("epic_risk_flags", []))
     high_risk = request["risk"] == "high" or bool(risk_flags & set(policy["high_risk_flags"]))
     demanding = high_risk or request["complexity"] == "high" or request["uncertainty"] == "high"
     simple = all(request[x] == "low" for x in ("risk", "complexity", "uncertainty")) and request["verification"] == "strong" and not risk_flags
-    selected = deepcopy(policy["role_defaults"][role])
+    selected = deepcopy(policy["role_defaults"][policy_role])
     reasons = ["balanced role default"]
     role_route = operating_config.get(role) if operating_config and role in ("controller", "specialist") else None
     if role_route:
@@ -319,7 +345,7 @@ def _select_route(policy, request, capabilities, operating_config):
         reasons = ["operating role default"]
     simple_route = operating_config["simple_worker"] if operating_config else policy["simple_worker"]
     simple_enabled = simple_route.get("enabled", True)
-    if role == "worker" and simple and simple_enabled:
+    if role in ("worker", "fix") and simple and simple_enabled:
         selected = {k: simple_route[k] for k in ("model", "reasoning_effort")}
         reasons = ["simple, low-risk, low-uncertainty work with strong verification"]
     if demanding:
@@ -329,15 +355,15 @@ def _select_route(policy, request, capabilities, operating_config):
     pinned = bool(role_route and role_route.get("pinned", False))
     if role == "worker" and simple and simple_enabled:
         pinned = simple_route.get("pinned", False)
-    if operating_config and role in ("worker", "critic"):
+    if operating_config and role in ("worker", "fix", "critic"):
         _require("stream" in request, "Operating worker/reviewer routing requires an observed stream A–F")
         stream_route = operating_config["streams"].get(request["stream"], {}).get("reviewer" if role == "critic" else "worker")
         _require(stream_route is not None, "Requested stream has no retained operating route; reconcile stream ownership")
         # An ordinary unpinned stream route is the normal-work default. Keeping
         # the simple option effective avoids overriding Luna with default Terra.
-        ordinary_default = all(stream_route[k] == policy["role_defaults"][role][k]
+        ordinary_default = all(stream_route[k] == policy["role_defaults"][policy_role][k]
                                for k in ("model", "reasoning_effort"))
-        if not (role == "worker" and simple and simple_enabled and ordinary_default and not stream_route.get("pinned", False)):
+        if not (role in ("worker", "fix") and simple and simple_enabled and ordinary_default and not stream_route.get("pinned", False)):
             selected = {k: stream_route[k] for k in ("model", "reasoning_effort")}
             pinned = stream_route.get("pinned", False)
             reasons.append("operating stream route" + (" pinned by user" if pinned else " for ordinary work"))
@@ -347,13 +373,13 @@ def _select_route(policy, request, capabilities, operating_config):
     # global route stays intact for unrelated work and future Epics.
     epic_routes = operating_config.get("epic_overrides", {}).get(request.get("epic_id"), {}) if operating_config else {}
     epic_route = (epic_routes.get("streams", {}).get(request.get("stream"), {}).get("reviewer" if role == "critic" else "worker")
-                  if role in ("worker", "critic") else epic_routes.get(role))
+                  if role in ("worker", "fix", "critic") else epic_routes.get(role))
     if epic_route is not None:
         selected = {k: epic_route[k] for k in ("model", "reasoning_effort")}
         pinned = epic_route.get("pinned", False)
         reasons.append("operating Epic-scoped route" + (" pinned by user" if pinned else ""))
     for field, key in (("agent_overrides", request["agent_id"]), ("ticket_overrides", request["ticket_id"])):
-        override = policy[field].get(key, {}).get(role)
+        override = policy[field].get(key, {}).get(policy_role)
         if override is not None:
             selected = {k: override[k] for k in ("model", "reasoning_effort")}
             pinned = override.get("pinned", False)
@@ -400,7 +426,7 @@ def _select_route(policy, request, capabilities, operating_config):
         ceiling = policy["escalation"]["effort_ceiling"]
         if EFFORTS.index(selected["reasoning_effort"]) > EFFORTS.index(ceiling):
             return {"status": "blocked", "reason": "monotone escalation would exceed configured effort ceiling", "policy_sha256": _fingerprint(policy)}
-        stronger_allowed = [m for m in policy["model_order"][rank + 1:] if m in policy["role_allowed_models"][role]]
+        stronger_allowed = [m for m in policy["model_order"][rank + 1:] if m in policy["role_allowed_models"][policy_role]]
         if already_stronger:
             # A revised risk assessment may already require a stronger model.
             # Do not unnecessarily step beyond that newly required route.
@@ -418,15 +444,115 @@ def _select_route(policy, request, capabilities, operating_config):
     _valid_pair(policy, selected, "selected route")
     if floor and not _at_least(policy, selected, floor):
         return {"status": "blocked", "reason": "escalation violates risk/review floor", "policy_sha256": _fingerprint(policy)}
-    if selected["model"] not in policy["role_allowed_models"][role]:
+    if selected["model"] not in policy["role_allowed_models"][policy_role]:
         return {"status": "unavailable", "reason": "selected model is outside effective role allowlist", "requested": selected, "policy_sha256": _fingerprint(policy)}
-    host_efforts = capabilities["models"].get(selected["model"], [])
+    host_efforts = normalized_capabilities.get(selected["model"], [])
     _require(isinstance(host_efforts, list) and all(isinstance(e, str) for e in host_efforts), "host model capabilities must be effort lists")
     if selected["reasoning_effort"] not in host_efforts:
         return {"status": "unavailable", "reason": "host does not support requested model/effort; no fallback", "requested": selected, "policy_sha256": _fingerprint(policy)}
     return {"status": "ready", **selected, "role": role, "reasons": reasons,
             "escalated": escalated, "pinned": pinned, "high_risk": demanding, "simple": simple,
             "policy_sha256": _fingerprint(policy), "dispatch_performed": False}
+
+
+def _current_retry_ceiling(connection, project_id):
+    return connection.execute(
+        "SELECT * FROM model_retry_ceiling_events WHERE project_id=? ORDER BY revision DESC LIMIT 1",
+        (project_id,)).fetchone()
+
+
+def _append_retry_ceiling(connection, project_id, previous, retry_limit, kind, observation):
+    revision = 1 if previous is None else previous["revision"] + 1
+    old_limit = None if previous is None else previous["retry_limit"]
+    audit = {**observation, "project_id": project_id, "revision": revision,
+             "previous_limit": old_limit, "new_limit": retry_limit, "kind": kind,
+             "recorded_at": datetime.now(timezone.utc).isoformat()}
+    connection.execute(
+        "INSERT INTO model_retry_ceiling_events "
+        "(project_id,revision,previous_limit,retry_limit,kind,observation) VALUES (?,?,?,?,?,?)",
+        (project_id, revision, old_limit, retry_limit, kind, json.dumps(audit)))
+    return _current_retry_ceiling(connection, project_id)
+
+
+def initialize_routing_ledger(connection, *, legacy_only=False):
+    """Create or migrate the authoritative routing-ledger schema on a connection."""
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_runs (
+      run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, ticket_id TEXT NOT NULL,
+      role TEXT NOT NULL, agent_id TEXT NOT NULL, phase TEXT NOT NULL,
+      created_at TEXT NOT NULL, day TEXT NOT NULL, policy_hash TEXT NOT NULL,
+      status TEXT NOT NULL, reserved_tokens INTEGER NOT NULL,
+      reserved_cost INTEGER, actual_tokens INTEGER, actual_cost INTEGER,
+      escalated INTEGER NOT NULL, request TEXT NOT NULL,
+      route TEXT NOT NULL, outcome TEXT)""")
+    connection.execute("CREATE INDEX IF NOT EXISTS model_runs_project ON model_runs(project_id,ticket_id,day)")
+    if legacy_only:
+        return
+    connection.execute("CREATE TABLE IF NOT EXISTS model_failure_resolutions (run_id TEXT PRIMARY KEY, observation TEXT NOT NULL)")
+    connection.execute("CREATE TABLE IF NOT EXISTS model_defect_observations (observation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, observation TEXT NOT NULL)")
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_reconciliations (
+      reconciliation_id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
+      project_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+      observation TEXT NOT NULL, result TEXT NOT NULL)""")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_update BEFORE UPDATE ON model_reconciliations BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_delete BEFORE DELETE ON model_reconciliations BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_replace BEFORE INSERT ON model_reconciliations WHEN EXISTS(SELECT 1 FROM model_reconciliations WHERE reconciliation_id=NEW.reconciliation_id OR run_id=NEW.run_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
+    connection.execute("CREATE TABLE IF NOT EXISTS model_retry_ceilings (project_id TEXT PRIMARY KEY, retry_limit INTEGER NOT NULL)")
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_limit_authorizations (
+      operation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+      request_hash TEXT NOT NULL, observation TEXT NOT NULL, result TEXT NOT NULL)""")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_update BEFORE UPDATE ON model_retry_limit_authorizations BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_delete BEFORE DELETE ON model_retry_limit_authorizations BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_replace BEFORE INSERT ON model_retry_limit_authorizations WHEN EXISTS(SELECT 1 FROM model_retry_limit_authorizations WHERE operation_id=NEW.operation_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_approval_consumptions (
+      reference_id TEXT PRIMARY KEY, first_operation_id TEXT NOT NULL,
+      first_project_id TEXT NOT NULL, provenance TEXT NOT NULL)""")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_update BEFORE UPDATE ON model_retry_approval_consumptions BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_delete BEFORE DELETE ON model_retry_approval_consumptions BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_replace BEFORE INSERT ON model_retry_approval_consumptions WHEN EXISTS(SELECT 1 FROM model_retry_approval_consumptions WHERE reference_id=NEW.reference_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
+    # Index existing grants without rewriting audit rows or rejecting old
+    # duplicate references. First historical use consumes the identity
+    # for every project and both reference fields in this database.
+    for row in connection.execute("SELECT * FROM model_retry_limit_authorizations ORDER BY rowid").fetchall():
+        audit = json.loads(row["observation"])
+        references = {_approval_reference(audit[field], historical=True)
+                      for field in ("authorization_ref", "evidence_ref")}
+        for reference in sorted(references):
+            if connection.execute("SELECT 1 FROM model_retry_approval_consumptions WHERE reference_id=?", (reference,)).fetchone() is None:
+                connection.execute("INSERT INTO model_retry_approval_consumptions VALUES (?,?,?,?)",
+                                   (reference, row["operation_id"], row["project_id"],
+                                    "historical grant; original records and duplicate references preserved"))
+    connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_ceiling_events (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision > 0), previous_limit INTEGER,
+      retry_limit INTEGER NOT NULL CHECK(retry_limit >= 0),
+      kind TEXT NOT NULL, observation TEXT NOT NULL, UNIQUE(project_id,revision))""")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_update BEFORE UPDATE ON model_retry_ceiling_events BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_delete BEFORE DELETE ON model_retry_ceiling_events BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_replace BEFORE INSERT ON model_retry_ceiling_events WHEN EXISTS(SELECT 1 FROM model_retry_ceiling_events WHERE event_id=NEW.event_id OR (project_id=NEW.project_id AND revision=NEW.revision)) BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
+    # Preserve the last legacy ceiling, not a guessed historical policy.
+    for row in connection.execute("SELECT * FROM model_retry_ceilings").fetchall():
+        if _current_retry_ceiling(connection, row["project_id"]) is None:
+            _append_retry_ceiling(connection, row["project_id"], None,
+                                  row["retry_limit"], "legacy_migration", {
+                "policy_sha256": None,
+                "provenance": "v1.8.1 current ceiling; historical reductions were not audited"})
+    for operation in ("INSERT", "UPDATE", "DELETE"):
+        connection.execute(f"CREATE TRIGGER IF NOT EXISTS retry_legacy_no_{operation.lower()} BEFORE {operation} ON model_retry_ceilings BEGIN SELECT RAISE(ABORT, 'legacy ceiling table is sealed; use append-only events'); END")
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(model_runs)")}
+    if "closed_day" not in columns:
+        connection.execute("ALTER TABLE model_runs ADD COLUMN closed_day TEXT")
+        for row in connection.execute("SELECT run_id,outcome FROM model_runs WHERE outcome IS NOT NULL").fetchall():
+            closed_at = json.loads(row["outcome"]).get("settled_at")
+            _require(isinstance(closed_at, str) and len(closed_at) >= 10,
+                     "legacy ledger outcome lacks settlement timestamp; inspect protected ledger")
+            connection.execute("UPDATE model_runs SET closed_day=? WHERE run_id=?", (closed_at[:10], row["run_id"]))
+    if "operating_hash" not in columns:
+        # Attribution is additive. Never invent a current operating
+        # configuration for pre-operating reservations or settlements.
+        connection.execute("ALTER TABLE model_runs ADD COLUMN operating_hash TEXT")
+    connection.execute("CREATE INDEX IF NOT EXISTS model_runs_status ON model_runs(project_id,status)")
+    connection.execute("CREATE INDEX IF NOT EXISTS model_runs_day ON model_runs(project_id,day)")
+    connection.execute("CREATE INDEX IF NOT EXISTS model_runs_closed ON model_runs(project_id,closed_day)")
 
 
 class RoutingLedger:
@@ -440,80 +566,7 @@ class RoutingLedger:
         _require(str(path) != ":memory:", "routing ledger must be durable")
         _require(self.path.parent.is_dir(), "create a trusted ledger directory before use")
         with self._transaction() as connection:
-            connection.execute("""CREATE TABLE IF NOT EXISTS model_runs (
-              run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, ticket_id TEXT NOT NULL,
-              role TEXT NOT NULL, agent_id TEXT NOT NULL, phase TEXT NOT NULL,
-              created_at TEXT NOT NULL, day TEXT NOT NULL, policy_hash TEXT NOT NULL,
-              status TEXT NOT NULL, reserved_tokens INTEGER NOT NULL,
-              reserved_cost INTEGER, actual_tokens INTEGER, actual_cost INTEGER,
-              escalated INTEGER NOT NULL, request TEXT NOT NULL,
-              route TEXT NOT NULL, outcome TEXT)""")
-            connection.execute("CREATE INDEX IF NOT EXISTS model_runs_project ON model_runs(project_id,ticket_id,day)")
-            connection.execute("CREATE TABLE IF NOT EXISTS model_failure_resolutions (run_id TEXT PRIMARY KEY, observation TEXT NOT NULL)")
-            connection.execute("CREATE TABLE IF NOT EXISTS model_defect_observations (observation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, observation TEXT NOT NULL)")
-            connection.execute("""CREATE TABLE IF NOT EXISTS model_reconciliations (
-              reconciliation_id TEXT PRIMARY KEY, run_id TEXT UNIQUE NOT NULL,
-              project_id TEXT NOT NULL, request_hash TEXT NOT NULL,
-              observation TEXT NOT NULL, result TEXT NOT NULL)""")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_update BEFORE UPDATE ON model_reconciliations BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_delete BEFORE DELETE ON model_reconciliations BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS reconciliation_no_replace BEFORE INSERT ON model_reconciliations WHEN EXISTS(SELECT 1 FROM model_reconciliations WHERE reconciliation_id=NEW.reconciliation_id OR run_id=NEW.run_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'reconciliation audit is append-only'); END")
-            connection.execute("CREATE TABLE IF NOT EXISTS model_retry_ceilings (project_id TEXT PRIMARY KEY, retry_limit INTEGER NOT NULL)")
-            connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_limit_authorizations (
-              operation_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
-              request_hash TEXT NOT NULL, observation TEXT NOT NULL, result TEXT NOT NULL)""")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_update BEFORE UPDATE ON model_retry_limit_authorizations BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_delete BEFORE DELETE ON model_retry_limit_authorizations BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_authorization_no_replace BEFORE INSERT ON model_retry_limit_authorizations WHEN EXISTS(SELECT 1 FROM model_retry_limit_authorizations WHERE operation_id=NEW.operation_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'retry-limit authorization audit is append-only'); END")
-            connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_approval_consumptions (
-              reference_id TEXT PRIMARY KEY, first_operation_id TEXT NOT NULL,
-              first_project_id TEXT NOT NULL, provenance TEXT NOT NULL)""")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_update BEFORE UPDATE ON model_retry_approval_consumptions BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_delete BEFORE DELETE ON model_retry_approval_consumptions BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_consumption_no_replace BEFORE INSERT ON model_retry_approval_consumptions WHEN EXISTS(SELECT 1 FROM model_retry_approval_consumptions WHERE reference_id=NEW.reference_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'approval consumption is append-only'); END")
-            # Index existing grants without rewriting audit rows or rejecting old
-            # duplicate references. First historical use consumes the identity
-            # for every project and both reference fields in this database.
-            for row in connection.execute("SELECT * FROM model_retry_limit_authorizations ORDER BY rowid").fetchall():
-                audit = json.loads(row["observation"])
-                references = {_approval_reference(audit[field], historical=True)
-                              for field in ("authorization_ref", "evidence_ref")}
-                for reference in sorted(references):
-                    if connection.execute("SELECT 1 FROM model_retry_approval_consumptions WHERE reference_id=?", (reference,)).fetchone() is None:
-                        connection.execute("INSERT INTO model_retry_approval_consumptions VALUES (?,?,?,?)",
-                                           (reference, row["operation_id"], row["project_id"],
-                                            "historical grant; original records and duplicate references preserved"))
-            connection.execute("""CREATE TABLE IF NOT EXISTS model_retry_ceiling_events (
-              event_id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
-              revision INTEGER NOT NULL CHECK(revision > 0), previous_limit INTEGER,
-              retry_limit INTEGER NOT NULL CHECK(retry_limit >= 0),
-              kind TEXT NOT NULL, observation TEXT NOT NULL, UNIQUE(project_id,revision))""")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_update BEFORE UPDATE ON model_retry_ceiling_events BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_delete BEFORE DELETE ON model_retry_ceiling_events BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
-            connection.execute("CREATE TRIGGER IF NOT EXISTS retry_ceiling_event_no_replace BEFORE INSERT ON model_retry_ceiling_events WHEN EXISTS(SELECT 1 FROM model_retry_ceiling_events WHERE event_id=NEW.event_id OR (project_id=NEW.project_id AND revision=NEW.revision)) BEGIN SELECT RAISE(ABORT, 'retry ceiling events are append-only'); END")
-            # Preserve the last legacy ceiling, not a guessed historical policy.
-            for row in connection.execute("SELECT * FROM model_retry_ceilings").fetchall():
-                if self._current_retry_ceiling(connection, row["project_id"]) is None:
-                    self._append_retry_ceiling(connection, row["project_id"], None,
-                                               row["retry_limit"], "legacy_migration", {
-                        "policy_sha256": None, "provenance": "v1.8.1 current ceiling; historical reductions were not audited"})
-            for operation in ("INSERT", "UPDATE", "DELETE"):
-                connection.execute(f"CREATE TRIGGER IF NOT EXISTS retry_legacy_no_{operation.lower()} BEFORE {operation} ON model_retry_ceilings BEGIN SELECT RAISE(ABORT, 'legacy ceiling table is sealed; use append-only events'); END")
-            columns = {row["name"] for row in connection.execute("PRAGMA table_info(model_runs)")}
-            if "closed_day" not in columns:
-                connection.execute("ALTER TABLE model_runs ADD COLUMN closed_day TEXT")
-                for row in connection.execute("SELECT run_id,outcome FROM model_runs WHERE outcome IS NOT NULL").fetchall():
-                    closed_at = json.loads(row["outcome"]).get("settled_at")
-                    _require(isinstance(closed_at, str) and len(closed_at) >= 10,
-                             "legacy ledger outcome lacks settlement timestamp; inspect protected ledger")
-                    connection.execute("UPDATE model_runs SET closed_day=? WHERE run_id=?", (closed_at[:10], row["run_id"]))
-            if "operating_hash" not in columns:
-                # Attribution is additive. Never invent a current operating
-                # configuration for pre-operating reservations or settlements.
-                connection.execute("ALTER TABLE model_runs ADD COLUMN operating_hash TEXT")
-            connection.execute("CREATE INDEX IF NOT EXISTS model_runs_status ON model_runs(project_id,status)")
-            connection.execute("CREATE INDEX IF NOT EXISTS model_runs_day ON model_runs(project_id,day)")
-            connection.execute("CREATE INDEX IF NOT EXISTS model_runs_closed ON model_runs(project_id,closed_day)")
+            initialize_routing_ledger(connection)
 
     def _connect(self):
         connection = sqlite3.connect(str(self.path), timeout=30)
@@ -668,18 +721,12 @@ class RoutingLedger:
 
     @staticmethod
     def _current_retry_ceiling(connection, project_id):
-        return connection.execute("SELECT * FROM model_retry_ceiling_events WHERE project_id=? ORDER BY revision DESC LIMIT 1", (project_id,)).fetchone()
+        return _current_retry_ceiling(connection, project_id)
 
     @staticmethod
     def _append_retry_ceiling(connection, project_id, previous, retry_limit, kind, observation):
-        revision = 1 if previous is None else previous["revision"] + 1
-        old_limit = None if previous is None else previous["retry_limit"]
-        audit = {**observation, "project_id": project_id, "revision": revision,
-                 "previous_limit": old_limit, "new_limit": retry_limit, "kind": kind,
-                 "recorded_at": datetime.now(timezone.utc).isoformat()}
-        connection.execute("INSERT INTO model_retry_ceiling_events (project_id,revision,previous_limit,retry_limit,kind,observation) VALUES (?,?,?,?,?,?)",
-                           (project_id, revision, old_limit, retry_limit, kind, json.dumps(audit)))
-        return RoutingLedger._current_retry_ceiling(connection, project_id)
+        return _append_retry_ceiling(connection, project_id, previous, retry_limit, kind,
+                                     observation)
 
     @staticmethod
     def _retry_ceiling(connection, project_id, configured_limit, policy):
@@ -793,12 +840,17 @@ class RoutingLedger:
             _require(outcome.get("failure_kind") is None, "successful run cannot have failure_kind")
         if outcome["independent_review_passed"]:
             _name(outcome.get("reviewer_context_id"), "reviewer_context_id")
-            _require(outcome["reviewer_context_id"] != outcome["actual_context_id"], "review outcome cannot attest its own independence")
         with self._transaction() as connection:
             row = connection.execute("SELECT * FROM model_runs WHERE run_id=?", (run_id,)).fetchone()
             _require(row is not None, "unknown reservation")
             _require(row["status"] == "reserved", "reservation already settled; duplicate settlement denied")
             route, request = json.loads(row["route"]), json.loads(row["request"])
+            if request["role"] in ("critic", "specialist"):
+                _require(not outcome["independent_review_passed"],
+                         "review runs cannot self-attest review independence; see .agentic/docs/27-MODEL-ROUTING.md#settlement-outcome-shapes")
+            if outcome["independent_review_passed"]:
+                _require(outcome["reviewer_context_id"] != outcome["actual_context_id"],
+                         "a run cannot self-attest review independence; see .agentic/docs/27-MODEL-ROUTING.md#settlement-outcome-shapes")
             _require(row["reserved_cost"] is None or outcome.get("actual_cost_microusd") is not None,
                      "observed actual cost required to settle a cost reservation")
             violations = []

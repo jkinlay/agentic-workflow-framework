@@ -1,6 +1,6 @@
 # Native coordination runbook
 
-Version 1.9.1. This is coordinator guidance for a host with delegation tools. The planner does not launch agents or authenticate active-writer records.
+Version 1.9.3. This is coordinator guidance for a host with delegation tools. The planner does not launch agents or authenticate active-writer records.
 
 See [specification](../SPECIFICATION.md), [ticket lifecycle](23-TICKET-LIFECYCLE.md) and [operating configuration](29-OPERATING-CONFIGURATION.md). Default three streams each have one independent reviewer; their count is derived. Reviewers and any separate coordinator consume shared host slots; configured ceilings do not prove available agents.
 
@@ -21,6 +21,8 @@ Direct chat instructions may change the operating count within its ceiling throu
 ## Reconcile
 
 On COMPLETE, reconcile ownership and candidate identity, then have the assigned publisher push the scoped feature branch/open a draft PR against `github.base_branch`. Observe `branch_pushed` and `pr_exists`. Current validation/requirements permit mark-ready and observed `draft_cleared`; only then dispatch the critic against the observed PR head. A worktree-only review is not READY_FOR_CRITIC. Owner-ready requires critic, applicable specialists and final gate; it still needs human merge authorization. Amend the same PR, register the observed new head and re-review.
+
+Publication also requires the history-aware scan described in [publication safety](31-PUBLICATION-SAFETY.md). The publisher scans the exact base/head and rendered PR body before the first push or PR creation; amendment publishers rescan the complete range before pushing. Provider comments are scanned before posting. A tip-only diff or `git diff --check` cannot establish publication safety.
 
 Routine publication classification requires accepted repository/default/numeric-ID/ref bindings and fresh matching live APPLIED rules evidence. It grants no execution authority and bypasses no platform, scope, protected-ref, secret or adapter prerequisites. Reuse authorization already granted; report any remaining concrete action/owner. BLOCKED/FAILED never becomes an invented PR or completion.
 

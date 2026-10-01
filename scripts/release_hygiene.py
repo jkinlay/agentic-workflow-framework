@@ -40,6 +40,12 @@ LONG_FORM = {'SPECIFICATION.md', '.agentic/docs/20-NEW-PROJECT-SETUP.md',
              '.agentic/docs/26-LOCAL-DISCOVERY-AND-ADOPTION.md',
              '.agentic/docs/27-MODEL-ROUTING.md'}
 PROMPT_PATHS = {'.agentic/prompts', 'scripts/prompt_templates'}
+SHOWCASE_PREFIXES = ('docs/showcase/',)
+SHOWCASE_PATHS = {
+    'docs/AWF-1.8.9-Showcase-Presentation.html',
+    'docs/AWF-1.9.1-Showcase-Presentation.html',
+    'docs/AWF-Showcase-Presentation-Plan.md',
+}
 VERSION_TOKEN = r'(?P<version>\d+\.\d+(?:\.\d+)?)(?!\d|\.\d)'
 # Match release meaning, not bare numbers: requirements such as PyYAML==6.0.2,
 # schema URNs and the compact AWF1.2 authorization wire format are independent.
@@ -60,15 +66,22 @@ def version_tuple(value):
     return tuple(map(int, value.split('.')))
 
 
+def showcase_material(relative):
+    name = relative.as_posix()
+    return name in SHOWCASE_PATHS or any(name.startswith(prefix) for prefix in SHOWCASE_PREFIXES)
+
+
 def word_budget(relative):
     """Per-file Markdown limits; generated manifest stays visible but uncapped."""
     name = relative.as_posix()
     if relative.name == 'MANIFEST.md':
         return None, 'generated_manifest'
+    if showcase_material(relative):
+        return None, 'showcase_material'
     if relative.parent.as_posix() in PROMPT_PATHS or name in {
             '.agentic/review-loop/critic-prompt.md', '.agentic/review-loop/worker-prompt.md'}:
         return 350, 'native_prompt'
-    if name in LONG_FORM or 'RUNBOOK' in relative.name.upper():
+    if name in LONG_FORM or relative.name == 'SPECIFICATION.md' or 'RUNBOOK' in relative.name.upper():
         return 1200, 'specification_or_runbook'
     return 800, 'documentation'
 
@@ -78,6 +91,8 @@ def stale_versions(body, current):
     current_tuple = version_tuple(current)
     # References to retained migration/disposition documents are historical links.
     body = re.sub(r'(?:MIGRATION-|RED-TEAM-DISPOSITION-v)[A-Za-z0-9.>_-]+\.md', '', body)
+    for path in SHOWCASE_PATHS:
+        body = body.replace(path, '')
     if 'urn:awf:1.2:' in body:
         body = body.replace('Agentic Workflow 1.2 —', 'Authorization protocol —')
         body = body.replace(r'Agentic Workflow 1.2 \u2014', 'Authorization protocol')
@@ -98,16 +113,17 @@ def check_release(root=ROOT, version=None):
     version_tuple(current)
     problems, budgets = [], []
     total_words = manifest_words = 0
-    files = sorted(p for p in root.rglob('*') if p.is_file() and '.git' not in p.relative_to(root).parts)
+    files = sorted(p for p in root.rglob('*') if p.is_file() and
+                   not ({'.git', '.tmp-tests'} & set(p.relative_to(root).parts)))
     for path in files:
         rel = path.relative_to(root)
         if path.suffix.lower() == '.md':
             words = len(path.read_text(encoding='utf-8').split())
             cap, category = word_budget(rel)
             total_words += words
-            if cap is None:
+            if category == 'generated_manifest':
                 manifest_words += words
-            elif words > cap:
+            elif cap is not None and words > cap:
                 problems.append(f'{rel.as_posix()}: documentation budget exceeded: {words} > {cap} words ({category})')
             budgets.append({'path': rel.as_posix(), 'words': words, 'limit': cap, 'category': category})
         if path.suffix.lower() not in SCAN_SUFFIXES:
@@ -118,13 +134,17 @@ def check_release(root=ROOT, version=None):
         if any(marker in body for marker in MOJIBAKE_SIGNATURES):
             problems.append(rel.as_posix() + ': suspected mojibake or replacement character; inspect original text')
         historical_validation = rel.parts[:3] == ('.agentic', 'validation', 'history') and path.suffix == '.json'
-        if ('tests' in rel.parts or historical_validation or path.name in HISTORY
+        if showcase_material(rel) or ('tests' in rel.parts or historical_validation or path.name in HISTORY
                 or rel.as_posix() in HISTORICAL_PILOT_DOCUMENTS
                 or path.name.startswith(('MIGRATION-', 'RED-TEAM-DISPOSITION-'))):
             continue
         stale = stale_versions(body, current)
         if stale:
             problems.append(rel.as_posix() + ': stale operational release version: ' + ', '.join(stale))
+    gitignore = root / '.gitignore'
+    if gitignore.is_file() and '.tmp-tests/' not in {
+            line.strip() for line in gitignore.read_text(encoding='utf-8').splitlines()}:
+        problems.append('.gitignore: .tmp-tests/ must ignore local self-test output')
     if current == VERSION:
         prompts = render_prompts(root)
     else:

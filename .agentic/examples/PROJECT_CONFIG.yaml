@@ -1,7 +1,7 @@
 {
   "version": 3,
   "template": {
-    "expected_workflow_version": "1.9.1"
+    "expected_workflow_version": "1.9.3"
   },
   "project": {
     "id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
@@ -66,7 +66,7 @@
     "independent_reviewers": {
       "allocation": "one_per_stream"
     },
-    "max_agent_runs_per_ticket": 8,
+    "max_agent_runs_per_ticket": 12,
     "max_spawn_depth": 1,
     "max_amendment_cycles": 3,
     "max_cap_extensions": 2,
@@ -100,9 +100,9 @@
     "transient_retry_limit": 2,
     "max_run_seconds": 3600,
     "max_tool_calls_per_run": 100,
-    "max_tokens_per_ticket": 100000,
-    "max_cost_microusd_per_ticket": 10000000,
-    "daily_project_cost_microusd": 50000000,
+    "max_tokens_per_ticket": 2000000,
+    "max_cost_microusd_per_ticket": null,
+    "daily_project_cost_microusd": null,
     "one_writer_per_ticket": true,
     "roles": {
       "controller": {
@@ -145,7 +145,7 @@
         "network_allowlist": []
       },
       "specialist": {
-        "model": "gpt-6-astra",
+        "model": "gpt-5.6-sol",
         "reasoning_effort": "high",
         "fallback": "deny",
         "approved_model_ids": [
@@ -157,6 +157,10 @@
         "permission_profile": "documented-reference-profile",
         "network_allowlist": []
       }
+    },
+    "route_capabilities": {
+      "observation_path": ".agentic/route-capabilities.json",
+      "max_age_days": 30
     },
     "host_broker": {
       "enabled": false,
@@ -231,7 +235,7 @@
           "reasoning_effort": "high"
         },
         "specialist": {
-          "model": "gpt-6-astra",
+          "model": "gpt-5.6-sol",
           "reasoning_effort": "high"
         }
       },
@@ -270,7 +274,7 @@
         "reasoning_effort": "high"
       },
       "risk_route": {
-        "model": "gpt-6-astra",
+        "model": "gpt-5.6-sol",
         "reasoning_effort": "high"
       },
       "high_risk_flags": [
@@ -292,10 +296,10 @@
         "effort_ceiling": "high"
       },
       "budgets": {
-        "max_runs_per_ticket": 8,
-        "max_runs_per_project_day": 40,
-        "max_tokens_per_ticket": 100000,
-        "max_tokens_per_project_day": 500000,
+        "max_runs_per_ticket": 12,
+        "max_runs_per_project_day": 250,
+        "max_tokens_per_ticket": 2000000,
+        "max_tokens_per_project_day": 30000000,
         "max_cost_microusd_per_ticket": null,
         "max_cost_microusd_per_project_day": null
       },

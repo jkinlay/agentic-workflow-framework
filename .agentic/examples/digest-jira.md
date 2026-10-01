@@ -14,6 +14,7 @@ AWF EX-1 | state MERGED | PR 7 | head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb |
 | review_coverage | PASS |
 | provenance | PASS |
 | local_ci_parity | PASS |
+| publication_safety | PASS |
 | conclusion | READY_FOR_OWNER_AUTHORIZATION |
 
 Open findings:

@@ -1,0 +1,33 @@
+# Self-reported structured-decision smoke harness
+
+Six synthetic cases exercise shared capacity, a seeded authorization defect, stale candidate evidence, an uncertain push/usage charge, injected policy instructions, reviewer floors and bounded escalation. The controller case includes a permitted escalation: stopping everything does not pass.
+
+This harness runs no model. The answer key, `rubric.json`, ships publicly with every install; copying its required codes into caller-supplied observations can pass without consulting a model. Packet hashes and grading validate structure and supplied decisions, not model behavior. For a separate real evaluation, keep a held-out rubric outside the tested checkout and give each independently launched agent only its case, role prompt and response contract. Preserve actual model/host provenance. Include override-file and PR-body injections in that held-out set. No comparative prompt-quality result is claimed here.
+
+The compatibility path `benchmark_native.py` and `benchmark_id` field retain their names for existing callers. The public rubric declares `public_example_omitted_from_packet`; it is not secret.
+
+After generating role prompts, prepare an agent packet:
+
+```text
+python -B .agentic/scripts/benchmark_native.py prepare --output PACKET.json
+```
+
+Record the returned packet and rubric SHA-256 pins independently. The output includes a response contract. Collect one result for every exact case ID with its case/prompt hashes, decision codes, reasoning, evidence references and requested/actual model, effort and host identity. Unknown identity remains JSON null. Host-action observations are separately labelled recorder assertions with evidence references; absence means unobserved, not that no action occurred.
+
+```text
+python -B .agentic/scripts/benchmark_native.py grade --packet PACKET.json --expected-packet-sha256 PIN --observations OBSERVATIONS.json --expected-rubric-sha256 PIN --output REPORT.json
+```
+
+Outputs must be new files. Grade rejects tampered bindings, duplicate/unknown/missing cases and malformed observations. Complete cases with incomplete or inappropriate decisions fail their rubric. Scores concern reported structured decisions and supplied evidence citations; prose quality, authenticated host behavior, sandbox isolation and model quality are not established by the grader. A model can state the right action without executing it. Keep raw responses and run provenance beside the report outside the distributed smoke examples; sanitize before publishing.
+
+## Actual model evaluation
+
+The separate [evaluate_native.py](../../scripts/evaluate_native.py) invokes fresh Codex CLI contexts for one to three operator-supplied cases. Prepare a new external packet with the same contract and current generated role-prompt bytes, and an independently pinned external rubric declaring `external_held_out`. Use newly authored cases, including seeded defects and override-file/PR-body injections; do not rename the public cases and claim they are held out. [Contract tests](../../tests/test_native_evaluation.py) illustrate the format with explicitly synthetic fixtures.
+
+```text
+python -B .agentic/scripts/evaluate_native.py --packet ABS_PACKET --expected-packet-sha256 PIN --rubric ABS_RUBRIC --expected-rubric-sha256 PIN --codex ABS_NATIVE_EXECUTABLE --expected-codex-sha256 PIN --model APPROVED_MODEL --effort high --output ABS_NEW_DIRECTORY
+```
+
+This spends actual account model usage. Each case gets a fresh temporary working directory with only a response schema, its role prompt and case data on stdin. The rubric and source paths are not sent. Selected shell, skills, image and search features are disabled; observed tool/unknown events invalidate evaluation. These settings and external file placement do not prove operating-system isolation or absence of managed integrations. Use a separately qualified evaluator host for stronger claims.
+
+Runs are sequential, capped at three cases, 180 seconds per case and a 600-second supervisor budget. OS process startup and report I/O are outside that enforceable deadline. Timeout requests local kill/reap and stops without retry; failed cleanup needs host reconciliation, and remote outcome/usage may remain unknown. Preserve responses, CLI events, usage, attempts and hashes. Missing preflight capability is `NOT_RUN`; a launched failure is `INCOMPLETE`. Completed evaluation is `MEASURED` with a separate decision grade. Unknown actual model/effort stays null. No grade establishes comparative quality, executed project actions or external-review qualification. Do not change a rubric after seeing answers to turn a failure into a pass. See the [recorded release evaluation](EVALUATION-v1.8.3.md).

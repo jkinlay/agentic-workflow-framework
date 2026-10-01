@@ -1,5 +1,6 @@
 """Synthetic model selection, durable budget and evidence regressions."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from copy import deepcopy
 import importlib.util
 import io
@@ -31,7 +32,8 @@ def capabilities():
 def outcome(reservation, **updates):
     result = dict(actual_model=reservation["model"], actual_reasoning_effort=reservation["reasoning_effort"],
                   actual_context_id="context-1", actual_tokens=100, actual_cost_microusd=None,
-                  success=True, validation_passed=True, independent_review_passed=True,
+                  success=True, validation_passed=True,
+                  independent_review_passed=reservation.get("role") not in ("critic", "specialist"),
                   reviewer_context_id="reviewer-context", escaped_defect=False)
     result.update(updates)
     return result
@@ -50,7 +52,7 @@ class ModelRoutingTests(unittest.TestCase):
 
     def test_balanced_roles_and_simple_worker(self):
         expected = {"controller": (MODELS[2], "medium"), "worker": (MODELS[1], "medium"),
-                    "critic": (MODELS[2], "high"), "specialist": (MODELS[3], "high")}
+                    "critic": (MODELS[2], "high"), "specialist": (MODELS[2], "high")}
         for role, pair in expected.items():
             route = select_route(self.policy, request(role=role, worker_context_id="other"), capabilities())
             self.assertEqual((route["model"], route["reasoning_effort"]), pair)
@@ -59,10 +61,10 @@ class ModelRoutingTests(unittest.TestCase):
         limited = select_route(self.policy, request(complexity="low", verification="limited"), capabilities())
         self.assertEqual(limited["model"], MODELS[1])
 
-    def test_complex_risky_and_uncertain_work_uses_astra(self):
+    def test_complex_risky_and_uncertain_work_uses_observed_sol_default(self):
         for facts in ({"complexity": "high"}, {"risk": "high"}, {"uncertainty": "high"}, {"risk_flags": ["permissions"]}):
             route = select_route(self.policy, request(**facts), capabilities())
-            self.assertEqual(route["model"], MODELS[3])
+            self.assertEqual(route["model"], MODELS[2])
 
     def test_review_independence_and_floor(self):
         with self.assertRaisesRegex(ValidationError, "independent"):
@@ -76,7 +78,7 @@ class ModelRoutingTests(unittest.TestCase):
         self.policy["ticket_overrides"] = {"EX-10": {"worker": {"model": MODELS[1], "reasoning_effort": "high"}}}
         route = select_route(self.policy, request(), capabilities())
         self.assertEqual(route["model"], MODELS[1])
-        self.assertEqual(select_route(self.policy, request(risk="high"), capabilities())["model"], MODELS[3])
+        self.assertEqual(select_route(self.policy, request(risk="high"), capabilities())["model"], MODELS[2])
 
     def test_unavailable_model_or_effort_has_no_silent_fallback(self):
         for host in ({"models": {MODELS[0]: ["low"]}}, {"models": {MODELS[1]: ["low"]}}):
@@ -109,6 +111,13 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertEqual(policy["budgets"]["max_cost_microusd_per_ticket"], 123)
         self.assertEqual(policy["role_allowed_models"]["worker"], [MODELS[0]])
         self.assertIsNone(self.policy["budgets"]["max_cost_microusd_per_ticket"])
+
+    def test_null_execution_cost_caps_preserve_token_only_policy(self):
+        config = {"execution": {"model_routing": self.policy, "max_cost_microusd_per_ticket": None,
+                                "daily_project_cost_microusd": None}}
+        effective = policy_from_config(config)
+        self.assertIsNone(effective["budgets"]["max_cost_microusd_per_ticket"])
+        self.assertIsNone(effective["budgets"]["max_cost_microusd_per_project_day"])
 
     def test_escalation_uses_persisted_history_and_survives_agent_change(self):
         first = self.reserve()
@@ -179,6 +188,23 @@ class ModelRoutingTests(unittest.TestCase):
         self.ledger.settle(first["run_id"], outcome(first, actual_cost_microusd=50))
         with self.assertRaisesRegex(ValidationError, "cost budget"):
             self.reserve(reservation_cost_microusd=51)
+
+    def test_token_only_reservation_and_settlement_record_null_cost(self):
+        reserved = self.reserve()
+        self.assertIsNone(reserved["reservation_cost_microusd"])
+        settled = self.ledger.settle(reserved["run_id"], outcome(reserved, actual_tokens=321))
+        self.assertEqual("settled", settled["status"])
+        with closing(sqlite3.connect(self.path)) as connection:
+            row = connection.execute("SELECT reserved_cost,actual_tokens,actual_cost FROM model_runs WHERE run_id=?",
+                                     (reserved["run_id"],)).fetchone()
+        self.assertEqual((None, 321, None), row)
+
+    def test_any_effective_monetary_cap_keeps_verified_cost_refusal(self):
+        config = {"execution": {"model_routing": self.policy, "max_cost_microusd_per_ticket": None,
+                                "daily_project_cost_microusd": 500}}
+        effective = policy_from_config(config)
+        with self.assertRaisesRegex(ValidationError, "^cost ceiling is configured but a verified hard cost reservation is unavailable$"):
+            self.ledger.reserve("project-1", effective, request(), capabilities())
 
     def test_unpriced_history_blocks_new_cost_cap(self):
         first = self.reserve()
@@ -294,7 +320,7 @@ class ModelRoutingTests(unittest.TestCase):
         self.ledger.settle(first["run_id"], outcome(first, success=False, failure_kind="implementation"))
         retry = self.reserve(risk="high")
         self.assertEqual(retry["status"], "reserved")
-        self.assertEqual(retry["model"], MODELS[3])
+        self.assertEqual(retry["model"], MODELS[2])
         self.assertTrue(retry["escalated"])
 
     def test_escalation_blocks_instead_of_lowering_previous_effort_above_ceiling(self):
@@ -314,7 +340,7 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertEqual(select_route(self.policy, work, capabilities())["status"], "blocked")
         self.policy["escalation"]["effort_ceiling"] = "xhigh"
         retry = select_route(self.policy, work, capabilities())
-        self.assertEqual((retry["model"], retry["reasoning_effort"]), (MODELS[3], "xhigh"))
+        self.assertEqual((retry["model"], retry["reasoning_effort"]), (MODELS[2], "xhigh"))
 
     def test_accepted_escalations_are_monotone_for_each_role_and_previous_pair(self):
         for role in ("controller", "worker", "critic", "specialist"):

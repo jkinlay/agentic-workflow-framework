@@ -110,6 +110,12 @@
         "evidence": [
           "urn:awf:UNFILLED"
         ]
+      },
+      "publication_safety": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
       }
     },
     "record_ids": [],

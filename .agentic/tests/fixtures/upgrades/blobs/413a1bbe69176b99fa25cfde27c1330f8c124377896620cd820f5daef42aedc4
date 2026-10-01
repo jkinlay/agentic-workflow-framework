@@ -1,0 +1,41 @@
+{
+  "template_for": "closeout-record",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "record_id": "00000000-0000-0000-0000-000000000000",
+    "created_at": "1970-01-01T00:00:00Z",
+    "producer_id": "UNFILLED",
+    "run_id": "00000000-0000-0000-0000-000000000000",
+    "binding": {
+      "project_id": "00000000-0000-0000-0000-000000000000",
+      "repository_id": 1,
+      "issue_id": "UNFILLED",
+      "requirements_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "candidate_id": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "pr_number": 1,
+    "reviewed_head_sha": "0000000000000000000000000000000000000000",
+    "base_sha": "0000000000000000000000000000000000000000",
+    "merge_commit_sha": "0000000000000000000000000000000000000000",
+    "merge_tree_sha": "0000000000000000000000000000000000000000",
+    "bound_files": [
+      {
+        "path": "UNFILLED",
+        "blob_sha": "0000000000000000000000000000000000000000",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "gate_record_id": "00000000-0000-0000-0000-000000000000",
+    "review_record_ids": [
+      "00000000-0000-0000-0000-000000000000"
+    ],
+    "jira_transition_record_id": null,
+    "evidence": [
+      "urn:awf:UNFILLED"
+    ]
+  }
+}

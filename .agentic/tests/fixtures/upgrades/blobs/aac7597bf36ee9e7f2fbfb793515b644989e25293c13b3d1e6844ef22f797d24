@@ -1,0 +1,207 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "created_at",
+    "producer_id",
+    "run_id",
+    "binding",
+    "role",
+    "context_id",
+    "parent_run_id",
+    "model",
+    "runtime_version",
+    "instruction_hash",
+    "permission_profile_hash",
+    "capabilities",
+    "status",
+    "attestation_evidence",
+    "resources_held"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "producer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "repository_id",
+        "issue_id",
+        "requirements_hash",
+        "contract_hash",
+        "policy_hash",
+        "candidate_id"
+      ],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "issue_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requirements_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "contract_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "role": {
+      "enum": [
+        "controller",
+        "worker",
+        "critic",
+        "specialist",
+        "collector",
+        "owner",
+        "verifier"
+      ]
+    },
+    "context_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "parent_run_id": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runtime_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instruction_hash": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "permission_profile_hash": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "status": {
+      "enum": [
+        "COMPLETE",
+        "FAILED",
+        "CANCELLED"
+      ]
+    },
+    "attestation_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "format": "uri"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "resources_held": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "slots",
+          "from",
+          "until"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "slots": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "from": {
+            "type": "string",
+            "minLength": 1,
+            "format": "date-time"
+          },
+          "until": {
+            "type": "string",
+            "minLength": 1,
+            "format": "date-time"
+          }
+        }
+      },
+      "minItems": 0
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:run-attestation",
+  "title": "Agentic Workflow 1.2 \u2014 run-attestation"
+}

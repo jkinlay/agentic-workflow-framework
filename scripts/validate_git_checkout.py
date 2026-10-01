@@ -27,6 +27,9 @@ import time
 import uuid
 
 sys.dont_write_bytecode = True
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+from agentic.child_process import child_env
 WORKFLOW = ".agentic/scripts/workflow.py"
 
 
@@ -183,7 +186,7 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
 
         def command(name, arguments, cwd=run, expected=0):
             started = time.monotonic()
-            done = subprocess.run([str(a) for a in arguments], cwd=cwd, env=env, capture_output=True,
+            done = subprocess.run([str(a) for a in arguments], cwd=cwd, env=child_env(env), capture_output=True,
                                   timeout=120, check=False)
             index = len(list(logs.iterdir())) + 1
             log = logs / f"{index:03}.log"

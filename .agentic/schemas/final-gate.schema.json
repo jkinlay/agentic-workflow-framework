@@ -113,7 +113,8 @@
         "ticket_snapshot_current",
         "review_coverage",
         "provenance",
-        "local_ci_parity"
+        "local_ci_parity",
+        "publication_safety"
       ],
       "properties": {
         "acceptance_criteria": {
@@ -466,6 +467,33 @@
               "uniqueItems": true
             }
           }
+        },
+        "publication_safety": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
         }
       }
     },
@@ -633,6 +661,13 @@
                 }
               },
               "local_ci_parity": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "publication_safety": {
                 "properties": {
                   "result": {
                     "const": "PASS"

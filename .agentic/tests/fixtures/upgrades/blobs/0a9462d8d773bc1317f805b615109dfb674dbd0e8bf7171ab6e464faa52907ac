@@ -1,0 +1,6 @@
+# Review and merge these scoped rules into the target's root .gitattributes.
+# Preserve existing rules; inspect more-specific and .git/info overrides.
+# The installer does not copy the broad source-release .gitattributes.
+/.agentic/** text eol=lf
+/AGENTS.md text eol=lf
+/.github/PULL_REQUEST_TEMPLATE.md text eol=lf

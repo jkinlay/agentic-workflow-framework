@@ -1,0 +1,31 @@
+{
+  "template_for": "publication-scan",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "status": "PASS",
+    "base_sha": "0000000000000000000000000000000000000000",
+    "head_sha": "0000000000000000000000000000000000000000",
+    "pr_body_sha256": null,
+    "additional_pr_body_sha256": [],
+    "comment_sha256": [],
+    "mapping_sha256": null,
+    "project_config_sha256": null,
+    "mapping_loaded": false,
+    "mapping_location": ".agentic-state/publication-deny.json",
+    "commits_scanned": [],
+    "findings": [],
+    "unscanned": [],
+    "coverage": {
+      "current_files": true,
+      "commit_messages": true,
+      "every_patch": true,
+      "generated_reports": "UNFILLED",
+      "captured_command_output": "UNFILLED",
+      "pr_bodies": false,
+      "pr_comments": false
+    },
+    "execution_authority": false
+  }
+}

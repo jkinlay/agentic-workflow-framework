@@ -10,7 +10,7 @@ Show JSON/text, status and newly prepared `operating.state` share `effective_cei
 
 `effective_ceiling_governance_path` names the binding project/broker path, preferring project on ties. `effective_ceiling_sources` lists every tied path, including the schema's six-stream maximum. When only that structural limit binds, the governance path is null. Native planning separately considers observed host slots, ownership and spawn depth. Malformed inputs are refused.
 
-Project-owned `OPERATING_CONFIG.yaml` holds choices within governance. Bootstrap seeds three streams: Terra/medium workers, Sol/high reviewers, Sol/medium controller, Astra/high specialist and Luna/low simple work. Existing files are preserved; this file is mutable and unprotected. Missing/invalid choices prevent CONFIGURED; preserve evidence and follow the remedy.
+Project-owned `OPERATING_CONFIG.yaml` holds choices within governance. Bootstrap seeds three streams: Terra/medium workers, Sol/high reviewers, Sol/medium controller, Sol/high specialist and Luna/low simple work. Existing files are preserved; this file is mutable and unprotected. Missing/invalid choices prevent CONFIGURED; preserve evidence and follow the remedy.
 
 Reviewer count derives from streams; legacy fixed counts still bind. Bootstrap's `--propose-operating-capacity` stages a ceiling of at least six and removes fixed count for the adoption PR. Merge before use; ordinary upgrades preserve both. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
 
@@ -28,10 +28,10 @@ Refusals exit 2, naming the path, binding governance value and remedy. Never cla
 
 An existing count above an enabled broker cap is rejected after upgrade. Repair an audited count of four under cap three with `operating set --instruction "Use three streams" --set streams.count=3`; governance stays unchanged and surplus streams drain.
 
-For “Stream B's worker on Astra/xhigh for this Epic”, bind the exact observed Epic ID, echo it, then run:
+For “Stream B's worker on Sol/high for this Epic”, bind the exact observed Epic ID, echo it, then run:
 
 ```text
-python -B .agentic/scripts/workflow.py operating set --instruction "Stream B's worker on Astra/xhigh for this Epic" --epic PROJ-123 --set streams.B.worker=gpt-6-astra/xhigh
+python -B .agentic/scripts/workflow.py operating set --instruction "Stream B's worker on Sol/high for this Epic" --epic PROJ-123 --set streams.B.worker=gpt-5.6-sol/high
 ```
 
 This pins `epic_overrides.PROJ-123.streams.B.worker` without changing global routes. Scoped worker/reviewer/controller/specialist routes obey the same allowlists/floors. Show lists them; only matching observed `epic_id` selects them, after global routes and before agent/ticket overrides. Never infer/broaden Epic identity. Scoped counts, simple switches and project recommendations with `--epic` are unsupported. Unpinning needs an existing complete route.
