@@ -2,7 +2,7 @@
 
 331 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `ba5a363f413b83781ec079a47c2bc218459c5fdf544bb6f058f6f9d87e492796`
+MANIFEST.json SHA-256: `fbd0c00f8a3c6d73e483d77b3ae142a83589f98c9854485eca6aa97c5b76a43f`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -37,13 +37,13 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/28-EXTERNAL-REVIEW.md` | `c53cf16430cb0b8b44915104f02bcc8ab09cf47608aeb1865eb491d25c7d31a2` |
 | `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `9d09ee75451c8d0766a66f47a089fa6dc2b76a25a5897223b4b1f0ee871f92de` |
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `be2ba691bd38a10a9256d99f25c5400aa4337f068e4fd1b3e42ca5b91e8a6d84` |
-| `.agentic/docs/31-PUBLICATION-SAFETY.md` | `d12fa4f4286cc53da9ded79c4359d4e78b3d3074cdc81da7b407573b1d9fd318` |
+| `.agentic/docs/31-PUBLICATION-SAFETY.md` | `1b1b68c258e60f6b2ce6b1393e97e526650f543dec0e101b3880e22cf1cffb7d` |
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `861a027bf807705a1fe3651bb274dd27ac24404567e0b440c21c338d8c227b3b` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `73a25bafeaa92a93cd247a9d4e64fb9434e608dc9df583d3bfd2ce5acde47fc6` |
 | `.agentic/examples/OPERATING_CONFIG.yaml` | `37ae4dc7924aa9ebac65603ecee5c1823731d2ca25ab02a86af88c6e80ec3d3f` |
 | `.agentic/examples/PROJECT_CONFIG.yaml` | `0e8dc1c00424ccbc232d7fb9edf0fb31965106df622cc3631acf1fc30248086c` |
 | `.agentic/examples/digest-jira.md` | `b49b827332ecbbc4963db05b4d913bf66fb2de41c3e570ec91db67cc5827a547` |
-| `.agentic/examples/evidence-bundle.json` | `a74169ccd8c08f28be71ab5c8fa739c07138706e1f7073ea2d779f3a96277954` |
+| `.agentic/examples/evidence-bundle.json` | `6c53b33bf4f0acf1f310b00e1ceb4ef82d2205b007b768ca22f59d21fec51360` |
 | `.agentic/examples/evidence.txt` | `9701f32841a7f0e2a6c9496384a68061f61e01478768582917df9c7612f53e21` |
 | `.agentic/examples/project-cycle.json` | `95c73703fba837832ac8e4ecf20d5acfbb1361022abe8e4b755cdd41912e35f8` |
 | `.agentic/examples/project-status.json` | `e75c1eab8e409b1bcbbc99b1af5b320aab12446af06e9be2cc0f909600d10750` |
@@ -65,7 +65,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
 | `.agentic/lib/agentic/contracts.py` | `5c724168a50554a9bcf7b61902995816771741251f6bf66457627ce98f2e3e04` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
-| `.agentic/lib/agentic/gates.py` | `d19525fc8b22004514add0ce314804f34955e3ad4c924dc64d31577fef3ce47e` |
+| `.agentic/lib/agentic/gates.py` | `c3dca8499aecd942d8d2473df24656d4f15399fdd1f5051d47ee3c1ddf3cbb67` |
 | `.agentic/lib/agentic/gittree.py` | `e2827e40987e45bd4575772869fd536918979fd64b182f24440adcf7d1a5b5c9` |
 | `.agentic/lib/agentic/host_preflight.py` | `9e26810e09f6264b5f4a78d56707a5e55601b4c236d6d397f7c48f9b2e66935a` |
 | `.agentic/lib/agentic/installer.py` | `44360d59e178e39d8757a55e04dc4d90a0b7b559f8914e9162ff048d94512c90` |
@@ -80,7 +80,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/providers/github.py` | `21d890937fd2a361c076c259949c0117a72d610c46fe3f76ff631ceaf399bd18` |
 | `.agentic/lib/agentic/providers/github_review_host.py` | `2f40909fc0cd05c9f636e3abf1c9e9bcce9403641dc66851ea3427cde0e97ac1` |
 | `.agentic/lib/agentic/providers/github_status.py` | `cf6b492281d444685b914669f79469f0f562ab958fb22474932f6bb41929ce3b` |
-| `.agentic/lib/agentic/publication.py` | `91c02d088d1e878e8ee6df0ffba5886a99df0e857617fd82d3fbc76bdbe8306b` |
+| `.agentic/lib/agentic/publication.py` | `429c285d19660e3bb89073b7bd4bd4ca841f16a4091fddbab9bb1635fbaa6354` |
 | `.agentic/lib/agentic/release_trust.py` | `52823764da8487f4c2d410b7979532c0ca2059706a9a09e1a0fb34302f2faebf` |
 | `.agentic/lib/agentic/repository_rules.py` | `6c04a815378ced7163dc763e3fb9a93889f8adde5461c4a58d5df13c20a27fcc` |
 | `.agentic/lib/agentic/review_host.py` | `5bd04cd379021bddee6a76878aa40f91824346f20f985864d7a6df13b888bb1f` |
@@ -129,7 +129,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/schemas/pr-snapshot.schema.json` | `a51558e568d233c67e125efab398287060aaae4addf77b7f3418e0dc01fdce55` |
 | `.agentic/schemas/project-config.schema.json` | `2de1e2b1921eb6e8a0d2e66921d23e124fd8fea498f922bcdc3f569f1465ca1e` |
 | `.agentic/schemas/project-state.schema.json` | `65f3f9045b57ac87255c5868d8bf1bb6e7a616e99ffd7f2f3f77131991d5bb6a` |
-| `.agentic/schemas/publication-scan.schema.json` | `17fae96e37c21600f8dd62340447acf120f34241f608a6128b6f79decfcea5c4` |
+| `.agentic/schemas/publication-scan.schema.json` | `943ce5dc080355feeead8aa97aca35c8acbdac87b75d6c3065c2e1753aaffac5` |
 | `.agentic/schemas/reconciliation.schema.json` | `37a89eb37109fa811a7736d164eb442fc6c11cbae7595b0dbd20a827724dbd7c` |
 | `.agentic/schemas/recovery.schema.json` | `99f476e67b6944b6871a0fb656e02d86cd02613ae4caa65bc83b38c71e85a375` |
 | `.agentic/schemas/review-cap-disposition.schema.json` | `c7828192218fab06881e3dfdff31e2c01b0de146c0d5ffa158272a86015bff27` |
@@ -186,7 +186,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/pr-snapshot.yaml` | `cc22fdff88367de9964016b15a2c7612471d058afd902f00f682f2617a97d0e2` |
 | `.agentic/templates/project-continuation.md` | `28e85eeabc649839c3a4ab82cae1796305a55ec9c1b9668361b0dec30fb4f9c1` |
 | `.agentic/templates/project-status.yaml` | `a669dd6e098fecddec7facab86c9e9c4231c97cf5507511017c92c54b18c9fca` |
-| `.agentic/templates/publication-scan.yaml` | `37466f98fb21100fd1112a3e026df65a624271fdf7aae1ee202c0c15fcc6852c` |
+| `.agentic/templates/publication-scan.yaml` | `5306b7285491e5571a6cf47ddcd1948d805677361629cc29a8ec3c08ac898593` |
 | `.agentic/templates/reconciliation.yaml` | `a574237f4865c6ee70d1c14a09ef37d4a864974eb2bd526ed3e7ae28560e2226` |
 | `.agentic/templates/recovery.yaml` | `769294660618d23057217368455e7820ba5627a53997278b430094e34aa71987` |
 | `.agentic/templates/review-cap-disposition.yaml` | `1a8c1c8398ab1d0e129faec1d2b059e292d81ccf678d77ce7b487f5613b782ff` |
@@ -217,7 +217,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_native_routine.py` | `5a2cd7a28fc147369c986c985071ab035ea50e8113267f7cac8881410c8a1e2a` |
 | `.agentic/tests/test_operating.py` | `def5290843cc25a01664f80d441f3aa52cb76b45802361b18bbad909bc40e0ea` |
 | `.agentic/tests/test_operating_integration.py` | `6a291df27699e934c42cf9007e1aaf47794b027a9878dc6bedc80a1c2b1b6b58` |
-| `.agentic/tests/test_publication.py` | `8f6d7579cb720dee5f75e24bd0734677516f7c4b4a623f741b61dd3b72962490` |
+| `.agentic/tests/test_publication.py` | `8597fff35f3b07496c3fae74a570771c2e94344d74674d45ebd92488e4fe4f01` |
 | `.agentic/tests/test_reference.py` | `3a0cec5e5889d5fefee72d3c70eca70984125ce486c1c2d2c075a656643c7cc5` |
 | `.agentic/tests/test_release_trust.py` | `aa0fea0255bc4b0610c8794e29c05d2180a3a1ef25e5bcf91a038adbbfaa8755` |
 | `.agentic/tests/test_repository_rules.py` | `c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68` |
@@ -316,8 +316,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/bootstrap_project.py` | `a631c77447bd5303157dfe7ee7839927a04d3e75673dbab6854dd0a302c4dd99` |
 | `scripts/build_release.py` | `2cb8119434770e7fa816f3329d4b409804cc3039efa480d2a2a0e675864cb48f` |
 | `scripts/build_skill_distribution.py` | `737260e8a67e65cc4a949b36fbd87eb817da0df140d00b4de8b71ff02a810c00` |
-| `scripts/generate_contracts.py` | `855def28ba06598c5818a647d36c9872aa4dc9a911ff4d9d30241ad0146444f4` |
-| `scripts/generate_examples.py` | `ae75a69e6f22707b08f19eb437910ab10c9eb04c6de17f18607f7ebbfc7a8d22` |
+| `scripts/generate_contracts.py` | `6bb5fb4c4535483a8961cadebea557cbccc2b196fc02c66a4ac88e4d986c03e1` |
+| `scripts/generate_examples.py` | `0d4b1baf25e620dad7b3ba5d3c39147482cd660f87f9da0426644b6b6e5ed076` |
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
 | `scripts/generate_review_loop.py` | `7043b0c1db9d1d8eef9ae82a845781dadf12643d47577df3c2edb6d11453b999` |

@@ -195,7 +195,8 @@ def catalog():
         "specialist_domains": STRINGS, "classification_complete": BOOL, "collector_attestation_id": UUID,
         "evidence": EVIDENCE})
     scan_finding = obj({"commit": OBJECT_ID, "path": text(), "line": nullable(integer(1)), "source": text(),
-        "change": nullable(enum("added", "deleted")), "detector_id": text(), "redacted_excerpt": text()})
+        "change": nullable(enum("added", "deleted")), "detector_id": text(),
+        "classification": enum("BLOCKING", "PRE_EXISTING"), "redacted_excerpt": text()})
     unscanned = obj({"commit": OBJECT_ID, "path": text(), "source": text(),
         "reason": enum("binary", "oversize", "invalid-utf8"),
         "parent": nullable(OBJECT_ID)})
@@ -204,7 +205,9 @@ def catalog():
         "additional_pr_body_sha256": arr(DIGEST), "comment_sha256": arr(DIGEST),
         "mapping_sha256": nullable(DIGEST), "project_config_sha256": nullable(DIGEST),
         "mapping_loaded": BOOL, "mapping_location": const(".agentic-state/publication-deny.json"),
-        "commits_scanned": arr(OBJECT_ID), "findings": arr(scan_finding), "unscanned": arr(unscanned),
+        "commits_scanned": arr(OBJECT_ID), "findings": arr(scan_finding),
+        "total_findings": integer(), "blocking_findings": integer(), "pre_existing_findings": integer(),
+        "unscanned": arr(unscanned), "unscanned_count": integer(),
         "coverage": obj({"current_files": TRUE, "commit_messages": TRUE, "every_patch": TRUE,
             "generated_reports": text(), "captured_command_output": text(), "strict_utf8": TRUE,
             "pr_bodies": BOOL, "pr_comments": BOOL}),

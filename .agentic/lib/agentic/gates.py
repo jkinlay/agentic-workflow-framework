@@ -91,6 +91,20 @@ def expected_binding(config, workflow, bundle):
             "candidate_id": fingerprint("candidate", bundle["candidate"])}
 
 
+def publication_receipt_consistent(publication):
+    """Validate semantic counts and PASS/BLOCKED classification, beyond JSON shape."""
+    findings = publication["findings"]
+    blocking = sum(item["classification"] == "BLOCKING" for item in findings)
+    pre_existing = sum(item["classification"] == "PRE_EXISTING" for item in findings)
+    blocked = bool(blocking or publication["unscanned"])
+    return (publication["total_findings"] == len(findings)
+            and publication["blocking_findings"] == blocking
+            and publication["pre_existing_findings"] == pre_existing
+            and publication["total_findings"] == blocking + pre_existing
+            and publication["unscanned_count"] == len(publication["unscanned"])
+            and publication["status"] == ("BLOCKED" if blocked else "PASS"))
+
+
 def evaluate(config, workflow, bundle, contracts, now):
     validate_config(config, workflow, contracts)
     if config["jira"].get("enabled", True) is False:
@@ -286,8 +300,9 @@ def evaluate(config, workflow, bundle, contracts, now):
         "review_coverage": pr["retrieval_complete"] and pr["classification_complete"] and critic["coverage"]["complete"] and not critic["coverage"]["omissions"] and set(critic["coverage"]["reviewed_paths"]) == file_paths,
         "provenance": not provenance_problems,
         "local_ci_parity": parity_ok,
-        "publication_safety": publication["status"] == "PASS" and not publication["findings"]
-            and not publication["unscanned"] and publication["base_sha"] == candidate["target_base_sha"]
+        "publication_safety": publication_receipt_consistent(publication)
+            and publication["status"] == "PASS" and publication["blocking_findings"] == 0
+            and publication["unscanned_count"] == 0 and publication["base_sha"] == candidate["target_base_sha"]
             and publication["head_sha"] == candidate["head_sha"]
             and publication["pr_body_sha256"] == pr["body_sha256"],
     }
