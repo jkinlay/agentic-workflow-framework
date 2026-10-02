@@ -722,6 +722,16 @@ def _ref_tips(root):
     return list(zip(values[0::2], values[1::2]))
 
 
+def _is_ancestor(root, older, newer):
+    """Distinguish a proven non-ancestor from a failed reachability lookup."""
+    result = _git(root, "merge-base", "--is-ancestor", older, newer, check=False)
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    raise ValidationError("Git reachability lookup failed; rewrite refused without changes")
+
+
 def _local_remote_has_ref(root, url, ref):
     """Sandbox-safe fallback after ls-remote was attempted for a local bare remote."""
     if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", url) and not url.lower().startswith("file://"):
@@ -772,7 +782,7 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
     if _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout:
         raise ValidationError("Rewrite requires a clean working tree and index")
     base_sha = _git(root, "rev-parse", "--verify", base + "^{commit}").stdout.decode("ascii").strip()
-    if _git(root, "merge-base", "--is-ancestor", base_sha, old_head, check=False).returncode:
+    if not _is_ancestor(root, base_sha, old_head):
         raise ValidationError("Rewrite base must be an ancestor of the branch")
     old_commits = [line.decode("ascii") for line in _git(root, "rev-list", base_sha + ".." + old_head).stdout.splitlines()]
     if not old_commits:
@@ -799,7 +809,7 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
     for other_ref, tip in _ref_tips(root):
         if other_ref == ref:
             continue
-        if any(_git(root, "merge-base", "--is-ancestor", commit, tip, check=False).returncode == 0 for commit in old_commits):
+        if any(_is_ancestor(root, commit, tip) for commit in old_commits):
             raise ValidationError("Old branch commits are reachable from another local or remote-tracking ref; rewrite refused")
     message = Path(message_file).read_bytes()
     if not message or b"\0" in message:
