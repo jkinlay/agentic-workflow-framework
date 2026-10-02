@@ -955,6 +955,7 @@ def _loose_path(object_dir, oid, object_format):
 def _install_quarantine_objects(root, records, snapshot):
     object_dir = _canonical_object_dir(root, snapshot)
     snapshot_objects = set(snapshot["objects"])
+    fanouts = {}
     # The snapshot was taken while the repository-wide rewrite lock was held;
     # it is the only authoritative pre-existence observation.  Any unlocked
     # probe made while the quarantine was prepared would be racy.
@@ -964,8 +965,30 @@ def _install_quarantine_objects(root, records, snapshot):
         record["snapshot_present"] = record["oid"] in snapshot_objects
         record["created_by_operation"] = False
         record["installed_identity"] = None
-        if not record["snapshot_present"] and path.exists():
-            raise ValidationError("New object has an ambiguous pre-install loose path")
+        key = str(path.parent)
+        if key not in fanouts:
+            try:
+                details = path.parent.lstat()
+                present = True
+                identity = (details.st_dev, details.st_ino)
+            except FileNotFoundError:
+                present = False
+                identity = None
+            except OSError as exc:
+                raise ValidationError("Loose object fanout snapshot could not be proved") from exc
+            fanouts[key] = {"path": path.parent, "snapshot_present": present,
+                            "snapshot_identity": identity, "created_by_operation": False,
+                            "installed_identity": None, "ambiguous": False}
+        record["fanout"] = fanouts[key]
+        if not record["snapshot_present"]:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise ValidationError("New object path snapshot could not be proved") from exc
+            else:
+                raise ValidationError("New object has an ambiguous pre-install loose path")
     for record in records:
         path = record["path"]
         if record["snapshot_present"]:
@@ -973,7 +996,22 @@ def _install_quarantine_objects(root, records, snapshot):
                 raise ValidationError("Snapshot-present object disappeared during installation")
             continue
         try:
-            path.parent.mkdir(mode=0o755, exist_ok=True)
+            fanout = record["fanout"]
+            if not fanout["snapshot_present"] and not fanout["created_by_operation"]:
+                try:
+                    path.parent.mkdir(mode=0o755, exist_ok=False)
+                    fanout["created_by_operation"] = True
+                    details = path.parent.lstat()
+                    fanout["installed_identity"] = (details.st_dev, details.st_ino)
+                except FileExistsError as exc:
+                    fanout["ambiguous"] = True
+                    raise ValidationError("Loose object fanout appeared after the locked snapshot") from exc
+            details = path.parent.lstat()
+            expected_fanout = (fanout["installed_identity"] if fanout["created_by_operation"]
+                               else fanout["snapshot_identity"])
+            if (details.st_dev, details.st_ino) != expected_fanout:
+                fanout["ambiguous"] = True
+                raise ValidationError("Loose object fanout identity changed after the locked snapshot")
             # Re-run the alias proof after mkdir so a concurrent fanout
             # replacement cannot redirect the operation outside objects/.
             path = _loose_path(object_dir, record["oid"], snapshot["object_format"])
@@ -1087,6 +1125,50 @@ def _cleanup_new_objects(root, records, snapshot):
             raise ValidationError("Replacement object installation identity changed; cleanup refused")
         if not _loose_object_matches(record, snapshot["object_format"]):
             raise ValidationError("Replacement loose object identity could not be proved")
+    fanouts = {}
+    for record in records:
+        fanout = record.get("fanout")
+        if fanout is not None:
+            fanouts[str(fanout["path"])] = fanout
+    retained_paths = {str(record["path"]) for record in retained}
+    for fanout in fanouts.values():
+        if fanout.get("ambiguous"):
+            raise ValidationError("Loose object fanout provenance is ambiguous; recovery required")
+        if not fanout.get("created_by_operation"):
+            continue
+        path = fanout["path"]
+        try:
+            details = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ValidationError("Operation-created fanout identity could not be read") from exc
+        try:
+            attributes = getattr(details, "st_file_attributes", 0)
+            if ((details.st_dev, details.st_ino) != fanout.get("installed_identity") or
+                    not path.is_dir() or path.is_symlink() or
+                    (hasattr(path, "is_junction") and path.is_junction()) or
+                    attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or
+                    path.resolve(strict=True).parent != Path(snapshot["object_dir"])):
+                raise ValidationError("Operation-created fanout identity changed; cleanup refused")
+            contents = list(path.iterdir())
+            unexpected = [entry for entry in contents if str(entry) not in retained_paths]
+            if unexpected:
+                raise ValidationError("Operation-created fanout contains ambiguous residue; cleanup refused")
+            if not contents:
+                path.rmdir()
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise ValidationError("Operation-created empty fanout absence could not be proved") from exc
+                else:
+                    raise ValidationError("Operation-created empty fanout cleanup did not complete")
+        except ValidationError:
+            raise
+        except OSError as exc:
+            raise ValidationError("Operation-created empty fanout cleanup failed") from exc
     if any(_has_claimant(root, record["oid"]) for record in retained):
         raise ValidationError("A replacement object has a concurrent claimant")
     if retained:
@@ -1120,8 +1202,27 @@ def _recovery_message(code, records, old_head, new_head, detail):
     retained = ",".join(record["oid"] for record in records
                         if not record.get("snapshot_present", False)
                         and record.get("path") is not None and record["path"].exists())
-    command = "git cat-file -t " + (retained.split(",")[0] if retained else new_head) + " && git fsck --full --no-reflogs"
+    fanouts = {}
+    ambiguous = {}
+    for record in records:
+        state = record.get("fanout")
+        if state is None:
+            continue
+        try:
+            details = state["path"].lstat()
+            evidence = f"{state['path'].name}@{details.st_dev}:{details.st_ino}"
+        except FileNotFoundError:
+            continue
+        except OSError:
+            evidence = state["path"].name + "@unresolved"
+        if state.get("created_by_operation"):
+            fanouts[str(state["path"])] = evidence
+        elif state.get("ambiguous"):
+            ambiguous[str(state["path"])] = evidence
+    command = (("git cat-file -t " + retained.split(",")[0] + " && ") if retained else "") + "git fsck --full --no-reflogs"
     return (f"{code}: old_head={old_head}; new_head={new_head}; retained_objects={retained or 'none'}; "
+            f"retained_fanouts={','.join(fanouts.values()) or 'none'}; "
+            f"ambiguous_fanouts={','.join(ambiguous.values()) or 'none'}; "
             f"detail={detail}; non_destructive_recovery={command}")
 
 
