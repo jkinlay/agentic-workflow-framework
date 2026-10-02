@@ -24,9 +24,9 @@ from .child_process import child_env
 
 
 PLAN_FORMAT = "awf-heavy-validation-plan-3"
-REVIEW_FORMAT = "awf-heavy-validation-review-4"
+REVIEW_FORMAT = "awf-heavy-validation-review-5"
 CAPACITY_FORMAT = "awf-heavy-validation-capacity-4"
-RESULT_FORMAT = "awf-heavy-validation-result-5"
+RESULT_FORMAT = "awf-heavy-validation-result-6"
 TERMINAL_STATES = frozenset({"PASS", "FAILED", "TIMED_OUT", "CANCELLED"})
 FROZEN_H_PROVIDER_API_KEY_ENV_VARS = frozenset({
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY",
@@ -43,6 +43,7 @@ _MAX_PARTITIONS = 256
 _MAX_ARGV = 64
 _MAX_TOKEN_BYTES = 8192
 _MAX_OUTPUT_BYTES = 256 * 1024
+_WINDOWS_LAUNCHER_RELATIVE = ".agentic/lib/agentic/heavy_validation_child.py"
 GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS = 30
 DISPATCH_ATTESTATION_COMMAND_COUNT = 4
 CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS = 120
@@ -338,6 +339,18 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     return value, sha256(raw)
 
 
+def _windows_launch_chain() -> dict:
+    interpreter = resolve_without_alias(Path(sys.executable).absolute(),
+                                        "controller Python executable", directory=False)
+    repository_root = Path(__file__).resolve().parents[3]
+    launcher = resolve_without_alias(repository_root / _WINDOWS_LAUNCHER_RELATIVE,
+                                     "Windows contained launcher", directory=False)
+    return {"interpreter": {"path": str(interpreter),
+                             "sha256": _file_sha256(interpreter)},
+            "launcher": {"repository_relative_path": _WINDOWS_LAUNCHER_RELATIVE,
+                         "sha256": _file_sha256(launcher)}}
+
+
 def workload_authorization(plan: dict, plan_digest: str) -> dict:
     """Return the exact workload record that an external reviewer must authorize."""
     record = {
@@ -350,6 +363,7 @@ def workload_authorization(plan: dict, plan_digest: str) -> dict:
         "requested_parallelism": plan["requested_parallelism"],
         "determinism": deepcopy(plan["determinism"]),
         "isolation": deepcopy(plan["isolation"]),
+        "windows_launch_chain": _windows_launch_chain(),
         "partitions": [{key: deepcopy(part[key]) for key in (
             "name", "framework", "resources", "argv", "executable",
             "timeout_seconds", "accepted_exit_codes")} for part in plan["partitions"]],
@@ -445,7 +459,8 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
             value = _mapping(supplied, "checkout snapshot")
             _exact_keys(value, {"status", "candidate", "source_working_directory",
                                 "snapshot_working_directory", "tree_sha",
-                                "archive_sha256", "file_count", "read_only",
+                                "archive_sha256", "file_count", "mutation_guard",
+                                "guarded_paths",
                                 "evidence_sha256"},
                         "checkout snapshot")
             if value["status"] != "IMMUTABLE":
@@ -459,12 +474,13 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
             _expected_digest(value["archive_sha256"], "checkout snapshot archive_sha256")
             _expected_digest(value["evidence_sha256"], "checkout snapshot evidence_sha256")
             _nonnegative_int(value["file_count"], "checkout snapshot file_count")
-            if value["read_only"] is not True:
-                raise ValidationError("Checkout snapshot is not read-only")
+            if value["mutation_guard"] != "windows-deny-write-delete-handles":
+                raise ValidationError("Checkout snapshot mutation guard is unsupported")
+            _positive_int(value["guarded_paths"], "checkout snapshot guarded_paths")
             record = {key: deepcopy(value[key]) for key in
                       ("candidate", "source_working_directory",
                        "snapshot_working_directory", "tree_sha", "archive_sha256",
-                       "file_count", "read_only")}
+                       "file_count", "mutation_guard", "guarded_paths")}
             if value["evidence_sha256"] != fingerprint(
                     "heavy-validation-checkout-snapshot", record):
                 raise ValidationError("Checkout snapshot evidence digest mismatch")
@@ -614,7 +630,7 @@ def _engine_identity(plan: dict) -> str:
 
 
 def _lease_request(plan: dict, plan_digest: str, config_digest: str,
-                   capacity_digest: str, parallelism: int, now: str) -> dict:
+                   capacity_digest: str, parallelism: int) -> dict:
     attempts = plan["determinism"]["retry_limit"] + 1
     per_attempt_overhead = (
         PROCESS_STARTUP_BUDGET_SECONDS
@@ -630,8 +646,7 @@ def _lease_request(plan: dict, plan_digest: str, config_digest: str,
     horizon_seconds = (dispatch_attestation_budget + CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS
                        + partition_budget
                        + TERMINAL_BARRIER_OVERHEAD_SECONDS)
-    required_until = timestamp(now) + timedelta(seconds=horizon_seconds)
-    return {"format": "awf-heavy-validation-lease-request-1",
+    return {"format": "awf-heavy-validation-lease-request-2",
             "candidate": deepcopy(plan["candidate"]), "plan_sha256": plan_digest,
             "config_sha256": config_digest, "capacity_sha256": capacity_digest,
             "parallelism": parallelism, "resource_class": plan["resource_class"],
@@ -641,7 +656,7 @@ def _lease_request(plan: dict, plan_digest: str, config_digest: str,
             "resource_claims": _resource_claims(plan, parallelism),
             "determinism": deepcopy(plan["determinism"]),
             "isolation": deepcopy(plan["isolation"]),
-            "required_until": required_until.isoformat(timespec="seconds").replace("+00:00", "Z")}
+            "required_duration_seconds": horizon_seconds}
 
 
 def _validate_lease(value: Any, request: dict, broker_id: str, now: str) -> dict:
@@ -659,9 +674,32 @@ def _validate_lease(value: Any, request: dict, broker_id: str, now: str) -> dict
     if value["broker_id"] != broker_id or value["request_sha256"] != fingerprint("heavy-validation-lease-request", request):
         raise ValidationError("Broker lease binding mismatch")
     acquired, expires, instant = timestamp(value["acquired_at"]), timestamp(value["expires_at"]), timestamp(now)
-    if acquired > instant + timedelta(seconds=30) or expires <= instant or expires < timestamp(request["required_until"]):
+    required = timedelta(seconds=_positive_int(
+        request["required_duration_seconds"], "lease request required_duration_seconds",
+        maximum=7 * 24 * 60 * 60))
+    if (acquired > instant + timedelta(seconds=30) or expires <= instant
+            or expires - acquired < required or expires - instant < required):
         return {**deepcopy(value), "status": "STALE"}
     return deepcopy(value)
+
+
+def _clock_text(clock) -> str:
+    value = clock()
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise ValidationError("Lease clock datetime must be timezone-aware")
+        return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    if isinstance(value, str):
+        timestamp(value)
+        return value
+    raise ValidationError("Lease clock must return an RFC3339 string or datetime")
+
+
+def _lease_runtime_guard(lease: dict | None, clock):
+    if lease is None or lease.get("status") != "GRANTED":
+        return
+    if timestamp(_clock_text(clock)) >= timestamp(lease["expires_at"]):
+        raise ValidationError("Capacity lease expired during execution")
 
 
 def _release_lease(client, lease: dict | None) -> dict:
@@ -744,7 +782,7 @@ def _parallelism(plan: dict, config: dict, capacity: dict | None,
 
 def _admit(plan: dict, plan_digest: str, config_digest: str,
            capacity_digest: str | None, desired: int, reasons: list[str],
-           broker: dict, client, now: str) -> tuple[int, list[str], dict | None, dict, list[dict], bool]:
+           broker: dict, client, lease_clock) -> tuple[int, list[str], dict | None, dict, list[dict], bool]:
     """Acquire an exact lease for governed parallel or serial execution."""
     events: list[dict] = []
     if not broker["enabled"]:
@@ -756,12 +794,12 @@ def _admit(plan: dict, plan_digest: str, config_digest: str,
     parallelism = desired
     while parallelism >= 1:
         request = _lease_request(plan, plan_digest, config_digest, capacity_digest,
-                                 parallelism, now)
+                                 parallelism)
         event = {"parallelism": parallelism,
                  "request_sha256": fingerprint("heavy-validation-lease-request", request)}
         try:
             lease = _validate_lease(client.acquire(deepcopy(request)), request,
-                                    broker["broker_id"], now)
+                                    broker["broker_id"], lease_clock())
         except ValidationError:
             raise
         except Exception as exc:
@@ -1018,7 +1056,8 @@ def _result_shell(partition: dict, plan: dict, executable: dict) -> dict:
 
 
 def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, config: dict,
-                     cancel_event: threading.Event, attempt: int) -> dict:
+                     cancel_event: threading.Event, attempt: int, launch_chain: dict,
+                     lease_guard) -> dict:
     result = _result_shell(partition, plan, executable)
     result["started_at"] = now_text()
     state = "FAILED"
@@ -1029,24 +1068,42 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
     cleanup = {"outcome": "NOT_REQUIRED", "mechanism": "none"}
     proc = None
     released = os.name != "nt"
-    artifact_context = None
-    artifact_entered = False
+    artifact_contexts = []
     artifact_evidence = {"method": "NOT_STARTED", "source_path": executable["resolved_path"],
                          "launch_path": None, "sha256": executable["sha256"]}
+    launch_chain_evidence = []
     try:
         if cancel_event.is_set():
             state = "CANCELLED"
             cleanup = {"outcome": "COMPLETE", "mechanism": "not_started"}
         else:
+            lease_guard()
             artifact_context = _immutable_executable(executable)
             artifact = artifact_context.__enter__()
-            artifact_entered = True
+            artifact_contexts.append(artifact_context)
             artifact_evidence = {key: artifact[key] for key in
                                  ("method", "source_path", "launch_path", "sha256")}
             target_argv = [artifact["launch_path"], *partition["argv"][1:]]
             if os.name == "nt":
-                launcher = str(Path(__file__).with_name("heavy_validation_child.py"))
-                command = [sys.executable, "-B", launcher]
+                interpreter_record = launch_chain["interpreter"]
+                interpreter_context = _immutable_executable({
+                    "resolved_path": interpreter_record["path"],
+                    "sha256": interpreter_record["sha256"]})
+                interpreter = interpreter_context.__enter__()
+                artifact_contexts.append(interpreter_context)
+                launcher_record = launch_chain["launcher"]
+                launcher_context = _immutable_executable({
+                    "resolved_path": str(cwd / launcher_record["repository_relative_path"]),
+                    "sha256": launcher_record["sha256"]})
+                launcher = launcher_context.__enter__()
+                artifact_contexts.append(launcher_context)
+                launch_chain_evidence = [
+                    {key: interpreter[key] for key in
+                     ("method", "source_path", "launch_path", "sha256")},
+                    {key: launcher[key] for key in
+                     ("method", "source_path", "launch_path", "sha256")},
+                ]
+                command = [interpreter["launch_path"], "-B", launcher["launch_path"]]
                 options = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
                 child_stdin = subprocess.PIPE
             else:
@@ -1076,6 +1133,7 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                 reader.start()
             deadline = time.monotonic() + partition["timeout_seconds"]
             while proc.poll() is None:
+                lease_guard()
                 if cancel_event.is_set():
                     cleanup = _terminate_process_tree(proc, config)
                     state = "CANCELLED"
@@ -1130,7 +1188,7 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
             for stream in (proc.stdin, proc.stdout, proc.stderr):
                 if stream is not None and not stream.closed:
                     stream.close()
-        if artifact_context is not None and artifact_entered:
+        for artifact_context in reversed(artifact_contexts):
             artifact_context.__exit__(None, None, None)
     result["ended_at"] = now_text()
     stdout_digest, stdout_bytes, stdout_truncated, stdout_text = stdout_evidence
@@ -1143,6 +1201,7 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
         "cancelled": state == "CANCELLED",
         "error_type": error_type,
         "executable_artifact": artifact_evidence,
+        "windows_launch_chain_artifacts": launch_chain_evidence,
         "process_tree_cleanup": cleanup,
         "stdout_sha256": stdout_digest,
         "stdout_bytes": stdout_bytes,
@@ -1157,12 +1216,13 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
 
 
 def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: dict,
-             cancel_event: threading.Event) -> dict:
+             cancel_event: threading.Event, launch_chain: dict, lease_guard) -> dict:
     attempts = []
     maximum = plan["determinism"]["retry_limit"] + 1
     final = None
     for attempt in range(1, maximum + 1):
-        final = _execute_attempt(partition, plan, executable, cwd, config, cancel_event, attempt)
+        final = _execute_attempt(partition, plan, executable, cwd, config, cancel_event, attempt,
+                                 launch_chain, lease_guard)
         attempts.append({key: final[key] for key in (
             "attempt", "state", "exit_code", "timed_out", "cancelled", "error_type",
             "process_tree_cleanup", "stdout_sha256", "stderr_sha256")})
@@ -1226,7 +1286,7 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
                    capacity_raw: bytes | None = None,
                    expected_capacity_sha256: str | None = None, broker_client=None,
                    now: str | None = None, max_capacity_age_seconds: int = 300,
-                   cancel_event: threading.Event | None = None) -> dict:
+                   cancel_event: threading.Event | None = None, lease_clock=None) -> dict:
     """Execute a reviewed partition plan and return complete fail-closed evidence.
 
     Inputs are exact digest-bound documents. A trusted host authenticator must
@@ -1250,16 +1310,21 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         plan_digest, config_digest, plan["candidate"])
     effective, reasons = _parallelism(plan, config, capacity, stale)
     execution_config, broker, _ = _broker(config)
+    lease_clock = lease_clock or (lambda: datetime.now(timezone.utc))
+    lease_now = lambda: _clock_text(lease_clock)
     effective, reasons, lease, lease_release, admission_events, admitted = _admit(
         plan, plan_digest, config_digest, capacity_digest, effective, reasons,
-        broker, broker_client, now)
+        broker, broker_client, lease_now)
     event = cancel_event or threading.Event()
     started_at = now_text()
     results: list[dict] = []
     dispatch_checkout = checkout
     checkout_snapshot = {"status": "NOT_CREATED"}
+    lease_runtime_valid = True
+    guard = lambda: _lease_runtime_guard(lease, lease_clock)
     try:
         if admitted:
+            guard()
             dispatch_checkout = _attest_checkout(
                 checkout_attestor, plan["candidate"], root)
             with _immutable_checkout(checkout_snapshotter, plan["candidate"], root) as snapshot:
@@ -1269,7 +1334,9 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
                                         thread_name_prefix="awf-heavy") as executor:
                     futures = {
                         executor.submit(_execute, part, plan, executable, snapshot_root,
-                                        config, event): (part, executable)
+                                        config, event,
+                                        authorization["record"]["windows_launch_chain"],
+                                        guard): (part, executable)
                         for part, executable in zip(plan["partitions"], launch_executables)
                     }
                     for future in as_completed(futures):
@@ -1278,6 +1345,10 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
                             results.append(future.result())
                         except Exception as exc:  # executor failures still get terminal evidence
                             results.append(_unexpected_result(part, plan, executable, exc))
+                try:
+                    guard()
+                except ValidationError:
+                    lease_runtime_valid = False
     finally:
         if lease is not None and lease.get("status") == "GRANTED":
             lease_release = _release_lease(broker_client, lease)
@@ -1290,8 +1361,10 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
     release_complete = (not broker["enabled"] or
                         (admitted and lease is not None and lease.get("status") == "GRANTED"
                          and lease_release["status"] == "RELEASED"))
-    passed = admitted and terminal and cleanup_complete and release_complete and all(
+    passed = (admitted and terminal and cleanup_complete and release_complete
+              and lease_runtime_valid and all(
         item["state"] == "PASS" for item in results)
+              )
     stable = [{key: item[key] for key in (
         "partition_id", "name", "engine", "command_sha256", "state", "exit_code",
         "timed_out", "cancelled", "retry_count", "attempts", "process_tree_cleanup",
@@ -1325,7 +1398,8 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         "lease": deepcopy(lease),
         "lease_release": lease_release,
         "admission": {"granted": admitted, "events": admission_events,
-                      "release_complete": release_complete},
+                      "release_complete": release_complete,
+                      "runtime_lease_valid": lease_runtime_valid},
         "started_at": started_at,
         "ended_at": ended_at,
         "all_partitions_terminal": terminal,

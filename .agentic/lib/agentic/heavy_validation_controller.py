@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import io
@@ -273,6 +273,38 @@ class GitCheckoutSnapshotter:
         except OSError:
             pass
 
+    @staticmethod
+    def _lock_snapshot(destination: Path):
+        if os.name != "nt":
+            raise ValidationError(
+                "Immutable snapshot mutation exclusion is unavailable on this host")
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                       ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                       wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handles = []
+        paths = [destination, *sorted(destination.rglob("*"), key=lambda item: str(item))]
+        invalid = wintypes.HANDLE(-1).value
+        try:
+            for path in paths:
+                flags = 0x02000000 if path.is_dir() else 0x00000080
+                handle = kernel.CreateFileW(str(path), 0x80000000, 0x00000001,
+                                            None, 3, flags, None)
+                if handle == invalid:
+                    raise ValidationError(
+                        "Snapshot mutation-exclusion handle acquisition failed")
+                handles.append(handle)
+        except Exception:
+            for handle in reversed(handles):
+                kernel.CloseHandle(handle)
+            raise
+        return kernel, handles
+
     @contextmanager
     def __call__(self, candidate: dict, working_directory: str):
         observed = resolve_without_alias(Path(working_directory).absolute(),
@@ -286,17 +318,21 @@ class GitCheckoutSnapshotter:
                                                   "checkout snapshot root", directory=True)
             file_count = self._extract(raw, snapshot_root)
             self._freeze(snapshot_root)
+            kernel, handles = self._lock_snapshot(snapshot_root)
             record = {"candidate": deepcopy(candidate),
                       "source_working_directory": str(self.root),
                       "snapshot_working_directory": str(snapshot_root),
                       "tree_sha": candidate["tree_sha"],
                       "archive_sha256": archive_sha, "file_count": file_count,
-                      "read_only": True}
+                      "mutation_guard": "windows-deny-write-delete-handles",
+                      "guarded_paths": len(handles)}
             try:
                 yield {"status": "IMMUTABLE", **record,
                        "evidence_sha256": fingerprint(
                            "heavy-validation-checkout-snapshot", record)}
             finally:
+                for handle in reversed(handles):
+                    kernel.CloseHandle(handle)
                 self._thaw(snapshot_root)
 
 
@@ -443,9 +479,9 @@ class FileLeaseBroker:
                     "capacity_sha256", "parallelism", "resource_class", "engine",
                     "engine_identity_sha256", "engine_slots",
                     "required_resources", "resource_claims", "determinism", "isolation",
-                    "required_until"}
+                    "required_duration_seconds"}
         _require(isinstance(request, dict) and set(request) == expected
-                 and request["format"] == "awf-heavy-validation-lease-request-1",
+                 and request["format"] == "awf-heavy-validation-lease-request-2",
                  "Lease request fields are invalid")
         _require(isinstance(request["candidate"], dict)
                  and set(request["candidate"]) == {"repository_id", "base_sha", "head_sha", "tree_sha"}
@@ -489,9 +525,13 @@ class FileLeaseBroker:
                  and request["determinism"]["seed"] <= 2**63 - 1
                  and request["determinism"]["retry_limit"] <= 5,
                  "Lease determinism declaration is invalid")
+        duration = _positive(request["required_duration_seconds"],
+                             "lease required_duration_seconds")
+        _require(duration <= 7 * 24 * 60 * 60,
+                 "lease required_duration_seconds exceeds seven days")
         now = self.clock()
-        _require(timestamp(request["required_until"]) > now,
-                 "Lease required_until must be in the future")
+        expires = now + timedelta(seconds=duration)
+        expires_text = expires.isoformat(timespec="seconds").replace("+00:00", "Z")
         request_sha = fingerprint("heavy-validation-lease-request", request)
 
         def operation(state):
@@ -529,7 +569,7 @@ class FileLeaseBroker:
             lease_id = hashlib.sha256(f"{self.broker_id}:{fence}:{request_sha}".encode()).hexdigest()
             acquired = now.isoformat(timespec="seconds").replace("+00:00", "Z")
             item = {"lease_id": lease_id, "fencing_token": fence,
-                    "expires_at": request["required_until"], "parallelism": requested,
+                    "expires_at": expires_text, "parallelism": requested,
                     "resource_class": request["resource_class"],
                     "resource_claims": deepcopy(request["resource_claims"]),
                     "engine": request["engine"],
@@ -539,7 +579,7 @@ class FileLeaseBroker:
             state["leases"].append(item)
             return {"status": "GRANTED", "lease_id": lease_id,
                     "fencing_token": fence, "broker_id": self.broker_id,
-                    "acquired_at": acquired, "expires_at": request["required_until"],
+                    "acquired_at": acquired, "expires_at": expires_text,
                     "request_sha256": request_sha}
         return self._transaction(operation)
 
