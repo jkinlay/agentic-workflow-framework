@@ -607,6 +607,28 @@ class PublicationRewriteTests(unittest.TestCase):
                                 mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
 
+    def test_ac44_reachability_lookup_error_refuses_before_mutation(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        refs = git(self.repo.path, "for-each-ref", "--format=%(refname)%00%(objectname)")
+        objects = git(self.repo.path, "count-objects", "-v")
+        real_git = publication._git
+
+        def fail_lookup(root, *args, **kwargs):
+            if args[:2] == ("merge-base", "--is-ancestor"):
+                return subprocess.CompletedProcess(args, 2, b"", b"synthetic lookup failure")
+            return real_git(root, *args, **kwargs)
+
+        with mock.patch.object(publication, "_git", side_effect=fail_lookup):
+            with self.assertRaisesRegex(ValidationError, "reachability lookup failed"):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertEqual(refs, git(self.repo.path, "for-each-ref", "--format=%(refname)%00%(objectname)"))
+        self.assertEqual(objects, git(self.repo.path, "count-objects", "-v"))
+
     def test_ac44_distinct_fetch_and_push_urls_are_all_checked(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
