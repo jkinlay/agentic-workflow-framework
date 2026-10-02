@@ -1,17 +1,19 @@
 # Direct upgrade to AWF 1.9.3
 
-Fresh installation of 1.9.3 never requires an earlier AWF version. Use verified 1.9.3 source and `bootstrap_project.py --mode install`; the portable distribution can likewise install into an empty skills root.
+Fresh 1.9.3 installation needs no earlier AWF version. Use verified source and `bootstrap_project.py --mode install`; the portable distribution can install into an empty skills root.
 
-Direct upgrade recognizes exactly 1.8.3, 1.8.9, 1.9.1 and 1.9.2. Identification is receipt- and byte-based: the registered source-manifest digest, managed-file manifest and every managed file must agree. Installation-level receipt fields such as `install_id` and `initial_config_sha256` do not identify a template version. A version string alone is insufficient.
+Direct upgrade recognizes 1.8.3, 1.8.9, 1.9.1 and 1.9.2. Receipt and byte identification requires agreement among the registered source-manifest digest, managed-file manifest and every managed file. Installation fields such as `install_id` and `initial_config_sha256`, or a version string alone, do not identify a template version.
 
-Post-merge `workflow.py status` obtains the integration commit through a bounded GraphQL query because the pinned REST pull-request payload can return an absent or null `merge_commit_sha`. It cross-binds that answer to the REST repository/default tip and selected merged PR, verifies receipt-to-integration-to-head ancestry, the PR file inventory, receipt content and every accepted governance blob, and reports `adoption_acceptance_basis: github_graphql_merge_commit`. The trusted GitHub child projects paginated PR-file responses to the fixed filename/status/blob-SHA inventory before verifier byte accounting, so unneeded patch bodies are not recorded; complete pagination, row typing, uniqueness and the existing inventory ceiling remain fail-closed. Missing, malformed or conflicting evidence remains CONFIGURED with a repair action.
+Post-merge `workflow.py status` obtains the integration commit through bounded GraphQL because pinned REST may return a null `merge_commit_sha`. It cross-binds the answer to the REST repository/default tip and merged PR; verifies receipt-to-integration-to-head ancestry, PR inventory, receipt and accepted governance blobs; and reports `adoption_acceptance_basis: github_graphql_merge_commit`. The trusted GitHub child reduces paginated PR-file responses to filename/status/blob-SHA before byte accounting, omitting patch bodies. Pagination, row typing, uniqueness and inventory ceilings fail closed. Missing, malformed or conflicting evidence remains CONFIGURED with a repair action.
 
 Run a non-writing plan first, then prepare one reviewed upgrade PR:
 
 ```text
 python -B scripts/bootstrap_project.py --dest PROJECT --mode upgrade --expected-manifest-sha256 SHA256 --dry-run
-python -B scripts/bootstrap_project.py --dest PROJECT --mode upgrade --expected-manifest-sha256 SHA256
+python -B scripts/bootstrap_project.py --dest PROJECT --mode upgrade --expected-manifest-sha256 SHA256 --runtime-wheelhouse ABS_VERIFIED_WHEELHOUSE
 ```
+
+The writing run requires an operator-prepared offline wheelhouse containing exactly one compatible complete wheel per locked dependency. Every wheel must match a SHA-256 in `.agentic/requirements.lock`; installed package directories and their mutable METADATA/RECORD files are not accepted as a source. Runtime construction and isolated validation occur in a sibling staging directory, followed by an atomic replacement and final-path revalidation. Recoverable failures restore the previous good runtime and remove transaction residue. If rollback itself fails, the named recovery backup is retained and reported instead of destroyed.
 
 The plan reports the detected version, every chain step, per-step and total configuration diff, managed additions/changes/removals, every path/action the real run will write, operating-configuration creation/audit, and state actions. Steps change the unique `template.expected_workflow_version` scalar; 1.8.3→1.8.9 also adds the routing policy that became required, deterministically derived from retained legacy role allowlists and budget ceilings. It preserves comments, ordering, line endings, owner values and an existing valid `OPERATING_CONFIG.yaml`; no new-adoption default is injected. Operating configuration is semantically validated before any managed write, and a missing file plus its bootstrap audit are staged in the same rollback-capable transaction.
 

@@ -9,8 +9,11 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
+import threading
+import time
 import tomllib
 
 from .child_process import child_env
@@ -18,32 +21,446 @@ from .child_process import child_env
 PATH_WARN_LENGTH = 180
 MANAGED_PATHS = ("/.agentic/**", "/AGENTS.md", "/.github/PULL_REQUEST_TEMPLATE.md")
 ROUTE_OBSERVATION_DEFAULT_DAYS = 30
+MAX_DIAGNOSTIC_CHARS = 2048
+MAX_CAPTURE_BYTES = 4096
+HOST_COMMAND_TIMEOUT_SECONDS = 30
+EXECUTION_POLICY_PRECEDENCE = ("MachinePolicy", "UserPolicy", "Process", "CurrentUser", "LocalMachine")
+EXECUTION_POLICY_SCOPES = set(EXECUTION_POLICY_PRECEDENCE)
+EXECUTION_POLICIES = {"Undefined", "Restricted", "AllSigned", "RemoteSigned", "Unrestricted", "Bypass", "Default"}
 
 
 def row(check, status, detail, remedy=""):
     return {"check": check, "status": status, "detail": detail, "remedy": remedy}
 
 
+def _bounded(value):
+    value = (value or "").strip()
+    return value[:MAX_DIAGNOSTIC_CHARS]
+
+
+def _nonzero_category(output):
+    lowered = output.casefold()
+    if "module could not be loaded" in lowered or "couldnotautoloadmatchingmodule" in lowered:
+        return "MODULE_LOAD_FAILURE"
+    if "access is denied" in lowered or "permission denied" in lowered:
+        return "ACCESS_DENIED"
+    return "NONZERO_EXIT"
+
+
+def _drain_bounded(stream, captured, state):
+    """Drain a child pipe without retaining more than MAX_CAPTURE_BYTES."""
+    try:
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                return
+            available = MAX_CAPTURE_BYTES - len(captured)
+            if available > 0:
+                captured.extend(chunk[:available])
+            if len(chunk) > available:
+                state["truncated"] = True
+    except (OSError, ValueError) as exc:
+        state["error"] = type(exc).__name__
+
+
+def _decode_captured(stdout, stderr, states):
+    invalid = []
+    decoded = []
+    for label, value in (("stdout", stdout), ("stderr", stderr)):
+        if not value:
+            continue
+        try:
+            text = bytes(value).decode("utf-8")
+        except UnicodeDecodeError:
+            invalid.append(label)
+            text = bytes(value).decode("utf-8", errors="replace")
+        decoded.append(text)
+    notes = []
+    truncated = [label for label in ("stdout", "stderr") if states[label]["truncated"]]
+    failures = [label + "=" + states[label]["error"] for label in ("stdout", "stderr")
+                if states[label]["error"]]
+    if invalid:
+        notes.append("invalid UTF-8 from child " + ", ".join(invalid))
+    if truncated:
+        notes.append("child " + ", ".join(truncated) + f" truncated at {MAX_CAPTURE_BYTES} bytes")
+    if failures:
+        notes.append("child output capture failed: " + ", ".join(failures))
+    observed = "\n".join(decoded)
+    output = _bounded("; ".join(notes) + (("\n" + observed) if notes and observed else observed))
+    return observed, output, bool(invalid), bool(truncated), bool(failures)
+
+
+class _PosixProcessTree:
+    def __init__(self, process):
+        self.process = process
+        self.process_group = process.pid
+
+    def terminate_and_wait(self, timeout):
+        errors = []
+        deadline = time.monotonic() + timeout
+        try:
+            os.killpg(self.process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            errors.append("tree_kill:" + type(exc).__name__)
+        try:
+            if self.process.poll() is None:
+                self.process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            errors.append("tree_wait:PROCESS_DID_NOT_EXIT")
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append("tree_wait:" + type(exc).__name__)
+        # Reaping the group leader before this probe avoids mistaking its zombie
+        # for a live descendant. killpg(..., 0) then proves the group is absent.
+        while True:
+            try:
+                os.killpg(self.process_group, 0)
+            except ProcessLookupError:
+                break
+            except OSError as exc:
+                errors.append("tree_wait:" + type(exc).__name__)
+                break
+            if time.monotonic() >= deadline:
+                errors.append("tree_wait:PROCESS_GROUP_DID_NOT_EXIT")
+                break
+            time.sleep(.01)
+        return errors
+
+
+class _WindowsJob:
+    """Kill-on-close Job Object assigned before a suspended child can spawn."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in
+                        ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                         "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BasicLimits),
+                        ("IoInfo", IoCounters),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        class Accounting(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_int64) for name in
+                        ("TotalUserTime", "TotalKernelTime", "ThisPeriodTotalUserTime",
+                         "ThisPeriodTotalKernelTime")] + [
+                        ("TotalPageFaultCount", wintypes.DWORD),
+                        ("TotalProcesses", wintypes.DWORD),
+                        ("ActiveProcesses", wintypes.DWORD),
+                        ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                      ctypes.c_void_p, wintypes.DWORD]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                        ctypes.c_void_p, wintypes.DWORD,
+                                                        ctypes.c_void_p]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        self._ctypes = ctypes
+        self._kernel32 = kernel32
+        self._Accounting = Accounting
+        self.handle = kernel32.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+        limits = ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            error = ctypes.get_last_error()
+            cleanup_errors = []
+            if not kernel32.CloseHandle(self.handle):
+                cleanup_errors.append("job_close:WinError" + str(ctypes.get_last_error()))
+            self.handle = None
+            failure = OSError(error, "SetInformationJobObject failed")
+            failure.cleanup_errors = cleanup_errors
+            raise failure
+
+    def assign_and_resume(self, process):
+        ctypes = self._ctypes
+        if not self._kernel32.AssignProcessToJobObject(self.handle, int(process._handle)):
+            raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject failed")
+        ntdll = ctypes.WinDLL("ntdll")
+        ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+        ntdll.NtResumeProcess.restype = ctypes.c_long
+        status = ntdll.NtResumeProcess(int(process._handle))
+        if status != 0:
+            raise OSError(status, "NtResumeProcess failed")
+
+    def terminate_and_wait(self, timeout):
+        errors = []
+        if self.handle is None:
+            return ["job_handle:UNAVAILABLE"]
+        try:
+            if not self._kernel32.TerminateJobObject(self.handle, 1):
+                errors.append("tree_kill:WinError" + str(self._ctypes.get_last_error()))
+            deadline = time.monotonic() + timeout
+            while True:
+                accounting = self._Accounting()
+                if not self._kernel32.QueryInformationJobObject(
+                        self.handle, 1, self._ctypes.byref(accounting),
+                        self._ctypes.sizeof(accounting), None):
+                    errors.append("tree_wait:WinError" + str(self._ctypes.get_last_error()))
+                    break
+                if accounting.ActiveProcesses == 0:
+                    break
+                if time.monotonic() >= deadline:
+                    errors.append("tree_wait:PROCESS_TREE_DID_NOT_EXIT")
+                    break
+                time.sleep(.01)
+        finally:
+            if not self._kernel32.CloseHandle(self.handle):
+                errors.append("job_close:WinError" + str(self._ctypes.get_last_error()))
+            self.handle = None
+        return errors
+
+
+class _SpawnSetupError(Exception):
+    def __init__(self, original, cleanup_errors):
+        super().__init__(str(original))
+        self.original = original
+        self.cleanup_errors = cleanup_errors
+
+
+def _spawn_tree(command, **kwargs):
+    if os.name == "nt":
+        job = None
+        process = None
+        try:
+            job = _WindowsJob()
+            flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200) |
+                     getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | 0x00000004)
+            process = subprocess.Popen(command, creationflags=flags, **kwargs)
+            job.assign_and_resume(process)
+            return process, job
+        except BaseException as original:
+            cleanup_errors = list(getattr(original, "cleanup_errors", []))
+            if job is not None:
+                try:
+                    cleanup_errors.extend(job.terminate_and_wait(2))
+                except BaseException as exc:
+                    cleanup_errors.append("job_cleanup:" + type(exc).__name__)
+            if process is not None:
+                try:
+                    alive = process.poll() is None
+                except BaseException as exc:
+                    cleanup_errors.append("poll:" + type(exc).__name__)
+                    alive = True
+                if alive:
+                    try:
+                        process.kill()
+                    except BaseException as exc:
+                        cleanup_errors.append("kill:" + type(exc).__name__)
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    cleanup_errors.append("wait:PROCESS_DID_NOT_EXIT")
+                except BaseException as exc:
+                    cleanup_errors.append("wait:" + type(exc).__name__)
+                for label, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except BaseException as exc:
+                            cleanup_errors.append(label + "_close:" + type(exc).__name__)
+            raise _SpawnSetupError(original, cleanup_errors) from original
+    process = subprocess.Popen(command, start_new_session=True, **kwargs)
+    return process, _PosixProcessTree(process)
+
+
+def _cancel_reader_io(thread):
+    if os.name != "nt" or thread.native_id is None:
+        return None
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.CancelSynchronousIo.argtypes = [wintypes.HANDLE]
+    kernel32.CancelSynchronousIo.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenThread(0x0001, False, thread.native_id)  # THREAD_TERMINATE
+    if not handle:
+        return "reader_open:WinError" + str(ctypes.get_last_error())
+    try:
+        if not kernel32.CancelSynchronousIo(handle):
+            error = ctypes.get_last_error()
+            if error != 1168:  # ERROR_NOT_FOUND: the blocking operation already completed.
+                return "reader_cancel:WinError" + str(error)
+    finally:
+        if not kernel32.CloseHandle(handle):
+            return "reader_handle_close:WinError" + str(ctypes.get_last_error())
+    return None
+
+
 def run(args, cwd=None):
     """Trusted-host executables only: never a file inside the checkout or a script wrapper."""
     from . import ValidationError
     from .providers.github_status import host_executable
+    executable = str(args[0])
     try:
         executable = host_executable(args[0], Path(cwd or os.getcwd()))
         env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
         env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
-        result = subprocess.run([executable, *args[1:]], capture_output=True, text=True, timeout=30, cwd=cwd,
-                                env=child_env(env), stdin=subprocess.DEVNULL)
+        process, process_tree = _spawn_tree(
+            [executable, *args[1:]], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=cwd, env=child_env(env), stdin=subprocess.DEVNULL, bufsize=0)
+    except _SpawnSetupError as exc:
+        original = exc.original
+        text = f"{type(original).__name__}: {original}"
+        category = ("MISSING_EXECUTABLE" if isinstance(original, FileNotFoundError) else
+                    "RESOURCE_CLEANUP_FAILURE" if exc.cleanup_errors else "EXECUTION_UNAVAILABLE")
+        return {"executable": executable, "exit_code": None, "output": _bounded(text),
+                "diagnostic_category": category, "cleanup_errors": exc.cleanup_errors,
+                "resource_cleanup_complete": not exc.cleanup_errors}
+    except FileNotFoundError as exc:
+        return {"executable": executable, "exit_code": None, "output": _bounded(str(exc)),
+                "diagnostic_category": "MISSING_EXECUTABLE", "cleanup_errors": [],
+                "resource_cleanup_complete": True}
     except (OSError, subprocess.SubprocessError, ValidationError) as exc:
-        return None, f"{type(exc).__name__}: {exc}"
-    return result.returncode, (result.stdout or result.stderr).strip()
+        text = f"{type(exc).__name__}: {exc}"
+        category = "MISSING_EXECUTABLE" if "unavailable" in str(exc).casefold() else "EXECUTION_UNAVAILABLE"
+        return {"executable": executable, "exit_code": None, "output": _bounded(text),
+                "diagnostic_category": category, "cleanup_errors": [],
+                "resource_cleanup_complete": True}
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    states = {name: {"truncated": False, "error": None} for name in captured}
+    threads = []
+    for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+        thread = threading.Thread(target=_drain_bounded, args=(stream, captured[name], states[name]), daemon=True)
+        thread.start()
+        threads.append((thread, stream, name))
+    timed_out = False
+    cleanup_errors = []
+    try:
+        process.wait(timeout=HOST_COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            process.terminate()
+        except (OSError, subprocess.SubprocessError) as exc:
+            cleanup_errors.append("terminate:" + type(exc).__name__)
+    except (OSError, subprocess.SubprocessError) as exc:
+        cleanup_errors.append("wait:" + type(exc).__name__)
+    finally:
+        cleanup_errors.extend(process_tree.terminate_and_wait(2))
+        if process.poll() is None:
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                cleanup_errors.append("wait:PROCESS_DID_NOT_EXIT")
+                try:
+                    process.kill()
+                except (OSError, subprocess.SubprocessError) as exc:
+                    cleanup_errors.append("kill:" + type(exc).__name__)
+                try:
+                    process.wait(timeout=2)
+                except (OSError, subprocess.SubprocessError) as exc:
+                    cleanup_errors.append("wait_after_kill:" + type(exc).__name__)
+        for thread, stream, name in threads:
+            thread.join(timeout=2)
+            if thread.is_alive():
+                cancellation = _cancel_reader_io(thread)
+                if cancellation:
+                    cleanup_errors.append(name + "_" + cancellation)
+            try:
+                stream.close()
+            except (OSError, ValueError) as exc:
+                cleanup_errors.append(name + "_close:" + type(exc).__name__)
+            if thread.is_alive():
+                thread.join(timeout=2)
+            if thread.is_alive():
+                cleanup_errors.append(name + "_reader:READER_JOIN_DEADLINE")
+                # Never return while a daemon reader still owns pending pipe I/O.
+                # Tree termination plus synchronous-I/O cancellation makes this
+                # final join finite on supported hosts; an OS that violates that
+                # contract must stop the probe rather than leak repeated readers.
+                thread.join()
+            elif states[name]["error"]:
+                cleanup_errors.append(name + "_reader:" + states[name]["error"])
+    observed, output, invalid, truncated, capture_failed = _decode_captured(
+        captured["stdout"], captured["stderr"], states)
+    if cleanup_errors:
+        output = _bounded("child cleanup failed: " + ", ".join(cleanup_errors) +
+                          (("\n" + output) if output else ""))
+    if timed_out:
+        category = "TIMEOUT"
+        prefix = f"child exceeded {HOST_COMMAND_TIMEOUT_SECONDS}-second deadline"
+        output = _bounded(prefix + (("\n" + output) if output else ""))
+        exit_code = None
+    elif cleanup_errors:
+        category = "RESOURCE_CLEANUP_FAILURE"
+        exit_code = process.returncode
+    elif capture_failed:
+        category = "OUTPUT_CAPTURE_FAILURE"
+        exit_code = process.returncode
+    elif invalid:
+        category = "INVALID_ENCODING"
+        exit_code = process.returncode
+    elif process.returncode == 0 and truncated:
+        category = "OUTPUT_TRUNCATED"
+        exit_code = process.returncode
+    else:
+        category = "OK" if process.returncode == 0 else _nonzero_category(observed)
+        exit_code = process.returncode
+    return {"executable": executable, "exit_code": exit_code, "output": output,
+            "diagnostic_category": category, "cleanup_errors": cleanup_errors,
+            "resource_cleanup_complete": not cleanup_errors}
 
 
 def git_config(root, key):
-    code, output = run(["git", "config", "--get", key], cwd=str(root))
-    if code is None:
-        return "unavailable (" + output.split(":")[0] + ")"
-    return output if code == 0 else None
+    probe = run(["git", "config", "--get", key], cwd=str(root))
+    return probe, probe["output"] if probe["exit_code"] == 0 and probe["diagnostic_category"] == "OK" else None
+
+
+def _observed(row_value, probe, *, category=None):
+    row_value.update(executable=probe["executable"], exit_code=probe["exit_code"],
+                     diagnostic_category=category or probe["diagnostic_category"])
+    return row_value
+
+
+def _execution_policy_rows(output):
+    rows = {}
+    for line in output.splitlines():
+        fields = line.strip().split("=")
+        if len(fields) != 2 or fields[0] not in EXECUTION_POLICY_SCOPES or fields[1] not in EXECUTION_POLICIES or fields[0] in rows:
+            return None
+        rows[fields[0]] = fields[1]
+    return rows if set(rows) == EXECUTION_POLICY_SCOPES else None
+
+
+def _effective_execution_policy(policies):
+    for scope in EXECUTION_POLICY_PRECEDENCE:
+        if policies[scope] != "Undefined":
+            return scope, policies[scope]
+    return None, "Undefined"
 
 
 def gitattributes_coverage(root):
@@ -233,31 +650,56 @@ def preflight(root, *, platform=None):
     rows.append(project_lint_scope(root))
     rows.append(route_models_observed(root))
     if windows:
-        longpaths = git_config(root, "core.longpaths")
-        rows.append(row("core.longpaths", "PASS" if longpaths == "true" else "WARN", f"core.longpaths={longpaths or 'unset'}",
-                        "" if longpaths == "true" else "git config --system core.longpaths true (also add the CI step)."))
-        code, output = run(["powershell", "-NoProfile", "-Command", "Get-ExecutionPolicy -List | ForEach-Object { $_.Scope.ToString() + '=' + $_.ExecutionPolicy.ToString() }"])
-        if code is None:
-            rows.append(row("powershell_execution_policy", "SKIP", output, "PowerShell not available; fixture launchers using .ps1 may fail."))
+        longpaths_probe, longpaths = git_config(root, "core.longpaths")
+        longpaths_ok = longpaths_probe["diagnostic_category"] == "OK" and longpaths == "true"
+        rows.append(_observed(row("core.longpaths", "PASS" if longpaths_ok else "WARN",
+                                  f"core.longpaths={longpaths or 'unobserved'}",
+                                  "" if longpaths_ok else "git config --system core.longpaths true (also add the CI step)."),
+                              longpaths_probe))
+        policy_probe = run(["powershell", "-NoProfile", "-Command", "Get-ExecutionPolicy -List | ForEach-Object { $_.Scope.ToString() + '=' + $_.ExecutionPolicy.ToString() }"])
+        output = policy_probe["output"]
+        if policy_probe["exit_code"] is None:
+            rows.append(_observed(row("powershell_execution_policy", "SKIP", output,
+                                      "PowerShell not available or timed out; fixture launchers using .ps1 may fail."), policy_probe))
+        elif policy_probe["exit_code"] != 0 or policy_probe["diagnostic_category"] != "OK":
+            rows.append(_observed(row("powershell_execution_policy", "WARN", output or "PowerShell returned a nonzero exit",
+                                      "Resolve the PowerShell host/module error, then rerun preflight."), policy_probe))
         else:
-            restricted = any(s in output for s in ("=Restricted", "=AllSigned", "=Undefined"))
-            effective = next((line for line in output.splitlines() if not line.endswith("=Undefined")), output)
-            rows.append(row("powershell_execution_policy", "WARN" if restricted else "PASS", output.replace("\n", "; "),
-                            "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned, or launch fixtures with -ExecutionPolicy Bypass." if restricted else ""))
+            policies = _execution_policy_rows(output)
+            if policies is None:
+                rows.append(_observed(row("powershell_execution_policy", "WARN", "PowerShell returned an unexpected execution-policy row shape",
+                                          "Run Get-ExecutionPolicy -List and resolve malformed or incomplete output."),
+                                      policy_probe, category="INVALID_OUTPUT"))
+            else:
+                effective_scope, effective_policy = _effective_execution_policy(policies)
+                restricted = effective_policy in {"Restricted", "AllSigned", "Default", "Undefined"}
+                if effective_scope in {"MachinePolicy", "UserPolicy"}:
+                    remedy = "Resolve the effective Group Policy execution policy with the administrator; lower scopes cannot override it."
+                else:
+                    remedy = "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned, or launch fixtures with -ExecutionPolicy Bypass."
+                detail = output.replace("\n", "; ") + "; effective=" + (effective_scope or "platform-default") + "=" + effective_policy
+                rows.append(_observed(row("powershell_execution_policy", "WARN" if restricted else "PASS", detail,
+                                          remedy if restricted else ""),
+                                      policy_probe))
         status, detail, remedy = symlink_privilege()
         rows.append(row("symlink_privilege", status, detail, remedy))
-        autocrlf = git_config(root, "core.autocrlf")
+        autocrlf_probe, autocrlf = git_config(root, "core.autocrlf")
         covered, detail = gitattributes_coverage(root)
-        rows.append(row("line_endings", "PASS" if covered else "WARN", f"core.autocrlf={autocrlf or 'unset'}; .gitattributes {detail}",
-                        "" if covered else "Merge .agentic/templates/installed.gitattributes into the root .gitattributes so manifest-bound bytes survive checkout."))
+        line_endings_ok = autocrlf_probe["diagnostic_category"] == "OK" and covered
+        rows.append(_observed(row("line_endings", "PASS" if line_endings_ok else "WARN",
+                                  f"core.autocrlf={autocrlf or 'unobserved'}; .gitattributes {detail}",
+                                  "" if line_endings_ok else "Observe core.autocrlf and merge .agentic/templates/installed.gitattributes into the root .gitattributes so manifest-bound bytes survive checkout."),
+                              autocrlf_probe))
     else:
         for name in ("core.longpaths", "powershell_execution_policy", "symlink_privilege", "line_endings"):
             rows.append(row(name, "N_A", "not a Windows host", ""))
     attributes = Path(root) / ".gitattributes"
     if attributes.is_file() and "filter=lfs" in attributes.read_text(encoding="utf-8", errors="replace"):
-        code, output = run(["git", "lfs", "version"])
-        rows.append(row("git_lfs", "PASS" if code == 0 else "WARN", output if code == 0 else "git lfs not found",
-                        "" if code == 0 else "Install Git LFS; .gitattributes names an lfs filter."))
+        lfs_probe = run(["git", "lfs", "version"])
+        lfs_ok = lfs_probe["diagnostic_category"] == "OK"
+        rows.append(_observed(row("git_lfs", "PASS" if lfs_ok else "WARN",
+                                  lfs_probe["output"] if lfs_ok else "git lfs observation failed",
+                                  "" if lfs_ok else "Install Git LFS; .gitattributes names an lfs filter."), lfs_probe))
     else:
         rows.append(row("git_lfs", "N_A", ".gitattributes names no lfs filter", ""))
     warnings = [r for r in rows if r["status"] == "WARN"]
@@ -270,5 +712,18 @@ def render_markdown(report):
     lines = ["## Host preflight", "", f"Platform: {report['platform']}. Rows never block INSTALLED; WARN rows are the next action.", "",
              "| Check | Status | Observed | Remedy |", "| --- | --- | --- | --- |"]
     for r in report["rows"]:
-        lines.append(f"| {r['check']} | {r['status']} | {r['detail']} | {r['remedy'] or '—'} |")
+        detail = _markdown_cell(r["detail"])
+        remedy = _markdown_cell(r["remedy"]) if r["remedy"] else "—"
+        lines.append(f"| {r['check']} | {r['status']} | {detail} | {remedy} |")
     return "\n".join(lines) + "\n"
+
+
+def _markdown_cell(value):
+    """Render repository-controlled diagnostics as one inert table cell."""
+    normalized = str(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    # CommonMark recognizes ASCII punctuation for links, images, code spans,
+    # escapes, emphasis, raw HTML and extensions such as bare URLs. Emit every
+    # punctuation character as an atomic numeric character reference so the
+    # rendered text is unchanged but none of those delimiters can be parsed.
+    return "".join(character if character.isalnum() or character == " "
+                   else f"&#{ord(character)};" for character in normalized)

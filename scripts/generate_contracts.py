@@ -207,6 +207,21 @@ def catalog():
         "coverage": obj({"current_files": TRUE, "commit_messages": TRUE, "every_patch": TRUE,
             "generated_reports": text(), "captured_command_output": text(), "pr_bodies": BOOL, "pr_comments": BOOL}),
         "execution_authority": FALSE})
+    schemas["doctor-output"] = obj({
+        "format": const("awf-doctor-1"), "template_version": const(VERSION), "root": text(),
+        "runtime": obj({"interpreter": text(), "entry_point": text(),
+                        "interpreter_exists": BOOL, "entry_point_exists": BOOL}),
+        "shell": const("powershell"),
+        "commands": arr(obj({"purpose": enum("adoption", "verification", "validation", "status", "operating"),
+                             "command": text(), "expected_exit_codes": arr(integer(), 1, uniqueItems=True)}), 5,
+                        maxItems=5, allOf=[
+                            {"contains": {"properties": {"purpose": const(purpose)}, "required": ["purpose"]},
+                             "minContains": 1, "maxContains": 1}
+                            for purpose in ("adoption", "verification", "validation", "status", "operating")]),
+        "long_argument_transport": obj({"method": const("literal_argv"),
+            "detail": const("Every supported value, including long hashes and paths, is passed as one literal argv element with PowerShell single-quote escaping. No generic JSON carrier or response-file transport is implemented.")}),
+        "activation_summary": obj({"status": const("EXTENSION_POINT"), "detail": text()}),
+        "execution_authority": FALSE})
     gate_results = obj({name: obj({"result": enum("PASS", "FAIL", "N_A"), "evidence": EVIDENCE}) for name in GATE_NAMES})
     gate_pass = {"properties": {"gates": {"properties": {name: {"properties": {"result": const("PASS")}}
                     for name in GATE_NAMES if name != "specialist_reviews"}}, "execution_authority": FALSE}}

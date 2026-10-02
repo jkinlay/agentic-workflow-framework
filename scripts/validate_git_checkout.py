@@ -2,7 +2,7 @@
 """Exercise real, offline Git autocrlf roundtrips without touching user Git state.
 
 API: run_validation(source, expected_manifest_sha256, workdir,
-                    python_executable=None) -> dict
+                    python_executable=None, runtime_wheelhouse=None) -> dict
 
 The helper retains its uniquely named fixture directory and command logs. Every
 Git command uses isolated configuration, an empty hooks/template directory and
@@ -30,6 +30,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.child_process import child_env
+from agentic.runtime_commands import installed_paths
 WORKFLOW = ".agentic/scripts/workflow.py"
 
 
@@ -46,6 +47,17 @@ def digest(data):
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def expected_post_install_commands(destination):
+    root, interpreter, entry_point = installed_paths(destination)
+    return [[str(interpreter), "-B", "-I", str(entry_point), "--root", str(root), action]
+            for action in ("verify-installation", "validate-config")]
+
+
+def installed_stage_python(destination):
+    """Select only the target installation's canonical interpreter."""
+    return installed_paths(destination)[1]
 
 
 def _pairs(items):
@@ -92,7 +104,16 @@ def _copy(files, destination):
 
 
 def _managed(name):
-    return name.startswith(".agentic/") or name in {"AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md"}
+    normalized = name.replace("\\", "/")
+    runtime = normalized == ".agentic/.venv" or normalized.startswith(".agentic/.venv/")
+    return (normalized.startswith(".agentic/") and not runtime) or normalized in {
+        "AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md"}
+
+
+def provision_installed_clone_runtime(destination, runtime_wheelhouse):
+    """Provision only the clone's ignored canonical runtime from pinned wheels."""
+    from agentic.adoption_config import ensure_installed_runtime
+    return ensure_installed_runtime(destination, wheelhouse=runtime_wheelhouse)
 
 
 def _locations(source, workdir, report=None):
@@ -107,7 +128,7 @@ def _locations(source, workdir, report=None):
     return source, workdir, report
 
 
-def run_validation(source, expected_manifest_sha256, workdir, python_executable=None):
+def run_validation(source, expected_manifest_sha256, workdir, python_executable=None, runtime_wheelhouse=None):
     """Return PASS evidence or raise GitCheckoutValidationError with partial evidence."""
     report = {
         "validation": "git-autocrlf-checkout",
@@ -146,6 +167,9 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
         require(set(manifest) == {"format", "template_version", "files"} and manifest["format"] == "awf-manifest-1", "Unsupported release manifest")
         require(set(payload) - {"MANIFEST.json", "MANIFEST.md"} == set(manifest["files"]), "Source manifest membership differs before Git validation")
         require(all(digest(payload[name]) == expected for name, expected in manifest["files"].items()), "Source file bytes differ from the approved manifest before Git validation")
+        require(runtime_wheelhouse is not None, "A verified offline runtime wheelhouse is required for installed checkout validation")
+        runtime_wheelhouse = Path(runtime_wheelhouse).resolve(strict=True)
+        require(runtime_wheelhouse.is_dir(), "The offline runtime wheelhouse is not a directory")
         require(".gitattributes" in payload and ".agentic/templates/installed.gitattributes" in payload,
                 "Release and installed-project LF attribute policies are required")
         report["template_version"] = manifest["template_version"]
@@ -205,15 +229,19 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
             require(condition, name)
             report["checks"].append({"check": name, "status": "PASS", **evidence})
 
-        def verify(name, directory, expected=0):
-            result = command(name, [python, "-B", WORKFLOW, "verify-installation"], directory, expected)
+        def verify(name, directory, expected=0, *, installed_runtime=False):
+            runtime = installed_stage_python(directory) if installed_runtime else Path(python)
+            require(runtime.is_file(), name + ": canonical Python runtime is unavailable")
+            isolation = ["-I"] if installed_runtime else []
+            result = command(name, [runtime, "-B", *isolation, WORKFLOW, "--root", directory,
+                                    "verify-installation"], directory, expected)
             if expected == 0:
                 _json(result.stdout)
             return result
 
         def create_repo(name, directory):
             git_command(f"{name}: initialize isolated repository", ["init", directory])
-            git_command(f"{name}: stage complete fixture", ["add", "--all", "--force", "--", "."], directory)
+            git_command(f"{name}: stage complete fixture", ["add", "--all", "--", "."], directory)
             git_command(f"{name}: commit with hooks and signing disabled", ["commit", "--no-gpg-sign", "-m", "Local AWF checkout fixture"], directory)
 
         def clone_repo(name, repository, destination, no_lf=False):
@@ -295,6 +323,7 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
         # command is configuration only; bootstrap does not execute project tests.
         bootstrap = command("Install into a project with existing gitattributes", [python, "-B", "scripts/bootstrap_project.py",
                 "--dest", installed, "--expected-manifest-sha256", expected_manifest_sha256,
+                "--runtime-wheelhouse", runtime_wheelhouse,
                 "--github-repo", "example/lf-fixture", "--repository-id", "54321",
                 "--project-name", "Synthetic LF fixture", "--project-short-name", "LFFIXTURE",
                 "--test-command", "python -m unittest discover", "--default-branch", "trunk"], source)
@@ -305,8 +334,9 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
                 "Bootstrap reported a different source manifest")
         observed = bootstrap_report["post_install_checks"]
         require(isinstance(observed, list) and len(observed) == 2, "Both installed bootstrap checks are required")
-        for item, action in zip(observed, ("verify-installation", "validate-config")):
-            require(item["command"] == [python, "-B", "-I", str(installed.resolve() / WORKFLOW), action]
+        expected_commands = expected_post_install_commands(installed)
+        for item, action, expected_command in zip(observed, ("verify-installation", "validate-config"), expected_commands):
+            require(item["command"] == expected_command
                     and item.get("execution_status") != "NOT_RUN" and item["exit_code"] == 0
                     and item["diagnostic"] is None and isinstance(item["output"], dict),
                     "Bootstrap did not prove the exact successful installed command: " + action)
@@ -336,11 +366,14 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
         merged_attributes = original_attributes + b"\n" + scoped
         (installed / ".gitattributes").write_bytes(merged_attributes)
         check("Disposable manual merge retains the existing policy prefix", merged_attributes.startswith(original_attributes))
-        verify("Installed fixture integrity passes before Git", installed)
+        verify("Installed fixture integrity passes before Git", installed, installed_runtime=True)
         expected_installed = {name: data for name, data in _files(installed).items() if _managed(name)}
         require(".agentic/installed-manifest.json" in expected_installed and ".agentic/workflow-version.yaml" in expected_installed,
                 "Installed manifest/provenance missing from comparison inventory")
         create_repo("Installed project", installed)
+        tracked_runtime = git_command("Installed project excludes ignored canonical runtime from Git inventory",
+                                      ["ls-files", "--", ".agentic/.venv"], installed).stdout
+        check("Installed project Git inventory contains no canonical runtime", tracked_runtime == b"")
         clone_repo("Installed project", installed, installed_clone)
         actual_installed = {name: data for name, data in _files(installed_clone).items() if _managed(name)}
         installed_changes = sorted(name for name in set(expected_installed) | set(actual_installed)
@@ -353,7 +386,16 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
               (installed_clone / "existing.bat").read_bytes() == batch_bytes and "text: set" in batch_attr and "eol: crlf" in batch_attr)
         check("Git retains all manually merged project attribute rules",
               (installed_clone / ".gitattributes").read_bytes().replace(b"\r\n", b"\n") == merged_attributes.replace(b"\r\n", b"\n"))
-        verify("Installed Git checkout integrity CLI passes", installed_clone)
+        require(not installed_stage_python(installed_clone).exists(),
+                "Fresh installed clone unexpectedly contains the ignored canonical runtime")
+        clone_runtime = provision_installed_clone_runtime(installed_clone, runtime_wheelhouse)
+        require(Path(clone_runtime["interpreter"]) == installed_stage_python(installed_clone)
+                and installed_stage_python(installed_clone).is_file(),
+                "Installed clone runtime was not provisioned at its canonical target path")
+        check("Fresh installed clone provisions its own ignored runtime from the pinned offline wheelhouse",
+              True, requirements_lock_sha256=clone_runtime["requirements_lock_sha256"],
+              interpreter=clone_runtime["interpreter"])
+        verify("Installed Git checkout integrity CLI passes", installed_clone, installed_runtime=True)
 
         dirty = run / "d"
         _copy(payload, dirty)
@@ -394,13 +436,16 @@ def main(argv=None):
     parser.add_argument("--expected-manifest-sha256", required=True)
     parser.add_argument("--workdir", type=Path, required=True, help="Short external directory; unique test fixtures are retained")
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--runtime-wheelhouse", type=Path,
+                        help="Verified offline wheel directory used by installed-checkout bootstrap validation")
     args = parser.parse_args(argv)
     try:
         args.source, args.workdir, args.report = _locations(args.source, args.workdir, args.report)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     try:
-        report = run_validation(args.source, args.expected_manifest_sha256, args.workdir)
+        report = run_validation(args.source, args.expected_manifest_sha256, args.workdir,
+                                runtime_wheelhouse=args.runtime_wheelhouse)
         code = 0
     except GitCheckoutValidationError as exc:
         report = exc.report
