@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -13,18 +14,47 @@ import subprocess
 from typing import Callable
 
 from . import ValidationError
-from .canonical import canonical, fingerprint, loads, sha256, timestamp
+from .canonical import canonical, fingerprint, sha256, timestamp
 from .child_process import child_env
 from .heavy_validation import resolve_without_alias
 
 
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_LABEL = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _MAX_PROVIDER_BYTES = 1024 * 1024
 
 
 def _require(condition, message):
     if not condition:
         raise ValidationError(message)
+
+
+def _positive(value, label):
+    _require(type(value) is int and value > 0, f"{label} must be a positive integer")
+    return value
+
+
+def _nonnegative(value, label):
+    _require(type(value) is int and value >= 0, f"{label} must be a nonnegative integer")
+    return value
+
+
+def _digest(value, label):
+    _require(isinstance(value, str) and _SHA256.fullmatch(value),
+             f"{label} must be a lowercase SHA-256")
+    return value
+
+
+def _resource_slots(value, label, *, positive=False):
+    _require(isinstance(value, dict), f"{label} must be a mapping")
+    result = {}
+    for name, amount in value.items():
+        _require(isinstance(name, str) and _LABEL.fullmatch(name),
+                 f"{label} has an invalid resource name")
+        (_positive if positive else _nonnegative)(amount, f"{label}.{name}")
+        result[name] = amount
+    return result
 
 
 class GitHubReviewAuthenticator:
@@ -68,7 +98,7 @@ class GitHubReviewAuthenticator:
         return value
 
     def __call__(self, review: dict, review_digest: str, plan_digest: str,
-                 candidate: dict) -> dict:
+                 candidate: dict, authorization: dict) -> dict:
         repository = self.read_api(f"repos/{self.repository}")
         pull = self.read_api(f"repos/{self.repository}/pulls/{self.pull_number}")
         commit = self.read_api(f"repos/{self.repository}/git/commits/{candidate['head_sha']}")
@@ -88,6 +118,12 @@ class GitHubReviewAuthenticator:
                  and provider_review.get("state") == "APPROVED"
                  and provider_review.get("commit_id") == candidate["head_sha"],
                  "GitHub review is not an approval of the exact head")
+        body = provider_review.get("body")
+        _require(isinstance(body, str), "GitHub review has no workload authorization")
+        markers = re.findall(
+            r"(?m)^AWF-HEAVY-VALIDATION-AUTHORIZATION-SHA256: ([0-9a-f]{64})$", body)
+        _require(markers == [authorization["sha256"]],
+                 "GitHub review does not authorize the exact workload")
         _require(review["reviewer"]["provider"] == "github"
                  and str(user.get("id")) == review["reviewer"]["immutable_id"]
                  and user.get("login") == review["reviewer"]["login"],
@@ -97,7 +133,58 @@ class GitHubReviewAuthenticator:
         return {"status": "AUTHENTICATED", **review["reviewer"],
                 "evidence_sha256": fingerprint("github-heavy-validation-review", evidence),
                 "review_sha256": review_digest, "plan_sha256": plan_digest,
-                "candidate": deepcopy(candidate)}
+                "candidate": deepcopy(candidate),
+                "workload_authorization_sha256": authorization["sha256"]}
+
+
+class GitCheckoutAttestor:
+    """Prove a clean checkout at the exact reviewed HEAD and tree before dispatch."""
+
+    def __init__(self, root: str | os.PathLike[str], run_git=None):
+        self.root = resolve_without_alias(Path(root).absolute(), "execution checkout", directory=True)
+        self.run_git = run_git or self._git
+
+    def _git(self, args: list[str]) -> str:
+        executable = shutil.which("git")
+        if not executable:
+            raise ValidationError("Git checkout attestation is unavailable")
+        executable = str(Path(executable).resolve())
+        if Path(executable).suffix.casefold() in {".cmd", ".bat", ".ps1"}:
+            raise ValidationError("Git checkout attestation needs a native executable")
+        try:
+            done = subprocess.run([executable, *args], cwd=str(self.root),
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, shell=False,
+                                  env=child_env(dict(os.environ)), timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValidationError("Git checkout attestation is unavailable") from exc
+        if done.returncode or len(done.stdout) > _MAX_PROVIDER_BYTES:
+            raise ValidationError("Git checkout attestation failed")
+        try:
+            return done.stdout.decode("utf-8").strip()
+        except UnicodeError as exc:
+            raise ValidationError("Git checkout attestation returned malformed evidence") from exc
+
+    def __call__(self, candidate: dict, working_directory: str) -> dict:
+        observed_root = resolve_without_alias(Path(working_directory).absolute(),
+                                              "execution checkout", directory=True)
+        _require(os.path.normcase(str(observed_root)) == os.path.normcase(str(self.root)),
+                 "Checkout attestor root mismatch")
+        top = self.run_git(["rev-parse", "--show-toplevel"])
+        head = self.run_git(["rev-parse", "--verify", "HEAD"])
+        tree = self.run_git(["rev-parse", "--verify", "HEAD^{tree}"])
+        dirty = self.run_git(["status", "--porcelain=v1", "--untracked-files=all",
+                              "--ignored=matching"])
+        _require(os.path.normcase(str(Path(top).resolve())) == os.path.normcase(str(self.root)),
+                 "Execution root is not the checkout root")
+        _require(head == candidate["head_sha"] and tree == candidate["tree_sha"],
+                 "Checkout HEAD/tree does not match the candidate")
+        _require(dirty == "", "Execution checkout is dirty")
+        evidence = {"candidate": candidate, "working_directory": str(self.root),
+                    "head": head, "tree": tree, "status": dirty}
+        return {"status": "CLEAN", "candidate": deepcopy(candidate),
+                "working_directory": str(self.root),
+                "evidence_sha256": fingerprint("heavy-validation-checkout", evidence)}
 
 
 class FileLeaseBroker:
@@ -113,7 +200,80 @@ class FileLeaseBroker:
         _require(isinstance(broker_id, str) and broker_id, "Broker identity is required")
         self.broker_id = broker_id
         self.limits = deepcopy(limits)
+        _require(set(self.limits) == {"max_workers", "max_heavy_jobs", "max_gpu_jobs",
+                                      "resources", "engines"},
+                 "Broker limits fields are invalid")
+        for name in ("max_workers", "max_heavy_jobs", "max_gpu_jobs"):
+            _nonnegative(self.limits[name], f"broker limits {name}")
+        _resource_slots(self.limits["resources"], "broker limit resources")
+        _require(isinstance(self.limits["engines"], dict), "Broker engine limits are invalid")
+        for name, evidence in self.limits["engines"].items():
+            _require(_LABEL.fullmatch(name) is not None and isinstance(evidence, dict)
+                     and set(evidence) == {"identity_sha256", "slots"},
+                     "Broker engine limit is invalid")
+            _digest(evidence["identity_sha256"], "broker engine identity")
+            _nonnegative(evidence["slots"], "broker engine slots")
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def _validate_state(self, state: dict):
+        _require(isinstance(state, dict)
+                 and set(state) == {"format", "broker_id", "next_fence", "leases"}
+                 and state["format"] == "awf-heavy-validation-broker-state-2"
+                 and state["broker_id"] == self.broker_id
+                 and isinstance(state["leases"], list),
+                 "Durable broker state is invalid")
+        _positive(state["next_fence"], "broker next_fence")
+        fences, lease_ids = [], []
+        expected = {"lease_id", "fencing_token", "expires_at", "parallelism",
+                    "resource_class", "resource_claims", "engine", "engine_identity_sha256",
+                    "engine_slots", "request_sha256"}
+        for item in state["leases"]:
+            _require(isinstance(item, dict) and set(item) == expected,
+                     "Durable broker lease fields are invalid")
+            _digest(item["lease_id"], "broker lease_id")
+            _positive(item["fencing_token"], "broker fencing_token")
+            timestamp(item["expires_at"])
+            _positive(item["parallelism"], "broker lease parallelism")
+            _require(item["resource_class"] in {"standard", "heavy", "gpu"},
+                     "Durable broker resource class is invalid")
+            claims = _resource_slots(item["resource_claims"], "broker lease resources",
+                                     positive=True)
+            _require(set(claims).issubset(self.limits["resources"]),
+                     "Durable broker lease contains unknown resources")
+            _require(isinstance(item["engine"], str) and _LABEL.fullmatch(item["engine"]),
+                     "Durable broker engine is invalid")
+            _digest(item["engine_identity_sha256"], "broker lease engine identity")
+            _positive(item["engine_slots"], "broker lease engine slots")
+            _require(item["engine_slots"] == item["parallelism"],
+                     "Durable broker engine slots do not match parallelism")
+            _require(item["engine"] in self.limits["engines"]
+                     and item["engine_identity_sha256"]
+                     == self.limits["engines"][item["engine"]]["identity_sha256"],
+                     "Durable broker engine identity is unknown")
+            _digest(item["request_sha256"], "broker request_sha256")
+            fences.append(item["fencing_token"])
+            lease_ids.append(item["lease_id"])
+        _require(len(fences) == len(set(fences)) and len(lease_ids) == len(set(lease_ids)),
+                 "Durable broker fences and lease IDs must be unique")
+        _require(fences == sorted(fences), "Durable broker fences are not monotonic")
+        _require(not fences or state["next_fence"] > max(fences),
+                 "Durable broker next_fence is not monotonic")
+        _require(sum(item["parallelism"] for item in state["leases"])
+                 <= self.limits["max_workers"], "Durable broker worker quantity exceeds limits")
+        _require(sum(item["parallelism"] for item in state["leases"]
+                     if item["resource_class"] in {"heavy", "gpu"})
+                 <= self.limits["max_heavy_jobs"],
+                 "Durable broker heavy quantity exceeds limits")
+        _require(sum(item["parallelism"] for item in state["leases"]
+                     if item["resource_class"] == "gpu") <= self.limits["max_gpu_jobs"],
+                 "Durable broker GPU quantity exceeds limits")
+        for name, available in self.limits["resources"].items():
+            _require(sum(item["resource_claims"].get(name, 0) for item in state["leases"])
+                     <= available, f"Durable broker resource {name} exceeds limits")
+        for name, evidence in self.limits["engines"].items():
+            _require(sum(item["engine_slots"] for item in state["leases"]
+                         if item["engine"] == name) <= evidence["slots"],
+                     f"Durable broker engine {name} exceeds limits")
 
     @staticmethod
     def _lock(stream):
@@ -145,21 +305,22 @@ class FileLeaseBroker:
             try:
                 stream.seek(0)
                 raw = stream.read().strip()
-                state = (json.loads(raw.decode("utf-8")) if raw else
-                         {"format": "awf-heavy-validation-broker-state-1",
-                          "broker_id": self.broker_id, "next_fence": 1, "leases": []})
-                _require(state.get("format") == "awf-heavy-validation-broker-state-1"
-                         and state.get("broker_id") == self.broker_id
-                         and type(state.get("next_fence")) is int
-                         and isinstance(state.get("leases"), list),
-                         "Durable broker state is invalid")
+                try:
+                    state = (json.loads(raw.decode("utf-8")) if raw else
+                             {"format": "awf-heavy-validation-broker-state-2",
+                              "broker_id": self.broker_id, "next_fence": 1, "leases": []})
+                except (UnicodeError, json.JSONDecodeError) as exc:
+                    raise ValidationError("Durable broker state is invalid") from exc
+                self._validate_state(state)
                 result = operation(state)
+                self._validate_state(state)
                 encoded = canonical(state)
                 stream.seek(0)
                 stream.truncate()
                 stream.write(encoded)
                 stream.flush()
                 os.fsync(stream.fileno())
+                _fsync_directory(self.path.parent)
                 return result
             finally:
                 self._unlock(stream)
@@ -167,15 +328,38 @@ class FileLeaseBroker:
     def acquire(self, request: dict) -> dict:
         expected = {"format", "candidate", "plan_sha256", "config_sha256",
                     "capacity_sha256", "parallelism", "resource_class", "engine",
+                    "engine_identity_sha256", "engine_slots",
                     "required_resources", "resource_claims", "determinism", "isolation",
                     "required_until"}
         _require(isinstance(request, dict) and set(request) == expected
                  and request["format"] == "awf-heavy-validation-lease-request-1",
                  "Lease request fields are invalid")
+        _require(isinstance(request["candidate"], dict)
+                 and set(request["candidate"]) == {"repository_id", "base_sha", "head_sha", "tree_sha"}
+                 and type(request["candidate"]["repository_id"]) is int
+                 and request["candidate"]["repository_id"] > 0
+                 and all(isinstance(request["candidate"][name], str)
+                         and re.fullmatch(r"[0-9a-f]{40}", request["candidate"][name])
+                         for name in ("base_sha", "head_sha", "tree_sha")),
+                 "Lease candidate is invalid")
+        for name in ("plan_sha256", "config_sha256", "capacity_sha256"):
+            _digest(request[name], f"lease {name}")
         _require(type(request["parallelism"]) is int and request["parallelism"] > 0,
                  "Lease parallelism is invalid")
+        _require(isinstance(request["engine"], str) and _LABEL.fullmatch(request["engine"])
+                 and request["engine"] in self.limits["engines"],
+                 "Lease engine is invalid")
+        _digest(request["engine_identity_sha256"], "lease engine identity")
+        _positive(request["engine_slots"], "lease engine slots")
+        _require(request["engine_slots"] == request["parallelism"]
+                 and request["engine_identity_sha256"]
+                 == self.limits["engines"][request["engine"]]["identity_sha256"],
+                 "Lease engine identity/slots are invalid")
         _require(request["resource_class"] in {"standard", "heavy", "gpu"}
                  and isinstance(request["required_resources"], list)
+                 and len(request["required_resources"]) == len(set(request["required_resources"]))
+                 and all(isinstance(name, str) and _LABEL.fullmatch(name)
+                         for name in request["required_resources"])
                  and isinstance(request["resource_claims"], dict)
                  and set(request["resource_claims"]).issubset(request["required_resources"])
                  and all(type(value) is int and value > 0
@@ -188,10 +372,13 @@ class FileLeaseBroker:
         _require(isinstance(request["determinism"], dict)
                  and set(request["determinism"]) == {"seed", "retry_limit"}
                  and all(type(value) is int and value >= 0
-                         for value in request["determinism"].values()),
+                         for value in request["determinism"].values())
+                 and request["determinism"]["seed"] <= 2**63 - 1
+                 and request["determinism"]["retry_limit"] <= 5,
                  "Lease determinism declaration is invalid")
-        timestamp(request["required_until"])
         now = self.clock()
+        _require(timestamp(request["required_until"]) > now,
+                 "Lease required_until must be in the future")
         request_sha = fingerprint("heavy-validation-lease-request", request)
 
         def operation(state):
@@ -204,6 +391,10 @@ class FileLeaseBroker:
                             if item["resource_class"] in {"heavy", "gpu"})
             gpu_use = sum(item["parallelism"] for item in active
                           if item["resource_class"] == "gpu")
+            engine_use = sum(item["engine_slots"] for item in active
+                             if item["engine"] == request["engine"]
+                             and item["engine_identity_sha256"]
+                             == request["engine_identity_sha256"])
             reasons = []
             if worker_use + requested > self.limits["max_workers"]:
                 reasons.append("worker capacity")
@@ -211,6 +402,9 @@ class FileLeaseBroker:
                 reasons.append("heavy capacity")
             if request["resource_class"] == "gpu" and gpu_use + requested > self.limits["max_gpu_jobs"]:
                 reasons.append("gpu capacity")
+            if (engine_use + request["engine_slots"]
+                    > self.limits["engines"][request["engine"]]["slots"]):
+                reasons.append("engine capacity")
             for name, amount in request["resource_claims"].items():
                 used = sum(item["resource_claims"].get(name, 0) for item in active)
                 if used + amount > self.limits["resources"].get(name, 0):
@@ -225,6 +419,9 @@ class FileLeaseBroker:
                     "expires_at": request["required_until"], "parallelism": requested,
                     "resource_class": request["resource_class"],
                     "resource_claims": deepcopy(request["resource_claims"]),
+                    "engine": request["engine"],
+                    "engine_identity_sha256": request["engine_identity_sha256"],
+                    "engine_slots": request["engine_slots"],
                     "request_sha256": request_sha}
             state["leases"].append(item)
             return {"status": "GRANTED", "lease_id": lease_id,
@@ -256,29 +453,133 @@ def broker_limits(config: dict, capacity: dict) -> tuple[str, dict]:
         "max_heavy_jobs": min(broker["max_heavy_jobs"], capacity["heavy_jobs_available"]),
         "max_gpu_jobs": min(broker["max_gpu_jobs"], capacity["gpu_jobs_available"]),
         "resources": resources,
+        "engines": {name: {"identity_sha256": evidence["identity_sha256"],
+                            "slots": evidence["parallel_slots"]}
+                    for name, evidence in capacity["engines"].items()},
     }
 
 
-def write_result_log(path: str | os.PathLike[str], result: dict) -> dict:
-    """Create one immutable, fsync'd result envelope; never overwrite evidence."""
+def _receipt_key(value: bytes) -> bytes:
+    _require(isinstance(value, bytes) and 32 <= len(value) <= 4096,
+             "Result receipt key must contain 32 to 4096 bytes")
+    return value
+
+
+def _fsync_directory(path: Path):
+    if os.name != "nt":
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+    kernel.FlushFileBuffers.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.CreateFileW(str(path), 0x40000000, 0x00000007, None, 3,
+                                0x02000000, None)
+    invalid = wintypes.HANDLE(-1).value
+    if handle == invalid:
+        raise OSError(ctypes.get_last_error(), "Directory durability handle failed")
+    try:
+        if not kernel.FlushFileBuffers(handle):
+            raise OSError(ctypes.get_last_error(), "Directory durability flush failed")
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _write_durable_exclusive(path: Path, raw: bytes, label: str) -> Path:
     target = Path(path).absolute()
-    parent = resolve_without_alias(target.parent, "result log parent", directory=True)
+    parent = resolve_without_alias(target.parent, f"{label} parent", directory=True)
     target = parent / target.name
-    result_raw = canonical(result)
-    envelope = {"format": "awf-heavy-validation-result-log-1",
-                "result_sha256": sha256(result_raw), "result": result}
-    raw = canonical(envelope)
+    _require(not target.is_symlink(), f"{label} cannot be a symlink")
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
+        _fsync_directory(parent)
     except Exception:
         try:
             target.unlink()
+            _fsync_directory(parent)
         except OSError:
             pass
         raise
-    return {"path": str(target), "sha256": sha256(raw),
-            "result_sha256": envelope["result_sha256"]}
+    return target
+
+
+def write_result_log(path: str | os.PathLike[str], receipt_path: str | os.PathLike[str],
+                     result: dict, receipt_key: bytes) -> dict:
+    """Durably create a result plus keyed receipt; never overwrite either artifact."""
+    key = _receipt_key(receipt_key)
+    result_raw = canonical(result)
+    envelope = {"format": "awf-heavy-validation-result-log-2",
+                "result_sha256": sha256(result_raw), "result": result}
+    log_raw = canonical(envelope)
+    unsigned = {"format": "awf-heavy-validation-result-receipt-1",
+                "log_sha256": sha256(log_raw),
+                "result_sha256": envelope["result_sha256"]}
+    mac = hmac.new(key, b"awf-heavy-validation-result-receipt-1\0" + canonical(unsigned),
+                   hashlib.sha256).hexdigest()
+    receipt = {**unsigned, "hmac_sha256": mac}
+    receipt_raw = canonical(receipt)
+    log_target = _write_durable_exclusive(Path(path), log_raw, "result log")
+    try:
+        receipt_target = _write_durable_exclusive(Path(receipt_path), receipt_raw,
+                                                  "result receipt")
+    except Exception:
+        try:
+            log_target.unlink()
+            _fsync_directory(log_target.parent)
+        except OSError:
+            pass
+        raise
+    return {"log_path": str(log_target), "receipt_path": str(receipt_target), **receipt}
+
+
+def read_result_log(path: str | os.PathLike[str], receipt_path: str | os.PathLike[str],
+                    receipt_key: bytes) -> dict:
+    """Verify and return completed evidence using its controller-held receipt key."""
+    key = _receipt_key(receipt_key)
+    log_target = resolve_without_alias(Path(path).absolute(), "result log", directory=False)
+    receipt_target = resolve_without_alias(Path(receipt_path).absolute(),
+                                           "result receipt", directory=False)
+    try:
+        log_raw = log_target.read_bytes()
+        receipt_raw = receipt_target.read_bytes()
+        envelope = json.loads(log_raw.decode("utf-8"))
+        receipt = json.loads(receipt_raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValidationError("Result evidence is unreadable") from exc
+    _require(isinstance(envelope, dict)
+             and set(envelope) == {"format", "result_sha256", "result"}
+             and envelope["format"] == "awf-heavy-validation-result-log-2",
+             "Result log envelope is invalid")
+    _require(isinstance(receipt, dict)
+             and set(receipt) == {"format", "log_sha256", "result_sha256", "hmac_sha256"}
+             and receipt["format"] == "awf-heavy-validation-result-receipt-1",
+             "Result receipt is invalid")
+    for name in ("log_sha256", "result_sha256", "hmac_sha256"):
+        _digest(receipt[name], f"result receipt {name}")
+    result_raw = canonical(envelope["result"])
+    _require(envelope["result_sha256"] == sha256(result_raw)
+             and receipt["result_sha256"] == envelope["result_sha256"]
+             and receipt["log_sha256"] == sha256(log_raw),
+             "Result evidence digest mismatch")
+    unsigned = {key_name: receipt[key_name] for key_name in
+                ("format", "log_sha256", "result_sha256")}
+    expected = hmac.new(key, b"awf-heavy-validation-result-receipt-1\0" + canonical(unsigned),
+                        hashlib.sha256).hexdigest()
+    _require(hmac.compare_digest(receipt["hmac_sha256"], expected),
+             "Result receipt authentication failed")
+    return {"result": deepcopy(envelope["result"]), "receipt": deepcopy(receipt),
+            "log_path": str(log_target), "receipt_path": str(receipt_target)}
