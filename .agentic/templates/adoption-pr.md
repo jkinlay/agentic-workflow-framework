@@ -1,6 +1,6 @@
 # Adopt AWF 1.9.3
 
-This draft changes repository governance files and preserves project-owned instructions, configuration and history. Complete every field from observed evidence; this template supplies no proof or authorization.
+This draft changes governance files and preserves project-owned instructions, configuration and history. Complete fields from observed evidence; this template supplies no authorization.
 
 ## Installation and configuration
 
@@ -16,9 +16,9 @@ This draft changes repository governance files and preserves project-owned instr
 - Actual state line, blockers, capabilities, next command, exit code and retained evidence: TO_RECORD. Do not substitute or anticipate an `ACTIVE` result.
 - Optional observed PR selector/trusted gh path and `status --json` details: TO_RECORD, or None.
 
-Bootstrap CONFIGURED requires both commands to exit 0, `integrity_valid: true`, `status: ACCEPTED` and matching source/policy digests. Dry runs only prepare. Status recomputes checks; INSTALLED/CONFIGURED prove local consistency, not release provenance or historical execution. Failed integrity is not a baseline. Record exclusive ownership and runtime-import rejection; preserve NOT_RUN.
+Bootstrap CONFIGURED requires both commands to exit 0, `integrity_valid: true`, `status: ACCEPTED` and matching source/policy digests. Dry runs only prepare. Status recomputes checks; INSTALLED/CONFIGURED prove local consistency, not release provenance. Failed integrity is not a baseline. Record exclusive ownership and runtime-import rejection; preserve NOT_RUN.
 
-Attach doctor JSON and preflight evidence.
+Attach doctor and preflight evidence.
 
 | Remaining configuration JSON path | Observed reason | Flag or project file remedy | Owner / next action |
 | --- | --- | --- | --- |
@@ -50,7 +50,7 @@ Record `.gitignore` merge/preservation and verify that local operating lock/jour
 - Owner application/re-observation next step, or None when supported by evidence: TO_RECORD.
 - Draft PR URL only after creation, or prepared branch/body and owner publication prerequisite: TO_RECORD.
 
-Missing rules do not block local installation, configuration or PR preparation. Offer the shipped ruleset for owner review; bootstrap never applies it. If agent pushes to this secrets-bearing repository are restricted, hand publication to the owner or observe rules first. APPLIED with an empty required-check list establishes no CI/review provenance.
+Missing rules do not block local installation, configuration or PR preparation. Offer the ruleset for owner review; bootstrap never applies it. If agent pushes to this repository are restricted, hand publication to the owner or observe rules first. APPLIED with an empty required-check list establishes no CI/review provenance.
 
 ## Effect after merge
 

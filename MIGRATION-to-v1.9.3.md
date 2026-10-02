@@ -1,10 +1,10 @@
 # Direct upgrade to AWF 1.9.3
 
-Fresh installation of 1.9.3 never requires an earlier AWF version. Use verified 1.9.3 source and `bootstrap_project.py --mode install`; the portable distribution can likewise install into an empty skills root.
+Fresh 1.9.3 installation needs no earlier AWF version. Use verified source and `bootstrap_project.py --mode install`; the portable distribution can install into an empty skills root.
 
-Direct upgrade recognizes exactly 1.8.3, 1.8.9, 1.9.1 and 1.9.2. Identification is receipt- and byte-based: the registered source-manifest digest, managed-file manifest and every managed file must agree. Installation-level receipt fields such as `install_id` and `initial_config_sha256` do not identify a template version. A version string alone is insufficient.
+Direct upgrade recognizes 1.8.3, 1.8.9, 1.9.1 and 1.9.2. Receipt and byte identification requires agreement among the registered source-manifest digest, managed-file manifest and every managed file. Installation fields such as `install_id` and `initial_config_sha256`, or a version string alone, do not identify a template version.
 
-Post-merge `workflow.py status` obtains the integration commit through a bounded GraphQL query because the pinned REST pull-request payload can return an absent or null `merge_commit_sha`. It cross-binds that answer to the REST repository/default tip and selected merged PR, verifies receipt-to-integration-to-head ancestry, the PR file inventory, receipt content and every accepted governance blob, and reports `adoption_acceptance_basis: github_graphql_merge_commit`. The trusted GitHub child projects paginated PR-file responses to the fixed filename/status/blob-SHA inventory before verifier byte accounting, so unneeded patch bodies are not recorded; complete pagination, row typing, uniqueness and the existing inventory ceiling remain fail-closed. Missing, malformed or conflicting evidence remains CONFIGURED with a repair action.
+Post-merge `workflow.py status` obtains the integration commit through bounded GraphQL because pinned REST may return a null `merge_commit_sha`. It cross-binds the answer to the REST repository/default tip and merged PR; verifies receipt-to-integration-to-head ancestry, PR inventory, receipt and accepted governance blobs; and reports `adoption_acceptance_basis: github_graphql_merge_commit`. The trusted GitHub child reduces paginated PR-file responses to filename/status/blob-SHA before byte accounting, omitting patch bodies. Pagination, row typing, uniqueness and inventory ceilings fail closed. Missing, malformed or conflicting evidence remains CONFIGURED with a repair action.
 
 Run a non-writing plan first, then prepare one reviewed upgrade PR:
 
