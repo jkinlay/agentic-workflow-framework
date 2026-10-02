@@ -5,12 +5,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import signal
 import stat
 import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -20,10 +22,10 @@ from .canonical import fingerprint, load_yaml, loads, now_text, sha256, timestam
 from .child_process import child_env
 
 
-PLAN_FORMAT = "awf-heavy-validation-plan-2"
-REVIEW_FORMAT = "awf-heavy-validation-review-2"
-CAPACITY_FORMAT = "awf-heavy-validation-capacity-2"
-RESULT_FORMAT = "awf-heavy-validation-result-2"
+PLAN_FORMAT = "awf-heavy-validation-plan-3"
+REVIEW_FORMAT = "awf-heavy-validation-review-3"
+CAPACITY_FORMAT = "awf-heavy-validation-capacity-3"
+RESULT_FORMAT = "awf-heavy-validation-result-3"
 TERMINAL_STATES = frozenset({"PASS", "FAILED", "TIMED_OUT", "CANCELLED"})
 FROZEN_H_PROVIDER_API_KEY_ENV_VARS = frozenset({
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY",
@@ -154,7 +156,7 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     value = _verified_load(raw, expected_sha256, "plan")
     _exact_keys(value, {"format", "workload_id", "engine", "resource_class",
                         "required_resources", "requested_parallelism", "candidate",
-                        "working_directory", "partitions"}, "plan")
+                        "working_directory", "determinism", "isolation", "partitions"}, "plan")
     if value["format"] != PLAN_FORMAT:
         raise ValidationError("Unsupported heavy validation plan format")
     for field in ("workload_id", "engine"):
@@ -175,6 +177,15 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     for resource in resources:
         if not isinstance(resource, str) or not _LABEL.fullmatch(resource):
             raise ValidationError("Invalid required resource")
+    determinism = _mapping(value["determinism"], "plan.determinism")
+    _exact_keys(determinism, {"seed", "retry_limit"}, "plan.determinism")
+    _nonnegative_int(determinism["seed"], "plan.determinism.seed", maximum=2**63 - 1)
+    _nonnegative_int(determinism["retry_limit"], "plan.determinism.retry_limit", maximum=5)
+    isolation = _mapping(value["isolation"], "plan.isolation")
+    _exact_keys(isolation, {"process_tree", "network", "filesystem"}, "plan.isolation")
+    if isolation != {"process_tree": "REQUIRED", "network": "HOST_POLICY",
+                      "filesystem": "WORKTREE"}:
+        raise ValidationError("plan.isolation must require process-tree, host-network, and worktree controls")
     _positive_int(value["requested_parallelism"], "requested_parallelism", maximum=256)
     parts = value["partitions"]
     if not isinstance(parts, list) or not (1 <= len(parts) <= _MAX_PARTITIONS):
@@ -182,7 +193,8 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     names: set[str] = set()
     for index, part in enumerate(parts):
         part = _mapping(part, f"partition {index}")
-        _exact_keys(part, {"name", "argv", "executable", "timeout_seconds", "accepted_exit_codes"},
+        _exact_keys(part, {"name", "framework", "resources", "argv", "executable",
+                           "timeout_seconds", "accepted_exit_codes"},
                     f"partition {index}")
         name = part["name"]
         if not isinstance(name, str) or not _PARTITION_NAME.fullmatch(name):
@@ -190,6 +202,13 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
         if name in names:
             raise ValidationError(f"Duplicate partition name: {name}")
         names.add(name)
+        if part["framework"] not in {"command", "python-unittest", "pytest", "matlab", "wolfram"}:
+            raise ValidationError(f"partition {name} framework is unsupported")
+        claims = _validate_slots(part["resources"], f"partition {name} resources")
+        if any(amount < 1 for amount in claims.values()):
+            raise ValidationError(f"partition {name} resource claims must be positive")
+        if not set(claims).issubset(resources):
+            raise ValidationError(f"partition {name} claims an undeclared resource")
         argv = part["argv"]
         if not isinstance(argv, list):
             raise ValidationError(f"partition {name} argv must be a list")
@@ -206,6 +225,16 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
         _expected_digest(executable["sha256"], f"partition {name} executable.sha256")
         if os.path.normcase(argv[0]) != os.path.normcase(executable["path"]):
             raise ValidationError(f"partition {name} argv[0] must equal executable.path")
+        program = Path(executable["path"]).name.casefold().removesuffix(".exe")
+        if part["framework"] == "python-unittest" and argv[1:3] != ["-m", "unittest"]:
+            raise ValidationError(f"partition {name} is not a python unittest adapter command")
+        if part["framework"] == "pytest" and argv[1:3] != ["-m", "pytest"]:
+            raise ValidationError(f"partition {name} is not a pytest adapter command")
+        if part["framework"] == "matlab" and (program != "matlab" or "-batch" not in argv[1:]):
+            raise ValidationError(f"partition {name} is not a MATLAB batch adapter command")
+        if part["framework"] == "wolfram" and (program != "wolframscript"
+                                                  or not ({"-code", "-file"} & set(argv[1:]))):
+            raise ValidationError(f"partition {name} is not a WolframScript adapter command")
         _positive_int(part["timeout_seconds"], f"partition {name} timeout_seconds",
                       maximum=86_400)
         exits = part["accepted_exit_codes"]
@@ -354,13 +383,28 @@ def _strip_names(config: dict) -> frozenset[str]:
     return frozenset(folded)
 
 
-def _validation_child_env(config: dict, base=None) -> dict:
+def _validation_child_env(config: dict, base=None, *, seed: int | None = None,
+                          attempt: int | None = None) -> dict:
     environment = child_env(base)
     denied = FROZEN_H_PROVIDER_API_KEY_ENV_VARS | _strip_names(config)
     for key in list(environment):
         if key.upper() in denied:
             environment.pop(key)
+    if seed is not None:
+        environment["AWF_VALIDATION_SEED"] = str(seed)
+    if attempt is not None:
+        environment["AWF_VALIDATION_ATTEMPT"] = str(attempt)
     return environment
+
+
+def _resource_claims(plan: dict, parallelism: int) -> dict[str, int]:
+    """Return a conservative bounded claim for the concurrently scheduled partitions."""
+    claims: dict[str, list[int]] = {name: [] for name in plan["required_resources"]}
+    for part in plan["partitions"]:
+        for name in claims:
+            claims[name].append(part["resources"].get(name, 0))
+    return {name: sum(sorted(values, reverse=True)[:parallelism])
+            for name, values in claims.items() if any(values)}
 
 
 def _lease_request(plan: dict, plan_digest: str, config_digest: str,
@@ -372,6 +416,9 @@ def _lease_request(plan: dict, plan_digest: str, config_digest: str,
             "config_sha256": config_digest, "capacity_sha256": capacity_digest,
             "parallelism": parallelism, "resource_class": plan["resource_class"],
             "engine": plan["engine"], "required_resources": list(plan["required_resources"]),
+            "resource_claims": _resource_claims(plan, parallelism),
+            "determinism": deepcopy(plan["determinism"]),
+            "isolation": deepcopy(plan["isolation"]),
             "required_until": required_until.isoformat(timespec="seconds").replace("+00:00", "Z")}
 
 
@@ -414,14 +461,12 @@ def _parallelism(plan: dict, config: dict, capacity: dict | None,
     execution, broker, configured_resources = _broker(config)
     requested = min(plan["requested_parallelism"], len(plan["partitions"]))
     reasons: list[str] = []
-    if requested <= 1:
-        return 1, reasons
     if not broker["enabled"]:
-        return 1, ["broker_disabled"]
+        return 1, (["broker_disabled"] if requested > 1 else [])
     if capacity is None:
-        return 1, ["observed_capacity_unavailable"]
+        return 0, ["observed_capacity_unavailable"]
     if stale:
-        return 1, ["observed_capacity_stale"]
+        return 0, ["observed_capacity_stale"]
     if capacity["broker_id"] != broker["broker_id"]:
         raise ValidationError("Capacity broker_id does not match configured host broker")
 
@@ -438,29 +483,94 @@ def _parallelism(plan: dict, config: dict, capacity: dict | None,
     engine = plan["engine"]
     engine_capacity = capacity["engines"].get(engine)
     if engine_capacity is None:
-        return 1, [f"engine_parallel_unobserved:{engine}"]
-    if (not engine_capacity["parallel_available"]
-            or engine_capacity["parallel_slots"] < 2):
-        return 1, [f"engine_parallel_unavailable:{engine}"]
+        return 0, [f"engine_capacity_unobserved:{engine}"]
+    if engine_capacity["parallel_slots"] < 1:
+        return 0, [f"engine_capacity_unavailable:{engine}"]
+    if not engine_capacity["parallel_available"] or engine_capacity["parallel_slots"] < 2:
+        reasons.append(f"engine_parallel_unavailable:{engine}")
     ceilings.append((f"capacity.engine.{engine}", engine_capacity["parallel_slots"]))
 
     observed_resources = capacity["resources_available"]
     for resource in plan["required_resources"]:
         configured = configured_resources.get(resource, 0)
         observed = observed_resources.get(resource, 0)
-        if configured < 1 or observed < 1:
-            return 1, [f"resource_capacity_unavailable:{resource}"]
-        ceilings.extend([(f"broker.resource.{resource}", configured),
-                         (f"capacity.resource.{resource}", observed)])
+        required = max((part["resources"].get(resource, 0) for part in plan["partitions"]), default=0)
+        if required > configured or required > observed:
+            return 0, [f"resource_capacity_unavailable:{resource}"]
 
     effective = requested
     for label, ceiling in ceilings:
         if ceiling < requested:
             reasons.append(f"{label}={ceiling}")
         effective = min(effective, ceiling)
+    while effective > 1:
+        claim = _resource_claims(plan, effective)
+        if all(claim.get(name, 0) <= configured_resources.get(name, 0)
+               and claim.get(name, 0) <= observed_resources.get(name, 0)
+               for name in plan["required_resources"]):
+            break
+        effective -= 1
+        reasons.append("named_resource_capacity_reduced_parallelism")
+    if effective < 1:
+        return 0, reasons or ["capacity_zero"]
     if effective < 2:
-        return 1, reasons or ["parallel_capacity_below_two"]
+        return 1, reasons or (["parallel_capacity_below_two"] if requested > 1 else [])
     return effective, reasons
+
+
+def _admit(plan: dict, plan_digest: str, config_digest: str,
+           capacity_digest: str | None, desired: int, reasons: list[str],
+           broker: dict, client, now: str) -> tuple[int, list[str], dict | None, dict, list[dict], bool]:
+    """Acquire an exact lease for governed parallel or serial execution."""
+    events: list[dict] = []
+    if not broker["enabled"]:
+        return desired, reasons, None, {"status": "NOT_REQUIRED"}, events, desired > 0
+    if desired < 1:
+        return 0, reasons, None, {"status": "NOT_ACQUIRED"}, events, False
+    if client is None:
+        return 0, [*reasons, "lease_client_unavailable"], None, {"status": "NOT_ACQUIRED"}, events, False
+    parallelism = desired
+    while parallelism >= 1:
+        request = _lease_request(plan, plan_digest, config_digest, capacity_digest,
+                                 parallelism, now)
+        event = {"parallelism": parallelism,
+                 "request_sha256": fingerprint("heavy-validation-lease-request", request)}
+        try:
+            lease = _validate_lease(client.acquire(deepcopy(request)), request,
+                                    broker["broker_id"], now)
+        except ValidationError:
+            raise
+        except Exception as exc:
+            event.update(status="FAILED", reason=type(exc).__name__)
+            events.append(event)
+            if parallelism == 1:
+                return 0, [*reasons, f"lease_acquire_failed:{type(exc).__name__}"], None, {"status": "NOT_ACQUIRED"}, events, False
+            reasons = [*reasons, f"parallel_lease_acquire_failed:{type(exc).__name__}"]
+            parallelism = 1
+            continue
+        event["status"] = lease["status"]
+        if lease["status"] == "DENIED":
+            event["reason"] = lease["reason"]
+            events.append(event)
+            if parallelism == 1:
+                return 0, [*reasons, "serial_lease_denied:" + lease["reason"]], None, {"status": "NOT_ACQUIRED"}, events, False
+            reasons = [*reasons, "parallel_lease_denied:" + lease["reason"]]
+            parallelism = 1
+            continue
+        if lease["status"] == "STALE":
+            released = _release_lease(client, lease)
+            event["release"] = released
+            events.append(event)
+            if released.get("status") != "RELEASED":
+                return 0, [*reasons, "stale_fence_release_failed"], lease, released, events, False
+            if parallelism == 1:
+                return 0, [*reasons, "serial_lease_stale"], None, released, events, False
+            reasons = [*reasons, "parallel_lease_stale"]
+            parallelism = 1
+            continue
+        events.append(event)
+        return parallelism, reasons, lease, {"status": "PENDING"}, events, True
+    return 0, reasons, None, {"status": "NOT_ACQUIRED"}, events, False
 
 
 def _bounded_digest(data: bytes) -> tuple[str, int, bool, str]:
@@ -589,19 +699,34 @@ def _attach_windows_job(proc: subprocess.Popen):
         kernel.CloseHandle.restype = wintypes.BOOL
         handle = kernel.CreateJobObjectW(None, None)
         if not handle:
-            return None
+            raise ValidationError("Windows containment job creation failed")
         limits = ExtendedLimit()
         limits.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
         if not kernel.SetInformationJobObject(handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
             kernel.CloseHandle(handle)
-            return None
+            raise ValidationError("Windows containment policy setup failed")
         if not kernel.AssignProcessToJobObject(handle, wintypes.HANDLE(proc._handle)):
             kernel.CloseHandle(handle)
-            return None
+            raise ValidationError("Windows containment assignment failed")
         proc._awf_job_handle = handle
         return handle
-    except (AttributeError, OSError, ValueError):
-        return None
+    except ValidationError:
+        raise
+    except (AttributeError, OSError, ValueError) as exc:
+        raise ValidationError("Windows containment setup failed") from exc
+
+
+def _release_windows_launcher(proc: subprocess.Popen, argv: list[str]):
+    if os.name != "nt":
+        return
+    try:
+        payload = json.dumps({"argv": argv}, ensure_ascii=True,
+                             separators=(",", ":")).encode("ascii") + b"\n"
+        proc.stdin.write(payload)
+        proc.stdin.flush()
+        proc.stdin.close()
+    except (AttributeError, OSError, ValueError) as exc:
+        raise ValidationError("Windows contained launcher could not be released") from exc
 
 
 def _close_windows_job(proc: subprocess.Popen):
@@ -633,6 +758,10 @@ def _result_shell(partition: dict, plan: dict, executable: dict) -> dict:
         "partition_id": identity,
         "name": partition["name"],
         "engine": plan["engine"],
+        "framework": partition["framework"],
+        "resources": deepcopy(partition["resources"]),
+        "isolation": deepcopy(plan["isolation"]),
+        "determinism": deepcopy(plan["determinism"]),
         "command_argv": list(partition["argv"]),
         "command_sha256": fingerprint("heavy-validation-command", partition["argv"]),
         "timeout_seconds": partition["timeout_seconds"],
@@ -641,8 +770,8 @@ def _result_shell(partition: dict, plan: dict, executable: dict) -> dict:
     }
 
 
-def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: dict,
-             cancel_event: threading.Event) -> dict:
+def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, config: dict,
+                     cancel_event: threading.Event, attempt: int) -> dict:
     result = _result_shell(partition, plan, executable)
     result["started_at"] = now_text()
     state = "FAILED"
@@ -652,24 +781,37 @@ def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: d
     error_type = None
     cleanup = {"outcome": "NOT_REQUIRED", "mechanism": "none"}
     proc = None
+    released = os.name != "nt"
     try:
         if cancel_event.is_set():
             state = "CANCELLED"
             cleanup = {"outcome": "COMPLETE", "mechanism": "not_started"}
         else:
-            options = ({"start_new_session": True} if os.name != "nt" else
-                       {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)})
+            target_argv = [executable["resolved_path"], *partition["argv"][1:]]
+            if os.name == "nt":
+                launcher = str(Path(__file__).with_name("heavy_validation_child.py"))
+                command = [sys.executable, "-B", launcher]
+                options = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+                child_stdin = subprocess.PIPE
+            else:
+                command = target_argv
+                options = {"start_new_session": True}
+                child_stdin = subprocess.DEVNULL
             proc = subprocess.Popen(
-                [executable["resolved_path"], *partition["argv"][1:]],
+                command,
                 cwd=str(cwd),
-                stdin=subprocess.DEVNULL,
+                stdin=child_stdin,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
-                env=_validation_child_env(config),
+                env=_validation_child_env(config, seed=plan["determinism"]["seed"],
+                                          attempt=attempt),
                 **options,
             )
-            _attach_windows_job(proc)
+            if os.name == "nt":
+                _attach_windows_job(proc)
+                _release_windows_launcher(proc, target_argv)
+                released = True
             stdout_capture = _Capture(proc.stdout)
             stderr_capture = _Capture(proc.stderr)
             readers = [threading.Thread(target=stdout_capture.drain, daemon=True),
@@ -703,22 +845,34 @@ def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: d
         error_type = type(exc).__name__
         stderr_evidence = _bounded_digest(str(exc).encode("utf-8", errors="replace"))
         if proc is not None and proc.poll() is None:
-            cleanup = _terminate_process_tree(proc, config)
+            if os.name == "nt" and not released:
+                proc.kill()
+                cleanup = {"outcome": "COMPLETE", "mechanism": "contained_launcher_terminated"}
+            else:
+                cleanup = _terminate_process_tree(proc, config)
             proc.wait()
     except Exception as exc:  # fail closed and retain one terminal record per partition
         state = "FAILED"
         error_type = type(exc).__name__
         stderr_evidence = _bounded_digest(str(exc).encode("utf-8", errors="replace"))
         if proc is not None and proc.poll() is None:
-            cleanup = _terminate_process_tree(proc, config)
+            if os.name == "nt" and not released:
+                proc.kill()
+                cleanup = {"outcome": "COMPLETE", "mechanism": "contained_launcher_terminated"}
+            else:
+                cleanup = _terminate_process_tree(proc, config)
             proc.wait()
     finally:
         if proc is not None:
             _close_windows_job(proc)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
     result["ended_at"] = now_text()
     stdout_digest, stdout_bytes, stdout_truncated, stdout_text = stdout_evidence
     stderr_digest, stderr_bytes, stderr_truncated, stderr_text = stderr_evidence
     result.update({
+        "attempt": attempt,
         "state": state,
         "exit_code": exit_code,
         "timed_out": state == "TIMED_OUT",
@@ -737,6 +891,25 @@ def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: d
     return result
 
 
+def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: dict,
+             cancel_event: threading.Event) -> dict:
+    attempts = []
+    maximum = plan["determinism"]["retry_limit"] + 1
+    final = None
+    for attempt in range(1, maximum + 1):
+        final = _execute_attempt(partition, plan, executable, cwd, config, cancel_event, attempt)
+        attempts.append({key: final[key] for key in (
+            "attempt", "state", "exit_code", "timed_out", "cancelled", "error_type",
+            "process_tree_cleanup", "stdout_sha256", "stderr_sha256")})
+        if (final["state"] in {"PASS", "CANCELLED"}
+                or final["process_tree_cleanup"]["outcome"] in {"PARTIAL", "FAILED"}
+                or cancel_event.is_set()):
+            break
+    final["attempts"] = attempts
+    final["retry_count"] = len(attempts) - 1
+    return final
+
+
 def _unexpected_result(partition: dict, plan: dict, executable: dict, exc: Exception) -> dict:
     result = _result_shell(partition, plan, executable)
     moment = now_text()
@@ -744,13 +917,18 @@ def _unexpected_result(partition: dict, plan: dict, executable: dict, exc: Excep
     digest, length, truncated, shown = _bounded_digest(stderr)
     empty = hashlib.sha256(b"").hexdigest()
     result.update({
-        "started_at": moment, "ended_at": moment, "state": "FAILED", "exit_code": None,
+        "started_at": moment, "ended_at": moment, "attempt": 0,
+        "state": "FAILED", "exit_code": None,
         "timed_out": False, "cancelled": False, "error_type": type(exc).__name__,
         "process_tree_cleanup": {"outcome": "FAILED", "mechanism": "executor_failure"},
         "stdout_sha256": empty, "stdout_bytes": 0, "stdout_truncated": False, "stdout": "",
         "stderr_sha256": digest, "stderr_bytes": length, "stderr_truncated": truncated,
         "stderr": shown,
     })
+    result["attempts"] = [{key: result[key] for key in (
+        "attempt", "state", "exit_code", "timed_out", "cancelled", "error_type",
+        "process_tree_cleanup", "stdout_sha256", "stderr_sha256")}]
+    result["retry_count"] = 0
     return result
 
 
@@ -803,40 +981,23 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         plan_digest, config_digest, plan["candidate"])
     effective, reasons = _parallelism(plan, config, capacity, stale)
     execution_config, broker, _ = _broker(config)
-    lease = None
-    lease_release = {"status": "NOT_ACQUIRED"}
-    if effective > 1:
-        if broker_client is None:
-            effective, reasons = 1, [*reasons, "lease_client_unavailable"]
-        else:
-            request = _lease_request(plan, plan_digest, config_digest, capacity_digest, effective, now)
-            try:
-                lease = _validate_lease(broker_client.acquire(deepcopy(request)), request,
-                                        broker["broker_id"], now)
-            except ValidationError:
-                raise
-            except Exception as exc:
-                effective, reasons = 1, [*reasons, f"lease_acquire_failed:{type(exc).__name__}"]
-            if lease is not None and lease["status"] == "DENIED":
-                effective, reasons = 1, [*reasons, "lease_denied:" + lease["reason"]]
-            elif lease is not None and lease["status"] == "STALE":
-                lease_release = _release_lease(broker_client, lease)
-                effective, reasons = 1, [*reasons, "lease_stale"]
-            elif lease is not None:
-                lease_release = {"status": "PENDING"}
+    effective, reasons, lease, lease_release, admission_events, admitted = _admit(
+        plan, plan_digest, config_digest, capacity_digest, effective, reasons,
+        broker, broker_client, now)
     event = cancel_event or threading.Event()
     started_at = now_text()
     results: list[dict] = []
     try:
-        with ThreadPoolExecutor(max_workers=effective, thread_name_prefix="awf-heavy") as executor:
-            futures = {executor.submit(_execute, part, plan, executable, root, config, event): (part, executable)
-                       for part, executable in zip(plan["partitions"], executables)}
-            for future in as_completed(futures):
-                part, executable = futures[future]
-                try:
-                    results.append(future.result())
-                except Exception as exc:  # executor failures still get terminal evidence
-                    results.append(_unexpected_result(part, plan, executable, exc))
+        if admitted:
+            with ThreadPoolExecutor(max_workers=effective, thread_name_prefix="awf-heavy") as executor:
+                futures = {executor.submit(_execute, part, plan, executable, root, config, event): (part, executable)
+                           for part, executable in zip(plan["partitions"], executables)}
+                for future in as_completed(futures):
+                    part, executable = futures[future]
+                    try:
+                        results.append(future.result())
+                    except Exception as exc:  # executor failures still get terminal evidence
+                        results.append(_unexpected_result(part, plan, executable, exc))
     finally:
         if lease is not None and lease.get("status") == "GRANTED":
             lease_release = _release_lease(broker_client, lease)
@@ -846,13 +1007,19 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         item["state"] in TERMINAL_STATES for item in results)
     cleanup_complete = all(item["process_tree_cleanup"]["outcome"] not in {"PARTIAL", "FAILED"}
                            for item in results)
-    release_complete = lease is None or lease.get("status") != "GRANTED" or lease_release["status"] == "RELEASED"
-    passed = terminal and cleanup_complete and release_complete and all(
+    release_complete = (not broker["enabled"] or
+                        (admitted and lease is not None and lease.get("status") == "GRANTED"
+                         and lease_release["status"] == "RELEASED"))
+    passed = admitted and terminal and cleanup_complete and release_complete and all(
         item["state"] == "PASS" for item in results)
     stable = [{key: item[key] for key in (
         "partition_id", "name", "engine", "command_sha256", "state", "exit_code",
-        "timed_out", "cancelled", "process_tree_cleanup", "stdout_sha256", "stderr_sha256")}
+        "timed_out", "cancelled", "retry_count", "attempts", "process_tree_cleanup",
+        "stdout_sha256", "stderr_sha256")}
         for item in results]
+    serial_equivalence_sha256 = fingerprint("heavy-validation-serial-equivalence", {
+        "candidate": plan["candidate"], "plan_sha256": plan_digest,
+        "partition_set": stable})
     cap_keys = ("max_tokens_per_ticket", "max_cost_microusd_per_ticket",
                 "daily_project_cost_microusd")
     preserved_caps = {key: execution_config[key] for key in cap_keys if key in execution_config}
@@ -865,6 +1032,8 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         "engine": plan["engine"],
         "resource_class": plan["resource_class"],
         "required_resources": list(plan["required_resources"]),
+        "determinism": deepcopy(plan["determinism"]),
+        "isolation": deepcopy(plan["isolation"]),
         "plan_sha256": plan_digest,
         "review_sha256": review_digest,
         "review_authority": review_authority,
@@ -872,12 +1041,15 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         "capacity_sha256": capacity_digest,
         "lease": deepcopy(lease),
         "lease_release": lease_release,
+        "admission": {"granted": admitted, "events": admission_events,
+                      "release_complete": release_complete},
         "started_at": started_at,
         "ended_at": ended_at,
         "all_partitions_terminal": terminal,
         "execution_authority": False,
         "execution": {
-            "mode": "PARALLEL" if effective > 1 else "SERIAL_FALLBACK",
+            "mode": ("PARALLEL" if effective > 1 else
+                     "SERIAL" if effective == 1 else "NOT_STARTED"),
             "requested_parallelism": plan["requested_parallelism"],
             "effective_parallelism": effective,
             "fallback_reasons": reasons,
@@ -891,7 +1063,9 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
             "candidate": plan["candidate"], "working_directory": str(root),
             "plan_sha256": plan_digest, "review_sha256": review_digest,
             "config_sha256": config_digest, "capacity_sha256": capacity_digest,
-            "lease": lease, "lease_release": lease_release, "partitions": stable}),
+            "lease": lease, "lease_release": lease_release,
+            "admission_events": admission_events, "partitions": stable}),
+        "serial_equivalence_sha256": serial_equivalence_sha256,
         "preserved_caps": preserved_caps,
         "native_streams": deepcopy(execution_config.get("native_streams")),
         "credential_strip_names": sorted(FROZEN_H_PROVIDER_API_KEY_ENV_VARS | _strip_names(config)),

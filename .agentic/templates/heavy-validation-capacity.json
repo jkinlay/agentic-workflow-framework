@@ -8,7 +8,7 @@
   },
   "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "engines": {"python": {"parallel_available": true, "parallel_slots": 2}},
-  "format": "awf-heavy-validation-capacity-2",
+  "format": "awf-heavy-validation-capacity-3",
   "gpu_jobs_available": 0,
   "heavy_jobs_available": 2,
   "observed_at": "2030-01-01T00:00:00Z",

@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,10 @@ sys.path.insert(0, str(SOURCE_ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, sha256
+from agentic import heavy_validation as heavy
 from agentic.heavy_validation import resolve_without_alias, run_validation
+from agentic.heavy_validation_controller import (
+    FileLeaseBroker, GitHubReviewAuthenticator, write_result_log)
 
 NOW = "2026-10-02T09:00:00Z"
 CANDIDATE = {"repository_id": 101, "base_sha": "a" * 40,
@@ -45,22 +49,26 @@ def config(*, enabled=True, heavy=2, gpu=1, resources=None, extras=None):
 
 def partition(name, code="print('ok')", *, timeout=5, exits=None):
     executable = str(Path(sys.executable).resolve())
-    return {"name": name, "argv": [executable, "-c", code],
+    return {"name": name, "framework": "command", "resources": {},
+            "argv": [executable, "-c", code],
             "executable": {"path": executable, "sha256": file_digest(executable)},
             "timeout_seconds": timeout, "accepted_exit_codes": list(exits or [0])}
 
 
 def plan(parts, *, engine="python", resource_class="heavy", resources=None,
-         parallelism=4, candidate=None, cwd=None):
-    return canonical({"format": "awf-heavy-validation-plan-2",
+         parallelism=4, candidate=None, cwd=None, seed=17, retries=0):
+    return canonical({"format": "awf-heavy-validation-plan-3",
         "workload_id": "qa9430-synthetic", "engine": engine,
         "resource_class": resource_class, "required_resources": list(resources or []),
         "requested_parallelism": parallelism, "candidate": candidate or CANDIDATE,
-        "working_directory": str(Path(cwd or SOURCE_ROOT).resolve()), "partitions": parts})
+        "working_directory": str(Path(cwd or SOURCE_ROOT).resolve()),
+        "determinism": {"seed": seed, "retry_limit": retries},
+        "isolation": {"process_tree": "REQUIRED", "network": "HOST_POLICY",
+                      "filesystem": "WORKTREE"}, "partitions": parts})
 
 
 def review(plan_raw, *, decision="APPROVE", candidate=None):
-    return canonical({"format": "awf-heavy-validation-review-2",
+    return canonical({"format": "awf-heavy-validation-review-3",
         "plan_sha256": sha256(plan_raw), "candidate": candidate or CANDIDATE,
         "decision": decision,
         "reviewer": {"provider": "fixture", "immutable_id": "reviewer-101", "login": "critic"},
@@ -75,7 +83,7 @@ def authenticator(value, review_digest, plan_digest, candidate):
 
 def capacity(plan_raw, config_raw, *, workers=6, heavy=2, gpu=1, resources=None,
              engines=None, observed_at=NOW, candidate=None):
-    return canonical({"format": "awf-heavy-validation-capacity-2",
+    return canonical({"format": "awf-heavy-validation-capacity-3",
         "observed_at": observed_at, "broker_id": "synthetic-broker",
         "workers_available": workers, "heavy_jobs_available": heavy,
         "gpu_jobs_available": gpu, "resources_available": dict(resources or {}),
@@ -95,8 +103,10 @@ class Broker:
             raise RuntimeError("unavailable")
         if self.mode == "deny":
             return {"status": "DENIED", "reason": "capacity raced"}
+        if self.mode == "deny_parallel" and request["parallelism"] > 1:
+            return {"status": "DENIED", "reason": "parallel capacity raced"}
         expiry = request["required_until"]
-        if self.mode == "stale":
+        if self.mode in {"stale", "stale_release_fail"}:
             expiry = "2026-10-02T08:59:59Z"
         return {"status": "GRANTED", "lease_id": "lease-1", "fencing_token": 7,
                 "broker_id": "synthetic-broker", "acquired_at": NOW,
@@ -105,6 +115,8 @@ class Broker:
 
     def release(self, lease_id, fencing_token):
         self.released.append((lease_id, fencing_token))
+        if self.mode in {"release_fail", "stale_release_fail"}:
+            return {"status": "STALE", "lease_id": lease_id, "fencing_token": fencing_token}
         return {"status": "RELEASED", "lease_id": lease_id, "fencing_token": fencing_token}
 
 
@@ -134,17 +146,53 @@ class HeavyValidationTests(unittest.TestCase):
         self.assertEqual("RELEASED", result["lease_release"]["status"])
         self.assertEqual(2, result["execution"]["completed_terminal_count"])
 
-    def test_denied_stale_failed_or_missing_lease_falls_back_serial(self):
+    def test_parallel_denial_requires_a_separate_governed_serial_lease(self):
         raw, cfg = plan([partition("a"), partition("b")], parallelism=2), config()
         cap = capacity(raw, canonical(cfg))
-        for broker, reason in ((None, "lease_client_unavailable"),
-                               (Broker("deny"), "lease_denied:"),
-                               (Broker("stale"), "lease_stale"),
-                               (Broker("raise"), "lease_acquire_failed:")):
-            with self.subTest(reason=reason):
+        broker = Broker("deny_parallel")
+        result = run(raw, cfg, cap=cap, broker=broker)
+        self.assertEqual("PASS", result["status"])
+        self.assertEqual("SERIAL", result["execution"]["mode"])
+        self.assertEqual([2, 1], [item["parallelism"] for item in broker.acquired])
+        self.assertEqual([("lease-1", 7)], broker.released)
+
+    def test_governed_serial_requires_admission_and_zero_capacity_starts_no_child(self):
+        with tempfile.TemporaryDirectory() as folder:
+            marker = Path(folder) / "started.txt"
+            raw = plan([partition("only", "import pathlib; pathlib.Path(" +
+                       repr(str(marker)) + ").write_text('started')")], parallelism=1)
+            cfg, broker = config(), Broker()
+            cap = capacity(raw, canonical(cfg), workers=0, heavy=0)
+            result = run(raw, cfg, cap=cap, broker=broker)
+            self.assertEqual("FAIL", result["status"])
+            self.assertEqual("NOT_STARTED", result["execution"]["mode"])
+            self.assertFalse(result["admission"]["granted"])
+            self.assertEqual([], broker.acquired)
+            self.assertFalse(marker.exists())
+            good = capacity(raw, canonical(cfg), workers=1, heavy=1)
+            admitted = run(raw, cfg, cap=good, broker=broker)
+            self.assertEqual("PASS", admitted["status"])
+            self.assertEqual(1, broker.acquired[-1]["parallelism"])
+
+    def test_unavailable_or_denied_serial_admission_starts_no_child(self):
+        raw, cfg = plan([partition("only")], parallelism=1), config()
+        cap = capacity(raw, canonical(cfg), workers=1, heavy=1)
+        for broker in (None, Broker("deny"), Broker("raise")):
+            with self.subTest(broker=broker):
                 result = run(raw, cfg, cap=cap, broker=broker)
-                self.assertEqual(1, result["execution"]["effective_parallelism"])
-                self.assertTrue(any(item.startswith(reason) for item in result["execution"]["fallback_reasons"]))
+                self.assertEqual("NOT_STARTED", result["execution"]["mode"])
+                self.assertEqual([], result["partitions"])
+
+    def test_stale_or_granted_fence_release_failure_blocks(self):
+        raw, cfg = plan([partition("a"), partition("b")], parallelism=2), config()
+        cap = capacity(raw, canonical(cfg))
+        stale = run(raw, cfg, cap=cap, broker=Broker("stale_release_fail"))
+        self.assertEqual("NOT_STARTED", stale["execution"]["mode"])
+        self.assertEqual("FAIL", stale["status"])
+        self.assertFalse(stale["admission"]["release_complete"])
+        granted = run(raw, cfg, cap=cap, broker=Broker("release_fail"))
+        self.assertEqual("FAIL", granted["status"])
+        self.assertEqual("FAILED", granted["lease_release"]["status"])
 
     def test_review_is_unavailable_without_trusted_authenticator(self):
         raw = plan([partition("only")])
@@ -249,6 +297,229 @@ class HeavyValidationTests(unittest.TestCase):
         large = run(plan([partition("large", "import sys; sys.stdout.write('x'*400000)")]), config(enabled=False))
         self.assertTrue(large["partitions"][0]["stdout_truncated"])
         self.assertEqual(400000, large["partitions"][0]["stdout_bytes"])
+
+    def test_seed_and_retry_are_bound_and_record_every_attempt(self):
+        code = ("import os; print(os.environ['AWF_VALIDATION_SEED']); "
+                "raise SystemExit(0 if os.environ['AWF_VALIDATION_ATTEMPT']=='2' else 9)")
+        result = run(plan([partition("retry", code)], parallelism=1, seed=314, retries=1),
+                     config(enabled=False))
+        item = result["partitions"][0]
+        self.assertEqual("PASS", result["status"])
+        self.assertEqual(1, item["retry_count"])
+        self.assertEqual(["FAILED", "PASS"], [entry["state"] for entry in item["attempts"]])
+        self.assertEqual("314", item["stdout"].strip())
+
+    def test_incomplete_cleanup_never_retries_or_launches_another_child(self):
+        value = json.loads(plan([partition("cleanup")], parallelism=1, retries=2))
+        part = value["partitions"][0]
+        executable = {"path": part["executable"]["path"],
+                      "resolved_path": part["executable"]["path"],
+                      "sha256": part["executable"]["sha256"]}
+        failed = {"attempt": 1, "state": "FAILED", "exit_code": None,
+                  "timed_out": False, "cancelled": False, "error_type": "CleanupError",
+                  "process_tree_cleanup": {"outcome": "PARTIAL",
+                                           "mechanism": "direct_process_only"},
+                  "stdout_sha256": "0" * 64, "stderr_sha256": "1" * 64}
+        with mock.patch.object(heavy, "_execute_attempt", return_value=failed) as execute:
+            result = heavy._execute(part, value, executable, SOURCE_ROOT,
+                                    config(enabled=False), threading.Event())
+        self.assertEqual(1, execute.call_count)
+        self.assertEqual(0, result["retry_count"])
+
+    def test_parallel_and_serial_results_have_same_equivalence_proof(self):
+        raw = plan([partition("b", "print('b')"), partition("a", "print('a')")],
+                   parallelism=2)
+        parallel_cfg = config()
+        parallel = run(raw, parallel_cfg, cap=capacity(raw, canonical(parallel_cfg)),
+                       broker=Broker())
+        serial = run(raw, config(enabled=False))
+        self.assertEqual("PASS", parallel["status"])
+        self.assertEqual("PASS", serial["status"])
+        self.assertEqual(parallel["serial_equivalence_sha256"],
+                         serial["serial_equivalence_sha256"])
+
+    def test_named_resource_exhaustion_starts_no_child(self):
+        part = partition("licensed")
+        part["resources"] = {"licensed_engine": 2}
+        raw = plan([part], parallelism=1, resources=["licensed_engine"])
+        cfg = config(resources={"licensed_engine": 1})
+        cap = capacity(raw, canonical(cfg), workers=1, heavy=1,
+                       resources={"licensed_engine": 1})
+        broker = Broker()
+        result = run(raw, cfg, cap=cap, broker=broker)
+        self.assertEqual("NOT_STARTED", result["execution"]["mode"])
+        self.assertEqual([], broker.acquired)
+
+    def test_gpu_and_engine_zero_capacity_start_no_child(self):
+        for cap_kwargs in (
+            {"gpu": 0},
+            {"gpu": 1, "engines": {"python": {"parallel_available": True,
+                                                "parallel_slots": 0}}},
+        ):
+            with self.subTest(capacity=cap_kwargs):
+                raw = plan([partition("gpu")], parallelism=1, resource_class="gpu")
+                cfg = config(gpu=1)
+                cap = capacity(raw, canonical(cfg), workers=1, heavy=1, **cap_kwargs)
+                broker = Broker()
+                result = run(raw, cfg, cap=cap, broker=broker)
+                self.assertEqual("NOT_STARTED", result["execution"]["mode"])
+                self.assertEqual([], broker.acquired)
+
+    def test_cancellation_during_work_reaches_complete_terminal_barrier(self):
+        event = threading.Event()
+        timer = threading.Timer(.15, event.set)
+        timer.start()
+        try:
+            raw = plan([partition("a", "import time; time.sleep(3)"),
+                        partition("b", "import time; time.sleep(3)")], parallelism=2)
+            result = run(raw, config(enabled=False), cancel_event=event)
+        finally:
+            timer.cancel()
+        self.assertEqual("FAIL", result["status"])
+        self.assertTrue(result["all_partitions_terminal"])
+        self.assertEqual({"CANCELLED"}, {item["state"] for item in result["partitions"]})
+
+    def test_framework_adapter_shapes_are_bound(self):
+        unit = partition("unit")
+        unit["framework"] = "python-unittest"
+        unit["argv"] = [unit["argv"][0], "-m", "unittest", "-h"]
+        result = run(plan([unit], parallelism=1), config(enabled=False))
+        self.assertEqual("PASS", result["status"])
+        invalid = deepcopy(unit)
+        invalid["framework"] = "pytest"
+        with self.assertRaisesRegex(ValidationError, "pytest adapter"):
+            run(plan([invalid], parallelism=1), config(enabled=False))
+        for framework, program, tail in (
+            ("pytest", Path(sys.executable), ["-m", "pytest", "tests"]),
+            ("matlab", Path(sys.executable).parent / "matlab.exe", ["-batch", "runTests"]),
+            ("wolfram", Path(sys.executable).parent / "wolframscript.exe", ["-code", "TestReport[]"]),
+        ):
+            value = json.loads(plan([partition("shape")], parallelism=1))
+            value["partitions"][0]["framework"] = framework
+            value["partitions"][0]["executable"]["path"] = str(program)
+            value["partitions"][0]["argv"] = [str(program), *tail]
+            encoded = canonical(value)
+            heavy._validate_plan(encoded, sha256(encoded))
+
+    def test_windows_containment_failure_never_resumes_suspended_child(self):
+        class FakeProcess:
+            def __init__(self):
+                self.stdin, self.stdout, self.stderr = io.BytesIO(), io.BytesIO(), io.BytesIO()
+                self.returncode, self.killed, self._handle, self._thread = None, False, 1, 2
+            def poll(self):
+                return self.returncode
+            def kill(self):
+                self.killed, self.returncode = True, 1
+            def wait(self):
+                return self.returncode
+
+        raw = plan([partition("contained")], parallelism=1)
+        value = json.loads(raw)
+        part = value["partitions"][0]
+        executable = {"path": part["executable"]["path"],
+                      "resolved_path": part["executable"]["path"],
+                      "sha256": part["executable"]["sha256"]}
+        fake = FakeProcess()
+        with mock.patch.object(heavy.os, "name", "nt"), \
+             mock.patch.object(heavy.subprocess, "Popen", return_value=fake), \
+             mock.patch.object(heavy, "_attach_windows_job",
+                               side_effect=ValidationError("containment unavailable")), \
+             mock.patch.object(heavy, "_release_windows_launcher") as release:
+            result = heavy._execute_attempt(part, value, executable, SOURCE_ROOT,
+                                            config(enabled=False), threading.Event(), 1)
+        self.assertTrue(fake.killed)
+        release.assert_not_called()
+        self.assertEqual("FAILED", result["state"])
+        self.assertEqual({"outcome": "COMPLETE", "mechanism": "contained_launcher_terminated"},
+                         result["process_tree_cleanup"])
+
+    def test_github_authenticator_binds_provider_repository_pr_review_and_tree(self):
+        endpoints = {
+            "repos/example/project": {"id": 101},
+            "repos/example/project/pulls/7": {"number": 7,
+                "head": {"sha": CANDIDATE["head_sha"]},
+                "base": {"sha": CANDIDATE["base_sha"]}},
+            f"repos/example/project/git/commits/{CANDIDATE['head_sha']}": {
+                "sha": CANDIDATE["head_sha"], "tree": {"sha": CANDIDATE["tree_sha"]}},
+            "repos/example/project/pulls/7/reviews/9": {"id": 9, "state": "APPROVED",
+                "commit_id": CANDIDATE["head_sha"],
+                "user": {"id": 42, "login": "reviewer"}},
+        }
+        auth = GitHubReviewAuthenticator("example/project", 7, 9,
+                                         read_api=lambda endpoint: deepcopy(endpoints[endpoint]))
+        review_value = {"reviewer": {"provider": "github", "immutable_id": "42",
+                                     "login": "reviewer"}}
+        result = auth(review_value, "d" * 64, "e" * 64, CANDIDATE)
+        self.assertEqual("AUTHENTICATED", result["status"])
+        moved = deepcopy(endpoints)
+        moved["repos/example/project/pulls/7"]["head"]["sha"] = "f" * 40
+        bad = GitHubReviewAuthenticator("example/project", 7, 9,
+                                        read_api=lambda endpoint: deepcopy(moved[endpoint]))
+        with self.assertRaisesRegex(ValidationError, "PR tuple"):
+            bad(review_value, "d" * 64, "e" * 64, CANDIDATE)
+
+    def test_production_authenticator_and_durable_broker_run_parallel(self):
+        raw = plan([partition("a"), partition("b")], parallelism=2)
+        cfg, cfg_raw = config(), canonical(config())
+        cap = capacity(raw, cfg_raw, workers=2, heavy=2)
+        review_raw = canonical({"format": "awf-heavy-validation-review-3",
+            "plan_sha256": sha256(raw), "candidate": CANDIDATE, "decision": "APPROVE",
+            "reviewer": {"provider": "github", "immutable_id": "42", "login": "reviewer"},
+            "reviewed_at": NOW, "expires_at": "2026-10-03T09:00:00Z"})
+        endpoints = {
+            "repos/example/project": {"id": 101},
+            "repos/example/project/pulls/7": {"number": 7,
+                "head": {"sha": CANDIDATE["head_sha"]}, "base": {"sha": CANDIDATE["base_sha"]}},
+            f"repos/example/project/git/commits/{CANDIDATE['head_sha']}": {
+                "sha": CANDIDATE["head_sha"], "tree": {"sha": CANDIDATE["tree_sha"]}},
+            "repos/example/project/pulls/7/reviews/9": {"id": 9, "state": "APPROVED",
+                "commit_id": CANDIDATE["head_sha"], "user": {"id": 42, "login": "reviewer"}},
+        }
+        auth = GitHubReviewAuthenticator("example/project", 7, 9,
+                                         read_api=lambda endpoint: deepcopy(endpoints[endpoint]))
+        clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+        with tempfile.TemporaryDirectory() as folder:
+            broker = FileLeaseBroker(Path(folder) / "broker.json", "synthetic-broker",
+                {"max_workers": 2, "max_heavy_jobs": 2, "max_gpu_jobs": 0,
+                 "resources": {}}, clock=clock)
+            result = run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=auth, capacity_raw=cap,
+                expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW)
+        self.assertEqual("PASS", result["status"])
+        self.assertEqual("PARALLEL", result["execution"]["mode"])
+        self.assertTrue(result["admission"]["release_complete"])
+
+    def test_durable_file_broker_fences_capacity_and_result_log_is_immutable(self):
+        clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+        with tempfile.TemporaryDirectory() as folder:
+            broker = FileLeaseBroker(Path(folder) / "broker.json", "fixture",
+                {"max_workers": 1, "max_heavy_jobs": 1, "max_gpu_jobs": 0,
+                 "resources": {}}, clock=clock)
+            request = {"format": "awf-heavy-validation-lease-request-1",
+                       "candidate": CANDIDATE, "plan_sha256": "a" * 64,
+                       "config_sha256": "b" * 64, "capacity_sha256": "c" * 64,
+                       "parallelism": 1, "resource_class": "heavy", "engine": "python",
+                       "required_resources": [], "resource_claims": {},
+                       "determinism": {"seed": 1, "retry_limit": 0},
+                       "isolation": {"process_tree": "REQUIRED", "network": "HOST_POLICY",
+                                     "filesystem": "WORKTREE"},
+                       "required_until": "2026-10-02T10:00:00Z"}
+            first = broker.acquire(request)
+            self.assertEqual("GRANTED", first["status"])
+            self.assertEqual("DENIED", broker.acquire(request)["status"])
+            self.assertEqual("RELEASED", broker.release(first["lease_id"],
+                                                         first["fencing_token"])["status"])
+            second = broker.acquire(request)
+            self.assertGreater(second["fencing_token"], first["fencing_token"])
+            log = Path(folder) / "result.json"
+            receipt = write_result_log(log, {"status": "PASS", "value": 1})
+            envelope = json.loads(log.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["result_sha256"], envelope["result_sha256"])
+            with self.assertRaises(FileExistsError):
+                write_result_log(log, {"status": "PASS", "value": 2})
 
 
 if __name__ == "__main__":

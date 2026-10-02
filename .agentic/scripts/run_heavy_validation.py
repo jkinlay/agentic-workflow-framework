@@ -13,7 +13,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
+from agentic.canonical import load_yaml, loads
 from agentic.heavy_validation import resolve_without_alias, run_validation
+from agentic.heavy_validation_controller import (
+    FileLeaseBroker, GitHubReviewAuthenticator, broker_limits, write_result_log)
 
 
 MAX_INPUT_BYTES = 1024 * 1024
@@ -45,6 +48,11 @@ def main(argv=None):
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--tree-sha", required=True)
     parser.add_argument("--execution-root", type=Path, default=ROOT)
+    parser.add_argument("--result-log", type=Path, required=True)
+    parser.add_argument("--github-repository", required=True)
+    parser.add_argument("--github-pr", type=int, required=True)
+    parser.add_argument("--github-review-id", type=int, required=True)
+    parser.add_argument("--broker-state", type=Path)
     args = parser.parse_args(argv)
     cancelled = threading.Event()
 
@@ -55,28 +63,52 @@ def main(argv=None):
     try:
         if (args.capacity is None) != (args.expected_capacity_sha256 is None):
             raise ValidationError("capacity requires both a file and expected SHA-256")
+        plan_raw = pinned_bytes(args.plan, "plan")
+        review_raw = pinned_bytes(args.review, "review")
+        config_raw = pinned_bytes(args.config, "config")
+        capacity_raw = pinned_bytes(args.capacity, "capacity") if args.capacity else None
+        config = (loads(config_raw.decode("utf-8")) if config_raw.lstrip().startswith(b"{")
+                  else load_yaml(config_raw))
+        capacity = loads(capacity_raw.decode("utf-8")) if capacity_raw is not None else None
+        broker = None
+        if config["execution"]["host_broker"]["enabled"]:
+            if args.broker_state is None or capacity is None:
+                raise ValidationError("Enabled broker requires --broker-state and pinned capacity")
+            broker_id, limits = broker_limits(config, capacity)
+            broker = FileLeaseBroker(args.broker_state, broker_id, limits)
+        authenticator = GitHubReviewAuthenticator(
+            args.github_repository, args.github_pr, args.github_review_id)
         result = run_validation(
-            plan_raw=pinned_bytes(args.plan, "plan"),
+            plan_raw=plan_raw,
             expected_plan_sha256=args.expected_plan_sha256,
-            review_raw=pinned_bytes(args.review, "review"),
+            review_raw=review_raw,
             expected_review_sha256=args.expected_review_sha256,
-            config_raw=pinned_bytes(args.config, "config"),
+            config_raw=config_raw,
             expected_config_sha256=args.expected_config_sha256,
             expected_candidate={"repository_id": args.repository_id, "base_sha": args.base_sha,
                                 "head_sha": args.head_sha, "tree_sha": args.tree_sha},
             execution_root=args.execution_root.absolute(),
-            review_authenticator=None,
-            capacity_raw=(pinned_bytes(args.capacity, "capacity") if args.capacity else None),
+            review_authenticator=authenticator,
+            capacity_raw=capacity_raw,
             expected_capacity_sha256=args.expected_capacity_sha256,
+            broker_client=broker,
             now=args.now,
             max_capacity_age_seconds=args.max_capacity_age_seconds,
             cancel_event=cancelled,
         )
-        print(json.dumps(result, ensure_ascii=True, sort_keys=True, indent=2))
+        receipt = write_result_log(args.result_log, result)
+        print(json.dumps({"format": "awf-heavy-validation-run-receipt-1",
+                          "status": result["status"], **receipt},
+                         ensure_ascii=True, sort_keys=True, indent=2))
         return 0 if result["status"] == "PASS" else 1
     except (ValidationError, OSError, ValueError, TypeError, RecursionError) as error:
-        print(json.dumps({"format": "awf-heavy-validation-result-2", "status": "REJECTED",
-                          "all_partitions_terminal": False, "reason": str(error)},
+        rejected = {"format": "awf-heavy-validation-result-3", "status": "REJECTED",
+                    "all_partitions_terminal": False, "reason": str(error)}
+        try:
+            receipt = write_result_log(args.result_log, rejected)
+        except (OSError, ValidationError, ValueError):
+            receipt = None
+        print(json.dumps({**rejected, "durable_log": receipt},
                          ensure_ascii=True, sort_keys=True), file=sys.stderr)
         return 2
     finally:
