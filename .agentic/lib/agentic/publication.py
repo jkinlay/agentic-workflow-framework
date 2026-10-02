@@ -738,6 +738,28 @@ _PSEUDOREFS = ("ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD",
                "REVERT_HEAD", "REBASE_HEAD", "AUTO_MERGE", "BISECT_HEAD")
 
 
+def _pseudoref_oids(name, content, object_format):
+    """Parse every OID from canonical pseudoref bytes; ambiguity fails closed."""
+    if content is None:
+        return ()
+    length = 40 if object_format == "sha1" else 64
+    oid_pattern = rb"([0-9a-f]{" + str(length).encode("ascii") + rb"})"
+    if not content or not content.endswith(b"\n") or b"\r" in content:
+        raise ValidationError("Pseudoref bytes are not canonical")
+    values = []
+    for line in content.splitlines():
+        if name == "FETCH_HEAD":
+            match = re.fullmatch(oid_pattern + rb"\t(?:not-for-merge)?\t.*", line)
+        else:
+            match = re.fullmatch(oid_pattern, line)
+        if match is None:
+            raise ValidationError("Pseudoref contains an invalid or unparsed object identity")
+        values.append(match.group(1).decode("ascii"))
+    if name not in {"FETCH_HEAD", "MERGE_HEAD"} and len(values) != 1:
+        raise ValidationError("Single-object pseudoref contains multiple identities")
+    return tuple(values)
+
+
 def _git_common_dir(root):
     value = _git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.decode("utf-8").strip()
     return Path(value).resolve(strict=True)
@@ -792,6 +814,9 @@ def _worktree_state(root):
         key, _, value = raw.partition(" ")
         current[key] = value
     result = {}
+    object_format = _git(root, "rev-parse", "--show-object-format").stdout.decode("ascii").strip()
+    if object_format not in {"sha1", "sha256"}:
+        raise ValidationError("Unsupported Git object format")
     for record in records:
         path = str(Path(record["worktree"]).resolve())
         git_dir = Path(_git(path, "rev-parse", "--path-format=absolute", "--absolute-git-dir")
@@ -800,14 +825,14 @@ def _worktree_state(root):
         symbolic = _git(path, "symbolic-ref", "-q", "HEAD", check=False)
         symbol = symbolic.stdout.decode("utf-8").strip() if symbolic.returncode == 0 else None
         status = _git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
-        pseudos = {}
-        for name in _PSEUDOREFS:
-            probe = _git(path, "rev-parse", "--verify", "--quiet", name + "^{commit}", check=False)
-            if probe.returncode == 0:
-                pseudos[name] = probe.stdout.decode("ascii").strip()
-            elif probe.returncode not in {1, 128}:
-                raise ValidationError("Pseudoref inventory failed; rewrite refused")
         pseudo_files = {name: _file_bytes(git_dir / name) for name in _PSEUDOREFS}
+        pseudos = {name: _pseudoref_oids(name, content, object_format)
+                   for name, content in pseudo_files.items() if content is not None}
+        for values in pseudos.values():
+            for oid in values:
+                probe = _git(path, "cat-file", "-e", oid, check=False)
+                if probe.returncode != 0:
+                    raise ValidationError("Pseudoref object identity could not be validated")
         result[path] = {"head": head, "symbolic": symbol, "status": status,
                         "pseudos": pseudos, "pseudo_files": pseudo_files}
     return result
@@ -896,8 +921,11 @@ def _quarantine_objects(root, object_dir, extra_env, object_format):
             raise ValidationError("Quarantine contains an invalid object path")
         kind = _git(root, "cat-file", "-t", oid, extra_env=extra_env).stdout.decode("ascii").strip()
         raw = _git(root, "cat-file", kind, oid, extra_env=extra_env).stdout
-        preexisting = _git(root, "cat-file", "-e", oid, check=False).returncode == 0
-        records.append({"oid": oid, "kind": kind, "raw": raw, "preexisting": preexisting})
+        try:
+            loose_bytes = path.read_bytes()
+        except OSError as exc:
+            raise ValidationError("Quarantine loose object could not be read") from exc
+        records.append({"oid": oid, "kind": kind, "raw": raw, "loose_bytes": loose_bytes})
     if not records:
         raise ValidationError("Quarantine object inventory is empty")
     return records
@@ -926,31 +954,75 @@ def _loose_path(object_dir, oid, object_format):
 
 def _install_quarantine_objects(root, records, snapshot):
     object_dir = _canonical_object_dir(root, snapshot)
-    # Prove every destination before creating the first object so a later
-    # validation failure cannot strand a partially installed set.
+    snapshot_objects = set(snapshot["objects"])
+    # The snapshot was taken while the repository-wide rewrite lock was held;
+    # it is the only authoritative pre-existence observation.  Any unlocked
+    # probe made while the quarantine was prepared would be racy.
     for record in records:
         path = _loose_path(object_dir, record["oid"], snapshot["object_format"])
         record["path"] = path
-        record["fanout_preexisting"] = path.parent.exists()
-        if not record["preexisting"] and path.exists():
+        record["snapshot_present"] = record["oid"] in snapshot_objects
+        record["created_by_operation"] = False
+        record["installed_identity"] = None
+        if not record["snapshot_present"] and path.exists():
             raise ValidationError("New object has an ambiguous pre-install loose path")
     for record in records:
         path = record["path"]
-        installed = _git(root, "hash-object", "-t", record["kind"], "-w", "--stdin",
-                         input_bytes=record["raw"]).stdout.decode("ascii").strip()
-        if installed != record["oid"] or _git(root, "cat-file", "-e", installed, check=False).returncode:
+        if record["snapshot_present"]:
+            if _git(root, "cat-file", "-e", record["oid"], check=False).returncode:
+                raise ValidationError("Snapshot-present object disappeared during installation")
+            continue
+        try:
+            path.parent.mkdir(mode=0o755, exist_ok=True)
+            # Re-run the alias proof after mkdir so a concurrent fanout
+            # replacement cannot redirect the operation outside objects/.
+            path = _loose_path(object_dir, record["oid"], snapshot["object_format"])
+            record["path"] = path
+            temporary = path.parent / (".awf-install-" + uuid.uuid4().hex + ".tmp")
+            # Keep the staging name writable until it is unlinked.  Windows
+            # refuses to unlink a read-only hard-link name; the canonical name
+            # is made read-only only after the staging name is gone.
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(record["loose_bytes"])
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                if not _loose_object_matches({**record, "path": temporary}, snapshot["object_format"]):
+                    raise ValidationError("Quarantine loose object identity changed before installation")
+                # A hard link gives an atomic create-if-absent operation.  A
+                # destination installed by any concurrent writer makes link()
+                # fail, so AWF never claims ownership of that path.
+                os.link(temporary, path)
+                identity = path.lstat()
+                temp_identity = temporary.lstat()
+                if ((identity.st_dev, identity.st_ino) != (temp_identity.st_dev, temp_identity.st_ino) or
+                        not path.is_file() or path.is_symlink() or
+                        getattr(identity, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+                    raise ValidationError("New object installation identity could not be proved")
+                record["created_by_operation"] = True
+                record["installed_identity"] = (identity.st_dev, identity.st_ino)
+            finally:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise ValidationError("Temporary loose object cleanup failed") from exc
+            path.chmod(stat.S_IREAD)
+        except FileExistsError as exc:
+            raise ValidationError("New object destination changed during atomic installation") from exc
+        except OSError as exc:
+            raise ValidationError("Atomic replacement object installation failed") from exc
+        if (_git(root, "cat-file", "-e", record["oid"], check=False).returncode or
+                not _loose_object_matches(record, snapshot["object_format"])):
             raise ValidationError("Replacement object installation did not preserve its identity")
-        if not record["preexisting"]:
-            attributes = getattr(path.lstat(), "st_file_attributes", 0) if path.exists() else 0
-            if not path.is_file() or path.is_symlink() or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
-                raise ValidationError("New object is not a canonical primary loose object")
 
 
 def _claimant_tips(root):
     tips = set(dict(_ref_tips(root)).values())
     for state in _worktree_state(root).values():
         tips.add(state["head"])
-        tips.update(state["pseudos"].values())
+        for values in state["pseudos"].values():
+            tips.update(values)
     length = 40 if _git(root, "rev-parse", "--show-object-format").stdout.strip() == b"sha1" else 64
     expression = re.compile(rb"(?<![0-9a-f])[0-9a-f]{" + str(length).encode("ascii") + rb"}(?![0-9a-f])")
     for content in _tree_files(_git_common_dir(root) / "logs").values():
@@ -977,18 +1049,6 @@ def _has_claimant(root, oid):
     return False
 
 
-def _unlink_loose_object(path):
-    path = Path(path)
-    try:
-        # Git deliberately makes loose objects read-only on Windows.  This path
-        # is reached only after the canonical-path, pre-existence, and claimant
-        # guards have proved that AWF created this exact loose object.
-        path.chmod(stat.S_IREAD | stat.S_IWRITE)
-        path.unlink()
-    except OSError as exc:
-        raise ValidationError("Replacement loose object cleanup failed") from exc
-
-
 def _loose_object_matches(record, object_format):
     path = record["path"]
     expected = (record["kind"] + " " + str(len(record["raw"]))).encode("ascii") + b"\0" + record["raw"]
@@ -1011,27 +1071,31 @@ def _loose_object_matches(record, object_format):
 
 def _cleanup_new_objects(root, records, snapshot):
     _canonical_object_dir(root, snapshot)
-    removable = [record for record in records
-                 if not record["preexisting"] and record.get("path") is not None
-                 and record["path"].exists()]
-    if any(_has_claimant(root, record["oid"]) for record in removable):
-        raise ValidationError("A replacement object has a concurrent claimant")
-    for record in removable:
+    retained = [record for record in records
+                if not record.get("snapshot_present", record["oid"] in set(snapshot["objects"]))
+                and record.get("path") is not None and record["path"].exists()]
+    for record in retained:
         path = record["path"]
-        attributes = getattr(path.lstat(), "st_file_attributes", 0) if path.exists() else 0
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
         if (not path.is_file() or path.is_symlink() or
                 attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
-            raise ValidationError("Replacement object is not removable as a primary loose object")
+            raise ValidationError("Replacement object is not a canonical primary loose object")
+        if not record.get("created_by_operation"):
+            raise ValidationError("Replacement object ownership is ambiguous; cleanup refused")
+        identity = path.lstat()
+        if (identity.st_dev, identity.st_ino) != record.get("installed_identity"):
+            raise ValidationError("Replacement object installation identity changed; cleanup refused")
         if not _loose_object_matches(record, snapshot["object_format"]):
             raise ValidationError("Replacement loose object identity could not be proved")
-        _unlink_loose_object(path)
-        if path.exists():
-            raise ValidationError("Replacement loose object cleanup did not complete")
-        if not record["fanout_preexisting"]:
-            try:
-                path.parent.rmdir()
-            except OSError:
-                pass
+    if any(_has_claimant(root, record["oid"]) for record in retained):
+        raise ValidationError("A replacement object has a concurrent claimant")
+    if retained:
+        # Git exposes no transaction that can exclude arbitrary external ref,
+        # pseudoref, reflog, or linked-worktree HEAD writers while a loose
+        # object is unlinked.  Even a complete census can become stale before
+        # unlink.  Retaining the object is the only fail-closed result that
+        # guarantees a claimant created at any time cannot lose its object.
+        raise ValidationError("Atomic claimant exclusion is unavailable; operation-owned objects retained")
 
 
 def _restore_rewrite_reflogs(root, snapshot, ref):
@@ -1053,7 +1117,9 @@ def _restore_rewrite_reflogs(root, snapshot, ref):
 
 
 def _recovery_message(code, records, old_head, new_head, detail):
-    retained = ",".join(record["oid"] for record in records if not record["preexisting"])
+    retained = ",".join(record["oid"] for record in records
+                        if not record.get("snapshot_present", False)
+                        and record.get("path") is not None and record["path"].exists())
     command = "git cat-file -t " + (retained.split(",")[0] if retained else new_head) + " && git fsck --full --no-reflogs"
     return (f"{code}: old_head={old_head}; new_head={new_head}; retained_objects={retained or 'none'}; "
             f"detail={detail}; non_destructive_recovery={command}")
@@ -1094,7 +1160,8 @@ def _post_cas_proof(root, snapshot, ref, created, old_commits, records):
     for path, state in current["worktrees"].items():
         if state["symbolic"] != ref:
             other_tips.add(state["head"])
-        other_tips.update(state["pseudos"].values())
+        for values in state["pseudos"].values():
+            other_tips.update(values)
     for old in old_commits:
         if any(_is_ancestor(root, old, tip) for tip in other_tips):
             return False, "old commit became reachable"
@@ -1275,5 +1342,5 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
             "old_commits_reachable_from_local_or_remote_tracking_refs": False,
             "remote_branch_absent": True,
             "remote_push_branch_absent": True,
-            "reflog_notice": "The old commit can remain in local reflogs. Failed-CAS cleanup removes only newly created, unclaimed, canonical primary loose objects after exact snapshot proof.",
+            "reflog_notice": "The old commit can remain in local reflogs. Failure recovery retains operation-created objects because Git cannot atomically exclude external claimants during loose-object cleanup.",
             "execution_authority": False}
