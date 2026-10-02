@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 
@@ -196,24 +197,58 @@ def _require_operator_local_mapping(root, path):
     root = Path(root).resolve()
     lexical = Path(path).absolute()
     try:
-        relative = lexical.relative_to(root)
-    except ValueError:
-        # The same checkout can have distinct lexical spellings (notably
-        # /var and /private/var on macOS).  An in-repository mapping must not
-        # become trusted merely because its caller used the other spelling.
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValidationError("Operator-local publication mapping identity could not be resolved") from exc
+
+    def reparse_point(candidate):
         try:
-            relative = lexical.resolve(strict=False).relative_to(root)
-        except ValueError:
-            return
-    cursor = root
-    for component in relative.parts:
+            if candidate.is_symlink() or (hasattr(candidate, "is_junction") and candidate.is_junction()):
+                return True
+            attributes = getattr(candidate.lstat(), "st_file_attributes", 0)
+            return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        except OSError as exc:
+            raise ValidationError("Operator-local publication mapping path could not be inspected") from exc
+
+    # Inspect every existing lexical component.  resolve() alone is not a
+    # provenance proof on Windows because junction/reparse traversal can make
+    # an apparently external path name repository-controlled content.
+    cursor = Path(lexical.anchor)
+    for component in lexical.parts[1:]:
         cursor /= component
-        if cursor.is_symlink():
-            raise ValidationError("Operator-local publication mapping must not traverse repository symlinks")
-    tracked = _git(root, "ls-files", "--error-unmatch", "--", relative.as_posix(), check=False)
-    ignored = _git(root, "check-ignore", "--quiet", "--no-index", "--", relative.as_posix(), check=False)
-    if tracked.returncode == 0 or ignored.returncode != 0:
-        raise ValidationError("Operator-local publication mapping must be untracked and ignored")
+        if cursor.exists() and reparse_point(cursor):
+            raise ValidationError("Operator-local publication mapping must not traverse symlinks, junctions, or reparse points")
+
+    def relative_to_root(candidate):
+        try:
+            return candidate.relative_to(root)
+        except ValueError:
+            return None
+
+    lexical_relative = relative_to_root(lexical)
+    resolved_relative = relative_to_root(resolved)
+    raw_index = _git(root, "ls-files", "-z").stdout
+    raw_head = _git(root, "ls-tree", "-rz", "--name-only", "HEAD").stdout
+    tracked_paths = {item.decode("utf-8", "surrogateescape") for raw in (raw_index, raw_head)
+                     for item in raw.split(b"\0") if item}
+    key = (lambda value: value.casefold()) if os.name == "nt" else (lambda value: value)
+    tracked_keys = {key(value) for value in tracked_paths}
+    for relative in (lexical_relative, resolved_relative):
+        if relative is not None and key(relative.as_posix()) in tracked_keys:
+            raise ValidationError("Operator-local publication mapping must not resolve to tracked content")
+    # File identity closes hard-link and alternate-spelling aliases that path
+    # normalization cannot prove, including Windows case-insensitive names.
+    for tracked_path in tracked_paths:
+        candidate = root / Path(tracked_path)
+        try:
+            if candidate.exists() and os.path.samefile(resolved, candidate):
+                raise ValidationError("Operator-local publication mapping must not share identity with tracked content")
+        except OSError as exc:
+            raise ValidationError("Tracked mapping identity could not be verified") from exc
+    for relative in {item for item in (lexical_relative, resolved_relative) if item is not None}:
+        ignored = _git(root, "check-ignore", "--quiet", "--no-index", "--", relative.as_posix(), check=False)
+        if ignored.returncode != 0:
+            raise ValidationError("Operator-local publication mapping must be untracked and ignored")
 
 
 def load_mapping(root, mapping_path=None):
@@ -340,10 +375,8 @@ def _historical_synthetic_test_reference(path, detector_id, line, value):
         return False
     identities = _HISTORICAL_SYNTHETIC_TEST_REFERENCES.get(path, ())
     return hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest() in identities
-
-
-def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, change=None):
-    findings = []
+def _matching_values(text, *, path, detectors, allows, line_offset=0):
+    """Yield detector matches without normalizing the raw matched value."""
     for number, line in enumerate(text.splitlines() or [text], 1):
         for detector in detectors:
             for match in detector.regex.finditer(line):
@@ -358,9 +391,19 @@ def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, 
                         allow_id in {"all", detector.detector_id.removeprefix("builtin.")} and pattern.search(value)
                         for allow_id, pattern in allows):
                     continue
-                findings.append({"commit": commit, "path": path, "line": number + line_offset,
-                                 "source": source, "change": change, "detector_id": detector.detector_id,
-                                 "redacted_excerpt": _redacted(value)})
+                yield number + line_offset, detector.detector_id, value
+
+
+def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, change=None,
+               base_membership=(), force_blocking=False):
+    findings = []
+    for number, detector_id, value in _matching_values(
+            text, path=path, detectors=detectors, allows=allows, line_offset=line_offset):
+        classification = "BLOCKING" if force_blocking or change == "added" else (
+            "PRE_EXISTING" if (detector_id, value) in base_membership else "BLOCKING")
+        findings.append({"commit": commit, "path": path, "line": number,
+                         "source": source, "change": change, "detector_id": detector_id,
+                         "classification": classification, "redacted_excerpt": _redacted(value)})
     return findings
 
 
@@ -376,16 +419,79 @@ def _tree(root, commit, extra_env=None):
     return result
 
 
-def _blob(root, oid, extra_env=None):
+def _blob(root, oid, extra_env=None, *, classification=False):
+    size_result = _git(root, "cat-file", "-s", oid, extra_env=extra_env, check=False)
+    if size_result.returncode:
+        raise ValidationError("Git blob size could not be verified before reading")
+    try:
+        size = int(size_result.stdout.strip())
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Git blob size is invalid") from exc
+    if size > MAX_TEXT_BYTES:
+        return None, "oversize"
     value = _git(root, "cat-file", "blob", oid, extra_env=extra_env).stdout
     if len(value) > MAX_TEXT_BYTES:
         return None, "oversize"
+    if classification:
+        # Base membership is not publication output. Search every bounded byte
+        # losslessly so binary/invalid bytes cannot hide a proven exact value.
+        return value.decode("utf-8", "surrogateescape"), None
     if b"\0" in value:
         return None, "binary"
     try:
         return value.decode("utf-8"), None
     except UnicodeDecodeError:
         return None, "invalid-utf8"
+
+
+def _provider_file(path):
+    """Read provider text with bounded memory while hashing all supplied bytes."""
+    digest = hashlib.sha256()
+    chunks, total = [], 0
+    try:
+        with Path(path).open("rb") as handle:
+            while True:
+                chunk = handle.read(min(1024 * 1024, MAX_TEXT_BYTES + 1))
+                if not chunk:
+                    break
+                digest.update(chunk)
+                total += len(chunk)
+                if total <= MAX_TEXT_BYTES:
+                    chunks.append(chunk)
+                else:
+                    chunks.clear()
+    except OSError as exc:
+        raise ValidationError(f"Publication provider input could not be read: {type(exc).__name__}") from exc
+    if total > MAX_TEXT_BYTES:
+        return None, digest.hexdigest(), "oversize"
+    raw = b"".join(chunks)
+    if b"\0" in raw:
+        return None, digest.hexdigest(), "binary"
+    try:
+        return raw.decode("utf-8"), digest.hexdigest(), None
+    except UnicodeDecodeError:
+        return None, digest.hexdigest(), "invalid-utf8"
+
+
+def _provider_text(value):
+    """Hash already-supplied provider text without a second unbounded allocation."""
+    if not isinstance(value, str):
+        raise ValidationError("Publication provider text must be a string")
+    digest = hashlib.sha256()
+    total, binary, invalid = 0, False, False
+    for offset in range(0, len(value), 256 * 1024):
+        chunk = value[offset:offset + 256 * 1024]
+        try:
+            raw = chunk.encode("utf-8")
+        except UnicodeEncodeError:
+            raw = chunk.encode("utf-8", "surrogatepass")
+            invalid = True
+        digest.update(raw)
+        total += len(raw)
+        binary = binary or b"\0" in raw
+    reason = "oversize" if total > MAX_TEXT_BYTES else (
+        "binary" if binary else ("invalid-utf8" if invalid else None))
+    return (value if reason is None else None), digest.hexdigest(), reason
 
 
 def _changed_pairs(root, old, new, extra_env=None):
@@ -436,6 +542,22 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     findings, unscanned = [], []
     tree_cache = {}
     base_tree = tree_cache.setdefault(base_sha, _tree(root, base_sha, extra_env))
+    # Classification is exact and case-sensitive.  Known positives survive an
+    # incomplete base scan, while every unknown remains blocking and the
+    # unscanned base entry independently prevents PASS.
+    base_membership = set()
+    for base_path, (_mode, kind, oid) in sorted(base_tree.items()):
+        if kind != "blob":
+            continue
+        output_path = _path_for_output(base_path, detectors, allows)
+        base_text, base_reason = _blob(root, oid, extra_env, classification=True)
+        if base_reason:
+            unscanned.append({"commit": base_sha, "path": output_path, "source": "base-classification",
+                              "reason": base_reason, "parent": None})
+            continue
+        for _line, detector_id, value in _matching_values(
+                base_text, path=base_path, detectors=detectors, allows=allows):
+            base_membership.add((detector_id, value))
     # Keep provenance per commit.  A traversal-global pathname map makes merge
     # results depend on parent order when disconnected roots reuse a path.
     # Each parent transition is derived independently and merge results retain
@@ -501,14 +623,16 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                 old_lines, new_lines = old_text.splitlines(), new_text.splitlines()
                 matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
                 for opcode, a1, a2, b1, b2 in matcher.get_opcodes():
-                    if opcode in {"delete", "replace"} and origin is None:
+                    if opcode in {"delete", "replace"}:
                         findings += _scan_text("\n".join(old_lines[a1:a2]), commit=commit, path=output_path,
                                                source="patch", change="deleted", line_offset=a1,
-                                               detectors=detectors, allows=allows)
+                                               detectors=detectors, allows=allows,
+                                               base_membership=base_membership)
                     if opcode in {"insert", "replace"}:
                         findings += _scan_text("\n".join(new_lines[b1:b2]), commit=commit, path=output_path,
                                                source="patch", change="added", line_offset=b1,
-                                               detectors=detectors, allows=allows)
+                                               detectors=detectors, allows=allows,
+                                               base_membership=base_membership, force_blocking=True)
         for transitioned in transition_maps:
             for path in list(transitioned):
                 if path not in commit_tree:
@@ -531,38 +655,24 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                               "parent": None})
         else:
             findings += _scan_text(new_text, commit=head_sha, path=output_path, source="current-file",
-                                   detectors=detectors, allows=allows)
+                                   detectors=detectors, allows=allows, base_membership=base_membership)
     body_entries, comment_entries = [], []
     for values, entries, channel in ((pr_body_texts, body_entries, "pr-body"),
                                      (comment_texts, comment_entries, "comment")):
         for value in values:
-            if not isinstance(value, str):
-                raise ValidationError(f"Publication {channel} text must be a string")
             try:
-                raw = value.encode("utf-8")
-                reason = "oversize" if len(raw) > MAX_TEXT_BYTES else ("binary" if "\0" in value else None)
-            except UnicodeEncodeError:
-                raw, reason = value.encode("utf-8", "surrogatepass"), "invalid-utf8"
-            entries.append((value if reason is None else None, raw, reason))
+                entries.append(_provider_text(value))
+            except ValidationError as exc:
+                raise ValidationError(f"Publication {channel} text must be a string") from exc
     for paths, entries, channel in ((pr_body_paths, body_entries, "pr-body"),
                                     (comment_paths, comment_entries, "comment")):
         for source_path in paths:
-            try:
-                raw = Path(source_path).read_bytes()
-            except OSError as exc:
-                raise ValidationError(f"Publication {channel} input could not be read: {type(exc).__name__}") from exc
-            reason = "oversize" if len(raw) > MAX_TEXT_BYTES else ("binary" if b"\0" in raw else None)
-            text = None
-            if reason is None:
-                try:
-                    text = raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    reason = "invalid-utf8"
-            entries.append((text, raw, reason))
-    body_hashes = [hashlib.sha256(raw).hexdigest() for _text, raw, _reason in body_entries]
-    comment_hashes = [hashlib.sha256(raw).hexdigest() for _text, raw, _reason in comment_entries]
+            text, digest, reason = _provider_file(source_path)
+            entries.append((text, digest, reason))
+    body_hashes = [digest for _text, digest, _reason in body_entries]
+    comment_hashes = [digest for _text, digest, _reason in comment_entries]
     for entries, channel in ((body_entries, "pr-body"), (comment_entries, "comment")):
-        for text, _raw, reason in entries:
+        for text, _digest, reason in entries:
             if reason:
                 unscanned.append({"commit": head_sha, "path": channel, "source": channel,
                                   "reason": reason, "parent": None})
@@ -570,13 +680,18 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                 findings += _scan_text(text, commit=head_sha, path=channel, source=channel,
                                        detectors=detectors, allows=allows)
     findings.sort(key=lambda item: (item["commit"] or "", item["path"] or "", item["line"] or 0, item["detector_id"]))
-    status = "BLOCKED" if findings or unscanned else "PASS"
+    blocking_count = sum(item["classification"] == "BLOCKING" for item in findings)
+    pre_existing_count = sum(item["classification"] == "PRE_EXISTING" for item in findings)
+    status = "BLOCKED" if blocking_count or unscanned else "PASS"
     return {"schema_version": 3, "status": status, "base_sha": base_sha, "head_sha": head_sha,
             "pr_body_sha256": body_hashes[0] if len(body_hashes) == 1 else None,
             "additional_pr_body_sha256": body_hashes[1:], "comment_sha256": comment_hashes,
             "mapping_sha256": mapping_sha, "project_config_sha256": config_sha,
             "mapping_loaded": mapping_sha is not None, "mapping_location": DEFAULT_MAPPING.as_posix(),
-            "commits_scanned": commits, "findings": findings, "unscanned": unscanned,
+            "commits_scanned": commits, "findings": findings,
+            "total_findings": len(findings), "blocking_findings": blocking_count,
+            "pre_existing_findings": pre_existing_count,
+            "unscanned": unscanned, "unscanned_count": len(unscanned),
             "coverage": {"current_files": True, "commit_messages": True, "every_patch": True,
                          "generated_reports": "when committed or passed as provider text",
                          "captured_command_output": "when committed or passed as provider text",
@@ -587,18 +702,22 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
 
 def render_scan(result):
     lines = [f"Publication scan: {result['status']}", f"Base: {result['base_sha']}", f"Head: {result['head_sha']}",
-             f"Commits scanned: {len(result['commits_scanned'])}", f"Findings: {len(result['findings'])}",
+             f"Commits scanned: {len(result['commits_scanned'])}",
+             f"Findings: {result['total_findings']} ({result['blocking_findings']} blocking, "
+             f"{result['pre_existing_findings']} pre-existing)",
              f"Unscanned binary/oversize/invalid-UTF-8 entries: {len(result['unscanned'])}"]
     for item in result["findings"]:
         line = "" if item["line"] is None else f":{item['line']}"
-        lines.append(f"- {item['commit']} {item['path']}{line} {item['detector_id']} {item['redacted_excerpt']}")
+        lines.append(f"- {item['classification']} {item['commit']} {item['path']}{line} "
+                     f"{item['detector_id']} {item['redacted_excerpt']}")
     for item in result["unscanned"]:
         lines.append(f"- NOT SCANNED {item['commit']} {item['path']} ({item['reason']})")
     return "\n".join(lines) + "\n"
 
 
-def _ref_tips(root, prefixes=("refs/heads", "refs/tags", "refs/remotes")):
-    raw = _git(root, "for-each-ref", "--format=%(refname)%00%(objectname)%00", *prefixes).stdout.split(b"\0")
+def _ref_tips(root):
+    """Enumerate every ref namespace."""
+    raw = _git(root, "for-each-ref", "--format=%(refname)%00%(objectname)%00").stdout.split(b"\0")
     values = [item.decode("utf-8", "surrogateescape").lstrip("\n") for item in raw if item.strip(b"\n")]
     return list(zip(values[0::2], values[1::2]))
 

@@ -1,5 +1,6 @@
 import json
 import copy
+import os
 from pathlib import Path
 import re
 import shutil
@@ -157,7 +158,7 @@ class PublicationScanTests(unittest.TestCase):
         self.assertTrue(any(item["path"] == "comment" for item in comment["findings"]))
         self.assertNotIn(value, json.dumps(body) + json.dumps(comment))
 
-    def test_ac53_complete_touched_head_content_blocks_preexisting_context(self):
+    def test_ac53_complete_touched_head_content_reports_preexisting_context(self):
         value = private_locator()
         git(self.repo.path, "switch", "main")
         self.repo.write("context.txt", value + "\nold\n")
@@ -168,9 +169,13 @@ class PublicationScanTests(unittest.TestCase):
         self.repo.write("context.txt", value + "\nnew\n")
         self.repo.commit("change adjacent line", "context.txt")
         result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
-        self.assertEqual("BLOCKED", result["status"])
-        self.assertTrue(any(item["source"] == "current-file" and item["path"] == "context.txt"
-                            for item in result["findings"]))
+        self.assertEqual("PASS", result["status"])
+        retained = [item for item in result["findings"]
+                    if item["source"] == "current-file" and item["path"] == "context.txt"]
+        self.assertTrue(retained)
+        self.assertTrue(all(item["classification"] == "PRE_EXISTING" for item in retained))
+        self.assertEqual(0, result["blocking_findings"])
+        self.assertEqual(len(result["findings"]), result["pre_existing_findings"])
 
     def test_deleted_preexisting_base_line_does_not_block(self):
         value = private_locator()
@@ -184,7 +189,73 @@ class PublicationScanTests(unittest.TestCase):
         self.repo.commit("remove preexisting private context", "context.txt")
         result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
         self.assertEqual("PASS", result["status"])
-        self.assertFalse(result["findings"])
+        deleted = [item for item in result["findings"] if item["change"] == "deleted"]
+        self.assertTrue(deleted)
+        self.assertTrue(all(item["classification"] == "PRE_EXISTING" for item in deleted))
+        self.assertEqual(0, result["blocking_findings"])
+
+    def test_exact_raw_membership_is_case_sensitive_and_candidate_additions_always_block(self):
+        lower = private_locator()
+        upper = lower.upper()
+        git(self.repo.path, "switch", "main")
+        self.repo.write("accepted.txt", upper + "\n")
+        git(self.repo.path, "add", "accepted.txt")
+        git(self.repo.path, "commit", "-m", "accepted base value")
+        base = git(self.repo.path, "rev-parse", "HEAD")
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication")
+        self.repo.write("case-variant.txt", lower + "\n")
+        self.repo.write("exact-duplicate.txt", upper + "\n")
+        self.repo.commit("candidate additions", "case-variant.txt", "exact-duplicate.txt")
+        result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
+        added = [item for item in result["findings"] if item["change"] == "added"]
+        self.assertTrue(added)
+        self.assertTrue(all(item["classification"] == "BLOCKING" for item in added))
+        self.assertEqual("BLOCKED", result["status"])
+
+    def test_binary_base_classification_is_lossless_and_retains_known_exact_positives(self):
+        value = private_locator()
+        git(self.repo.path, "switch", "main")
+        self.repo.write("context.txt", value + "\nold\n")
+        self.repo.write("opaque.bin", data=b"opaque\0base")
+        git(self.repo.path, "add", "context.txt", "opaque.bin")
+        git(self.repo.path, "commit", "-m", "accepted mixed base")
+        base = git(self.repo.path, "rev-parse", "HEAD")
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication")
+        self.repo.write("context.txt", value + "\nnew\n")
+        self.repo.commit("change adjacent line", "context.txt")
+        result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
+        self.assertEqual("PASS", result["status"])
+        self.assertFalse(result["unscanned"])
+        retained = [item for item in result["findings"] if item["source"] == "current-file"]
+        self.assertTrue(retained)
+        self.assertTrue(all(item["classification"] == "PRE_EXISTING" for item in retained))
+
+    def test_failed_base_classification_retains_known_positives_and_fails_closed(self):
+        value = private_locator()
+        git(self.repo.path, "switch", "main")
+        self.repo.write("context.txt", value + "\nold\n")
+        self.repo.write("oversize.txt", "opaque\n")
+        git(self.repo.path, "add", "context.txt", "oversize.txt")
+        git(self.repo.path, "commit", "-m", "accepted base")
+        base = git(self.repo.path, "rev-parse", "HEAD")
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication")
+        self.repo.write("context.txt", value + "\nnew\n")
+        self.repo.commit("change adjacent line", "context.txt")
+        real_blob = publication._blob
+
+        def incomplete(root, oid, extra_env=None, *, classification=False):
+            tree = publication._tree(root, base, extra_env)
+            if classification and oid == tree["oversize.txt"][2]:
+                return None, "oversize"
+            return real_blob(root, oid, extra_env, classification=classification)
+
+        with mock.patch.object(publication, "_blob", side_effect=incomplete):
+            result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping)
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertTrue(any(item["source"] == "base-classification" for item in result["unscanned"]))
+        retained = [item for item in result["findings"] if item["source"] == "current-file"]
+        self.assertTrue(retained)
+        self.assertTrue(all(item["classification"] == "PRE_EXISTING" for item in retained))
 
     def test_deleted_preexisting_base_line_is_independent_of_merge_parent_order(self):
         for root_first in (False, True):
@@ -212,6 +283,8 @@ class PublicationScanTests(unittest.TestCase):
                 git(repo.path, "update-ref", "refs/heads/awf/EX-6-publication", merge, feature)
                 result = scan_repository(repo.path, base, merge, mapping_path=mapping)
                 self.assertEqual("PASS", result["status"], render_scan(result))
+                self.assertTrue(any(item["change"] == "deleted" and item["classification"] == "PRE_EXISTING"
+                                    for item in result["findings"]))
 
     def test_ac53_channels_and_builtin_cannot_be_disabled_by_tracked_config(self):
         value = private_locator()
@@ -283,6 +356,41 @@ class PublicationScanTests(unittest.TestCase):
         self.assertTrue(any(item["path"] == "pr-body" and item["reason"] == "invalid-utf8"
                             for item in body["unscanned"]))
 
+    def test_git_blob_size_is_checked_before_content_is_requested(self):
+        calls = []
+
+        def plumbing(_root, *args, **_kwargs):
+            calls.append(args)
+            if args[:2] == ("cat-file", "-s"):
+                return subprocess.CompletedProcess(args, 0, str(publication.MAX_TEXT_BYTES + 1).encode(), b"")
+            raise AssertionError("oversize blob content must not be requested")
+
+        with mock.patch.object(publication, "_git", side_effect=plumbing):
+            text, reason = publication._blob(self.repo.path, "a" * 40)
+        self.assertIsNone(text)
+        self.assertEqual("oversize", reason)
+        self.assertEqual([("cat-file", "-s", "a" * 40)], calls)
+
+    def test_provider_file_is_streamed_with_bounded_memory(self):
+        provider = Path(self.temp.name) / "oversize-provider.txt"
+        provider.write_bytes(b"0123456789")
+        with mock.patch.object(publication, "MAX_TEXT_BYTES", 8):
+            text, digest, reason = publication._provider_file(provider)
+        self.assertIsNone(text)
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertEqual("oversize", reason)
+
+        with mock.patch.object(publication, "MAX_TEXT_BYTES", 8):
+            text, digest, reason = publication._provider_text("0123456789")
+        self.assertIsNone(text)
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertEqual("oversize", reason)
+
+        text, digest, reason = publication._provider_text("invalid-\ud800")
+        self.assertIsNone(text)
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertEqual("invalid-utf8", reason)
+
     def test_parentless_side_root_is_scanned(self):
         value = private_locator().encode("utf-8") + b"\n"
         blob = git(self.repo.path, "hash-object", "-w", "--stdin", input_bytes=value)
@@ -348,7 +456,7 @@ class PublicationScanTests(unittest.TestCase):
         git(self.repo.path, "add", "generated.txt")
         git(self.repo.path, "add", "-f", ".agentic-state/publication-deny.json")
         git(self.repo.path, "commit", "-m", "attempt tracked detector override")
-        with self.assertRaisesRegex(ValidationError, "untracked and ignored"):
+        with self.assertRaisesRegex(ValidationError, "tracked content|share identity"):
             scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
 
     def test_force_tracked_mapping_cannot_hide_behind_repository_alias(self):
@@ -365,9 +473,36 @@ class PublicationScanTests(unittest.TestCase):
         except OSError as exc:
             self.skipTest(f"directory symlinks unavailable: {type(exc).__name__}")
         aliased_mapping = alias / ".agentic-state" / "publication-deny.json"
-        with self.assertRaisesRegex(ValidationError, "untracked and ignored"):
+        with self.assertRaisesRegex(ValidationError, "symlinks|tracked content|share identity"):
             scan_repository(self.repo.path.resolve(), self.repo.base, "HEAD",
                             mapping_path=aliased_mapping)
+
+    def test_mapping_hardlink_to_tracked_content_is_refused(self):
+        tracked = self.repo.path / "tracked-mapping.json"
+        tracked.write_text(json.dumps({"version": 1, "builtin_allow": []}), encoding="utf-8")
+        self.repo.commit("track mapping target", "tracked-mapping.json")
+        alias = Path(self.temp.name) / "operator-map.json"
+        try:
+            os.link(tracked, alias)
+        except OSError as exc:
+            self.skipTest(f"hard links unavailable: {type(exc).__name__}")
+        with self.assertRaisesRegex(ValidationError, "share identity"):
+            scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=alias)
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction regression")
+    def test_mapping_windows_junction_to_tracked_content_is_refused(self):
+        tracked_dir = self.repo.path / "tracked-mapping-dir"
+        tracked_dir.mkdir()
+        tracked = tracked_dir / "mapping.json"
+        tracked.write_text(json.dumps({"version": 1, "builtin_allow": []}), encoding="utf-8")
+        self.repo.commit("track junction target", "tracked-mapping-dir/mapping.json")
+        junction = Path(self.temp.name) / "mapping-junction"
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(tracked_dir)],
+                              capture_output=True, text=True)
+        if made.returncode:
+            self.skipTest("directory junction unavailable")
+        with self.assertRaisesRegex(ValidationError, "junctions|reparse"):
+            scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=junction / "mapping.json")
 
     def test_custom_regex_policy_is_bounded_and_safe(self):
         for pattern in (r"(a+)+$", r"a.*b", r"a?b", r"a{1,8}b{1,8}", r"a{1,65}",
@@ -481,6 +616,17 @@ class PublicationRewriteTests(unittest.TestCase):
         git(self.repo.path, "config", "--unset-all", "remote.origin.pushurl")
         git(self.repo.path, "update-ref", "refs/remotes/origin/other", head)
         with self.assertRaisesRegex(ValidationError, "remote-tracking ref"):
+            rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                mapping_path=self.mapping)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_ac44_every_ref_namespace_is_in_the_reachability_census(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        git(self.repo.path, "update-ref", "refs/notes/retention-proof", head)
+        with self.assertRaisesRegex(ValidationError, "reachable from another"):
             rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                 mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
@@ -691,6 +837,48 @@ class PublicationGateTests(unittest.TestCase):
         gate = evaluate(config, workflow, changed, contracts, "2026-09-09T12:00:00Z")
         self.assertEqual("FAIL", gate["gates"]["publication_safety"]["result"])
         self.assertEqual("NOT_READY", gate["conclusion"])
+
+    def test_preexisting_only_pass_receipt_is_accepted_and_counts_fail_closed(self):
+        config = load(ROOT / ".agentic" / "examples" / "PROJECT_CONFIG.yaml")
+        workflow = load(ROOT / ".agentic" / "workflow.yaml")
+        bundle = load(ROOT / ".agentic" / "examples" / "evidence-bundle.json")
+        contracts = Contracts(ROOT / ".agentic" / "schemas")
+        finding = {"commit": bundle["candidate"]["head_sha"], "path": "src/example.py", "line": 1,
+                   "source": "current-file", "change": None, "detector_id": "declared.literal.1",
+                   "classification": "PRE_EXISTING", "redacted_excerpt": "sha256:" + "1" * 64}
+        publication_scan = bundle["publication_scan"]
+        publication_scan["findings"] = [finding]
+        publication_scan["total_findings"] = 1
+        publication_scan["blocking_findings"] = 0
+        publication_scan["pre_existing_findings"] = 1
+        gate = evaluate(config, workflow, bundle, contracts, "2026-09-09T12:00:00Z")
+        self.assertEqual("PASS", gate["gates"]["publication_safety"]["result"])
+
+        inconsistent = copy.deepcopy(bundle)
+        inconsistent["publication_scan"]["total_findings"] = 2
+        gate = evaluate(config, workflow, inconsistent, contracts, "2026-09-09T12:00:00Z")
+        self.assertEqual("FAIL", gate["gates"]["publication_safety"]["result"])
+
+        blocking = copy.deepcopy(bundle)
+        blocking["publication_scan"]["findings"][0]["classification"] = "BLOCKING"
+        blocking["publication_scan"]["blocking_findings"] = 1
+        blocking["publication_scan"]["pre_existing_findings"] = 0
+        blocking["publication_scan"]["status"] = "BLOCKED"
+        gate = evaluate(config, workflow, blocking, contracts, "2026-09-09T12:00:00Z")
+        self.assertEqual("FAIL", gate["gates"]["publication_safety"]["result"])
+
+        unscanned = copy.deepcopy(bundle)
+        unscanned["publication_scan"]["unscanned"] = [{"commit": bundle["candidate"]["head_sha"],
+            "path": "provider", "source": "pr-body", "reason": "oversize", "parent": None}]
+        unscanned["publication_scan"]["unscanned_count"] = 1
+        unscanned["publication_scan"]["status"] = "BLOCKED"
+        gate = evaluate(config, workflow, unscanned, contracts, "2026-09-09T12:00:00Z")
+        self.assertEqual("FAIL", gate["gates"]["publication_safety"]["result"])
+
+        malformed = copy.deepcopy(bundle)
+        malformed["publication_scan"]["total_findings"] = -1
+        with self.assertRaises(ValidationError):
+            evaluate(config, workflow, malformed, contracts, "2026-09-09T12:00:00Z")
 
 
 if __name__ == "__main__":
