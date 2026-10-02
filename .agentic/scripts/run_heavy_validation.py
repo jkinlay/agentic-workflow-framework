@@ -13,17 +13,14 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
-from agentic.canonical import load
-from agentic.heavy_validation import run_validation
+from agentic.heavy_validation import resolve_without_alias, run_validation
 
 
 MAX_INPUT_BYTES = 1024 * 1024
 
 
 def pinned_bytes(path: Path, label: str) -> bytes:
-    path = path.resolve(strict=True)
-    if not path.is_file() or path.is_symlink():
-        raise ValidationError(f"{label} must be an existing regular file")
+    path = resolve_without_alias(path.absolute(), label, directory=False)
     with path.open("rb") as stream:
         raw = stream.read(MAX_INPUT_BYTES + 1)
     if len(raw) > MAX_INPUT_BYTES:
@@ -34,6 +31,7 @@ def pinned_bytes(path: Path, label: str) -> bytes:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=ROOT / ".agentic/PROJECT_CONFIG.yaml")
+    parser.add_argument("--expected-config-sha256", required=True)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--expected-plan-sha256", required=True)
     parser.add_argument("--review", type=Path, required=True)
@@ -42,6 +40,11 @@ def main(argv=None):
     parser.add_argument("--expected-capacity-sha256")
     parser.add_argument("--now", help="Pinned RFC3339 controller time; defaults to local UTC time")
     parser.add_argument("--max-capacity-age-seconds", type=int, default=300)
+    parser.add_argument("--repository-id", type=int, required=True)
+    parser.add_argument("--base-sha", required=True)
+    parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--tree-sha", required=True)
+    parser.add_argument("--execution-root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
     cancelled = threading.Event()
 
@@ -57,7 +60,12 @@ def main(argv=None):
             expected_plan_sha256=args.expected_plan_sha256,
             review_raw=pinned_bytes(args.review, "review"),
             expected_review_sha256=args.expected_review_sha256,
-            config=load(args.config.resolve(strict=True)),
+            config_raw=pinned_bytes(args.config, "config"),
+            expected_config_sha256=args.expected_config_sha256,
+            expected_candidate={"repository_id": args.repository_id, "base_sha": args.base_sha,
+                                "head_sha": args.head_sha, "tree_sha": args.tree_sha},
+            execution_root=args.execution_root.absolute(),
+            review_authenticator=None,
             capacity_raw=(pinned_bytes(args.capacity, "capacity") if args.capacity else None),
             expected_capacity_sha256=args.expected_capacity_sha256,
             now=args.now,
@@ -67,7 +75,7 @@ def main(argv=None):
         print(json.dumps(result, ensure_ascii=True, sort_keys=True, indent=2))
         return 0 if result["status"] == "PASS" else 1
     except (ValidationError, OSError, ValueError, TypeError, RecursionError) as error:
-        print(json.dumps({"format": "awf-heavy-validation-result-1", "status": "REJECTED",
+        print(json.dumps({"format": "awf-heavy-validation-result-2", "status": "REJECTED",
                           "all_partitions_terminal": False, "reason": str(error)},
                          ensure_ascii=True, sort_keys=True), file=sys.stderr)
         return 2
