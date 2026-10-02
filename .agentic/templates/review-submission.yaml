@@ -1,0 +1,49 @@
+{
+  "template_for": "review-submission",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "submission_id": "00000000-0000-0000-0000-000000000000",
+    "cycle_id": "00000000-0000-0000-0000-000000000000",
+    "completion_snapshot": {
+      "cycle_id": "00000000-0000-0000-0000-000000000000",
+      "tuple": {
+        "repository": "UNFILLED",
+        "base_sha": "0000000000000000000000000000000000000000",
+        "head_sha": "0000000000000000000000000000000000000000",
+        "head_tree_sha": "0000000000000000000000000000000000000000",
+        "contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "review_input_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "tuple_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "required_reviewers": [
+        "UNFILLED"
+      ],
+      "reviewer_set_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "counts": {
+        "required": 0,
+        "completed": 0,
+        "acceptable": 0,
+        "failed": 0,
+        "stale": 0,
+        "outstanding": 0
+      },
+      "results": [
+        {
+          "reviewer_id": "UNFILLED",
+          "state": "ACCEPTABLE",
+          "result_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "terminal_at": "1970-01-01T00:00:00Z"
+        }
+      ]
+    },
+    "completion_snapshot_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "aggregate": "UNFILLED",
+    "aggregate_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "provider_preconditions": {
+      "tuple_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "reviewer_set_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "execution_authority": false
+  }
+}

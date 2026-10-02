@@ -1,0 +1,175 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observed_at",
+    "kind",
+    "cadence_seconds",
+    "all_complete",
+    "streams"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "observed_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "kind": {
+      "enum": [
+        "REGULAR",
+        "CHANGE"
+      ]
+    },
+    "cadence_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "all_complete": {
+      "type": "boolean"
+    },
+    "streams": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stream",
+          "state",
+          "ticket",
+          "actor",
+          "reason",
+          "next_action",
+          "resume_trigger",
+          "exact_tuple",
+          "activity",
+          "verification_gate",
+          "reviewer_completion",
+          "open_findings",
+          "jira_status",
+          "updated_at"
+        ],
+        "properties": {
+          "stream": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "enum": [
+              "WORKING",
+              "PAUSED_INPUT",
+              "BLOCKED",
+              "COMPLETE"
+            ]
+          },
+          "ticket": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actor": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "next_action": {
+            "type": "string",
+            "minLength": 1
+          },
+          "resume_trigger": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exact_tuple": {
+            "type": "string",
+            "minLength": 1
+          },
+          "activity": {
+            "type": "string",
+            "minLength": 1
+          },
+          "verification_gate": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reviewer_completion": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "required",
+              "completed",
+              "acceptable",
+              "failed",
+              "stale",
+              "outstanding"
+            ],
+            "properties": {
+              "required": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "completed": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "acceptable": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "stale": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "outstanding": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          },
+          "open_findings": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "jira_status": {
+            "type": "string",
+            "minLength": 1
+          },
+          "updated_at": {
+            "type": "string",
+            "minLength": 1,
+            "format": "date-time"
+          }
+        }
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:controller-status-digest",
+  "title": "Agentic Workflow 1.2 \u2014 controller-status-digest"
+}

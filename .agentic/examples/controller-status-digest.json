@@ -1,0 +1,78 @@
+{
+  "schema_version": 3,
+  "observed_at": "2026-09-09T12:00:00Z",
+  "kind": "REGULAR",
+  "cadence_seconds": 900,
+  "all_complete": false,
+  "streams": [
+    {
+      "stream": "A",
+      "state": "WORKING",
+      "ticket": "EX-1",
+      "actor": "worker-a",
+      "reason": "Eligible scoped action",
+      "next_action": "Continue implementation",
+      "resume_trigger": "worker completion",
+      "exact_tuple": "base:c/head:b/tree:d/contract:a/review:e",
+      "activity": "Implement EX-1",
+      "verification_gate": "PENDING",
+      "reviewer_completion": {
+        "required": 1,
+        "completed": 0,
+        "acceptable": 0,
+        "failed": 0,
+        "stale": 0,
+        "outstanding": 1
+      },
+      "open_findings": 0,
+      "jira_status": "In Progress",
+      "updated_at": "2026-09-09T12:00:00Z"
+    },
+    {
+      "stream": "B",
+      "state": "PAUSED_INPUT",
+      "ticket": "EX-2",
+      "actor": "owner",
+      "reason": "Owner input required",
+      "next_action": "Await the named decision",
+      "resume_trigger": "owner decision recorded",
+      "exact_tuple": "base:c/head:b/tree:d/contract:a/review:e",
+      "activity": "Await input for EX-2",
+      "verification_gate": "PENDING",
+      "reviewer_completion": {
+        "required": 1,
+        "completed": 0,
+        "acceptable": 0,
+        "failed": 0,
+        "stale": 0,
+        "outstanding": 1
+      },
+      "open_findings": 0,
+      "jira_status": "Open",
+      "updated_at": "2026-09-09T12:00:00Z"
+    },
+    {
+      "stream": "C",
+      "state": "BLOCKED",
+      "ticket": "EX-3",
+      "actor": "controller",
+      "reason": "Dependency unavailable",
+      "next_action": "Continue independent streams",
+      "resume_trigger": "dependency becomes satisfied",
+      "exact_tuple": "base:c/head:b/tree:d/contract:a/review:e",
+      "activity": "Blocked on EX-3 dependency",
+      "verification_gate": "PENDING",
+      "reviewer_completion": {
+        "required": 1,
+        "completed": 0,
+        "acceptable": 0,
+        "failed": 0,
+        "stale": 0,
+        "outstanding": 1
+      },
+      "open_findings": 0,
+      "jira_status": "Open",
+      "updated_at": "2026-09-09T12:00:00Z"
+    }
+  ]
+}

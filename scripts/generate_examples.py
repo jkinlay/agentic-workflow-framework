@@ -70,7 +70,8 @@ def config(example=True):
             "require_critic_approval_current_tuple": True, "require_specialist_reviews_current_tuple": True, "require_required_ci_green": True,
             "require_zero_unresolved_blocking_threads": True, "invalidate_on_head_change": True, "invalidate_on_target_base_change": True,
             "authorization_ttl_seconds": 900, "trusted_owner_ids": [1001] if example else [], "high_risk_owner_quorum": 1},
-        "controller": {key: False for key in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments", "auto_transition_jira"]},
+        "controller": {**{key: False for key in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments", "auto_transition_jira"]},
+                       "status_cadence_seconds": 900},
         "audit": {"store_must_be_outside_worktrees": True, "retention_days": 90, "redact_secrets": True},
         "portfolio": {"read_only": True, "cross_project_dispatch": False}}
     from agentic.model_routing import default_policy
@@ -197,6 +198,25 @@ def main():
     write(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml", cfg)
     bundle = example_bundle(cfg)
     write(ROOT / ".agentic/examples/evidence-bundle.json", bundle)
+    write(ROOT / ".agentic/examples/controller-status-digest.json", {
+        "schema_version": 3, "observed_at": NOW, "kind": "REGULAR", "cadence_seconds": 900,
+        "all_complete": False, "streams": [{"stream": stream, "state": state, "ticket": ticket,
+            "actor": actor, "reason": reason, "next_action": action, "resume_trigger": trigger,
+            "exact_tuple": "base:c/head:b/tree:d/contract:a/review:e", "activity": activity,
+            "verification_gate": "PENDING", "reviewer_completion": {"required": 1, "completed": 0,
+                "acceptable": 0, "failed": 0, "stale": 0, "outstanding": 1},
+            "open_findings": 0, "jira_status": jira, "updated_at": NOW}
+            for stream, state, ticket, actor, reason, action, trigger, activity, jira in [
+                ("A", "WORKING", "EX-1", "worker-a", "Eligible scoped action", "Continue implementation",
+                 "worker completion", "Implement EX-1", "In Progress"),
+                ("B", "PAUSED_INPUT", "EX-2", "owner", "Owner input required", "Await the named decision",
+                 "owner decision recorded", "Await input for EX-2", "Open"),
+                ("C", "BLOCKED", "EX-3", "controller", "Dependency unavailable", "Continue independent streams",
+                 "dependency becomes satisfied", "Blocked on EX-3 dependency", "Open")]]})
+    write(ROOT / ".agentic/examples/jira-progress.json", {"schema_version": 3, "merged_ticket": "EX-1",
+        "scope": "project=EX AND labels=awf-fixture", "observed_at": NOW, "closed": 4,
+        "remaining_open": 2, "jira_state": "RECONCILED",
+        "reason": "authoritative complete scoped Jira observation"})
     from agentic.contracts import Contracts
     from agentic.digest import render
     from agentic.gates import evaluate

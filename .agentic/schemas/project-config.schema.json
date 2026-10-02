@@ -1160,6 +1160,11 @@
         },
         "auto_transition_jira": {
           "type": "boolean"
+        },
+        "status_cadence_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         }
       }
     },

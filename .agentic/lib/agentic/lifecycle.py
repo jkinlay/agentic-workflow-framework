@@ -65,6 +65,15 @@ def definition():
                                    for source, event, target, guards in NORMAL],
             "invalidation_events": sorted(INVALIDATING), "control_events": sorted(CONTROL_EVENTS),
             "jira_writes": dict(sorted(JIRA_WRITES.items())),
+            "controller_execution_contract": {
+                "stream_states": ["WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"],
+                "unlabelled_idle_allowed": False,
+                "refill_after_run_completion": "immediate_next_eligible_or_explicit_pause_block_complete",
+                "blocked_streams_pause_independent_streams": False,
+                "status_cadence_seconds_default": 900,
+                "status_change_digest": "immediate_without_resetting_regular_cadence",
+                "review_submission": "all_frozen_reviewers_terminal_and_acceptable_for_exact_tuple",
+                "post_merge_reporting_order": ["reconcile_merged_ticket_jira", "count_complete_scoped_jira", "report_closed_and_remaining"]},
             "unspecified_event_policy": "reject", "terminal_invalidation_policy": "audit_without_state_change",
             "merge_uncertainty_policy": "reconcile_before_retry", "implementation": ".agentic/lib/agentic/lifecycle.py"}
 
