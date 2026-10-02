@@ -7,12 +7,32 @@
   },
   "decision": "APPROVE",
   "expires_at": "2030-01-02T00:00:00Z",
-  "format": "awf-heavy-validation-review-3",
+  "format": "awf-heavy-validation-review-4",
   "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "reviewed_at": "2030-01-01T00:00:00Z",
   "reviewer": {
     "immutable_id": "replace-with-numeric-github-user-id",
     "login": "replace-with-observed-login",
     "provider": "github"
+  },
+  "workload_authorization": {
+    "record": {
+      "candidate": {
+        "base_sha": "0000000000000000000000000000000000000000",
+        "head_sha": "0000000000000000000000000000000000000000",
+        "repository_id": 1,
+        "tree_sha": "0000000000000000000000000000000000000000"
+      },
+      "determinism": {"retry_limit": 0, "seed": 0},
+      "engine": "python",
+      "isolation": {"filesystem": "WORKTREE", "network": "HOST_POLICY", "process_tree": "REQUIRED"},
+      "partitions": [],
+      "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "requested_parallelism": 1,
+      "required_resources": [],
+      "resource_class": "heavy",
+      "working_directory": "/replace/repository"
+    },
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
   }
 }

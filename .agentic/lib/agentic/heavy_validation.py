@@ -23,9 +23,9 @@ from .child_process import child_env
 
 
 PLAN_FORMAT = "awf-heavy-validation-plan-3"
-REVIEW_FORMAT = "awf-heavy-validation-review-3"
-CAPACITY_FORMAT = "awf-heavy-validation-capacity-3"
-RESULT_FORMAT = "awf-heavy-validation-result-3"
+REVIEW_FORMAT = "awf-heavy-validation-review-4"
+CAPACITY_FORMAT = "awf-heavy-validation-capacity-4"
+RESULT_FORMAT = "awf-heavy-validation-result-4"
 TERMINAL_STATES = frozenset({"PASS", "FAILED", "TIMED_OUT", "CANCELLED"})
 FROZEN_H_PROVIDER_API_KEY_ENV_VARS = frozenset({
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY",
@@ -248,17 +248,42 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     return value, sha256(raw)
 
 
-def _validate_review(raw: bytes, expected_sha256: str, plan_digest: str,
-                     candidate: dict, now: str) -> tuple[dict, str]:
+def workload_authorization(plan: dict, plan_digest: str) -> dict:
+    """Return the exact workload record that an external reviewer must authorize."""
+    record = {
+        "plan_sha256": plan_digest,
+        "candidate": deepcopy(plan["candidate"]),
+        "working_directory": plan["working_directory"],
+        "engine": plan["engine"],
+        "resource_class": plan["resource_class"],
+        "required_resources": list(plan["required_resources"]),
+        "requested_parallelism": plan["requested_parallelism"],
+        "determinism": deepcopy(plan["determinism"]),
+        "isolation": deepcopy(plan["isolation"]),
+        "partitions": [{key: deepcopy(part[key]) for key in (
+            "name", "framework", "resources", "argv", "executable",
+            "timeout_seconds", "accepted_exit_codes")} for part in plan["partitions"]],
+    }
+    return {"record": record,
+            "sha256": fingerprint("heavy-validation-workload-authorization", record)}
+
+
+def _validate_review(raw: bytes, expected_sha256: str, plan: dict,
+                     plan_digest: str, now: str) -> tuple[dict, str, dict]:
     value = _verified_load(raw, expected_sha256, "review")
     _exact_keys(value, {"format", "plan_sha256", "candidate", "decision", "reviewer",
-                        "reviewed_at", "expires_at"}, "review")
+                        "workload_authorization", "reviewed_at", "expires_at"}, "review")
     if value["format"] != REVIEW_FORMAT:
         raise ValidationError("Unsupported heavy validation review format")
     if value["plan_sha256"] != plan_digest:
         raise ValidationError("review does not bind the submitted plan SHA-256")
-    if _validate_candidate(value["candidate"], "review.candidate") != candidate:
+    if _validate_candidate(value["candidate"], "review.candidate") != plan["candidate"]:
         raise ValidationError("review candidate tuple does not match the plan")
+    authorization = workload_authorization(plan, plan_digest)
+    supplied = _mapping(value["workload_authorization"], "review.workload_authorization")
+    _exact_keys(supplied, {"record", "sha256"}, "review.workload_authorization")
+    if supplied != authorization:
+        raise ValidationError("review does not authorize the exact workload record")
     if value["decision"] != "APPROVE":
         raise ValidationError("review is not approved")
     reviewer = _mapping(value["reviewer"], "review.reviewer")
@@ -271,20 +296,22 @@ def _validate_review(raw: bytes, expected_sha256: str, plan_digest: str,
     instant = timestamp(now)
     if reviewed > instant or expires <= instant or expires <= reviewed:
         raise ValidationError("Review validity interval does not include execution time")
-    return value, sha256(raw)
+    return value, sha256(raw), authorization
 
 
 def _authenticate_review(review: dict, review_digest: str, plan_digest: str,
-                         candidate: dict, authenticator) -> dict:
+                         candidate: dict, authorization: dict, authenticator) -> dict:
     if authenticator is None:
         raise ValidationError("Authenticated review authority is unavailable")
     try:
-        value = authenticator(deepcopy(review), review_digest, plan_digest, deepcopy(candidate))
+        value = authenticator(deepcopy(review), review_digest, plan_digest,
+                              deepcopy(candidate), deepcopy(authorization))
     except Exception as exc:
         raise ValidationError(f"Authenticated review lookup failed: {type(exc).__name__}") from exc
     value = _mapping(value, "authenticated review")
     _exact_keys(value, {"status", "provider", "immutable_id", "login", "evidence_sha256",
-                        "review_sha256", "plan_sha256", "candidate"}, "authenticated review")
+                        "review_sha256", "plan_sha256", "candidate",
+                        "workload_authorization_sha256"}, "authenticated review")
     if value["status"] != "AUTHENTICATED":
         raise ValidationError("Review authority did not authenticate the approval")
     for field in ("provider", "immutable_id", "login"):
@@ -293,8 +320,28 @@ def _authenticate_review(review: dict, review_digest: str, plan_digest: str,
     _expected_digest(value["evidence_sha256"], "authenticated review evidence_sha256")
     if value["review_sha256"] != review_digest or value["plan_sha256"] != plan_digest:
         raise ValidationError("Authenticated review digest binding mismatch")
+    if value["workload_authorization_sha256"] != authorization["sha256"]:
+        raise ValidationError("Authenticated workload authorization binding mismatch")
     if _validate_candidate(value["candidate"], "authenticated review candidate") != candidate:
         raise ValidationError("Authenticated review candidate tuple mismatch")
+    return deepcopy(value)
+
+
+def _attest_checkout(attestor, candidate: dict, root: Path) -> dict:
+    if attestor is None:
+        raise ValidationError("Trusted checkout attestation is unavailable")
+    try:
+        value = attestor(deepcopy(candidate), str(root))
+    except Exception as exc:
+        raise ValidationError(f"Checkout attestation failed: {type(exc).__name__}") from exc
+    value = _mapping(value, "checkout attestation")
+    _exact_keys(value, {"status", "candidate", "working_directory", "evidence_sha256"},
+                "checkout attestation")
+    if value["status"] != "CLEAN" or value["working_directory"] != str(root):
+        raise ValidationError("Checkout is not clean at the reviewed working directory")
+    if _validate_candidate(value["candidate"], "checkout candidate") != candidate:
+        raise ValidationError("Checkout candidate tuple mismatch")
+    _expected_digest(value["evidence_sha256"], "checkout evidence_sha256")
     return deepcopy(value)
 
 
@@ -339,8 +386,10 @@ def _validate_capacity(raw: bytes | None, expected_sha256: str | None, now: str,
         if not isinstance(engine, str) or not _LABEL.fullmatch(engine):
             raise ValidationError("Invalid capacity engine label")
         evidence = _mapping(evidence, f"capacity engine {engine}")
-        _exact_keys(evidence, {"parallel_available", "parallel_slots"},
+        _exact_keys(evidence, {"identity_sha256", "parallel_available", "parallel_slots"},
                     f"capacity engine {engine}")
+        _expected_digest(evidence["identity_sha256"],
+                         f"capacity engine {engine} identity_sha256")
         if not isinstance(evidence["parallel_available"], bool):
             raise ValidationError(f"capacity engine {engine} parallel_available must be boolean")
         _nonnegative_int(evidence["parallel_slots"],
@@ -407,15 +456,28 @@ def _resource_claims(plan: dict, parallelism: int) -> dict[str, int]:
             for name, values in claims.items() if any(values)}
 
 
+def _engine_identity(plan: dict) -> str:
+    records = [{"framework": part["framework"], "executable": part["executable"]}
+               for part in plan["partitions"]]
+    return fingerprint("heavy-validation-engine-identity", {
+        "engine": plan["engine"], "executables": records})
+
+
 def _lease_request(plan: dict, plan_digest: str, config_digest: str,
                    capacity_digest: str, parallelism: int, now: str) -> dict:
-    required_until = timestamp(now) + timedelta(
-        seconds=sum(part["timeout_seconds"] for part in plan["partitions"]) + 60)
+    attempts = plan["determinism"]["retry_limit"] + 1
+    attempt_count = len(plan["partitions"]) * attempts
+    timeout_budget = sum(part["timeout_seconds"] * attempts
+                         for part in plan["partitions"])
+    overhead_seconds = 60 + (5 * attempt_count)
+    required_until = timestamp(now) + timedelta(seconds=timeout_budget + overhead_seconds)
     return {"format": "awf-heavy-validation-lease-request-1",
             "candidate": deepcopy(plan["candidate"]), "plan_sha256": plan_digest,
             "config_sha256": config_digest, "capacity_sha256": capacity_digest,
             "parallelism": parallelism, "resource_class": plan["resource_class"],
-            "engine": plan["engine"], "required_resources": list(plan["required_resources"]),
+            "engine": plan["engine"], "engine_identity_sha256": _engine_identity(plan),
+            "engine_slots": parallelism,
+            "required_resources": list(plan["required_resources"]),
             "resource_claims": _resource_claims(plan, parallelism),
             "determinism": deepcopy(plan["determinism"]),
             "isolation": deepcopy(plan["isolation"]),
@@ -486,6 +548,8 @@ def _parallelism(plan: dict, config: dict, capacity: dict | None,
         return 0, [f"engine_capacity_unobserved:{engine}"]
     if engine_capacity["parallel_slots"] < 1:
         return 0, [f"engine_capacity_unavailable:{engine}"]
+    if engine_capacity["identity_sha256"] != _engine_identity(plan):
+        raise ValidationError("Capacity engine identity does not match the reviewed plan")
     if not engine_capacity["parallel_available"] or engine_capacity["parallel_slots"] < 2:
         reasons.append(f"engine_parallel_unavailable:{engine}")
     ceilings.append((f"capacity.engine.{engine}", engine_capacity["parallel_slots"]))
@@ -956,7 +1020,8 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
                    review_raw: bytes, expected_review_sha256: str,
                    config_raw: bytes, expected_config_sha256: str,
                    expected_candidate: dict, execution_root: str | os.PathLike[str],
-                   review_authenticator=None, capacity_raw: bytes | None = None,
+                   review_authenticator=None, checkout_attestor=None,
+                   capacity_raw: bytes | None = None,
                    expected_capacity_sha256: str | None = None, broker_client=None,
                    now: str | None = None, max_capacity_age_seconds: int = 300,
                    cancel_event: threading.Event | None = None) -> dict:
@@ -972,10 +1037,12 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
     plan, plan_digest = _validate_plan(plan_raw, expected_plan_sha256)
     config, config_digest = _validate_config(config_raw, expected_config_sha256)
     root, executables = _execution_context(plan, expected_candidate, execution_root)
-    review, review_digest = _validate_review(
-        review_raw, expected_review_sha256, plan_digest, plan["candidate"], now)
+    checkout = _attest_checkout(checkout_attestor, plan["candidate"], root)
+    review, review_digest, authorization = _validate_review(
+        review_raw, expected_review_sha256, plan, plan_digest, now)
     review_authority = _authenticate_review(
-        review, review_digest, plan_digest, plan["candidate"], review_authenticator)
+        review, review_digest, plan_digest, plan["candidate"], authorization,
+        review_authenticator)
     capacity, capacity_digest, stale = _validate_capacity(
         capacity_raw, expected_capacity_sha256, now, max_capacity_age_seconds,
         plan_digest, config_digest, plan["candidate"])
@@ -987,8 +1054,11 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
     event = cancel_event or threading.Event()
     started_at = now_text()
     results: list[dict] = []
+    dispatch_checkout = checkout
     try:
         if admitted:
+            dispatch_checkout = _attest_checkout(
+                checkout_attestor, plan["candidate"], root)
             with ThreadPoolExecutor(max_workers=effective, thread_name_prefix="awf-heavy") as executor:
                 futures = {executor.submit(_execute, part, plan, executable, root, config, event): (part, executable)
                            for part, executable in zip(plan["partitions"], executables)}
@@ -1037,6 +1107,8 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         "plan_sha256": plan_digest,
         "review_sha256": review_digest,
         "review_authority": review_authority,
+        "workload_authorization": authorization,
+        "checkout_attestation": {"initial": checkout, "dispatch": dispatch_checkout},
         "config_sha256": config_digest,
         "capacity_sha256": capacity_digest,
         "lease": deepcopy(lease),

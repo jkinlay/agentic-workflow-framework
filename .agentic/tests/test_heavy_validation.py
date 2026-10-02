@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import threading
@@ -19,11 +20,14 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SOURCE_ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
-from agentic.canonical import canonical, fingerprint, sha256
+from agentic.canonical import canonical, fingerprint, sha256, timestamp
 from agentic import heavy_validation as heavy
-from agentic.heavy_validation import resolve_without_alias, run_validation
+from agentic import heavy_validation_controller as heavy_controller
+from agentic.heavy_validation import (_engine_identity, resolve_without_alias, run_validation,
+                                      workload_authorization)
 from agentic.heavy_validation_controller import (
-    FileLeaseBroker, GitHubReviewAuthenticator, write_result_log)
+    FileLeaseBroker, GitCheckoutAttestor, GitHubReviewAuthenticator, read_result_log,
+    write_result_log)
 
 NOW = "2026-10-02T09:00:00Z"
 CANDIDATE = {"repository_id": 101, "base_sha": "a" * 40,
@@ -68,27 +72,40 @@ def plan(parts, *, engine="python", resource_class="heavy", resources=None,
 
 
 def review(plan_raw, *, decision="APPROVE", candidate=None):
-    return canonical({"format": "awf-heavy-validation-review-3",
+    plan_value = json.loads(plan_raw)
+    authorization = workload_authorization(plan_value, sha256(plan_raw))
+    return canonical({"format": "awf-heavy-validation-review-4",
         "plan_sha256": sha256(plan_raw), "candidate": candidate or CANDIDATE,
-        "decision": decision,
+        "decision": decision, "workload_authorization": authorization,
         "reviewer": {"provider": "fixture", "immutable_id": "reviewer-101", "login": "critic"},
         "reviewed_at": NOW, "expires_at": "2026-10-03T09:00:00Z"})
 
 
-def authenticator(value, review_digest, plan_digest, candidate):
+def authenticator(value, review_digest, plan_digest, candidate, authorization):
     return {"status": "AUTHENTICATED", **value["reviewer"],
             "evidence_sha256": "d" * 64, "review_sha256": review_digest,
-            "plan_sha256": plan_digest, "candidate": candidate}
+            "plan_sha256": plan_digest, "candidate": candidate,
+            "workload_authorization_sha256": authorization["sha256"]}
+
+
+def checkout_attestor(candidate, working_directory):
+    return {"status": "CLEAN", "candidate": candidate,
+            "working_directory": working_directory, "evidence_sha256": "e" * 64}
 
 
 def capacity(plan_raw, config_raw, *, workers=6, heavy=2, gpu=1, resources=None,
              engines=None, observed_at=NOW, candidate=None):
-    return canonical({"format": "awf-heavy-validation-capacity-3",
+    identity = _engine_identity(json.loads(plan_raw))
+    engine_values = ({"python": {"identity_sha256": identity,
+                                  "parallel_available": True, "parallel_slots": workers}}
+                     if engines is None else deepcopy(engines))
+    for evidence in engine_values.values():
+        evidence.setdefault("identity_sha256", identity)
+    return canonical({"format": "awf-heavy-validation-capacity-4",
         "observed_at": observed_at, "broker_id": "synthetic-broker",
         "workers_available": workers, "heavy_jobs_available": heavy,
         "gpu_jobs_available": gpu, "resources_available": dict(resources or {}),
-        "engines": dict({"python": {"parallel_available": True, "parallel_slots": workers}}
-                        if engines is None else engines),
+        "engines": engine_values,
         "plan_sha256": sha256(plan_raw), "config_sha256": sha256(config_raw),
         "candidate": candidate or CANDIDATE})
 
@@ -129,7 +146,7 @@ def run(plan_raw, cfg, *, cap=None, broker=None, auth=authenticator,
         config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
         expected_candidate=candidate or CANDIDATE,
         execution_root=str(Path(cwd or SOURCE_ROOT).resolve()),
-        review_authenticator=auth, capacity_raw=cap,
+        review_authenticator=auth, checkout_attestor=checkout_attestor, capacity_raw=cap,
         expected_capacity_sha256=sha256(cap) if cap is not None else None,
         broker_client=broker, now=NOW, cancel_event=cancel_event)
 
@@ -201,8 +218,8 @@ class HeavyValidationTests(unittest.TestCase):
 
     def test_authenticator_and_candidate_movement_fail_before_execution(self):
         raw = plan([partition("only")])
-        def wrong(value, review_digest, plan_digest, candidate):
-            result = authenticator(value, review_digest, plan_digest, candidate)
+        def wrong(value, review_digest, plan_digest, candidate, authorization):
+            result = authenticator(value, review_digest, plan_digest, candidate, authorization)
             result["immutable_id"] = "attacker"
             return result
         with self.assertRaisesRegex(ValidationError, "immutable_id"):
@@ -434,6 +451,7 @@ class HeavyValidationTests(unittest.TestCase):
                          result["process_tree_cleanup"])
 
     def test_github_authenticator_binds_provider_repository_pr_review_and_tree(self):
+        authorization = {"record": {"fixture": True}, "sha256": "f" * 64}
         endpoints = {
             "repos/example/project": {"id": 101},
             "repos/example/project/pulls/7": {"number": 7,
@@ -443,27 +461,38 @@ class HeavyValidationTests(unittest.TestCase):
                 "sha": CANDIDATE["head_sha"], "tree": {"sha": CANDIDATE["tree_sha"]}},
             "repos/example/project/pulls/7/reviews/9": {"id": 9, "state": "APPROVED",
                 "commit_id": CANDIDATE["head_sha"],
+                "body": "AWF-HEAVY-VALIDATION-AUTHORIZATION-SHA256: " + authorization["sha256"],
                 "user": {"id": 42, "login": "reviewer"}},
         }
         auth = GitHubReviewAuthenticator("example/project", 7, 9,
                                          read_api=lambda endpoint: deepcopy(endpoints[endpoint]))
         review_value = {"reviewer": {"provider": "github", "immutable_id": "42",
                                      "login": "reviewer"}}
-        result = auth(review_value, "d" * 64, "e" * 64, CANDIDATE)
+        result = auth(review_value, "d" * 64, "e" * 64, CANDIDATE, authorization)
         self.assertEqual("AUTHENTICATED", result["status"])
         moved = deepcopy(endpoints)
         moved["repos/example/project/pulls/7"]["head"]["sha"] = "f" * 40
         bad = GitHubReviewAuthenticator("example/project", 7, 9,
                                         read_api=lambda endpoint: deepcopy(moved[endpoint]))
         with self.assertRaisesRegex(ValidationError, "PR tuple"):
-            bad(review_value, "d" * 64, "e" * 64, CANDIDATE)
+            bad(review_value, "d" * 64, "e" * 64, CANDIDATE, authorization)
+        unauthorized = deepcopy(endpoints)
+        unauthorized["repos/example/project/pulls/7/reviews/9"]["body"] = (
+            "AWF-HEAVY-VALIDATION-AUTHORIZATION-SHA256: " + "0" * 64)
+        bad = GitHubReviewAuthenticator(
+            "example/project", 7, 9,
+            read_api=lambda endpoint: deepcopy(unauthorized[endpoint]))
+        with self.assertRaisesRegex(ValidationError, "exact workload"):
+            bad(review_value, "d" * 64, "e" * 64, CANDIDATE, authorization)
 
     def test_production_authenticator_and_durable_broker_run_parallel(self):
         raw = plan([partition("a"), partition("b")], parallelism=2)
-        cfg, cfg_raw = config(), canonical(config())
+        cfg_raw = canonical(config())
         cap = capacity(raw, cfg_raw, workers=2, heavy=2)
-        review_raw = canonical({"format": "awf-heavy-validation-review-3",
+        authorization = workload_authorization(json.loads(raw), sha256(raw))
+        review_raw = canonical({"format": "awf-heavy-validation-review-4",
             "plan_sha256": sha256(raw), "candidate": CANDIDATE, "decision": "APPROVE",
+            "workload_authorization": authorization,
             "reviewer": {"provider": "github", "immutable_id": "42", "login": "reviewer"},
             "reviewed_at": NOW, "expires_at": "2026-10-03T09:00:00Z"})
         endpoints = {
@@ -473,7 +502,9 @@ class HeavyValidationTests(unittest.TestCase):
             f"repos/example/project/git/commits/{CANDIDATE['head_sha']}": {
                 "sha": CANDIDATE["head_sha"], "tree": {"sha": CANDIDATE["tree_sha"]}},
             "repos/example/project/pulls/7/reviews/9": {"id": 9, "state": "APPROVED",
-                "commit_id": CANDIDATE["head_sha"], "user": {"id": 42, "login": "reviewer"}},
+                "commit_id": CANDIDATE["head_sha"],
+                "body": "AWF-HEAVY-VALIDATION-AUTHORIZATION-SHA256: " + authorization["sha256"],
+                "user": {"id": 42, "login": "reviewer"}},
         }
         auth = GitHubReviewAuthenticator("example/project", 7, 9,
                                          read_api=lambda endpoint: deepcopy(endpoints[endpoint]))
@@ -481,12 +512,14 @@ class HeavyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             broker = FileLeaseBroker(Path(folder) / "broker.json", "synthetic-broker",
                 {"max_workers": 2, "max_heavy_jobs": 2, "max_gpu_jobs": 0,
-                 "resources": {}}, clock=clock)
+                 "resources": {}, "engines": {"python": {
+                     "identity_sha256": heavy._engine_identity(json.loads(raw)), "slots": 2}}},
+                clock=clock)
             result = run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
                 review_raw=review_raw, expected_review_sha256=sha256(review_raw),
                 config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
-                review_authenticator=auth, capacity_raw=cap,
+                review_authenticator=auth, checkout_attestor=checkout_attestor, capacity_raw=cap,
                 expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW)
         self.assertEqual("PASS", result["status"])
         self.assertEqual("PARALLEL", result["execution"]["mode"])
@@ -497,11 +530,13 @@ class HeavyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             broker = FileLeaseBroker(Path(folder) / "broker.json", "fixture",
                 {"max_workers": 1, "max_heavy_jobs": 1, "max_gpu_jobs": 0,
-                 "resources": {}}, clock=clock)
+                 "resources": {}, "engines": {"python": {
+                     "identity_sha256": "d" * 64, "slots": 1}}}, clock=clock)
             request = {"format": "awf-heavy-validation-lease-request-1",
                        "candidate": CANDIDATE, "plan_sha256": "a" * 64,
                        "config_sha256": "b" * 64, "capacity_sha256": "c" * 64,
                        "parallelism": 1, "resource_class": "heavy", "engine": "python",
+                       "engine_identity_sha256": "d" * 64, "engine_slots": 1,
                        "required_resources": [], "resource_claims": {},
                        "determinism": {"seed": 1, "retry_limit": 0},
                        "isolation": {"process_tree": "REQUIRED", "network": "HOST_POLICY",
@@ -514,12 +549,173 @@ class HeavyValidationTests(unittest.TestCase):
                                                          first["fencing_token"])["status"])
             second = broker.acquire(request)
             self.assertGreater(second["fencing_token"], first["fencing_token"])
-            log = Path(folder) / "result.json"
-            receipt = write_result_log(log, {"status": "PASS", "value": 1})
+            log, receipt_path, key = (Path(folder) / "result.json",
+                                      Path(folder) / "result.receipt.json", b"k" * 32)
+            receipt = write_result_log(log, receipt_path, {"status": "PASS", "value": 1}, key)
             envelope = json.loads(log.read_text(encoding="utf-8"))
             self.assertEqual(receipt["result_sha256"], envelope["result_sha256"])
+            self.assertEqual("PASS", read_result_log(log, receipt_path, key)["result"]["status"])
             with self.assertRaises(FileExistsError):
-                write_result_log(log, {"status": "PASS", "value": 2})
+                write_result_log(log, Path(folder) / "other.receipt.json",
+                                 {"status": "PASS", "value": 2}, key)
+
+    def test_workload_authorization_binds_every_dispatch_input(self):
+        raw = plan([partition("bound")], parallelism=1)
+        reviewed = json.loads(review(raw))
+        reviewed["workload_authorization"]["record"]["partitions"][0]["argv"].append("moved")
+        changed = canonical(reviewed)
+        cfg = canonical(config(enabled=False))
+        with self.assertRaisesRegex(ValidationError, "exact workload"):
+            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=changed, expected_review_sha256=sha256(changed),
+                config_raw=cfg, expected_config_sha256=sha256(cfg),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticator, checkout_attestor=checkout_attestor,
+                now=NOW)
+
+    def test_checkout_attestation_is_required_clean_and_exact(self):
+        raw = plan([partition("checkout")], parallelism=1)
+        cfg = canonical(config(enabled=False))
+        review_raw = review(raw)
+        with self.assertRaisesRegex(ValidationError, "attestation is unavailable"):
+            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                config_raw=cfg, expected_config_sha256=sha256(cfg),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticator, now=NOW)
+        outputs = {
+            ("rev-parse", "--show-toplevel"): str(SOURCE_ROOT),
+            ("rev-parse", "--verify", "HEAD"): CANDIDATE["head_sha"],
+            ("rev-parse", "--verify", "HEAD^{tree}"): CANDIDATE["tree_sha"],
+            ("status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"):
+                "dirty.txt",
+        }
+        attestor = GitCheckoutAttestor(SOURCE_ROOT, run_git=lambda args: outputs[tuple(args)])
+        with self.assertRaisesRegex(ValidationError, "dirty"):
+            attestor(CANDIDATE, str(SOURCE_ROOT))
+        outputs[("status", "--porcelain=v1", "--untracked-files=all",
+                 "--ignored=matching")] = ""
+        outputs[("rev-parse", "--verify", "HEAD")] = "0" * 40
+        with self.assertRaisesRegex(ValidationError, "HEAD/tree"):
+            attestor(CANDIDATE, str(SOURCE_ROOT))
+
+    def test_dispatch_rechecks_checkout_and_releases_lease_on_movement(self):
+        raw, cfg = plan([partition("checkout")], parallelism=1), config()
+        cfg_raw = canonical(cfg)
+        cap, broker, calls = capacity(raw, cfg_raw, workers=1, heavy=1), Broker(), []
+        def moves(candidate, working_directory):
+            calls.append(working_directory)
+            if len(calls) == 2:
+                raise ValidationError("checkout moved before dispatch")
+            return checkout_attestor(candidate, working_directory)
+        review_raw = review(raw)
+        with self.assertRaisesRegex(ValidationError, "Checkout attestation failed"):
+            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticator, checkout_attestor=moves,
+                capacity_raw=cap, expected_capacity_sha256=sha256(cap),
+                broker_client=broker, now=NOW)
+        self.assertEqual(2, len(calls))
+        self.assertEqual([("lease-1", 7)], broker.released)
+
+    def test_production_checkout_attestor_reads_clean_head_and_tree(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            subprocess.run(["git", "init", "-q", str(root)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            (root / "tracked.txt").write_text("clean\n", encoding="utf-8", newline="\n")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture", "-c",
+                            "user.email=fixture@example.invalid", "commit", "-q", "-m", "fixture"],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
+                                  stdout=subprocess.PIPE, text=True).stdout.strip()
+            tree = subprocess.run(["git", "-C", str(root), "show", "-s", "--format=%T", "HEAD"],
+                                  check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+            candidate = {**CANDIDATE, "head_sha": head, "tree_sha": tree}
+            attestor = GitCheckoutAttestor(root)
+            self.assertEqual("CLEAN", attestor(candidate, str(root))["status"])
+            (root / "untracked.txt").write_text("dirty\n", encoding="utf-8", newline="\n")
+            with self.assertRaisesRegex(ValidationError, "dirty"):
+                attestor(candidate, str(root))
+
+    def test_engine_identity_and_slots_are_fenced(self):
+        raw = plan([partition("a"), partition("b")], parallelism=2)
+        cfg, cfg_raw = config(), canonical(config())
+        moved = capacity(raw, cfg_raw, engines={"python": {
+            "identity_sha256": "0" * 64, "parallel_available": True, "parallel_slots": 2}})
+        with self.assertRaisesRegex(ValidationError, "engine identity"):
+            run(raw, cfg, cap=moved, broker=Broker())
+        cap = capacity(raw, cfg_raw, workers=2, heavy=2)
+        broker_id, limits = heavy_controller.broker_limits(cfg, json.loads(cap))
+        clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+        with tempfile.TemporaryDirectory() as folder:
+            broker = FileLeaseBroker(Path(folder) / "broker.json", broker_id, limits, clock=clock)
+            request = heavy._lease_request(json.loads(raw), sha256(raw), sha256(cfg_raw),
+                                           sha256(cap), 2, NOW)
+            first = broker.acquire(request)
+            self.assertEqual("GRANTED", first["status"])
+            self.assertEqual("DENIED", broker.acquire(request)["status"])
+            state = json.loads((Path(folder) / "broker.json").read_text(encoding="utf-8"))
+            self.assertEqual("python", state["leases"][0]["engine"])
+            self.assertEqual(2, state["leases"][0]["engine_slots"])
+
+    def test_lease_duration_covers_every_retry_and_bounded_overhead(self):
+        raw = plan([partition("a", timeout=5), partition("b", timeout=5)],
+                   parallelism=2, retries=2)
+        request = heavy._lease_request(json.loads(raw), sha256(raw), "a" * 64,
+                                       "b" * 64, 2, NOW)
+        duration = timestamp(request["required_until"]) - timestamp(NOW)
+        self.assertEqual(120, duration.total_seconds())
+
+    def test_malformed_durable_broker_state_fails_closed(self):
+        limits = {"max_workers": 2, "max_heavy_jobs": 2, "max_gpu_jobs": 0,
+                  "resources": {}, "engines": {"python": {
+                      "identity_sha256": "d" * 64, "slots": 2}}}
+        clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+        lease = {"lease_id": "a" * 64, "fencing_token": 1,
+                 "expires_at": "2026-10-02T10:00:00Z", "parallelism": 1,
+                 "resource_class": "heavy", "resource_claims": {}, "engine": "python",
+                 "engine_identity_sha256": "d" * 64, "engine_slots": 1,
+                 "request_sha256": "b" * 64}
+        states = [
+            {"format": "awf-heavy-validation-broker-state-2", "broker_id": "fixture",
+             "next_fence": 1, "leases": [lease]},
+            {"format": "awf-heavy-validation-broker-state-2", "broker_id": "fixture",
+             "next_fence": 3, "leases": [lease, {**lease, "lease_id": "c" * 64}]},
+            {"format": "awf-heavy-validation-broker-state-2", "broker_id": "fixture",
+             "next_fence": 3, "leases": [{**lease, "parallelism": -1}]},
+            {"format": "awf-heavy-validation-broker-state-2", "broker_id": "fixture",
+             "next_fence": 3, "leases": [{**lease, "resource_claims": {"unknown": 1}}]},
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            for index, state in enumerate(states):
+                path = Path(folder) / f"broker-{index}.json"
+                path.write_bytes(canonical(state))
+                broker = FileLeaseBroker(path, "fixture", limits, clock=clock)
+                with self.subTest(index=index), self.assertRaises(ValidationError):
+                    broker.release("missing", 1)
+
+    def test_result_receipt_detects_log_receipt_and_key_tampering(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log, receipt, key = (Path(folder) / "result.json",
+                                 Path(folder) / "receipt.json", b"r" * 32)
+            write_result_log(log, receipt, {"status": "PASS", "value": 7}, key)
+            original = log.read_bytes()
+            log.write_bytes(original.replace(b'"value":7', b'"value":8'))
+            with self.assertRaisesRegex(ValidationError, "digest mismatch"):
+                read_result_log(log, receipt, key)
+            log.write_bytes(original)
+            with self.assertRaisesRegex(ValidationError, "authentication failed"):
+                read_result_log(log, receipt, b"x" * 32)
+            receipt_value = json.loads(receipt.read_text(encoding="utf-8"))
+            receipt_value["hmac_sha256"] = "0" * 64
+            receipt.write_bytes(canonical(receipt_value))
+            with self.assertRaisesRegex(ValidationError, "authentication failed"):
+                read_result_log(log, receipt, key)
 
 
 if __name__ == "__main__":
