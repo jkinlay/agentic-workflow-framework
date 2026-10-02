@@ -2,7 +2,7 @@
 
 340 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `4247821d5fdf459d2d31818b9e77b61f134094cc0bdf487feb999fca29817211`
+MANIFEST.json SHA-256: `57d622421850570093b54d29f81e473303a3e187dd6674aca9db84723415e2f8`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -39,7 +39,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `be2ba691bd38a10a9256d99f25c5400aa4337f068e4fd1b3e42ca5b91e8a6d84` |
 | `.agentic/docs/31-PUBLICATION-SAFETY.md` | `8833253d42a541e77a17872061c10385ae572828bdba78ddd4dc570cfdb4c8e3` |
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `861a027bf807705a1fe3651bb274dd27ac24404567e0b440c21c338d8c227b3b` |
-| `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `9558046220d96e0cd424b0257075b5e7af77e71d79a7d2f0dfc8e4a19973ce36` |
+| `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `7e1c7eda1df4a3146b31e4e646756af5071af09ca4e1d6dc5bc68a4bc8df4207` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `73a25bafeaa92a93cd247a9d4e64fb9434e608dc9df583d3bfd2ce5acde47fc6` |
 | `.agentic/examples/OPERATING_CONFIG.yaml` | `37ae4dc7924aa9ebac65603ecee5c1823731d2ca25ab02a86af88c6e80ec3d3f` |
 | `.agentic/examples/PROJECT_CONFIG.yaml` | `0e8dc1c00424ccbc232d7fb9edf0fb31965106df622cc3631acf1fc30248086c` |
@@ -68,7 +68,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
 | `.agentic/lib/agentic/gates.py` | `d19525fc8b22004514add0ce314804f34955e3ad4c924dc64d31577fef3ce47e` |
 | `.agentic/lib/agentic/gittree.py` | `e2827e40987e45bd4575772869fd536918979fd64b182f24440adcf7d1a5b5c9` |
-| `.agentic/lib/agentic/heavy_validation.py` | `0654da83cd54f2e09cbf8e23d32fe8d846eacd709aa876e4280596d7f1c1bd72` |
+| `.agentic/lib/agentic/heavy_validation.py` | `6ea94fd2645553ad8a86c857dac19ecff49ccef09c26a30a64489f2c6b52679e` |
 | `.agentic/lib/agentic/heavy_validation_child.py` | `89dad4ea1f0a2757fea82f02931597393097f8181c812c706b3fd3b9404f024e` |
 | `.agentic/lib/agentic/heavy_validation_controller.py` | `223585389f61554f8cf2674a54ef510ad4936dcf71c4c93ee5673217ede244bd` |
 | `.agentic/lib/agentic/host_preflight.py` | `9e26810e09f6264b5f4a78d56707a5e55601b4c236d6d397f7c48f9b2e66935a` |
@@ -180,7 +180,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/finding-disposition.yaml` | `7ef48e5b40463d543de2813d9d786d1a036eb0803f27694d1653a35da74fc344` |
 | `.agentic/templates/heavy-validation-capacity.json` | `eb54bb56d9361ce132bb18292959f09d1284089dc9eec10c1de01434b2ece2c1` |
 | `.agentic/templates/heavy-validation-plan.json` | `d94adf3f44d2c6101dae911748bb95ea5e9cba9c13383acb6c55f330c61fe005` |
-| `.agentic/templates/heavy-validation-review.json` | `506b9c94223b243b4d52507d91f8f62e1a2529da1355f391959a4f09905afcb8` |
+| `.agentic/templates/heavy-validation-review.json` | `71ff313c15294774cc4f958972142c0e937ddd10faf6cac2ea86bafbe280da99` |
 | `.agentic/templates/host-lease.yaml` | `9e1ee1ce254a47dded40099f52d9bffab82b1a8750265e3fbaa75873bf115660` |
 | `.agentic/templates/installed.gitattributes` | `0a9462d8d773bc1317f805b615109dfb674dbd0e8bf7171ab6e464faa52907ac` |
 | `.agentic/templates/jira-snapshot.yaml` | `62c6558aa514d2aa372e6269b89a04cfa1d4fda5fa2ec41f674d2b7391a8b515` |
@@ -215,7 +215,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_config_diagnostics.py` | `e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07` |
 | `.agentic/tests/test_continuation.py` | `1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633` |
 | `.agentic/tests/test_gittree.py` | `6eb3a12e3c5edc126368b3446fcdac47737281c3ed1c2beb45458c67d1f7d483` |
-| `.agentic/tests/test_heavy_validation.py` | `025f831c5442e0b21dd2d3ba01340a672a9fe251bfc275b3ec2846347b4e5d0c` |
+| `.agentic/tests/test_heavy_validation.py` | `e9333e84c2b4209d04155b85ff42673b2704747d59f5aea66e980ac6b046ee32` |
 | `.agentic/tests/test_host_process.py` | `e51ef1f41d87493eeb3e3dbf38d815e5cec3d0d90e2f06f83fdc23436d131083` |
 | `.agentic/tests/test_interaction.py` | `184d5faff4c18af704decfe2ea8e1a1aeae696cb1ae35149630ea4cca19da9aa` |
 | `.agentic/tests/test_lifecycle_190.py` | `d810658ca19fd8b2964b5bb20f417f418a0cb8ab0b7b532162597ff0d3c36fbb` |

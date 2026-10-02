@@ -37,6 +37,7 @@
           "path": "/replace/controller-python",
           "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
         },
+        "interpreter_flags": ["-I", "-S", "-B"],
         "launcher": {
           "repository_relative_path": ".agentic/lib/agentic/heavy_validation_child.py",
           "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
