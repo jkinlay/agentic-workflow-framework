@@ -1,105 +1,39 @@
 # Continuous controller contract
 
-Version 1.9.3. While a release or assigned backlog has work, the controller
-continues every configured stream until scoped completion, an explicit owner
-stop, or a recorded stream-specific blocker. The durable reference is
-`ContinuousControllerStore`; it records decisions and grants no dispatch,
-provider, Jira, or merge authority.
+Version 1.9.3. While scoped work remains, the controller continues every configured stream until completion, an owner stop, or a recorded stream-specific blocker. `ContinuousControllerStore` persists decisions and grants no host, provider, Jira, or merge authority.
 
-The production reference entry point is:
+## Production entry point
+
+Run production operations only through the workflow entry point:
 
 ```text
-python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --stream A --stream B --stream C --worktree-root ABSOLUTE_WORKTREE cycle|finish|digest|ack|snapshot ...
+python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --stream A --stream B --stream C --worktree-root ABSOLUTE_WORKTREE --project-config PROJECT_CONFIG --adapter-module REVIEWED_ADAPTER.py --adapter-sha256 PIN --adapter-config ADAPTER_CONFIG cycle --inventory-binding INVENTORY_BINDING --now TIME --host-capacity N
 ```
 
-Use `cycle` with a fresh bounded inventory after each material observation and
-`finish` immediately after a run terminates. The CLI records decisions and
-pending digest deliveries. A reviewed host adapter remains responsible for
-launching work, publishing a digest, Jira access, or any provider mutation.
-Both ledgers use the same protected-state factory: it requires an absolute
-path outside every declared worktree, rejects link/reparse and hardlink
-aliases, applies owner-only file permissions, and checks SQLite integrity,
-application identity, and schema version on every open.
+`cycle` calls `production_controller_cycle`: observe authenticated inventory, schedule, persist dispatch intent, invoke dispatch or uncertain-operation observation, deliver the cadence digest, and acknowledge only exact delivery readback. The adapter is loaded from the exact UTF-8 bytes matching its SHA-256 pin. It must be an absolute regular single-link file of at most 1 MiB exposing `build_adapters(config)`. No shell string or unpinned executable is accepted. Missing operations fail closed.
+
+`jira-lifecycle` uses the same pinned adapter for read-before-write, at most one mapped write, and independent readback. `merge-observed` validates the merge before reconciliation and a fresh scoped Jira count. `snapshot` is read-only.
+
+Protected state must be absolute and outside every declared worktree. The state factory rejects links, reparse points and hardlink aliases, applies owner-only permissions, and checks SQLite integrity, application identity and schema version on every open.
 
 ## No silent idle state
 
-Each stream is exactly one of `WORKING`, `PAUSED_INPUT`, `BLOCKED`, or
-`COMPLETE`. Every record names the ticket, actor, reason, next safe action, and
-resume trigger, plus its exact tuple, activity, verification gate, frozen
-reviewer counts, findings, and Jira observation. `COMPLETE` means no action
-remains in the current scoped backlog; it does not invent replacement work.
+Each stream is `WORKING`, `PAUSED_INPUT`, `BLOCKED`, or `COMPLETE`. Every row names its ticket, actor, reason, next action, resume trigger, exact tuple, activity, verification gate, reviewer counts, findings and Jira observation. `COMPLETE` means the current scoped backlog has no remaining action.
 
-After a worker or reviewer finishes, refill that stream in the same scheduling
-transaction with the next eligible action. Otherwise record the concrete input
-wait, blocker, or scoped completion. Schedule other streams independently: a
-blocked or input-dependent stream never pauses eligible work elsewhere.
+Selection is deterministic by priority and ticket identity. It preserves one writer per overlapping path and checks dependencies, budgets, run and amendment caps, reviewer independence and observed host capacity. Repository paths are canonical and repository-relative; absolute, drive, UNC, traversal and alias forms are rejected. A blocked stream never pauses eligible work elsewhere.
 
-Selection is deterministic by configured priority and stable ticket identity.
-It preserves one writer per overlapping path and checks dependencies, budgets,
-run and amendment caps, reviewer independence, and observed host capacity.
-Unavailable prerequisites produce a named `BLOCKED` record and resume trigger;
-they never become inferred permission or capacity. Restart opens the same
-SQLite ledger and preserves all stream states.
+Reviewer counts are admitted only when `required = completed + outstanding` and `completed = acceptable + failed + stale`. Contradictory inventory fails before scheduling, dispatch or status delivery. Running work is revalidated on every inventory observation. A completed ticket must be absent or terminal before refill.
 
-Repository paths are canonical repository-relative paths. Absolute paths,
-drive or UNC paths, parent traversal, and aliases that could bypass overlap
-checks are refused. On every cycle the controller revalidates running work
-against the new inventory, including disposition, prerequisites, capacity,
-and ownership. A finished ticket cannot be immediately redispatched unless
-the fresh inventory records it as complete or removes it.
+## Dispatch and cadence
 
-## Status cadence
+Dispatch intent is durable before the host call. An interrupted call becomes `UNKNOWN` and is reconciled only by observation; it is never blindly replayed. Unrelated streams continue after one adapter failure.
 
-Emit one digest covering every configured stream while any is incomplete. The
-default cadence is 900 seconds and `controller.status_cadence_seconds` may set a
-positive replacement. A state or gate change can emit an immediate `CHANGE`
-digest. That digest does not reset or suppress the next regular deadline. Each
-digest includes exact tuple, activity, verification, reviewer completion,
-findings, Jira, reason, next action, and observation time.
+The default digest cadence is 900 seconds; configured cadence must be positive. A change can produce an immediate `CHANGE` digest without resetting the next regular deadline. The acknowledged outbox replays one `delivery_id` until exact delivery readback succeeds. Restarts preserve pending delivery, and clock rollback fails closed. Every digest covers all streams and their exact gate state.
 
-Digest delivery is an acknowledged outbox operation. `digest` replays the
-same `delivery_id` until the transport succeeds and the operator calls `ack`;
-only that acknowledgement advances the regular deadline. Restarts preserve
-pending delivery, and a backwards clock observation fails closed. Once all
-streams are complete, only a state change emits another digest.
+## Jira lifecycle and merge progress
 
-The production host calls `production_controller_cycle` for each foreground
-or scheduled wakeup. It obtains an authenticated inventory, schedules all
-streams, persists dispatch intents before calling `dispatch_ticket`, observes
-uncertain dispatches without replay, and acknowledges a digest only after exact
-delivery readback. An interrupted dispatch becomes `UNKNOWN`; unrelated streams
-continue. Inventory items contain structured reviewed actions and paths, never
-shell command strings. The observation must be complete and bound to the
-configured project, repository, and Jira scope. Partial or wrong-scope
-inventories fail before scheduling or dispatch.
+Jira disabled means no read or write. Otherwise lifecycle production first reads the bound issue, rejects wrong issue identity or an observation predating the operation, plans from that observed status, writes once, then requires an exact operation/issue receipt and a later bound readback. Mismatch, unknown outcome or timestamp reversal stops writes for that ticket while other streams continue.
 
-## Merge and Jira progress
+After a validated merge, reconcile the merged ticket first. Only then page through the complete configured scope. Every page must share the scope digest, snapshot ID and observation time, and that observation must be at or after reconciliation. Counts use stable ticket IDs and terminal categories, exclude Epics unless requested, and enforce page, item, byte, time and cursor bounds. Any missing, stale, duplicate, partial or mismatched evidence reports both counts as `UNOBSERVED`.
 
-After observing a merge, first apply the controller-only conflict-safe Jira
-reconciliation: read before write, perform at most one mapped transition, read
-after, and require a receipt bound to immutable Jira cloud, project, actor,
-issue, operation, and before/after status identities. Stop that ticket after
-an unknown or mismatched outcome. A disabled
-site reports `JIRA_DISABLED` and performs no Jira action.
-
-Only after reconciliation succeeds, page through the complete configured Jira
-scope. Count stable ticket identities by the adapter's terminal workflow
-category; do not guess from status names. Exclude Epics unless the scope
-explicitly includes them. Report the exact filter scope, observation time,
-`closed`, and `remaining_open`. If reconciliation, pagination, query
-completeness, identity uniqueness, or category mapping is unproved, report both
-counts as `UNOBSERVED` rather than publishing a partial or stale number.
-Every page must share one query-scope digest, snapshot identifier, and
-observation time. Page count, item count, canonical byte size, elapsed time, cursor progression,
-and identity uniqueness are bounded. A complete, stable snapshot reports
-`COUNTED`; reconciliation without a complete count reports `RECONCILED` with
-both counts unobserved.
-
-`production_jira_lifecycle` reuses the configured event map, creates one bound
-transition record, calls the reviewed write adapter once, and records a
-separate readback. Missing or mismatched readback stops writes for that ticket.
-`production_merge_observed` connects merge observation to reconcile-first Jira
-counts.
-
-Final review submission separately requires the
-[review completion barrier](33-REVIEW-COMPLETION-BARRIER.md).
+Final review submission separately requires the [review completion barrier](33-REVIEW-COMPLETION-BARRIER.md).

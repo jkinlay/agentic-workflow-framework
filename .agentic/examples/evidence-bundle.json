@@ -332,7 +332,9 @@
       "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "head_tree_sha": "dddddddddddddddddddddddddddddddddddddddd",
       "tuple_sha256": "13ead55df0ac6f9a1182369b3d7c80b39ae381eade1f77310d189ef2689ca2e7",
-      "reviewer_set_sha256": "5a10c872428ed78e5f630b6d8c9dd880fc76eb032305b0346d71e6cc158e2582"
+      "reviewer_set_sha256": "5a10c872428ed78e5f630b6d8c9dd880fc76eb032305b0346d71e6cc158e2582",
+      "completion_snapshot_sha256": "6a22bc36b976f0f08f18acf80fbaf0baa260b0503ca677cfd49830acb6a0b0c8",
+      "aggregate_sha256": "24805c5c09460fe0bbcc57769ef1529f95bdc60fa9411e7189adf5d8b5d75315"
     },
     "execution_authority": false
   },

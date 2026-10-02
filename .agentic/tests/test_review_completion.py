@@ -250,6 +250,14 @@ class ReviewCompletionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "operation_id"):
             self.store.complete_submission(admission, forged)
         forged = self.receipt(admission)
+        forged["completion_snapshot_sha256"] = "8" * 64
+        with self.assertRaisesRegex(ValidationError, "completion_snapshot_sha256"):
+            self.store.complete_submission(admission, forged)
+        forged = self.receipt(admission)
+        forged["aggregate_sha256"] = "7" * 64
+        with self.assertRaisesRegex(ValidationError, "aggregate_sha256"):
+            self.store.complete_submission(admission, forged)
+        forged = self.receipt(admission)
         forged["observed_at"] = "1970-01-01T00:00:00Z"
         with self.assertRaisesRegex(ValidationError, "predates"):
             self.store.complete_submission(admission, forged)
@@ -277,6 +285,7 @@ class ReviewCompletionTests(unittest.TestCase):
             value["provider_preconditions"]["repository"] = "other/project"
             value["provider_preconditions"]["tuple_sha256"] = snapshot["tuple_sha256"]
             value["completion_snapshot_sha256"] = fingerprint("review-completion", snapshot)
+            value["provider_preconditions"]["completion_snapshot_sha256"] = value["completion_snapshot_sha256"]
 
         def changed_reviewers(value):
             snapshot = value["completion_snapshot"]
@@ -287,10 +296,12 @@ class ReviewCompletionTests(unittest.TestCase):
             snapshot["reviewer_set_sha256"] = fingerprint("reviewer-set", snapshot["required_reviewers"])
             value["provider_preconditions"]["reviewer_set_sha256"] = snapshot["reviewer_set_sha256"]
             value["completion_snapshot_sha256"] = fingerprint("review-completion", snapshot)
+            value["provider_preconditions"]["completion_snapshot_sha256"] = value["completion_snapshot_sha256"]
 
         def changed_aggregate(value):
             value["aggregate"] = {"verdict": "APPROVE", "redirected": True}
             value["aggregate_sha256"] = fingerprint("review-aggregate", value["aggregate"])
+            value["provider_preconditions"]["aggregate_sha256"] = value["aggregate_sha256"]
 
         mutations = (changed_identity, changed_time, changed_tuple, changed_reviewers, changed_aggregate)
         for mutation in mutations:

@@ -43,6 +43,17 @@ def _require(condition, message):
         raise ValidationError(message)
 
 
+def _reviewer_counts(counts):
+    required = {"required", "completed", "acceptable", "failed", "stale", "outstanding"}
+    _require(isinstance(counts, dict) and set(counts) == required and
+             all(type(number) is int and number >= 0 for number in counts.values()),
+             "Reviewer completion requires all six nonnegative counts")
+    _require(counts["completed"] + counts["outstanding"] == counts["required"] and
+             counts["acceptable"] + counts["failed"] + counts["stale"] == counts["completed"],
+             "Reviewer completion counts are contradictory")
+    return dict(counts)
+
+
 def _ticket(value):
     required = {"ticket", "priority", "disposition", "actor", "reason", "next_action", "resume_trigger",
                 "paths", "dependencies_satisfied", "budget_available", "cap_available", "review_independent",
@@ -60,11 +71,7 @@ def _ticket(value):
     for key in ("actor", "reason", "next_action", "resume_trigger", "exact_tuple", "activity",
                 "verification_gate", "jira_status"):
         _require(isinstance(value[key], str) and value[key].strip(), f"{key} is required")
-    counts = value["reviewer_completion"]
-    _require(isinstance(counts, dict) and set(counts) == {
-        "required", "completed", "acceptable", "failed", "stale", "outstanding"} and
-        all(type(number) is int and number >= 0 for number in counts.values()),
-        "Reviewer completion requires all six nonnegative counts")
+    value["reviewer_completion"] = _reviewer_counts(value["reviewer_completion"])
     _require(type(value["open_findings"]) is int and value["open_findings"] >= 0,
              "Open finding count must be nonnegative")
     return value
@@ -452,12 +459,13 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
     try:
         uuid_value = __import__("uuid").UUID(reconciled["operation_id"])
         _require(str(uuid_value) == reconciled["operation_id"], "Jira operation identity is not canonical")
-        timestamp(reconciled["observed_at"])
+        reconciled_at = timestamp(reconciled["observed_at"])
         _require(all(isinstance(reconciled[key], str) and reconciled[key] for key in
                      ("issue_id", "before_status_id", "after_status_id")),
                  "Jira reconciliation receipt lacks stable issue/status identity")
     except (ValidationError, ValueError, TypeError, AttributeError):
         return {**base, "jira_state": "UNOBSERVED", "reason": "merge reconciliation receipt is malformed"}
+    base["observed_at"] = reconciled["observed_at"]
     items, identities, cursor, seen_cursors = [], set(), None, set()
     snapshot_id = page_observed_at = None
     import time
@@ -485,7 +493,9 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
                 base["snapshot_id"] = snapshot_id
             if page["snapshot_id"] != snapshot_id:
                 raise ValidationError("Jira snapshot changed during pagination")
-            timestamp(page["observed_at"])
+            observed_time = timestamp(page["observed_at"])
+            if observed_time < reconciled_at:
+                raise ValidationError("Jira count snapshot predates merge reconciliation")
             if page_observed_at is None:
                 page_observed_at = page["observed_at"]
             if page["observed_at"] != page_observed_at:
@@ -597,40 +607,69 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 
 
 def production_jira_lifecycle(*, config, contract, event, facts, binding,
-                              issue_type, current_status, prior_writes,
-                              state, producer_id, run_id, now, evidence,
-                              transition_id, write_transition, read_transition,
+                              issue_type, prior_writes, state, producer_id,
+                              run_id, now, evidence, transition_id,
+                              read_current_status, write_transition, read_transition,
                               merge_result_id=None):
-    """Execute one mapped Jira lifecycle event with write/readback adapters."""
-    _require(callable(write_transition) and callable(read_transition),
-             "Jira lifecycle write and readback adapters must be callable")
+    """Read current Jira state, execute at most one mapped write, then read back."""
+    _require(all(callable(adapter) for adapter in
+                 (read_current_status, write_transition, read_transition)),
+             "Jira lifecycle read/write/readback adapters must be callable")
+    if config.get("jira", {}).get("enabled", True) is False:
+        return {"planned": False, "reason": "Jira is disabled; no reads or writes",
+                "execution_authority": False}
+    _require(isinstance(binding, dict) and isinstance(binding.get("issue_id"), str) and
+             binding["issue_id"], "Jira lifecycle needs an immutable issue binding")
+    start_time = timestamp(now)
+    try:
+        current = read_current_status(binding)
+        _require(isinstance(current, dict) and set(current) == {
+            "issue_id", "status_id", "observed_at"} and
+            current["issue_id"] == binding["issue_id"] and
+            isinstance(current["status_id"], str) and current["status_id"],
+            "Jira pre-write observation is missing or mismatched")
+        current_time = timestamp(current["observed_at"])
+        _require(current_time >= start_time,
+                 "Jira pre-write observation predates the lifecycle operation")
+    except Exception as exc:
+        return {"planned": False, "reason": f"Jira pre-write observation failed: {type(exc).__name__}",
+                "writes_stopped": True, "execution_authority": False}
     from .jira_lifecycle import planned_write, transition_record, apply_read_back
     key, target = planned_write(config, contract, event, facts, issue_type=issue_type,
-                                current_status=current_status, prior_writes=prior_writes,
+                                current_status=current["status_id"], prior_writes=prior_writes,
                                 state=state)
     if key is None:
-        return {"planned": False, "reason": target, "execution_authority": False}
-    record = transition_record(binding, event, current_status, target, transition_id,
+        return {"planned": False, "reason": target, "current_observation": current,
+                "execution_authority": False}
+    record = transition_record(binding, event, current["status_id"], target, transition_id,
                                merge_result_id=merge_result_id, producer_id=producer_id,
                                run_id=run_id, now=now, evidence=evidence)
     try:
         operation = write_transition(record)
         _require(isinstance(operation, dict) and set(operation) == {
-            "operation_id", "status", "observed_at"} and
+            "operation_id", "issue_id", "status", "observed_at"} and
             operation["operation_id"] == record["operation_id"] and
+            operation["issue_id"] == binding["issue_id"] and
             operation["status"] == "ATTEMPTED", "Jira write receipt is missing or mismatched")
-        timestamp(operation["observed_at"])
+        operation_time = timestamp(operation["observed_at"])
+        _require(operation_time >= current_time,
+                 "Jira write receipt predates the pre-write observation")
         observation = read_transition(record, operation)
         _require(isinstance(observation, dict) and set(observation) == {
-            "status", "actor", "observed_at"}, "Jira readback has an invalid shape")
-        timestamp(observation["observed_at"])
-        return {"planned": True, **apply_read_back(record, observation["status"],
-                                                     observation["actor"], observation["observed_at"]),
+            "issue_id", "status", "actor", "observed_at"} and
+            observation["issue_id"] == binding["issue_id"],
+            "Jira readback has an invalid or mismatched shape")
+        readback_time = timestamp(observation["observed_at"])
+        _require(readback_time >= operation_time,
+                 "Jira readback predates the write receipt")
+        return {"planned": True, "current_observation": current,
+                **apply_read_back(record, observation["status"], observation["actor"],
+                                  observation["observed_at"]),
                 "execution_authority": False}
     except Exception as exc:
-        return {"planned": True, **apply_read_back(record, None),
+        return {"planned": True, "current_observation": current,
+                **apply_read_back(record, None),
                 "reason": type(exc).__name__, "execution_authority": False}
-
 
 def production_post_merge_progress(**adapters):
     """Named production route for reconcile-first scoped Jira reporting."""

@@ -35,6 +35,8 @@ def bind_review_admission(bundle):
             "base_sha": tuple_value["base_sha"], "head_sha": tuple_value["head_sha"],
             "head_tree_sha": tuple_value["head_tree_sha"],
             "tuple_sha256": snapshot["tuple_sha256"],
-            "reviewer_set_sha256": snapshot["reviewer_set_sha256"]},
+            "reviewer_set_sha256": snapshot["reviewer_set_sha256"],
+            "completion_snapshot_sha256": fingerprint("review-completion", snapshot),
+            "aggregate_sha256": fingerprint("review-aggregate", aggregate)},
         "execution_authority": False}
     return bundle["review_submission"]

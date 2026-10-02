@@ -137,7 +137,8 @@ def catalog():
         "provider_preconditions": obj({"operation_id": UUID, "prepared_at": TIME,
             "repository": review_tuple["properties"]["repository"],
             "base_sha": SHA, "head_sha": SHA, "head_tree_sha": SHA,
-            "tuple_sha256": DIGEST, "reviewer_set_sha256": DIGEST}),
+            "tuple_sha256": DIGEST, "reviewer_set_sha256": DIGEST,
+            "completion_snapshot_sha256": DIGEST, "aggregate_sha256": DIGEST}),
         "execution_authority": FALSE})
     stream_status = obj({"stream": text(), "state": enum("WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"),
         "ticket": nullable(text()), "actor": text(), "reason": text(), "next_action": text(),

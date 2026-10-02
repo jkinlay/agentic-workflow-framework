@@ -154,7 +154,9 @@ def example_bundle(cfg):
             "base_sha": review_tuple["base_sha"], "head_sha": review_tuple["head_sha"],
             "head_tree_sha": review_tuple["head_tree_sha"],
             "tuple_sha256": completion_snapshot["tuple_sha256"],
-            "reviewer_set_sha256": completion_snapshot["reviewer_set_sha256"]},
+            "reviewer_set_sha256": completion_snapshot["reviewer_set_sha256"],
+            "completion_snapshot_sha256": fingerprint("review-completion", completion_snapshot),
+            "aggregate_sha256": fingerprint("review-aggregate", aggregate)},
         "execution_authority": False}
     ci = record("ci", "collector", retrieval_complete=True, candidate_type="synthetic_merge", checks=[{"name": "unit-tests", "check_id": "check-1", "app_id": 42,
         "workflow_path": ".github/workflows/test.yml", "workflow_sha": "a" * 40, "attempt": 1, "event": "pull_request", "conclusion": "success",

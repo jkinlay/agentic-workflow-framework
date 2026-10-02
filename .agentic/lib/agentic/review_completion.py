@@ -350,7 +350,9 @@ class ReviewCompletionStore:
                 "repository": tuple_value["repository"], "base_sha": tuple_value["base_sha"],
                 "head_sha": tuple_value["head_sha"], "head_tree_sha": tuple_value["head_tree_sha"],
                 "tuple_sha256": cycle["tuple_sha256"],
-                "reviewer_set_sha256": cycle["reviewer_set_sha256"]},
+                "reviewer_set_sha256": cycle["reviewer_set_sha256"],
+                "completion_snapshot_sha256": cycle["completion_snapshot_sha256"],
+                "aggregate_sha256": cycle["aggregate_sha256"]},
             "execution_authority": False}
         validate_submission_semantics(admission)
         _require(snapshot["tuple"] == tuple_value and
@@ -370,7 +372,8 @@ class ReviewCompletionStore:
     def _provider_receipt(admission, provider_receipt):
         _require(isinstance(provider_receipt, dict) and set(provider_receipt) == {
             "status", "operation_id", "repository", "base_sha", "head_sha", "head_tree_sha",
-            "tuple_sha256", "reviewer_set_sha256", "prepared_at", "observed_at"},
+            "tuple_sha256", "reviewer_set_sha256", "completion_snapshot_sha256",
+            "aggregate_sha256", "prepared_at", "observed_at"},
             "Provider receipt must be the exact bound submission receipt")
         _require(provider_receipt["status"] == "SUBMITTED", "Provider did not confirm submission")
         try:
@@ -381,7 +384,8 @@ class ReviewCompletionStore:
                  "Provider receipt operation_id must be canonical")
         expected = admission["provider_preconditions"]
         for field in ("operation_id", "prepared_at", "repository", "base_sha", "head_sha",
-                      "head_tree_sha", "tuple_sha256", "reviewer_set_sha256"):
+                      "head_tree_sha", "tuple_sha256", "reviewer_set_sha256",
+                      "completion_snapshot_sha256", "aggregate_sha256"):
             _require(provider_receipt[field] == expected[field],
                      f"Provider receipt {field} differs from the admitted submission")
         _require(timestamp(provider_receipt["observed_at"]) >= timestamp(expected["prepared_at"]),
@@ -539,7 +543,8 @@ def validate_submission_semantics(value):
              "Submission counts do not prove complete acceptable review")
     preconditions = value["provider_preconditions"]
     precondition_fields = {"operation_id", "prepared_at", "repository", "base_sha", "head_sha",
-                           "head_tree_sha", "tuple_sha256", "reviewer_set_sha256"}
+                           "head_tree_sha", "tuple_sha256", "reviewer_set_sha256",
+                           "completion_snapshot_sha256", "aggregate_sha256"}
     _require(isinstance(preconditions, dict) and set(preconditions) == precondition_fields,
              "Provider preconditions must be an exact durable binding")
     _require(preconditions["operation_id"] == value["submission_id"],
@@ -551,8 +556,10 @@ def validate_submission_semantics(value):
         _require(preconditions[field] == snapshot["tuple"][field],
                  f"Provider precondition {field} differs from the completion tuple")
     _require(preconditions["tuple_sha256"] == snapshot["tuple_sha256"] and
-             preconditions["reviewer_set_sha256"] == snapshot["reviewer_set_sha256"],
-             "Provider precondition digests differ from the completion snapshot")
+             preconditions["reviewer_set_sha256"] == snapshot["reviewer_set_sha256"] and
+             preconditions["completion_snapshot_sha256"] == value["completion_snapshot_sha256"] and
+             preconditions["aggregate_sha256"] == value["aggregate_sha256"],
+             "Provider precondition digests differ from the admitted review evidence")
     _require(snapshot["tuple_sha256"] == fingerprint("review-tuple", snapshot["tuple"]) and
              snapshot["reviewer_set_sha256"] == fingerprint("reviewer-set", required),
              "Submission tuple or reviewer-set digest is invalid")

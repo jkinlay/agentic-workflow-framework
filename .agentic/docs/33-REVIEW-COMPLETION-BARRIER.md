@@ -44,8 +44,8 @@ exact tuple and reviewer set, and admits submission only when every reviewer is
 terminal and acceptable. The transaction stores one immutable completion
 snapshot and final aggregate before returning provider preconditions. A
 provider adapter must enforce the durable submission operation UUID,
-preparation time, repository, base, head, head-tree, tuple, and reviewer-set
-preconditions in its own conditional mutation. No adapter call is permitted
+preparation time, repository, base, head, head-tree, tuple, reviewer-set,
+completion-snapshot, and aggregate digest preconditions in its own conditional mutation. No adapter call is permitted
 before admission. Completion and reconciliation reconstruct the admission from
 protected state, fully revalidate it, reject any caller discrepancy, and accept
 only an exact provider receipt observed at or after preparation. The mutation

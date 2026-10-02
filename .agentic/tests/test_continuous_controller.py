@@ -16,7 +16,7 @@ from agentic.continuous_controller import (
 )
 from agentic.contracts import Contracts
 from agentic import ValidationError
-from agentic.canonical import fingerprint
+from agentic.canonical import fingerprint, sha256
 from agentic.cli import local_semantics
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -103,6 +103,21 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(sum(item["state"] == "WORKING" for item in snapshot), 1)
         self.assertTrue(all(item["state"] in {"WORKING", "BLOCKED", "PAUSED_INPUT", "COMPLETE"}
                             for item in snapshot))
+
+    def test_contradictory_reviewer_counts_fail_before_dispatch_or_delivery(self):
+        malformed = ticket("QA-BAD", 1, reviewer_completion={
+            "required": 2, "completed": 1, "acceptable": 1,
+            "failed": 0, "stale": 0, "outstanding": 0})
+        calls = []
+        with self.assertRaisesRegex(ValidationError, "counts are contradictory"):
+            production_controller_cycle(
+                self.store, now=NOW, host_capacity=1,
+                inventory_binding=INVENTORY_BINDING,
+                observe_inventory=lambda: inventory_observation(NOW, [malformed]),
+                dispatch_ticket=lambda payload: calls.append("dispatch"),
+                observe_dispatch=lambda payload: calls.append("observe"),
+                deliver_status=lambda payload: calls.append("deliver"))
+        self.assertEqual(calls, [])
 
     def test_restart_preserves_visible_stream_states_and_has_no_idle_value(self):
         before = self.store.schedule([ticket("QA-1", 1), ticket("QA-2", 2, "PAUSED_INPUT")],
@@ -360,6 +375,15 @@ class JiraProgressTests(unittest.TestCase):
         result = self.call(fetch=lambda scope, cursor: pages[0] if cursor is None else pages[1])
         self.assertEqual(result["jira_state"], "RECONCILED")
 
+    def test_count_snapshot_must_not_predate_reconciliation(self):
+        receipt = self.receipt(observed_at="2026-10-02T10:00:01Z")
+        stale = self.page([], observed=NOW)
+        result = self.call(reconcile=lambda ticket: receipt,
+                           fetch=lambda scope, cursor: stale)
+        self.assertEqual((result["jira_state"], result["closed"], result["remaining_open"]),
+                         ("RECONCILED", "UNOBSERVED", "UNOBSERVED"))
+        self.assertIn("incomplete", result["reason"])
+
     def test_pagination_page_and_item_bounds_are_enforced(self):
         calls = []
         def endless(scope, cursor):
@@ -395,17 +419,173 @@ class JiraProgressTests(unittest.TestCase):
         config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text())
         bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
         calls = []
+        binding = bundle["critic"]["binding"]
         result = production_jira_lifecycle(config=config, contract=bundle["contract"],
             event="WORKER_STARTED", facts={"run_registered": True, "worktree_verified": True},
-            binding=bundle["critic"]["binding"], issue_type="LEAF", current_status="Ready",
-            prior_writes=[], state="DISPATCHED", producer_id="fixture-controller",
-            run_id=str(uuid.UUID(int=7)), now=NOW, evidence=["urn:awf:fixture:jira"],
-            transition_id="31", write_transition=lambda record: calls.append("write") or {
-                "operation_id": record["operation_id"], "status": "ATTEMPTED", "observed_at": NOW},
-            read_transition=lambda record, operation: calls.append("read") or {
-                "status": "In Progress", "actor": "fixture-controller", "observed_at": NOW})
-        self.assertEqual(calls, ["write", "read"])
+            binding=binding, issue_type="LEAF", prior_writes=[], state="DISPATCHED",
+            producer_id="fixture-controller", run_id=str(uuid.UUID(int=7)), now=NOW,
+            evidence=["urn:awf:fixture:jira"], transition_id="31",
+            read_current_status=lambda value: calls.append("read-before") or {
+                "issue_id": value["issue_id"], "status_id": "Ready", "observed_at": NOW},
+            write_transition=lambda record: calls.append("write") or {
+                "operation_id": record["operation_id"], "issue_id": binding["issue_id"],
+                "status": "ATTEMPTED", "observed_at": NOW},
+            read_transition=lambda record, operation: calls.append("read-after") or {
+                "issue_id": binding["issue_id"], "status": "In Progress",
+                "actor": "fixture-controller", "observed_at": NOW})
+        self.assertEqual(calls, ["read-before", "write", "read-after"])
         self.assertEqual((result["record"]["status"], result["writes_stopped"]), ("SUCCEEDED", False))
+
+
+    def test_disabled_jira_lifecycle_uses_no_adapter(self):
+        config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text())
+        config["jira"]["enabled"] = False
+        bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
+        calls = []
+        result = production_jira_lifecycle(
+            config=config, contract=bundle["contract"], event="WORKER_STARTED",
+            facts={"run_registered": True, "worktree_verified": True},
+            binding=bundle["critic"]["binding"], issue_type="LEAF", prior_writes=[],
+            state="DISPATCHED", producer_id="fixture-controller",
+            run_id=str(uuid.UUID(int=11)), now=NOW, evidence=[], transition_id="31",
+            read_current_status=lambda value: calls.append("read-before"),
+            write_transition=lambda value: calls.append("write"),
+            read_transition=lambda record, operation: calls.append("read-after"))
+        self.assertEqual(calls, [])
+        self.assertFalse(result["planned"])
+
+    def test_production_jira_lifecycle_rejects_unbound_or_stale_adapter_evidence(self):
+        config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text())
+        bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
+        binding = bundle["critic"]["binding"]
+        writes = []
+        common = dict(config=config, contract=bundle["contract"], event="WORKER_STARTED",
+            facts={"run_registered": True, "worktree_verified": True}, binding=binding,
+            issue_type="LEAF", prior_writes=[], state="DISPATCHED",
+            producer_id="fixture-controller", run_id=str(uuid.UUID(int=8)), now=NOW,
+            evidence=["urn:awf:fixture:jira"], transition_id="31",
+            write_transition=lambda record: writes.append(record),
+            read_transition=lambda record, operation: self.fail("invalid write cannot be read back"))
+        result = production_jira_lifecycle(**common,
+            read_current_status=lambda value: {
+                "issue_id": "other", "status_id": "Ready", "observed_at": NOW})
+        self.assertTrue(result["writes_stopped"])
+        self.assertEqual(writes, [])
+        result = production_jira_lifecycle(**common,
+            read_current_status=lambda value: {
+                "issue_id": value["issue_id"], "status_id": "Ready",
+                "observed_at": "2026-10-02T09:59:59Z"})
+        self.assertTrue(result["writes_stopped"])
+        self.assertEqual(writes, [])
+
+    def test_workflow_cli_runs_all_production_routes_through_digest_pinned_adapter(self):
+        temporary = tempfile.TemporaryDirectory(prefix="awf-controller-cli-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        state_path = root / "controller.sqlite3"
+        worktree = root / "worker"
+        worktree.mkdir()
+        inventory = [ticket("QA-CLI", 1)]
+        scope = "project=QA AND fixVersion=1.9.3"
+        scope_sha256 = fingerprint("jira-progress-scope", {
+            "scope": scope, "binding": BINDING, "include_epics": False})
+        bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
+        adapter_config = {
+            "inventory": inventory_observation(NOW, inventory),
+            "jira_now": NOW,
+            "jira_before": "Ready",
+            "jira_after": "In Progress",
+            "reconcile_receipt": {"ticket": "QA-CLI", "issue_id": "10001", **BINDING,
+                "status": "RECONCILED", "operation_id": str(uuid.UUID(int=9)),
+                "before_status_id": "3", "after_status_id": "10002", "observed_at": NOW},
+            "jira_page": {"items": [{"id": "10001", "issue_type": "TASK",
+                                      "status_category": "TERMINAL"}],
+                "next_cursor": None, "complete": True, "snapshot_id": "snapshot-cli",
+                "scope_sha256": scope_sha256, "observed_at": NOW},
+        }
+        adapter_source = '''def build_adapters(config):
+    now = config["jira_now"]
+    def observe_inventory():
+        return config["inventory"]
+    def dispatch_ticket(payload):
+        return {key: payload[key] for key in ("dispatch_id", "stream", "ticket", "exact_tuple")} | {"status": "ACCEPTED", "observed_at": now}
+    def observe_dispatch(payload):
+        return dispatch_ticket(payload)
+    def deliver_status(digest):
+        return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": now}
+    def read_current_status(binding):
+        return {"issue_id": binding["issue_id"], "status_id": config["jira_before"], "observed_at": now}
+    def write_transition(record):
+        return {"operation_id": record["operation_id"], "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED", "observed_at": now}
+    def read_transition(record, operation):
+        return {"issue_id": record["binding"]["issue_id"], "status": config["jira_after"], "actor": record["producer_id"], "observed_at": now}
+    def reconcile_merged_ticket(ticket):
+        value = dict(config["reconcile_receipt"])
+        value["ticket"] = ticket
+        return value
+    def fetch_scope_page(scope, cursor):
+        return config["jira_page"]
+    return {name: value for name, value in locals().items() if callable(value) and name != "build_adapters"}
+'''
+        adapter_path = root / "reviewed_adapter.py"
+        adapter_path.write_text(adapter_source, encoding="utf-8", newline="\n")
+        adapter_config_path = root / "adapter.json"
+        adapter_config_path.write_text(json.dumps(adapter_config), encoding="utf-8")
+        binding_path = root / "inventory-binding.json"
+        binding_path.write_text(json.dumps(INVENTORY_BINDING), encoding="utf-8")
+        pin = sha256(adapter_path.read_bytes())
+        common = [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
+                  "--root", str(ROOT), "controller", "--state", str(state_path),
+                  "--stream", "A", "--stream", "B", "--stream", "C",
+                  "--worktree-root", str(worktree), "--project-config",
+                  str(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml"),
+                  "--adapter-module", str(adapter_path),
+                  "--adapter-sha256", pin, "--adapter-config", str(adapter_config_path)]
+        cycle = subprocess.run([*common, "cycle", "--inventory-binding", str(binding_path),
+                                "--now", NOW, "--host-capacity", "1"],
+                               cwd=ROOT, text=True, capture_output=True, timeout=30)
+        self.assertEqual(cycle.returncode, 0, cycle.stderr)
+        cycle_output = json.loads(cycle.stdout)
+        self.assertEqual((len(cycle_output["dispatch_receipts"]),
+                          cycle_output["status_delivery"]["status"]), (1, "DELIVERED"))
+
+        def dump(name, value):
+            path = root / name
+            path.write_text(json.dumps(value), encoding="utf-8")
+            return path
+        lifecycle = subprocess.run([*common, "jira-lifecycle",
+            "--contract", str(dump("contract.json", bundle["contract"])),
+            "--event", "WORKER_STARTED",
+            "--facts", str(dump("facts.json", {"run_registered": True, "worktree_verified": True})),
+            "--binding", str(dump("binding.json", bundle["critic"]["binding"])),
+            "--prior-writes", str(dump("prior.json", [])), "--lifecycle-state", "DISPATCHED",
+            "--producer-id", "fixture-controller", "--run-id", str(uuid.UUID(int=10)),
+            "--now", NOW, "--evidence", "urn:awf:fixture:jira", "--transition-id", "31"],
+            cwd=ROOT, text=True, capture_output=True, timeout=30)
+        self.assertEqual(lifecycle.returncode, 0, lifecycle.stderr)
+        lifecycle_output = json.loads(lifecycle.stdout)
+        self.assertEqual(lifecycle_output["record"]["status"], "SUCCEEDED")
+        self.assertEqual(lifecycle_output["current_observation"]["status_id"], "Ready")
+
+        progress = {"jira_enabled": True, "merged_ticket": "QA-CLI", "scope": scope,
+                    "observed_at": NOW, "jira_binding": BINDING}
+        merge = subprocess.run([*common, "merge-observed", "--lifecycle-state", "MERGING",
+            "--lifecycle-facts", str(dump("merge-facts.json", {
+                "merge_confirmed": True, "candidate_matched": True})),
+            "--jira-progress", str(dump("progress.json", progress))],
+            cwd=ROOT, text=True, capture_output=True, timeout=30)
+        self.assertEqual(merge.returncode, 0, merge.stderr)
+        merge_output = json.loads(merge.stdout)
+        self.assertEqual((merge_output["state"], merge_output["jira_progress"]["jira_state"],
+                          merge_output["jira_progress"]["closed"]), ("MERGED", "COUNTED", 1))
+
+        wrong_pin = subprocess.run([*common[:common.index("--adapter-sha256") + 1], "0" * 64,
+                                    "--adapter-config", str(adapter_config_path), "cycle",
+                                    "--inventory-binding", str(binding_path), "--now", NOW,
+                                    "--host-capacity", "1"],
+                                   cwd=ROOT, text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(wrong_pin.returncode, 0)
+        self.assertIn("SHA-256 pin", wrong_pin.stderr)
 
 
 if __name__ == "__main__":

@@ -205,7 +205,9 @@
         "head_sha",
         "head_tree_sha",
         "tuple_sha256",
-        "reviewer_set_sha256"
+        "reviewer_set_sha256",
+        "completion_snapshot_sha256",
+        "aggregate_sha256"
       ],
       "properties": {
         "operation_id": {
@@ -244,6 +246,16 @@
           "pattern": "^[0-9a-f]{64}$"
         },
         "reviewer_set_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "completion_snapshot_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "aggregate_sha256": {
           "type": "string",
           "minLength": 1,
           "pattern": "^[0-9a-f]{64}$"
