@@ -2,22 +2,21 @@
 
 ## 1.9.3 — 24 September 2026
 
-Adds Git-format-aware `tested_tree`; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match.
+Adds Git-aware `tested_tree`; publisher candidates match declared changes and `HEAD^{tree}` exactly.
 
-Sets new-adoption risk and specialist routes to `gpt-5.6-sol` / high. Capability observations feed route preflight; owner-set routes persist.
+Routes new-adoption risk and specialists to `gpt-5.6-sol` / high, with warning-only capability observations that preserve owner routes.
 
-Adds outcome templates; verdicts remain separate.
+Adds settlement outcomes and templates while keeping verdicts separate.
 
-Adds byte-verified install/upgrade; unsafe evidence fails closed.
+Adds byte-verified install/upgrade, GraphQL-bound adoption identity, structured activation blockers, strict ACTIVE exit, and capabilities. Unsafe evidence fails closed.
 
-Adds publication scanning of messages, patches, files, PR bodies and comments. Findings block; receipts bind base, head and body digest. An ignored mapping supplies aliases and deny entries beside built-in detectors.
+Scans publication messages, patches, files, PR bodies and comments with redacted blockers and bound receipts. Rewrites unpublished branches atomically while preserving the tree and checking old-ref reachability.
 
-Adds a one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, scanning the replacement and checking ref reachability. It refuses published evidence or unsupported counts and reports reflog retention. This covers L1, L2 and L9 scanning; producer retrofits remain P1.
+Raises the new-adoption run cap to 16 while preserving upgrade values. Warning/disposition signals and role summaries remain independent of review caps.
 
-Hardens activation with versioned REST/GraphQL merge identity, complete PR/base/head/state/time cross-checks, Git-object checkout comparison, lock-free inspection, structured blockers, strict ACTIVE exit and capabilities. Network detectors self-scan without weakening detection.
+Adds reproducible draft-release verification, complete clean-source diagnostics and a pinned clean-Windows check. Durable host receipts and manifest-verified extractions or ZIPs establish release trust without source Git metadata.
 
-Hardens replacement-ref, inherited Git-environment, raw pinned-byte, no-follow raw-tree release, tagged archive-mode, portable-order and routing-summary consistency.
-
+Hardens replacement refs, inherited Git environments, pinned bytes, raw-tree release, tagged archive modes, portable ordering and routing summaries.
 ## 1.9.2 — 23 September 2026
 
 Adds token-only host budgets with larger new-project token/run defaults, an exact-tree publisher commit route for workers unable to write Git metadata, project lint-scope preflight, and the repository-owned portable skill source. Host child processes now consistently exclude Anthropic, Codex and OpenAI API keys. Release builds reject `.tmp`/`tmp` path components and `*.tmp` files before rewriting manifests or creating an archive, while retaining `.tmp-tests` as an excluded local test area whose links remain forbidden. The defaults reflect an owner workload of 10–20 tickets a day, signal-lab SL-1's 282,975 tokens in 3 runs, the 77-file AWF 1.9.2 PR's 1,402,537 tokens in 6 runs across three critic rounds, and 8–9 runs for a full ticket. Existing project configuration remains preserved on upgrade; review, merge, reconciliation and Jira boundaries are unchanged. No new model pilot.

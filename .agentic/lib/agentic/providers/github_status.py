@@ -21,7 +21,7 @@ from ..contracts import Contracts
 from ..installer import CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed, verify_installed
 from .github import (GITHUB_REST_API_VERSION, _gh_get, _gh_get_pr_files, _gh_graphql,
                      branch_name, repository_name)
-from ..release_trust import approved_manifest
+from ..release_trust import establish_release_trust
 from ..safeio import Tree, relative_parts
 
 MAX_BYTES = 1024 * 1024
@@ -549,10 +549,12 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
     if receipt is not None:
         try:
             complete_receipt(receipt)
-            digest, trust_basis = approved_manifest(root, release_source=release_source,
+            release_trust = establish_release_trust(root, release_source=release_source,
                                                     expected_manifest_sha256=expected_manifest_sha256)
-            require(digest == receipt['source_manifest_sha256'], 'Installation differs from the independently approved release')
-            result['release_trust_basis'] = trust_basis
+            require(release_trust['manifest_sha256'] == receipt['source_manifest_sha256'],
+                    'Installation differs from the independently approved release')
+            result['release_trust'] = release_trust
+            result['release_trust_basis'] = release_trust['basis']
             trust_ready = True
             add('RELEASE_TRUST', 'release_trust', 'PASS', 'Independent release manifest matches the installation receipt',
                 'Refresh the trusted host receipt when changing AWF releases')
