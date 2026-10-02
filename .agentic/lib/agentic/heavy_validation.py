@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 from typing import Any
@@ -339,16 +341,45 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     return value, sha256(raw)
 
 
-def _windows_launch_chain() -> dict:
+def _reviewed_git_archive_sha256(plan: dict, repository_relative_path: str) -> str:
+    root = resolve_without_alias(Path(plan["working_directory"]).absolute(),
+                                 "reviewed working directory", directory=True)
+    head = _validate_candidate(plan["candidate"])["head_sha"]
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "archive", "--format=tar", head,
+             repository_relative_path],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            shell=False, env=child_env(), timeout=GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValidationError("Reviewed launch artifact Git object is unavailable") from exc
+    if done.returncode or len(done.stdout) > 2 * 1024 * 1024:
+        raise ValidationError("Reviewed launch artifact Git object is unavailable or oversized")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(done.stdout), mode="r:") as archive:
+            members = [member for member in archive.getmembers()
+                       if member.name == repository_relative_path]
+            if len(members) != 1 or not members[0].isfile():
+                raise ValidationError("Reviewed launch artifact archive entry is invalid")
+            source = archive.extractfile(members[0])
+            if source is None:
+                raise ValidationError("Reviewed launch artifact archive entry is invalid")
+            raw = source.read(1024 * 1024 + 1)
+    except (tarfile.TarError, OSError) as exc:
+        raise ValidationError("Reviewed launch artifact archive is invalid") from exc
+    if len(raw) > 1024 * 1024:
+        raise ValidationError("Reviewed launch artifact archive entry is oversized")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _windows_launch_chain(plan: dict) -> dict:
     interpreter = resolve_without_alias(Path(sys.executable).absolute(),
                                         "controller Python executable", directory=False)
-    repository_root = Path(__file__).resolve().parents[3]
-    launcher = resolve_without_alias(repository_root / _WINDOWS_LAUNCHER_RELATIVE,
-                                     "Windows contained launcher", directory=False)
     return {"interpreter": {"path": str(interpreter),
                              "sha256": _file_sha256(interpreter)},
             "launcher": {"repository_relative_path": _WINDOWS_LAUNCHER_RELATIVE,
-                         "sha256": _file_sha256(launcher)}}
+                         "sha256": _reviewed_git_archive_sha256(
+                             plan, _WINDOWS_LAUNCHER_RELATIVE)}}
 
 
 def workload_authorization(plan: dict, plan_digest: str) -> dict:
@@ -363,7 +394,7 @@ def workload_authorization(plan: dict, plan_digest: str) -> dict:
         "requested_parallelism": plan["requested_parallelism"],
         "determinism": deepcopy(plan["determinism"]),
         "isolation": deepcopy(plan["isolation"]),
-        "windows_launch_chain": _windows_launch_chain(),
+        "windows_launch_chain": _windows_launch_chain(plan),
         "partitions": [{key: deepcopy(part[key]) for key in (
             "name", "framework", "resources", "argv", "executable",
             "timeout_seconds", "accepted_exit_codes")} for part in plan["partitions"]],
@@ -459,8 +490,9 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
             value = _mapping(supplied, "checkout snapshot")
             _exact_keys(value, {"status", "candidate", "source_working_directory",
                                 "snapshot_working_directory", "tree_sha",
-                                "archive_sha256", "file_count", "mutation_guard",
-                                "guarded_paths",
+                                "archive_sha256", "file_count", "content_inventory_sha256",
+                                "mutation_guard",
+                                "guarded_paths", "sealed_directories",
                                 "evidence_sha256"},
                         "checkout snapshot")
             if value["status"] != "IMMUTABLE":
@@ -472,15 +504,20 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
             if value["tree_sha"] != candidate["tree_sha"]:
                 raise ValidationError("Checkout snapshot tree mismatch")
             _expected_digest(value["archive_sha256"], "checkout snapshot archive_sha256")
+            _expected_digest(value["content_inventory_sha256"],
+                             "checkout snapshot content_inventory_sha256")
             _expected_digest(value["evidence_sha256"], "checkout snapshot evidence_sha256")
             _nonnegative_int(value["file_count"], "checkout snapshot file_count")
-            if value["mutation_guard"] != "windows-deny-write-delete-handles":
+            if value["mutation_guard"] != "windows-file-handles-and-sealed-directories":
                 raise ValidationError("Checkout snapshot mutation guard is unsupported")
             _positive_int(value["guarded_paths"], "checkout snapshot guarded_paths")
+            _positive_int(value["sealed_directories"],
+                          "checkout snapshot sealed_directories")
             record = {key: deepcopy(value[key]) for key in
                       ("candidate", "source_working_directory",
                        "snapshot_working_directory", "tree_sha", "archive_sha256",
-                       "file_count", "mutation_guard", "guarded_paths")}
+                       "file_count", "content_inventory_sha256", "mutation_guard", "guarded_paths",
+                       "sealed_directories")}
             if value["evidence_sha256"] != fingerprint(
                     "heavy-validation-checkout-snapshot", record):
                 raise ValidationError("Checkout snapshot evidence digest mismatch")
@@ -688,7 +725,8 @@ def _clock_text(clock) -> str:
     if isinstance(value, datetime):
         if value.tzinfo is None:
             raise ValidationError("Lease clock datetime must be timezone-aware")
-        return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace(
+            "+00:00", "Z")
     if isinstance(value, str):
         timestamp(value)
         return value
