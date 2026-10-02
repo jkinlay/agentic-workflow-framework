@@ -46,6 +46,7 @@ _MAX_ARGV = 64
 _MAX_TOKEN_BYTES = 8192
 _MAX_OUTPUT_BYTES = 256 * 1024
 _WINDOWS_LAUNCHER_RELATIVE = ".agentic/lib/agentic/heavy_validation_child.py"
+_WINDOWS_LAUNCHER_FLAGS = ("-I", "-S", "-B")
 GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS = 30
 DISPATCH_ATTESTATION_COMMAND_COUNT = 4
 CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS = 120
@@ -377,6 +378,7 @@ def _windows_launch_chain(plan: dict) -> dict:
                                         "controller Python executable", directory=False)
     return {"interpreter": {"path": str(interpreter),
                              "sha256": _file_sha256(interpreter)},
+            "interpreter_flags": list(_WINDOWS_LAUNCHER_FLAGS),
             "launcher": {"repository_relative_path": _WINDOWS_LAUNCHER_RELATIVE,
                          "sha256": _reviewed_git_archive_sha256(
                              plan, _WINDOWS_LAUNCHER_RELATIVE)}}
@@ -1123,6 +1125,9 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                                  ("method", "source_path", "launch_path", "sha256")}
             target_argv = [artifact["launch_path"], *partition["argv"][1:]]
             if os.name == "nt":
+                interpreter_flags = launch_chain.get("interpreter_flags")
+                if interpreter_flags != list(_WINDOWS_LAUNCHER_FLAGS):
+                    raise ValidationError("Windows launcher isolation flags are invalid")
                 interpreter_record = launch_chain["interpreter"]
                 interpreter_context = _immutable_executable({
                     "resolved_path": interpreter_record["path"],
@@ -1141,7 +1146,8 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                     {key: launcher[key] for key in
                      ("method", "source_path", "launch_path", "sha256")},
                 ]
-                command = [interpreter["launch_path"], "-B", launcher["launch_path"]]
+                command = [interpreter["launch_path"], *interpreter_flags,
+                           launcher["launch_path"]]
                 options = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
                 child_stdin = subprocess.PIPE
             else:

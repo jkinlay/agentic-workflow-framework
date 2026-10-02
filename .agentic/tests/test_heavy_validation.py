@@ -487,7 +487,7 @@ class HeavyValidationTests(unittest.TestCase):
         launch_chain = heavy._windows_launch_chain(value)
         fake = FakeProcess()
         with mock.patch.object(heavy.os, "name", "nt"), \
-             mock.patch.object(heavy.subprocess, "Popen", return_value=fake), \
+             mock.patch.object(heavy.subprocess, "Popen", return_value=fake) as popen, \
              mock.patch.object(heavy, "_attach_windows_job",
                                side_effect=ValidationError("containment unavailable")), \
              mock.patch.object(heavy, "_release_windows_launcher") as release:
@@ -495,6 +495,7 @@ class HeavyValidationTests(unittest.TestCase):
                                             config(enabled=False), threading.Event(), 1,
                                             launch_chain, lambda: None)
         self.assertTrue(fake.killed)
+        self.assertEqual(["-I", "-S", "-B"], popen.call_args.args[0][1:4])
         release.assert_not_called()
         self.assertEqual("FAILED", result["state"])
         self.assertEqual({"outcome": "COMPLETE", "mechanism": "contained_launcher_terminated"},
@@ -627,6 +628,17 @@ class HeavyValidationTests(unittest.TestCase):
         reviewed = json.loads(review(raw))
         reviewed["workload_authorization"]["record"]["windows_launch_chain"][
             "launcher"]["sha256"] = "0" * 64
+        changed = canonical(reviewed)
+        with self.assertRaisesRegex(ValidationError, "exact workload"):
+            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=changed, expected_review_sha256=sha256(changed),
+                config_raw=cfg, expected_config_sha256=sha256(cfg),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticator, checkout_attestor=checkout_attestor,
+                now=NOW)
+        reviewed = json.loads(review(raw))
+        reviewed["workload_authorization"]["record"]["windows_launch_chain"][
+            "interpreter_flags"] = ["-B"]
         changed = canonical(reviewed)
         with self.assertRaisesRegex(ValidationError, "exact workload"):
             run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
@@ -809,6 +821,60 @@ class HeavyValidationTests(unittest.TestCase):
             self.assertFalse((root / "unreviewed.py").exists())
             self.assertGreater(result["checkout_snapshot"]["sealed_directories"], 0)
 
+    @unittest.skipUnless(os.name == "nt", "Windows containment launcher only")
+    def test_production_launcher_ignores_hostile_python_module_search(self):
+        with tempfile.TemporaryDirectory() as folder:
+            outer = Path(folder)
+            root, hostile = outer / "repository", outer / "hostile"
+            launcher = root / ".agentic/lib/agentic/heavy_validation_child.py"
+            launcher.parent.mkdir(parents=True)
+            hostile.mkdir()
+            shutil.copy2(SOURCE_ROOT / ".agentic/lib/agentic/heavy_validation_child.py",
+                         launcher)
+            subprocess.run(["git", "init", "-q", str(root)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture", "-c",
+                            "user.email=fixture@example.invalid", "commit", "-q", "-m",
+                            "fixture"], check=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+            head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                  check=True, stdout=subprocess.PIPE,
+                                  text=True).stdout.strip()
+            tree = subprocess.run(["git", "-C", str(root), "show", "-s", "--format=%T",
+                                   "HEAD"], check=True, stdout=subprocess.PIPE,
+                                  text=True).stdout.strip()
+            candidate = {**CANDIDATE, "head_sha": head, "tree_sha": tree}
+            sentinels = []
+            for module in ("json", "sitecustomize", "usercustomize"):
+                sentinel = hostile / f"{module}.executed"
+                sentinels.append(sentinel)
+                source = (f"open({str(sentinel)!r}, 'w', encoding='utf-8').write('bad')\n"
+                          "raise RuntimeError('unreviewed module executed')\n")
+                (hostile / f"{module}.py").write_text(source, encoding="utf-8")
+            target = Path(os.environ["COMSPEC"]).resolve()
+            part = partition("module-search")
+            part["executable"] = {"path": str(target), "sha256": file_digest(target)}
+            part["argv"] = [str(target), "/d", "/c", "exit", "0"]
+            plan_raw = plan([part], parallelism=1, candidate=candidate, cwd=root)
+            config_raw = canonical(config(enabled=False))
+            review_raw = review(plan_raw, candidate=candidate)
+            with mock.patch.dict(os.environ, {
+                    "PYTHONPATH": str(hostile), "PYTHONUSERBASE": str(hostile)}):
+                result = run_validation(
+                    plan_raw=plan_raw, expected_plan_sha256=sha256(plan_raw),
+                    review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                    config_raw=config_raw, expected_config_sha256=sha256(config_raw),
+                    expected_candidate=candidate, execution_root=str(root.resolve()),
+                    review_authenticator=authenticator,
+                    checkout_attestor=GitCheckoutAttestor(root),
+                    checkout_snapshotter=GitCheckoutSnapshotter(root), now=NOW)
+            self.assertEqual("PASS", result["status"], json.dumps(result, indent=2))
+            self.assertEqual(["-I", "-S", "-B"], result["workload_authorization"][
+                "record"]["windows_launch_chain"]["interpreter_flags"])
+            self.assertFalse(any(path.exists() for path in sentinels))
+
     def test_executable_fence_blocks_or_isolates_attestation_launch_race(self):
         with tempfile.TemporaryDirectory() as folder:
             target = Path(folder) / Path(sys.executable).name
@@ -829,6 +895,7 @@ class HeavyValidationTests(unittest.TestCase):
     def test_windows_launcher_bytes_are_reviewed_and_mutation_fenced(self):
         value = json.loads(plan([partition("launcher")], parallelism=1))
         chain = heavy._windows_launch_chain(value)
+        self.assertEqual(["-I", "-S", "-B"], chain["interpreter_flags"])
         launcher = chain["launcher"]
         reviewed = git_archive_file(
             SOURCE_ROOT, value["candidate"]["head_sha"],
