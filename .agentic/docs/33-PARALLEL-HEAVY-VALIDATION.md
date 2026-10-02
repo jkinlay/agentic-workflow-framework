@@ -12,7 +12,7 @@ A version 3 plan binds:
 - argv, timeouts, accepted exits, engine, framework, resource class, and named-resource quantities;
 - one deterministic seed, bounded retry limit, and required process-tree, host-network-policy, and worktree isolation declarations.
 
-Before launch, a trusted attestor proves the source root clean at the reviewed HEAD/tree. Execution uses a private snapshot from that Git object. On Windows, AWF holds deny-write/delete handles on every tracked snapshot path through execution; hosts without a mandatory mutation guard fail closed. The target executable, controller interpreter, and snapshot copy of `heavy_validation_child.py` are each reviewed, digest-checked, and fenced through launch. Identity movement fails closed; `shell=False` is mandatory.
+Before launch, a trusted attestor proves the source root clean at the reviewed HEAD/tree. Execution uses a private snapshot of that Git object. On Windows, AWF holds deny-write/delete handles on tracked snapshot paths; protected DACLs deny directory namespace and security mutation, including owner rights. Pre-opened handles restore original DACLs after execution. Hosts without both guards fail closed. The target executable, controller interpreter, and archived candidate `heavy_validation_child.py` bytes are reviewed, digest-checked, and fenced through launch. Identity movement fails closed; `shell=False` is mandatory.
 
 The version 5 review binds plan digest, cwd, argv, launch chain, resources, retries, and isolation. A trusted adapter must find that digest in a formal provider review. GitHub observations bind repository, PR tuple, immutable reviewer, APPROVED state, reviewed commit, and `AWF-HEAVY-VALIDATION-AUTHORIZATION-SHA256: <digest>`. Local `APPROVE` never authorizes work.
 
@@ -28,7 +28,7 @@ Parallel execution requires all of these:
 
 Zero worker, class, engine, or named-resource capacity starts no child. All broker-enabled work needs an exact lease. Parallel failure may use serial only after a separate grant. Every stale fence is released before another request; release failure blocks execution. Execution-fence release failure keeps the result at `FAIL`. Capacity observations never grant resources.
 
-The broker validates every field, positive quantity, resource, unique monotonic fence, and engine identity/slot before and after mutation. It anchors expiry at actual acquisition and rejects a grant without the full required duration remaining. A live guard terminates work and blocks PASS when authorization expires. Its OS-locked state is fsynced; malformed state fails closed.
+The broker validates every field, positive quantity, resource, unique monotonic fence, and engine identity/slot. It records acquisition and expiry with microsecond precision at actual acquisition and adds a bounded validation margin after the full requested duration. A live guard terminates work and blocks PASS after expiry. Its OS-locked state is fsynced; malformed state fails closed.
 
 ## Process and credential containment
 
@@ -70,4 +70,4 @@ Run the synthetic regression with:
 python -B -m unittest discover -s .agentic/tests -p test_heavy_validation.py -v
 ```
 
-The regression covers authorization, owner-write and launch-chain races, checkout mutation, delayed acquisition and runtime expiry, exhausted capacity, serial/fallback leases, release failure, engine fencing, malformed state, worst-case duration, tamper detection, GitHub authentication, Windows containment, determinism, adapters/resources, cancellation, descendant termination, tuple/cwd movement, credentials, aliases, caps, and bounded output. It uses no proprietary engine, GPU, or license server.
+The regression covers authorization, owner-write, launcher and snapshot-namespace injection races, checkout mutation, fractional delayed acquisition and runtime expiry, exhausted capacity, serial/fallback leases, release failure, engine fencing, malformed state, worst-case duration, tamper detection, GitHub authentication, Windows containment, determinism, adapters/resources, cancellation, descendant termination, tuple/cwd movement, credentials, aliases, caps, and bounded output. It uses no proprietary engine, GPU, or license server.

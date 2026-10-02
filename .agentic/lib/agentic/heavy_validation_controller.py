@@ -30,6 +30,7 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _LABEL = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _MAX_PROVIDER_BYTES = 1024 * 1024
 _MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
+LEASE_VALIDATION_TRANSPORT_MARGIN_SECONDS = 5
 
 
 def _require(condition, message):
@@ -224,8 +225,10 @@ class GitCheckoutSnapshotter:
         return done.stdout
 
     @staticmethod
-    def _extract(raw: bytes, destination: Path) -> int:
+    def _extract(raw: bytes, destination: Path) -> tuple[int, dict]:
         count = 0
+        files = []
+        directories = set()
         try:
             archive = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
         except tarfile.TarError as exc:
@@ -238,8 +241,11 @@ class GitCheckoutSnapshotter:
                 if member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
                     raise ValidationError("Git checkout snapshot contains an alias or special file")
                 target = destination.joinpath(*name.parts)
+                for length in range(1, len(name.parts)):
+                    directories.add(PurePosixPath(*name.parts[:length]).as_posix())
                 if member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
+                    directories.add(name.as_posix())
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 source = archive.extractfile(member)
@@ -248,9 +254,36 @@ class GitCheckoutSnapshotter:
                 descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                                      member.mode & 0o777 or 0o600)
                 with source, os.fdopen(descriptor, "wb") as output:
-                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                    digest = hashlib.sha256()
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        output.write(chunk)
+                files.append({"path": name.as_posix(), "sha256": digest.hexdigest()})
                 count += 1
-        return count
+        inventory = {"files": sorted(files, key=lambda item: item["path"]),
+                     "directories": sorted(directories)}
+        return count, inventory
+
+    @staticmethod
+    def _inventory(destination: Path) -> dict:
+        files = []
+        directories = []
+        for path in sorted(destination.rglob("*"), key=lambda item: str(item)):
+            relative = path.relative_to(destination).as_posix()
+            if path.is_dir():
+                directories.append(relative)
+            elif path.is_file():
+                digest = hashlib.sha256()
+                with path.open("rb") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                files.append({"path": relative, "sha256": digest.hexdigest()})
+            else:
+                raise ValidationError("Checkout snapshot contains an unreviewed object")
+        return {"files": files, "directories": directories}
 
     @staticmethod
     def _freeze(destination: Path):
@@ -287,23 +320,75 @@ class GitCheckoutSnapshotter:
         kernel.CreateFileW.restype = wintypes.HANDLE
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel.CloseHandle.restype = wintypes.BOOL
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.DWORD)]
+        advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+        advapi.GetKernelObjectSecurity.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD)]
+        advapi.GetKernelObjectSecurity.restype = wintypes.BOOL
+        advapi.SetKernelObjectSecurity.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p]
+        advapi.SetKernelObjectSecurity.restype = wintypes.BOOL
+        kernel.LocalFree.argtypes = [ctypes.c_void_p]
+        kernel.LocalFree.restype = ctypes.c_void_p
         handles = []
+        directory_handles = []
+        original_security = []
         paths = [destination, *sorted(destination.rglob("*"), key=lambda item: str(item))]
         invalid = wintypes.HANDLE(-1).value
         try:
             for path in paths:
-                flags = 0x02000000 if path.is_dir() else 0x00000080
-                handle = kernel.CreateFileW(str(path), 0x80000000, 0x00000001,
+                directory = path.is_dir()
+                flags = 0x02000000 if directory else 0x00000080
+                access = 0x00060001 if directory else 0x80000000
+                share = 0x00000007 if directory else 0x00000001
+                handle = kernel.CreateFileW(str(path), access, share,
                                             None, 3, flags, None)
                 if handle == invalid:
                     raise ValidationError(
                         "Snapshot mutation-exclusion handle acquisition failed")
                 handles.append(handle)
+                if directory:
+                    directory_handles.append(handle)
+
+            sealed = ctypes.c_void_p()
+            sealed_length = wintypes.DWORD()
+            # OWNER RIGHTS removes the owner's implicit WRITE_DAC escape hatch.
+            # World is denied every directory namespace mutation while retaining
+            # read, list, traverse, and execute access to the reviewed snapshot.
+            sddl = ("D:P(D;;0x000d0156;;;OW)(D;;0x000d0156;;;WD)"
+                    "(A;;0x001200a9;;;WD)")
+            if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl, 1, ctypes.byref(sealed), ctypes.byref(sealed_length)):
+                raise ValidationError("Snapshot namespace security descriptor failed")
+            try:
+                for handle in directory_handles:
+                    needed = wintypes.DWORD()
+                    advapi.GetKernelObjectSecurity(handle, 0x00000004, None, 0,
+                                                   ctypes.byref(needed))
+                    if not needed.value:
+                        raise ValidationError("Snapshot namespace security read failed")
+                    original = ctypes.create_string_buffer(needed.value)
+                    if not advapi.GetKernelObjectSecurity(
+                            handle, 0x00000004, original, needed.value,
+                            ctypes.byref(needed)):
+                        raise ValidationError("Snapshot namespace security read failed")
+                    if not advapi.SetKernelObjectSecurity(
+                            handle, 0x00000004, sealed):
+                        raise ValidationError("Snapshot namespace seal failed")
+                    original_security.append((handle, original))
+            finally:
+                kernel.LocalFree(sealed)
         except Exception:
+            for handle, original in reversed(original_security):
+                advapi.SetKernelObjectSecurity(handle, 0x00000004, original)
             for handle in reversed(handles):
                 kernel.CloseHandle(handle)
             raise
-        return kernel, handles
+        return kernel, advapi, handles, original_security
 
     @contextmanager
     def __call__(self, candidate: dict, working_directory: str):
@@ -316,24 +401,38 @@ class GitCheckoutSnapshotter:
         with tempfile.TemporaryDirectory(prefix="awf-heavy-snapshot-") as folder:
             snapshot_root = resolve_without_alias(Path(folder).absolute(),
                                                   "checkout snapshot root", directory=True)
-            file_count = self._extract(raw, snapshot_root)
+            file_count, expected_inventory = self._extract(raw, snapshot_root)
             self._freeze(snapshot_root)
-            kernel, handles = self._lock_snapshot(snapshot_root)
-            record = {"candidate": deepcopy(candidate),
-                      "source_working_directory": str(self.root),
-                      "snapshot_working_directory": str(snapshot_root),
-                      "tree_sha": candidate["tree_sha"],
-                      "archive_sha256": archive_sha, "file_count": file_count,
-                      "mutation_guard": "windows-deny-write-delete-handles",
-                      "guarded_paths": len(handles)}
+            kernel, advapi, handles, original_security = self._lock_snapshot(snapshot_root)
             try:
+                observed_inventory = self._inventory(snapshot_root)
+                _require(observed_inventory == expected_inventory,
+                         "Checkout snapshot content changed before namespace seal")
+                inventory_sha = fingerprint("heavy-validation-snapshot-inventory",
+                                            observed_inventory)
+                record = {"candidate": deepcopy(candidate),
+                          "source_working_directory": str(self.root),
+                          "snapshot_working_directory": str(snapshot_root),
+                          "tree_sha": candidate["tree_sha"],
+                          "archive_sha256": archive_sha, "file_count": file_count,
+                          "content_inventory_sha256": inventory_sha,
+                          "mutation_guard": "windows-file-handles-and-sealed-directories",
+                          "guarded_paths": len(handles),
+                          "sealed_directories": len(original_security)}
                 yield {"status": "IMMUTABLE", **record,
                        "evidence_sha256": fingerprint(
                            "heavy-validation-checkout-snapshot", record)}
             finally:
+                restored = True
+                for handle, original in reversed(original_security):
+                    if not advapi.SetKernelObjectSecurity(
+                            handle, 0x00000004, original):
+                        restored = False
                 for handle in reversed(handles):
                     kernel.CloseHandle(handle)
                 self._thaw(snapshot_root)
+                if not restored:
+                    raise ValidationError("Snapshot namespace security restoration failed")
 
 
 class FileLeaseBroker:
@@ -529,14 +628,13 @@ class FileLeaseBroker:
                              "lease required_duration_seconds")
         _require(duration <= 7 * 24 * 60 * 60,
                  "lease required_duration_seconds exceeds seven days")
-        now = self.clock()
-        expires = now + timedelta(seconds=duration)
-        expires_text = expires.isoformat(timespec="seconds").replace("+00:00", "Z")
         request_sha = fingerprint("heavy-validation-lease-request", request)
 
         def operation(state):
+            # Sample under the broker lock so queueing cannot consume the grant.
+            capacity_now = self.clock()
             active = [item for item in state["leases"]
-                      if timestamp(item["expires_at"]) > now]
+                      if timestamp(item["expires_at"]) > capacity_now]
             state["leases"] = active
             requested = request["parallelism"]
             worker_use = sum(item["parallelism"] for item in active)
@@ -564,10 +662,14 @@ class FileLeaseBroker:
                     reasons.append(f"resource {name}")
             if reasons:
                 return {"status": "DENIED", "reason": ", ".join(sorted(reasons))}
+            acquired_now = self.clock()
+            expires = acquired_now + timedelta(
+                seconds=duration + LEASE_VALIDATION_TRANSPORT_MARGIN_SECONDS)
+            expires_text = expires.isoformat(timespec="microseconds").replace("+00:00", "Z")
             fence = state["next_fence"]
             state["next_fence"] += 1
             lease_id = hashlib.sha256(f"{self.broker_id}:{fence}:{request_sha}".encode()).hexdigest()
-            acquired = now.isoformat(timespec="seconds").replace("+00:00", "Z")
+            acquired = acquired_now.isoformat(timespec="microseconds").replace("+00:00", "Z")
             item = {"lease_id": lease_id, "fencing_token": fence,
                     "expires_at": expires_text, "parallelism": requested,
                     "resource_class": request["resource_class"],

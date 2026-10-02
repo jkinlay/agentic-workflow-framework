@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -32,8 +33,26 @@ from agentic.heavy_validation_controller import (
     GitHubReviewAuthenticator, read_result_log, write_result_log)
 
 NOW = "2026-10-02T09:00:00Z"
+SOURCE_HEAD = subprocess.run(["git", "-C", str(SOURCE_ROOT), "rev-parse", "HEAD"],
+                             check=True, stdout=subprocess.PIPE,
+                             text=True).stdout.strip()
+SOURCE_TREE = subprocess.run(["git", "-C", str(SOURCE_ROOT), "rev-parse", "HEAD^{tree}"],
+                             check=True, stdout=subprocess.PIPE,
+                             text=True).stdout.strip()
 CANDIDATE = {"repository_id": 101, "base_sha": "a" * 40,
-             "head_sha": "b" * 40, "tree_sha": "c" * 40}
+             "head_sha": SOURCE_HEAD, "tree_sha": SOURCE_TREE}
+
+
+def git_archive_file(root, head, relative_path):
+    raw = subprocess.run(
+        ["git", "-C", str(root), "archive", "--format=tar", head, relative_path],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        member = archive.getmember(relative_path)
+        source = archive.extractfile(member)
+        if source is None:
+            raise AssertionError("archive fixture entry is not a file")
+        return source.read()
 
 
 def file_digest(path):
@@ -101,14 +120,17 @@ def checkout_snapshotter(candidate, working_directory):
         snapshot = str(Path(folder).resolve())
         launcher = Path(snapshot) / ".agentic/lib/agentic/heavy_validation_child.py"
         launcher.parent.mkdir(parents=True)
-        shutil.copy2(SOURCE_ROOT / ".agentic/lib/agentic/heavy_validation_child.py", launcher)
+        launcher.write_bytes(git_archive_file(
+            SOURCE_ROOT, candidate["head_sha"],
+            ".agentic/lib/agentic/heavy_validation_child.py"))
         record = {"candidate": deepcopy(candidate),
                   "source_working_directory": working_directory,
                   "snapshot_working_directory": snapshot,
                   "tree_sha": candidate["tree_sha"],
                   "archive_sha256": "f" * 64, "file_count": 1,
-                  "mutation_guard": "windows-deny-write-delete-handles",
-                  "guarded_paths": 5}
+                  "content_inventory_sha256": "e" * 64,
+                  "mutation_guard": "windows-file-handles-and-sealed-directories",
+                  "guarded_paths": 5, "sealed_directories": 4}
         yield {"status": "IMMUTABLE", **record,
                "evidence_sha256": fingerprint("heavy-validation-checkout-snapshot", record)}
 
@@ -143,8 +165,9 @@ class Broker:
         if self.mode == "deny_parallel" and request["parallelism"] > 1:
             return {"status": "DENIED", "reason": "parallel capacity raced"}
         expiry = (timestamp(NOW) + timedelta(
-            seconds=request["required_duration_seconds"])).isoformat(
-                timespec="seconds").replace("+00:00", "Z")
+            seconds=request["required_duration_seconds"]
+            + heavy_controller.LEASE_VALIDATION_TRANSPORT_MARGIN_SECONDS)).isoformat(
+                timespec="microseconds").replace("+00:00", "Z")
         if self.mode in {"stale", "stale_release_fail"}:
             expiry = "2026-10-02T08:59:59Z"
         return {"status": "GRANTED", "lease_id": "lease-1", "fencing_token": 7,
@@ -364,7 +387,7 @@ class HeavyValidationTests(unittest.TestCase):
         with mock.patch.object(heavy, "_execute_attempt", return_value=failed) as execute:
             result = heavy._execute(part, value, executable, SOURCE_ROOT,
                                     config(enabled=False), threading.Event(),
-                                    heavy._windows_launch_chain(), lambda: None)
+                                    heavy._windows_launch_chain(value), lambda: None)
         self.assertEqual(1, execute.call_count)
         self.assertEqual(0, result["retry_count"])
 
@@ -461,6 +484,7 @@ class HeavyValidationTests(unittest.TestCase):
         executable = {"path": part["executable"]["path"],
                       "resolved_path": part["executable"]["path"],
                       "sha256": part["executable"]["sha256"]}
+        launch_chain = heavy._windows_launch_chain(value)
         fake = FakeProcess()
         with mock.patch.object(heavy.os, "name", "nt"), \
              mock.patch.object(heavy.subprocess, "Popen", return_value=fake), \
@@ -469,7 +493,7 @@ class HeavyValidationTests(unittest.TestCase):
              mock.patch.object(heavy, "_release_windows_launcher") as release:
             result = heavy._execute_attempt(part, value, executable, SOURCE_ROOT,
                                             config(enabled=False), threading.Event(), 1,
-                                            heavy._windows_launch_chain(), lambda: None)
+                                            launch_chain, lambda: None)
         self.assertTrue(fake.killed)
         release.assert_not_called()
         self.assertEqual("FAILED", result["state"])
@@ -723,8 +747,67 @@ class HeavyValidationTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     snapshot_file.write_text("bad\n", encoding="utf-8", newline="\n")
                 self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
+                injected = Path(evidence["snapshot_working_directory"]) / "unreviewed.py"
+                with self.assertRaises(OSError):
+                    injected.write_text("INJECTED = True\n", encoding="utf-8", newline="\n")
+                self.assertFalse(injected.exists())
                 self.assertEqual(tree, evidence["tree_sha"])
                 self.assertEqual("IMMUTABLE", evidence["status"])
+            real_lock = snapshotter._lock_snapshot
+
+            def inject_before_seal(destination):
+                (destination / "unreviewed.py").write_text(
+                    "INJECTED = True\n", encoding="utf-8", newline="\n")
+                return real_lock(destination)
+
+            with mock.patch.object(snapshotter, "_lock_snapshot",
+                                   side_effect=inject_before_seal):
+                with self.assertRaisesRegex(ValidationError,
+                                            "content changed before namespace seal"):
+                    with snapshotter(candidate, str(root)):
+                        self.fail("snapshot with an injected sibling was dispatched")
+
+    def test_production_snapshot_blocks_injection_during_execution(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            launcher = root / ".agentic/lib/agentic/heavy_validation_child.py"
+            launcher.parent.mkdir(parents=True)
+            shutil.copy2(SOURCE_ROOT / ".agentic/lib/agentic/heavy_validation_child.py",
+                         launcher)
+            subprocess.run(["git", "init", "-q", str(root)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture", "-c",
+                            "user.email=fixture@example.invalid", "commit", "-q", "-m",
+                            "fixture"], check=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+            head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                  check=True, stdout=subprocess.PIPE,
+                                  text=True).stdout.strip()
+            tree = subprocess.run(["git", "-C", str(root), "show", "-s", "--format=%T",
+                                   "HEAD"], check=True, stdout=subprocess.PIPE,
+                                  text=True).stdout.strip()
+            candidate = {**CANDIDATE, "head_sha": head, "tree_sha": tree}
+            attempt = ("exec(\"from pathlib import Path\\ntry:\\n "
+                       "Path('unreviewed.py').write_text('bad')\\nexcept OSError:\\n "
+                       "raise SystemExit(0)\\nraise SystemExit(19)\\n\")")
+            plan_raw = plan([partition("namespace-injection", attempt)], parallelism=1,
+                            candidate=candidate, cwd=root)
+            config_raw = canonical(config(enabled=False))
+            review_raw = review(plan_raw, candidate=candidate)
+            result = run_validation(
+                plan_raw=plan_raw, expected_plan_sha256=sha256(plan_raw),
+                review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                config_raw=config_raw, expected_config_sha256=sha256(config_raw),
+                expected_candidate=candidate, execution_root=str(root.resolve()),
+                review_authenticator=authenticator,
+                checkout_attestor=GitCheckoutAttestor(root),
+                checkout_snapshotter=GitCheckoutSnapshotter(root), now=NOW)
+            self.assertEqual("PASS", result["status"], json.dumps(result, indent=2))
+            self.assertEqual("PASS", result["partitions"][0]["state"])
+            self.assertFalse((root / "unreviewed.py").exists())
+            self.assertGreater(result["checkout_snapshot"]["sealed_directories"], 0)
 
     def test_executable_fence_blocks_or_isolates_attestation_launch_race(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -744,13 +827,16 @@ class HeavyValidationTests(unittest.TestCase):
                     self.assertNotEqual(str(target), artifact["launch_path"])
 
     def test_windows_launcher_bytes_are_reviewed_and_mutation_fenced(self):
-        chain = heavy._windows_launch_chain()
+        value = json.loads(plan([partition("launcher")], parallelism=1))
+        chain = heavy._windows_launch_chain(value)
         launcher = chain["launcher"]
-        self.assertEqual(file_digest(SOURCE_ROOT / launcher["repository_relative_path"]),
-                         launcher["sha256"])
+        reviewed = git_archive_file(
+            SOURCE_ROOT, value["candidate"]["head_sha"],
+            launcher["repository_relative_path"])
+        self.assertEqual(hashlib.sha256(reviewed).hexdigest(), launcher["sha256"])
         with tempfile.TemporaryDirectory() as folder:
             copied = Path(folder) / "heavy_validation_child.py"
-            shutil.copy2(SOURCE_ROOT / launcher["repository_relative_path"], copied)
+            copied.write_bytes(reviewed)
             expected = file_digest(copied)
             with heavy._immutable_executable({"resolved_path": str(copied),
                                               "sha256": expected}) as artifact:
@@ -805,14 +891,25 @@ class HeavyValidationTests(unittest.TestCase):
         self.assertEqual(expected, duration)
 
     def test_broker_anchors_full_duration_at_delayed_acquisition(self):
-        acquired = timestamp(NOW) + timedelta(minutes=11)
-        clock = lambda: acquired
+        acquired = timestamp(NOW) + timedelta(minutes=11, microseconds=375_000)
+        current = {"time": timestamp(NOW), "timeline": None}
+
+        def clock():
+            if current["timeline"] is None:
+                return current["time"]
+            return next(current["timeline"])
         limits = {"max_workers": 1, "max_heavy_jobs": 1, "max_gpu_jobs": 0,
                   "resources": {}, "engines": {"python": {
                       "identity_sha256": "d" * 64, "slots": 1}}}
         with tempfile.TemporaryDirectory() as folder:
             broker = FileLeaseBroker(Path(folder) / "broker.json", "fixture", limits,
                                      clock=clock)
+            transaction = broker._transaction
+
+            def delayed_transaction(operation):
+                current["timeline"] = iter([acquired - timedelta(seconds=2), acquired])
+                return transaction(operation)
+
             request = {"format": "awf-heavy-validation-lease-request-2",
                        "candidate": CANDIDATE, "plan_sha256": "a" * 64,
                        "config_sha256": "b" * 64, "capacity_sha256": "c" * 64,
@@ -823,9 +920,22 @@ class HeavyValidationTests(unittest.TestCase):
                        "isolation": {"process_tree": "REQUIRED", "network": "HOST_POLICY",
                                      "filesystem": "WORKTREE"},
                        "required_duration_seconds": 750}
-            lease = broker.acquire(request)
-        self.assertEqual(750, (timestamp(lease["expires_at"])
+            with mock.patch.object(broker, "_transaction",
+                                   side_effect=delayed_transaction):
+                lease = broker.acquire(request)
+        self.assertTrue(lease["acquired_at"].endswith(".375000Z"))
+        self.assertTrue(lease["expires_at"].endswith(".375000Z"))
+        self.assertEqual(acquired, timestamp(lease["acquired_at"]))
+        self.assertEqual(755, (timestamp(lease["expires_at"])
                               - timestamp(lease["acquired_at"])).total_seconds())
+        almost_margin = (acquired + timedelta(seconds=4, microseconds=999_999)
+                         ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        self.assertEqual("GRANTED", heavy._validate_lease(
+            lease, request, "fixture", almost_margin)["status"])
+        beyond_margin = (acquired + timedelta(seconds=5, microseconds=1)
+                         ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        self.assertEqual("STALE", heavy._validate_lease(
+            lease, request, "fixture", beyond_margin)["status"])
 
     def test_runtime_lease_expiry_terminates_and_blocks_pass(self):
         calls = {"count": 0}
