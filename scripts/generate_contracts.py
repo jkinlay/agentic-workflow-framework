@@ -122,7 +122,11 @@ def catalog():
         "current": BOOL, "ready": BOOL, "tuple": review_tuple, "tuple_sha256": DIGEST,
         "required_reviewers": arr(text(), 1, uniqueItems=True), "reviewer_set_sha256": DIGEST,
         "counts": review_counts, "reviewers": arr(reviewer_state, 1, uniqueItems=True),
-        "completion_snapshot_sha256": nullable(DIGEST)})
+        "completion_snapshot_sha256": nullable(DIGEST)}, allOf=[
+            {"if": {"properties": {"ready": const(True)}}, "then": {"properties": {
+                "state": const("COLLECTING"), "current": const(True),
+                "counts": {"properties": {"failed": const(0), "stale": const(0), "outstanding": const(0)}},
+                "reviewers": {"items": {"properties": {"state": const("ACCEPTABLE")}}}}}}])
     completion_snapshot = obj({"cycle_id": UUID, "tuple": review_tuple, "tuple_sha256": DIGEST,
         "required_reviewers": arr(text(), 1, uniqueItems=True), "reviewer_set_sha256": DIGEST,
         "counts": review_counts, "results": arr(obj({"reviewer_id": text(), "state": const("ACCEPTABLE"),
@@ -130,20 +134,31 @@ def catalog():
     schemas["review-submission"] = obj({"submission_id": UUID, "cycle_id": UUID,
         "completion_snapshot": completion_snapshot, "completion_snapshot_sha256": DIGEST,
         "aggregate": {}, "aggregate_sha256": DIGEST,
-        "provider_preconditions": obj({"tuple_sha256": DIGEST, "reviewer_set_sha256": DIGEST}),
+        "provider_preconditions": obj({"repository": review_tuple["properties"]["repository"],
+            "base_sha": SHA, "head_sha": SHA, "head_tree_sha": SHA,
+            "tuple_sha256": DIGEST, "reviewer_set_sha256": DIGEST}),
         "execution_authority": FALSE})
     stream_status = obj({"stream": text(), "state": enum("WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"),
         "ticket": nullable(text()), "actor": text(), "reason": text(), "next_action": text(),
         "resume_trigger": text(), "exact_tuple": text(), "activity": text(), "verification_gate": text(),
         "reviewer_completion": review_counts, "open_findings": integer(), "jira_status": text(),
         "updated_at": TIME})
-    schemas["controller-status-digest"] = obj({"schema_version": const(3), "observed_at": TIME,
+    schemas["controller-status-digest"] = obj({"schema_version": const(3), "delivery_id": DIGEST, "observed_at": TIME,
         "kind": enum("REGULAR", "CHANGE"), "cadence_seconds": integer(1), "all_complete": BOOL,
-        "streams": arr(stream_status, 1, uniqueItems=True)})
+        "streams": arr(stream_status, 1, uniqueItems=True)}, allOf=[
+            {"if": {"properties": {"all_complete": const(True)}},
+             "then": {"properties": {"streams": {"items": {"properties": {"state": const("COMPLETE")}}}}}},
+            {"if": {"properties": {"all_complete": const(False)}},
+             "then": {"properties": {"streams": {"contains": {"properties": {"state": {"not": const("COMPLETE")}}}}}}}])
     count_or_unobserved = {"oneOf": [integer(), const("UNOBSERVED")]}
     schemas["jira-progress"] = obj({"schema_version": const(3), "merged_ticket": text(), "scope": text(),
+        "scope_sha256": DIGEST, "include_epics": BOOL, "snapshot_id": nullable(text()),
         "observed_at": TIME, "closed": count_or_unobserved, "remaining_open": count_or_unobserved,
-        "jira_state": enum("RECONCILED", "UNOBSERVED", "JIRA_DISABLED"), "reason": text()})
+        "jira_state": enum("COUNTED", "RECONCILED", "UNOBSERVED", "JIRA_DISABLED"), "reason": text()}, allOf=[
+            {"if": {"properties": {"jira_state": const("COUNTED")}}, "then": {"properties": {
+                "closed": integer(), "remaining_open": integer(), "snapshot_id": text()}}},
+            {"if": {"properties": {"jira_state": {"enum": ["RECONCILED", "UNOBSERVED", "JIRA_DISABLED"]}}},
+             "then": {"properties": {"closed": const("UNOBSERVED"), "remaining_open": const("UNOBSERVED")}}}])
     ac = obj({"id": text(), "text": text(), "validation": text()})
     dependency = obj({"issue_id": text(), "ticket": text(), "kind": enum("code", "deployment", "migration", "environment"),
         "direction": const("requires"), "satisfied": BOOL, "target": text(), "evidence": arr(text(format="uri"), uniqueItems=True)})

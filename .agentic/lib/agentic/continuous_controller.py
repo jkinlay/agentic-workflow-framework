@@ -7,16 +7,18 @@ authority, budget, independence, capacity, and readback checks.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from pathlib import Path
+import re
 import sqlite3
 
 from . import ValidationError
 from .canonical import canonical, loads, now_text, timestamp
+from .controller_state import configure_database, protected_state_path, restrict_state_permissions
 
 
 STREAM_STATES = {"WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"}
 TICKET_STATES = {"ELIGIBLE", "PAUSED_INPUT", "BLOCKED", "COMPLETE"}
 DEFAULT_STATUS_CADENCE_SECONDS = 15 * 60
+STATE_APPLICATION_ID = 0x41574631
 
 DDL = """
 CREATE TABLE IF NOT EXISTS controller_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -26,6 +28,9 @@ CREATE TABLE IF NOT EXISTS stream_status(
  exact_tuple TEXT NOT NULL,activity TEXT NOT NULL,verification_gate TEXT NOT NULL,
  reviewer_completion TEXT NOT NULL,open_findings INTEGER NOT NULL,
  jira_status TEXT NOT NULL,paths TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS controller_outbox(
+ delivery_id TEXT PRIMARY KEY,kind TEXT NOT NULL,revision INTEGER NOT NULL,
+ observed_at TEXT NOT NULL,payload_json TEXT NOT NULL,acknowledged_at TEXT);
 """
 
 
@@ -42,8 +47,10 @@ def _ticket(value):
     _require(isinstance(value["ticket"], str) and value["ticket"].strip(), "Ticket identity is required")
     _require(type(value["priority"]) is int and value["priority"] >= 0, "Ticket priority must be nonnegative")
     _require(value["disposition"] in TICKET_STATES, "Unknown ticket scheduling disposition")
-    _require(isinstance(value["paths"], list) and len(value["paths"]) == len(set(value["paths"])) and
-             all(isinstance(path, str) and path for path in value["paths"]), "Ticket paths must be unique strings")
+    _require(isinstance(value["paths"], list), "Ticket paths must be a list")
+    value = dict(value)
+    value["paths"] = [_owned_path(path) for path in value["paths"]]
+    _require(len(value["paths"]) == len(set(value["paths"])), "Ticket paths must be unique canonical paths")
     for key in ("dependencies_satisfied", "budget_available", "cap_available", "review_independent"):
         _require(type(value[key]) is bool, f"{key} must be observed boolean")
     for key in ("actor", "reason", "next_action", "resume_trigger", "exact_tuple", "activity",
@@ -56,12 +63,30 @@ def _ticket(value):
         "Reviewer completion requires all six nonnegative counts")
     _require(type(value["open_findings"]) is int and value["open_findings"] >= 0,
              "Open finding count must be nonnegative")
-    return dict(value)
+    return value
+
+
+def _owned_path(path):
+    _require(isinstance(path, str) and path and not any(ord(char) < 32 for char in path),
+             "Ticket path must be a nonempty printable repository-relative path")
+    value = path.replace("\\", "/").rstrip("/")
+    wildcard = ""
+    for suffix in ("/**", "/*"):
+        if value.endswith(suffix):
+            value, wildcard = value[:-len(suffix)].rstrip("/"), suffix
+            break
+    _require(value and not value.startswith("/") and not value.startswith("//") and
+             re.match(r"^[A-Za-z]:", value) is None,
+             "Ticket path must stay repository-relative; external/absolute paths are not ownership claims")
+    parts = value.split("/")
+    _require(all(part not in {"", ".", ".."} for part in parts),
+             "Ticket path cannot contain empty, dot, or parent traversal segments")
+    return "/".join(parts) + wildcard
 
 
 def _overlap(first, second):
     def surface(path):
-        value = path.replace("\\", "/").rstrip("/").casefold()
+        value = _owned_path(path).casefold()
         for suffix in ("/**", "/*"):
             if value.endswith(suffix):
                 value = value[:-len(suffix)].rstrip("/")
@@ -73,8 +98,9 @@ def _overlap(first, second):
 class ContinuousControllerStore:
     """Durable scheduler in which every configured stream has a visible state."""
 
-    def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS):
-        self.path = Path(path).absolute()
+    def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS,
+                 worktree_roots=()):
+        self.path = protected_state_path(path, worktree_roots)
         _require(isinstance(stream_ids, (list, tuple)) and stream_ids and
                  len(stream_ids) == len(set(stream_ids)) and
                  all(isinstance(item, str) and item.strip() for item in stream_ids),
@@ -104,14 +130,14 @@ class ContinuousControllerStore:
             except BaseException:
                 db.execute("ROLLBACK")
                 raise
+        restrict_state_permissions(self.path)
 
     @contextmanager
     def connection(self):
         db = sqlite3.connect(str(self.path), timeout=10, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA synchronous=FULL")
         try:
+            db.row_factory = sqlite3.Row
+            configure_database(db, self.path, STATE_APPLICATION_ID)
             yield db
         finally:
             db.close()
@@ -180,9 +206,18 @@ class ContinuousControllerStore:
     def _schedule(self, db, tickets, now, host_capacity):
         rows = db.execute("SELECT * FROM stream_status ORDER BY stream_id").fetchall()
         inventory = {item["ticket"]: item for item in tickets}
-        working = [row for row in rows if row["state"] == "WORKING" and row["ticket"] in inventory]
+        working, held_paths = [], []
+        for row in rows:
+            item = inventory.get(row["ticket"]) if row["state"] == "WORKING" else None
+            prerequisites = item is not None and item["disposition"] == "ELIGIBLE" and all((
+                item["dependencies_satisfied"], item["budget_available"], item["cap_available"],
+                item["review_independent"]))
+            if (prerequisites and len(working) < host_capacity and
+                    not any(_overlap(item["paths"], paths) for paths in held_paths)):
+                working.append(row)
+                held_paths.append(item["paths"])
+                self._update_stream(db, row["stream_id"], "WORKING", item, now)
         assigned = {row["ticket"] for row in working}
-        held_paths = [loads(row["paths"]) for row in working]
         slots = max(0, host_capacity - len(working))
         eligible = sorted((item for item in tickets if item["ticket"] not in assigned and
                            item["disposition"] == "ELIGIBLE"), key=lambda item: (item["priority"], item["ticket"]))
@@ -230,6 +265,9 @@ class ContinuousControllerStore:
         """Complete one run and refill its stream within the same transaction."""
         timestamp(now)
         tickets = [_ticket(item) for item in inventory]
+        repeated = next((item for item in tickets if item["ticket"] == ticket), None)
+        _require(repeated is None or repeated["disposition"] == "COMPLETE",
+                 "Completed ticket remains dispatch-eligible; record its terminal lifecycle state before refill")
         with self.transaction() as db:
             row = db.execute("SELECT * FROM stream_status WHERE stream_id=?", (stream_id,)).fetchone()
             _require(row is not None and row["state"] == "WORKING" and row["ticket"] == ticket,
@@ -256,25 +294,55 @@ class ContinuousControllerStore:
             return self._snapshot(db)
 
     def digest(self, now):
-        """Emit change digests immediately without delaying the regular cadence."""
+        """Create/replay a durable pending digest; delivery is separate and acknowledged."""
         current = timestamp(now)
         with self.transaction() as db:
+            pending = db.execute("SELECT payload_json FROM controller_outbox WHERE acknowledged_at IS NULL ORDER BY rowid LIMIT 1").fetchone()
+            if pending is not None:
+                return loads(pending["payload_json"])
             revision = int(self._meta(db, "revision"))
             last_revision = int(self._meta(db, "last_digest_revision"))
             last_regular = self._meta(db, "last_regular_digest")
             cadence = int(self._meta(db, "cadence_seconds"))
-            regular_due = not last_regular or (current - timestamp(last_regular)).total_seconds() >= cadence
+            elapsed = None if not last_regular else (current - timestamp(last_regular)).total_seconds()
+            _require(elapsed is None or elapsed >= 0, "Host clock moved backwards; reconcile cadence before delivery")
+            regular_due = not last_regular or elapsed >= cadence
             change_due = revision > last_revision
+            streams = self._snapshot(db)
+            all_complete = all(s["state"] == "COMPLETE" for s in streams)
+            if all_complete and not change_due:
+                return None
             if not regular_due and not change_due:
                 return None
             kind = "REGULAR" if regular_due else "CHANGE"
-            if regular_due:
-                db.execute("UPDATE controller_meta SET value=? WHERE key='last_regular_digest'", (now,))
-            db.execute("UPDATE controller_meta SET value=? WHERE key='last_digest_revision'", (str(revision),))
-            streams = self._snapshot(db)
-            return {"schema_version": 3, "observed_at": now, "kind": kind,
-                    "cadence_seconds": cadence, "all_complete": all(s["state"] == "COMPLETE" for s in streams),
-                    "streams": streams}
+            from .canonical import fingerprint
+            body = {"schema_version": 3, "observed_at": now, "kind": kind,
+                    "cadence_seconds": cadence, "all_complete": all_complete, "streams": streams}
+            delivery_id = fingerprint("controller-status-digest", {"revision": revision, **body})
+            body["delivery_id"] = delivery_id
+            db.execute("INSERT INTO controller_outbox VALUES(?,?,?,?,?,NULL)",
+                       (delivery_id, kind, revision, now, canonical(body).decode()))
+            return body
+
+    def acknowledge_digest(self, delivery_id, delivered_at):
+        """Acknowledge successful external delivery; unknown delivery is never inferred."""
+        timestamp(delivered_at)
+        with self.transaction() as db:
+            row = db.execute("SELECT * FROM controller_outbox WHERE delivery_id=?", (delivery_id,)).fetchone()
+            _require(row is not None, "Unknown controller digest delivery")
+            if row["acknowledged_at"] is not None:
+                return loads(row["payload_json"])
+            _require(timestamp(delivered_at) >= timestamp(row["observed_at"]),
+                     "Digest acknowledgement predates its observation")
+            db.execute("UPDATE controller_outbox SET acknowledged_at=? WHERE delivery_id=?",
+                       (delivered_at, delivery_id))
+            prior_revision = int(self._meta(db, "last_digest_revision"))
+            db.execute("UPDATE controller_meta SET value=? WHERE key='last_digest_revision'",
+                       (str(max(prior_revision, row["revision"])),))
+            if row["kind"] == "REGULAR":
+                db.execute("UPDATE controller_meta SET value=? WHERE key='last_regular_digest'",
+                           (row["observed_at"],))
+            return loads(row["payload_json"])
 
 
 def _zero_counts():
@@ -282,25 +350,83 @@ def _zero_counts():
 
 
 def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
-                             reconcile_merged_ticket, fetch_scope_page, include_epics=False):
+                             jira_binding, reconcile_merged_ticket, fetch_scope_page,
+                             include_epics=False, max_pages=20, max_items=10000,
+                             max_bytes=16 * 1024 * 1024, max_seconds=60, clock=None):
     """Reconcile the merge first, then report only complete authoritative counts."""
     timestamp(observed_at)
+    _require(isinstance(merged_ticket, str) and merged_ticket.strip() and
+             isinstance(scope, str) and scope.strip(), "Jira ticket and scoped query are required")
+    _require(type(include_epics) is bool, "Jira Epic inclusion must be an observed boolean")
+    _require(isinstance(jira_binding, dict) and set(jira_binding) == {"cloud_id", "project_id", "actor_id"} and
+             all(isinstance(value, str) and value for value in jira_binding.values()),
+             "Jira count needs immutable cloud, project, and actor bindings")
+    _require(type(max_pages) is int and 0 < max_pages <= 100 and type(max_items) is int and
+             0 < max_items <= 100000 and type(max_bytes) is int and 0 < max_bytes <= 64 * 1024 * 1024 and
+             isinstance(max_seconds, (int, float)) and 0 < max_seconds <= 300,
+             "Jira count bounds are invalid")
+    from .canonical import fingerprint
+    scope_sha256 = fingerprint("jira-progress-scope", {"scope": scope, "binding": jira_binding,
+                                                        "include_epics": include_epics})
     base = {"schema_version": 3, "merged_ticket": merged_ticket, "scope": scope,
+            "scope_sha256": scope_sha256, "include_epics": include_epics,
+            "snapshot_id": None,
             "observed_at": observed_at, "closed": "UNOBSERVED", "remaining_open": "UNOBSERVED"}
     if not jira_enabled:
         return {**base, "jira_state": "JIRA_DISABLED", "reason": "Jira is disabled; no reads or writes attempted"}
     try:
         reconciled = reconcile_merged_ticket(merged_ticket)
-    except BaseException as exc:
+    except Exception as exc:
         return {**base, "jira_state": "UNOBSERVED", "reason": f"merge reconciliation failed: {type(exc).__name__}"}
-    if not isinstance(reconciled, dict) or reconciled.get("ticket") != merged_ticket or reconciled.get("status") != "RECONCILED":
+    required_receipt = {"ticket", "issue_id", "cloud_id", "project_id", "actor_id", "status",
+                        "operation_id", "before_status_id", "after_status_id", "observed_at"}
+    if (not isinstance(reconciled, dict) or set(reconciled) != required_receipt or
+            reconciled.get("ticket") != merged_ticket or reconciled.get("status") != "RECONCILED" or
+            any(reconciled.get(key) != jira_binding[key] for key in jira_binding)):
         return {**base, "jira_state": "UNOBSERVED", "reason": "merge reconciliation is incomplete, unknown, or mismatched"}
+    try:
+        uuid_value = __import__("uuid").UUID(reconciled["operation_id"])
+        _require(str(uuid_value) == reconciled["operation_id"], "Jira operation identity is not canonical")
+        timestamp(reconciled["observed_at"])
+        _require(all(isinstance(reconciled[key], str) and reconciled[key] for key in
+                     ("issue_id", "before_status_id", "after_status_id")),
+                 "Jira reconciliation receipt lacks stable issue/status identity")
+    except (ValidationError, ValueError, TypeError, AttributeError):
+        return {**base, "jira_state": "UNOBSERVED", "reason": "merge reconciliation receipt is malformed"}
     items, identities, cursor, seen_cursors = [], set(), None, set()
+    snapshot_id = page_observed_at = None
+    import time
+    timer = clock or time.monotonic
+    started = timer()
+    pages = total_bytes = 0
     try:
         while True:
+            pages += 1
+            if pages > max_pages or timer() - started > max_seconds:
+                raise ValidationError("Jira pagination exceeded its request or time bound")
             page = fetch_scope_page(scope, cursor)
-            if not isinstance(page, dict) or set(page) != {"items", "next_cursor", "complete"} or page["complete"] is not True:
-                raise ValidationError("Jira pagination/query completeness is unproved")
+            if timer() - started > max_seconds:
+                raise ValidationError("Jira pagination exceeded its request or time bound")
+            total_bytes += len(canonical(page))
+            if total_bytes > max_bytes:
+                raise ValidationError("Jira pagination exceeded its byte bound")
+            required_page = {"items", "next_cursor", "complete", "snapshot_id", "scope_sha256", "observed_at"}
+            if not isinstance(page, dict) or set(page) != required_page:
+                raise ValidationError("Malformed Jira scope page")
+            if page["scope_sha256"] != scope_sha256 or not isinstance(page["snapshot_id"], str) or not page["snapshot_id"]:
+                raise ValidationError("Jira page has wrong scope or no stable snapshot")
+            if snapshot_id is None:
+                snapshot_id = page["snapshot_id"]
+                base["snapshot_id"] = snapshot_id
+            if page["snapshot_id"] != snapshot_id:
+                raise ValidationError("Jira snapshot changed during pagination")
+            timestamp(page["observed_at"])
+            if page_observed_at is None:
+                page_observed_at = page["observed_at"]
+            if page["observed_at"] != page_observed_at:
+                raise ValidationError("Jira page observation time changed during pagination")
+            if not isinstance(page["items"], list):
+                raise ValidationError("Malformed Jira scope items")
             for item in page["items"]:
                 if not isinstance(item, dict) or set(item) != {"id", "issue_type", "status_category"}:
                     raise ValidationError("Malformed Jira scope item")
@@ -309,15 +435,24 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
                 identities.add(item["id"])
                 if include_epics or item["issue_type"] != "EPIC":
                     items.append(item)
+                if len(identities) > max_items:
+                    raise ValidationError("Jira scope exceeded its item bound")
             following = page["next_cursor"]
             if following is None:
+                if page["complete"] is not True:
+                    raise ValidationError("Final Jira page did not prove query completeness")
+                base["observed_at"] = page["observed_at"]
                 break
+            if page["complete"] is not False:
+                raise ValidationError("Non-final Jira page made a contradictory completeness claim")
+            if not isinstance(following, str) or not following:
+                raise ValidationError("Jira pagination cursor is malformed")
             if following == cursor or following in seen_cursors:
                 raise ValidationError("Jira pagination cursor did not advance")
             seen_cursors.add(following)
             cursor = following
-    except BaseException as exc:
+    except Exception as exc:
         return {**base, "jira_state": "RECONCILED", "reason": f"scoped Jira count is incomplete: {type(exc).__name__}"}
-    return {**base, "jira_state": "RECONCILED", "closed": sum(i["status_category"] == "TERMINAL" for i in items),
+    return {**base, "jira_state": "COUNTED", "closed": sum(i["status_category"] == "TERMINAL" for i in items),
             "remaining_open": sum(i["status_category"] == "NON_TERMINAL" for i in items),
             "reason": "authoritative complete scoped Jira observation"}

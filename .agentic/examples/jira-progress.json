@@ -5,6 +5,9 @@
   "observed_at": "2026-09-09T12:00:00Z",
   "closed": 4,
   "remaining_open": 2,
-  "jira_state": "RECONCILED",
+  "jira_state": "COUNTED",
+  "scope_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "include_epics": false,
+  "snapshot_id": "fixture-snapshot-1",
   "reason": "authoritative complete scoped Jira observation"
 }

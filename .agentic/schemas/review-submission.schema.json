@@ -198,10 +198,34 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "repository",
+        "base_sha",
+        "head_sha",
+        "head_tree_sha",
         "tuple_sha256",
         "reviewer_set_sha256"
       ],
       "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "base_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "head_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "head_tree_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
         "tuple_sha256": {
           "type": "string",
           "minLength": 1,

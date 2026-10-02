@@ -3,6 +3,7 @@
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "delivery_id",
     "observed_at",
     "kind",
     "cadence_seconds",
@@ -12,6 +13,11 @@
   "properties": {
     "schema_version": {
       "const": 3
+    },
+    "delivery_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
     },
     "observed_at": {
       "type": "string",
@@ -169,6 +175,54 @@
       "uniqueItems": true
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "all_complete": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "streams": {
+            "items": {
+              "properties": {
+                "state": {
+                  "const": "COMPLETE"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "all_complete": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "streams": {
+            "contains": {
+              "properties": {
+                "state": {
+                  "not": {
+                    "const": "COMPLETE"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:awf:1.2:controller-status-digest",
   "title": "Agentic Workflow 1.2 \u2014 controller-status-digest"

@@ -4,6 +4,7 @@
   "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
   "record": {
     "schema_version": 3,
+    "delivery_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "observed_at": "1970-01-01T00:00:00Z",
     "kind": "REGULAR",
     "cadence_seconds": 1,

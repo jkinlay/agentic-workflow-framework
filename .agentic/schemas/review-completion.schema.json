@@ -190,6 +190,49 @@
       ]
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "ready": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "const": "COLLECTING"
+          },
+          "current": {
+            "const": true
+          },
+          "counts": {
+            "properties": {
+              "failed": {
+                "const": 0
+              },
+              "stale": {
+                "const": 0
+              },
+              "outstanding": {
+                "const": 0
+              }
+            }
+          },
+          "reviewers": {
+            "items": {
+              "properties": {
+                "state": {
+                  "const": "ACCEPTABLE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:awf:1.2:review-completion",
   "title": "Agentic Workflow 1.2 \u2014 review-completion"

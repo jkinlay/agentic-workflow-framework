@@ -6,10 +6,13 @@
     "schema_version": 3,
     "merged_ticket": "UNFILLED",
     "scope": "UNFILLED",
+    "scope_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "include_epics": false,
+    "snapshot_id": null,
     "observed_at": "1970-01-01T00:00:00Z",
     "closed": 0,
     "remaining_open": 0,
-    "jira_state": "RECONCILED",
+    "jira_state": "COUNTED",
     "reason": "UNFILLED"
   }
 }

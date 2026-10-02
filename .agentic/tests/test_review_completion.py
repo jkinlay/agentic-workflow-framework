@@ -1,10 +1,17 @@
+import copy
+import json
+import os
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
+import uuid
 from pathlib import Path
 
 from agentic import ValidationError
 from agentic.contracts import Contracts
+from agentic.cli import local_semantics
 from agentic.review_completion import ReviewCompletionStore
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,14 +44,22 @@ class ReviewCompletionTests(unittest.TestCase):
 
     def acceptable(self, reviewer, binding):
         return self.store.record_result(reviewer, binding, "ACCEPTABLE",
-                                        {"verdict": "APPROVE", "reviewer": reviewer})
+                                        {"verdict": "APPROVE", "reviewer": reviewer,
+                                         "findings": []})
+
+    @staticmethod
+    def receipt(admission):
+        return {"status": "SUBMITTED", "operation_id": str(uuid.UUID(int=1)),
+                **admission["provider_preconditions"],
+                "observed_at": "2026-10-02T10:00:00Z"}
 
     def test_incomplete_set_cannot_mutate_provider_and_reports_all_counts(self):
         bindings = self.freeze_and_dispatch()
         self.acceptable("reviewer-a", bindings["reviewer-a"])
         calls = []
         with self.assertRaisesRegex(ValidationError, "Every frozen independent reviewer"):
-            self.store.submit(self.current, self.reviewers, {"verdict": "APPROVE"}, calls.append)
+            self.store.submit(self.current, self.reviewers, {"verdict": "APPROVE"}, calls.append,
+                              lambda admission, intent: self.receipt(admission))
         self.assertEqual(calls, [])
         counts = self.store.status(self.current, self.reviewers)["counts"]
         self.assertEqual(counts, {"required": 3, "completed": 1, "acceptable": 1,
@@ -56,7 +71,8 @@ class ReviewCompletionTests(unittest.TestCase):
                   "tuple_sha256": frozen["tuple_sha256"],
                   "reviewer_set_sha256": frozen["reviewer_set_sha256"]}
         with self.assertRaisesRegex(ValidationError, "persisted dispatch"):
-            self.store.record_result("one", forged, "ACCEPTABLE", {"verdict": "APPROVE"})
+            self.store.record_result("one", forged, "ACCEPTABLE",
+                                     {"verdict": "APPROVE", "reviewer": "one", "findings": []})
 
     def test_failed_timeout_malformed_and_tuple_mismatch_never_complete(self):
         reviewers = ["failed", "timeout", "malformed", "stale"]
@@ -67,7 +83,8 @@ class ReviewCompletionTests(unittest.TestCase):
         self.store.record_result("malformed", bindings["malformed"], "MALFORMED", {"reason": "invalid JSON envelope"})
         stale = dict(bindings["stale"])
         stale["tuple_sha256"] = "0" * 64
-        self.store.record_result("stale", stale, "ACCEPTABLE", {"verdict": "APPROVE"})
+        self.store.record_result("stale", stale, "ACCEPTABLE",
+                                 {"verdict": "APPROVE", "reviewer": "stale", "findings": []})
         summary = self.store.status(self.current, reviewers)
         self.assertFalse(summary["ready"])
         self.assertEqual(summary["counts"], {"required": 4, "completed": 4, "acceptable": 0,
@@ -77,8 +94,10 @@ class ReviewCompletionTests(unittest.TestCase):
         reviewers = ["one"]
         self.store.freeze(self.current, reviewers)
         binding = self.store.dispatch("one", self.current, reviewers)
-        self.store.record_result("one", binding, "ACCEPTABLE", {"verdict": "APPROVE", "sequence": 1})
-        duplicate = self.store.record_result("one", binding, "ACCEPTABLE", {"verdict": "APPROVE", "sequence": 2})
+        self.store.record_result("one", binding, "ACCEPTABLE",
+                                 {"verdict": "APPROVE", "reviewer": "one", "findings": [], "sequence": 1})
+        duplicate = self.store.record_result("one", binding, "ACCEPTABLE",
+                                             {"verdict": "APPROVE", "reviewer": "one", "findings": [], "sequence": 2})
         self.assertEqual(duplicate["reason"], "DUPLICATE")
         self.assertEqual(duplicate["summary"]["reviewers"], [{"reviewer_id": "one", "state": "DUPLICATE"}])
         self.assertEqual(duplicate["summary"]["counts"], {"required": 1, "completed": 1,
@@ -140,7 +159,8 @@ class ReviewCompletionTests(unittest.TestCase):
 
         def submit():
             outcome["summary"] = self.store.submit(
-                self.current, self.reviewers, {"verdict": "APPROVE", "finding_ids": []}, provider)
+                self.current, self.reviewers, {"verdict": "APPROVE", "finding_ids": []}, provider,
+                lambda admission, intent: self.receipt(admission))
 
         thread = threading.Thread(target=submit)
         thread.start()
@@ -168,11 +188,13 @@ class ReviewCompletionTests(unittest.TestCase):
             return {"ok": True}
 
         first = threading.Thread(target=lambda: self.store.submit(
-            self.current, self.reviewers, {"verdict": "APPROVE"}, provider))
+            self.current, self.reviewers, {"verdict": "APPROVE"}, provider,
+            lambda admission, intent: self.receipt(admission)))
         first.start()
         self.assertTrue(entered.wait(5))
         with self.assertRaisesRegex(ValidationError, "already prepared"):
-            self.store.submit(self.current, self.reviewers, {"verdict": "APPROVE"}, provider)
+            self.store.submit(self.current, self.reviewers, {"verdict": "APPROVE"}, provider,
+                              lambda admission, intent: self.receipt(admission))
         release.set()
         first.join(5)
         self.assertEqual(len(calls), 1)
@@ -186,6 +208,65 @@ class ReviewCompletionTests(unittest.TestCase):
         contracts.validate("review-completion", self.store.status(self.current, reviewers))
         admission = self.store.prepare_submission(self.current, reviewers, {"verdict": "APPROVE"})
         contracts.validate("review-submission", admission)
+        local_semantics("review-submission", admission)
+        forged = copy.deepcopy(admission)
+        forged["completion_snapshot"]["counts"]["acceptable"] = 0
+        with self.assertRaisesRegex(ValidationError, "counts"):
+            local_semantics("review-submission", forged)
+
+    def test_transport_cannot_assert_acceptable_against_result(self):
+        for result, message in [
+            ({"verdict": "REQUEST_CHANGES", "reviewer": "one", "findings": []}, "APPROVE"),
+            ({"verdict": "APPROVE", "reviewer": "other", "findings": []}, "identity"),
+            ({"verdict": "APPROVE", "reviewer": "one",
+              "findings": [{"id": "F1", "status": "OPEN"}]}, "unresolved"),
+        ]:
+            with self.subTest(result=result):
+                path = Path(self.temporary.name) / (str(len(message)) + message + ".sqlite3")
+                store = ReviewCompletionStore(path)
+                store.freeze(self.current, ["one"])
+                binding = store.dispatch("one", self.current, ["one"])
+                with self.assertRaisesRegex(ValidationError, message):
+                    store.record_result("one", binding, "ACCEPTABLE", result)
+
+    def test_provider_receipt_must_be_fresh_observation_bound_to_exact_tuple(self):
+        binding = self.store.freeze(self.current, ["one"])
+        dispatch = self.store.dispatch("one", self.current, ["one"])
+        self.acceptable("one", dispatch)
+        admission = self.store.prepare_submission(self.current, ["one"], {"verdict": "APPROVE"})
+        forged = self.receipt(admission)
+        forged["head_sha"] = "9" * 40
+        with self.assertRaisesRegex(ValidationError, "head_sha"):
+            self.store.complete_submission(admission, forged)
+        self.store.mark_submission_unknown(admission["submission_id"], "provider observation mismatch")
+        self.assertEqual(self.store.reconcile_submission(admission, self.receipt(admission))["state"],
+                         "SUBMITTED")
+
+    def test_production_workflow_cli_exposes_review_completion_barrier(self):
+        root = Path(self.temporary.name)
+        worktree = root / "candidate"
+        worktree.mkdir()
+        candidate_path, reviewers_path = root / "candidate.json", root / "reviewers.json"
+        candidate_path.write_text(json.dumps(self.current), encoding="utf-8")
+        reviewers_path.write_text(json.dumps(["one"]), encoding="utf-8")
+        command = [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
+                   "--root", str(ROOT), "review-completion", "--state", str(root / "review.sqlite3"),
+                   "--worktree-root", str(worktree), "freeze", "--candidate", str(candidate_path),
+                   "--reviewers", str(reviewers_path)]
+        completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=30)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["counts"]["outstanding"], 1)
+
+    def test_review_state_is_rejected_inside_worktree_or_through_hardlink(self):
+        root = Path(self.temporary.name)
+        worktree = root / "reviewer-worktree"
+        worktree.mkdir()
+        with self.assertRaisesRegex(ValidationError, "outside"):
+            ReviewCompletionStore(worktree / "state.sqlite3", worktree_roots=[worktree])
+        linked = root / "linked.sqlite3"
+        os.link(self.path, linked)
+        with self.assertRaisesRegex(ValidationError, "hardlinks"):
+            ReviewCompletionStore(linked)
 
 
 if __name__ == "__main__":

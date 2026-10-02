@@ -200,7 +200,8 @@ def main():
     write(ROOT / ".agentic/examples/evidence-bundle.json", bundle)
     write(ROOT / ".agentic/examples/controller-status-digest.json", {
         "schema_version": 3, "observed_at": NOW, "kind": "REGULAR", "cadence_seconds": 900,
-        "all_complete": False, "streams": [{"stream": stream, "state": state, "ticket": ticket,
+        "delivery_id": "d" * 64, "all_complete": False,
+        "streams": [{"stream": stream, "state": state, "ticket": ticket,
             "actor": actor, "reason": reason, "next_action": action, "resume_trigger": trigger,
             "exact_tuple": "base:c/head:b/tree:d/contract:a/review:e", "activity": activity,
             "verification_gate": "PENDING", "reviewer_completion": {"required": 1, "completed": 0,
@@ -215,7 +216,8 @@ def main():
                  "dependency becomes satisfied", "Blocked on EX-3 dependency", "Open")]]})
     write(ROOT / ".agentic/examples/jira-progress.json", {"schema_version": 3, "merged_ticket": "EX-1",
         "scope": "project=EX AND labels=awf-fixture", "observed_at": NOW, "closed": 4,
-        "remaining_open": 2, "jira_state": "RECONCILED",
+        "remaining_open": 2, "jira_state": "COUNTED", "scope_sha256": "d" * 64,
+        "include_epics": False, "snapshot_id": "fixture-snapshot-1",
         "reason": "authoritative complete scoped Jira observation"})
     from agentic.contracts import Contracts
     from agentic.digest import render

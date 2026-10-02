@@ -5,6 +5,16 @@ Version 1.9.3. Final review aggregation and provider submission use
 reviewer worktrees. This ledger records coordination evidence; it grants no
 merge, Jira, dispatch, or provider authority.
 
+The production reference entry point is:
+
+```text
+python .agentic/scripts/workflow.py review-completion --state ABSOLUTE_PROTECTED_DB --worktree-root ABSOLUTE_WORKTREE freeze|dispatch|record|status|prepare|complete|reconcile|recover ...
+```
+
+Keep the SQLite path on controller-owned storage outside every candidate and
+reviewer worktree. The CLI performs state transitions only; a reviewed host
+adapter is still responsible for launching reviewers or mutating a provider.
+
 ## Freeze before dispatch
 
 Before launching any independent reviewer, freeze the complete required
@@ -22,20 +32,29 @@ result and makes that reviewer's contribution unacceptable. Status always
 reports `required`, `completed`, `acceptable`, `failed`, `stale`, and
 `outstanding` counts.
 
+`ACCEPTABLE` is derived from the captured result, not asserted independently:
+the result must name the frozen reviewer, have verdict `APPROVE`, contain a
+findings list with no unresolved item, and fit within the bounded result size.
+Malformed, contradictory, or oversized results are refused.
+
 ## Submit one immutable snapshot
 
 `prepare_submission` takes an immediate SQLite writer transaction, rechecks the
 exact tuple and reviewer set, and admits submission only when every reviewer is
 terminal and acceptable. The transaction stores one immutable completion
 snapshot and final aggregate before returning provider preconditions. A
-provider adapter must enforce those tuple preconditions in its own conditional
-mutation. No adapter call is permitted before admission.
+provider adapter must enforce the repository, base, head, head-tree, tuple, and
+reviewer-set preconditions in its own conditional mutation. No adapter call is
+permitted before admission. Completion needs a fresh provider observation
+receipt with an operation UUID, observed time, and every exact precondition;
+the mutation callback's assertion alone is insufficient.
 
 Once submission is prepared, later or duplicate reviewer results are audited
 as late and cannot change the aggregate. A concurrent second submitter is
 refused. If the provider call fails, or the controller restarts before its
-receipt is durably recorded, state becomes `SUBMISSION_UNKNOWN`; reconcile the
-same operation and never replay it blindly. A submitted verdict remains
+receipt is durably recorded, state becomes `SUBMISSION_UNKNOWN`; use
+`reconcile` with a matching observed receipt for the same operation and never
+replay it blindly. A submitted verdict remains
 immutable even if a later observation finds candidate movement.
 
 Use the generated `review-completion` and `review-submission` contracts for
