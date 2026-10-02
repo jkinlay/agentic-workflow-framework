@@ -1373,9 +1373,26 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
                         "CAS_FAILED_RECOVERY_REQUIRED", records, old_head, created, str(exc))) from exc
                 raise ValidationError(_recovery_message(
                     "CAS_FAILED_RECOVERED", records, old_head, created, "exact pre-operation snapshot restored"))
-            proved, detail = _post_cas_proof(root, snapshot, ref, created, old_commits, records)
+            try:
+                proved, detail = _post_cas_proof(root, snapshot, ref, created, old_commits, records)
+            except Exception as proof_error:
+                # The target ref has already moved.  Snapshot, alias, identity,
+                # permission, and reachability failures are proof failures, not
+                # an exit around exact-CAS rollback.  Catch ordinary exceptions
+                # only; process-control BaseException values still propagate.
+                proved = False
+                detail = ("post-CAS proof exception " + type(proof_error).__name__ +
+                          ": " + (str(proof_error) or "no detail")).replace("\r", " ").replace("\n", " ")
             if not proved:
-                rollback = _git(root, "update-ref", ref, old_head, created, check=False)
+                try:
+                    rollback = _git(root, "update-ref", ref, old_head, created, check=False)
+                except Exception as rollback_error:
+                    rollback_detail = ("exact-CAS rollback invocation failed after " + detail +
+                                       "; rollback exception " + type(rollback_error).__name__ +
+                                       ": " + (str(rollback_error) or "no detail"))
+                    raise ValidationError(_recovery_message(
+                        "POST_CAS_RECOVERY_REQUIRED", records, old_head, created,
+                        rollback_detail.replace("\r", " ").replace("\n", " "))) from rollback_error
                 if rollback.returncode:
                     raise ValidationError(_recovery_message(
                         "POST_CAS_RECOVERY_REQUIRED", records, old_head, created,
@@ -1389,9 +1406,11 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
                     _cleanup_new_objects(root, records, snapshot)
                     if not _failure_state_matches(root, snapshot):
                         raise ValidationError("repository snapshot was not restored")
-                except ValidationError as exc:
+                except Exception as exc:
                     raise ValidationError(_recovery_message(
-                        "POST_CAS_RECOVERY_REQUIRED", records, old_head, created, str(exc))) from exc
+                        "POST_CAS_RECOVERY_REQUIRED", records, old_head, created,
+                        ("after " + detail + "; recovery exception " + type(exc).__name__ +
+                         ": " + (str(exc) or "no detail")).replace("\r", " ").replace("\n", " "))) from exc
                 raise ValidationError(_recovery_message(
                     "POST_CAS_PROOF_FAILED_RECOVERED", records, old_head, created,
                     "exact-CAS rollback restored the pre-operation snapshot after " + detail))

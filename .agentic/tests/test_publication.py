@@ -1091,6 +1091,111 @@ class PublicationRewriteTests(unittest.TestCase):
             if key not in {"objects", "fanouts"}:
                 self.assertEqual(snapshot[key], current[key])
 
+    def test_ac44_post_cas_snapshot_exception_uses_exact_rollback_and_recovery_evidence(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        real_snapshot = publication._rewrite_snapshot
+        calls = []
+
+        def fail_post_cas_snapshot(root):
+            calls.append(root)
+            if len(calls) == 2:
+                raise PermissionError("synthetic post-CAS snapshot denial")
+            return real_snapshot(root)
+
+        with mock.patch.object(publication, "_rewrite_snapshot",
+                               side_effect=fail_post_cas_snapshot):
+            with self.assertRaisesRegex(
+                    ValidationError,
+                    r"POST_CAS_RECOVERY_REQUIRED:.*post-CAS proof exception PermissionError") as caught:
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                                    message, mapping_path=self.mapping)
+        created = re.search(r"new_head=([0-9a-f]+)", str(caught.exception)).group(1)
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertTrue(object_exists(self.repo.path, created))
+
+    def test_ac44_post_cas_ancestor_exception_uses_exact_rollback_and_recovery_evidence(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+        real_is_ancestor = publication._is_ancestor
+
+        def fail_after_cas(root, ancestor, descendant):
+            current = real_git(root, "rev-parse", "refs/heads/awf/EX-6-publication",
+                               check=False)
+            if (current.returncode == 0 and
+                    current.stdout.decode("ascii").strip() != old_head):
+                raise ValidationError("synthetic post-CAS reachability denial")
+            return real_is_ancestor(root, ancestor, descendant)
+
+        with mock.patch.object(publication, "_is_ancestor", side_effect=fail_after_cas):
+            with self.assertRaisesRegex(
+                    ValidationError,
+                    r"POST_CAS_RECOVERY_REQUIRED:.*post-CAS proof exception ValidationError") as caught:
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                                    message, mapping_path=self.mapping)
+        created = re.search(r"new_head=([0-9a-f]+)", str(caught.exception)).group(1)
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertTrue(object_exists(self.repo.path, created))
+
+    def test_ac44_post_cas_proof_exception_contention_never_overwrites_concurrent_ref(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        real_snapshot = publication._rewrite_snapshot
+        real_git = publication._git
+        calls = []
+
+        def contend_then_fail(root):
+            calls.append(root)
+            if len(calls) == 2:
+                real_git(root, "update-ref", "refs/heads/awf/EX-6-publication",
+                         self.repo.base)
+                raise PermissionError("synthetic post-CAS snapshot denial with contention")
+            return real_snapshot(root)
+
+        with mock.patch.object(publication, "_rewrite_snapshot", side_effect=contend_then_fail):
+            with self.assertRaisesRegex(
+                    ValidationError,
+                    r"POST_CAS_RECOVERY_REQUIRED:.*exact-CAS rollback failed after post-CAS proof exception PermissionError") as caught:
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                                    message, mapping_path=self.mapping)
+        created = re.search(r"new_head=([0-9a-f]+)", str(caught.exception)).group(1)
+        self.assertEqual(self.repo.base,
+                         git(self.repo.path, "rev-parse", "refs/heads/awf/EX-6-publication"))
+        self.assertTrue(object_exists(self.repo.path, created))
+
+    def test_ac44_post_cas_recovery_snapshot_exception_is_recovery_required(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        real_snapshot = publication._rewrite_snapshot
+        calls = []
+
+        def fail_proof_and_recovery_snapshots(root):
+            calls.append(root)
+            if len(calls) == 2:
+                raise PermissionError("synthetic post-CAS snapshot denial")
+            if len(calls) == 3:
+                raise PermissionError("synthetic recovery snapshot denial")
+            return real_snapshot(root)
+
+        with mock.patch.object(publication, "_rewrite_snapshot",
+                               side_effect=fail_proof_and_recovery_snapshots):
+            with self.assertRaisesRegex(
+                    ValidationError,
+                    r"POST_CAS_RECOVERY_REQUIRED:.*post-CAS proof exception PermissionError.*recovery exception PermissionError") as caught:
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                                    message, mapping_path=self.mapping)
+        created = re.search(r"new_head=([0-9a-f]+)", str(caught.exception)).group(1)
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertTrue(object_exists(self.repo.path, created))
+
     def test_ac44_fetch_head_and_merge_head_parse_every_canonical_oid(self):
         snapshot = publication._rewrite_snapshot(self.repo.path)
         first = git(self.repo.path, "rev-parse", "HEAD")
