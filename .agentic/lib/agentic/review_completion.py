@@ -14,7 +14,7 @@ import sqlite3
 import uuid
 
 from . import ValidationError
-from .canonical import canonical, fingerprint, loads, now_text
+from .canonical import canonical, fingerprint, loads, now_text, timestamp
 from .controller_state import configure_database, protected_state_path, restrict_state_permissions
 
 
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS review_cycles(
  reviewer_set_sha256 TEXT NOT NULL, state TEXT NOT NULL,
  completion_snapshot_json TEXT, completion_snapshot_sha256 TEXT,
  aggregate_json TEXT, aggregate_sha256 TEXT, submission_id TEXT UNIQUE,
- provider_receipt_json TEXT, invalidation_reason TEXT);
+ submission_prepared_at TEXT, provider_receipt_json TEXT, invalidation_reason TEXT);
 CREATE TABLE IF NOT EXISTS active_cycle(singleton INTEGER PRIMARY KEY CHECK(singleton=1), cycle_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reviewer_results(
  cycle_id TEXT NOT NULL, reviewer_id TEXT NOT NULL, state TEXT NOT NULL,
@@ -126,6 +126,9 @@ class ReviewCompletionStore:
         self.path = protected_state_path(path, worktree_roots)
         with self.connection() as db:
             db.executescript(DDL)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(review_cycles)")}
+            if "submission_prepared_at" not in columns:
+                db.execute("ALTER TABLE review_cycles ADD COLUMN submission_prepared_at TEXT")
         restrict_state_permissions(self.path)
 
     @contextmanager
@@ -298,6 +301,8 @@ class ReviewCompletionStore:
         """Atomically capture the complete set and immutable final aggregate."""
         binding = _binding(candidate, reviewers)
         aggregate_json = canonical(aggregate).decode()
+        _require(binding["tuple"]["review_input_sha256"] == fingerprint("review-input", aggregate),
+                 "Final review aggregate differs from the frozen review-input digest")
         with self.transaction() as db:
             cycle = self._active(db)
             _require(self._matches(cycle, binding), "Candidate or reviewer set moved; aggregate is invalid")
@@ -317,24 +322,55 @@ class ReviewCompletionStore:
             snapshot_hash = fingerprint("review-completion", snapshot)
             aggregate_hash = fingerprint("review-aggregate", aggregate)
             submission_id = str(uuid.uuid4())
-            db.execute("UPDATE review_cycles SET state='SUBMITTING',completion_snapshot_json=?,completion_snapshot_sha256=?,aggregate_json=?,aggregate_sha256=?,submission_id=? WHERE cycle_id=?",
-                       (snapshot_json, snapshot_hash, aggregate_json, aggregate_hash, submission_id, cycle["cycle_id"]))
-            return {"submission_id": submission_id, "cycle_id": cycle["cycle_id"],
-                    "completion_snapshot": snapshot, "completion_snapshot_sha256": snapshot_hash,
-                    "aggregate": loads(aggregate_json), "aggregate_sha256": aggregate_hash,
-                    "provider_preconditions": {"repository": summary["tuple"]["repository"],
-                                               "base_sha": summary["tuple"]["base_sha"],
-                                               "head_sha": summary["tuple"]["head_sha"],
-                                               "head_tree_sha": summary["tuple"]["head_tree_sha"],
-                                               "tuple_sha256": cycle["tuple_sha256"],
-                                               "reviewer_set_sha256": cycle["reviewer_set_sha256"]},
-                    "execution_authority": False}
+            prepared_at = now_text()
+            db.execute("UPDATE review_cycles SET state='SUBMITTING',completion_snapshot_json=?,completion_snapshot_sha256=?,aggregate_json=?,aggregate_sha256=?,submission_id=?,submission_prepared_at=? WHERE cycle_id=?",
+                       (snapshot_json, snapshot_hash, aggregate_json, aggregate_hash,
+                        submission_id, prepared_at, cycle["cycle_id"]))
+            return self._durable_admission(db, self._active(db))
+
+    @staticmethod
+    def _durable_admission(db, cycle):
+        """Reconstruct and reprove the only admission owned by durable state."""
+        _require(all(cycle[field] is not None for field in (
+            "submission_id", "submission_prepared_at", "completion_snapshot_json",
+            "completion_snapshot_sha256", "aggregate_json", "aggregate_sha256")),
+            "Durable review admission is incomplete")
+        tuple_value = loads(cycle["tuple_json"])
+        reviewers = loads(cycle["reviewers_json"])
+        snapshot = loads(cycle["completion_snapshot_json"])
+        admission = {
+            "submission_id": cycle["submission_id"], "cycle_id": cycle["cycle_id"],
+            "completion_snapshot": snapshot,
+            "completion_snapshot_sha256": cycle["completion_snapshot_sha256"],
+            "aggregate": loads(cycle["aggregate_json"]),
+            "aggregate_sha256": cycle["aggregate_sha256"],
+            "provider_preconditions": {
+                "operation_id": cycle["submission_id"],
+                "prepared_at": cycle["submission_prepared_at"],
+                "repository": tuple_value["repository"], "base_sha": tuple_value["base_sha"],
+                "head_sha": tuple_value["head_sha"], "head_tree_sha": tuple_value["head_tree_sha"],
+                "tuple_sha256": cycle["tuple_sha256"],
+                "reviewer_set_sha256": cycle["reviewer_set_sha256"]},
+            "execution_authority": False}
+        validate_submission_semantics(admission)
+        _require(snapshot["tuple"] == tuple_value and
+                 snapshot["tuple_sha256"] == cycle["tuple_sha256"],
+                 "Durable completion snapshot differs from its frozen tuple")
+        _require(snapshot["required_reviewers"] == reviewers and
+                 snapshot["reviewer_set_sha256"] == cycle["reviewer_set_sha256"],
+                 "Durable completion snapshot differs from its frozen reviewer set")
+        expected_results = [dict(row) for row in db.execute(
+            "SELECT reviewer_id,state,result_sha256,terminal_at FROM reviewer_results "
+            "WHERE cycle_id=? ORDER BY reviewer_id", (cycle["cycle_id"],)).fetchall()]
+        _require(snapshot["results"] == expected_results,
+                 "Durable completion snapshot differs from persisted reviewer results")
+        return admission
 
     @staticmethod
     def _provider_receipt(admission, provider_receipt):
         _require(isinstance(provider_receipt, dict) and set(provider_receipt) == {
             "status", "operation_id", "repository", "base_sha", "head_sha", "head_tree_sha",
-            "tuple_sha256", "reviewer_set_sha256", "observed_at"},
+            "tuple_sha256", "reviewer_set_sha256", "prepared_at", "observed_at"},
             "Provider receipt must be the exact bound submission receipt")
         _require(provider_receipt["status"] == "SUBMITTED", "Provider did not confirm submission")
         try:
@@ -343,25 +379,26 @@ class ReviewCompletionStore:
             raise ValidationError("Provider receipt operation_id must be a UUID") from exc
         _require(str(operation_id) == provider_receipt["operation_id"],
                  "Provider receipt operation_id must be canonical")
-        from .canonical import timestamp
-        timestamp(provider_receipt["observed_at"])
         expected = admission["provider_preconditions"]
-        for field in ("repository", "base_sha", "head_sha", "head_tree_sha",
-                      "tuple_sha256", "reviewer_set_sha256"):
+        for field in ("operation_id", "prepared_at", "repository", "base_sha", "head_sha",
+                      "head_tree_sha", "tuple_sha256", "reviewer_set_sha256"):
             _require(provider_receipt[field] == expected[field],
                      f"Provider receipt {field} differs from the admitted submission")
+        _require(timestamp(provider_receipt["observed_at"]) >= timestamp(expected["prepared_at"]),
+                 "Provider receipt observation predates the durable submission admission")
         return canonical(provider_receipt).decode()
 
     def complete_submission(self, admission, provider_receipt):
         """Persist the provider receipt without permitting aggregate replacement."""
-        receipt_json = self._provider_receipt(admission, provider_receipt)
+        validate_submission_semantics(admission)
         with self.transaction() as db:
             cycle = self._active(db)
-            _require(cycle["state"] == "SUBMITTING" and cycle["submission_id"] == admission.get("submission_id"),
+            _require(cycle["state"] == "SUBMITTING",
                      "Submission admission is stale, uncertain, or already consumed")
-            _require(cycle["completion_snapshot_sha256"] == admission.get("completion_snapshot_sha256") and
-                     cycle["aggregate_sha256"] == admission.get("aggregate_sha256"),
-                     "Submission payload differs from the atomic completion snapshot")
+            durable = self._durable_admission(db, cycle)
+            _require(canonical(admission) == canonical(durable),
+                     "Caller admission differs from the immutable durable admission")
+            receipt_json = self._provider_receipt(durable, provider_receipt)
             db.execute("UPDATE review_cycles SET state='SUBMITTED',provider_receipt_json=? WHERE cycle_id=?",
                        (receipt_json, cycle["cycle_id"]))
             return self._summary(db, self._active(db), current=True)
@@ -398,15 +435,15 @@ class ReviewCompletionStore:
 
     def reconcile_submission(self, admission, provider_receipt):
         """Close an uncertain operation only from a fresh bound provider observation."""
-        receipt_json = self._provider_receipt(admission, provider_receipt)
+        validate_submission_semantics(admission)
         with self.transaction() as db:
             cycle = self._active(db)
-            _require(cycle["state"] == "SUBMISSION_UNKNOWN" and
-                     cycle["submission_id"] == admission.get("submission_id"),
+            _require(cycle["state"] == "SUBMISSION_UNKNOWN",
                      "Only the matching uncertain submission can be reconciled")
-            _require(cycle["completion_snapshot_sha256"] == admission.get("completion_snapshot_sha256") and
-                     cycle["aggregate_sha256"] == admission.get("aggregate_sha256"),
-                     "Reconciliation admission differs from the immutable snapshot")
+            durable = self._durable_admission(db, cycle)
+            _require(canonical(admission) == canonical(durable),
+                     "Caller admission differs from the immutable durable admission")
+            receipt_json = self._provider_receipt(durable, provider_receipt)
             db.execute("UPDATE review_cycles SET state='SUBMITTED',provider_receipt_json=? WHERE cycle_id=?",
                        (receipt_json, cycle["cycle_id"]))
             return self._summary(db, self._active(db), current=True)
@@ -461,37 +498,69 @@ def validate_completion_semantics(value):
 
 
 def validate_submission_semantics(value):
-    """Validate that a portable submission contains one acceptable result per reviewer."""
-    _require(isinstance(value, dict), "Review submission must be an object")
-    snapshot = value.get("completion_snapshot", {})
-    required = snapshot.get("required_reviewers", [])
-    results = snapshot.get("results", [])
-    _require([row.get("reviewer_id") for row in results] == required,
+    """Fully validate one immutable, provider-bound review submission."""
+    top_fields = {"submission_id", "cycle_id", "completion_snapshot",
+                  "completion_snapshot_sha256", "aggregate", "aggregate_sha256",
+                  "provider_preconditions", "execution_authority"}
+    _require(isinstance(value, dict) and set(value) == top_fields,
+             "Review submission must be an exact object")
+    for field in ("submission_id", "cycle_id"):
+        try:
+            parsed = uuid.UUID(value[field])
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValidationError(f"Review submission {field} must be a UUID") from exc
+        _require(str(parsed) == value[field], f"Review submission {field} must be canonical")
+    snapshot = value["completion_snapshot"]
+    snapshot_fields = {"cycle_id", "tuple", "tuple_sha256", "required_reviewers",
+                       "reviewer_set_sha256", "counts", "results"}
+    _require(isinstance(snapshot, dict) and set(snapshot) == snapshot_fields,
+             "Completion snapshot must be an exact object")
+    _candidate(snapshot["tuple"])
+    required = _reviewers(snapshot["required_reviewers"])
+    _require(snapshot["required_reviewers"] == required,
+             "Submission reviewers must use deterministic sorted order")
+    results = snapshot["results"]
+    _require(isinstance(results, list) and len(results) == len(required),
+             "Submission needs one result for every frozen reviewer")
+    _require(all(isinstance(row, dict) and set(row) == {
+        "reviewer_id", "state", "result_sha256", "terminal_at"} for row in results),
+        "Submission reviewer results must be exact objects")
+    _require([row["reviewer_id"] for row in results] == required,
              "Submission results must exactly match the sorted frozen reviewer set")
-    _require(required == sorted(required), "Submission reviewers must use deterministic sorted order")
-    _require(value.get("cycle_id") == snapshot.get("cycle_id"),
+    _require(value["cycle_id"] == snapshot["cycle_id"],
              "Submission cycle differs from the completion snapshot")
-    _require(all(row.get("state") == "ACCEPTABLE" for row in results),
+    _require(all(row["state"] == "ACCEPTABLE" and isinstance(row["result_sha256"], str) and
+                 DIGEST.fullmatch(row["result_sha256"]) is not None for row in results),
              "Submission contains a non-acceptable reviewer result")
-    counts = snapshot.get("counts", {})
+    result_times = [timestamp(row["terminal_at"]) for row in results]
+    counts = snapshot["counts"]
     _require(counts == {"required": len(required), "completed": len(required),
                         "acceptable": len(required), "failed": 0, "stale": 0, "outstanding": 0},
              "Submission counts do not prove complete acceptable review")
-    preconditions = value.get("provider_preconditions", {})
+    preconditions = value["provider_preconditions"]
+    precondition_fields = {"operation_id", "prepared_at", "repository", "base_sha", "head_sha",
+                           "head_tree_sha", "tuple_sha256", "reviewer_set_sha256"}
+    _require(isinstance(preconditions, dict) and set(preconditions) == precondition_fields,
+             "Provider preconditions must be an exact durable binding")
+    _require(preconditions["operation_id"] == value["submission_id"],
+             "Provider operation identity differs from the durable submission identity")
+    prepared_at = timestamp(preconditions["prepared_at"])
+    _require(all(observed <= prepared_at for observed in result_times),
+             "Submission preparation predates a frozen reviewer result")
     for field in ("repository", "base_sha", "head_sha", "head_tree_sha"):
-        _require(preconditions.get(field) == snapshot.get("tuple", {}).get(field),
+        _require(preconditions[field] == snapshot["tuple"][field],
                  f"Provider precondition {field} differs from the completion tuple")
-    _require(preconditions.get("tuple_sha256") == snapshot.get("tuple_sha256") and
-             preconditions.get("reviewer_set_sha256") == snapshot.get("reviewer_set_sha256"),
+    _require(preconditions["tuple_sha256"] == snapshot["tuple_sha256"] and
+             preconditions["reviewer_set_sha256"] == snapshot["reviewer_set_sha256"],
              "Provider precondition digests differ from the completion snapshot")
-    _require(snapshot.get("tuple_sha256") == fingerprint("review-tuple", snapshot.get("tuple")) and
-             snapshot.get("reviewer_set_sha256") == fingerprint("reviewer-set", required),
+    _require(snapshot["tuple_sha256"] == fingerprint("review-tuple", snapshot["tuple"]) and
+             snapshot["reviewer_set_sha256"] == fingerprint("reviewer-set", required),
              "Submission tuple or reviewer-set digest is invalid")
-    _require(value.get("completion_snapshot_sha256") == fingerprint("review-completion", snapshot),
+    _require(value["completion_snapshot_sha256"] == fingerprint("review-completion", snapshot),
              "Completion snapshot digest is invalid")
-    _require(value.get("aggregate_sha256") == fingerprint("review-aggregate", value.get("aggregate")),
+    _require(value["aggregate_sha256"] == fingerprint("review-aggregate", value["aggregate"]),
              "Review aggregate digest is invalid")
-    _require(value.get("execution_authority") is False,
+    _require(value["execution_authority"] is False,
              "Review submission record cannot grant execution authority")
     return value
 

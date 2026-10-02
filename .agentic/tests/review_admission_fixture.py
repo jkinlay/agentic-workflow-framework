@@ -29,7 +29,9 @@ def bind_review_admission(bundle):
         "cycle_id": cycle_id, "completion_snapshot": snapshot,
         "completion_snapshot_sha256": fingerprint("review-completion", snapshot),
         "aggregate": aggregate, "aggregate_sha256": fingerprint("review-aggregate", aggregate),
-        "provider_preconditions": {"repository": tuple_value["repository"],
+        "provider_preconditions": {
+            "operation_id": old.get("submission_id", "22222222-2222-4222-8222-222222222222"),
+            "prepared_at": NOW, "repository": tuple_value["repository"],
             "base_sha": tuple_value["base_sha"], "head_sha": tuple_value["head_sha"],
             "head_tree_sha": tuple_value["head_tree_sha"],
             "tuple_sha256": snapshot["tuple_sha256"],

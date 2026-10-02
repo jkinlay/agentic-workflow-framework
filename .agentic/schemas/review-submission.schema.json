@@ -198,6 +198,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "operation_id",
+        "prepared_at",
         "repository",
         "base_sha",
         "head_sha",
@@ -206,6 +208,16 @@
         "reviewer_set_sha256"
       ],
       "properties": {
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "prepared_at": {
+          "type": "string",
+          "minLength": 1,
+          "format": "date-time"
+        },
         "repository": {
           "type": "string",
           "minLength": 1,

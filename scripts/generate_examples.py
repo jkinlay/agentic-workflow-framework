@@ -144,11 +144,13 @@ def example_bundle(cfg):
             "result_sha256": fingerprint("reviewer-result", {
                 "reviewer": reviewers[0], "verdict": "APPROVE", "findings": []}),
             "terminal_at": NOW}]}
-    review_submission = {"submission_id": uid("review-submission"), "cycle_id": cycle_id,
+    submission_id = uid("review-submission")
+    review_submission = {"submission_id": submission_id, "cycle_id": cycle_id,
         "completion_snapshot": completion_snapshot,
         "completion_snapshot_sha256": fingerprint("review-completion", completion_snapshot),
         "aggregate": aggregate, "aggregate_sha256": fingerprint("review-aggregate", aggregate),
-        "provider_preconditions": {"repository": review_tuple["repository"],
+        "provider_preconditions": {"operation_id": submission_id, "prepared_at": NOW,
+            "repository": review_tuple["repository"],
             "base_sha": review_tuple["base_sha"], "head_sha": review_tuple["head_sha"],
             "head_tree_sha": review_tuple["head_tree_sha"],
             "tuple_sha256": completion_snapshot["tuple_sha256"],

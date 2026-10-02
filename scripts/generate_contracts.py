@@ -134,7 +134,8 @@ def catalog():
     schemas["review-submission"] = obj({"submission_id": UUID, "cycle_id": UUID,
         "completion_snapshot": completion_snapshot, "completion_snapshot_sha256": DIGEST,
         "aggregate": {}, "aggregate_sha256": DIGEST,
-        "provider_preconditions": obj({"repository": review_tuple["properties"]["repository"],
+        "provider_preconditions": obj({"operation_id": UUID, "prepared_at": TIME,
+            "repository": review_tuple["properties"]["repository"],
             "base_sha": SHA, "head_sha": SHA, "head_tree_sha": SHA,
             "tuple_sha256": DIGEST, "reviewer_set_sha256": DIGEST}),
         "execution_authority": FALSE})

@@ -11,6 +11,7 @@ from agentic.continuous_controller import (
     ContinuousControllerStore,
     production_controller_cycle,
     production_jira_lifecycle,
+    production_merge_observed,
     production_post_merge_progress,
 )
 from agentic.contracts import Contracts
@@ -307,6 +308,27 @@ class JiraProgressTests(unittest.TestCase):
         self.assertEqual(calls[0], ("reconcile", "QA-1"))
         self.assertEqual((result["jira_state"], result["closed"], result["remaining_open"]),
                          ("COUNTED", 1, 1))
+
+    def test_routine_merge_observation_uses_reconcile_first_progress_route(self):
+        calls = []
+        args = dict(jira_enabled=True, merged_ticket="QA-1", scope=self.scope, observed_at=NOW,
+                    jira_binding=BINDING,
+                    reconcile_merged_ticket=lambda ticket: calls.append(("reconcile", ticket)) or
+                        self.receipt(ticket),
+                    fetch_scope_page=lambda scope, cursor: calls.append(("count", cursor)) or
+                        self.page([]))
+        result = production_merge_observed(
+            lifecycle_state="MERGING",
+            lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
+            jira_progress=args)
+        self.assertEqual(calls, [("reconcile", "QA-1"), ("count", None)])
+        self.assertEqual((result["state"], result["jira_progress"]["jira_state"],
+                          result["execution_authority"]), ("MERGED", "COUNTED", False))
+        calls.clear()
+        with self.assertRaises(ValidationError):
+            production_merge_observed(lifecycle_state="MERGING", lifecycle_facts={},
+                                      jira_progress=args)
+        self.assertEqual(calls, [])
 
     def test_disabled_jira_performs_no_reads_or_writes(self):
         calls = []

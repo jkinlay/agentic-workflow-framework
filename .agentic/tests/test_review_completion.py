@@ -11,7 +11,7 @@ from pathlib import Path
 
 from agentic import ValidationError
 from agentic.authorization import make_request
-from agentic.canonical import load
+from agentic.canonical import fingerprint, load
 from agentic.contracts import Contracts
 from agentic.cli import local_semantics
 from agentic.gates import evaluate
@@ -29,7 +29,7 @@ def candidate(head="2" * 40, tree="3" * 40):
         "head_sha": head,
         "head_tree_sha": tree,
         "contract_sha256": "4" * 64,
-        "review_input_sha256": "5" * 64,
+        "review_input_sha256": fingerprint("review-input", {"verdict": "APPROVE"}),
     }
 
 
@@ -55,9 +55,8 @@ class ReviewCompletionTests(unittest.TestCase):
 
     @staticmethod
     def receipt(admission):
-        return {"status": "SUBMITTED", "operation_id": str(uuid.UUID(int=1)),
-                **admission["provider_preconditions"],
-                "observed_at": "2026-10-02T10:00:00Z"}
+        return {"status": "SUBMITTED", **admission["provider_preconditions"],
+                "observed_at": admission["provider_preconditions"]["prepared_at"]}
 
     def test_incomplete_set_cannot_mutate_provider_and_reports_all_counts(self):
         bindings = self.freeze_and_dispatch()
@@ -165,7 +164,7 @@ class ReviewCompletionTests(unittest.TestCase):
 
         def submit():
             outcome["summary"] = self.store.submit(
-                self.current, self.reviewers, {"verdict": "APPROVE", "finding_ids": []}, provider,
+                self.current, self.reviewers, {"verdict": "APPROVE"}, provider,
                 lambda admission, intent: self.receipt(admission))
 
         thread = threading.Thread(target=submit)
@@ -177,7 +176,7 @@ class ReviewCompletionTests(unittest.TestCase):
         thread.join(5)
         self.assertFalse(thread.is_alive())
         self.assertEqual(outcome["summary"]["state"], "SUBMITTED")
-        self.assertEqual(self.store.submitted()["aggregate"], {"verdict": "APPROVE", "finding_ids": []})
+        self.assertEqual(self.store.submitted()["aggregate"], {"verdict": "APPROVE"})
 
     def test_two_concurrent_submitters_admit_only_one_provider_mutation(self):
         bindings = self.freeze_and_dispatch()
@@ -212,6 +211,8 @@ class ReviewCompletionTests(unittest.TestCase):
         self.acceptable("one", binding)
         contracts = Contracts(ROOT / ".agentic/schemas")
         contracts.validate("review-completion", self.store.status(self.current, reviewers))
+        with self.assertRaisesRegex(ValidationError, "review-input digest"):
+            self.store.prepare_submission(self.current, reviewers, {"verdict": "REQUEST_CHANGES"})
         admission = self.store.prepare_submission(self.current, reviewers, {"verdict": "APPROVE"})
         contracts.validate("review-submission", admission)
         local_semantics("review-submission", admission)
@@ -236,7 +237,7 @@ class ReviewCompletionTests(unittest.TestCase):
                     store.record_result("one", binding, "ACCEPTABLE", result)
 
     def test_provider_receipt_must_be_fresh_observation_bound_to_exact_tuple(self):
-        binding = self.store.freeze(self.current, ["one"])
+        self.store.freeze(self.current, ["one"])
         dispatch = self.store.dispatch("one", self.current, ["one"])
         self.acceptable("one", dispatch)
         admission = self.store.prepare_submission(self.current, ["one"], {"verdict": "APPROVE"})
@@ -244,7 +245,69 @@ class ReviewCompletionTests(unittest.TestCase):
         forged["head_sha"] = "9" * 40
         with self.assertRaisesRegex(ValidationError, "head_sha"):
             self.store.complete_submission(admission, forged)
+        forged = self.receipt(admission)
+        forged["operation_id"] = str(uuid.UUID(int=9))
+        with self.assertRaisesRegex(ValidationError, "operation_id"):
+            self.store.complete_submission(admission, forged)
+        forged = self.receipt(admission)
+        forged["observed_at"] = "1970-01-01T00:00:00Z"
+        with self.assertRaisesRegex(ValidationError, "predates"):
+            self.store.complete_submission(admission, forged)
         self.store.mark_submission_unknown(admission["submission_id"], "provider observation mismatch")
+        self.assertEqual(self.store.reconcile_submission(admission, self.receipt(admission))["state"],
+                         "SUBMITTED")
+
+    def test_altered_caller_admission_cannot_redirect_complete_or_reconcile(self):
+        self.store.freeze(self.current, ["one"])
+        dispatch = self.store.dispatch("one", self.current, ["one"])
+        self.acceptable("one", dispatch)
+        admission = self.store.prepare_submission(self.current, ["one"], {"verdict": "APPROVE"})
+
+        def changed_identity(value):
+            value["submission_id"] = str(uuid.UUID(int=44))
+            value["provider_preconditions"]["operation_id"] = value["submission_id"]
+
+        def changed_time(value):
+            value["provider_preconditions"]["prepared_at"] = "2030-01-01T00:00:00Z"
+
+        def changed_tuple(value):
+            snapshot = value["completion_snapshot"]
+            snapshot["tuple"]["repository"] = "other/project"
+            snapshot["tuple_sha256"] = fingerprint("review-tuple", snapshot["tuple"])
+            value["provider_preconditions"]["repository"] = "other/project"
+            value["provider_preconditions"]["tuple_sha256"] = snapshot["tuple_sha256"]
+            value["completion_snapshot_sha256"] = fingerprint("review-completion", snapshot)
+
+        def changed_reviewers(value):
+            snapshot = value["completion_snapshot"]
+            snapshot["required_reviewers"].append("reviewer-z")
+            snapshot["results"].append({"reviewer_id": "reviewer-z", "state": "ACCEPTABLE",
+                "result_sha256": "9" * 64, "terminal_at": snapshot["results"][0]["terminal_at"]})
+            snapshot["counts"].update(required=2, completed=2, acceptable=2)
+            snapshot["reviewer_set_sha256"] = fingerprint("reviewer-set", snapshot["required_reviewers"])
+            value["provider_preconditions"]["reviewer_set_sha256"] = snapshot["reviewer_set_sha256"]
+            value["completion_snapshot_sha256"] = fingerprint("review-completion", snapshot)
+
+        def changed_aggregate(value):
+            value["aggregate"] = {"verdict": "APPROVE", "redirected": True}
+            value["aggregate_sha256"] = fingerprint("review-aggregate", value["aggregate"])
+
+        mutations = (changed_identity, changed_time, changed_tuple, changed_reviewers, changed_aggregate)
+        for mutation in mutations:
+            with self.subTest(route="complete", mutation=mutation.__name__):
+                forged = copy.deepcopy(admission)
+                mutation(forged)
+                from agentic.review_completion import validate_submission_semantics
+                validate_submission_semantics(forged)
+                with self.assertRaisesRegex(ValidationError, "immutable durable admission"):
+                    self.store.complete_submission(forged, self.receipt(forged))
+        self.store.mark_submission_unknown(admission["submission_id"], "provider completion unavailable")
+        for mutation in mutations:
+            with self.subTest(route="reconcile", mutation=mutation.__name__):
+                forged = copy.deepcopy(admission)
+                mutation(forged)
+                with self.assertRaisesRegex(ValidationError, "immutable durable admission"):
+                    self.store.reconcile_submission(forged, self.receipt(forged))
         self.assertEqual(self.store.reconcile_submission(admission, self.receipt(admission))["state"],
                          "SUBMITTED")
 
@@ -252,16 +315,42 @@ class ReviewCompletionTests(unittest.TestCase):
         root = Path(self.temporary.name)
         worktree = root / "candidate"
         worktree.mkdir()
+        state_path = root / "review.sqlite3"
         candidate_path, reviewers_path = root / "candidate.json", root / "reviewers.json"
         candidate_path.write_text(json.dumps(self.current), encoding="utf-8")
         reviewers_path.write_text(json.dumps(["one"]), encoding="utf-8")
-        command = [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
-                   "--root", str(ROOT), "review-completion", "--state", str(root / "review.sqlite3"),
-                   "--worktree-root", str(worktree), "freeze", "--candidate", str(candidate_path),
+        prefix = [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
+                  "--root", str(ROOT), "review-completion", "--state", str(state_path),
+                  "--worktree-root", str(worktree)]
+        command = [*prefix, "freeze", "--candidate", str(candidate_path),
                    "--reviewers", str(reviewers_path)]
         completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=30)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(completed.stdout)["counts"]["outstanding"], 1)
+
+        cli_store = ReviewCompletionStore(state_path, worktree_roots=[worktree])
+        binding = cli_store.dispatch("one", self.current, ["one"])
+        cli_store.record_result("one", binding, "ACCEPTABLE",
+                                {"verdict": "APPROVE", "reviewer": "one", "findings": []})
+        admission = cli_store.prepare_submission(self.current, ["one"], {"verdict": "APPROVE"})
+        forged = copy.deepcopy(admission)
+        forged["provider_preconditions"]["repository"] = "other/project"
+        admission_path, receipt_path = root / "forged-admission.json", root / "forged-receipt.json"
+        admission_path.write_text(json.dumps(forged), encoding="utf-8")
+        receipt_path.write_text(json.dumps(self.receipt(forged)), encoding="utf-8")
+        completed = subprocess.run([*prefix, "complete", "--admission", str(admission_path),
+                                    "--receipt", str(receipt_path)],
+                                   cwd=ROOT, text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("repository", completed.stderr)
+        self.assertEqual(cli_store.submitted()["state"], "SUBMITTING")
+        cli_store.mark_submission_unknown(admission["submission_id"], "CLI completion rejected")
+        completed = subprocess.run([*prefix, "reconcile", "--admission", str(admission_path),
+                                    "--receipt", str(receipt_path)],
+                                   cwd=ROOT, text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("repository", completed.stderr)
+        self.assertEqual(cli_store.submitted()["state"], "SUBMISSION_UNKNOWN")
 
     def test_review_state_is_rejected_inside_worktree_or_through_hardlink(self):
         root = Path(self.temporary.name)

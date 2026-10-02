@@ -98,8 +98,8 @@ both counts unobserved.
 `production_jira_lifecycle` reuses the configured event map, creates one bound
 transition record, calls the reviewed write adapter once, and records a
 separate readback. Missing or mismatched readback stops writes for that ticket.
-`post_merge_jira_progress` provides the bounded post-merge reconciliation and
-count report.
+`production_merge_observed` connects merge observation to reconcile-first Jira
+counts.
 
 Final review submission separately requires the
 [review completion barrier](33-REVIEW-COMPLETION-BARRIER.md).

@@ -635,3 +635,16 @@ def production_jira_lifecycle(*, config, contract, event, facts, binding,
 def production_post_merge_progress(**adapters):
     """Named production route for reconcile-first scoped Jira reporting."""
     return post_merge_jira_progress(**adapters)
+
+
+def production_merge_observed(*, lifecycle_state, lifecycle_facts, jira_progress):
+    """Record a routine observed merge, then reconcile Jira and report counts."""
+    _require(lifecycle_state in {"MERGING", "MERGE_UNKNOWN"},
+             "Production merge observation needs a merge-in-progress state")
+    _require(isinstance(lifecycle_facts, dict) and isinstance(jira_progress, dict),
+             "Production merge observation needs lifecycle facts and Jira adapters")
+    from .lifecycle import transition
+    state = transition(lifecycle_state, "MERGE_OBSERVED", lifecycle_facts)
+    progress = production_post_merge_progress(**jira_progress)
+    return {"schema_version": 3, "state": state, "jira_progress": progress,
+            "execution_authority": False}

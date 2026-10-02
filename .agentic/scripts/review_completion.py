@@ -10,7 +10,7 @@ import argparse
 import json
 
 from agentic.canonical import load
-from agentic.review_completion import ReviewCompletionStore
+from agentic.review_completion import ReviewCompletionStore, validate_submission_semantics
 
 
 def main(argv=None, default_root=ROOT):
@@ -51,9 +51,11 @@ def main(argv=None, default_root=ROOT):
     elif args.command == "record":
         output = store.record_result(args.reviewer, load(args.binding), args.outcome, load(args.result))
     elif args.command == "complete":
-        output = store.complete_submission(load(args.admission), load(args.receipt))
+        admission = validate_submission_semantics(load(args.admission))
+        output = store.complete_submission(admission, load(args.receipt))
     elif args.command == "reconcile":
-        output = store.reconcile_submission(load(args.admission), load(args.receipt))
+        admission = validate_submission_semantics(load(args.admission))
+        output = store.reconcile_submission(admission, load(args.receipt))
     else:
         output = store.recover()
     print(json.dumps(output, indent=2))

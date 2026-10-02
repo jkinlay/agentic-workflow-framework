@@ -325,6 +325,8 @@
     },
     "aggregate_sha256": "24805c5c09460fe0bbcc57769ef1529f95bdc60fa9411e7189adf5d8b5d75315",
     "provider_preconditions": {
+      "operation_id": "0e6143bf-d2af-5b18-8d8d-72f129b9bb7f",
+      "prepared_at": "2026-09-09T12:00:00Z",
       "repository": "fixture/example",
       "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
       "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
