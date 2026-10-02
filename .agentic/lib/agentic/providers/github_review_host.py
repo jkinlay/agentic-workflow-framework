@@ -136,9 +136,14 @@ class HostDriver:
         return result.stdout
 
     def git(self, checkout, *args, strip=True, binary=False):
+        # The isolated Git environment intentionally ignores host configuration.
+        # Pin Windows' checkout conversion so a clean CRLF worktree does not
+        # become falsely dirty when the user's global core.autocrlf is removed.
+        conversion = ['-c', 'core.autocrlf=true'] if os.name == 'nt' else []
         value = self.run('git', ['--no-replace-objects', '-c','core.useReplaceRefs=false',
-            '-c','core.hooksPath=' + str(self.state / 'empty-hooks'), '-c','protocol.file.allow=never',
-            '-c','core.fsmonitor=false', '-C',str(checkout),*args], binary=binary)
+            *conversion, '-c','core.hooksPath=' + str(self.state / 'empty-hooks'),
+            '-c','protocol.file.allow=never', '-c','core.fsmonitor=false',
+            '-C',str(checkout),*args], binary=binary)
         return value.strip() if strip else value
 
     def api(self, suffix):

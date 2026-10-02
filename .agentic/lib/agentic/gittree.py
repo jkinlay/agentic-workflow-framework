@@ -76,7 +76,7 @@ def _base_entries(root, base, oid_bytes):
 
 
 def _status(root):
-    raw = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
+    raw = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty")
     records = raw.split(b"\0")
     tracked, untracked = set(), set()
     index = 0

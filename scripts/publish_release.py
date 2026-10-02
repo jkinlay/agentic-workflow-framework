@@ -233,7 +233,8 @@ def version_problems(source):
             continue
         # These operating inputs have their own wire-format revisions.
         independent_revision = schema.name in {
-            "operating-config.schema.json", "operating-epics.schema.json"}
+            "activation-status.schema.json", "operating-config.schema.json",
+            "operating-epics.schema.json"}
         for field in ("schema_version", "version"):
             prop = value.get("properties", {}).get(field, {})
             if (schema_revision is not None and not independent_revision
