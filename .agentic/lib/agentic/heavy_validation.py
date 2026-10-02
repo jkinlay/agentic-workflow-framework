@@ -3,27 +3,39 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
+import os
+from pathlib import Path
 import re
+import signal
+import stat
 import subprocess
 import threading
 import time
 from typing import Any
 
 from . import ValidationError
-from .canonical import fingerprint, loads, now_text, sha256, timestamp
+from .canonical import fingerprint, load_yaml, loads, now_text, sha256, timestamp
 from .child_process import child_env
 
 
-PLAN_FORMAT = "awf-heavy-validation-plan-1"
-REVIEW_FORMAT = "awf-heavy-validation-review-1"
-CAPACITY_FORMAT = "awf-heavy-validation-capacity-1"
+PLAN_FORMAT = "awf-heavy-validation-plan-2"
+REVIEW_FORMAT = "awf-heavy-validation-review-2"
+CAPACITY_FORMAT = "awf-heavy-validation-capacity-2"
+RESULT_FORMAT = "awf-heavy-validation-result-2"
 TERMINAL_STATES = frozenset({"PASS", "FAILED", "TIMED_OUT", "CANCELLED"})
+FROZEN_H_PROVIDER_API_KEY_ENV_VARS = frozenset({
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY",
+    "CODEX_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
+})
+PROTECTED_GITHUB_ENV_VARS = frozenset({"GH_TOKEN", "GITHUB_TOKEN"})
+_SHA = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _LABEL = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _PARTITION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _MAX_PARTITIONS = 256
 _MAX_ARGV = 64
 _MAX_TOKEN_BYTES = 8192
@@ -76,15 +88,83 @@ def _verified_load(raw: bytes, expected_sha256: str, label: str) -> dict:
     return _mapping(value, label)
 
 
+def _validate_candidate(value: Any, label: str = "candidate") -> dict:
+    value = _mapping(value, label)
+    _exact_keys(value, {"repository_id", "base_sha", "head_sha", "tree_sha"}, label)
+    _positive_int(value["repository_id"], f"{label}.repository_id")
+    for key in ("base_sha", "head_sha", "tree_sha"):
+        if not isinstance(value[key], str) or not _SHA.fullmatch(value[key]):
+            raise ValidationError(f"{label}.{key} must be a lowercase SHA-1 object ID")
+    return deepcopy(value)
+
+
+def _validate_config(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
+    if not isinstance(raw, bytes):
+        raise ValidationError("config must be supplied as bytes")
+    expected = _expected_digest(expected_sha256, "expected config SHA-256")
+    actual = sha256(raw)
+    if actual != expected:
+        raise ValidationError(f"config SHA-256 mismatch: expected {expected}, got {actual}")
+    try:
+        value = loads(raw.decode("utf-8")) if raw.lstrip().startswith(b"{") else load_yaml(raw)
+    except UnicodeError as exc:
+        raise ValidationError("config must be UTF-8") from exc
+    return _mapping(value, "config"), actual
+
+
+def _is_alias(path: Path) -> bool:
+    info = os.lstat(path)
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def resolve_without_alias(path_value: str | os.PathLike[str], label: str, *, directory: bool) -> Path:
+    """Reject lexical symlink/reparse components before resolving an absolute path."""
+    lexical = Path(path_value)
+    if not lexical.is_absolute():
+        raise ValidationError(f"{label} must be absolute")
+    lexical = Path(os.path.abspath(os.fspath(lexical)))
+    current = Path(lexical.anchor)
+    for component in lexical.parts[1:]:
+        current /= component
+        try:
+            if _is_alias(current):
+                raise ValidationError(f"{label} uses a symlink or reparse alias: {current}")
+        except FileNotFoundError as exc:
+            raise ValidationError(f"{label} does not exist: {current}") from exc
+    resolved = lexical.resolve(strict=True)
+    if os.path.normcase(str(resolved)) != os.path.normcase(str(lexical)):
+        raise ValidationError(f"{label} lexical and resolved paths differ")
+    if directory and not resolved.is_dir():
+        raise ValidationError(f"{label} must be a directory")
+    if not directory and not resolved.is_file():
+        raise ValidationError(f"{label} must be a regular file")
+    return resolved
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     value = _verified_load(raw, expected_sha256, "plan")
     _exact_keys(value, {"format", "workload_id", "engine", "resource_class",
-                        "required_resources", "requested_parallelism", "partitions"}, "plan")
+                        "required_resources", "requested_parallelism", "candidate",
+                        "working_directory", "partitions"}, "plan")
     if value["format"] != PLAN_FORMAT:
         raise ValidationError("Unsupported heavy validation plan format")
     for field in ("workload_id", "engine"):
         if not isinstance(value[field], str) or not _LABEL.fullmatch(value[field]):
             raise ValidationError(f"Invalid plan {field}")
+    value["candidate"] = _validate_candidate(value["candidate"], "plan.candidate")
+    if (not isinstance(value["working_directory"], str)
+            or not Path(value["working_directory"]).is_absolute()
+            or _CONTROL.search(value["working_directory"])):
+        raise ValidationError("plan.working_directory must be an absolute path string")
     if value["resource_class"] not in {"standard", "heavy", "gpu"}:
         raise ValidationError("resource_class must be standard, heavy, or gpu")
     resources = value["required_resources"]
@@ -102,7 +182,7 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     names: set[str] = set()
     for index, part in enumerate(parts):
         part = _mapping(part, f"partition {index}")
-        _exact_keys(part, {"name", "argv", "timeout_seconds", "accepted_exit_codes"},
+        _exact_keys(part, {"name", "argv", "executable", "timeout_seconds", "accepted_exit_codes"},
                     f"partition {index}")
         name = part["name"]
         if not isinstance(name, str) or not _PARTITION_NAME.fullmatch(name):
@@ -119,6 +199,13 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
             if (not isinstance(token, str) or not token
                     or len(token.encode("utf-8")) > _MAX_TOKEN_BYTES or _CONTROL.search(token)):
                 raise ValidationError(f"partition {name} argv token is invalid")
+        executable = _mapping(part["executable"], f"partition {name} executable")
+        _exact_keys(executable, {"path", "sha256"}, f"partition {name} executable")
+        if not isinstance(executable["path"], str) or not Path(executable["path"]).is_absolute():
+            raise ValidationError(f"partition {name} executable.path must be absolute")
+        _expected_digest(executable["sha256"], f"partition {name} executable.sha256")
+        if os.path.normcase(argv[0]) != os.path.normcase(executable["path"]):
+            raise ValidationError(f"partition {name} argv[0] must equal executable.path")
         _positive_int(part["timeout_seconds"], f"partition {name} timeout_seconds",
                       maximum=86_400)
         exits = part["accepted_exit_codes"]
@@ -132,25 +219,54 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     return value, sha256(raw)
 
 
-def _validate_review(raw: bytes, expected_sha256: str, plan_digest: str, now: str) -> tuple[dict, str]:
+def _validate_review(raw: bytes, expected_sha256: str, plan_digest: str,
+                     candidate: dict, now: str) -> tuple[dict, str]:
     value = _verified_load(raw, expected_sha256, "review")
-    _exact_keys(value, {"format", "plan_sha256", "decision", "reviewer_identity",
+    _exact_keys(value, {"format", "plan_sha256", "candidate", "decision", "reviewer",
                         "reviewed_at", "expires_at"}, "review")
     if value["format"] != REVIEW_FORMAT:
         raise ValidationError("Unsupported heavy validation review format")
     if value["plan_sha256"] != plan_digest:
         raise ValidationError("review does not bind the submitted plan SHA-256")
+    if _validate_candidate(value["candidate"], "review.candidate") != candidate:
+        raise ValidationError("review candidate tuple does not match the plan")
     if value["decision"] != "APPROVE":
         raise ValidationError("review is not approved")
-    identity = value["reviewer_identity"]
-    if not isinstance(identity, str) or not identity.strip() or len(identity.encode("utf-8")) > 256:
-        raise ValidationError("Invalid review reviewer_identity")
+    reviewer = _mapping(value["reviewer"], "review.reviewer")
+    _exact_keys(reviewer, {"provider", "immutable_id", "login"}, "review.reviewer")
+    for field in ("provider", "immutable_id", "login"):
+        if not isinstance(reviewer[field], str) or not reviewer[field].strip() or len(reviewer[field]) > 256:
+            raise ValidationError(f"Invalid review reviewer.{field}")
     reviewed = timestamp(value["reviewed_at"])
     expires = timestamp(value["expires_at"])
     instant = timestamp(now)
     if reviewed > instant or expires <= instant or expires <= reviewed:
         raise ValidationError("Review validity interval does not include execution time")
     return value, sha256(raw)
+
+
+def _authenticate_review(review: dict, review_digest: str, plan_digest: str,
+                         candidate: dict, authenticator) -> dict:
+    if authenticator is None:
+        raise ValidationError("Authenticated review authority is unavailable")
+    try:
+        value = authenticator(deepcopy(review), review_digest, plan_digest, deepcopy(candidate))
+    except Exception as exc:
+        raise ValidationError(f"Authenticated review lookup failed: {type(exc).__name__}") from exc
+    value = _mapping(value, "authenticated review")
+    _exact_keys(value, {"status", "provider", "immutable_id", "login", "evidence_sha256",
+                        "review_sha256", "plan_sha256", "candidate"}, "authenticated review")
+    if value["status"] != "AUTHENTICATED":
+        raise ValidationError("Review authority did not authenticate the approval")
+    for field in ("provider", "immutable_id", "login"):
+        if value[field] != review["reviewer"][field]:
+            raise ValidationError(f"Authenticated reviewer {field} does not match review")
+    _expected_digest(value["evidence_sha256"], "authenticated review evidence_sha256")
+    if value["review_sha256"] != review_digest or value["plan_sha256"] != plan_digest:
+        raise ValidationError("Authenticated review digest binding mismatch")
+    if _validate_candidate(value["candidate"], "authenticated review candidate") != candidate:
+        raise ValidationError("Authenticated review candidate tuple mismatch")
+    return deepcopy(value)
 
 
 def _validate_slots(value: Any, label: str) -> dict[str, int]:
@@ -164,7 +280,8 @@ def _validate_slots(value: Any, label: str) -> dict[str, int]:
 
 
 def _validate_capacity(raw: bytes | None, expected_sha256: str | None, now: str,
-                       max_age_seconds: int) -> tuple[dict | None, str | None, bool]:
+                       max_age_seconds: int, plan_digest: str, config_digest: str,
+                       candidate: dict) -> tuple[dict | None, str | None, bool]:
     if raw is None:
         if expected_sha256 is not None:
             raise ValidationError("Expected capacity SHA-256 supplied without capacity evidence")
@@ -173,10 +290,14 @@ def _validate_capacity(raw: bytes | None, expected_sha256: str | None, now: str,
         raise ValidationError("Capacity evidence requires an expected SHA-256")
     value = _verified_load(raw, expected_sha256, "capacity")
     _exact_keys(value, {"format", "observed_at", "broker_id", "workers_available",
-                        "heavy_jobs_available", "gpu_jobs_available", "resources_available",
-                        "engines"}, "capacity")
+                         "heavy_jobs_available", "gpu_jobs_available", "resources_available",
+                         "engines", "plan_sha256", "config_sha256", "candidate"}, "capacity")
     if value["format"] != CAPACITY_FORMAT:
         raise ValidationError("Unsupported heavy validation capacity format")
+    if value["plan_sha256"] != plan_digest or value["config_sha256"] != config_digest:
+        raise ValidationError("capacity does not bind the current plan and config")
+    if _validate_candidate(value["candidate"], "capacity.candidate") != candidate:
+        raise ValidationError("capacity candidate tuple mismatch")
     timestamp(value["observed_at"])
     if not isinstance(value["broker_id"], str) or len(value["broker_id"].encode("utf-8")) > 256:
         raise ValidationError("Invalid capacity broker_id")
@@ -206,12 +327,86 @@ def _broker(config: dict) -> tuple[dict, dict, dict]:
     broker = _mapping(execution.get("host_broker"), "config.execution.host_broker")
     if not isinstance(broker.get("enabled"), bool):
         raise ValidationError("host_broker.enabled must be boolean")
+    if broker.get("lease_before_dispatch") is not True:
+        raise ValidationError("host_broker.lease_before_dispatch must be true")
     if not isinstance(broker.get("broker_id"), str):
         raise ValidationError("host_broker.broker_id must be a string")
     for field in ("max_workers", "max_heavy_jobs", "max_gpu_jobs"):
         _nonnegative_int(broker.get(field), f"host_broker.{field}")
     resources = _validate_slots(broker.get("resources", {}), "host_broker.resources")
     return execution, broker, resources
+
+
+def _strip_names(config: dict) -> frozenset[str]:
+    values = _mapping(config.get("execution"), "config.execution").get("child_env_strip_extra", [])
+    if not isinstance(values, list):
+        raise ValidationError("execution.child_env_strip_extra must be a list")
+    folded: set[str] = set()
+    for value in values:
+        if not isinstance(value, str) or not _ENV_NAME.fullmatch(value):
+            raise ValidationError("execution.child_env_strip_extra contains an invalid environment name")
+        name = value.upper()
+        if name in PROTECTED_GITHUB_ENV_VARS:
+            raise ValidationError(f"execution.child_env_strip_extra cannot name {name}")
+        if name in folded:
+            raise ValidationError("execution.child_env_strip_extra contains a case-insensitive duplicate")
+        folded.add(name)
+    return frozenset(folded)
+
+
+def _validation_child_env(config: dict, base=None) -> dict:
+    environment = child_env(base)
+    denied = FROZEN_H_PROVIDER_API_KEY_ENV_VARS | _strip_names(config)
+    for key in list(environment):
+        if key.upper() in denied:
+            environment.pop(key)
+    return environment
+
+
+def _lease_request(plan: dict, plan_digest: str, config_digest: str,
+                   capacity_digest: str, parallelism: int, now: str) -> dict:
+    required_until = timestamp(now) + timedelta(
+        seconds=sum(part["timeout_seconds"] for part in plan["partitions"]) + 60)
+    return {"format": "awf-heavy-validation-lease-request-1",
+            "candidate": deepcopy(plan["candidate"]), "plan_sha256": plan_digest,
+            "config_sha256": config_digest, "capacity_sha256": capacity_digest,
+            "parallelism": parallelism, "resource_class": plan["resource_class"],
+            "engine": plan["engine"], "required_resources": list(plan["required_resources"]),
+            "required_until": required_until.isoformat(timespec="seconds").replace("+00:00", "Z")}
+
+
+def _validate_lease(value: Any, request: dict, broker_id: str, now: str) -> dict:
+    value = _mapping(value, "broker lease")
+    if value.get("status") == "DENIED":
+        _exact_keys(value, {"status", "reason"}, "denied broker lease")
+        if not isinstance(value["reason"], str) or not value["reason"]:
+            raise ValidationError("Denied broker lease needs a reason")
+        return deepcopy(value)
+    _exact_keys(value, {"status", "lease_id", "fencing_token", "broker_id", "acquired_at",
+                        "expires_at", "request_sha256"}, "broker lease")
+    if value["status"] != "GRANTED" or not isinstance(value["lease_id"], str) or not value["lease_id"]:
+        raise ValidationError("Broker lease is not a valid grant")
+    _positive_int(value["fencing_token"], "broker lease fencing_token")
+    if value["broker_id"] != broker_id or value["request_sha256"] != fingerprint("heavy-validation-lease-request", request):
+        raise ValidationError("Broker lease binding mismatch")
+    acquired, expires, instant = timestamp(value["acquired_at"]), timestamp(value["expires_at"]), timestamp(now)
+    if acquired > instant + timedelta(seconds=30) or expires <= instant or expires < timestamp(request["required_until"]):
+        return {**deepcopy(value), "status": "STALE"}
+    return deepcopy(value)
+
+
+def _release_lease(client, lease: dict | None) -> dict:
+    if lease is None or lease.get("status") not in {"GRANTED", "STALE"}:
+        return {"status": "NOT_ACQUIRED"}
+    try:
+        result = client.release(lease["lease_id"], lease["fencing_token"])
+    except Exception as exc:
+        return {"status": "FAILED", "reason": f"{type(exc).__name__}: release failed"}
+    if (not isinstance(result, dict) or result.get("status") != "RELEASED"
+            or result.get("lease_id") != lease["lease_id"]
+            or result.get("fencing_token") != lease["fencing_token"]):
+        return {"status": "FAILED", "reason": "broker did not confirm the exact fence release"}
+    return deepcopy(result)
 
 
 def _parallelism(plan: dict, config: dict, capacity: dict | None,
@@ -309,46 +504,172 @@ class _Capture:
                 bytes(self.shown).decode("utf-8", errors="replace"))
 
 
-def _result_shell(partition: dict, engine: str, workload_id: str) -> dict:
+def _terminate_process_tree(proc: subprocess.Popen, config: dict) -> dict:
+    job = getattr(proc, "_awf_job_handle", None)
+    if os.name == "nt" and job:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            terminate = ctypes.windll.kernel32.TerminateJobObject
+            terminate.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            terminate.restype = wintypes.BOOL
+            if terminate(job, 1):
+                return {"outcome": "COMPLETE", "mechanism": "windows_job_object"}
+        except (AttributeError, OSError):
+            pass
+    if os.name == "nt":
+        system_root = os.environ.get("SystemRoot")
+        taskkill = (Path(system_root) / "System32" / "taskkill.exe") if system_root else None
+        try:
+            if taskkill is None:
+                raise OSError("SystemRoot is unavailable")
+            done = subprocess.run([str(taskkill), "/PID", str(proc.pid), "/T", "/F"],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, shell=False,
+                                  env=_validation_child_env(config), timeout=10)
+            if done.returncode == 0:
+                return {"outcome": "COMPLETE", "mechanism": "windows_taskkill_tree"}
+        except (OSError, subprocess.SubprocessError, ValidationError):
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            return {"outcome": "COMPLETE", "mechanism": "posix_process_group"}
+        except ProcessLookupError:
+            return {"outcome": "COMPLETE", "mechanism": "posix_process_group_absent"}
+        except OSError:
+            pass
+    try:
+        if proc.poll() is None:
+            proc.kill()
+        return {"outcome": "PARTIAL", "mechanism": "direct_process_only"}
+    except OSError:
+        return {"outcome": "FAILED", "mechanism": "termination_failed"}
+
+
+def _attach_windows_job(proc: subprocess.Popen):
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimit(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
+                        ("PerJobUserTimeLimit", ctypes.c_longlong),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class ExtendedLimit(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BasicLimit), ("IoInfo", IoCounters),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        kernel = ctypes.windll.kernel32
+        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                   ctypes.c_void_p, wintypes.DWORD]
+        kernel.SetInformationJobObject.restype = wintypes.BOOL
+        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.CreateJobObjectW(None, None)
+        if not handle:
+            return None
+        limits = ExtendedLimit()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+        if not kernel.SetInformationJobObject(handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            kernel.CloseHandle(handle)
+            return None
+        if not kernel.AssignProcessToJobObject(handle, wintypes.HANDLE(proc._handle)):
+            kernel.CloseHandle(handle)
+            return None
+        proc._awf_job_handle = handle
+        return handle
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _close_windows_job(proc: subprocess.Popen):
+    handle = getattr(proc, "_awf_job_handle", None)
+    if not handle:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        close = ctypes.windll.kernel32.CloseHandle
+        close.argtypes = [wintypes.HANDLE]
+        close.restype = wintypes.BOOL
+        close(handle)
+    finally:
+        proc._awf_job_handle = None
+
+
+def _result_shell(partition: dict, plan: dict, executable: dict) -> dict:
     identity = fingerprint("heavy-validation-partition", {
-        "workload_id": workload_id,
+        "candidate": plan["candidate"],
+        "workload_id": plan["workload_id"],
+        "working_directory": plan["working_directory"],
         "name": partition["name"],
-        "engine": engine,
+        "engine": plan["engine"],
         "argv": partition["argv"],
+        "executable": executable,
     })
     return {
         "partition_id": identity,
         "name": partition["name"],
-        "engine": engine,
+        "engine": plan["engine"],
         "command_argv": list(partition["argv"]),
         "command_sha256": fingerprint("heavy-validation-command", partition["argv"]),
         "timeout_seconds": partition["timeout_seconds"],
         "accepted_exit_codes": list(partition["accepted_exit_codes"]),
+        "executable": deepcopy(executable),
     }
 
 
-def _execute(partition: dict, engine: str, workload_id: str,
+def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: dict,
              cancel_event: threading.Event) -> dict:
-    result = _result_shell(partition, engine, workload_id)
+    result = _result_shell(partition, plan, executable)
     result["started_at"] = now_text()
     state = "FAILED"
     exit_code = None
     stdout_evidence = _bounded_digest(b"")
     stderr_evidence = _bounded_digest(b"")
     error_type = None
+    cleanup = {"outcome": "NOT_REQUIRED", "mechanism": "none"}
     proc = None
     try:
         if cancel_event.is_set():
             state = "CANCELLED"
+            cleanup = {"outcome": "COMPLETE", "mechanism": "not_started"}
         else:
+            options = ({"start_new_session": True} if os.name != "nt" else
+                       {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)})
             proc = subprocess.Popen(
-                partition["argv"],
+                [executable["resolved_path"], *partition["argv"][1:]],
+                cwd=str(cwd),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
-                env=child_env(),
+                env=_validation_child_env(config),
+                **options,
             )
+            _attach_windows_job(proc)
             stdout_capture = _Capture(proc.stdout)
             stderr_capture = _Capture(proc.stderr)
             readers = [threading.Thread(target=stdout_capture.drain, daemon=True),
@@ -358,36 +679,42 @@ def _execute(partition: dict, engine: str, workload_id: str,
             deadline = time.monotonic() + partition["timeout_seconds"]
             while proc.poll() is None:
                 if cancel_event.is_set():
-                    proc.kill()
+                    cleanup = _terminate_process_tree(proc, config)
                     state = "CANCELLED"
                     break
                 if time.monotonic() >= deadline:
-                    proc.kill()
+                    cleanup = _terminate_process_tree(proc, config)
                     state = "TIMED_OUT"
                     break
                 time.sleep(0.02)
             proc.wait()
             for reader in readers:
-                reader.join()
+                reader.join(timeout=15)
+            if any(reader.is_alive() for reader in readers):
+                cleanup = _terminate_process_tree(proc, config)
+                state, error_type = "FAILED", "DescendantPipeTimeout"
             stdout_evidence = stdout_capture.evidence()
             stderr_evidence = stderr_capture.evidence()
             exit_code = proc.returncode
-            if state not in {"CANCELLED", "TIMED_OUT"}:
+            if state not in {"CANCELLED", "TIMED_OUT"} and error_type is None:
                 state = "PASS" if exit_code in partition["accepted_exit_codes"] else "FAILED"
     except OSError as exc:
         state = "FAILED"
         error_type = type(exc).__name__
         stderr_evidence = _bounded_digest(str(exc).encode("utf-8", errors="replace"))
         if proc is not None and proc.poll() is None:
-            proc.kill()
+            cleanup = _terminate_process_tree(proc, config)
             proc.wait()
     except Exception as exc:  # fail closed and retain one terminal record per partition
         state = "FAILED"
         error_type = type(exc).__name__
         stderr_evidence = _bounded_digest(str(exc).encode("utf-8", errors="replace"))
         if proc is not None and proc.poll() is None:
-            proc.kill()
+            cleanup = _terminate_process_tree(proc, config)
             proc.wait()
+    finally:
+        if proc is not None:
+            _close_windows_job(proc)
     result["ended_at"] = now_text()
     stdout_digest, stdout_bytes, stdout_truncated, stdout_text = stdout_evidence
     stderr_digest, stderr_bytes, stderr_truncated, stderr_text = stderr_evidence
@@ -397,6 +724,7 @@ def _execute(partition: dict, engine: str, workload_id: str,
         "timed_out": state == "TIMED_OUT",
         "cancelled": state == "CANCELLED",
         "error_type": error_type,
+        "process_tree_cleanup": cleanup,
         "stdout_sha256": stdout_digest,
         "stdout_bytes": stdout_bytes,
         "stdout_truncated": stdout_truncated,
@@ -409,8 +737,8 @@ def _execute(partition: dict, engine: str, workload_id: str,
     return result
 
 
-def _unexpected_result(partition: dict, engine: str, workload_id: str, exc: Exception) -> dict:
-    result = _result_shell(partition, engine, workload_id)
+def _unexpected_result(partition: dict, plan: dict, executable: dict, exc: Exception) -> dict:
+    result = _result_shell(partition, plan, executable)
     moment = now_text()
     stderr = str(exc).encode("utf-8", errors="replace")
     digest, length, truncated, shown = _bounded_digest(stderr)
@@ -418,6 +746,7 @@ def _unexpected_result(partition: dict, engine: str, workload_id: str, exc: Exce
     result.update({
         "started_at": moment, "ended_at": moment, "state": "FAILED", "exit_code": None,
         "timed_out": False, "cancelled": False, "error_type": type(exc).__name__,
+        "process_tree_cleanup": {"outcome": "FAILED", "mechanism": "executor_failure"},
         "stdout_sha256": empty, "stdout_bytes": 0, "stdout_truncated": False, "stdout": "",
         "stderr_sha256": digest, "stderr_bytes": length, "stderr_truncated": truncated,
         "stderr": shown,
@@ -425,62 +754,124 @@ def _unexpected_result(partition: dict, engine: str, workload_id: str, exc: Exce
     return result
 
 
+def _execution_context(plan: dict, expected_candidate: dict,
+                       execution_root: str | os.PathLike[str]):
+    if _validate_candidate(expected_candidate, "expected candidate") != plan["candidate"]:
+        raise ValidationError("Expected candidate tuple does not match plan")
+    root = resolve_without_alias(execution_root, "execution root", directory=True)
+    planned = resolve_without_alias(plan["working_directory"], "plan working_directory", directory=True)
+    if os.path.normcase(str(root)) != os.path.normcase(str(planned)):
+        raise ValidationError("Execution cwd does not match reviewed plan")
+    executables = []
+    for part in plan["partitions"]:
+        path = resolve_without_alias(part["executable"]["path"],
+                                     f"partition {part['name']} executable", directory=False)
+        observed = _file_sha256(path)
+        if observed != part["executable"]["sha256"]:
+            raise ValidationError(f"partition {part['name']} executable digest mismatch")
+        executables.append({"path": part["executable"]["path"],
+                            "resolved_path": str(path), "sha256": observed})
+    return root, executables
+
+
 def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
                    review_raw: bytes, expected_review_sha256: str,
-                   config: dict, capacity_raw: bytes | None = None,
-                   expected_capacity_sha256: str | None = None,
+                   config_raw: bytes, expected_config_sha256: str,
+                   expected_candidate: dict, execution_root: str | os.PathLike[str],
+                   review_authenticator=None, capacity_raw: bytes | None = None,
+                   expected_capacity_sha256: str | None = None, broker_client=None,
                    now: str | None = None, max_capacity_age_seconds: int = 300,
                    cancel_event: threading.Event | None = None) -> dict:
     """Execute a reviewed partition plan and return complete fail-closed evidence.
 
-    Inputs are exact digest-bound byte documents. The caller or trusted host is
-    responsible for authenticating who supplied the review and capacity record.
+    Inputs are exact digest-bound documents. A trusted host authenticator must
+    independently authenticate the immutable reviewer and candidate tuple.
     """
     now = now or datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     timestamp(now)
     max_capacity_age_seconds = _positive_int(max_capacity_age_seconds,
                                              "max_capacity_age_seconds", maximum=86_400)
     plan, plan_digest = _validate_plan(plan_raw, expected_plan_sha256)
-    review, review_digest = _validate_review(review_raw, expected_review_sha256, plan_digest, now)
+    config, config_digest = _validate_config(config_raw, expected_config_sha256)
+    root, executables = _execution_context(plan, expected_candidate, execution_root)
+    review, review_digest = _validate_review(
+        review_raw, expected_review_sha256, plan_digest, plan["candidate"], now)
+    review_authority = _authenticate_review(
+        review, review_digest, plan_digest, plan["candidate"], review_authenticator)
     capacity, capacity_digest, stale = _validate_capacity(
-        capacity_raw, expected_capacity_sha256, now, max_capacity_age_seconds)
+        capacity_raw, expected_capacity_sha256, now, max_capacity_age_seconds,
+        plan_digest, config_digest, plan["candidate"])
     effective, reasons = _parallelism(plan, config, capacity, stale)
-    execution_config, _, _ = _broker(config)
+    execution_config, broker, _ = _broker(config)
+    lease = None
+    lease_release = {"status": "NOT_ACQUIRED"}
+    if effective > 1:
+        if broker_client is None:
+            effective, reasons = 1, [*reasons, "lease_client_unavailable"]
+        else:
+            request = _lease_request(plan, plan_digest, config_digest, capacity_digest, effective, now)
+            try:
+                lease = _validate_lease(broker_client.acquire(deepcopy(request)), request,
+                                        broker["broker_id"], now)
+            except ValidationError:
+                raise
+            except Exception as exc:
+                effective, reasons = 1, [*reasons, f"lease_acquire_failed:{type(exc).__name__}"]
+            if lease is not None and lease["status"] == "DENIED":
+                effective, reasons = 1, [*reasons, "lease_denied:" + lease["reason"]]
+            elif lease is not None and lease["status"] == "STALE":
+                lease_release = _release_lease(broker_client, lease)
+                effective, reasons = 1, [*reasons, "lease_stale"]
+            elif lease is not None:
+                lease_release = {"status": "PENDING"}
     event = cancel_event or threading.Event()
     started_at = now_text()
     results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=effective, thread_name_prefix="awf-heavy") as executor:
-        futures = {executor.submit(_execute, part, plan["engine"], plan["workload_id"], event): part
-                   for part in plan["partitions"]}
-        for future in as_completed(futures):
-            part = futures[future]
-            try:
-                results.append(future.result())
-            except Exception as exc:  # executor failures still get terminal evidence
-                results.append(_unexpected_result(part, plan["engine"], plan["workload_id"], exc))
+    try:
+        with ThreadPoolExecutor(max_workers=effective, thread_name_prefix="awf-heavy") as executor:
+            futures = {executor.submit(_execute, part, plan, executable, root, config, event): (part, executable)
+                       for part, executable in zip(plan["partitions"], executables)}
+            for future in as_completed(futures):
+                part, executable = futures[future]
+                try:
+                    results.append(future.result())
+                except Exception as exc:  # executor failures still get terminal evidence
+                    results.append(_unexpected_result(part, plan, executable, exc))
+    finally:
+        if lease is not None and lease.get("status") == "GRANTED":
+            lease_release = _release_lease(broker_client, lease)
     ended_at = now_text()
     results.sort(key=lambda item: item["name"])
     terminal = len(results) == len(plan["partitions"]) and all(
         item["state"] in TERMINAL_STATES for item in results)
-    passed = terminal and all(item["state"] == "PASS" for item in results)
+    cleanup_complete = all(item["process_tree_cleanup"]["outcome"] not in {"PARTIAL", "FAILED"}
+                           for item in results)
+    release_complete = lease is None or lease.get("status") != "GRANTED" or lease_release["status"] == "RELEASED"
+    passed = terminal and cleanup_complete and release_complete and all(
+        item["state"] == "PASS" for item in results)
     stable = [{key: item[key] for key in (
         "partition_id", "name", "engine", "command_sha256", "state", "exit_code",
-        "timed_out", "cancelled", "stdout_sha256", "stderr_sha256")}
+        "timed_out", "cancelled", "process_tree_cleanup", "stdout_sha256", "stderr_sha256")}
         for item in results]
     cap_keys = ("max_tokens_per_ticket", "max_cost_microusd_per_ticket",
                 "daily_project_cost_microusd")
     preserved_caps = {key: execution_config[key] for key in cap_keys if key in execution_config}
     return {
-        "format": "awf-heavy-validation-result-1",
+        "format": RESULT_FORMAT,
         "status": "PASS" if passed else "FAIL",
+        "candidate": deepcopy(plan["candidate"]),
+        "working_directory": str(root),
         "workload_id": plan["workload_id"],
         "engine": plan["engine"],
         "resource_class": plan["resource_class"],
         "required_resources": list(plan["required_resources"]),
         "plan_sha256": plan_digest,
         "review_sha256": review_digest,
-        "reviewer_identity": review["reviewer_identity"],
+        "review_authority": review_authority,
+        "config_sha256": config_digest,
         "capacity_sha256": capacity_digest,
+        "lease": deepcopy(lease),
+        "lease_release": lease_release,
         "started_at": started_at,
         "ended_at": ended_at,
         "all_partitions_terminal": terminal,
@@ -493,9 +884,15 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
             "scheduled_partition_count": len(plan["partitions"]),
             "completed_terminal_count": sum(item["state"] in TERMINAL_STATES for item in results),
             "shell": False,
+            "process_tree_cleanup_complete": cleanup_complete,
         },
         "partitions": results,
-        "aggregate_sha256": fingerprint("heavy-validation-result", stable),
+        "aggregate_sha256": fingerprint("heavy-validation-result", {
+            "candidate": plan["candidate"], "working_directory": str(root),
+            "plan_sha256": plan_digest, "review_sha256": review_digest,
+            "config_sha256": config_digest, "capacity_sha256": capacity_digest,
+            "lease": lease, "lease_release": lease_release, "partitions": stable}),
         "preserved_caps": preserved_caps,
         "native_streams": deepcopy(execution_config.get("native_streams")),
+        "credential_strip_names": sorted(FROZEN_H_PROVIDER_API_KEY_ENV_VARS | _strip_names(config)),
     }
