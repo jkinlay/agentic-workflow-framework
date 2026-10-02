@@ -186,7 +186,7 @@ class ContinuousControllerTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaisesRegex(ValidationError, "path"):
                 self.store.schedule([ticket("BAD", 1, paths=[path])], NOW, host_capacity=1)
 
-    def test_git_inventory_rejects_ntfs_hardlink_and_junction_aliases(self):
+    def test_git_inventory_serializes_ntfs_hardlink_directory_claims_and_rejects_junctions(self):
         if os.name != "nt":
             self.skipTest("NTFS alias regression is Windows-specific")
         repository = Path(self.temporary.name) / "alias-repository"
@@ -194,24 +194,31 @@ class ContinuousControllerTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(repository)], check=True)
         subprocess.run(["git", "-C", str(repository), "config", "user.email", "fixture@example.invalid"], check=True)
         subprocess.run(["git", "-C", str(repository), "config", "user.name", "Fixture"], check=True)
-        real = repository / "real"
-        real.mkdir()
-        source = real / "file.py"
+        left = repository / "left"
+        right = repository / "right"
+        left.mkdir()
+        right.mkdir()
+        source = left / "file.py"
         source.write_text("value = 1\n", encoding="utf-8", newline="\n")
-        hardlink = real / "hard.py"
+        hardlink = right / "hard.py"
         os.link(source, hardlink)
-        subprocess.run(["git", "-C", str(repository), "add", "real/file.py", "real/hard.py"], check=True)
+        subprocess.run(["git", "-C", str(repository), "add", "left/file.py", "right/hard.py"], check=True)
         subprocess.run(["git", "-C", str(repository), "commit", "-qm", "synthetic alias inventory"], check=True)
         head = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
         tree = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD^{tree}"], text=True).strip()
-        with self.assertRaisesRegex(ValidationError, "hardlink alias"):
-            canonical_repository_paths([ticket("HARD", 1, paths=["real/file.py"])],
-                                       repository, head, tree)
+        admitted, _binding = canonical_repository_paths(
+            [ticket("LEFT", 1, paths=["left/**"]),
+             ticket("RIGHT", 2, paths=["right/*"])], repository, head, tree)
+        self.assertIn("left/file.py", admitted[0]["paths"])
+        self.assertIn("left/file.py", admitted[1]["paths"])
+        snapshot = self.store.schedule(admitted, NOW, host_capacity=2)
+        self.assertEqual(sum(item["state"] == "WORKING" for item in snapshot), 1)
+        self.assertEqual(sum(item["state"] == "BLOCKED" for item in snapshot), 1)
 
         hardlink.unlink()
-        subprocess.run(["git", "-C", str(repository), "checkout", "--", "real/hard.py"], check=True)
+        subprocess.run(["git", "-C", str(repository), "checkout", "--", "right/hard.py"], check=True)
         alias = repository / "alias"
-        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(real)],
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(left)],
                               capture_output=True, text=True)
         if made.returncode:
             self.skipTest("NTFS junction creation unavailable on this host")

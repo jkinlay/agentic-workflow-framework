@@ -149,8 +149,9 @@ def _git(root, *args):
 def canonical_repository_paths(tickets, repository_root, head_sha, tree_sha):
     """Bind ownership paths to one exact worktree, Git tuple and physical surface.
 
-    Git spelling is authoritative. Existing reparse points and file hardlinks are
-    rejected instead of guessing whether two names reach the same write surface.
+    Git spelling is authoritative. Directory claims expand through the pinned
+    tracked inventory. Physical aliases share a canonical ownership key so that
+    only one writer can be admitted for the same filesystem surface.
     """
     root_input = Path(repository_root)
     _require(root_input.is_absolute() and root_input.is_dir(),
@@ -194,6 +195,27 @@ def canonical_repository_paths(tickets, repository_root, head_sha, tree_sha):
     names = {key: next(iter(values)) for key, values in canonical_names.items()}
     directories = {key: next(iter(values)) for key, values in directory_names.items()}
 
+    def tracked_identity(name):
+        """Return a stable physical identity for one tracked regular file."""
+        mode = modes[name]
+        _require(mode not in {"120000", "160000"},
+                 "Owned path cannot contain a Git symlink or nested repository")
+        candidate = root
+        for component in name.split("/"):
+            candidate = candidate / component
+            if _reparse(candidate):
+                raise ValidationError("Owned path traverses a symlink, junction, or reparse point")
+        _require(candidate.exists() and candidate.is_file(),
+                 "Tracked ownership surface is missing or not a regular file")
+        resolved = candidate.resolve(strict=True)
+        _require(resolved.is_relative_to(root),
+                 "Owned path resolves outside the pinned repository")
+        metadata = candidate.stat()
+        device, inode = getattr(metadata, "st_dev", None), getattr(metadata, "st_ino", None)
+        _require(type(device) is int and type(inode) is int and inode != 0,
+                 "Tracked ownership surface has no reliable physical identity")
+        return device, inode
+
     def canonical_path(raw):
         owned = _owned_path(raw)
         wildcard = next((suffix for suffix in ("/**", "/*") if owned.endswith(suffix)), "")
@@ -226,21 +248,50 @@ def canonical_repository_paths(tickets, repository_root, head_sha, tree_sha):
         resolved = candidate.resolve(strict=False)
         _require(resolved == root or resolved.is_relative_to(root),
                  "Owned path resolves outside the pinned repository")
-        if candidate.exists():
-            metadata = candidate.stat()
-            _require(not (stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1),
-                     "Owned path is a hardlink alias with uncertain ownership")
         mode = modes.get(canonical_surface)
         _require(mode not in {"120000", "160000"},
                  "Owned path cannot be a Git symlink or nested repository")
-        return canonical_surface + wildcard
+        if mode is not None:
+            covered = [canonical_surface]
+        elif canonical_surface.casefold() in directories:
+            prefix = canonical_surface + "/"
+            covered = [name for name in modes if name.startswith(prefix)]
+        else:
+            covered = []
+        _require(not wildcard or covered,
+                 "Wildcard ownership has no tracked descendants")
+        return canonical_surface + wildcard, covered
 
-    result = []
+    prepared, covered_names = [], set()
     for item in tickets:
         admitted = _ticket(item)
-        admitted["paths"] = [canonical_path(path) for path in admitted["paths"]]
-        _require(len(admitted["paths"]) == len(set(admitted["paths"])),
+        canonical_claims, covered = [], []
+        for path in admitted["paths"]:
+            claim, descendants = canonical_path(path)
+            canonical_claims.append(claim)
+            covered.extend(descendants)
+        _require(len(canonical_claims) == len(set(canonical_claims)),
                  "Ticket paths collapse to one canonical repository surface")
+        covered_names.update(covered)
+        prepared.append((admitted, canonical_claims, covered))
+
+    physical_names = {}
+    for name in sorted(covered_names, key=lambda value: (value.casefold(), value)):
+        identity = tracked_identity(name)
+        physical_names.setdefault(identity, []).append(name)
+    physical_representative = {
+        name: members[0]
+        for members in physical_names.values()
+        for name in members
+    }
+
+    result = []
+    for admitted, canonical_claims, covered in prepared:
+        # Include every covered descendant's physical representative. Claims
+        # that reach hardlinked names therefore share an exact ownership key
+        # and cannot both be scheduled as writers.
+        aliases = [physical_representative[name] for name in covered]
+        admitted["paths"] = list(dict.fromkeys(canonical_claims + aliases))
         result.append(admitted)
     binding = {"repository_root": str(root), "head_sha": head_sha, "tree_sha": tree_sha,
                "git_path_count": len(modes)}
