@@ -1,6 +1,7 @@
 """Adversarial synthetic tests for tuple-bound heavy validation."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
 import hashlib
@@ -8,6 +9,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,8 +28,8 @@ from agentic import heavy_validation_controller as heavy_controller
 from agentic.heavy_validation import (_engine_identity, resolve_without_alias, run_validation,
                                       workload_authorization)
 from agentic.heavy_validation_controller import (
-    FileLeaseBroker, GitCheckoutAttestor, GitHubReviewAuthenticator, read_result_log,
-    write_result_log)
+    FileLeaseBroker, GitCheckoutAttestor, GitCheckoutSnapshotter,
+    GitHubReviewAuthenticator, read_result_log, write_result_log)
 
 NOW = "2026-10-02T09:00:00Z"
 CANDIDATE = {"repository_id": 101, "base_sha": "a" * 40,
@@ -93,6 +95,19 @@ def checkout_attestor(candidate, working_directory):
             "working_directory": working_directory, "evidence_sha256": "e" * 64}
 
 
+@contextmanager
+def checkout_snapshotter(candidate, working_directory):
+    with tempfile.TemporaryDirectory(prefix="awf-heavy-test-snapshot-") as folder:
+        snapshot = str(Path(folder).resolve())
+        record = {"candidate": deepcopy(candidate),
+                  "source_working_directory": working_directory,
+                  "snapshot_working_directory": snapshot,
+                  "tree_sha": candidate["tree_sha"],
+                  "archive_sha256": "f" * 64, "file_count": 0, "read_only": True}
+        yield {"status": "IMMUTABLE", **record,
+               "evidence_sha256": fingerprint("heavy-validation-checkout-snapshot", record)}
+
+
 def capacity(plan_raw, config_raw, *, workers=6, heavy=2, gpu=1, resources=None,
              engines=None, observed_at=NOW, candidate=None):
     identity = _engine_identity(json.loads(plan_raw))
@@ -146,7 +161,8 @@ def run(plan_raw, cfg, *, cap=None, broker=None, auth=authenticator,
         config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
         expected_candidate=candidate or CANDIDATE,
         execution_root=str(Path(cwd or SOURCE_ROOT).resolve()),
-        review_authenticator=auth, checkout_attestor=checkout_attestor, capacity_raw=cap,
+        review_authenticator=auth, checkout_attestor=checkout_attestor,
+        checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
         expected_capacity_sha256=sha256(cap) if cap is not None else None,
         broker_client=broker, now=NOW, cancel_event=cancel_event)
 
@@ -427,7 +443,7 @@ class HeavyValidationTests(unittest.TestCase):
                 return self.returncode
             def kill(self):
                 self.killed, self.returncode = True, 1
-            def wait(self):
+            def wait(self, timeout=None):
                 return self.returncode
 
         raw = plan([partition("contained")], parallelism=1)
@@ -519,7 +535,8 @@ class HeavyValidationTests(unittest.TestCase):
                 review_raw=review_raw, expected_review_sha256=sha256(review_raw),
                 config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
-                review_authenticator=auth, checkout_attestor=checkout_attestor, capacity_raw=cap,
+                review_authenticator=auth, checkout_attestor=checkout_attestor,
+                checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
                 expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW)
         self.assertEqual("PASS", result["status"])
         self.assertEqual("PARALLEL", result["execution"]["mode"])
@@ -599,6 +616,18 @@ class HeavyValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "HEAD/tree"):
             attestor(CANDIDATE, str(SOURCE_ROOT))
 
+    def test_execution_requires_separate_immutable_checkout_snapshot(self):
+        raw = plan([partition("checkout")], parallelism=1)
+        cfg = canonical(config(enabled=False))
+        review_raw = review(raw)
+        with self.assertRaisesRegex(ValidationError, "snapshot provider is unavailable"):
+            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                config_raw=cfg, expected_config_sha256=sha256(cfg),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticator, checkout_attestor=checkout_attestor,
+                now=NOW)
+
     def test_dispatch_rechecks_checkout_and_releases_lease_on_movement(self):
         raw, cfg = plan([partition("checkout")], parallelism=1), config()
         cfg_raw = canonical(cfg)
@@ -642,6 +671,51 @@ class HeavyValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "dirty"):
                 attestor(candidate, str(root))
 
+    def test_git_object_snapshot_isolated_from_checkout_mutation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            subprocess.run(["git", "init", "-q", str(root)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            tracked = root / "tracked.txt"
+            tracked.write_text("reviewed\n", encoding="utf-8", newline="\n")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture", "-c",
+                            "user.email=fixture@example.invalid", "commit", "-q", "-m", "fixture"],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
+                                  stdout=subprocess.PIPE, text=True).stdout.strip()
+            tree = subprocess.run(["git", "-C", str(root), "show", "-s", "--format=%T", "HEAD"],
+                                  check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+            candidate = {**CANDIDATE, "head_sha": head, "tree_sha": tree}
+            snapshotter = GitCheckoutSnapshotter(root)
+            with snapshotter(candidate, str(root)) as evidence:
+                snapshot_file = Path(evidence["snapshot_working_directory"]) / "tracked.txt"
+                self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
+                tracked.write_text("raced\n", encoding="utf-8", newline="\n")
+                self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
+                with self.assertRaises(OSError):
+                    snapshot_file.write_text("bad\n", encoding="utf-8", newline="\n")
+                self.assertEqual(tree, evidence["tree_sha"])
+                self.assertEqual("IMMUTABLE", evidence["status"])
+
+    def test_executable_fence_blocks_or_isolates_attestation_launch_race(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / Path(sys.executable).name
+            shutil.copy2(sys.executable, target)
+            expected = file_digest(target)
+            executable = {"resolved_path": str(target), "sha256": expected}
+            with heavy._immutable_executable(executable) as artifact:
+                self.assertEqual(expected, artifact["sha256"])
+                if os.name == "nt":
+                    with self.assertRaises(OSError):
+                        target.write_bytes(b"raced")
+                    self.assertEqual(expected, file_digest(target))
+                else:
+                    target.write_bytes(b"raced")
+                    self.assertEqual(expected, file_digest(artifact["launch_path"]))
+                    self.assertNotEqual(str(target), artifact["launch_path"])
+
     def test_engine_identity_and_slots_are_fenced(self):
         raw = plan([partition("a"), partition("b")], parallelism=2)
         cfg, cfg_raw = config(), canonical(config())
@@ -663,13 +737,23 @@ class HeavyValidationTests(unittest.TestCase):
             self.assertEqual("python", state["leases"][0]["engine"])
             self.assertEqual(2, state["leases"][0]["engine_slots"])
 
-    def test_lease_duration_covers_every_retry_and_bounded_overhead(self):
+    def test_lease_duration_covers_every_retry_and_all_coded_waits(self):
         raw = plan([partition("a", timeout=5), partition("b", timeout=5)],
                    parallelism=2, retries=2)
         request = heavy._lease_request(json.loads(raw), sha256(raw), "a" * 64,
                                        "b" * 64, 2, NOW)
         duration = timestamp(request["required_until"]) - timestamp(NOW)
-        self.assertEqual(120, duration.total_seconds())
+        per_attempt = (heavy.PROCESS_STARTUP_BUDGET_SECONDS
+                       + (2 * heavy.PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS)
+                       + (2 * heavy.PROCESS_EXIT_WAIT_SECONDS)
+                       + (2 * heavy.PIPE_READER_JOIN_SECONDS))
+        expected = (heavy.GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS
+                    * heavy.DISPATCH_ATTESTATION_COMMAND_COUNT
+                    + heavy.CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS
+                    + 2 * 3 * (5 + per_attempt)
+                    + heavy.TERMINAL_BARRIER_OVERHEAD_SECONDS)
+        self.assertEqual(750, expected)
+        self.assertEqual(expected, duration.total_seconds())
 
     def test_malformed_durable_broker_state_fails_closed(self):
         limits = {"max_workers": 2, "max_heavy_jobs": 2, "max_gpu_jobs": 0,

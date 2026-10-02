@@ -16,8 +16,8 @@ from agentic import ValidationError
 from agentic.canonical import load_yaml, loads
 from agentic.heavy_validation import resolve_without_alias, run_validation
 from agentic.heavy_validation_controller import (
-    FileLeaseBroker, GitCheckoutAttestor, GitHubReviewAuthenticator, broker_limits,
-    read_result_log, write_result_log)
+    FileLeaseBroker, GitCheckoutAttestor, GitCheckoutSnapshotter,
+    GitHubReviewAuthenticator, broker_limits, read_result_log, write_result_log)
 
 
 MAX_INPUT_BYTES = 1024 * 1024
@@ -104,6 +104,7 @@ def main(argv=None):
         authenticator = GitHubReviewAuthenticator(
             args.github_repository, args.github_pr, args.github_review_id)
         checkout_attestor = GitCheckoutAttestor(execution_root)
+        checkout_snapshotter = GitCheckoutSnapshotter(execution_root)
         result = run_validation(
             plan_raw=plan_raw,
             expected_plan_sha256=args.expected_plan_sha256,
@@ -116,6 +117,7 @@ def main(argv=None):
             execution_root=execution_root,
             review_authenticator=authenticator,
             checkout_attestor=checkout_attestor,
+            checkout_snapshotter=checkout_snapshotter,
             capacity_raw=capacity_raw,
             expected_capacity_sha256=args.expected_capacity_sha256,
             broker_client=broker,
@@ -130,7 +132,7 @@ def main(argv=None):
                          ensure_ascii=True, sort_keys=True, indent=2))
         return 0 if result["status"] == "PASS" else 1
     except (ValidationError, OSError, ValueError, TypeError, RecursionError) as error:
-        rejected = {"format": "awf-heavy-validation-result-4", "status": "REJECTED",
+        rejected = {"format": "awf-heavy-validation-result-5", "status": "REJECTED",
                     "all_partitions_terminal": False, "reason": str(error)}
         try:
             receipt = (write_result_log(args.result_log, args.result_receipt, rejected, receipt_key)

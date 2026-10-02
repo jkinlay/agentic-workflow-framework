@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -25,7 +26,7 @@ from .child_process import child_env
 PLAN_FORMAT = "awf-heavy-validation-plan-3"
 REVIEW_FORMAT = "awf-heavy-validation-review-4"
 CAPACITY_FORMAT = "awf-heavy-validation-capacity-4"
-RESULT_FORMAT = "awf-heavy-validation-result-4"
+RESULT_FORMAT = "awf-heavy-validation-result-5"
 TERMINAL_STATES = frozenset({"PASS", "FAILED", "TIMED_OUT", "CANCELLED"})
 FROZEN_H_PROVIDER_API_KEY_ENV_VARS = frozenset({
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY",
@@ -42,6 +43,14 @@ _MAX_PARTITIONS = 256
 _MAX_ARGV = 64
 _MAX_TOKEN_BYTES = 8192
 _MAX_OUTPUT_BYTES = 256 * 1024
+GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS = 30
+DISPATCH_ATTESTATION_COMMAND_COUNT = 4
+CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS = 120
+PROCESS_STARTUP_BUDGET_SECONDS = 5
+PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS = 10
+PROCESS_EXIT_WAIT_SECONDS = 10
+PIPE_READER_JOIN_SECONDS = 15
+TERMINAL_BARRIER_OVERHEAD_SECONDS = 30
 
 
 def _mapping(value: Any, label: str) -> dict:
@@ -150,6 +159,87 @@ def _file_sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _windows_read_lock(path: Path):
+    """Open an executable while denying write and delete sharing."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                   wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.CreateFileW(str(path), 0x80000000, 0x00000001, None, 3,
+                                0x00000080, None)
+    invalid = wintypes.HANDLE(-1).value
+    if handle == invalid:
+        raise ValidationError("Executable mutation-exclusion handle is unavailable")
+    return kernel, handle
+
+
+@contextmanager
+def _immutable_executable(executable: dict):
+    """Yield an exact launch target that cannot change after its digest check."""
+    source = resolve_without_alias(executable.get("launch_source_path",
+                                                  executable["resolved_path"]),
+                                   "launch executable",
+                                   directory=False)
+    expected = _expected_digest(executable["sha256"], "launch executable SHA-256")
+    if os.name == "nt":
+        kernel, handle = _windows_read_lock(source)
+        try:
+            observed = _file_sha256(source)
+            if observed != expected:
+                raise ValidationError("Launch executable digest changed before process creation")
+            yield {"method": "windows-deny-write-delete-handle",
+                   "source_path": str(source), "launch_path": str(source),
+                   "sha256": observed, "pass_fds": ()}
+        finally:
+            kernel.CloseHandle(handle)
+        return
+
+    if not hasattr(os, "memfd_create"):
+        raise ValidationError("A sealed immutable executable artifact is unavailable")
+    try:
+        import fcntl
+        descriptor = os.memfd_create("awf-heavy-executable",
+                                     getattr(os, "MFD_CLOEXEC", 0x0001)
+                                     | getattr(os, "MFD_ALLOW_SEALING", 0x0002))
+        digest = hashlib.sha256()
+        with source.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+                view = memoryview(block)
+                while view:
+                    written = os.write(descriptor, view)
+                    view = view[written:]
+        observed = digest.hexdigest()
+        if observed != expected:
+            raise ValidationError("Launch executable digest changed while capturing artifact")
+        os.fchmod(descriptor, 0o500)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        seals = (getattr(fcntl, "F_SEAL_SEAL", 0x0001)
+                 | getattr(fcntl, "F_SEAL_SHRINK", 0x0002)
+                 | getattr(fcntl, "F_SEAL_GROW", 0x0004)
+                 | getattr(fcntl, "F_SEAL_WRITE", 0x0008))
+        fcntl.fcntl(descriptor, getattr(fcntl, "F_ADD_SEALS", 1033), seals)
+        launch = Path(f"/proc/self/fd/{descriptor}")
+        if not launch.exists():
+            raise ValidationError("Sealed executable descriptor path is unavailable")
+        yield {"method": "sealed-memfd", "source_path": str(source),
+               "launch_path": str(launch), "sha256": observed,
+               "pass_fds": (descriptor,)}
+    except ValidationError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ValidationError("Immutable executable artifact creation failed") from exc
+    finally:
+        if "descriptor" in locals():
+            os.close(descriptor)
 
 
 def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
@@ -345,6 +435,66 @@ def _attest_checkout(attestor, candidate: dict, root: Path) -> dict:
     return deepcopy(value)
 
 
+@contextmanager
+def _immutable_checkout(snapshotter, candidate: dict, root: Path):
+    if snapshotter is None:
+        raise ValidationError("Immutable checkout snapshot provider is unavailable")
+    try:
+        context = snapshotter(deepcopy(candidate), str(root))
+        with context as supplied:
+            value = _mapping(supplied, "checkout snapshot")
+            _exact_keys(value, {"status", "candidate", "source_working_directory",
+                                "snapshot_working_directory", "tree_sha",
+                                "archive_sha256", "file_count", "read_only",
+                                "evidence_sha256"},
+                        "checkout snapshot")
+            if value["status"] != "IMMUTABLE":
+                raise ValidationError("Checkout snapshot is not immutable")
+            if _validate_candidate(value["candidate"], "snapshot candidate") != candidate:
+                raise ValidationError("Checkout snapshot candidate tuple mismatch")
+            if value["source_working_directory"] != str(root):
+                raise ValidationError("Checkout snapshot source root mismatch")
+            if value["tree_sha"] != candidate["tree_sha"]:
+                raise ValidationError("Checkout snapshot tree mismatch")
+            _expected_digest(value["archive_sha256"], "checkout snapshot archive_sha256")
+            _expected_digest(value["evidence_sha256"], "checkout snapshot evidence_sha256")
+            _nonnegative_int(value["file_count"], "checkout snapshot file_count")
+            if value["read_only"] is not True:
+                raise ValidationError("Checkout snapshot is not read-only")
+            record = {key: deepcopy(value[key]) for key in
+                      ("candidate", "source_working_directory",
+                       "snapshot_working_directory", "tree_sha", "archive_sha256",
+                       "file_count", "read_only")}
+            if value["evidence_sha256"] != fingerprint(
+                    "heavy-validation-checkout-snapshot", record):
+                raise ValidationError("Checkout snapshot evidence digest mismatch")
+            snapshot_root = resolve_without_alias(value["snapshot_working_directory"],
+                                                  "checkout snapshot root", directory=True)
+            if os.path.normcase(str(snapshot_root)) == os.path.normcase(str(root)):
+                raise ValidationError("Checkout snapshot must be separate from the mutable checkout")
+            yield snapshot_root, deepcopy(value)
+    except ValidationError:
+        raise
+    except Exception as exc:
+        raise ValidationError(f"Immutable checkout snapshot failed: {type(exc).__name__}") from exc
+
+
+def _snapshot_executables(executables: list[dict], source_root: Path,
+                          snapshot_root: Path) -> list[dict]:
+    result = []
+    for executable in executables:
+        source = Path(executable["resolved_path"])
+        try:
+            relative = source.relative_to(source_root)
+        except ValueError:
+            launch_source = source
+        else:
+            launch_source = snapshot_root / relative
+        resolved = resolve_without_alias(launch_source, "snapshot executable", directory=False)
+        result.append({**executable, "launch_source_path": str(resolved)})
+    return result
+
+
 def _validate_slots(value: Any, label: str) -> dict[str, int]:
     value = _mapping(value, label)
     result = {}
@@ -466,11 +616,21 @@ def _engine_identity(plan: dict) -> str:
 def _lease_request(plan: dict, plan_digest: str, config_digest: str,
                    capacity_digest: str, parallelism: int, now: str) -> dict:
     attempts = plan["determinism"]["retry_limit"] + 1
-    attempt_count = len(plan["partitions"]) * attempts
-    timeout_budget = sum(part["timeout_seconds"] * attempts
-                         for part in plan["partitions"])
-    overhead_seconds = 60 + (5 * attempt_count)
-    required_until = timestamp(now) + timedelta(seconds=timeout_budget + overhead_seconds)
+    per_attempt_overhead = (
+        PROCESS_STARTUP_BUDGET_SECONDS
+        + (2 * PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS)
+        + (2 * PROCESS_EXIT_WAIT_SECONDS)
+        + (2 * PIPE_READER_JOIN_SECONDS)
+    )
+    partition_budget = sum(
+        (part["timeout_seconds"] + per_attempt_overhead) * attempts
+        for part in plan["partitions"])
+    dispatch_attestation_budget = (GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS
+                                   * DISPATCH_ATTESTATION_COMMAND_COUNT)
+    horizon_seconds = (dispatch_attestation_budget + CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS
+                       + partition_budget
+                       + TERMINAL_BARRIER_OVERHEAD_SECONDS)
+    required_until = timestamp(now) + timedelta(seconds=horizon_seconds)
     return {"format": "awf-heavy-validation-lease-request-1",
             "candidate": deepcopy(plan["candidate"]), "plan_sha256": plan_digest,
             "config_sha256": config_digest, "capacity_sha256": capacity_digest,
@@ -700,7 +860,8 @@ def _terminate_process_tree(proc: subprocess.Popen, config: dict) -> dict:
             done = subprocess.run([str(taskkill), "/PID", str(proc.pid), "/T", "/F"],
                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, shell=False,
-                                  env=_validation_child_env(config), timeout=10)
+                                  env=_validation_child_env(config),
+                                  timeout=PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS)
             if done.returncode == 0:
                 return {"outcome": "COMPLETE", "mechanism": "windows_taskkill_tree"}
         except (OSError, subprocess.SubprocessError, ValidationError):
@@ -719,6 +880,26 @@ def _terminate_process_tree(proc: subprocess.Popen, config: dict) -> dict:
         return {"outcome": "PARTIAL", "mechanism": "direct_process_only"}
     except OSError:
         return {"outcome": "FAILED", "mechanism": "termination_failed"}
+
+
+def _bounded_process_exit(proc: subprocess.Popen, config: dict, cleanup: dict) -> tuple[dict, str | None]:
+    """Bound both exit waits and retry tree termination once before failing closed."""
+    try:
+        proc.wait(timeout=PROCESS_EXIT_WAIT_SECONDS)
+        return cleanup, None
+    except subprocess.TimeoutExpired:
+        second = _terminate_process_tree(proc, config)
+        mechanisms = [cleanup.get("mechanism", "unknown"), second.get("mechanism", "unknown")]
+        complete = (cleanup.get("outcome") in {"NOT_REQUIRED", "COMPLETE"}
+                    and second.get("outcome") == "COMPLETE")
+        combined = {"outcome": "COMPLETE" if complete else "FAILED",
+                    "mechanism": "+".join(mechanisms)}
+        try:
+            proc.wait(timeout=PROCESS_EXIT_WAIT_SECONDS)
+            return combined, None if complete else "ProcessTreeCleanupIncomplete"
+        except subprocess.TimeoutExpired:
+            return {"outcome": "FAILED", "mechanism": combined["mechanism"] + "+exit_wait"}, \
+                "ProcessExitTimeout"
 
 
 def _attach_windows_job(proc: subprocess.Popen):
@@ -809,6 +990,8 @@ def _close_windows_job(proc: subprocess.Popen):
 
 
 def _result_shell(partition: dict, plan: dict, executable: dict) -> dict:
+    reviewed_executable = {key: executable[key] for key in
+                           ("path", "resolved_path", "sha256")}
     identity = fingerprint("heavy-validation-partition", {
         "candidate": plan["candidate"],
         "workload_id": plan["workload_id"],
@@ -816,7 +999,7 @@ def _result_shell(partition: dict, plan: dict, executable: dict) -> dict:
         "name": partition["name"],
         "engine": plan["engine"],
         "argv": partition["argv"],
-        "executable": executable,
+        "executable": reviewed_executable,
     })
     return {
         "partition_id": identity,
@@ -830,7 +1013,7 @@ def _result_shell(partition: dict, plan: dict, executable: dict) -> dict:
         "command_sha256": fingerprint("heavy-validation-command", partition["argv"]),
         "timeout_seconds": partition["timeout_seconds"],
         "accepted_exit_codes": list(partition["accepted_exit_codes"]),
-        "executable": deepcopy(executable),
+        "executable": deepcopy(reviewed_executable),
     }
 
 
@@ -846,12 +1029,21 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
     cleanup = {"outcome": "NOT_REQUIRED", "mechanism": "none"}
     proc = None
     released = os.name != "nt"
+    artifact_context = None
+    artifact_entered = False
+    artifact_evidence = {"method": "NOT_STARTED", "source_path": executable["resolved_path"],
+                         "launch_path": None, "sha256": executable["sha256"]}
     try:
         if cancel_event.is_set():
             state = "CANCELLED"
             cleanup = {"outcome": "COMPLETE", "mechanism": "not_started"}
         else:
-            target_argv = [executable["resolved_path"], *partition["argv"][1:]]
+            artifact_context = _immutable_executable(executable)
+            artifact = artifact_context.__enter__()
+            artifact_entered = True
+            artifact_evidence = {key: artifact[key] for key in
+                                 ("method", "source_path", "launch_path", "sha256")}
+            target_argv = [artifact["launch_path"], *partition["argv"][1:]]
             if os.name == "nt":
                 launcher = str(Path(__file__).with_name("heavy_validation_child.py"))
                 command = [sys.executable, "-B", launcher]
@@ -859,7 +1051,7 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                 child_stdin = subprocess.PIPE
             else:
                 command = target_argv
-                options = {"start_new_session": True}
+                options = {"start_new_session": True, "pass_fds": artifact["pass_fds"]}
                 child_stdin = subprocess.DEVNULL
             proc = subprocess.Popen(
                 command,
@@ -893,9 +1085,11 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                     state = "TIMED_OUT"
                     break
                 time.sleep(0.02)
-            proc.wait()
+            cleanup, exit_error = _bounded_process_exit(proc, config, cleanup)
+            if exit_error is not None:
+                state, error_type = "FAILED", exit_error
             for reader in readers:
-                reader.join(timeout=15)
+                reader.join(timeout=PIPE_READER_JOIN_SECONDS)
             if any(reader.is_alive() for reader in readers):
                 cleanup = _terminate_process_tree(proc, config)
                 state, error_type = "FAILED", "DescendantPipeTimeout"
@@ -914,7 +1108,9 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                 cleanup = {"outcome": "COMPLETE", "mechanism": "contained_launcher_terminated"}
             else:
                 cleanup = _terminate_process_tree(proc, config)
-            proc.wait()
+            cleanup, exit_error = _bounded_process_exit(proc, config, cleanup)
+            if exit_error is not None:
+                error_type = exit_error
     except Exception as exc:  # fail closed and retain one terminal record per partition
         state = "FAILED"
         error_type = type(exc).__name__
@@ -925,13 +1121,17 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                 cleanup = {"outcome": "COMPLETE", "mechanism": "contained_launcher_terminated"}
             else:
                 cleanup = _terminate_process_tree(proc, config)
-            proc.wait()
+            cleanup, exit_error = _bounded_process_exit(proc, config, cleanup)
+            if exit_error is not None:
+                error_type = exit_error
     finally:
         if proc is not None:
             _close_windows_job(proc)
             for stream in (proc.stdin, proc.stdout, proc.stderr):
                 if stream is not None and not stream.closed:
                     stream.close()
+        if artifact_context is not None and artifact_entered:
+            artifact_context.__exit__(None, None, None)
     result["ended_at"] = now_text()
     stdout_digest, stdout_bytes, stdout_truncated, stdout_text = stdout_evidence
     stderr_digest, stderr_bytes, stderr_truncated, stderr_text = stderr_evidence
@@ -942,6 +1142,7 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
         "timed_out": state == "TIMED_OUT",
         "cancelled": state == "CANCELLED",
         "error_type": error_type,
+        "executable_artifact": artifact_evidence,
         "process_tree_cleanup": cleanup,
         "stdout_sha256": stdout_digest,
         "stdout_bytes": stdout_bytes,
@@ -1021,6 +1222,7 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
                    config_raw: bytes, expected_config_sha256: str,
                    expected_candidate: dict, execution_root: str | os.PathLike[str],
                    review_authenticator=None, checkout_attestor=None,
+                   checkout_snapshotter=None,
                    capacity_raw: bytes | None = None,
                    expected_capacity_sha256: str | None = None, broker_client=None,
                    now: str | None = None, max_capacity_age_seconds: int = 300,
@@ -1055,19 +1257,27 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
     started_at = now_text()
     results: list[dict] = []
     dispatch_checkout = checkout
+    checkout_snapshot = {"status": "NOT_CREATED"}
     try:
         if admitted:
             dispatch_checkout = _attest_checkout(
                 checkout_attestor, plan["candidate"], root)
-            with ThreadPoolExecutor(max_workers=effective, thread_name_prefix="awf-heavy") as executor:
-                futures = {executor.submit(_execute, part, plan, executable, root, config, event): (part, executable)
-                           for part, executable in zip(plan["partitions"], executables)}
-                for future in as_completed(futures):
-                    part, executable = futures[future]
-                    try:
-                        results.append(future.result())
-                    except Exception as exc:  # executor failures still get terminal evidence
-                        results.append(_unexpected_result(part, plan, executable, exc))
+            with _immutable_checkout(checkout_snapshotter, plan["candidate"], root) as snapshot:
+                snapshot_root, checkout_snapshot = snapshot
+                launch_executables = _snapshot_executables(executables, root, snapshot_root)
+                with ThreadPoolExecutor(max_workers=effective,
+                                        thread_name_prefix="awf-heavy") as executor:
+                    futures = {
+                        executor.submit(_execute, part, plan, executable, snapshot_root,
+                                        config, event): (part, executable)
+                        for part, executable in zip(plan["partitions"], launch_executables)
+                    }
+                    for future in as_completed(futures):
+                        part, executable = futures[future]
+                        try:
+                            results.append(future.result())
+                        except Exception as exc:  # executor failures still get terminal evidence
+                            results.append(_unexpected_result(part, plan, executable, exc))
     finally:
         if lease is not None and lease.get("status") == "GRANTED":
             lease_release = _release_lease(broker_client, lease)
@@ -1109,6 +1319,7 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         "review_authority": review_authority,
         "workload_authorization": authorization,
         "checkout_attestation": {"initial": checkout, "dispatch": dispatch_checkout},
+        "checkout_snapshot": checkout_snapshot,
         "config_sha256": config_digest,
         "capacity_sha256": capacity_digest,
         "lease": deepcopy(lease),
@@ -1135,6 +1346,7 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
             "candidate": plan["candidate"], "working_directory": str(root),
             "plan_sha256": plan_digest, "review_sha256": review_digest,
             "config_sha256": config_digest, "capacity_sha256": capacity_digest,
+            "checkout_snapshot": checkout_snapshot,
             "lease": lease, "lease_release": lease_release,
             "admission_events": admission_events, "partitions": stable}),
         "serial_equivalence_sha256": serial_equivalence_sha256,
