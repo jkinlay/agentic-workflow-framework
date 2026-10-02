@@ -7,8 +7,12 @@ authority, budget, independence, capacity, and readback checks.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
+from pathlib import Path
 import re
 import sqlite3
+import stat
+import subprocess
 
 from . import ValidationError
 from .canonical import canonical, loads, now_text, timestamp
@@ -35,6 +39,11 @@ CREATE TABLE IF NOT EXISTS controller_dispatch(
  dispatch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,ticket TEXT NOT NULL,
  exact_tuple TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,
  receipt_json TEXT,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS controller_jira_operation(
+ operation_id TEXT PRIMARY KEY,issue_id TEXT NOT NULL,event TEXT NOT NULL,
+ intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,
+ operation_json TEXT,readback_json TEXT,updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS controller_jira_issue ON controller_jira_operation(issue_id,status);
 """
 
 
@@ -106,6 +115,138 @@ def _overlap(first, second):
     return any(a == b or a.startswith(b + "/") or b.startswith(a + "/") for a in left for b in right)
 
 
+def _reparse(path):
+    """Recognise every link-like filesystem surface available to this host."""
+    try:
+        metadata = Path(path).lstat()
+    except FileNotFoundError:
+        return False
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return (stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag) or
+            bool(getattr(Path(path), "is_junction", lambda: False)()))
+
+
+def _git(root, *args):
+    """Run bounded, read-only Git plumbing without shell or lazy network fetch."""
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.upper().startswith("GIT_") and key.upper() not in {"PYTHONPATH", "PYTHONHOME"}}
+    environment.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0",
+                       GIT_NO_REPLACE_OBJECTS="1", GIT_CONFIG_NOSYSTEM="1",
+                       GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_LAZY_FETCH="1")
+    try:
+        result = subprocess.run(
+            ["git", "--no-replace-objects", "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=" + os.devnull, "-c", "core.quotePath=false",
+             "-c", "protocol.file.allow=never", "-C", str(root), *args],
+            capture_output=True, timeout=30, check=False, env=environment)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValidationError(f"Git path inventory failed: {type(exc).__name__}") from exc
+    _require(result.returncode == 0, "Git path inventory could not be observed")
+    return result.stdout
+
+
+def canonical_repository_paths(tickets, repository_root, head_sha, tree_sha):
+    """Bind ownership paths to one exact worktree, Git tuple and physical surface.
+
+    Git spelling is authoritative. Existing reparse points and file hardlinks are
+    rejected instead of guessing whether two names reach the same write surface.
+    """
+    root_input = Path(repository_root)
+    _require(root_input.is_absolute() and root_input.is_dir(),
+             "Path ownership needs an absolute existing repository worktree")
+    for parent in (root_input, *root_input.parents):
+        if parent.exists() and _reparse(parent):
+            raise ValidationError("Repository worktree traverses a link, junction, or reparse point")
+    root = root_input.resolve(strict=True)
+    observed_root = Path(_git(root, "rev-parse", "--show-toplevel").decode("utf-8", "strict").strip()).resolve(strict=True)
+    _require(observed_root == root, "Pinned repository root differs from the Git worktree")
+    _require(isinstance(head_sha, str) and re.fullmatch(r"[0-9a-f]{40}", head_sha) and
+             isinstance(tree_sha, str) and re.fullmatch(r"[0-9a-f]{40}", tree_sha),
+             "Repository ownership needs lowercase full head and tree pins")
+    observed_head = _git(root, "rev-parse", "HEAD").decode("ascii", "strict").strip()
+    observed_tree = _git(root, "rev-parse", "HEAD^{tree}").decode("ascii", "strict").strip()
+    _require((observed_head, observed_tree) == (head_sha, tree_sha),
+             "Repository ownership tuple differs from the pinned head/tree")
+
+    try:
+        records = _git(root, "ls-files", "-s", "-z").decode("utf-8", "strict").split("\0")
+    except UnicodeDecodeError as exc:
+        raise ValidationError("Git path inventory contains a non-UTF-8 path") from exc
+    modes, canonical_names, directory_names = {}, {}, {}
+    for record in records:
+        if not record:
+            continue
+        metadata, name = record.split("\t", 1)
+        mode, _object_id, stage = metadata.split(" ")
+        _require(stage == "0" and _owned_path(name) == name,
+                 "Git path inventory contains an unsafe or unmerged path")
+        modes[name] = mode
+        parts = name.split("/")
+        for index in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:index])
+            bucket = canonical_names.setdefault(prefix.casefold(), set())
+            bucket.add(prefix)
+            if index < len(parts):
+                directory_names.setdefault(prefix.casefold(), set()).add(prefix)
+    _require(all(len(names) == 1 for names in canonical_names.values()),
+             "Git path inventory has case-folded alias collisions")
+    names = {key: next(iter(values)) for key, values in canonical_names.items()}
+    directories = {key: next(iter(values)) for key, values in directory_names.items()}
+
+    def canonical_path(raw):
+        owned = _owned_path(raw)
+        wildcard = next((suffix for suffix in ("/**", "/*") if owned.endswith(suffix)), "")
+        surface = owned[:-len(wildcard)] if wildcard else owned
+        current = root
+        for component in surface.split("/"):
+            current = current / component
+            if current.exists() and _reparse(current):
+                raise ValidationError("Owned path traverses a symlink, junction, or reparse point")
+        key = surface.casefold()
+        if key in names:
+            canonical_surface = names[key]
+        else:
+            parts = surface.split("/")
+            canonical_parts, matched_directory = [], False
+            for index in range(len(parts), 0, -1):
+                prefix_key = "/".join(parts[:index]).casefold()
+                if prefix_key in directories:
+                    canonical_parts = directories[prefix_key].split("/") + parts[index:]
+                    matched_directory = True
+                    break
+            if not matched_directory:
+                _require(len(parts) == 1,
+                         "Owned path is absent from the pinned Git inventory and has no canonical parent")
+                canonical_parts = parts
+            canonical_surface = "/".join(canonical_parts)
+        _require(not wildcard or canonical_surface.casefold() in directories,
+                 "Wildcard ownership must name a canonical Git directory")
+        candidate = root.joinpath(*canonical_surface.split("/"))
+        resolved = candidate.resolve(strict=False)
+        _require(resolved == root or resolved.is_relative_to(root),
+                 "Owned path resolves outside the pinned repository")
+        if candidate.exists():
+            metadata = candidate.stat()
+            _require(not (stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1),
+                     "Owned path is a hardlink alias with uncertain ownership")
+        mode = modes.get(canonical_surface)
+        _require(mode not in {"120000", "160000"},
+                 "Owned path cannot be a Git symlink or nested repository")
+        return canonical_surface + wildcard
+
+    result = []
+    for item in tickets:
+        admitted = _ticket(item)
+        admitted["paths"] = [canonical_path(path) for path in admitted["paths"]]
+        _require(len(admitted["paths"]) == len(set(admitted["paths"])),
+                 "Ticket paths collapse to one canonical repository surface")
+        result.append(admitted)
+    binding = {"repository_root": str(root), "head_sha": head_sha, "tree_sha": tree_sha,
+               "git_path_count": len(modes)}
+    return result, binding
+
+
 class ContinuousControllerStore:
     """Durable scheduler in which every configured stream has a visible state."""
 
@@ -174,6 +315,15 @@ class ContinuousControllerStore:
         _require(type(seconds) is int and seconds > 0, "Status cadence must be positive seconds")
         with self.transaction() as db:
             db.execute("UPDATE controller_meta SET value=? WHERE key='cadence_seconds'", (str(seconds),))
+
+    def bind_repository(self, binding):
+        """Pin one canonical repository/worktree identity for all scheduling."""
+        encoded = canonical(binding).decode()
+        with self.transaction() as db:
+            prior = db.execute("SELECT value FROM controller_meta WHERE key='repository_binding'").fetchone()
+            _require(prior is None or prior[0] == encoded,
+                     "Controller repository/worktree binding changed; use an explicit state migration")
+            db.execute("INSERT OR IGNORE INTO controller_meta VALUES('repository_binding',?)", (encoded,))
 
     @staticmethod
     def _row_value(stream, state, ticket, now):
@@ -416,6 +566,81 @@ class ContinuousControllerStore:
         with self.transaction() as db:
             db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE status='IN_FLIGHT'", (now,))
 
+    def prepare_jira_operation(self, record, now):
+        """Persist an immutable deterministic Jira intent before any provider call."""
+        timestamp(now)
+        from .canonical import fingerprint
+        _require(isinstance(record, dict) and isinstance(record.get("operation_id"), str) and
+                 isinstance(record.get("binding"), dict) and
+                 isinstance(record["binding"].get("issue_id"), str),
+                 "Jira operation intent is malformed")
+        immutable_intent = {key: value for key, value in record.items() if key != "created_at"}
+        intent_sha256 = fingerprint("controller-jira-operation", immutable_intent)
+        encoded = canonical(record).decode()
+        with self.transaction() as db:
+            prior = db.execute("SELECT * FROM controller_jira_operation WHERE operation_id=?",
+                               (record["operation_id"],)).fetchone()
+            if prior is None:
+                db.execute("INSERT INTO controller_jira_operation VALUES(?,?,?,?,?,?,NULL,NULL,?)",
+                           (record["operation_id"], record["binding"]["issue_id"],
+                            record["lifecycle_event"], intent_sha256, "PENDING", encoded, now))
+            else:
+                _require(prior["intent_sha256"] == intent_sha256,
+                         "Jira operation identity collided with a different durable intent")
+            row = db.execute("SELECT * FROM controller_jira_operation WHERE operation_id=?",
+                             (record["operation_id"],)).fetchone()
+            return dict(row) | {"record": loads(row["record_json"])}
+
+    def begin_jira_operation(self, operation_id, now):
+        """Mark the durable Jira intent in flight before external mutation."""
+        timestamp(now)
+        with self.transaction() as db:
+            row = db.execute("SELECT * FROM controller_jira_operation WHERE operation_id=?",
+                             (operation_id,)).fetchone()
+            _require(row is not None and row["status"] == "PENDING",
+                     "Jira operation is not pending")
+            db.execute("UPDATE controller_jira_operation SET status='IN_FLIGHT',updated_at=? WHERE operation_id=?",
+                       (now, operation_id))
+            return loads(row["record_json"])
+
+    def mark_jira_unknown(self, operation_id, now):
+        timestamp(now)
+        with self.transaction() as db:
+            row = db.execute("SELECT status FROM controller_jira_operation WHERE operation_id=?",
+                             (operation_id,)).fetchone()
+            _require(row is not None and row["status"] in {"IN_FLIGHT", "UNKNOWN"},
+                     "Only an in-flight or unknown Jira operation can remain unknown")
+            db.execute("UPDATE controller_jira_operation SET status='UNKNOWN',updated_at=? WHERE operation_id=?",
+                       (now, operation_id))
+
+    def recover_jira_operations(self, now):
+        """A lost process after mutation becomes UNKNOWN and cannot be reissued."""
+        timestamp(now)
+        with self.transaction() as db:
+            db.execute("UPDATE controller_jira_operation SET status='UNKNOWN',updated_at=? WHERE status='IN_FLIGHT'",
+                       (now,))
+
+    def jira_operations(self, issue_id):
+        _require(isinstance(issue_id, str) and issue_id, "Jira operation query needs an issue identity")
+        with self.connection() as db:
+            return [dict(row) | {"record": loads(row["record_json"])} for row in db.execute(
+                "SELECT * FROM controller_jira_operation WHERE issue_id=? ORDER BY rowid", (issue_id,))]
+
+    def finish_jira_operation(self, operation_id, status, observation, now, operation=None):
+        """Persist terminal readback or retain UNKNOWN; never infer a provider result."""
+        timestamp(now)
+        _require(status in {"SUCCEEDED", "FAILED", "UNKNOWN"}, "Invalid Jira operation result")
+        with self.transaction() as db:
+            row = db.execute("SELECT * FROM controller_jira_operation WHERE operation_id=?",
+                             (operation_id,)).fetchone()
+            _require(row is not None and row["status"] in {"IN_FLIGHT", "UNKNOWN"},
+                     "Jira operation result does not match durable operation state")
+            db.execute("UPDATE controller_jira_operation SET status=?,operation_json=?,readback_json=?,updated_at=? WHERE operation_id=?",
+                       (status, canonical(operation).decode() if operation is not None else row["operation_json"],
+                        canonical(observation).decode() if observation is not None else None,
+                        now, operation_id))
+            return loads(row["record_json"])
+
 
 def _zero_counts():
     return {"required": 0, "completed": 0, "acceptable": 0, "failed": 0, "stale": 0, "outstanding": 0}
@@ -533,8 +758,9 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
             "reason": "authoritative complete scoped Jira observation"}
 
 
-def production_controller_cycle(store, *, now, host_capacity, inventory_binding, observe_inventory,
-                                dispatch_ticket, observe_dispatch, deliver_status):
+def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
+                                repository_root, repository_head_sha, repository_tree_sha,
+                                observe_inventory, dispatch_ticket, observe_dispatch, deliver_status):
     """Run one real host-controller cycle through explicit reviewed adapters.
 
     Inventory is observed before scheduling.  Dispatch intent is durable before
@@ -566,7 +792,10 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
              observation["inventory_sha256"] == fingerprint("controller-inventory", {
                  "binding": inventory_binding, "tickets": observation["tickets"]}),
              "Production inventory identity or digest differs from the configured scope")
-    streams = store.schedule(observation["tickets"], now, host_capacity)
+    tickets, repository_binding = canonical_repository_paths(
+        observation["tickets"], repository_root, repository_head_sha, repository_tree_sha)
+    store.bind_repository(repository_binding)
+    streams = store.schedule(tickets, now, host_capacity)
     dispatches, errors = [], []
     for operation in store.prepare_dispatches(now):
         payload, dispatch_id = operation["payload"], operation["dispatch_id"]
@@ -606,12 +835,13 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
             "errors": errors, "execution_authority": False}
 
 
-def production_jira_lifecycle(*, config, contract, event, facts, binding,
-                              issue_type, prior_writes, state, producer_id,
-                              run_id, now, evidence, transition_id,
+def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
+                              issue_type, state, producer_id, run_id, now, evidence, transition_id,
                               read_current_status, write_transition, read_transition,
                               merge_result_id=None):
-    """Read current Jira state, execute at most one mapped write, then read back."""
+    """Reconcile durable intent, then perform at most one write and readback."""
+    _require(isinstance(store, ContinuousControllerStore),
+             "Jira lifecycle production needs the protected controller store")
     _require(all(callable(adapter) for adapter in
                  (read_current_status, write_transition, read_transition)),
              "Jira lifecycle read/write/readback adapters must be callable")
@@ -620,6 +850,7 @@ def production_jira_lifecycle(*, config, contract, event, facts, binding,
                 "execution_authority": False}
     _require(isinstance(binding, dict) and isinstance(binding.get("issue_id"), str) and
              binding["issue_id"], "Jira lifecycle needs an immutable issue binding")
+    store.recover_jira_operations(now)
     start_time = timestamp(now)
     try:
         current = read_current_status(binding)
@@ -635,6 +866,36 @@ def production_jira_lifecycle(*, config, contract, event, facts, binding,
         return {"planned": False, "reason": f"Jira pre-write observation failed: {type(exc).__name__}",
                 "writes_stopped": True, "execution_authority": False}
     from .jira_lifecycle import planned_write, transition_record, apply_read_back
+    durable = store.jira_operations(binding["issue_id"])
+    for operation_row in durable:
+        if operation_row["status"] == "FAILED":
+            return {"planned": False, "reason": "A durable Jira operation failed; writes remain stopped",
+                    "writes_stopped": True, "operation_id": operation_row["operation_id"],
+                    "current_observation": current, "execution_authority": False}
+        if operation_row["status"] != "UNKNOWN":
+            continue
+        record = operation_row["record"]
+        if current["status_id"] == record["to_status_id"]:
+            store.finish_jira_operation(record["operation_id"], "SUCCEEDED", current,
+                                        current["observed_at"])
+            continue
+        store.finish_jira_operation(record["operation_id"], "UNKNOWN", current,
+                                    current["observed_at"])
+        return {"planned": False,
+                "reason": "Unknown durable Jira operation was not proven successful by readback; writes remain stopped",
+                "writes_stopped": True, "operation_id": record["operation_id"],
+                "current_observation": current, "execution_authority": False}
+    durable = store.jira_operations(binding["issue_id"])
+    prior_writes = []
+    for operation_row in durable:
+        record = dict(operation_row["record"])
+        record["status"] = operation_row["status"]
+        if operation_row["readback_json"]:
+            observed = loads(operation_row["readback_json"])
+            record["read_back"] = {"observed_status": observed.get("status_id", observed.get("status")),
+                                   "observed_actor": observed.get("actor"),
+                                   "observed_at": observed.get("observed_at")}
+        prior_writes.append(record)
     key, target = planned_write(config, contract, event, facts, issue_type=issue_type,
                                 current_status=current["status_id"], prior_writes=prior_writes,
                                 state=state)
@@ -644,6 +905,14 @@ def production_jira_lifecycle(*, config, contract, event, facts, binding,
     record = transition_record(binding, event, current["status_id"], target, transition_id,
                                merge_result_id=merge_result_id, producer_id=producer_id,
                                run_id=run_id, now=now, evidence=evidence)
+    intent = store.prepare_jira_operation(record, now)
+    record = intent["record"]
+    if intent["status"] == "SUCCEEDED":
+        return {"planned": False, "reason": "Durable Jira operation already succeeded",
+                "operation_id": record["operation_id"], "current_observation": current,
+                "execution_authority": False}
+    _require(intent["status"] == "PENDING", "Jira operation is unresolved; writes remain stopped")
+    store.begin_jira_operation(record["operation_id"], now)
     try:
         operation = write_transition(record)
         _require(isinstance(operation, dict) and set(operation) == {
@@ -662,13 +931,18 @@ def production_jira_lifecycle(*, config, contract, event, facts, binding,
         readback_time = timestamp(observation["observed_at"])
         _require(readback_time >= operation_time,
                  "Jira readback predates the write receipt")
-        return {"planned": True, "current_observation": current,
-                **apply_read_back(record, observation["status"], observation["actor"],
-                                  observation["observed_at"]),
+        result = apply_read_back(record, observation["status"], observation["actor"],
+                                 observation["observed_at"])
+        store.finish_jira_operation(record["operation_id"], result["record"]["status"],
+                                    observation, observation["observed_at"], operation)
+        return {"planned": True, "current_observation": current, **result,
                 "execution_authority": False}
     except Exception as exc:
-        return {"planned": True, "current_observation": current,
-                **apply_read_back(record, None),
+        try:
+            store.mark_jira_unknown(record["operation_id"], now)
+        except Exception:
+            pass
+        return {"planned": True, "current_observation": current, **apply_read_back(record, None),
                 "reason": type(exc).__name__, "execution_authority": False}
 
 def production_post_merge_progress(**adapters):

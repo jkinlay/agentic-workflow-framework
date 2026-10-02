@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 
 from agentic.continuous_controller import (
     ContinuousControllerStore,
+    canonical_repository_paths,
     production_controller_cycle,
     production_jira_lifecycle,
     production_merge_observed,
@@ -27,6 +29,13 @@ COUNTS = {"required": 1, "completed": 0, "acceptable": 0,
           "failed": 0, "stale": 0, "outstanding": 1}
 INVENTORY_BINDING = {"project_id": "project-1", "repository_id": "repository-1",
                      "scope_sha256": "a" * 64}
+REPOSITORY = {
+    "repository_root": ROOT,
+    "repository_head_sha": subprocess.check_output(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip(),
+    "repository_tree_sha": subprocess.check_output(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD^{tree}"], text=True).strip(),
+}
 
 
 def inventory_observation(now, tickets):
@@ -45,7 +54,7 @@ def ticket(name, priority, disposition="ELIGIBLE", paths=None, **overrides):
         "reason": "eligible scoped action" if disposition == "ELIGIBLE" else "specific wait condition",
         "next_action": "continue " + name,
         "resume_trigger": "named prerequisite becomes current",
-        "paths": paths or ["src/" + name.lower() + ".py"],
+        "paths": paths or [".agentic/tests/fixtures/" + name.lower() + ".txt"],
         "dependencies_satisfied": True,
         "budget_available": True,
         "cap_available": True,
@@ -113,6 +122,7 @@ class ContinuousControllerTests(unittest.TestCase):
             production_controller_cycle(
                 self.store, now=NOW, host_capacity=1,
                 inventory_binding=INVENTORY_BINDING,
+                **REPOSITORY,
                 observe_inventory=lambda: inventory_observation(NOW, [malformed]),
                 dispatch_ticket=lambda payload: calls.append("dispatch"),
                 observe_dispatch=lambda payload: calls.append("observe"),
@@ -176,6 +186,53 @@ class ContinuousControllerTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaisesRegex(ValidationError, "path"):
                 self.store.schedule([ticket("BAD", 1, paths=[path])], NOW, host_capacity=1)
 
+    def test_git_inventory_rejects_ntfs_hardlink_and_junction_aliases(self):
+        if os.name != "nt":
+            self.skipTest("NTFS alias regression is Windows-specific")
+        repository = Path(self.temporary.name) / "alias-repository"
+        repository.mkdir()
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.email", "fixture@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.name", "Fixture"], check=True)
+        real = repository / "real"
+        real.mkdir()
+        source = real / "file.py"
+        source.write_text("value = 1\n", encoding="utf-8", newline="\n")
+        hardlink = real / "hard.py"
+        os.link(source, hardlink)
+        subprocess.run(["git", "-C", str(repository), "add", "real/file.py", "real/hard.py"], check=True)
+        subprocess.run(["git", "-C", str(repository), "commit", "-qm", "synthetic alias inventory"], check=True)
+        head = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+        tree = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD^{tree}"], text=True).strip()
+        with self.assertRaisesRegex(ValidationError, "hardlink alias"):
+            canonical_repository_paths([ticket("HARD", 1, paths=["real/file.py"])],
+                                       repository, head, tree)
+
+        hardlink.unlink()
+        subprocess.run(["git", "-C", str(repository), "checkout", "--", "real/hard.py"], check=True)
+        alias = repository / "alias"
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(real)],
+                              capture_output=True, text=True)
+        if made.returncode:
+            self.skipTest("NTFS junction creation unavailable on this host")
+        with self.assertRaisesRegex(ValidationError, "junction|reparse"):
+            canonical_repository_paths([ticket("JUNCTION", 1, paths=["alias/file.py"])],
+                                       repository, head, tree)
+
+    def test_git_inventory_collapses_case_aliases_and_rejects_wrong_tuple(self):
+        exact = ".agentic/lib/agentic/continuous_controller.py"
+        admitted, binding = canonical_repository_paths(
+            [ticket("LOWER", 1, paths=[exact]), ticket("UPPER", 2, paths=[exact.upper()])],
+            ROOT, REPOSITORY["repository_head_sha"], REPOSITORY["repository_tree_sha"])
+        self.assertEqual(admitted[0]["paths"], admitted[1]["paths"])
+        self.assertEqual(binding["head_sha"], REPOSITORY["repository_head_sha"])
+        snapshot = self.store.schedule(admitted, NOW, host_capacity=2)
+        self.assertEqual(sum(item["state"] == "WORKING" for item in snapshot), 1)
+        with self.assertRaisesRegex(ValidationError, "pinned head/tree"):
+            canonical_repository_paths(
+                [ticket("WRONG", 1, paths=[exact])], ROOT,
+                "0" * 40, REPOSITORY["repository_tree_sha"])
+
     def test_digest_outbox_survives_restart_and_clock_rollback_fails_closed(self):
         first = self.store.digest(NOW)
         restarted = ContinuousControllerStore(self.path, ["A", "B", "C"])
@@ -228,6 +285,7 @@ class ContinuousControllerTests(unittest.TestCase):
             return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": NOW}
         result = production_controller_cycle(self.store, now=NOW, host_capacity=3,
             inventory_binding=INVENTORY_BINDING,
+            **REPOSITORY,
             observe_inventory=lambda: inventory_observation(NOW, inventory),
             dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail("no reconciliation"),
             deliver_status=deliver)
@@ -246,6 +304,7 @@ class ContinuousControllerTests(unittest.TestCase):
         first_tickets = [ticket("QA-4", 1)]
         first = production_controller_cycle(store, now=NOW, host_capacity=1,
             inventory_binding=INVENTORY_BINDING,
+            **REPOSITORY,
             observe_inventory=lambda: inventory_observation(NOW, first_tickets),
             dispatch_ticket=fail_dispatch, observe_dispatch=lambda payload: self.fail("not yet"),
             deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
@@ -258,6 +317,7 @@ class ContinuousControllerTests(unittest.TestCase):
         second_tickets = [ticket("QA-4", 1)]
         second = production_controller_cycle(store, now=later, host_capacity=1,
             inventory_binding=INVENTORY_BINDING,
+            **REPOSITORY,
             observe_inventory=lambda: inventory_observation(later, second_tickets),
             dispatch_ticket=lambda payload: self.fail("uncertain dispatch was reissued"),
             observe_dispatch=observe,
@@ -276,6 +336,7 @@ class ContinuousControllerTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 production_controller_cycle(self.store, now=NOW, host_capacity=1,
                     inventory_binding=INVENTORY_BINDING,
+                    **REPOSITORY,
                     observe_inventory=lambda item=value: item,
                     dispatch_ticket=lambda payload: self.fail("invalid inventory dispatched"),
                     observe_dispatch=lambda payload: self.fail("invalid inventory observed"),
@@ -284,6 +345,12 @@ class ContinuousControllerTests(unittest.TestCase):
 
 class JiraProgressTests(unittest.TestCase):
     scope = "project=QA AND fixVersion=1.9.3"
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="awf-controller-jira-")
+        self.addCleanup(self.temporary.cleanup)
+        self.store = ContinuousControllerStore(
+            Path(self.temporary.name) / "controller.sqlite3", ["A", "B", "C"])
 
     def receipt(self, ticket="QA-1", **overrides):
         value = {"ticket": ticket, "issue_id": "10001", **BINDING, "status": "RECONCILED",
@@ -420,9 +487,9 @@ class JiraProgressTests(unittest.TestCase):
         bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
         calls = []
         binding = bundle["critic"]["binding"]
-        result = production_jira_lifecycle(config=config, contract=bundle["contract"],
+        result = production_jira_lifecycle(self.store, config=config, contract=bundle["contract"],
             event="WORKER_STARTED", facts={"run_registered": True, "worktree_verified": True},
-            binding=binding, issue_type="LEAF", prior_writes=[], state="DISPATCHED",
+            binding=binding, issue_type="LEAF", state="DISPATCHED",
             producer_id="fixture-controller", run_id=str(uuid.UUID(int=7)), now=NOW,
             evidence=["urn:awf:fixture:jira"], transition_id="31",
             read_current_status=lambda value: calls.append("read-before") or {
@@ -442,10 +509,10 @@ class JiraProgressTests(unittest.TestCase):
         config["jira"]["enabled"] = False
         bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
         calls = []
-        result = production_jira_lifecycle(
+        result = production_jira_lifecycle(self.store,
             config=config, contract=bundle["contract"], event="WORKER_STARTED",
             facts={"run_registered": True, "worktree_verified": True},
-            binding=bundle["critic"]["binding"], issue_type="LEAF", prior_writes=[],
+            binding=bundle["critic"]["binding"], issue_type="LEAF",
             state="DISPATCHED", producer_id="fixture-controller",
             run_id=str(uuid.UUID(int=11)), now=NOW, evidence=[], transition_id="31",
             read_current_status=lambda value: calls.append("read-before"),
@@ -461,22 +528,89 @@ class JiraProgressTests(unittest.TestCase):
         writes = []
         common = dict(config=config, contract=bundle["contract"], event="WORKER_STARTED",
             facts={"run_registered": True, "worktree_verified": True}, binding=binding,
-            issue_type="LEAF", prior_writes=[], state="DISPATCHED",
+            issue_type="LEAF", state="DISPATCHED",
             producer_id="fixture-controller", run_id=str(uuid.UUID(int=8)), now=NOW,
             evidence=["urn:awf:fixture:jira"], transition_id="31",
             write_transition=lambda record: writes.append(record),
             read_transition=lambda record, operation: self.fail("invalid write cannot be read back"))
-        result = production_jira_lifecycle(**common,
+        result = production_jira_lifecycle(self.store, **common,
             read_current_status=lambda value: {
                 "issue_id": "other", "status_id": "Ready", "observed_at": NOW})
         self.assertTrue(result["writes_stopped"])
         self.assertEqual(writes, [])
-        result = production_jira_lifecycle(**common,
+        result = production_jira_lifecycle(self.store, **common,
             read_current_status=lambda value: {
                 "issue_id": value["issue_id"], "status_id": "Ready",
                 "observed_at": "2026-10-02T09:59:59Z"})
         self.assertTrue(result["writes_stopped"])
         self.assertEqual(writes, [])
+
+    def test_jira_intent_survives_crash_after_side_effect_without_reissue(self):
+        path = Path(self.temporary.name) / "jira-crash.sqlite3"
+        store = ContinuousControllerStore(path, ["A"])
+        config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text())
+        bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
+        binding = bundle["critic"]["binding"]
+        external = {"status": "Ready", "writes": 0}
+
+        def observe(_binding, observed_at=NOW):
+            return {"issue_id": binding["issue_id"], "status_id": external["status"],
+                    "observed_at": observed_at}
+
+        def crash_after_mutation(record):
+            external["writes"] += 1
+            external["status"] = "In Progress"
+            raise SystemExit("synthetic process loss after Jira side effect")
+
+        common = dict(config=config, contract=bundle["contract"], event="WORKER_STARTED",
+            facts={"run_registered": True, "worktree_verified": True}, binding=binding,
+            issue_type="LEAF", state="DISPATCHED", producer_id="fixture-controller",
+            run_id=str(uuid.UUID(int=12)), evidence=["urn:awf:fixture:jira"], transition_id="31",
+            read_transition=lambda record, operation: self.fail("crashed call has no receipt"))
+        with self.assertRaisesRegex(SystemExit, "synthetic process loss"):
+            production_jira_lifecycle(store, now=NOW, read_current_status=observe,
+                                      write_transition=crash_after_mutation, **common)
+        in_flight = store.jira_operations(binding["issue_id"])
+        self.assertEqual((len(in_flight), in_flight[0]["status"], external["writes"]),
+                         (1, "IN_FLIGHT", 1))
+        operation_id = in_flight[0]["operation_id"]
+
+        restarted = ContinuousControllerStore(path, ["A"])
+        recovered_at = "2026-10-02T10:00:01Z"
+        restarted.recover_jira_operations(recovered_at)
+        self.assertEqual(restarted.jira_operations(binding["issue_id"])[0]["status"], "UNKNOWN")
+        result = production_jira_lifecycle(
+            restarted, now=recovered_at,
+            read_current_status=lambda value: observe(value, recovered_at),
+            write_transition=lambda record: self.fail("unknown side effect was reissued"), **common)
+        durable = restarted.jira_operations(binding["issue_id"])
+        self.assertEqual((external["writes"], durable[0]["operation_id"], durable[0]["status"]),
+                         (1, operation_id, "SUCCEEDED"))
+        self.assertFalse(result["planned"])
+
+    def test_unknown_jira_intent_without_success_readback_stops_all_retries(self):
+        path = Path(self.temporary.name) / "jira-unknown.sqlite3"
+        store = ContinuousControllerStore(path, ["A"])
+        config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text())
+        bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
+        binding = bundle["critic"]["binding"]
+        common = dict(config=config, contract=bundle["contract"], event="WORKER_STARTED",
+            facts={"run_registered": True, "worktree_verified": True}, binding=binding,
+            issue_type="LEAF", state="DISPATCHED", producer_id="fixture-controller",
+            run_id=str(uuid.UUID(int=13)), now=NOW, evidence=[], transition_id="31",
+            read_current_status=lambda value: {
+                "issue_id": binding["issue_id"], "status_id": "Ready", "observed_at": NOW},
+            read_transition=lambda record, operation: self.fail("no receipt exists"))
+        first = production_jira_lifecycle(
+            store, write_transition=lambda record: (_ for _ in ()).throw(RuntimeError("lost")), **common)
+        self.assertTrue(first["writes_stopped"])
+        calls = []
+        second = production_jira_lifecycle(
+            ContinuousControllerStore(path, ["A"]),
+            write_transition=lambda record: calls.append(record), **common)
+        self.assertEqual(calls, [])
+        self.assertTrue(second["writes_stopped"])
+        self.assertIn("not proven successful", second["reason"])
 
     def test_workflow_cli_runs_all_production_routes_through_digest_pinned_adapter(self):
         temporary = tempfile.TemporaryDirectory(prefix="awf-controller-cli-")
@@ -542,6 +676,9 @@ class JiraProgressTests(unittest.TestCase):
                   "--adapter-module", str(adapter_path),
                   "--adapter-sha256", pin, "--adapter-config", str(adapter_config_path)]
         cycle = subprocess.run([*common, "cycle", "--inventory-binding", str(binding_path),
+                                "--repository-root", str(ROOT),
+                                "--repository-head-sha", REPOSITORY["repository_head_sha"],
+                                "--repository-tree-sha", REPOSITORY["repository_tree_sha"],
                                 "--now", NOW, "--host-capacity", "1"],
                                cwd=ROOT, text=True, capture_output=True, timeout=30)
         self.assertEqual(cycle.returncode, 0, cycle.stderr)
@@ -558,7 +695,7 @@ class JiraProgressTests(unittest.TestCase):
             "--event", "WORKER_STARTED",
             "--facts", str(dump("facts.json", {"run_registered": True, "worktree_verified": True})),
             "--binding", str(dump("binding.json", bundle["critic"]["binding"])),
-            "--prior-writes", str(dump("prior.json", [])), "--lifecycle-state", "DISPATCHED",
+            "--lifecycle-state", "DISPATCHED",
             "--producer-id", "fixture-controller", "--run-id", str(uuid.UUID(int=10)),
             "--now", NOW, "--evidence", "urn:awf:fixture:jira", "--transition-id", "31"],
             cwd=ROOT, text=True, capture_output=True, timeout=30)
@@ -581,7 +718,10 @@ class JiraProgressTests(unittest.TestCase):
 
         wrong_pin = subprocess.run([*common[:common.index("--adapter-sha256") + 1], "0" * 64,
                                     "--adapter-config", str(adapter_config_path), "cycle",
-                                    "--inventory-binding", str(binding_path), "--now", NOW,
+                                    "--inventory-binding", str(binding_path),
+                                    "--repository-root", str(ROOT),
+                                    "--repository-head-sha", REPOSITORY["repository_head_sha"],
+                                    "--repository-tree-sha", REPOSITORY["repository_tree_sha"], "--now", NOW,
                                     "--host-capacity", "1"],
                                    cwd=ROOT, text=True, capture_output=True, timeout=30)
         self.assertNotEqual(wrong_pin.returncode, 0)

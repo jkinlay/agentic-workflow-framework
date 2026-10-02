@@ -79,6 +79,9 @@ def main(argv=None, default_root=ROOT):
 
     cycle = sub.add_parser("cycle", help="Run inventory, dispatch and status delivery through reviewed adapters")
     cycle.add_argument("--inventory-binding", type=Path, required=True)
+    cycle.add_argument("--repository-root", type=Path, required=True)
+    cycle.add_argument("--repository-head-sha", required=True)
+    cycle.add_argument("--repository-tree-sha", required=True)
     cycle.add_argument("--now", required=True)
     cycle.add_argument("--host-capacity", type=int, required=True)
 
@@ -89,7 +92,6 @@ def main(argv=None, default_root=ROOT):
     jira.add_argument("--facts", type=Path, required=True)
     jira.add_argument("--binding", type=Path, required=True)
     jira.add_argument("--issue-type", default="LEAF")
-    jira.add_argument("--prior-writes", type=Path, required=True)
     jira.add_argument("--lifecycle-state")
     jira.add_argument("--producer-id", required=True)
     jira.add_argument("--run-id", required=True)
@@ -122,16 +124,17 @@ def main(argv=None, default_root=ROOT):
                                              "observe_dispatch", "deliver_status"})
         output = production_controller_cycle(
             store, now=args.now, host_capacity=args.host_capacity,
-            inventory_binding=load(args.inventory_binding), **calls)
+            inventory_binding=load(args.inventory_binding), repository_root=args.repository_root,
+            repository_head_sha=args.repository_head_sha,
+            repository_tree_sha=args.repository_tree_sha, **calls)
 
     elif args.command == "jira-lifecycle":
         calls = _require_adapters(adapters, {"read_current_status", "write_transition",
                                              "read_transition"})
-        output = production_jira_lifecycle(
+        output = production_jira_lifecycle(store,
             config=config, contract=load(args.contract), event=args.event,
             facts=load(args.facts), binding=load(args.binding), issue_type=args.issue_type,
-            prior_writes=load(args.prior_writes), state=args.lifecycle_state,
-            producer_id=args.producer_id, run_id=args.run_id, now=args.now,
+            state=args.lifecycle_state, producer_id=args.producer_id, run_id=args.run_id, now=args.now,
             evidence=args.evidence, transition_id=args.transition_id,
             merge_result_id=args.merge_result_id, **calls)
     elif args.command == "merge-observed":
