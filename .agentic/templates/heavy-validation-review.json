@@ -1,0 +1,8 @@
+{
+  "decision": "APPROVE",
+  "expires_at": "2026-10-03T09:00:00Z",
+  "format": "awf-heavy-validation-review-1",
+  "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "reviewed_at": "2026-10-02T09:00:00Z",
+  "reviewer_identity": "replace-with-authenticated-reviewer-identity"
+}
