@@ -784,6 +784,33 @@ def _object_ids(root):
     return tuple(sorted(line.decode("ascii") for line in raw.splitlines() if line))
 
 
+def _fanout_snapshot(object_dir):
+    """Capture every possible loose-object fanout while the rewrite lock is held."""
+    result = {}
+    for value in range(256):
+        prefix = f"{value:02x}"
+        path = Path(object_dir) / prefix
+        try:
+            details = path.lstat()
+        except FileNotFoundError:
+            result[prefix] = None
+            continue
+        except OSError as exc:
+            raise ValidationError("Loose object fanout snapshot could not be proved") from exc
+        attributes = getattr(details, "st_file_attributes", 0)
+        try:
+            canonical = (path.is_dir() and not path.is_symlink() and
+                         not (hasattr(path, "is_junction") and path.is_junction()) and
+                         not attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) and
+                         path.resolve(strict=True).parent == Path(object_dir))
+        except OSError as exc:
+            raise ValidationError("Loose object fanout snapshot could not be proved") from exc
+        if not canonical:
+            raise ValidationError("Loose object fanout snapshot contains an alias")
+        result[prefix] = (details.st_dev, details.st_ino)
+    return result
+
+
 def _rewrite_snapshot(root):
     common = _git_common_dir(root)
     object_dir = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-path", "objects").stdout.decode("utf-8").strip())
@@ -808,6 +835,7 @@ def _rewrite_snapshot(root):
             "logs": logs, "indexes": indexes,
             "alternate": alternate, "object_format": object_format,
             "object_dir": str(object_resolved), "object_identity": object_identity,
+            "fanouts": _fanout_snapshot(object_resolved),
             "objects": _object_ids(root)}
 
 
@@ -908,16 +936,8 @@ def _install_quarantine_objects(root, records, snapshot):
         record["installed_identity"] = None
         key = str(path.parent)
         if key not in fanouts:
-            try:
-                details = path.parent.lstat()
-                present = True
-                identity = (details.st_dev, details.st_ino)
-            except FileNotFoundError:
-                present = False
-                identity = None
-            except OSError as exc:
-                raise ValidationError("Loose object fanout snapshot could not be proved") from exc
-            fanouts[key] = {"path": path.parent, "snapshot_present": present,
+            identity = snapshot["fanouts"][path.parent.name]
+            fanouts[key] = {"path": path.parent, "snapshot_present": identity is not None,
                             "snapshot_identity": identity, "created_by_operation": False,
                             "installed_identity": None, "ambiguous": False}
         record["fanout"] = fanouts[key]
@@ -1071,7 +1091,8 @@ def _cleanup_new_objects(root, records, snapshot):
         fanout = record.get("fanout")
         if fanout is not None:
             fanouts[str(fanout["path"])] = fanout
-    retained_paths = {str(record["path"]) for record in retained}
+    if any(_has_claimant(root, record["oid"]) for record in retained):
+        raise ValidationError("A replacement object has a concurrent claimant")
     for fanout in fanouts.values():
         if fanout.get("ambiguous"):
             raise ValidationError("Loose object fanout provenance is ambiguous; recovery required")
@@ -1092,26 +1113,19 @@ def _cleanup_new_objects(root, records, snapshot):
                     attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or
                     path.resolve(strict=True).parent != Path(snapshot["object_dir"])):
                 raise ValidationError("Operation-created fanout identity changed; cleanup refused")
-            contents = list(path.iterdir())
-            unexpected = [entry for entry in contents if str(entry) not in retained_paths]
-            if unexpected:
-                raise ValidationError("Operation-created fanout contains ambiguous residue; cleanup refused")
-            if not contents:
-                path.rmdir()
-                try:
-                    path.lstat()
-                except FileNotFoundError:
-                    pass
-                except OSError as exc:
-                    raise ValidationError("Operation-created empty fanout absence could not be proved") from exc
-                else:
-                    raise ValidationError("Operation-created empty fanout cleanup did not complete")
+            # Directory enumeration and pathname-based rmdir cannot be bound
+            # atomically to the identity just validated.  An external writer
+            # can replace the fanout between either operation.  No portable
+            # primitive available here removes an empty directory by an open
+            # identity handle, so retain every operation-created fanout and
+            # report recovery required.  This can leave harmless empty
+            # namespace residue, but can never delete a replacement directory.
+            raise ValidationError(
+                "Atomic identity-bound fanout removal is unavailable; operation-created fanout retained")
         except ValidationError:
             raise
         except OSError as exc:
             raise ValidationError("Operation-created empty fanout cleanup failed") from exc
-    if any(_has_claimant(root, record["oid"]) for record in retained):
-        raise ValidationError("A replacement object has a concurrent claimant")
     if retained:
         # Git exposes no transaction that can exclude arbitrary external ref,
         # pseudoref, reflog, or linked-worktree HEAD writers while a loose
@@ -1331,7 +1345,8 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
             except ValidationError as install_error:
                 try:
                     current = _rewrite_snapshot(root)
-                    if any(current[key] != snapshot[key] for key in snapshot if key != "objects"):
+                    if any(current[key] != snapshot[key] for key in snapshot
+                           if key not in {"objects", "fanouts"}):
                         raise ValidationError("repository state changed during installation failure")
                     _cleanup_new_objects(root, records, snapshot)
                     if not _failure_state_matches(root, snapshot):
@@ -1347,7 +1362,8 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
             if update.returncode:
                 try:
                     current = _rewrite_snapshot(root)
-                    if any(current[key] != snapshot[key] for key in snapshot if key != "objects"):
+                    if any(current[key] != snapshot[key] for key in snapshot
+                           if key not in {"objects", "fanouts"}):
                         raise ValidationError("repository state changed during failed CAS")
                     _cleanup_new_objects(root, records, snapshot)
                     if not _failure_state_matches(root, snapshot):
@@ -1367,7 +1383,8 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
                 try:
                     _restore_rewrite_reflogs(root, snapshot, ref)
                     current = _rewrite_snapshot(root)
-                    if any(current[key] != snapshot[key] for key in snapshot if key != "objects"):
+                    if any(current[key] != snapshot[key] for key in snapshot
+                           if key not in {"objects", "fanouts"}):
                         raise ValidationError("repository state changed during post-CAS recovery")
                     _cleanup_new_objects(root, records, snapshot)
                     if not _failure_state_matches(root, snapshot):

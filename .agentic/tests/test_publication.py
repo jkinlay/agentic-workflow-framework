@@ -675,7 +675,7 @@ class PublicationRewriteTests(unittest.TestCase):
         self.assertTrue(object_exists(self.repo.path, created[0]))
         current = publication._rewrite_snapshot(self.repo.path)
         for key in snapshot:
-            if key != "objects":
+            if key not in {"objects", "fanouts"}:
                 self.assertEqual(snapshot[key], current[key])
 
     def test_ac44_failed_final_cas_preserves_objects_claimed_by_all_ref_namespaces(self):
@@ -889,17 +889,21 @@ class PublicationRewriteTests(unittest.TestCase):
             raise OSError("synthetic uncertainty after atomic create")
 
         with mock.patch.object(publication.os, "link", side_effect=fail_after_link):
-            with self.assertRaisesRegex(ValidationError, "PRE_CAS_RECOVERY_REQUIRED"):
+            with self.assertRaisesRegex(ValidationError, "PRE_CAS_RECOVERY_REQUIRED") as caught:
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertEqual(1, len(installed))
         self.assertTrue(object_exists(self.repo.path, installed[0]))
         current = publication._rewrite_snapshot(self.repo.path)
         for key in snapshot:
-            if key != "objects":
+            if key not in {"objects", "fanouts"}:
                 self.assertEqual(snapshot[key], current[key])
+        prefix = installed[0][:2]
+        self.assertIsNone(snapshot["fanouts"][prefix])
+        self.assertIsNotNone(current["fanouts"][prefix])
+        self.assertIn("retained_fanouts=" + prefix + "@", str(caught.exception))
 
-    def test_ac44_link_permission_failure_restores_object_directory_namespace(self):
+    def test_ac44_link_permission_failure_retains_operation_created_fanout(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
         message.write_text("clean squash\n", encoding="utf-8")
@@ -907,15 +911,60 @@ class PublicationRewriteTests(unittest.TestCase):
         object_dir = Path(snapshot["object_dir"])
         namespace = {entry.name for entry in object_dir.iterdir()}
 
-        with mock.patch.object(publication.os, "link",
-                               side_effect=PermissionError("synthetic hard-link denial")):
-            with self.assertRaisesRegex(ValidationError, "PRE_CAS_FAILED_RECOVERED"):
-                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
-                                    mapping_path=self.mapping)
-        self.assertEqual(namespace, {entry.name for entry in object_dir.iterdir()})
-        self.assertEqual(snapshot, publication._rewrite_snapshot(self.repo.path))
+        try:
+            with mock.patch.object(publication.os, "link",
+                                   side_effect=PermissionError("synthetic hard-link denial")):
+                with self.assertRaisesRegex(ValidationError,
+                                            r"PRE_CAS_RECOVERY_REQUIRED:.*retained_fanouts="):
+                    rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                        mapping_path=self.mapping)
+            created = [entry for entry in object_dir.iterdir() if entry.name not in namespace]
+            self.assertEqual(1, len(created))
+            self.assertTrue(created[0].is_dir())
+            self.assertEqual([], list(created[0].iterdir()))
+        finally:
+            for entry in object_dir.iterdir():
+                if entry.name not in namespace and entry.is_dir():
+                    entry.rmdir()
 
-    def test_ac44_empty_operation_created_fanout_permission_error_is_exact_residue(self):
+    def test_ac44_fanout_created_after_locked_snapshot_is_never_snapshot_present(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        real_install = publication._install_quarantine_objects
+        raced = []
+        seen = []
+
+        def create_after_snapshot(root, records, snapshot):
+            record = next(item for item in records
+                          if snapshot["fanouts"][item["oid"][:2]] is None)
+            fanout = Path(snapshot["object_dir"]) / record["oid"][:2]
+            fanout.mkdir()
+            marker = fanout / "external-after-snapshot"
+            marker.write_bytes(b"external writer")
+            raced.append((fanout, marker))
+            seen.extend(records)
+            return real_install(root, records, snapshot)
+
+        try:
+            with mock.patch.object(publication, "_install_quarantine_objects",
+                                   side_effect=create_after_snapshot):
+                with self.assertRaisesRegex(ValidationError,
+                                            r"PRE_CAS_RECOVERY_REQUIRED:.*ambiguous_fanouts="):
+                    rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                        mapping_path=self.mapping)
+            self.assertEqual(1, len(raced))
+            state = next(record["fanout"] for record in seen
+                         if record["fanout"]["path"] == raced[0][0])
+            self.assertFalse(state["snapshot_present"])
+            self.assertTrue(state["ambiguous"])
+            self.assertTrue(raced[0][1].is_file())
+        finally:
+            for fanout, marker in raced:
+                marker.unlink(missing_ok=True)
+                fanout.rmdir()
+
+    def test_ac44_empty_operation_created_fanout_is_retained_without_pathname_rmdir(self):
         snapshot = publication._rewrite_snapshot(self.repo.path)
         object_dir = Path(snapshot["object_dir"])
         prefix = next(f"{value:02x}" for value in range(256)
@@ -929,11 +978,11 @@ class PublicationRewriteTests(unittest.TestCase):
         record = {"oid": prefix + "0" * 38, "snapshot_present": False,
                   "path": fanout / ("0" * 38), "fanout": state}
         try:
-            with mock.patch.object(Path, "rmdir",
-                                   side_effect=PermissionError("synthetic fanout removal denial")):
+            with mock.patch.object(Path, "rmdir") as remove:
                 with self.assertRaisesRegex(ValidationError,
-                                            "Operation-created empty fanout cleanup failed"):
+                                            "Atomic identity-bound fanout removal is unavailable"):
                     publication._cleanup_new_objects(self.repo.path, [record], snapshot)
+            remove.assert_not_called()
             self.assertTrue(fanout.is_dir())
             evidence = publication._recovery_message("PRE_CAS_RECOVERY_REQUIRED", [record],
                                                      "1" * 40, "2" * 40, "synthetic")
@@ -960,7 +1009,36 @@ class PublicationRewriteTests(unittest.TestCase):
                   "path": fanout / ("0" * 38), "fanout": state}
         try:
             with self.assertRaisesRegex(ValidationError,
-                                        "fanout contains ambiguous residue"):
+                                        "Atomic identity-bound fanout removal is unavailable"):
+                publication._cleanup_new_objects(self.repo.path, [record], snapshot)
+            self.assertTrue(marker.is_file())
+            evidence = publication._recovery_message("PRE_CAS_RECOVERY_REQUIRED", [record],
+                                                     "1" * 40, "2" * 40, "synthetic")
+            self.assertIn("retained_fanouts=" + prefix + "@", evidence)
+        finally:
+            marker.unlink()
+            fanout.rmdir()
+
+    def test_ac44_identity_swap_before_fanout_removal_never_deletes_external_directory(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        object_dir = Path(snapshot["object_dir"])
+        prefix = next(f"{value:02x}" for value in range(256)
+                      if not (object_dir / f"{value:02x}").exists())
+        fanout = object_dir / prefix
+        fanout.mkdir()
+        original = fanout.lstat()
+        state = {"path": fanout, "snapshot_present": False, "snapshot_identity": None,
+                 "created_by_operation": True,
+                 "installed_identity": (original.st_dev, original.st_ino), "ambiguous": False}
+        record = {"oid": prefix + "0" * 38, "snapshot_present": False,
+                  "path": fanout / ("0" * 38), "fanout": state}
+        fanout.rmdir()
+        fanout.mkdir()
+        marker = fanout / "external-replacement"
+        marker.write_bytes(b"external writer")
+        try:
+            with self.assertRaisesRegex(ValidationError,
+                                        "Operation-created fanout identity changed"):
                 publication._cleanup_new_objects(self.repo.path, [record], snapshot)
             self.assertTrue(marker.is_file())
             evidence = publication._recovery_message("PRE_CAS_RECOVERY_REQUIRED", [record],
@@ -1010,7 +1088,7 @@ class PublicationRewriteTests(unittest.TestCase):
         self.assertTrue(object_exists(self.repo.path, created))
         current = publication._rewrite_snapshot(self.repo.path)
         for key in snapshot:
-            if key != "objects":
+            if key not in {"objects", "fanouts"}:
                 self.assertEqual(snapshot[key], current[key])
 
     def test_ac44_fetch_head_and_merge_head_parse_every_canonical_oid(self):
