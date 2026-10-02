@@ -29,6 +29,11 @@ def git(repository, *args, input_bytes=None, check=True):
     return result.stdout.decode("utf-8", "replace").strip()
 
 
+def object_exists(repository, oid):
+    return subprocess.run(["git", "-C", str(repository), "cat-file", "-e", oid],
+                          capture_output=True, check=False).returncode == 0
+
+
 def private_locator():
     return "\\" * 2 + "example-host" + "\\" + "share" + "\\" + "raw"
 
@@ -646,12 +651,12 @@ class PublicationRewriteTests(unittest.TestCase):
                                 mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
 
-    def test_ac44_failed_final_cas_retains_valid_unreachable_object_without_ref_change(self):
+    def test_ac44_failed_final_cas_removes_new_object_and_restores_exact_snapshot(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
         message.write_text("clean squash\n", encoding="utf-8")
         head = git(self.repo.path, "rev-parse", "HEAD")
-        refs_before = git(self.repo.path, "for-each-ref", "--format=%(refname)%00%(objectname)")
+        snapshot = publication._rewrite_snapshot(self.repo.path)
         real_git = publication._git
         created = []
 
@@ -662,36 +667,39 @@ class PublicationRewriteTests(unittest.TestCase):
             return real_git(root, *args, **kwargs)
 
         with mock.patch.object(publication, "_git", side_effect=fail_update):
-            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+            with self.assertRaisesRegex(ValidationError, "CAS_FAILED_RECOVERED"):
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertEqual(1, len(created))
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
-        self.assertEqual(refs_before, git(self.repo.path, "for-each-ref", "--format=%(refname)%00%(objectname)"))
-        self.assertEqual("commit", git(self.repo.path, "cat-file", "-t", created[0]))
-        self.assertEqual("", git(self.repo.path, "for-each-ref", "--contains", created[0], "--format=%(refname)"))
-        reachable = git(self.repo.path, "rev-list", "--all", "--reflog").splitlines()
-        self.assertNotIn(created[0], reachable)
+        self.assertFalse(object_exists(self.repo.path, created[0]))
+        self.assertEqual(snapshot, publication._rewrite_snapshot(self.repo.path))
 
-    def test_ac44_failed_final_cas_preserves_object_claimed_by_concurrent_ref(self):
+    def test_ac44_failed_final_cas_preserves_objects_claimed_by_all_ref_namespaces(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
         message.write_text("clean squash\n", encoding="utf-8")
         head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
         created = []
+        concurrent_refs = ["refs/heads/concurrent", "refs/tags/concurrent",
+                           "refs/remotes/origin/concurrent", "refs/notes/concurrent",
+                           "refs/replace/" + head]
         def lose_after_concurrent_ref(root, *args, **kwargs):
             if args and args[0] == "update-ref" and args[1] == "refs/heads/awf/EX-6-publication":
                 created.append(args[2])
-                real_git(root, "update-ref", "refs/heads/concurrent", args[2])
+                for concurrent_ref in concurrent_refs:
+                    real_git(root, "update-ref", concurrent_ref, args[2])
                 return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
             return real_git(root, *args, **kwargs)
         with mock.patch.object(publication, "_git", side_effect=lose_after_concurrent_ref):
-            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+            with self.assertRaisesRegex(ValidationError, "CAS_FAILED_RECOVERY_REQUIRED"):
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
-        self.assertEqual(created[0], git(self.repo.path, "rev-parse", "refs/heads/concurrent^{commit}"))
+        for concurrent_ref in concurrent_refs:
+            self.assertEqual(created[0], git(self.repo.path, "--no-replace-objects", "rev-parse",
+                                             concurrent_ref + "^{commit}"))
         self.assertEqual("", git(self.repo.path, "cat-file", "-e", created[0] + "^{commit}"))
 
     def test_ac44_failed_final_cas_preserves_object_retained_only_by_reflog(self):
@@ -709,7 +717,7 @@ class PublicationRewriteTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
             return real_git(root, *args, **kwargs)
         with mock.patch.object(publication, "_git", side_effect=lose_after_concurrent_ref_moves_away):
-            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+            with self.assertRaisesRegex(ValidationError, "CAS_FAILED_RECOVERY_REQUIRED"):
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
@@ -739,7 +747,7 @@ class PublicationRewriteTests(unittest.TestCase):
             return real_git(root, *args, **kwargs)
 
         with mock.patch.object(publication, "_git", side_effect=fail_final_update):
-            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+            with self.assertRaisesRegex(ValidationError, "CAS_FAILED_RECOVERY_REQUIRED"):
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertFalse((self.repo.path / ".git" / "logs" / "HEAD").exists())
@@ -768,7 +776,7 @@ class PublicationRewriteTests(unittest.TestCase):
             return real_git(root, *args, **kwargs)
 
         with mock.patch.object(publication, "_git", side_effect=fail_final_update):
-            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+            with self.assertRaisesRegex(ValidationError, "CAS_FAILED_RECOVERY_REQUIRED"):
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertFalse((self.repo.path / ".git" / "logs" / "ORIG_HEAD").exists())
@@ -800,7 +808,7 @@ class PublicationRewriteTests(unittest.TestCase):
             return real_git(root, *args, **kwargs)
 
         with mock.patch.object(publication, "_git", side_effect=fail_final_update):
-            with self.assertRaisesRegex(ValidationError, "Atomic branch update failed"):
+            with self.assertRaisesRegex(ValidationError, "CAS_FAILED_RECOVERY_REQUIRED"):
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertFalse((linked_git_dir / "logs" / "HEAD").exists())
@@ -810,6 +818,154 @@ class PublicationRewriteTests(unittest.TestCase):
         checked = subprocess.run(["git", "-C", str(self.repo.path), "fsck", "--full"],
                                  capture_output=True, text=True)
         self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
+
+    def test_ac44_cleanup_failure_reports_exact_retained_object_and_recovery_command(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+        created = []
+
+        def fail_update(root, *args, **kwargs):
+            if args and args[0] == "update-ref" and args[1] == "refs/heads/awf/EX-6-publication":
+                created.append(args[2])
+                return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
+            return real_git(root, *args, **kwargs)
+
+        with mock.patch.object(publication, "_git", side_effect=fail_update), \
+                mock.patch.object(publication, "_unlink_loose_object",
+                                  side_effect=ValidationError("synthetic cleanup failure")):
+            with self.assertRaisesRegex(ValidationError,
+                                        r"CAS_FAILED_RECOVERY_REQUIRED:.*retained_objects=.*non_destructive_recovery="):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertTrue(object_exists(self.repo.path, created[0]))
+
+    def test_ac44_cleanup_never_touches_preexisting_packed_or_alternate_records(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        existing = git(self.repo.path, "rev-parse", "HEAD")
+        loose = publication._loose_path(Path(snapshot["object_dir"]), existing,
+                                        snapshot["object_format"])
+        records = [
+            {"oid": existing, "preexisting": True, "path": loose},
+            {"oid": existing, "preexisting": True, "path": Path(snapshot["object_dir"]) / "missing-packed"},
+            {"oid": existing, "preexisting": True, "path": Path(self.temp.name) / "alternate-object"},
+        ]
+        with mock.patch.object(publication, "_unlink_loose_object") as unlink:
+            publication._cleanup_new_objects(self.repo.path, records, snapshot)
+        unlink.assert_not_called()
+        self.assertTrue(object_exists(self.repo.path, existing))
+
+    def test_ac44_partial_install_failure_removes_residue_and_restores_snapshot(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        real_git = publication._git
+        installed = []
+
+        def fail_after_install(root, *args, **kwargs):
+            result = real_git(root, *args, **kwargs)
+            if args and args[0] == "hash-object" and not installed:
+                installed.append(result.stdout.decode("ascii").strip())
+                return subprocess.CompletedProcess(args, 0, b"0" * 40 + b"\n", b"")
+            return result
+
+        with mock.patch.object(publication, "_git", side_effect=fail_after_install):
+            with self.assertRaisesRegex(ValidationError, "PRE_CAS_FAILED_RECOVERED"):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual(1, len(installed))
+        self.assertFalse(object_exists(self.repo.path, installed[0]))
+        self.assertEqual(snapshot, publication._rewrite_snapshot(self.repo.path))
+
+    def test_ac44_post_cas_proof_failure_exactly_rolls_back_and_cleans_objects(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        with mock.patch.object(publication, "_post_cas_proof",
+                               return_value=(False, "synthetic post-CAS race")):
+            with self.assertRaisesRegex(ValidationError, "POST_CAS_PROOF_FAILED_RECOVERED") as caught:
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        created = re.search(r"new_head=([0-9a-f]+)", str(caught.exception)).group(1)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertFalse(object_exists(self.repo.path, created))
+        self.assertEqual(snapshot, publication._rewrite_snapshot(self.repo.path))
+
+    def test_ac44_post_cas_rollback_failure_preserves_recovery_evidence(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+
+        def fail_rollback(root, *args, **kwargs):
+            if (args and args[0] == "update-ref" and
+                    args[1] == "refs/heads/awf/EX-6-publication" and args[2] == old_head):
+                return subprocess.CompletedProcess(args, 1, b"", b"synthetic rollback failure")
+            return real_git(root, *args, **kwargs)
+
+        with mock.patch.object(publication, "_post_cas_proof",
+                               return_value=(False, "synthetic post-CAS race")), \
+                mock.patch.object(publication, "_git", side_effect=fail_rollback):
+            with self.assertRaisesRegex(ValidationError,
+                                        r"POST_CAS_RECOVERY_REQUIRED:.*old_head=.*new_head=.*retained_objects=.*non_destructive_recovery=") as caught:
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        created = re.search(r"new_head=([0-9a-f]+)", str(caught.exception)).group(1)
+        self.assertEqual(created, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertTrue(object_exists(self.repo.path, created))
+
+    def test_ac44_concurrent_ref_after_cas_is_detected_and_target_is_rolled_back(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+        created = []
+
+        def add_ref_after_cas(root, *args, **kwargs):
+            if (args and args[0] == "update-ref" and
+                    args[1] == "refs/heads/awf/EX-6-publication" and args[2] != old_head):
+                result = real_git(root, *args, **kwargs)
+                created.append(args[2])
+                real_git(root, "update-ref", "refs/tags/post-cas-race", old_head)
+                return result
+            return real_git(root, *args, **kwargs)
+
+        with mock.patch.object(publication, "_git", side_effect=add_ref_after_cas):
+            with self.assertRaisesRegex(ValidationError, "POST_CAS_RECOVERY_REQUIRED"):
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "refs/tags/post-cas-race"))
+        self.assertTrue(object_exists(self.repo.path, created[0]))
+
+    def test_ac44_fanout_alias_is_rejected_before_object_installation(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        oid = "ab" + "0" * 38
+        fanout = Path(snapshot["object_dir"]) / oid[:2]
+        target = Path(self.temp.name) / "fanout-target"
+        target.mkdir()
+        made_alias = False
+        if hasattr(fanout, "symlink_to"):
+            try:
+                fanout.symlink_to(target, target_is_directory=True)
+                made_alias = True
+            except OSError:
+                pass
+        if not made_alias and os.name == "nt":
+            made_alias = subprocess.run(["cmd", "/c", "mklink", "/J", str(fanout), str(target)],
+                                        capture_output=True, check=False).returncode == 0
+        if not made_alias:
+            self.skipTest("directory alias creation is unavailable on this host")
+        with self.assertRaisesRegex(ValidationError, "fanout directory is aliased"):
+            publication._loose_path(Path(snapshot["object_dir"]), oid, snapshot["object_format"])
 
     def test_ac44_invalid_utf8_message_refuses_without_change(self):
         self.contaminate_then_remove()

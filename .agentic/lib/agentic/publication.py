@@ -18,6 +18,8 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import uuid
+import zlib
 
 from . import ValidationError
 from .child_process import child_env
@@ -673,6 +675,373 @@ def _is_ancestor(root, older, newer):
     raise ValidationError("Git reachability lookup failed; rewrite refused without changes")
 
 
+_PSEUDOREFS = ("ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD",
+               "REVERT_HEAD", "REBASE_HEAD", "AUTO_MERGE", "BISECT_HEAD")
+
+
+def _git_common_dir(root):
+    value = _git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.decode("utf-8").strip()
+    return Path(value).resolve(strict=True)
+
+
+def _file_bytes(path):
+    try:
+        path = Path(path)
+        if not path.exists():
+            return None
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        if (not path.is_file() or path.is_symlink() or
+                (hasattr(path, "is_junction") and path.is_junction()) or
+                attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+            raise ValidationError("Rewrite state file is not a canonical regular file")
+        return path.read_bytes()
+    except OSError as exc:
+        raise ValidationError("Rewrite state file could not be read") from exc
+
+
+def _tree_files(path):
+    root = Path(path)
+    if not root.exists():
+        return {}
+    try:
+        result = {}
+        for current, directories, files in os.walk(root, followlinks=False):
+            for name in directories + files:
+                item = Path(current) / name
+                attributes = getattr(item.lstat(), "st_file_attributes", 0)
+                if (item.is_symlink() or (hasattr(item, "is_junction") and item.is_junction()) or
+                        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+                    raise ValidationError("Rewrite state inventory contains an alias")
+            for name in files:
+                item = Path(current) / name
+                if not item.is_file():
+                    raise ValidationError("Rewrite state inventory contains a non-file")
+                result[item.relative_to(root).as_posix()] = item.read_bytes()
+        return result
+    except OSError as exc:
+        raise ValidationError("Rewrite state inventory could not be read") from exc
+
+
+def _worktree_state(root):
+    records, current = [], {}
+    for raw in _git(root, "worktree", "list", "--porcelain").stdout.decode("utf-8", "surrogateescape").splitlines() + [""]:
+        if not raw:
+            if current:
+                records.append(current)
+                current = {}
+            continue
+        key, _, value = raw.partition(" ")
+        current[key] = value
+    result = {}
+    for record in records:
+        path = str(Path(record["worktree"]).resolve())
+        git_dir = Path(_git(path, "rev-parse", "--path-format=absolute", "--absolute-git-dir")
+                       .stdout.decode("utf-8").strip()).resolve(strict=True)
+        head = _git(path, "rev-parse", "--verify", "HEAD^{commit}").stdout.decode("ascii").strip()
+        symbolic = _git(path, "symbolic-ref", "-q", "HEAD", check=False)
+        symbol = symbolic.stdout.decode("utf-8").strip() if symbolic.returncode == 0 else None
+        status = _git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
+        pseudos = {}
+        for name in _PSEUDOREFS:
+            probe = _git(path, "rev-parse", "--verify", "--quiet", name + "^{commit}", check=False)
+            if probe.returncode == 0:
+                pseudos[name] = probe.stdout.decode("ascii").strip()
+            elif probe.returncode not in {1, 128}:
+                raise ValidationError("Pseudoref inventory failed; rewrite refused")
+        pseudo_files = {name: _file_bytes(git_dir / name) for name in _PSEUDOREFS}
+        result[path] = {"head": head, "symbolic": symbol, "status": status,
+                        "pseudos": pseudos, "pseudo_files": pseudo_files}
+    return result
+
+
+def _object_ids(root):
+    raw = _git(root, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)").stdout
+    return tuple(sorted(line.decode("ascii") for line in raw.splitlines() if line))
+
+
+def _rewrite_snapshot(root):
+    common = _git_common_dir(root)
+    object_dir = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-path", "objects").stdout.decode("utf-8").strip())
+    try:
+        object_resolved = object_dir.resolve(strict=True)
+        object_identity = (object_resolved.stat().st_dev, object_resolved.stat().st_ino)
+    except OSError as exc:
+        raise ValidationError("Primary object directory identity could not be proved") from exc
+    indexes = {"index": _file_bytes(common / "index")}
+    logs = _tree_files(common / "logs")
+    worktrees = common / "worktrees"
+    if worktrees.exists():
+        for item in worktrees.iterdir():
+            indexes["worktrees/" + item.name + "/index"] = _file_bytes(item / "index")
+            for key, value in _tree_files(item / "logs").items():
+                logs["worktrees/" + item.name + "/" + key] = value
+    alternate = _file_bytes(object_resolved / "info" / "alternates")
+    object_format = _git(root, "rev-parse", "--show-object-format").stdout.decode("ascii").strip()
+    if object_format not in {"sha1", "sha256"}:
+        raise ValidationError("Unsupported Git object format")
+    return {"refs": dict(_ref_tips(root)), "worktrees": _worktree_state(root),
+            "logs": logs, "indexes": indexes,
+            "alternate": alternate, "object_format": object_format,
+            "object_dir": str(object_resolved), "object_identity": object_identity,
+            "objects": _object_ids(root)}
+
+
+class _RewriteLock:
+    def __init__(self, root):
+        self.path = _git_common_dir(root) / "awf-publication-rewrite.lock"
+        self.token = (str(os.getpid()) + ":" + uuid.uuid4().hex).encode("ascii")
+
+    def __enter__(self):
+        try:
+            descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(self.token)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            raise ValidationError("Repository-wide publication rewrite lock is unavailable") from exc
+        return self
+
+    def __exit__(self, *_args):
+        try:
+            if self.path.read_bytes() == self.token:
+                self.path.unlink()
+        except OSError:
+            pass
+
+
+def _canonical_object_dir(root, snapshot):
+    common = _git_common_dir(root)
+    expected = common / "objects"
+    try:
+        resolved = expected.resolve(strict=True)
+        if str(resolved) != snapshot["object_dir"] or (resolved.stat().st_dev, resolved.stat().st_ino) != snapshot["object_identity"]:
+            raise ValidationError("Primary object directory identity changed")
+        cursor = common
+        for component in expected.relative_to(common).parts:
+            cursor /= component
+            attributes = getattr(cursor.lstat(), "st_file_attributes", 0)
+            if cursor.is_symlink() or (hasattr(cursor, "is_junction") and cursor.is_junction()) or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+                raise ValidationError("Primary object directory traverses an alias")
+    except (OSError, ValueError) as exc:
+        raise ValidationError("Primary object directory identity could not be proved") from exc
+    return resolved
+
+
+def _quarantine_objects(root, object_dir, extra_env, object_format):
+    length = 40 if object_format == "sha1" else 64
+    records = []
+    for path in sorted(Path(object_dir).glob("[0-9a-f][0-9a-f]/*")):
+        oid = path.parent.name + path.name
+        if not re.fullmatch(rf"[0-9a-f]{{{length}}}", oid):
+            raise ValidationError("Quarantine contains an invalid object path")
+        kind = _git(root, "cat-file", "-t", oid, extra_env=extra_env).stdout.decode("ascii").strip()
+        raw = _git(root, "cat-file", kind, oid, extra_env=extra_env).stdout
+        preexisting = _git(root, "cat-file", "-e", oid, check=False).returncode == 0
+        records.append({"oid": oid, "kind": kind, "raw": raw, "preexisting": preexisting})
+    if not records:
+        raise ValidationError("Quarantine object inventory is empty")
+    return records
+
+
+def _loose_path(object_dir, oid, object_format):
+    length = 40 if object_format == "sha1" else 64
+    if not re.fullmatch(rf"[0-9a-f]{{{length}}}", oid):
+        raise ValidationError("Object identity is invalid")
+    path = Path(object_dir) / oid[:2] / oid[2:]
+    try:
+        fanout = Path(object_dir) / oid[:2]
+        if path.resolve(strict=False).parent != fanout.resolve(strict=False):
+            raise ValidationError("Loose object path escaped the primary object directory")
+        if fanout.exists():
+            attributes = getattr(fanout.lstat(), "st_file_attributes", 0)
+            if (not fanout.is_dir() or fanout.is_symlink() or
+                    (hasattr(fanout, "is_junction") and fanout.is_junction()) or
+                    attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or
+                    fanout.resolve(strict=True).parent != Path(object_dir)):
+                raise ValidationError("Loose object fanout directory is aliased")
+    except OSError as exc:
+        raise ValidationError("Loose object path could not be proved") from exc
+    return path
+
+
+def _install_quarantine_objects(root, records, snapshot):
+    object_dir = _canonical_object_dir(root, snapshot)
+    # Prove every destination before creating the first object so a later
+    # validation failure cannot strand a partially installed set.
+    for record in records:
+        path = _loose_path(object_dir, record["oid"], snapshot["object_format"])
+        record["path"] = path
+        record["fanout_preexisting"] = path.parent.exists()
+        if not record["preexisting"] and path.exists():
+            raise ValidationError("New object has an ambiguous pre-install loose path")
+    for record in records:
+        path = record["path"]
+        installed = _git(root, "hash-object", "-t", record["kind"], "-w", "--stdin",
+                         input_bytes=record["raw"]).stdout.decode("ascii").strip()
+        if installed != record["oid"] or _git(root, "cat-file", "-e", installed, check=False).returncode:
+            raise ValidationError("Replacement object installation did not preserve its identity")
+        if not record["preexisting"]:
+            attributes = getattr(path.lstat(), "st_file_attributes", 0) if path.exists() else 0
+            if not path.is_file() or path.is_symlink() or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+                raise ValidationError("New object is not a canonical primary loose object")
+
+
+def _claimant_tips(root):
+    tips = set(dict(_ref_tips(root)).values())
+    for state in _worktree_state(root).values():
+        tips.add(state["head"])
+        tips.update(state["pseudos"].values())
+    length = 40 if _git(root, "rev-parse", "--show-object-format").stdout.strip() == b"sha1" else 64
+    expression = re.compile(rb"(?<![0-9a-f])[0-9a-f]{" + str(length).encode("ascii") + rb"}(?![0-9a-f])")
+    for content in _tree_files(_git_common_dir(root) / "logs").values():
+        tips.update(value.decode("ascii") for value in expression.findall(content))
+    common = _git_common_dir(root) / "worktrees"
+    if common.exists():
+        for item in common.iterdir():
+            for content in _tree_files(item / "logs").values():
+                tips.update(value.decode("ascii") for value in expression.findall(content))
+    return tips
+
+
+def _has_claimant(root, oid):
+    for tip in _claimant_tips(root):
+        if tip == oid:
+            return True
+        peeled = _git(root, "rev-parse", "--verify", "--quiet", tip + "^{commit}", check=False)
+        if peeled.returncode in {1, 128}:
+            continue
+        if peeled.returncode != 0:
+            raise ValidationError("Claimant type lookup failed; cleanup refused")
+        if _is_ancestor(root, oid, peeled.stdout.decode("ascii").strip()):
+            return True
+    return False
+
+
+def _unlink_loose_object(path):
+    path = Path(path)
+    try:
+        # Git deliberately makes loose objects read-only on Windows.  This path
+        # is reached only after the canonical-path, pre-existence, and claimant
+        # guards have proved that AWF created this exact loose object.
+        path.chmod(stat.S_IREAD | stat.S_IWRITE)
+        path.unlink()
+    except OSError as exc:
+        raise ValidationError("Replacement loose object cleanup failed") from exc
+
+
+def _loose_object_matches(record, object_format):
+    path = record["path"]
+    expected = (record["kind"] + " " + str(len(record["raw"]))).encode("ascii") + b"\0" + record["raw"]
+    try:
+        size = path.stat().st_size
+        if size > len(expected) * 2 + 1024:
+            return False
+        compressed = path.read_bytes()
+        inflater = zlib.decompressobj()
+        decoded = inflater.decompress(compressed, len(expected) + 1)
+        if len(decoded) > len(expected) or inflater.unconsumed_tail:
+            return False
+        decoded += inflater.flush(len(expected) + 1 - len(decoded))
+    except (OSError, zlib.error):
+        return False
+    algorithm = hashlib.sha1 if object_format == "sha1" else hashlib.sha256
+    return (inflater.eof and not inflater.unused_data and not inflater.unconsumed_tail and
+            decoded == expected and algorithm(expected).hexdigest() == record["oid"])
+
+
+def _cleanup_new_objects(root, records, snapshot):
+    _canonical_object_dir(root, snapshot)
+    removable = [record for record in records
+                 if not record["preexisting"] and record.get("path") is not None
+                 and record["path"].exists()]
+    if any(_has_claimant(root, record["oid"]) for record in removable):
+        raise ValidationError("A replacement object has a concurrent claimant")
+    for record in removable:
+        path = record["path"]
+        attributes = getattr(path.lstat(), "st_file_attributes", 0) if path.exists() else 0
+        if (not path.is_file() or path.is_symlink() or
+                attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+            raise ValidationError("Replacement object is not removable as a primary loose object")
+        if not _loose_object_matches(record, snapshot["object_format"]):
+            raise ValidationError("Replacement loose object identity could not be proved")
+        _unlink_loose_object(path)
+        if path.exists():
+            raise ValidationError("Replacement loose object cleanup did not complete")
+        if not record["fanout_preexisting"]:
+            try:
+                path.parent.rmdir()
+            except OSError:
+                pass
+
+
+def _restore_rewrite_reflogs(root, snapshot, ref):
+    common = _git_common_dir(root)
+    for relative in ("HEAD", ref):
+        key = relative if relative == "HEAD" else relative
+        path = common / "logs" / key
+        original = snapshot["logs"].get(key)
+        try:
+            if original is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_name(path.name + ".awf-restore")
+                temporary.write_bytes(original)
+                os.replace(temporary, path)
+        except OSError as exc:
+            raise ValidationError("Rewrite reflog restoration failed") from exc
+
+
+def _recovery_message(code, records, old_head, new_head, detail):
+    retained = ",".join(record["oid"] for record in records if not record["preexisting"])
+    command = "git cat-file -t " + (retained.split(",")[0] if retained else new_head) + " && git fsck --full --no-reflogs"
+    return (f"{code}: old_head={old_head}; new_head={new_head}; retained_objects={retained or 'none'}; "
+            f"detail={detail}; non_destructive_recovery={command}")
+
+
+def _failure_state_matches(root, snapshot):
+    return _rewrite_snapshot(root) == snapshot
+
+
+def _post_cas_proof(root, snapshot, ref, created, old_commits, records):
+    current = _rewrite_snapshot(root)
+    expected_refs = dict(snapshot["refs"])
+    expected_refs[ref] = created
+    if current["refs"] != expected_refs:
+        return False, "ref census changed"
+    for path, before in snapshot["worktrees"].items():
+        after = current["worktrees"].get(path)
+        if (after is None or after["symbolic"] != before["symbolic"] or
+                after["status"] != before["status"] or
+                after["pseudo_files"] != before["pseudo_files"]):
+            return False, "worktree census changed"
+        expected_head = created if before["symbolic"] == ref else before["head"]
+        if after["head"] != expected_head or after["pseudos"] != before["pseudos"]:
+            return False, "worktree or pseudoref changed"
+    if set(current["worktrees"]) != set(snapshot["worktrees"]):
+        return False, "worktree set changed"
+    allowed_logs = {"HEAD", ref}
+    for key in set(current["logs"]) | set(snapshot["logs"]):
+        if key not in allowed_logs and current["logs"].get(key) != snapshot["logs"].get(key):
+            return False, "unexpected reflog changed"
+    for key in ("indexes", "alternate", "object_format", "object_dir", "object_identity"):
+        if current[key] != snapshot[key]:
+            return False, key + " changed"
+    expected_objects = set(snapshot["objects"]) | {record["oid"] for record in records}
+    if set(current["objects"]) != expected_objects:
+        return False, "object inventory changed"
+    other_tips = set(current["refs"].values()) - {created}
+    for path, state in current["worktrees"].items():
+        if state["symbolic"] != ref:
+            other_tips.add(state["head"])
+        other_tips.update(state["pseudos"].values())
+    for old in old_commits:
+        if any(_is_ancestor(root, old, tip) for tip in other_tips):
+            return False, "old commit became reachable"
+    return True, "proved"
+
+
 def _local_remote_has_ref(root, url, ref):
     """Sandbox-safe fallback after ls-remote was attempted for a local bare remote."""
     if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", url) and not url.lower().startswith("file://"):
@@ -761,10 +1130,10 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
         raise ValidationError("Rewrite message file must be strict UTF-8") from exc
     old_tree = _git(root, "rev-parse", old_head + "^{tree}").stdout.decode("ascii").strip()
     verify_publisher_tree(root, old_tree)
-    object_dir = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-path", "objects").stdout.decode("utf-8").strip())
     with tempfile.TemporaryDirectory(prefix="awf-publication-rewrite-") as temporary:
         temp_objects = Path(temporary) / "objects"
         temp_objects.mkdir()
+        object_dir = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-path", "objects").stdout.decode("utf-8").strip())
         alternate = str(object_dir)
         extra = {"GIT_OBJECT_DIRECTORY": str(temp_objects), "GIT_ALTERNATE_OBJECT_DIRECTORIES": alternate}
         created = _git(root, "commit-tree", old_tree, "-p", base_sha, input_bytes=message, extra_env=extra).stdout.decode("ascii").strip()
@@ -779,26 +1148,73 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
         object_format = _git(root, "rev-parse", "--show-object-format").stdout.decode("ascii").strip()
         if object_format not in {"sha1", "sha256"}:
             raise ValidationError("Unsupported Git object format")
-        raw_object = _git(root, "cat-file", "commit", created, extra_env=extra).stdout
-    # The quarantine has been fully validated and removed before the only two
-    # persistent operations. Git writes the object atomically and update-ref is
-    # the final operation. If that CAS fails, retain the validated object:
-    # no ref census can exclude a validated lock being renamed immediately
-    # after the census, and ordinary Git grace/GC safely handles unreachable
-    # objects without risking a concurrent ref, pseudoref or reflog.
-    installed = _git(root, "hash-object", "-t", "commit", "-w", "--stdin",
-                     input_bytes=raw_object).stdout.decode("ascii").strip()
-    installed_present = _git(root, "cat-file", "-e", created + "^{commit}", check=False).returncode == 0
-    if installed != created or not installed_present:
-        raise ValidationError("Replacement object installation did not preserve its identity")
-    update = _git(root, "update-ref", ref, created, old_head, check=False)
-    if update.returncode:
-        raise ValidationError("Atomic branch update failed; branch was not changed and the validated replacement object was retained for Git recovery/GC")
+        records = _quarantine_objects(root, temp_objects, extra, object_format)
+        if created not in {record["oid"] for record in records}:
+            raise ValidationError("Replacement commit is absent from the quarantine inventory")
+        with _RewriteLock(root):
+            snapshot = _rewrite_snapshot(root)
+            if snapshot["refs"].get(ref) != old_head:
+                raise ValidationError("Target ref changed before installation; rewrite refused without changes")
+            for other_ref, tip in snapshot["refs"].items():
+                if other_ref != ref and any(_is_ancestor(root, commit, tip) for commit in old_commits):
+                    raise ValidationError("Old commits became reachable before installation; rewrite refused without changes")
+            try:
+                _install_quarantine_objects(root, records, snapshot)
+            except ValidationError as install_error:
+                try:
+                    current = _rewrite_snapshot(root)
+                    if any(current[key] != snapshot[key] for key in snapshot if key != "objects"):
+                        raise ValidationError("repository state changed during installation failure")
+                    _cleanup_new_objects(root, records, snapshot)
+                    if not _failure_state_matches(root, snapshot):
+                        raise ValidationError("repository snapshot was not restored")
+                except ValidationError as recovery_error:
+                    raise ValidationError(_recovery_message(
+                        "PRE_CAS_RECOVERY_REQUIRED", records, old_head, created,
+                        str(install_error) + "; recovery: " + str(recovery_error))) from recovery_error
+                raise ValidationError(_recovery_message(
+                    "PRE_CAS_FAILED_RECOVERED", records, old_head, created,
+                    str(install_error) + "; exact pre-operation snapshot restored")) from install_error
+            update = _git(root, "update-ref", ref, created, old_head, check=False)
+            if update.returncode:
+                try:
+                    current = _rewrite_snapshot(root)
+                    if any(current[key] != snapshot[key] for key in snapshot if key != "objects"):
+                        raise ValidationError("repository state changed during failed CAS")
+                    _cleanup_new_objects(root, records, snapshot)
+                    if not _failure_state_matches(root, snapshot):
+                        raise ValidationError("repository snapshot was not restored")
+                except ValidationError as exc:
+                    raise ValidationError(_recovery_message(
+                        "CAS_FAILED_RECOVERY_REQUIRED", records, old_head, created, str(exc))) from exc
+                raise ValidationError(_recovery_message(
+                    "CAS_FAILED_RECOVERED", records, old_head, created, "exact pre-operation snapshot restored"))
+            proved, detail = _post_cas_proof(root, snapshot, ref, created, old_commits, records)
+            if not proved:
+                rollback = _git(root, "update-ref", ref, old_head, created, check=False)
+                if rollback.returncode:
+                    raise ValidationError(_recovery_message(
+                        "POST_CAS_RECOVERY_REQUIRED", records, old_head, created,
+                        "exact-CAS rollback failed after " + detail))
+                try:
+                    _restore_rewrite_reflogs(root, snapshot, ref)
+                    current = _rewrite_snapshot(root)
+                    if any(current[key] != snapshot[key] for key in snapshot if key != "objects"):
+                        raise ValidationError("repository state changed during post-CAS recovery")
+                    _cleanup_new_objects(root, records, snapshot)
+                    if not _failure_state_matches(root, snapshot):
+                        raise ValidationError("repository snapshot was not restored")
+                except ValidationError as exc:
+                    raise ValidationError(_recovery_message(
+                        "POST_CAS_RECOVERY_REQUIRED", records, old_head, created, str(exc))) from exc
+                raise ValidationError(_recovery_message(
+                    "POST_CAS_PROOF_FAILED_RECOVERED", records, old_head, created,
+                    "exact-CAS rollback restored the pre-operation snapshot after " + detail))
     return {"status": "PASS", "branch": branch, "base_sha": base_sha, "old_head": old_head,
             "head_sha": created, "head_tree": old_tree, "commits": 1, "publication_scan": scan,
             "old_commits_reachable_from_branches_or_tags": False,
             "old_commits_reachable_from_local_or_remote_tracking_refs": False,
             "remote_branch_absent": True,
             "remote_push_branch_absent": True,
-            "reflog_notice": "The old commit can remain in local reflogs and the object store. If it must be removed locally, expire relevant reflogs and prune unreachable objects under an operator-approved retention policy after preserving required recovery evidence.",
+            "reflog_notice": "The old commit can remain in local reflogs. Failed-CAS cleanup removes only newly created, unclaimed, canonical primary loose objects after exact snapshot proof.",
             "execution_authority": False}
