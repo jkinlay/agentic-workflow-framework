@@ -79,34 +79,34 @@ class ContinuousControllerTests(unittest.TestCase):
 
     def test_blocked_or_input_dependent_stream_does_not_pause_eligible_work(self):
         inventory = [
-            ticket("QA-1", 1, "BLOCKED", reason="dependency unavailable"),
-            ticket("QA-2", 2, "PAUSED_INPUT", reason="owner input required"),
-            ticket("QA-3", 3),
+            ticket("EX-1", 1, "BLOCKED", reason="dependency unavailable"),
+            ticket("EX-2", 2, "PAUSED_INPUT", reason="owner input required"),
+            ticket("EX-3", 3),
         ]
         snapshot = self.store.schedule(inventory, NOW, host_capacity=3)
         self.assertEqual({item["state"] for item in snapshot}, {"WORKING", "BLOCKED", "PAUSED_INPUT"})
         working = next(item for item in snapshot if item["state"] == "WORKING")
-        self.assertEqual(working["ticket"], "QA-3")
+        self.assertEqual(working["ticket"], "EX-3")
         self.assertTrue(all(item["reason"] and item["next_action"] and item["resume_trigger"] for item in snapshot))
 
     def test_completed_run_refills_same_transaction_with_next_eligible_action(self):
-        first = self.store.schedule([ticket("QA-1", 1), ticket("QA-2", 2)], NOW, host_capacity=1)
+        first = self.store.schedule([ticket("EX-1", 1), ticket("EX-2", 2)], NOW, host_capacity=1)
         stream = next(item for item in first if item["state"] == "WORKING")
-        self.assertEqual(stream["ticket"], "QA-1")
-        after = self.store.finish_and_refill(stream["stream"], "QA-1", [ticket("QA-2", 2)],
+        self.assertEqual(stream["ticket"], "EX-1")
+        after = self.store.finish_and_refill(stream["stream"], "EX-1", [ticket("EX-2", 2)],
                                              "2026-10-02T10:00:01Z", host_capacity=1)
         refilled = next(item for item in after if item["stream"] == stream["stream"])
-        self.assertEqual((refilled["state"], refilled["ticket"]), ("WORKING", "QA-2"))
+        self.assertEqual((refilled["state"], refilled["ticket"]), ("WORKING", "EX-2"))
         self.assertNotIn(None, [item["state"] for item in after])
 
     def test_path_capacity_budget_cap_dependency_and_independence_are_fail_closed(self):
         inventory = [
-            ticket("QA-1", 1, paths=["src/shared"]),
-            ticket("QA-2", 2, paths=["SRC/shared/nested.py"]),
-            ticket("QA-3", 3, budget_available=False),
-            ticket("QA-4", 4, cap_available=False),
-            ticket("QA-5", 5, dependencies_satisfied=False),
-            ticket("QA-6", 6, review_independent=False),
+            ticket("EX-1", 1, paths=["src/shared"]),
+            ticket("EX-2", 2, paths=["SRC/shared/nested.py"]),
+            ticket("EX-3", 3, budget_available=False),
+            ticket("EX-4", 4, cap_available=False),
+            ticket("EX-5", 5, dependencies_satisfied=False),
+            ticket("EX-6", 6, review_independent=False),
         ]
         snapshot = self.store.schedule(inventory, NOW, host_capacity=2)
         self.assertEqual(sum(item["state"] == "WORKING" for item in snapshot), 1)
@@ -130,7 +130,7 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_restart_preserves_visible_stream_states_and_has_no_idle_value(self):
-        before = self.store.schedule([ticket("QA-1", 1), ticket("QA-2", 2, "PAUSED_INPUT")],
+        before = self.store.schedule([ticket("EX-1", 1), ticket("EX-2", 2, "PAUSED_INPUT")],
                                      NOW, host_capacity=1)
         restarted = ContinuousControllerStore(self.path, ["A", "B", "C"])
         self.assertEqual(restarted.snapshot(), before)
@@ -143,7 +143,7 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(self.store.digest("2026-10-02T10:00:30Z"), first)
         self.store.acknowledge_digest(first["delivery_id"], "2026-10-02T10:00:31Z")
         self.assertIsNone(self.store.digest("2026-10-02T10:01:00Z"))
-        self.store.schedule([ticket("QA-1", 1)], "2026-10-02T10:02:00Z", host_capacity=1)
+        self.store.schedule([ticket("EX-1", 1)], "2026-10-02T10:02:00Z", host_capacity=1)
         changed = self.store.digest("2026-10-02T10:02:01Z")
         self.assertEqual(changed["kind"], "CHANGE")
         self.assertEqual(len(changed["streams"]), 3)
@@ -157,7 +157,7 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(self.store.digest("2026-10-02T10:20:00Z")["cadence_seconds"], 300)
 
     def test_generated_digest_contract_accepts_runtime_record(self):
-        self.store.schedule([ticket("QA-1", 1)], NOW, host_capacity=1)
+        self.store.schedule([ticket("EX-1", 1)], NOW, host_capacity=1)
         digest = self.store.digest(NOW)
         Contracts(ROOT / ".agentic/schemas").validate("controller-status-digest", digest)
         local_semantics("controller-status-digest", digest)
@@ -166,19 +166,19 @@ class ContinuousControllerTests(unittest.TestCase):
             local_semantics("controller-status-digest", digest)
 
     def test_running_work_is_revalidated_and_completed_ticket_is_not_redispatched(self):
-        self.store.schedule([ticket("QA-1", 1)], NOW, host_capacity=1)
-        blocked = self.store.schedule([ticket("QA-1", 1, dependencies_satisfied=False)],
+        self.store.schedule([ticket("EX-1", 1)], NOW, host_capacity=1)
+        blocked = self.store.schedule([ticket("EX-1", 1, dependencies_satisfied=False)],
                                       "2026-10-02T10:00:01Z", host_capacity=1)
-        self.assertEqual(next(item for item in blocked if item["ticket"] == "QA-1")["state"], "BLOCKED")
+        self.assertEqual(next(item for item in blocked if item["ticket"] == "EX-1")["state"], "BLOCKED")
         fresh = ContinuousControllerStore(Path(self.temporary.name) / "finished.sqlite3", ["A"])
-        fresh.schedule([ticket("QA-2", 1)], NOW, host_capacity=1)
+        fresh.schedule([ticket("EX-2", 1)], NOW, host_capacity=1)
         with self.assertRaisesRegex(ValidationError, "Completed ticket remains dispatch-eligible"):
-            fresh.finish_and_refill("A", "QA-2", [ticket("QA-2", 1)],
+            fresh.finish_and_refill("A", "EX-2", [ticket("EX-2", 1)],
                                     "2026-10-02T10:00:01Z", host_capacity=1)
 
     def test_path_aliases_overlap_and_external_or_traversal_paths_are_rejected(self):
-        snapshot = self.store.schedule([ticket("QA-1", 1, paths=["src\\shared"]),
-                                        ticket("QA-2", 2, paths=["SRC/shared/nested.py"])],
+        snapshot = self.store.schedule([ticket("EX-1", 1, paths=["src\\shared"]),
+                                        ticket("EX-2", 2, paths=["SRC/shared/nested.py"])],
                                        NOW, host_capacity=2)
         self.assertEqual(sum(item["state"] == "WORKING" for item in snapshot), 1)
         drive_absolute = "".join(("C", ":/outside"))
@@ -281,7 +281,7 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(len(json.loads(completed.stdout)["streams"]), 3)
 
     def test_production_cycle_observes_inventory_dispatches_and_delivers_digest(self):
-        inventory = [ticket("QA-1", 1), ticket("QA-2", 2), ticket("QA-3", 3)]
+        inventory = [ticket("EX-1", 1), ticket("EX-2", 2), ticket("EX-3", 3)]
         calls = []
         def dispatch(payload):
             calls.append(("dispatch", payload["ticket"]))
@@ -308,7 +308,7 @@ class ContinuousControllerTests(unittest.TestCase):
         def fail_dispatch(payload):
             dispatch_calls.append(payload)
             raise RuntimeError("synthetic uncertain host result")
-        first_tickets = [ticket("QA-4", 1)]
+        first_tickets = [ticket("EX-4", 1)]
         first = production_controller_cycle(store, now=NOW, host_capacity=1,
             inventory_binding=INVENTORY_BINDING,
             **REPOSITORY,
@@ -321,7 +321,7 @@ class ContinuousControllerTests(unittest.TestCase):
         def observe(payload):
             return {key: payload[key] for key in ("dispatch_id", "stream", "ticket", "exact_tuple")} | {
                 "status": "ACCEPTED", "observed_at": later}
-        second_tickets = [ticket("QA-4", 1)]
+        second_tickets = [ticket("EX-4", 1)]
         second = production_controller_cycle(store, now=later, host_capacity=1,
             inventory_binding=INVENTORY_BINDING,
             **REPOSITORY,
@@ -334,7 +334,7 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(second["dispatch_receipts"][0]["status"], "ACCEPTED")
 
     def test_production_cycle_rejects_partial_or_wrong_scope_inventory(self):
-        observed = inventory_observation(NOW, [ticket("QA-5", 1)])
+        observed = inventory_observation(NOW, [ticket("EX-5", 1)])
         for mutate in (lambda value: value.update(complete=False),
                        lambda value: value["binding"].update(project_id="other"),
                        lambda value: value.update(inventory_sha256="0" * 64)):
@@ -359,7 +359,7 @@ class JiraProgressTests(unittest.TestCase):
         self.store = ContinuousControllerStore(
             Path(self.temporary.name) / "controller.sqlite3", ["A", "B", "C"])
 
-    def receipt(self, ticket="QA-1", **overrides):
+    def receipt(self, ticket="EX-1", **overrides):
         value = {"ticket": ticket, "issue_id": "10001", **BINDING, "status": "RECONCILED",
                  "operation_id": str(uuid.UUID(int=2)), "before_status_id": "3",
                  "after_status_id": "10002", "observed_at": NOW}
@@ -374,7 +374,7 @@ class JiraProgressTests(unittest.TestCase):
                 "snapshot_id": snapshot, "scope_sha256": scope_hash, "observed_at": observed}
 
     def call(self, reconcile=None, fetch=None, **overrides):
-        args = dict(jira_enabled=True, merged_ticket="QA-1", scope=self.scope, observed_at=NOW,
+        args = dict(jira_enabled=True, merged_ticket="EX-1", scope=self.scope, observed_at=NOW,
                     jira_binding=BINDING,
                     reconcile_merged_ticket=reconcile or (lambda ticket: self.receipt(ticket)),
                     fetch_scope_page=fetch or (lambda scope, cursor: self.page([])))
@@ -394,13 +394,13 @@ class JiraProgressTests(unittest.TestCase):
                                  cursor="p2", complete=False)
             return self.page([{"id": "3", "issue_type": "TASK", "status_category": "NON_TERMINAL"}])
         result = self.call(reconcile=reconcile, fetch=page)
-        self.assertEqual(calls[0], ("reconcile", "QA-1"))
+        self.assertEqual(calls[0], ("reconcile", "EX-1"))
         self.assertEqual((result["jira_state"], result["closed"], result["remaining_open"]),
                          ("COUNTED", 1, 1))
 
     def test_routine_merge_observation_uses_reconcile_first_progress_route(self):
         calls = []
-        args = dict(jira_enabled=True, merged_ticket="QA-1", scope=self.scope, observed_at=NOW,
+        args = dict(jira_enabled=True, merged_ticket="EX-1", scope=self.scope, observed_at=NOW,
                     jira_binding=BINDING,
                     reconcile_merged_ticket=lambda ticket: calls.append(("reconcile", ticket)) or
                         self.receipt(ticket),
@@ -410,7 +410,7 @@ class JiraProgressTests(unittest.TestCase):
             lifecycle_state="MERGING",
             lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
             jira_progress=args)
-        self.assertEqual(calls, [("reconcile", "QA-1"), ("count", None)])
+        self.assertEqual(calls, [("reconcile", "EX-1"), ("count", None)])
         self.assertEqual((result["state"], result["jira_progress"]["jira_state"],
                           result["execution_authority"]), ("MERGED", "COUNTED", False))
         calls.clear()
@@ -429,12 +429,12 @@ class JiraProgressTests(unittest.TestCase):
 
     def test_wrong_reconciliation_binding_is_not_retried_or_counted(self):
         for field, value in (("cloud_id", "other"), ("actor_id", "other"),
-                             ("status", "UNKNOWN"), ("ticket", "QA-2")):
+                             ("status", "UNKNOWN"), ("ticket", "EX-2")):
             calls = []
             result = self.call(reconcile=lambda ticket, f=field, v=value:
                                calls.append(ticket) or self.receipt(ticket, **{f: v}),
                                fetch=lambda scope, cursor: self.fail("count requires proven reconciliation"))
-            self.assertEqual(calls, ["QA-1"])
+            self.assertEqual(calls, ["EX-1"])
             self.assertEqual(result["jira_state"], "UNOBSERVED")
 
     def test_snapshot_scope_time_category_and_completeness_fail_closed(self):

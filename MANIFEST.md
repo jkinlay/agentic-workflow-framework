@@ -2,7 +2,7 @@
 
 351 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `1e668f2a1d97030073aa22a14b290ecd6f049bc7a1141908630b48e391c2d921`
+MANIFEST.json SHA-256: `03e9845231af84e53da6adbc08c7396be4b370f0fd8cbfd5aa7442df322a644d`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -37,7 +37,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/28-EXTERNAL-REVIEW.md` | `c53cf16430cb0b8b44915104f02bcc8ab09cf47608aeb1865eb491d25c7d31a2` |
 | `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `9d09ee75451c8d0766a66f47a089fa6dc2b76a25a5897223b4b1f0ee871f92de` |
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `be2ba691bd38a10a9256d99f25c5400aa4337f068e4fd1b3e42ca5b91e8a6d84` |
-| `.agentic/docs/31-PUBLICATION-SAFETY.md` | `8833253d42a541e77a17872061c10385ae572828bdba78ddd4dc570cfdb4c8e3` |
+| `.agentic/docs/31-PUBLICATION-SAFETY.md` | `1658d881554d4274918c203a53562f042e1d94021b585f6a3007c9f0219a0a8e` |
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `861a027bf807705a1fe3651bb274dd27ac24404567e0b440c21c338d8c227b3b` |
 | `.agentic/docs/33-REVIEW-COMPLETION-BARRIER.md` | `9c33043f3a511d4cba6ead5f864e4156e1c4f7754f15c342d5683678079fa2a2` |
 | `.agentic/docs/34-CONTINUOUS-CONTROLLER.md` | `385c594023a22d4a0a068d1722a59d6bac991883a910f3e1c883c5d8936aabfb` |
@@ -86,7 +86,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/providers/github.py` | `21d890937fd2a361c076c259949c0117a72d610c46fe3f76ff631ceaf399bd18` |
 | `.agentic/lib/agentic/providers/github_review_host.py` | `2f40909fc0cd05c9f636e3abf1c9e9bcce9403641dc66851ea3427cde0e97ac1` |
 | `.agentic/lib/agentic/providers/github_status.py` | `cf6b492281d444685b914669f79469f0f562ab958fb22474932f6bb41929ce3b` |
-| `.agentic/lib/agentic/publication.py` | `9c0e4989545405b15826a0930cced88eb374766769ddb64e8bd1d8f1c2f5d47b` |
+| `.agentic/lib/agentic/publication.py` | `f175970d60af5a25a1cc2192953b9e8a2d3d559d0fb402134f66fe79851dfc38` |
 | `.agentic/lib/agentic/release_trust.py` | `52823764da8487f4c2d410b7979532c0ca2059706a9a09e1a0fb34302f2faebf` |
 | `.agentic/lib/agentic/repository_rules.py` | `6c04a815378ced7163dc763e3fb9a93889f8adde5461c4a58d5df13c20a27fcc` |
 | `.agentic/lib/agentic/review_completion.py` | `56050b8462bed97a05f99eb1ab25b131bb6e468bc4ad288e0a36b0750038a6ff` |
@@ -224,7 +224,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_codeowners.py` | `12c0b86ed561d24d4d3c6cbe2c713be9820e62ed862455658a9b792e0fac5184` |
 | `.agentic/tests/test_config_diagnostics.py` | `e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07` |
 | `.agentic/tests/test_continuation.py` | `1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633` |
-| `.agentic/tests/test_continuous_controller.py` | `14c2e638ca00fe73052020b8496f05573cb9aafabdcf696e47667575aa13d36d` |
+| `.agentic/tests/test_continuous_controller.py` | `291c4be94e960988a595fff6f314c33309c25369e80e367859cff2bf0c547d77` |
 | `.agentic/tests/test_gittree.py` | `6eb3a12e3c5edc126368b3446fcdac47737281c3ed1c2beb45458c67d1f7d483` |
 | `.agentic/tests/test_host_process.py` | `e51ef1f41d87493eeb3e3dbf38d815e5cec3d0d90e2f06f83fdc23436d131083` |
 | `.agentic/tests/test_interaction.py` | `7b0ac687daa56b3e49e9d849b578e4c2d2bd640c89c96b2f4b543b071ae5a996` |
@@ -236,7 +236,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_native_routine.py` | `5a2cd7a28fc147369c986c985071ab035ea50e8113267f7cac8881410c8a1e2a` |
 | `.agentic/tests/test_operating.py` | `def5290843cc25a01664f80d441f3aa52cb76b45802361b18bbad909bc40e0ea` |
 | `.agentic/tests/test_operating_integration.py` | `6a291df27699e934c42cf9007e1aaf47794b027a9878dc6bedc80a1c2b1b6b58` |
-| `.agentic/tests/test_publication.py` | `1805bebd5d7271bfe950b9c148d6295d05fa494756d240460c8f5439012a73b6` |
+| `.agentic/tests/test_publication.py` | `b02604aabfac27c2b2ff7d10fdf6a33c91caea7e5cd36f1c17d40dc9beae9f64` |
 | `.agentic/tests/test_reference.py` | `7eb3d674ac28eb9be6a16b0db6e8c9350221e898386a5e2a09bde8fb0ed88ae2` |
 | `.agentic/tests/test_release_trust.py` | `aa0fea0255bc4b0610c8794e29c05d2180a3a1ef25e5bcf91a038adbbfaa8755` |
 | `.agentic/tests/test_repository_rules.py` | `c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68` |

@@ -51,6 +51,56 @@ _HISTORICAL_SELF_REFERENCES = {
     }),
 }
 
+# PR #34 initially used short Jira-shaped labels for synthetic controller test
+# tickets. The published commits cannot be rewritten without owner authority.
+# These identities cover only those exact historical full lines, in that exact
+# test path, for the operator-local restricted-identifier detector. Current
+# fixtures use EX-* labels. A changed line, path, detector, or Jira value is
+# still a finding.
+_HISTORICAL_SYNTHETIC_TEST_REFERENCES = {
+    ".agentic/tests/test_continuous_controller.py": frozenset({
+        "0a0472d6c185682c5886ba6fe5dc6af41c5afa439a434bb90dd45afb0fca89a3",
+        "0db2d0bfb0d2d2ea6af3b5e6d4e1b544b753fe14de176580072795747b7ed1c6",
+        "0e2416a558804e03b323b89435ffb6b6a1a5d4b53a1a4f86f8ed0f833fdf6c57",
+        "168ef0f6eb2e14bfc3dd281f4457152c3204313b42474724ec8374c26e555fc8",
+        "18e161041415c5c2b5568f462a42f3f5c01d76f9774b4f4f56448287bcfcb85b",
+        "195f617308ef7689e34a78db6277135d9e53644d752467778c6a096c60213e49",
+        "1a39bd27bbc855b7a746124ebfe465a885ff91aaa30a4991a6cb641002b17af1",
+        "2fa632f95da7665069ee0dd85f92c9240fd8529c03f07325022e9b9f2bc185f3",
+        "457bf8a93440d088996e833d5fdfc336e9dad1d0f66fed91603b8379fab05d5d",
+        "47fc1047b6bc1ab8c3a859cdbc0174d2a54ba65a2aadd9c289bab5553cbb5b62",
+        "4e20399bb57229eaa1afdb5d97be8b15cf275379a958ad6ad42812066a152619",
+        "53f340f5b7419bad5f1293ec03a53253c7546837fc72728b66e8e7044fbf75bd",
+        "5498acbf26ec57a3f77e81f3ce65964e80ce61329f8eafcde2581c0f7490f70c",
+        "5883dfaeb2709a2d6ac130314dad4d75a6f67ae14ca310dc83d8df1072eb6fa1",
+        "5f42210bc3da0981a6160409e6a5be91a0805183d98341569e4d5d483010a593",
+        "648c5a3185bd32df97cb0871e7ddfb13a771ceda8311797fac0aecb9a7338be2",
+        "6cfc7156b4d100242ca7f84c5ff9f47c166b497a5b7807df4c28d8d0ce7d087f",
+        "6fe138c3864e43a93a2a8e3570cdc27e85e26c1a6ae004fb04a3d171150b03fb",
+        "7b01bf7a27182c7c1005d73fb666fa9d1ac32139c0c4a5e181168eb349fbe0e5",
+        "7ce66651fd1556eaf265ccda36c6cba9ae50f3e02c38bb8d5fa4e521ec2a53b4",
+        "7d1978c4d447193cd6181b614a839df63c5e38485167a002fffb5dc9ff610718",
+        "7edc6197541b815e71cc2bb6bd71f8ab7105d609d0c57860639a3f14c51e940c",
+        "89a0198387ccef34a546e6d3c70fa59a75d3d9571923b6efd917b991fbdd4da9",
+        "8d8fcb6aff357d6e6a0d0db8feaf236d3f9961fd140bb38f4582009344c4e71d",
+        "982d3d873252621721e6b423e25f16b811e2dd085f85331b5e63b30e745720b8",
+        "9a33402f86d5e602e4be01e7a230f33e7b317a7e57366f4f0d7f28677e2edf74",
+        "9cf0ce46d56eaece7ab9af8cd18ddc286877c53b5a031cee272157a17445e9e7",
+        "a826adddc50cafda162a9e707fe6017c0ccd8b4680243b15eee8ce4c0ece35b3",
+        "a884bbd9fdc64dea0738cd8ecd8953fc76942eb3658baa158f792b30dc50f0fa",
+        "b1af1cddea32f05eb6f4b939cf844df875c9e174f956dae70660042bafd71066",
+        "beb3ffac8b924cf4fae6303be78d142a914616a1a2a6aec7cd925f92caaee328",
+        "c778b3303c665ea0f89259037f75046ea46253e4f28ecb05aeab0bd151bda386",
+        "ce49c5023cdde26dc105bd516c4828ad859360cf4dc060fa6276be71eaa70534",
+        "d8e71f1a9287d97ecdddc4d6b1d2084b2e3e309651cc5915ad81fd20515e7dd4",
+        "ebd0ddb6e79206d6b3a7773001b93adc4f565568695d8a33cd0062f613ebe127",
+        "ed928b55071730ca2880f0eae5202a63af10a98763a62acdca5b34fb81fbf56b",
+        "edca96ab210b7ff2916ca74bc11b5d2dbe8e702241d91924fbbc1f85347f598b",
+        "f684483718de3a6cb8f8bf546c22f91f3bffbf3db891f8da706de6d6f8bf2fba",
+        "fb650fa803749af726932b21de36cd97c54d5ee33f3478d4d0beb72d0235a9bd",
+    }),
+}
+
 
 @dataclass(frozen=True)
 class Detector:
@@ -209,6 +259,15 @@ def _historical_self_reference(path, detector_id, line):
     return hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest() in identities
 
 
+def _historical_synthetic_test_reference(path, detector_id, line, value):
+    if detector_id != "local.regex.restricted_identifier":
+        return False
+    if re.fullmatch("QA-" + r"[1-6]", value, re.IGNORECASE) is None:
+        return False
+    identities = _HISTORICAL_SYNTHETIC_TEST_REFERENCES.get(path, ())
+    return hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest() in identities
+
+
 def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, change=None):
     findings = []
     for number, line in enumerate(text.splitlines() or [text], 1):
@@ -218,6 +277,8 @@ def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, 
                 if detector.private_ip and not _private_ip(value):
                     continue
                 if _historical_self_reference(path, detector.detector_id, line):
+                    continue
+                if _historical_synthetic_test_reference(path, detector.detector_id, line, value):
                     continue
                 if detector.detector_id.startswith("builtin.") and any(
                         allow_id in {"all", detector.detector_id.removeprefix("builtin.")} and pattern.search(value)

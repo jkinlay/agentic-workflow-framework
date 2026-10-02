@@ -33,6 +33,8 @@ The scan covers every commit message; every added and deleted line in each commi
 
 Built-ins detect network-share locators, absolute drive paths, common absolute home-directory paths, private IPv4 ranges and unique-local IPv6 ranges. Local aliases/literals/regexes/hostnames and project declarations add exact detectors. Findings contain the commit, path or provider-text channel, line when available, detector id, and only a redacted fingerprint.
 
+Published historical exceptions are code-owned exact full-line SHA-256 identities scoped to one tracked path and detector. They exist only for reviewed synthetic test fixtures that have since moved to `EX-*` labels. A changed line, path, detector or value remains blocked; provider text never receives this exception. Operator mappings cannot add or broaden historical exceptions.
+
 The publisher preserves the JSON receipt. Its resolved base and head and `pr_body_sha256` must match the pushed candidate and exact posted body. Any finding, unscanned content, body change, head change, or base change invalidates it. Scan a prospective comment with `--comment FILE` before posting it.
 
 ## Unpublished rewrite
