@@ -651,7 +651,7 @@ class PublicationRewriteTests(unittest.TestCase):
                                 mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
 
-    def test_ac44_failed_final_cas_removes_new_object_and_restores_exact_snapshot(self):
+    def test_ac44_failed_final_cas_retains_owned_object_with_truthful_recovery_required(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
         message.write_text("clean squash\n", encoding="utf-8")
@@ -667,13 +667,16 @@ class PublicationRewriteTests(unittest.TestCase):
             return real_git(root, *args, **kwargs)
 
         with mock.patch.object(publication, "_git", side_effect=fail_update):
-            with self.assertRaisesRegex(ValidationError, "CAS_FAILED_RECOVERED"):
+            with self.assertRaisesRegex(ValidationError, "CAS_FAILED_RECOVERY_REQUIRED"):
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertEqual(1, len(created))
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
-        self.assertFalse(object_exists(self.repo.path, created[0]))
-        self.assertEqual(snapshot, publication._rewrite_snapshot(self.repo.path))
+        self.assertTrue(object_exists(self.repo.path, created[0]))
+        current = publication._rewrite_snapshot(self.repo.path)
+        for key in snapshot:
+            if key != "objects":
+                self.assertEqual(snapshot[key], current[key])
 
     def test_ac44_failed_final_cas_preserves_objects_claimed_by_all_ref_namespaces(self):
         self.contaminate_then_remove()
@@ -819,7 +822,7 @@ class PublicationRewriteTests(unittest.TestCase):
                                  capture_output=True, text=True)
         self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
 
-    def test_ac44_cleanup_failure_reports_exact_retained_object_and_recovery_command(self):
+    def test_ac44_claimant_created_after_census_keeps_object_and_recovery_evidence(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
         message.write_text("clean squash\n", encoding="utf-8")
@@ -833,15 +836,28 @@ class PublicationRewriteTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 1, b"", b"synthetic compare-and-swap failure")
             return real_git(root, *args, **kwargs)
 
+        real_has_claimant = publication._has_claimant
+        raced = []
+
+        def create_claimant_after_census(root, oid):
+            claimed = real_has_claimant(root, oid)
+            self.assertFalse(claimed)
+            real_git(root, "update-ref", "refs/heads/after-census-race", oid)
+            raced.append(oid)
+            # This models a claimant created immediately after a complete
+            # census but before the caller could have unlinked the object.
+            return claimed
+
         with mock.patch.object(publication, "_git", side_effect=fail_update), \
-                mock.patch.object(publication, "_unlink_loose_object",
-                                  side_effect=ValidationError("synthetic cleanup failure")):
+                mock.patch.object(publication, "_has_claimant", side_effect=create_claimant_after_census):
             with self.assertRaisesRegex(ValidationError,
                                         r"CAS_FAILED_RECOVERY_REQUIRED:.*retained_objects=.*non_destructive_recovery="):
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertEqual(created, raced)
         self.assertTrue(object_exists(self.repo.path, created[0]))
+        self.assertEqual(created[0], git(self.repo.path, "rev-parse", "refs/heads/after-census-race"))
 
     def test_ac44_cleanup_never_touches_preexisting_packed_or_alternate_records(self):
         snapshot = publication._rewrite_snapshot(self.repo.path)
@@ -849,39 +865,41 @@ class PublicationRewriteTests(unittest.TestCase):
         loose = publication._loose_path(Path(snapshot["object_dir"]), existing,
                                         snapshot["object_format"])
         records = [
-            {"oid": existing, "preexisting": True, "path": loose},
-            {"oid": existing, "preexisting": True, "path": Path(snapshot["object_dir"]) / "missing-packed"},
-            {"oid": existing, "preexisting": True, "path": Path(self.temp.name) / "alternate-object"},
+            {"oid": existing, "snapshot_present": True, "path": loose},
+            {"oid": existing, "snapshot_present": True,
+             "path": Path(snapshot["object_dir"]) / "missing-packed"},
+            {"oid": existing, "snapshot_present": True,
+             "path": Path(self.temp.name) / "alternate-object"},
         ]
-        with mock.patch.object(publication, "_unlink_loose_object") as unlink:
-            publication._cleanup_new_objects(self.repo.path, records, snapshot)
-        unlink.assert_not_called()
+        publication._cleanup_new_objects(self.repo.path, records, snapshot)
         self.assertTrue(object_exists(self.repo.path, existing))
 
-    def test_ac44_partial_install_failure_removes_residue_and_restores_snapshot(self):
+    def test_ac44_ambiguous_partial_install_is_retained_and_fails_closed(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
         message.write_text("clean squash\n", encoding="utf-8")
         snapshot = publication._rewrite_snapshot(self.repo.path)
-        real_git = publication._git
+        real_link = os.link
         installed = []
 
-        def fail_after_install(root, *args, **kwargs):
-            result = real_git(root, *args, **kwargs)
-            if args and args[0] == "hash-object" and not installed:
-                installed.append(result.stdout.decode("ascii").strip())
-                return subprocess.CompletedProcess(args, 0, b"0" * 40 + b"\n", b"")
-            return result
+        def fail_after_link(source, target, *args, **kwargs):
+            real_link(source, target, *args, **kwargs)
+            target = Path(target)
+            installed.append(target.parent.name + target.name)
+            raise OSError("synthetic uncertainty after atomic create")
 
-        with mock.patch.object(publication, "_git", side_effect=fail_after_install):
-            with self.assertRaisesRegex(ValidationError, "PRE_CAS_FAILED_RECOVERED"):
+        with mock.patch.object(publication.os, "link", side_effect=fail_after_link):
+            with self.assertRaisesRegex(ValidationError, "PRE_CAS_RECOVERY_REQUIRED"):
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertEqual(1, len(installed))
-        self.assertFalse(object_exists(self.repo.path, installed[0]))
-        self.assertEqual(snapshot, publication._rewrite_snapshot(self.repo.path))
+        self.assertTrue(object_exists(self.repo.path, installed[0]))
+        current = publication._rewrite_snapshot(self.repo.path)
+        for key in snapshot:
+            if key != "objects":
+                self.assertEqual(snapshot[key], current[key])
 
-    def test_ac44_post_cas_proof_failure_exactly_rolls_back_and_cleans_objects(self):
+    def test_ac44_post_cas_proof_failure_rolls_back_ref_and_retains_owned_object(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
         message.write_text("clean squash\n", encoding="utf-8")
@@ -889,13 +907,44 @@ class PublicationRewriteTests(unittest.TestCase):
         snapshot = publication._rewrite_snapshot(self.repo.path)
         with mock.patch.object(publication, "_post_cas_proof",
                                return_value=(False, "synthetic post-CAS race")):
-            with self.assertRaisesRegex(ValidationError, "POST_CAS_PROOF_FAILED_RECOVERED") as caught:
+            with self.assertRaisesRegex(ValidationError, "POST_CAS_RECOVERY_REQUIRED") as caught:
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         created = re.search(r"new_head=([0-9a-f]+)", str(caught.exception)).group(1)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
-        self.assertFalse(object_exists(self.repo.path, created))
-        self.assertEqual(snapshot, publication._rewrite_snapshot(self.repo.path))
+        self.assertTrue(object_exists(self.repo.path, created))
+        current = publication._rewrite_snapshot(self.repo.path)
+        for key in snapshot:
+            if key != "objects":
+                self.assertEqual(snapshot[key], current[key])
+
+    def test_ac44_fetch_head_and_merge_head_parse_every_canonical_oid(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        first = git(self.repo.path, "rev-parse", "HEAD")
+        second = git(self.repo.path, "rev-parse", self.repo.base)
+        fetch = (f"{first}\t\tbranch 'one' of example\n"
+                 f"{second}\tnot-for-merge\tbranch 'two' of example\n").encode("ascii")
+        merge = (first + "\n" + second + "\n").encode("ascii")
+        self.assertEqual((first, second),
+                         publication._pseudoref_oids("FETCH_HEAD", fetch,
+                                                    snapshot["object_format"]))
+        self.assertEqual((first, second),
+                         publication._pseudoref_oids("MERGE_HEAD", merge,
+                                                    snapshot["object_format"]))
+
+    def test_ac44_malformed_or_partially_parsed_multi_oid_pseudoref_fails_closed(self):
+        object_format = publication._rewrite_snapshot(self.repo.path)["object_format"]
+        first = git(self.repo.path, "rev-parse", "HEAD")
+        invalid_values = [
+            ("FETCH_HEAD", (first + "\tmissing-second-tab\n").encode("ascii")),
+            ("FETCH_HEAD", (first + "\t\tvalid\n" + "z" * len(first) + "\t\tbad\n").encode("ascii")),
+            ("MERGE_HEAD", (first + " extra\n").encode("ascii")),
+            ("MERGE_HEAD", (first + "\r\n").encode("ascii")),
+        ]
+        for name, content in invalid_values:
+            with self.subTest(name=name, content=content):
+                with self.assertRaisesRegex(ValidationError, "Pseudoref"):
+                    publication._pseudoref_oids(name, content, object_format)
 
     def test_ac44_post_cas_rollback_failure_preserves_recovery_evidence(self):
         self.contaminate_then_remove()
