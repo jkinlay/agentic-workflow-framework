@@ -204,11 +204,12 @@ class RepositoryRulesTests(unittest.TestCase):
             kwargs["stdout"].write(json.dumps(projected).encode())
             return Mock(poll=Mock(return_value=0), returncode=0)
         with patch.object(rules.subprocess, "Popen", side_effect=launch):
-            value, count = rules._gh_get("repos/fixture/example/pulls/7/files?per_page=100&page=1",
-                                         rules.time.monotonic() + 5, pr_file_metadata=True)
+            value, count = rules._gh_get_pr_files(
+                "repos/fixture/example/pulls/7/files?per_page=100&page=1",
+                rules.time.monotonic() + 5)
         self.assertEqual(value, projected)
         self.assertLess(count, rules.MAX_BYTES)
-        self.assertEqual(commands[0][commands[0].index("--jq") + 1], "map({filename,status,sha})")
+        self.assertEqual(commands[0][commands[0].index("--jq") + 1], rules.PR_FILES_PROJECTION)
         self.assertEqual(commands[0][commands[0].index("--method") + 1], "GET")
 
     def test_transport_deadline_cleanup_failure_remains_unobserved(self):

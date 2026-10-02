@@ -2,17 +2,19 @@
 
 ## 1.9.3 — 24 September 2026
 
-Adds Git-format-aware `tested_tree` for publisher-routed workers. Declared changes form the candidate; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match exactly.
+Adds Git-format-aware `tested_tree`; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match.
 
-Sets new-adoption risk and specialist routes to `gpt-5.6-sol` / high. Expiring capability observations feed warning-only route preflight; existing owner-set routes persist.
+Sets new-adoption risk and specialist routes to `gpt-5.6-sol` / high. Capability observations feed route preflight; owner-set routes persist.
 
-Adds settlement outcomes and `route_model.py outcome-template`; verdicts remain separate records.
+Adds outcome templates; verdicts remain separate.
 
-Adds byte-verified install/upgrade, GraphQL-bound adoption merge identity and compact PR file observation; unsafe evidence fails closed.
+Adds byte-verified install/upgrade; unsafe evidence fails closed.
 
-Adds history-aware publication scanning of messages, patch lines, changed files, PR bodies and comments. Redacted findings block; receipts bind base, head and body digest. An ignored local mapping supplies aliases and deny entries alongside built-in path/network detectors and alias rendering.
+Adds publication scanning of messages, patches, files, PR bodies and comments. Findings block; receipts bind base, head and body digest. An ignored mapping supplies aliases and deny entries beside built-in detectors.
 
-Adds an atomic one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, scanning the replacement and checking old ref reachability. It refuses published evidence or unsupported counts and reports reflog retention. This covers L1, L2 and L9 scanning; producer retrofits remain P1.
+Adds a one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, scanning the replacement and checking ref reachability. It refuses published evidence or unsupported counts and reports reflog retention. This covers L1, L2 and L9 scanning; producer retrofits remain P1.
+
+Hardens activation with versioned REST/GraphQL merge identity, complete PR/base/head/state/time cross-checks, Git-object checkout comparison, lock-free inspection, structured blockers, strict ACTIVE exit and capabilities. Network detectors self-scan without weakening detection.
 
 ## 1.9.2 — 23 September 2026
 

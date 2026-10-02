@@ -12,8 +12,8 @@ This draft changes repository governance files and preserves project-owned instr
 - Actual verification exit code and `integrity_valid`: TO_RECORD; retained output: TO_RECORD.
 - Configuration command: `python -B -I ABS_INSTALLED_SCRIPT validate-config`.
 - Actual validation exit code and `status`: TO_RECORD; retained output: TO_RECORD.
-- Exact status command: `python -B -I ABS_INSTALLED_SCRIPT status`.
-- Actual status line, next action and retained evidence: TO_RECORD. Do not substitute an anticipated `ACTIVE` result.
+- Status command: `python -B -I ABS_INSTALLED_SCRIPT status` (add `--require-active` when required).
+- Actual state, blockers, capabilities, next command, exit code and evidence: TO_RECORD; never anticipate `ACTIVE`.
 - Optional observed PR selector/trusted gh path and `status --json` details: TO_RECORD, or None.
 
 Bootstrap CONFIGURED requires both commands to exit 0, verification `integrity_valid: true`, validation `status: ACCEPTED` and matching source/policy digests; record those comparisons. A dry run is preparation only. Status recomputes current checks; INSTALLED/CONFIGURED establish local consistency, not release provenance or historical child execution. Failed integrity is not an installed baseline. Record exclusive ownership/quiescence and any runtime-import rejection; preserve NOT_RUN outcomes.

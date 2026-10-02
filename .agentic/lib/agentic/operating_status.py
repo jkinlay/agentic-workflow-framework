@@ -30,7 +30,11 @@ def with_operating(root, governance, report):
         else:
             operating = inspect_operating(root, governance)
     result['operating'] = operating
-    if operating['status'] != 'ACCEPTED':
+    if operating['status'] == 'ACCESS_UNAVAILABLE':
+        # Filesystem observation failed; the already accepted project policy is
+        # not thereby invalid. Activation reports this independent blocker.
+        result['operating_observation'] = 'UNOBSERVED'
+    elif operating['status'] != 'ACCEPTED':
         result['status'] = 'REJECTED'
         for item in operating['refusals']:
             result['unresolved'].append({

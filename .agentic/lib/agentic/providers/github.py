@@ -23,6 +23,10 @@ from ..safeio import Tree
 
 FORMAT = "awf-repository-rules-observation-1"
 HOST = "github.com"
+# GitHub's documented, supported REST contract used by every AWF REST call.
+# Keep this centralized so observations can record the exact provider surface.
+GITHUB_REST_API_VERSION = "2022-11-28"
+PR_FILES_PROJECTION = "map({filename: .filename, status: .status, sha: .sha})"
 MAX_BYTES = 1024 * 1024
 MAX_TOTAL_BYTES = 4 * MAX_BYTES
 MAX_PAGES = 5
@@ -349,16 +353,12 @@ def load_observation_report(path=None, expected_sha256=None, **binding):
         return result
 
 
-def _gh_get(endpoint, deadline, *, gh="gh", pr_file_metadata=False):
+def _gh_get(endpoint, deadline, *, gh="gh"):
     """Bounded GET-only child; raw stderr/provider error content is never reported."""
     remaining = deadline - time.monotonic()
     require(remaining > 0, "Rules observation deadline exhausted")
     command = [str(gh), "api", "--hostname", HOST, "--method", "GET", "-H", "Accept: application/vnd.github+json",
-               "-H", "X-GitHub-Api-Version: 2026-03-10", endpoint]
-    if pr_file_metadata:
-        # PR file patches can exceed the bounded stdout even for a modest PR.
-        # Keep the complete page's identity fields and discard patch bodies in gh.
-        command.extend(["--jq", "map({filename,status,sha})"])
+               "-H", "X-GitHub-Api-Version: " + GITHUB_REST_API_VERSION, endpoint]
     env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_PAGER="cat")
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
@@ -376,6 +376,79 @@ def _gh_get(endpoint, deadline, *, gh="gh", pr_file_metadata=False):
             out.seek(0)
             raw = out.read(MAX_BYTES + 1)
             require(len(raw) <= MAX_BYTES, "Rules response exceeds byte limit")
+            return loads(raw.decode("utf-8")), len(raw)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
+
+
+def _gh_get_pr_files(endpoint, deadline, *, gh="gh"):
+    """Bounded PR-file GET whose trusted-child output has a fixed projection."""
+    remaining = deadline - time.monotonic()
+    require(remaining > 0, "PR file observation deadline exhausted")
+    command = [str(gh), "api", "--hostname", HOST, "--method", "GET",
+               "-H", "Accept: application/vnd.github+json",
+               "-H", "X-GitHub-Api-Version: " + GITHUB_REST_API_VERSION,
+               "--jq", PR_FILES_PROJECTION, endpoint]
+    env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_PAGER="cat")
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                   env=child_env(env))
+        try:
+            while process.poll() is None:
+                require(time.monotonic() < deadline, "PR file observation deadline exhausted")
+                require(os.fstat(out.fileno()).st_size <= MAX_BYTES and os.fstat(err.fileno()).st_size <= MAX_BYTES,
+                        "Projected PR file response exceeds byte limit")
+                try:
+                    process.wait(timeout=min(0.05, max(0.001, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    pass
+            require(time.monotonic() <= deadline and process.returncode == 0,
+                    "PR file GET did not complete successfully")
+            require(os.fstat(err.fileno()).st_size <= MAX_BYTES,
+                    "PR file stderr exceeds byte limit")
+            out.seek(0)
+            raw = out.read(MAX_BYTES + 1)
+            require(len(raw) <= MAX_BYTES, "Projected PR file response exceeds byte limit")
+            return loads(raw.decode("utf-8")), len(raw)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
+
+
+def _gh_graphql(query, variables, deadline, *, gh="gh"):
+    """Bounded official GraphQL call through gh; provider diagnostics stay private."""
+    require(deadline - time.monotonic() > 0, "GraphQL observation deadline exhausted")
+    require(isinstance(query, str) and isinstance(variables, dict),
+            "GraphQL request is malformed")
+    request = canonical({"query": query, "variables": variables})
+    require(len(request) <= MAX_BYTES, "GraphQL request exceeds byte limit")
+    command = [str(gh), "api", "--hostname", HOST, "--method", "POST",
+               "graphql", "--input", "-"]
+    env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_PAGER="cat")
+    with tempfile.TemporaryFile() as incoming, tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        incoming.write(request)
+        incoming.seek(0)
+        process = subprocess.Popen(command, stdin=incoming, stdout=out, stderr=err,
+                                   env=child_env(env))
+        try:
+            while process.poll() is None:
+                require(time.monotonic() < deadline, "GraphQL observation deadline exhausted")
+                require(os.fstat(out.fileno()).st_size <= MAX_BYTES and os.fstat(err.fileno()).st_size <= MAX_BYTES,
+                        "GraphQL response exceeds byte limit")
+                try:
+                    process.wait(timeout=min(0.05, max(0.001, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    pass
+            require(time.monotonic() <= deadline and process.returncode == 0,
+                    "GraphQL query did not complete successfully")
+            require(os.fstat(err.fileno()).st_size <= MAX_BYTES,
+                    "GraphQL stderr exceeds byte limit")
+            out.seek(0)
+            raw = out.read(MAX_BYTES + 1)
+            require(len(raw) <= MAX_BYTES, "GraphQL response exceeds byte limit")
             return loads(raw.decode("utf-8")), len(raw)
         finally:
             if process.poll() is None:

@@ -10,7 +10,8 @@ from agentic import ValidationError
 from agentic.canonical import load
 from agentic.contracts import Contracts
 from agentic.gates import evaluate
-from agentic.publication import render_aliases, render_scan, rewrite_unpublished, scan_repository
+from agentic.publication import (_detectors, _scan_text, render_aliases, render_scan,
+                                 rewrite_unpublished, scan_repository)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -70,6 +71,34 @@ class PublicationScanTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_builtin_detectors_do_not_flag_their_own_shipped_source(self):
+        path = ROOT / ".agentic/lib/agentic/publication.py"
+        detectors, allows = _detectors({}, {})
+        findings = _scan_text(path.read_text(encoding="utf-8"), commit="working-tree",
+                              path=".agentic/lib/agentic/publication.py", source="current_file",
+                              detectors=detectors, allows=allows)
+        self.assertEqual([], [item for item in findings if item["detector_id"].startswith("builtin.")])
+
+    def test_historical_self_reference_identities_are_exact_and_path_scoped(self):
+        detectors, allows = _detectors({}, {})
+        ipv4 = '        return (address in ipaddress.ip_network("' + ".".join(("10", "0", "0", "0")) + '/8") or'
+        windows = '        for value in ("../escape", "", "/root", "C:' + '/root", "data//nested"):'
+        cases = [
+            (ipv4, ".agentic/lib/agentic/publication.py", "builtin.private_ipv4"),
+            (windows, ".agentic/tests/test_operating.py", "builtin.windows_absolute"),
+        ]
+        for line, path, detector_id in cases:
+            with self.subTest(path=path):
+                accepted = _scan_text(line, commit="fixture", path=path, source="patch",
+                                      change="deleted", detectors=detectors, allows=allows)
+                self.assertEqual([], accepted)
+                other_path = _scan_text(line, commit="fixture", path="other.py", source="patch",
+                                        change="deleted", detectors=detectors, allows=allows)
+                self.assertTrue(any(item["detector_id"] == detector_id for item in other_path))
+                changed = _scan_text(line + " ", commit="fixture", path=path, source="patch",
+                                     change="deleted", detectors=detectors, allows=allows)
+                self.assertTrue(any(item["detector_id"] == detector_id for item in changed))
 
     def test_ac43_removed_value_still_blocks_and_is_redacted(self):
         value = private_locator()

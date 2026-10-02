@@ -7,7 +7,7 @@ import sys
 
 from . import ValidationError, VERSION
 from .authorization import make_request, parse_text, request_fields, verify_record
-from .canonical import load, now_text, sha256, unique
+from .canonical import load, load_yaml, loads, now_text, sha256, unique
 from .contracts import Contracts
 from .gates import evaluate
 from .installer import verify_installed
@@ -48,6 +48,8 @@ def main(argv=None, default_root=None):
                                help="Also require pinned CI and actual owner identities; does not qualify an adapter")
     status_parser = sub.add_parser("status")
     status_parser.add_argument("--json", action="store_true", help="Print the state, proofs and single next action as JSON")
+    status_parser.add_argument("--require-active", action="store_true",
+                               help="Exit 4 unless the highest established project state is ACTIVE")
     status_parser.add_argument("--adoption-pr", type=int, help="Optional adoption PR number; otherwise discover its receipt-changing commit's PR")
     status_parser.add_argument("--gh", help="Trusted host GitHub CLI executable for read-only acceptance observation")
     status_parser.add_argument("--release-source", type=Path, help="Verified release source outside this project; requires an independently approved manifest pin")
@@ -187,6 +189,8 @@ def main(argv=None, default_root=None):
             output = project_status(root, adoption_pr=args.adoption_pr, gh=args.gh,
                                     release_source=args.release_source, expected_manifest_sha256=args.expected_manifest_sha256)
             print(json.dumps(output, indent=2, ensure_ascii=False) if args.json else render_status(output))
+            if args.require_active and output['project_state'] != 'ACTIVE':
+                return 4
             return 0 if output['project_state'] is not None else 2
         else:
             digest = verify_installed(root)
@@ -196,12 +200,26 @@ def main(argv=None, default_root=None):
                 contracts = Contracts(root / ".agentic/schemas")
                 workflow = load(root / ".agentic/workflow.yaml")
                 if args.command == "validate-config":
-                    config = load(args.config or root / ".agentic/PROJECT_CONFIG.yaml")
+                    config_path = args.config or root / ".agentic/PROJECT_CONFIG.yaml"
+                    workflow_path = root / ".agentic/workflow.yaml"
+                    before_config = config_path.read_bytes()
+                    before_workflow = workflow_path.read_bytes()
+                    config = (loads(before_config.decode("utf-8")) if config_path.suffix.lower() == ".json"
+                              else load_yaml(before_config))
+                    workflow = load_yaml(before_workflow)
                     instructions = root / "PROJECT_INSTRUCTIONS.md"
-                    output = inspect_config(config, workflow, contracts,
-                                            project_instructions=instructions.read_text(encoding="utf-8") if instructions.is_file() else None)
+                    before_instructions = instructions.read_bytes() if instructions.is_file() else None
+                    output = inspect_config(config, workflow, contracts, project_instructions=(
+                        before_instructions.decode("utf-8") if before_instructions is not None else None))
                     from .operating_status import with_operating
                     output = with_operating(root, config, output)
+                    after_instructions = instructions.read_bytes() if instructions.is_file() else None
+                    if (config_path.read_bytes(), workflow_path.read_bytes(), after_instructions) != (
+                            before_config, before_workflow, before_instructions):
+                        output.update(status="UNOBSERVED", diagnostic={"classification": "CONCURRENT_CHANGE",
+                            "path": ".agentic configuration paths"}, execution_authority=False)
+                        print(json.dumps(output, indent=2, ensure_ascii=False))
+                        return 2
                     output.update(configuration_valid_for="adoption", policy_hash=output['policy_sha256'])
                     if output['status'] == 'REJECTED':
                         print(json.dumps(output, indent=2, ensure_ascii=False))
@@ -264,5 +282,14 @@ def main(argv=None, default_root=None):
         print(json.dumps(output, indent=2, ensure_ascii=False))
         return 0
     except (ValidationError, OSError, ValueError, KeyError) as exc:
-        print(json.dumps({"status": "REJECTED", "reason": str(exc), "execution_authority": False}, indent=2), file=sys.stderr)
+        if isinstance(exc, OSError):
+            from .activation import access_diagnostic
+            filename = getattr(exc, "filename", None)
+            safe_name = Path(filename).name if isinstance(filename, (str, bytes)) and filename else "project path"
+            output = {"status": "ACCESS_UNAVAILABLE", "reason": "Access unavailable for " + str(safe_name),
+                      "diagnostic": access_diagnostic(exc, ".agentic project paths (" + str(safe_name) + ")"),
+                      "execution_authority": False}
+        else:
+            output = {"status": "REJECTED", "reason": str(exc), "execution_authority": False}
+        print(json.dumps(output, indent=2), file=sys.stderr)
         return 2

@@ -123,6 +123,33 @@ class ReleaseHygieneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'docs/operator.md: stale operational'):
             check_release(self.root)
 
+    def test_exact_192_showcase_and_review_artifacts_are_historical(self):
+        artifacts = {
+            'docs/AWF-1.9.2-Speaker-Script.md': 'showcase_material',
+            'Claude outputs/AWF-1.9.2-Speaker-Script.md': 'showcase_material',
+            'Claude outputs/awf192-critic-prompt.md': 'documentation',
+            'Claude outputs/awf192-fix1-prompt.md': 'documentation',
+            'Claude outputs/awf192-fix2-prompt.md': 'documentation',
+        }
+        for relative, category in artifacts.items():
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('# Preserved record\nAWF 1.9.2 release\n' + 'word ' * 801,
+                            encoding='utf-8')
+            if category == 'showcase_material':
+                result = check_release(self.root)
+                budget = next(item for item in result['documentation_file_budgets']
+                              if item['path'] == relative)
+                self.assertEqual((None, category), (budget['limit'], budget['category']))
+            else:
+                path.write_text('# Preserved record\nAWF 1.9.2 release\n', encoding='utf-8')
+                self.assertEqual('PASS', check_release(self.root)['status'])
+            path.unlink()
+        neighbor = self.root / 'Claude outputs/awf192-current-prompt.md'
+        neighbor.write_text('# Current instruction\nAWF 1.9.2 release\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValidationError, 'stale operational'):
+            check_release(self.root)
+
     def test_exact_showcase_path_references_are_historical_not_operational_claims(self):
         self.assertEqual([], stale_versions('See docs/AWF-1.8.9-Showcase-Presentation.html', '1.9.2'))
         self.assertEqual(['1.8.9'], stale_versions('See docs/AWF-1.8.9-Operator-Guide.md', '1.9.2'))
