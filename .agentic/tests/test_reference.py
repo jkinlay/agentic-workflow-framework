@@ -24,6 +24,7 @@ from agentic.lifecycle import definition, transition, STATES, NORMAL, INVALIDATI
 from agentic.policy import validate_config, topological_order, require_reference_capability, inside_scope
 from agentic.safeio import Tree
 from agentic.store import Store
+from review_admission_fixture import bind_review_admission
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-09T12:00:00Z"
@@ -41,6 +42,7 @@ class Fixture(unittest.TestCase):
         self.bundle = copy.deepcopy(self.bundle0)
 
     def gate(self):
+        bind_review_admission(self.bundle)
         return evaluate(self.config, definition(), self.bundle, self.contracts, NOW)
 
     def authorize(self, decision="AUTHORIZE"):
@@ -364,7 +366,13 @@ class LifecycleTests(unittest.TestCase):
     def test_all_normal_transitions(self):
         for source, event, target, guards in NORMAL:
             with self.subTest(source=source, event=event):
-                self.assertEqual(transition(source, event, {g: True for g in guards}), target)
+                facts = {g: True for g in guards}
+                if event == "FINAL_GATE_PASSED":
+                    config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
+                    bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+                    facts["final_gate"] = evaluate(config, definition(), bundle,
+                                                     Contracts(ROOT / ".agentic/schemas"), NOW)
+                self.assertEqual(transition(source, event, facts), target)
 
     def test_no_unverified_progress_for_all_state_event_pairs(self):
         events = {r[1] for r in NORMAL} | INVALIDATING | CONTROL_EVENTS

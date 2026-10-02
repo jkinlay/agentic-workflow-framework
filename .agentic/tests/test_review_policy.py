@@ -17,6 +17,7 @@ from agentic.gates import evaluate
 from agentic.lifecycle import RESUME, STATES, definition, transition
 from agentic.review_policy import (BOUNDARY_SENTENCE, cap_disposition_plan, cap_status, check_tier_declaration,
                                    computed_tier, evidence_only, project_instructions_errors, validate_findings)
+from review_admission_fixture import bind_review_admission
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-09T12:00:00Z"
@@ -67,6 +68,7 @@ class Fixture(unittest.TestCase):
         self.bundle = copy.deepcopy(self.bundle0)
 
     def gate(self):
+        bind_review_admission(self.bundle)
         return evaluate(self.config, definition(), self.bundle, self.contracts, NOW)
 
     def verifier_run(self):

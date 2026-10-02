@@ -36,7 +36,7 @@ NORMAL = [
     ("READY_FOR_CRITIC", "CRITIC_APPROVED_FINAL", "FINAL_REVIEW", ["critic_current", "no_specialists_required"]),
     ("SPECIALIST_REVIEW", "SPECIALIST_REJECTED", "CHANGES_REQUESTED", ["review_current"]),
     ("SPECIALIST_REVIEW", "SPECIALISTS_APPROVED", "FINAL_REVIEW", ["specialists_current", "critic_current"]),
-    ("FINAL_REVIEW", "FINAL_GATE_PASSED", "READY_FOR_OWNER_AUTHORIZATION", ["derived_gate_ready", "requirements_current"]),
+    ("FINAL_REVIEW", "FINAL_GATE_PASSED", "READY_FOR_OWNER_AUTHORIZATION", ["derived_gate_ready", "requirements_current", "final_gate_current"]),
     ("READY_FOR_OWNER_AUTHORIZATION", "OWNER_AUTHORIZED", "OWNER_AUTHORIZED", ["authorization_verified", "request_unused", "gate_current"]),
     ("OWNER_AUTHORIZED", "MERGE_STARTED", "MERGING", ["executor_certified", "atomic_candidate_protocol", "permit_consumed", "gate_current"]),
     ("MERGING", "MERGE_OBSERVED", "MERGED", ["merge_confirmed", "candidate_matched"]),
@@ -95,6 +95,9 @@ def transition(state, event, facts=None, resume_state=None):
         missing = [name for name in names if facts.get(name) is not True]
         if missing:
             raise ValidationError("Missing verified guards: " + ", ".join(missing))
+    if state == "FINAL_REVIEW" and event == "FINAL_GATE_PASSED":
+        from .review_completion import validate_ready_gate_completion
+        validate_ready_gate_completion(facts.get("final_gate"))
     if event == "REVERT_OBSERVED" and state in AFTER_MERGE:
         require("revert_confirmed")
         return "REOPENED"

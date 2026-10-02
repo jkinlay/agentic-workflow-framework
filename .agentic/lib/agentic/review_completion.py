@@ -494,3 +494,88 @@ def validate_submission_semantics(value):
     _require(value.get("execution_authority") is False,
              "Review submission record cannot grant execution authority")
     return value
+
+
+def gate_review_aggregate(candidate, critic, specialists):
+    """Return the only aggregate shape accepted by the final-gate route.
+
+    The completion ledger proves that the frozen reviewers all terminated
+    acceptably.  This aggregate additionally binds that proof to the concrete
+    critic/specialist records consumed by the gate, so a completion admission
+    from another evidence bundle cannot be replayed.
+    """
+    reviewers = sorted([critic["producer_id"], *[row["producer_id"] for row in specialists]])
+    _require(len(reviewers) == len(set(reviewers)),
+             "Final-gate reviewers must have unique producer identities")
+    return {
+        "candidate_id": fingerprint("candidate", candidate),
+        "critic_record_id": critic["record_id"],
+        "critic_sha256": fingerprint("critic-review", critic),
+        "specialist_record_ids": sorted(row["record_id"] for row in specialists),
+        "specialist_sha256": sorted(fingerprint("specialist-review", row) for row in specialists),
+        "required_reviewers": reviewers,
+    }
+
+
+def gate_review_tuple(candidate, contract, aggregate):
+    """Build the frozen tuple expected by final-gate evaluation."""
+    return {
+        "repository": candidate["repository"],
+        "base_sha": candidate["target_base_sha"],
+        "head_sha": candidate["head_sha"],
+        "head_tree_sha": candidate["head_tree_sha"],
+        "contract_sha256": fingerprint("contract", contract),
+        "review_input_sha256": fingerprint("review-input", aggregate),
+    }
+
+
+def validate_gate_submission(value, candidate, contract, critic, specialists):
+    """Validate an atomic completion admission against final-gate inputs."""
+    validate_submission_semantics(value)
+    aggregate = gate_review_aggregate(candidate, critic, specialists)
+    _require(value.get("aggregate") == aggregate,
+             "Review-completion aggregate differs from the final-gate review records")
+    snapshot = value["completion_snapshot"]
+    _require(snapshot.get("required_reviewers") == aggregate["required_reviewers"],
+             "Frozen reviewer set differs from the final-gate reviewers")
+    expected_tuple = gate_review_tuple(candidate, contract, aggregate)
+    _require(snapshot.get("tuple") == expected_tuple,
+             "Review-completion tuple differs from the final-gate candidate or contract")
+    return value
+
+
+def validate_ready_gate_completion(gate):
+    """Fail closed when a readiness/authorization route lacks atomic review proof.
+
+    This portable guard is deliberately usable by lifecycle, interaction and
+    authorization code that does not own a schema registry.  Full gate
+    construction performs the stronger cross-record check above.
+    """
+    _require(isinstance(gate, dict) and gate.get("conclusion") == "READY_FOR_OWNER_AUTHORIZATION",
+             "Final gate is not ready for owner authorization")
+    submission = gate.get("review_submission")
+    validate_submission_semantics(submission)
+    candidate = gate.get("candidate", {})
+    tuple_value = submission["completion_snapshot"]["tuple"]
+    for gate_field, tuple_field in (("repository", "repository"),
+                                    ("target_base_sha", "base_sha"),
+                                    ("head_sha", "head_sha"),
+                                    ("head_tree_sha", "head_tree_sha")):
+        _require(candidate.get(gate_field) == tuple_value.get(tuple_field),
+                 f"Final-gate candidate {gate_field} differs from completion admission")
+    aggregate = submission["aggregate"]
+    binding = gate.get("binding", {})
+    _require(binding.get("candidate_id") == fingerprint("candidate", candidate) == aggregate.get("candidate_id"),
+             "Final-gate candidate identity differs from completion aggregate")
+    _require(binding.get("contract_hash") == tuple_value.get("contract_sha256"),
+             "Final-gate contract identity differs from completion tuple")
+    _require(tuple_value.get("review_input_sha256") == fingerprint("review-input", aggregate),
+             "Completion review-input digest differs from its aggregate")
+    record_ids = set(gate.get("record_ids", []))
+    _require(aggregate.get("critic_record_id") in record_ids and
+             set(aggregate.get("specialist_record_ids", [])) <= record_ids,
+             "Completion aggregate names review records outside the final gate")
+    _require(aggregate.get("required_reviewers") ==
+             submission["completion_snapshot"].get("required_reviewers"),
+             "Completion aggregate reviewer set differs from its frozen snapshot")
+    return submission

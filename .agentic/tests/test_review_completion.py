@@ -10,9 +10,15 @@ import uuid
 from pathlib import Path
 
 from agentic import ValidationError
+from agentic.authorization import make_request
+from agentic.canonical import load
 from agentic.contracts import Contracts
 from agentic.cli import local_semantics
+from agentic.gates import evaluate
+from agentic.interaction import gate_handoff
+from agentic.lifecycle import definition, transition
 from agentic.review_completion import ReviewCompletionStore
+from agentic.store import Store
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -267,6 +273,44 @@ class ReviewCompletionTests(unittest.TestCase):
         os.link(self.path, linked)
         with self.assertRaisesRegex(ValidationError, "hardlinks"):
             ReviewCompletionStore(linked)
+
+    def test_old_gate_authorization_interaction_and_lifecycle_routes_cannot_bypass_barrier(self):
+        contracts = Contracts(ROOT / ".agentic/schemas")
+        config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
+        bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+        gate = evaluate(config, definition(), bundle, contracts, "2026-09-09T12:00:00Z")
+        request = make_request(gate, contracts, "2026-09-09T12:00:00Z")
+        gate_handoff(gate, request, config, contracts, "2026-09-09T12:00:00Z")
+        facts = {"derived_gate_ready": True, "requirements_current": True,
+                 "final_gate_current": True, "final_gate": gate}
+        self.assertEqual(transition("FINAL_REVIEW", "FINAL_GATE_PASSED", facts),
+                         "READY_FOR_OWNER_AUTHORIZATION")
+
+        missing = copy.deepcopy(bundle)
+        del missing["review_submission"]
+        with self.assertRaises(ValidationError):
+            evaluate(config, definition(), missing, contracts, "2026-09-09T12:00:00Z")
+        old_gate = copy.deepcopy(gate)
+        del old_gate["review_submission"]
+        with self.assertRaises(ValidationError):
+            make_request(old_gate, contracts, "2026-09-09T12:00:00Z")
+        with self.assertRaises(ValidationError):
+            gate_handoff(old_gate, request, config, contracts, "2026-09-09T12:00:00Z")
+        with self.assertRaises(ValidationError):
+            transition("FINAL_REVIEW", "FINAL_GATE_PASSED",
+                       {"derived_gate_ready": True, "requirements_current": True,
+                        "final_gate_current": True})
+
+        state = Path(self.temporary.name) / "coordinator.sqlite3"
+        store = Store(state, config["project"]["id"])
+        with store.connection() as db:
+            db.execute("INSERT INTO tickets VALUES('EX-1','FINAL_REVIEW',0)")
+        with self.assertRaises(ValidationError):
+            store.advance("EX-1", "FINAL_GATE_PASSED", 0,
+                          {"derived_gate_ready": True, "requirements_current": True,
+                           "final_gate_current": True})
+        self.assertEqual(store.advance("EX-1", "FINAL_GATE_PASSED", 0, facts)[0],
+                         "READY_FOR_OWNER_AUTHORIZATION")
 
 
 if __name__ == "__main__":

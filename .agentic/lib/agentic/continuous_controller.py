@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS stream_status(
 CREATE TABLE IF NOT EXISTS controller_outbox(
  delivery_id TEXT PRIMARY KEY,kind TEXT NOT NULL,revision INTEGER NOT NULL,
  observed_at TEXT NOT NULL,payload_json TEXT NOT NULL,acknowledged_at TEXT);
+CREATE TABLE IF NOT EXISTS controller_dispatch(
+ dispatch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,ticket TEXT NOT NULL,
+ exact_tuple TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,
+ receipt_json TEXT,updated_at TEXT NOT NULL);
 """
 
 
@@ -344,6 +348,67 @@ class ContinuousControllerStore:
                            (row["observed_at"],))
             return loads(row["payload_json"])
 
+    def prepare_dispatches(self, now):
+        """Persist deterministic dispatch intents for newly scheduled work."""
+        timestamp(now)
+        from .canonical import fingerprint
+        with self.transaction() as db:
+            for row in db.execute("SELECT * FROM stream_status WHERE state='WORKING' ORDER BY stream_id"):
+                payload = {"stream": row["stream_id"], "ticket": row["ticket"],
+                           "exact_tuple": row["exact_tuple"], "paths": loads(row["paths"]),
+                           "actor": row["actor"], "next_action": row["next_action"]}
+                dispatch_id = fingerprint("controller-dispatch", payload)
+                payload["dispatch_id"] = dispatch_id
+                db.execute("INSERT OR IGNORE INTO controller_dispatch VALUES(?,?,?,?,? ,?,NULL,?)",
+                           (dispatch_id, row["stream_id"], row["ticket"], row["exact_tuple"],
+                            "PENDING", canonical(payload).decode(), now))
+            return [dict(row) | {"payload": loads(row["payload_json"])} for row in db.execute(
+                "SELECT * FROM controller_dispatch WHERE status IN ('PENDING','UNKNOWN') ORDER BY stream_id,dispatch_id")]
+
+    def begin_dispatch(self, dispatch_id, now):
+        """Move one intent to IN_FLIGHT before the external host call."""
+        timestamp(now)
+        with self.transaction() as db:
+            row = db.execute("SELECT * FROM controller_dispatch WHERE dispatch_id=?", (dispatch_id,)).fetchone()
+            _require(row is not None and row["status"] == "PENDING", "Dispatch is not pending")
+            db.execute("UPDATE controller_dispatch SET status='IN_FLIGHT',updated_at=? WHERE dispatch_id=?",
+                       (now, dispatch_id))
+            return loads(row["payload_json"])
+
+    def finish_dispatch(self, dispatch_id, receipt, now, *, reconcile=False):
+        """Accept only exact host readback; uncertain calls are never reissued."""
+        timestamp(now)
+        required = {"dispatch_id", "stream", "ticket", "exact_tuple", "status", "observed_at"}
+        _require(isinstance(receipt, dict) and set(receipt) == required and
+                 receipt["status"] == "ACCEPTED", "Dispatch receipt is not an exact accepted readback")
+        timestamp(receipt["observed_at"])
+        with self.transaction() as db:
+            row = db.execute("SELECT * FROM controller_dispatch WHERE dispatch_id=?", (dispatch_id,)).fetchone()
+            expected = "UNKNOWN" if reconcile else "IN_FLIGHT"
+            _require(row is not None and row["status"] == expected,
+                     "Dispatch receipt does not match the durable operation state")
+            payload = loads(row["payload_json"])
+            _require(all(receipt[key] == payload[key] for key in
+                         ("dispatch_id", "stream", "ticket", "exact_tuple")),
+                     "Dispatch receipt differs from the durable intent")
+            db.execute("UPDATE controller_dispatch SET status='ACCEPTED',receipt_json=?,updated_at=? WHERE dispatch_id=?",
+                       (canonical(receipt).decode(), now, dispatch_id))
+            return receipt
+
+    def mark_dispatch_unknown(self, dispatch_id, now):
+        timestamp(now)
+        with self.transaction() as db:
+            row = db.execute("SELECT status FROM controller_dispatch WHERE dispatch_id=?", (dispatch_id,)).fetchone()
+            _require(row is not None and row["status"] == "IN_FLIGHT", "Only an in-flight dispatch can become unknown")
+            db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?",
+                       (now, dispatch_id))
+
+    def recover_dispatches(self, now):
+        """A crash while calling the host becomes UNKNOWN, never PENDING."""
+        timestamp(now)
+        with self.transaction() as db:
+            db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE status='IN_FLIGHT'", (now,))
+
 
 def _zero_counts():
     return {"required": 0, "completed": 0, "acceptable": 0, "failed": 0, "stale": 0, "outstanding": 0}
@@ -456,3 +521,117 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
     return {**base, "jira_state": "COUNTED", "closed": sum(i["status_category"] == "TERMINAL" for i in items),
             "remaining_open": sum(i["status_category"] == "NON_TERMINAL" for i in items),
             "reason": "authoritative complete scoped Jira observation"}
+
+
+def production_controller_cycle(store, *, now, host_capacity, inventory_binding, observe_inventory,
+                                dispatch_ticket, observe_dispatch, deliver_status):
+    """Run one real host-controller cycle through explicit reviewed adapters.
+
+    Inventory is observed before scheduling.  Dispatch intent is durable before
+    the host call, and an interrupted call becomes UNKNOWN and is only
+    reconciled by observation.  Status is acknowledged only from exact delivery
+    readback.  One adapter failure is returned for that operation while other
+    streams continue through the same cycle.
+    """
+    _require(isinstance(store, ContinuousControllerStore), "Production cycle needs a controller store")
+    _require(all(callable(adapter) for adapter in
+                 (observe_inventory, dispatch_ticket, observe_dispatch, deliver_status)),
+             "Production controller adapters must be callable")
+    timestamp(now)
+    store.recover_dispatches(now)
+    _require(isinstance(inventory_binding, dict) and set(inventory_binding) == {
+        "project_id", "repository_id", "scope_sha256"} and
+        all(isinstance(value, str) and value for value in inventory_binding.values()),
+        "Production inventory needs immutable project, repository, and scope bindings")
+    observation = observe_inventory()
+    _require(isinstance(observation, dict) and set(observation) == {
+        "source", "observed_at", "binding", "complete", "inventory_sha256", "tickets"} and
+        observation["source"] == "host_observation" and observation["complete"] is True,
+        "Production inventory must be an exact authenticated host observation")
+    timestamp(observation["observed_at"])
+    _require(observation["observed_at"] == now,
+             "Production inventory observation time differs from this controller cycle")
+    from .canonical import fingerprint
+    _require(observation["binding"] == inventory_binding and
+             observation["inventory_sha256"] == fingerprint("controller-inventory", {
+                 "binding": inventory_binding, "tickets": observation["tickets"]}),
+             "Production inventory identity or digest differs from the configured scope")
+    streams = store.schedule(observation["tickets"], now, host_capacity)
+    dispatches, errors = [], []
+    for operation in store.prepare_dispatches(now):
+        payload, dispatch_id = operation["payload"], operation["dispatch_id"]
+        try:
+            if operation["status"] == "PENDING":
+                payload = store.begin_dispatch(dispatch_id, now)
+                receipt = dispatch_ticket(payload)
+                dispatches.append(store.finish_dispatch(dispatch_id, receipt, now))
+            else:
+                receipt = observe_dispatch(payload)
+                dispatches.append(store.finish_dispatch(dispatch_id, receipt, now, reconcile=True))
+        except Exception as exc:
+            if operation["status"] == "PENDING":
+                try:
+                    store.mark_dispatch_unknown(dispatch_id, now)
+                except Exception:
+                    pass
+            errors.append({"operation": "dispatch", "dispatch_id": dispatch_id,
+                           "state": "UNKNOWN", "reason": type(exc).__name__})
+    digest = store.digest(now)
+    delivery = None
+    if digest is not None:
+        try:
+            receipt = deliver_status(digest)
+            _require(isinstance(receipt, dict) and set(receipt) == {
+                "delivery_id", "status", "observed_at"} and
+                receipt["delivery_id"] == digest["delivery_id"] and
+                receipt["status"] == "DELIVERED", "Status delivery readback is missing or mismatched")
+            timestamp(receipt["observed_at"])
+            store.acknowledge_digest(digest["delivery_id"], receipt["observed_at"])
+            delivery = receipt
+        except Exception as exc:
+            errors.append({"operation": "status_delivery", "delivery_id": digest["delivery_id"],
+                           "state": "PENDING", "reason": type(exc).__name__})
+    return {"schema_version": 3, "observed_at": now, "streams": streams,
+            "dispatch_receipts": dispatches, "status_delivery": delivery,
+            "errors": errors, "execution_authority": False}
+
+
+def production_jira_lifecycle(*, config, contract, event, facts, binding,
+                              issue_type, current_status, prior_writes,
+                              state, producer_id, run_id, now, evidence,
+                              transition_id, write_transition, read_transition,
+                              merge_result_id=None):
+    """Execute one mapped Jira lifecycle event with write/readback adapters."""
+    _require(callable(write_transition) and callable(read_transition),
+             "Jira lifecycle write and readback adapters must be callable")
+    from .jira_lifecycle import planned_write, transition_record, apply_read_back
+    key, target = planned_write(config, contract, event, facts, issue_type=issue_type,
+                                current_status=current_status, prior_writes=prior_writes,
+                                state=state)
+    if key is None:
+        return {"planned": False, "reason": target, "execution_authority": False}
+    record = transition_record(binding, event, current_status, target, transition_id,
+                               merge_result_id=merge_result_id, producer_id=producer_id,
+                               run_id=run_id, now=now, evidence=evidence)
+    try:
+        operation = write_transition(record)
+        _require(isinstance(operation, dict) and set(operation) == {
+            "operation_id", "status", "observed_at"} and
+            operation["operation_id"] == record["operation_id"] and
+            operation["status"] == "ATTEMPTED", "Jira write receipt is missing or mismatched")
+        timestamp(operation["observed_at"])
+        observation = read_transition(record, operation)
+        _require(isinstance(observation, dict) and set(observation) == {
+            "status", "actor", "observed_at"}, "Jira readback has an invalid shape")
+        timestamp(observation["observed_at"])
+        return {"planned": True, **apply_read_back(record, observation["status"],
+                                                     observation["actor"], observation["observed_at"]),
+                "execution_authority": False}
+    except Exception as exc:
+        return {"planned": True, **apply_read_back(record, None),
+                "reason": type(exc).__name__, "execution_authority": False}
+
+
+def production_post_merge_progress(**adapters):
+    """Named production route for reconcile-first scoped Jira reporting."""
+    return post_merge_jira_progress(**adapters)

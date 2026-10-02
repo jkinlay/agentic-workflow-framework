@@ -63,8 +63,15 @@ only that acknowledgement advances the regular deadline. Restarts preserve
 pending delivery, and a backwards clock observation fails closed. Once all
 streams are complete, only a state change emits another digest.
 
-The cadence defaults from `controller.status_cadence_seconds`; an explicit
-positive CLI override is allowed for a reviewed host invocation.
+The production host calls `production_controller_cycle` for each foreground
+or scheduled wakeup. It obtains an authenticated inventory, schedules all
+streams, persists dispatch intents before calling `dispatch_ticket`, observes
+uncertain dispatches without replay, and acknowledges a digest only after exact
+delivery readback. An interrupted dispatch becomes `UNKNOWN`; unrelated streams
+continue. Inventory items contain structured reviewed actions and paths, never
+shell command strings. The observation must be complete and bound to the
+configured project, repository, and Jira scope. Partial or wrong-scope
+inventories fail before scheduling or dispatch.
 
 ## Merge and Jira progress
 
@@ -87,6 +94,12 @@ observation time. Page count, item count, canonical byte size, elapsed time, cur
 and identity uniqueness are bounded. A complete, stable snapshot reports
 `COUNTED`; reconciliation without a complete count reports `RECONCILED` with
 both counts unobserved.
+
+`production_jira_lifecycle` reuses the configured event map, creates one bound
+transition record, calls the reviewed write adapter once, and records a
+separate readback. Missing or mismatched readback stops writes for that ticket.
+`post_merge_jira_progress` provides the bounded post-merge reconciliation and
+count report.
 
 Final review submission separately requires the
 [review completion barrier](33-REVIEW-COMPLETION-BARRIER.md).

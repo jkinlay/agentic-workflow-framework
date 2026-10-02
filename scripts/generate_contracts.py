@@ -96,7 +96,7 @@ NO_BLOCKERS = {"not": {"contains": {"type": "object", "required": ["severity", "
                                      "properties": {"severity": enum("BLOCKER", "MAJOR"),
                                                     "status": enum("OPEN", "DISPUTED")}}}}
 AC_RESULT = obj({"id": text(), "verdict": enum("PASS", "FAIL", "UNKNOWN"), "evidence": EVIDENCE})
-GATE_NAMES = ["acceptance_criteria", "scope", "critic_current_tuple", "specialist_reviews",
+GATE_NAMES = ["review_completion", "acceptance_criteria", "scope", "critic_current_tuple", "specialist_reviews",
               "required_ci", "ci_candidate_binding", "blocking_threads_zero", "dependencies",
               "merge_compatibility", "ticket_snapshot_current", "review_coverage", "provenance", "local_ci_parity",
               "publication_safety"]
@@ -260,7 +260,7 @@ def catalog():
     gate_pass = {"properties": {"gates": {"properties": {name: {"properties": {"result": const("PASS")}}
                     for name in GATE_NAMES if name != "specialist_reviews"}}, "execution_authority": FALSE}}
     gate_pass["properties"]["gates"]["properties"]["specialist_reviews"] = {"properties": {"result": enum("PASS", "N_A")}}
-    schemas["final-gate"] = bound({"candidate": ref("candidate"), "gates": gate_results,
+    schemas["final-gate"] = bound({"candidate": ref("candidate"), "review_submission": ref("review-submission"), "gates": gate_results,
         "record_ids": STRINGS, "required_specialist_domains": STRINGS, "residual_risks": STRINGS,
         "risk_tier": enum(1, 2), "tier_justification": text(), "closure_standard": enum("FULL", "DECLARED_LIMITATIONS"),
         "accepted_findings": STRINGS,
@@ -359,6 +359,7 @@ def catalog():
     schemas["evidence-bundle"] = obj({"schema_version": const(3), "candidate": ref("candidate"),
         "snapshot": ref("jira-snapshot"), "contract": ref("ticket-contract"), "dispatch": ref("work-dispatch"),
         "worker": ref("worker-result"), "critic": ref("critic-review"), "specialists": arr(ref("specialist-review")),
+        "review_submission": ref("review-submission"),
         "ci": ref("ci-evidence"), "pr": ref("pr-snapshot"), "runs": arr(ref("run-attestation"), 3),
         "prior_findings": arr(FINDING), "finding_dispositions": arr(ref("finding-disposition")),
         "cap_disposition": nullable(ref("review-cap-disposition")), "publication_scan": ref("publication-scan"),

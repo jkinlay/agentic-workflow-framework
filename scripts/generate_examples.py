@@ -15,6 +15,7 @@ from agentic import VERSION
 from agentic.lifecycle import definition
 from agentic.policy import CAPABILITIES, PROTECTED_PATHS, policy_hash
 from agentic.review_policy import DEFAULT_RISK_TIERS
+from agentic.review_completion import gate_review_aggregate, gate_review_tuple
 from generate_contracts import catalog
 
 NOW = "2026-09-09T12:00:00Z"
@@ -129,6 +130,30 @@ def example_bundle(cfg):
     files = [{"path": "src/example.py", "blob_sha": "1" * 40}]
     critic = record("critic-review", "critic", verdict="APPROVE", acceptance_criteria=results, findings=[], prior_finding_ids=[],
         closure={"result": "MET", "evidence": evidence}, coverage={"complete": True, "file_manifest_sha256": fingerprint("file-manifest", files), "reviewed_paths": ["src/example.py"], "omissions": []}, evidence_checked=evidence)
+    aggregate = gate_review_aggregate(candidate, critic, [])
+    review_tuple = gate_review_tuple(candidate, contract, aggregate)
+    reviewers = aggregate["required_reviewers"]
+    cycle_id = uid("review-cycle")
+    completion_snapshot = {"cycle_id": cycle_id, "tuple": review_tuple,
+        "tuple_sha256": fingerprint("review-tuple", review_tuple),
+        "required_reviewers": reviewers,
+        "reviewer_set_sha256": fingerprint("reviewer-set", reviewers),
+        "counts": {"required": 1, "completed": 1, "acceptable": 1,
+                   "failed": 0, "stale": 0, "outstanding": 0},
+        "results": [{"reviewer_id": reviewers[0], "state": "ACCEPTABLE",
+            "result_sha256": fingerprint("reviewer-result", {
+                "reviewer": reviewers[0], "verdict": "APPROVE", "findings": []}),
+            "terminal_at": NOW}]}
+    review_submission = {"submission_id": uid("review-submission"), "cycle_id": cycle_id,
+        "completion_snapshot": completion_snapshot,
+        "completion_snapshot_sha256": fingerprint("review-completion", completion_snapshot),
+        "aggregate": aggregate, "aggregate_sha256": fingerprint("review-aggregate", aggregate),
+        "provider_preconditions": {"repository": review_tuple["repository"],
+            "base_sha": review_tuple["base_sha"], "head_sha": review_tuple["head_sha"],
+            "head_tree_sha": review_tuple["head_tree_sha"],
+            "tuple_sha256": completion_snapshot["tuple_sha256"],
+            "reviewer_set_sha256": completion_snapshot["reviewer_set_sha256"]},
+        "execution_authority": False}
     ci = record("ci", "collector", retrieval_complete=True, candidate_type="synthetic_merge", checks=[{"name": "unit-tests", "check_id": "check-1", "app_id": 42,
         "workflow_path": ".github/workflows/test.yml", "workflow_sha": "a" * 40, "attempt": 1, "event": "pull_request", "conclusion": "success",
         "tested_tree_sha": candidate["integration_tree_sha"], "tested_commit_sha": candidate["tested_merge_sha"], "tests_executed": 2, "completed_at": NOW, "evidence": evidence, "checkout_depth": "full"}], collector_attestation_id=uid("attestation-collector"))
@@ -145,7 +170,7 @@ def example_bundle(cfg):
             "captured_command_output": "when committed or passed as provider text", "pr_bodies": True, "pr_comments": False},
         "execution_authority": False}
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,
-            "specialists": [], "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,
+            "specialists": [], "review_submission": review_submission, "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,
             "publication_scan": publication_scan, "evidence_registry": [{"uri": evidence[0],
                 "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"}], "provenance_mode": "offline_fixture"}
 

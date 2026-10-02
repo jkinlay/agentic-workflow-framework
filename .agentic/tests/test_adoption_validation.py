@@ -13,6 +13,7 @@ from agentic.contracts import Contracts
 from agentic.gates import evaluate
 from agentic.lifecycle import definition
 from agentic.policy import inside_scope, policy_hash, validate_config
+from review_admission_fixture import bind_review_admission
 
 
 class AdoptionValidationTests(unittest.TestCase):
@@ -64,6 +65,7 @@ class AdoptionValidationTests(unittest.TestCase):
                 for child in value:
                     bind(child)
         bind(bundle)
+        bind_review_admission(bundle)
         result = evaluate(self.config, definition(), bundle, self.contracts, '2026-09-09T12:00:00Z')
         self.assertNotEqual(result['conclusion'], 'READY_FOR_OWNER_AUTHORIZATION')
         self.assertFalse(result['execution_authority'])

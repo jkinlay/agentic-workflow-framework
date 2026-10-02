@@ -9,7 +9,9 @@ from pathlib import Path
 
 from agentic.continuous_controller import (
     ContinuousControllerStore,
-    post_merge_jira_progress,
+    production_controller_cycle,
+    production_jira_lifecycle,
+    production_post_merge_progress,
 )
 from agentic.contracts import Contracts
 from agentic import ValidationError
@@ -22,6 +24,15 @@ NOW = "2026-10-02T10:00:00Z"
 BINDING = {"cloud_id": "cloud-1", "project_id": "project-1", "actor_id": "actor-1"}
 COUNTS = {"required": 1, "completed": 0, "acceptable": 0,
           "failed": 0, "stale": 0, "outstanding": 1}
+INVENTORY_BINDING = {"project_id": "project-1", "repository_id": "repository-1",
+                     "scope_sha256": "a" * 64}
+
+
+def inventory_observation(now, tickets):
+    return {"source": "host_observation", "observed_at": now,
+            "binding": dict(INVENTORY_BINDING), "complete": True,
+            "inventory_sha256": fingerprint("controller-inventory", {
+                "binding": INVENTORY_BINDING, "tickets": tickets}), "tickets": tickets}
 
 
 def ticket(name, priority, disposition="ELIGIBLE", paths=None, **overrides):
@@ -189,6 +200,71 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(len(json.loads(completed.stdout)["streams"]), 3)
 
+    def test_production_cycle_observes_inventory_dispatches_and_delivers_digest(self):
+        inventory = [ticket("QA-1", 1), ticket("QA-2", 2), ticket("QA-3", 3)]
+        calls = []
+        def dispatch(payload):
+            calls.append(("dispatch", payload["ticket"]))
+            return {key: payload[key] for key in ("dispatch_id", "stream", "ticket", "exact_tuple")} | {
+                "status": "ACCEPTED", "observed_at": NOW}
+        def deliver(digest):
+            calls.append(("deliver", digest["delivery_id"]))
+            return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": NOW}
+        result = production_controller_cycle(self.store, now=NOW, host_capacity=3,
+            inventory_binding=INVENTORY_BINDING,
+            observe_inventory=lambda: inventory_observation(NOW, inventory),
+            dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail("no reconciliation"),
+            deliver_status=deliver)
+        self.assertEqual(len(result["dispatch_receipts"]), 3)
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(all(row["state"] == "WORKING" for row in result["streams"]))
+        self.assertEqual(sum(kind == "dispatch" for kind, _ in calls), 3)
+        self.assertEqual(sum(kind == "deliver" for kind, _ in calls), 1)
+
+    def test_uncertain_dispatch_is_observed_and_never_blindly_reissued(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "unknown.sqlite3", ["A"])
+        dispatch_calls = []
+        def fail_dispatch(payload):
+            dispatch_calls.append(payload)
+            raise RuntimeError("synthetic uncertain host result")
+        first_tickets = [ticket("QA-4", 1)]
+        first = production_controller_cycle(store, now=NOW, host_capacity=1,
+            inventory_binding=INVENTORY_BINDING,
+            observe_inventory=lambda: inventory_observation(NOW, first_tickets),
+            dispatch_ticket=fail_dispatch, observe_dispatch=lambda payload: self.fail("not yet"),
+            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": NOW})
+        self.assertEqual(first["errors"][0]["state"], "UNKNOWN")
+        later = "2026-10-02T10:00:01Z"
+        def observe(payload):
+            return {key: payload[key] for key in ("dispatch_id", "stream", "ticket", "exact_tuple")} | {
+                "status": "ACCEPTED", "observed_at": later}
+        second_tickets = [ticket("QA-4", 1)]
+        second = production_controller_cycle(store, now=later, host_capacity=1,
+            inventory_binding=INVENTORY_BINDING,
+            observe_inventory=lambda: inventory_observation(later, second_tickets),
+            dispatch_ticket=lambda payload: self.fail("uncertain dispatch was reissued"),
+            observe_dispatch=observe,
+            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": later})
+        self.assertEqual(len(dispatch_calls), 1)
+        self.assertEqual(second["dispatch_receipts"][0]["status"], "ACCEPTED")
+
+    def test_production_cycle_rejects_partial_or_wrong_scope_inventory(self):
+        observed = inventory_observation(NOW, [ticket("QA-5", 1)])
+        for mutate in (lambda value: value.update(complete=False),
+                       lambda value: value["binding"].update(project_id="other"),
+                       lambda value: value.update(inventory_sha256="0" * 64)):
+            value = json.loads(json.dumps(observed))
+            mutate(value)
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                production_controller_cycle(self.store, now=NOW, host_capacity=1,
+                    inventory_binding=INVENTORY_BINDING,
+                    observe_inventory=lambda item=value: item,
+                    dispatch_ticket=lambda payload: self.fail("invalid inventory dispatched"),
+                    observe_dispatch=lambda payload: self.fail("invalid inventory observed"),
+                    deliver_status=lambda payload: self.fail("invalid inventory delivered"))
+
 
 class JiraProgressTests(unittest.TestCase):
     scope = "project=QA AND fixVersion=1.9.3"
@@ -213,7 +289,7 @@ class JiraProgressTests(unittest.TestCase):
                     reconcile_merged_ticket=reconcile or (lambda ticket: self.receipt(ticket)),
                     fetch_scope_page=fetch or (lambda scope, cursor: self.page([])))
         args.update(overrides)
-        return post_merge_jira_progress(**args)
+        return production_post_merge_progress(**args)
 
     def test_reconciliation_precedes_complete_paginated_stable_identity_counts(self):
         calls = []
@@ -292,6 +368,22 @@ class JiraProgressTests(unittest.TestCase):
         contracts.validate("jira-progress", authoritative)
         local_semantics("jira-progress", authoritative)
         contracts.validate("jira-progress", self.call(jira_enabled=False))
+
+    def test_production_jira_lifecycle_writes_once_and_requires_readback(self):
+        config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text())
+        bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
+        calls = []
+        result = production_jira_lifecycle(config=config, contract=bundle["contract"],
+            event="WORKER_STARTED", facts={"run_registered": True, "worktree_verified": True},
+            binding=bundle["critic"]["binding"], issue_type="LEAF", current_status="Ready",
+            prior_writes=[], state="DISPATCHED", producer_id="fixture-controller",
+            run_id=str(uuid.UUID(int=7)), now=NOW, evidence=["urn:awf:fixture:jira"],
+            transition_id="31", write_transition=lambda record: calls.append("write") or {
+                "operation_id": record["operation_id"], "status": "ATTEMPTED", "observed_at": NOW},
+            read_transition=lambda record, operation: calls.append("read") or {
+                "status": "In Progress", "actor": "fixture-controller", "observed_at": NOW})
+        self.assertEqual(calls, ["write", "read"])
+        self.assertEqual((result["record"]["status"], result["writes_stopped"]), ("SUCCEEDED", False))
 
 
 if __name__ == "__main__":

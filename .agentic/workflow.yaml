@@ -232,7 +232,8 @@
       "actor": "controller",
       "requires": [
         "derived_gate_ready",
-        "requirements_current"
+        "requirements_current",
+        "final_gate_current"
       ]
     },
     {

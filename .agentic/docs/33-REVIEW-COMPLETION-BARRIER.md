@@ -58,5 +58,12 @@ replay it blindly. A submitted verdict remains
 immutable even if a later observation finds candidate movement.
 
 Use the generated `review-completion` and `review-submission` contracts for
-portable status and provider admission records. Final-gate evaluation and
-human merge authorization remain subsequent, separate requirements.
+portable status and provider admission records. The final evidence bundle must
+carry the exact `review-submission`. Gate evaluation binds its candidate,
+contract, critic and specialist record digests to that admission and embeds it
+in the final gate. Authorization request creation, authorization verification,
+the user-facing gate handoff, and `FINAL_GATE_PASSED` lifecycle transition all
+revalidate the embedded admission. Removing, replacing, or rebinding it fails
+closed before readiness. `ReviewCompletionStore.submit` remains the sole
+provider-submission route; its mutation callback cannot run before the atomic
+admission exists.

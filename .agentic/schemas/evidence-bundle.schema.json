@@ -10,6 +10,7 @@
     "worker",
     "critic",
     "specialists",
+    "review_submission",
     "ci",
     "pr",
     "runs",
@@ -48,6 +49,9 @@
         "$ref": "urn:awf:1.2:specialist-review"
       },
       "minItems": 0
+    },
+    "review_submission": {
+      "$ref": "urn:awf:1.2:review-submission"
     },
     "ci": {
       "$ref": "urn:awf:1.2:ci-evidence"

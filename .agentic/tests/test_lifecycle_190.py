@@ -21,6 +21,7 @@ from agentic.jira_lifecycle import apply_read_back, closing_comment, owner_closu
 from agentic.lifecycle import JIRA_WRITES, definition, transition
 from agentic.review_loop import LoopStore, enroll, resume, tick, validate_review
 from agentic.store import Store
+from review_admission_fixture import bind_review_admission
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-09T12:00:00Z"
@@ -102,6 +103,7 @@ class JiraLifecycleTests(unittest.TestCase):
         bundle = copy.deepcopy(self.bundle0)
         bundle["snapshot"]["summary"] = "Cutover: switch the nightly store build"
         bundle["contract"]["requirements_hash"] = __import__("agentic.canonical", fromlist=["fingerprint"]).fingerprint("requirements", bundle["snapshot"])
+        bind_review_admission(bundle)
         with self.assertRaisesRegex(ValidationError, "owner_closure_required|binding"):
             evaluate(self.config, definition(), bundle, self.contracts, NOW)
 
