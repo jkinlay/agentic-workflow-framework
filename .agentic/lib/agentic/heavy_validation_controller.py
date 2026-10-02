@@ -1,28 +1,35 @@
 """Trusted controller adapters for governed heavy validation."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import hmac
+import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import subprocess
+import tarfile
+import tempfile
 from typing import Callable
 
 from . import ValidationError
 from .canonical import canonical, fingerprint, sha256, timestamp
 from .child_process import child_env
-from .heavy_validation import resolve_without_alias
+from .heavy_validation import (CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS,
+                               GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS,
+                               resolve_without_alias)
 
 
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _LABEL = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _MAX_PROVIDER_BYTES = 1024 * 1024
+_MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 
 
 def _require(condition, message):
@@ -155,7 +162,9 @@ class GitCheckoutAttestor:
             done = subprocess.run([executable, *args], cwd=str(self.root),
                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, shell=False,
-                                  env=child_env(dict(os.environ)), timeout=30, check=False)
+                                  env=child_env(dict(os.environ)),
+                                  timeout=GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS,
+                                  check=False)
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValidationError("Git checkout attestation is unavailable") from exc
         if done.returncode or len(done.stdout) > _MAX_PROVIDER_BYTES:
@@ -185,6 +194,110 @@ class GitCheckoutAttestor:
         return {"status": "CLEAN", "candidate": deepcopy(candidate),
                 "working_directory": str(self.root),
                 "evidence_sha256": fingerprint("heavy-validation-checkout", evidence)}
+
+
+class GitCheckoutSnapshotter:
+    """Materialize execution only from the immutable reviewed Git object."""
+
+    def __init__(self, root: str | os.PathLike[str], run_archive=None):
+        self.root = resolve_without_alias(Path(root).absolute(), "execution checkout",
+                                          directory=True)
+        self.run_archive = run_archive or self._archive
+
+    def _archive(self, head_sha: str) -> bytes:
+        executable = shutil.which("git")
+        if not executable:
+            raise ValidationError("Git checkout snapshot is unavailable")
+        executable = str(Path(executable).resolve())
+        if Path(executable).suffix.casefold() in {".cmd", ".bat", ".ps1"}:
+            raise ValidationError("Git checkout snapshot needs a native executable")
+        try:
+            done = subprocess.run(
+                [executable, "archive", "--format=tar", head_sha], cwd=str(self.root),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                shell=False, env=child_env(dict(os.environ)),
+                timeout=CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValidationError("Git checkout snapshot is unavailable") from exc
+        if done.returncode or len(done.stdout) > _MAX_SNAPSHOT_BYTES:
+            raise ValidationError("Git checkout snapshot failed or exceeded its bound")
+        return done.stdout
+
+    @staticmethod
+    def _extract(raw: bytes, destination: Path) -> int:
+        count = 0
+        try:
+            archive = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
+        except tarfile.TarError as exc:
+            raise ValidationError("Git checkout snapshot archive is malformed") from exc
+        with archive:
+            for member in archive.getmembers():
+                name = PurePosixPath(member.name)
+                if name.is_absolute() or ".." in name.parts or not name.parts:
+                    raise ValidationError("Git checkout snapshot has an unsafe path")
+                if member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
+                    raise ValidationError("Git checkout snapshot contains an alias or special file")
+                target = destination.joinpath(*name.parts)
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = archive.extractfile(member)
+                if source is None:
+                    raise ValidationError("Git checkout snapshot file is unreadable")
+                descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                     member.mode & 0o777 or 0o600)
+                with source, os.fdopen(descriptor, "wb") as output:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                count += 1
+        return count
+
+    @staticmethod
+    def _freeze(destination: Path):
+        paths = sorted(destination.rglob("*"), key=lambda item: len(item.parts), reverse=True)
+        for path in paths:
+            mode = path.stat().st_mode
+            if path.is_dir():
+                path.chmod(mode & ~0o222)
+            else:
+                path.chmod(mode & ~0o222)
+        destination.chmod(destination.stat().st_mode & ~0o222)
+
+    @staticmethod
+    def _thaw(destination: Path):
+        try:
+            destination.chmod(destination.stat().st_mode | 0o700)
+            paths = sorted(destination.rglob("*"), key=lambda item: len(item.parts))
+            for path in paths:
+                path.chmod(path.stat().st_mode | (0o700 if path.is_dir() else 0o600))
+        except OSError:
+            pass
+
+    @contextmanager
+    def __call__(self, candidate: dict, working_directory: str):
+        observed = resolve_without_alias(Path(working_directory).absolute(),
+                                         "execution checkout", directory=True)
+        _require(os.path.normcase(str(observed)) == os.path.normcase(str(self.root)),
+                 "Checkout snapshotter root mismatch")
+        raw = self.run_archive(candidate["head_sha"])
+        archive_sha = sha256(raw)
+        with tempfile.TemporaryDirectory(prefix="awf-heavy-snapshot-") as folder:
+            snapshot_root = resolve_without_alias(Path(folder).absolute(),
+                                                  "checkout snapshot root", directory=True)
+            file_count = self._extract(raw, snapshot_root)
+            self._freeze(snapshot_root)
+            record = {"candidate": deepcopy(candidate),
+                      "source_working_directory": str(self.root),
+                      "snapshot_working_directory": str(snapshot_root),
+                      "tree_sha": candidate["tree_sha"],
+                      "archive_sha256": archive_sha, "file_count": file_count,
+                      "read_only": True}
+            try:
+                yield {"status": "IMMUTABLE", **record,
+                       "evidence_sha256": fingerprint(
+                           "heavy-validation-checkout-snapshot", record)}
+            finally:
+                self._thaw(snapshot_root)
 
 
 class FileLeaseBroker:
