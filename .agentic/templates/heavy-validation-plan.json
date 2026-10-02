@@ -1,0 +1,27 @@
+{
+  "engine": "python",
+  "format": "awf-heavy-validation-plan-1",
+  "partitions": [
+    {
+      "accepted_exit_codes": [
+        0
+      ],
+      "argv": [
+        "python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-p",
+        "test_partition_01.py"
+      ],
+      "name": "partition-01",
+      "timeout_seconds": 900
+    }
+  ],
+  "requested_parallelism": 2,
+  "required_resources": [],
+  "resource_class": "heavy",
+  "workload_id": "reviewed-heavy-validation"
+}

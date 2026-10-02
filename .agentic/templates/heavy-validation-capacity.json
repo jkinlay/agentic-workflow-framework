@@ -1,0 +1,15 @@
+{
+  "broker_id": "replace-with-configured-broker-id",
+  "engines": {
+    "python": {
+      "parallel_available": true,
+      "parallel_slots": 2
+    }
+  },
+  "format": "awf-heavy-validation-capacity-1",
+  "gpu_jobs_available": 0,
+  "heavy_jobs_available": 2,
+  "observed_at": "2026-10-02T09:00:00Z",
+  "resources_available": {},
+  "workers_available": 2
+}
