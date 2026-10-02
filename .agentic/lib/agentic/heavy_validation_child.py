@@ -13,13 +13,19 @@ def main() -> int:
     try:
         value = json.loads(raw.decode("ascii"))
         argv = value["argv"]
-        if (set(value) != {"argv"} or not isinstance(argv, list) or not argv
-                or not all(isinstance(token, str) and token for token in argv)):
+        environment = value["environment"]
+        if (set(value) != {"argv", "environment"}
+                or not isinstance(argv, list) or not argv
+                or not all(isinstance(token, str) and token for token in argv)
+                or not isinstance(environment, dict)
+                or not all(isinstance(name, str) and name and isinstance(item, str)
+                           for name, item in environment.items())):
             return 125
     except (KeyError, UnicodeError, json.JSONDecodeError, TypeError):
         return 125
     try:
-        done = subprocess.run(argv, stdin=subprocess.DEVNULL, shell=False, check=False)
+        done = subprocess.run(argv, stdin=subprocess.DEVNULL, shell=False, check=False,
+                              env=environment)
     except OSError:
         return 126
     return done.returncode

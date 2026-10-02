@@ -7,7 +7,7 @@
   },
   "decision": "APPROVE",
   "expires_at": "2030-01-02T00:00:00Z",
-  "format": "awf-heavy-validation-review-5",
+  "format": "awf-heavy-validation-review-6",
   "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "reviewed_at": "2030-01-01T00:00:00Z",
   "reviewer": {
@@ -26,6 +26,14 @@
       "determinism": {"retry_limit": 0, "seed": 0},
       "engine": "python",
       "isolation": {"filesystem": "WORKTREE", "network": "HOST_POLICY", "process_tree": "REQUIRED"},
+      "target_environment": {
+        "name_normalization": "UPPERCASE",
+        "runtime_additions": ["AWF_VALIDATION_ATTEMPT", "AWF_VALIDATION_SEED"],
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "strip_names": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY", "CODEX_API_KEY", "GEMINI_API_KEY", "GH_TOKEN", "GITHUB_TOKEN", "GOOGLE_API_KEY", "OPENAI_API_KEY", "PYTHONHOME", "PYTHONINSPECT", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE"],
+        "value_normalization": "NFC",
+        "values": {"PYTHONIOENCODING": "utf-8", "PYTHONNOUSERSITE": "1", "PYTHONUTF8": "1"}
+      },
       "partitions": [],
       "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "requested_parallelism": 1,
