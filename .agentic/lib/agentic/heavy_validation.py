@@ -19,16 +19,17 @@ import tarfile
 import threading
 import time
 from typing import Any
+import unicodedata
 
 from . import ValidationError
 from .canonical import fingerprint, load_yaml, loads, now_text, sha256, timestamp
 from .child_process import child_env
 
 
-PLAN_FORMAT = "awf-heavy-validation-plan-3"
-REVIEW_FORMAT = "awf-heavy-validation-review-5"
+PLAN_FORMAT = "awf-heavy-validation-plan-4"
+REVIEW_FORMAT = "awf-heavy-validation-review-6"
 CAPACITY_FORMAT = "awf-heavy-validation-capacity-4"
-RESULT_FORMAT = "awf-heavy-validation-result-6"
+RESULT_FORMAT = "awf-heavy-validation-result-7"
 TERMINAL_STATES = frozenset({"PASS", "FAILED", "TIMED_OUT", "CANCELLED"})
 FROZEN_H_PROVIDER_API_KEY_ENV_VARS = frozenset({
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY",
@@ -44,9 +45,23 @@ _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _MAX_PARTITIONS = 256
 _MAX_ARGV = 64
 _MAX_TOKEN_BYTES = 8192
+_MAX_ENVIRONMENT_VARIABLES = 64
+_MAX_ENVIRONMENT_VALUE_BYTES = 8192
+_MAX_WINDOWS_LAUNCHER_PAYLOAD_BYTES = 64 * 1024
 _MAX_OUTPUT_BYTES = 256 * 1024
 _WINDOWS_LAUNCHER_RELATIVE = ".agentic/lib/agentic/heavy_validation_child.py"
 _WINDOWS_LAUNCHER_FLAGS = ("-I", "-S", "-B")
+_TARGET_ENVIRONMENT_ALWAYS_STRIP = frozenset({
+    *FROZEN_H_PROVIDER_API_KEY_ENV_VARS,
+    *PROTECTED_GITHUB_ENV_VARS,
+    "PYTHONHOME", "PYTHONINSPECT", "PYTHONPATH", "PYTHONSTARTUP",
+    "PYTHONUSERBASE",
+})
+_TARGET_ENVIRONMENT_FORCED = {
+    "PYTHONIOENCODING": "utf-8",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONUTF8": "1",
+}
 GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS = 30
 DISPATCH_ATTESTATION_COMMAND_COUNT = 4
 CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS = 120
@@ -246,11 +261,93 @@ def _immutable_executable(executable: dict):
             os.close(descriptor)
 
 
+def _normalized_target_environment(value: Any) -> dict:
+    value = _mapping(value, "plan.target_environment")
+    _exact_keys(value, {"values", "strip_extra"}, "plan.target_environment")
+    supplied = _mapping(value["values"], "plan.target_environment.values")
+    if len(supplied) > _MAX_ENVIRONMENT_VARIABLES:
+        raise ValidationError(
+            f"plan.target_environment.values may contain at most {_MAX_ENVIRONMENT_VARIABLES} entries")
+    normalized: dict[str, str] = {}
+    for name, raw_value in supplied.items():
+        if (not isinstance(name, str) or name != name.upper()
+                or not _ENV_NAME.fullmatch(name)):
+            raise ValidationError(
+                "plan.target_environment names must be normalized uppercase environment names")
+        if name in _TARGET_ENVIRONMENT_ALWAYS_STRIP or name in _TARGET_ENVIRONMENT_FORCED:
+            raise ValidationError(f"plan.target_environment cannot set reserved name {name}")
+        if not isinstance(raw_value, str):
+            raise ValidationError(f"plan.target_environment value for {name} must be a string")
+        text = unicodedata.normalize("NFC", raw_value)
+        if (_CONTROL.search(text)
+                or len(text.encode("utf-8")) > _MAX_ENVIRONMENT_VALUE_BYTES):
+            raise ValidationError(f"plan.target_environment value for {name} is invalid")
+        normalized[name] = text
+    extras = value["strip_extra"]
+    if not isinstance(extras, list):
+        raise ValidationError("plan.target_environment.strip_extra must be a list")
+    folded: set[str] = set()
+    for raw_name in extras:
+        if (not isinstance(raw_name, str) or raw_name != raw_name.upper()
+                or not _ENV_NAME.fullmatch(raw_name)):
+            raise ValidationError(
+                "plan.target_environment.strip_extra must contain normalized uppercase names")
+        if raw_name in PROTECTED_GITHUB_ENV_VARS:
+            raise ValidationError(
+                f"plan.target_environment.strip_extra cannot name {raw_name}")
+        if raw_name in folded:
+            raise ValidationError("plan.target_environment.strip_extra contains a duplicate")
+        folded.add(raw_name)
+    forbidden = _TARGET_ENVIRONMENT_ALWAYS_STRIP | folded
+    overlap = sorted(set(normalized) & forbidden)
+    if overlap:
+        raise ValidationError(
+            f"plan.target_environment values include stripped names: {overlap}")
+    return {"values": dict(sorted(normalized.items())), "strip_extra": sorted(folded)}
+
+
+def _target_environment_authorization(plan: dict) -> dict:
+    target = _normalized_target_environment(plan["target_environment"])
+    record = {
+        "values": {**target["values"], **_TARGET_ENVIRONMENT_FORCED},
+        "strip_names": sorted(_TARGET_ENVIRONMENT_ALWAYS_STRIP | set(target["strip_extra"])),
+        "name_normalization": "UPPERCASE",
+        "value_normalization": "NFC",
+        "runtime_additions": ["AWF_VALIDATION_ATTEMPT", "AWF_VALIDATION_SEED"],
+    }
+    return {**record, "sha256": fingerprint("heavy-validation-target-environment", record)}
+
+
+def _target_child_env(environment: dict, *, seed: int, attempt: int) -> dict[str, str]:
+    expected = fingerprint("heavy-validation-target-environment", {
+        key: environment[key] for key in (
+            "values", "strip_names", "name_normalization", "value_normalization",
+            "runtime_additions")})
+    if environment.get("sha256") != expected:
+        raise ValidationError("Reviewed target environment digest mismatch")
+    result = dict(environment["values"])
+    for name in environment["strip_names"]:
+        result.pop(name, None)
+    result["AWF_VALIDATION_SEED"] = str(seed)
+    result["AWF_VALIDATION_ATTEMPT"] = str(attempt)
+    return result
+
+
+def _windows_launcher_payload(argv: list[str], environment: dict[str, str]) -> bytes:
+    payload = json.dumps({"argv": argv, "environment": environment}, ensure_ascii=True,
+                         separators=(",", ":"), sort_keys=True).encode("ascii") + b"\n"
+    if len(payload) > _MAX_WINDOWS_LAUNCHER_PAYLOAD_BYTES:
+        raise ValidationError(
+            "Windows launcher payload exceeds the 65536-byte reviewed bound")
+    return payload
+
+
 def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     value = _verified_load(raw, expected_sha256, "plan")
     _exact_keys(value, {"format", "workload_id", "engine", "resource_class",
                         "required_resources", "requested_parallelism", "candidate",
-                        "working_directory", "determinism", "isolation", "partitions"}, "plan")
+                        "working_directory", "determinism", "isolation",
+                        "target_environment", "partitions"}, "plan")
     if value["format"] != PLAN_FORMAT:
         raise ValidationError("Unsupported heavy validation plan format")
     for field in ("workload_id", "engine"):
@@ -280,6 +377,8 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
     if isolation != {"process_tree": "REQUIRED", "network": "HOST_POLICY",
                       "filesystem": "WORKTREE"}:
         raise ValidationError("plan.isolation must require process-tree, host-network, and worktree controls")
+    value["target_environment"] = _normalized_target_environment(
+        value["target_environment"])
     _positive_int(value["requested_parallelism"], "requested_parallelism", maximum=256)
     parts = value["partitions"]
     if not isinstance(parts, list) or not (1 <= len(parts) <= _MAX_PARTITIONS):
@@ -339,6 +438,12 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
         for code in exits:
             if isinstance(code, bool) or not isinstance(code, int) or not (-255 <= code <= 255):
                 raise ValidationError(f"partition {name} accepted exit code is invalid")
+    reviewed_environment = _target_environment_authorization(value)
+    for part in parts:
+        for attempt in range(1, value["determinism"]["retry_limit"] + 2):
+            _windows_launcher_payload(
+                part["argv"], _target_child_env(
+                    reviewed_environment, seed=value["determinism"]["seed"], attempt=attempt))
     return value, sha256(raw)
 
 
@@ -396,6 +501,7 @@ def workload_authorization(plan: dict, plan_digest: str) -> dict:
         "requested_parallelism": plan["requested_parallelism"],
         "determinism": deepcopy(plan["determinism"]),
         "isolation": deepcopy(plan["isolation"]),
+        "target_environment": _target_environment_authorization(plan),
         "windows_launch_chain": _windows_launch_chain(plan),
         "partitions": [{key: deepcopy(part[key]) for key in (
             "name", "framework", "resources", "argv", "executable",
@@ -1039,12 +1145,12 @@ def _attach_windows_job(proc: subprocess.Popen):
         raise ValidationError("Windows containment setup failed") from exc
 
 
-def _release_windows_launcher(proc: subprocess.Popen, argv: list[str]):
+def _release_windows_launcher(proc: subprocess.Popen, argv: list[str],
+                              environment: dict[str, str]):
     if os.name != "nt":
         return
     try:
-        payload = json.dumps({"argv": argv}, ensure_ascii=True,
-                             separators=(",", ":")).encode("ascii") + b"\n"
+        payload = _windows_launcher_payload(argv, environment)
         proc.stdin.write(payload)
         proc.stdin.flush()
         proc.stdin.close()
@@ -1154,6 +1260,9 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                 command = target_argv
                 options = {"start_new_session": True, "pass_fds": artifact["pass_fds"]}
                 child_stdin = subprocess.DEVNULL
+            target_environment = _target_child_env(
+                launch_chain["target_environment"], seed=plan["determinism"]["seed"],
+                attempt=attempt)
             proc = subprocess.Popen(
                 command,
                 cwd=str(cwd),
@@ -1161,13 +1270,12 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
-                env=_validation_child_env(config, seed=plan["determinism"]["seed"],
-                                          attempt=attempt),
+                env=target_environment,
                 **options,
             )
             if os.name == "nt":
                 _attach_windows_job(proc)
-                _release_windows_launcher(proc, target_argv)
+                _release_windows_launcher(proc, target_argv, target_environment)
                 released = True
             stdout_capture = _Capture(proc.stdout)
             stderr_capture = _Capture(proc.stderr)
@@ -1342,6 +1450,11 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
                                              "max_capacity_age_seconds", maximum=86_400)
     plan, plan_digest = _validate_plan(plan_raw, expected_plan_sha256)
     config, config_digest = _validate_config(config_raw, expected_config_sha256)
+    configured_strip = _strip_names(config)
+    reviewed_strip = frozenset(plan["target_environment"]["strip_extra"])
+    if configured_strip != reviewed_strip:
+        raise ValidationError(
+            "execution.child_env_strip_extra does not match reviewed target_environment.strip_extra")
     root, executables = _execution_context(plan, expected_candidate, execution_root)
     checkout = _attest_checkout(checkout_attestor, plan["candidate"], root)
     review, review_digest, authorization = _validate_review(
@@ -1364,11 +1477,15 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
     results: list[dict] = []
     dispatch_checkout = checkout
     checkout_snapshot = {"status": "NOT_CREATED"}
+    dispatch_review_authority = {"status": "NOT_RECHECKED"}
     lease_runtime_valid = True
     guard = lambda: _lease_runtime_guard(lease, lease_clock)
     try:
         if admitted:
             guard()
+            dispatch_review_authority = _authenticate_review(
+                review, review_digest, plan_digest, plan["candidate"], authorization,
+                review_authenticator)
             dispatch_checkout = _attest_checkout(
                 checkout_attestor, plan["candidate"], root)
             with _immutable_checkout(checkout_snapshotter, plan["candidate"], root) as snapshot:
@@ -1379,7 +1496,9 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
                     futures = {
                         executor.submit(_execute, part, plan, executable, snapshot_root,
                                         config, event,
-                                        authorization["record"]["windows_launch_chain"],
+                                        {**authorization["record"]["windows_launch_chain"],
+                                         "target_environment": authorization["record"][
+                                             "target_environment"]},
                                         guard): (part, executable)
                         for part, executable in zip(plan["partitions"], launch_executables)
                     }
@@ -1434,6 +1553,7 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         "plan_sha256": plan_digest,
         "review_sha256": review_digest,
         "review_authority": review_authority,
+        "dispatch_review_authority": dispatch_review_authority,
         "workload_authorization": authorization,
         "checkout_attestation": {"initial": checkout, "dispatch": dispatch_checkout},
         "checkout_snapshot": checkout_snapshot,
@@ -1470,5 +1590,8 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         "serial_equivalence_sha256": serial_equivalence_sha256,
         "preserved_caps": preserved_caps,
         "native_streams": deepcopy(execution_config.get("native_streams")),
-        "credential_strip_names": sorted(FROZEN_H_PROVIDER_API_KEY_ENV_VARS | _strip_names(config)),
+        "target_environment_sha256": authorization["record"][
+            "target_environment"]["sha256"],
+        "credential_strip_names": authorization["record"][
+            "target_environment"]["strip_names"],
     }

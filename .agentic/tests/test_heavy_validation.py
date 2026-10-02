@@ -81,21 +81,25 @@ def partition(name, code="print('ok')", *, timeout=5, exits=None):
 
 
 def plan(parts, *, engine="python", resource_class="heavy", resources=None,
-         parallelism=4, candidate=None, cwd=None, seed=17, retries=0):
-    return canonical({"format": "awf-heavy-validation-plan-3",
+         parallelism=4, candidate=None, cwd=None, seed=17, retries=0,
+         environment=None, strip_extra=None):
+    return canonical({"format": "awf-heavy-validation-plan-4",
         "workload_id": "qa9430-synthetic", "engine": engine,
         "resource_class": resource_class, "required_resources": list(resources or []),
         "requested_parallelism": parallelism, "candidate": candidate or CANDIDATE,
         "working_directory": str(Path(cwd or SOURCE_ROOT).resolve()),
         "determinism": {"seed": seed, "retry_limit": retries},
         "isolation": {"process_tree": "REQUIRED", "network": "HOST_POLICY",
-                      "filesystem": "WORKTREE"}, "partitions": parts})
+                      "filesystem": "WORKTREE"},
+        "target_environment": {"values": dict(environment or {}),
+                               "strip_extra": list(strip_extra or [])},
+        "partitions": parts})
 
 
 def review(plan_raw, *, decision="APPROVE", candidate=None):
     plan_value = json.loads(plan_raw)
     authorization = workload_authorization(plan_value, sha256(plan_raw))
-    return canonical({"format": "awf-heavy-validation-review-5",
+    return canonical({"format": "awf-heavy-validation-review-6",
         "plan_sha256": sha256(plan_raw), "candidate": candidate or CANDIDATE,
         "decision": decision, "workload_authorization": authorization,
         "reviewer": {"provider": "fixture", "immutable_id": "reviewer-101", "login": "critic"},
@@ -301,12 +305,92 @@ class HeavyValidationTests(unittest.TestCase):
                  "GOOGLE_API_KEY", "SYNTHETIC_EXTRA_SECRET"]
         code = "import os; print('|'.join(os.environ.get(k, 'absent') for k in " + repr(names) + "))"
         with mock.patch.dict(os.environ, {name: "secret" for name in names}):
-            result = run(plan([partition("env", code)]),
+            result = run(plan([partition("env", code)],
+                              strip_extra=["SYNTHETIC_EXTRA_SECRET"]),
                          config(enabled=False, extras=["SYNTHETIC_EXTRA_SECRET"]))
         self.assertEqual("|".join(["absent"] * len(names)), result["partitions"][0]["stdout"].strip())
         for protected in ("GH_TOKEN", "GITHUB_TOKEN"):
             with self.assertRaisesRegex(ValidationError, "cannot name"):
                 run(plan([partition("x")]), config(enabled=False, extras=[protected]))
+
+    def test_target_environment_is_reviewed_deterministic_and_does_not_load_host_modules(self):
+        with tempfile.TemporaryDirectory() as folder:
+            hostile = Path(folder)
+            sentinels = []
+            for module in ("json", "sitecustomize", "usercustomize"):
+                sentinel = hostile / f"{module}.executed"
+                sentinels.append(sentinel)
+                (hostile / f"{module}.py").write_text(
+                    f"open({str(sentinel)!r}, 'w').write('bad')\n", encoding="utf-8")
+            names = ["PYTHONPATH", "PYTHONUSERBASE", "HOST_ONLY"]
+            code = ("import json,os; print(os.environ['SAFE_VALUE']); "
+                    "print('|'.join(os.environ.get(k, 'absent') for k in "
+                    + repr(names) + "))")
+            plan_raw = plan([partition("target-env", code)], parallelism=1,
+                            environment={"SAFE_VALUE": "reviewed caf\u00e9"})
+            with mock.patch.dict(os.environ, {
+                    "PYTHONPATH": str(hostile), "PYTHONUSERBASE": str(hostile),
+                    "HOST_ONLY": "unreviewed"}):
+                result = run(plan_raw, config(enabled=False))
+            self.assertEqual("PASS", result["status"], json.dumps(result, indent=2))
+            self.assertEqual(["reviewed caf\u00e9", "absent|absent|absent"],
+                             result["partitions"][0]["stdout"].splitlines())
+            self.assertFalse(any(path.exists() for path in sentinels))
+            target = result["workload_authorization"]["record"]["target_environment"]
+            self.assertEqual({"PYTHONIOENCODING": "utf-8", "PYTHONNOUSERSITE": "1",
+                              "PYTHONUTF8": "1", "SAFE_VALUE": "reviewed caf\u00e9"},
+                             target["values"])
+            self.assertEqual(target["sha256"], result["target_environment_sha256"])
+
+    def test_target_environment_policy_must_match_config_and_rejects_reserved_names(self):
+        raw = plan([partition("env")], strip_extra=["SYNTHETIC_SECRET"])
+        with self.assertRaisesRegex(ValidationError, "does not match reviewed"):
+            run(raw, config(enabled=False))
+        for name in ("PYTHONPATH", "OPENAI_API_KEY", "PYTHONNOUSERSITE",
+                     "PYTHONIOENCODING", "PYTHONUTF8"):
+            bad = plan([partition("env")], environment={name: "unreviewed"})
+            with self.assertRaisesRegex(ValidationError, "reserved name"):
+                run(bad, config(enabled=False))
+
+    def test_windows_launcher_payload_is_ascii_exact_and_bounded(self):
+        environment = {"SAFE": "caf\u00e9", "PYTHONNOUSERSITE": "1"}
+        argv = [str(Path(sys.executable).resolve()), "space value", "snowman \u2603"]
+        payload = heavy._windows_launcher_payload(argv, environment)
+        self.assertEqual(payload, payload.decode("ascii").encode("ascii"))
+        self.assertEqual({"argv": argv, "environment": environment},
+                         json.loads(payload.decode("ascii")))
+        near = ["x", *(["a" * heavy._MAX_TOKEN_BYTES] * 7), ""]
+        missing = heavy._MAX_WINDOWS_LAUNCHER_PAYLOAD_BYTES - len(
+            heavy._windows_launcher_payload(near, environment))
+        self.assertGreaterEqual(missing, 0)
+        self.assertLessEqual(missing, heavy._MAX_TOKEN_BYTES)
+        near[-1] = "b" * missing
+        self.assertEqual(heavy._MAX_WINDOWS_LAUNCHER_PAYLOAD_BYTES,
+                         len(heavy._windows_launcher_payload(near, environment)))
+        near[-1] += "b"
+        with self.assertRaisesRegex(ValidationError, "65536-byte"):
+            heavy._windows_launcher_payload(near, environment)
+        exact_value = json.loads(plan([partition("exact-payload")], parallelism=1))
+        reviewed_environment = heavy._target_environment_authorization(exact_value)
+        runtime_environment = heavy._target_child_env(
+            reviewed_environment, seed=exact_value["determinism"]["seed"], attempt=1)
+        exact_argv = [exact_value["partitions"][0]["argv"][0],
+                      *(["a" * heavy._MAX_TOKEN_BYTES] * 7), ""]
+        exact_missing = heavy._MAX_WINDOWS_LAUNCHER_PAYLOAD_BYTES - len(
+            heavy._windows_launcher_payload(exact_argv, runtime_environment))
+        self.assertLessEqual(exact_missing, heavy._MAX_TOKEN_BYTES)
+        exact_argv[-1] = "b" * exact_missing
+        exact_value["partitions"][0]["argv"] = exact_argv
+        exact_raw = canonical(exact_value)
+        heavy._validate_plan(exact_raw, sha256(exact_raw))
+        exact_value["partitions"][0]["argv"][-1] += "b"
+        oversized_raw = canonical(exact_value)
+        with self.assertRaisesRegex(ValidationError, "65536-byte"):
+            heavy._validate_plan(oversized_raw, sha256(oversized_raw))
+        escaped = plan([partition("escaped")], environment={
+            f"UNICODE_{index}": "\u2603" * 2730 for index in range(4)})
+        with self.assertRaisesRegex(ValidationError, "65536-byte"):
+            run(escaped, config(enabled=False))
 
     def test_timeout_terminates_descendant_tree_and_records_cleanup(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -485,6 +569,7 @@ class HeavyValidationTests(unittest.TestCase):
                       "resolved_path": part["executable"]["path"],
                       "sha256": part["executable"]["sha256"]}
         launch_chain = heavy._windows_launch_chain(value)
+        launch_chain["target_environment"] = heavy._target_environment_authorization(value)
         fake = FakeProcess()
         with mock.patch.object(heavy.os, "name", "nt"), \
              mock.patch.object(heavy.subprocess, "Popen", return_value=fake) as popen, \
@@ -541,7 +626,7 @@ class HeavyValidationTests(unittest.TestCase):
         cfg_raw = canonical(config())
         cap = capacity(raw, cfg_raw, workers=2, heavy=2)
         authorization = workload_authorization(json.loads(raw), sha256(raw))
-        review_raw = canonical({"format": "awf-heavy-validation-review-5",
+        review_raw = canonical({"format": "awf-heavy-validation-review-6",
             "plan_sha256": sha256(raw), "candidate": CANDIDATE, "decision": "APPROVE",
             "workload_authorization": authorization,
             "reviewer": {"provider": "github", "immutable_id": "42", "login": "reviewer"},
@@ -577,6 +662,71 @@ class HeavyValidationTests(unittest.TestCase):
         self.assertEqual("PASS", result["status"])
         self.assertEqual("PARALLEL", result["execution"]["mode"])
         self.assertTrue(result["admission"]["release_complete"])
+
+        review_reads = 0
+
+        def revoked_after_admission(endpoint):
+            nonlocal review_reads
+            value = deepcopy(endpoints[endpoint])
+            if endpoint.endswith("/reviews/9"):
+                review_reads += 1
+                if review_reads == 2:
+                    value["state"] = "DISMISSED"
+            return value
+
+        revoked_auth = GitHubReviewAuthenticator(
+            "example/project", 7, 9, read_api=revoked_after_admission)
+        broker = Broker()
+        with mock.patch.object(heavy, "_execute_attempt",
+                               side_effect=AssertionError("target scheduled")):
+            with self.assertRaisesRegex(ValidationError, "lookup failed"):
+                run_validation(
+                    plan_raw=raw, expected_plan_sha256=sha256(raw),
+                    review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                    config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                    expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                    review_authenticator=revoked_auth,
+                    checkout_attestor=checkout_attestor,
+                    checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
+                    expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                    lease_clock=lambda: NOW)
+        self.assertEqual(2, review_reads)
+        self.assertEqual([("lease-1", 7)], broker.released)
+
+    def test_post_admission_reauthentication_releases_lease_and_starts_no_target(self):
+        mutations = {
+            "revoked approval": lambda evidence: evidence.update(status="REVOKED"),
+            "moved tuple": lambda evidence: evidence["candidate"].update(
+                head_sha="f" * 40),
+            "moved reviewer": lambda evidence: evidence.update(
+                immutable_id="other-reviewer"),
+            "moved authorization": lambda evidence: evidence.update(
+                workload_authorization_sha256="0" * 64),
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            for label, mutate in mutations.items():
+                with self.subTest(label=label):
+                    marker = Path(folder) / (label.replace(" ", "-") + ".txt")
+                    raw = plan([partition(
+                        "guarded", f"from pathlib import Path; Path({str(marker)!r}).write_text('bad')")],
+                        parallelism=1)
+                    cfg, broker = config(), Broker()
+                    calls = 0
+
+                    def reauthenticate(*args):
+                        nonlocal calls
+                        calls += 1
+                        evidence = authenticator(*args)
+                        if calls == 2:
+                            mutate(evidence)
+                        return evidence
+
+                    with self.assertRaises(ValidationError):
+                        run(raw, cfg, cap=capacity(raw, canonical(cfg)), broker=broker,
+                            auth=reauthenticate)
+                    self.assertEqual(2, calls)
+                    self.assertEqual([("lease-1", 7)], broker.released)
+                    self.assertFalse(marker.exists())
 
     def test_durable_file_broker_fences_capacity_and_result_log_is_immutable(self):
         clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))

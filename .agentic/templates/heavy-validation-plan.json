@@ -10,11 +10,15 @@
     "retry_limit": 0,
     "seed": 0
   },
-  "format": "awf-heavy-validation-plan-3",
+  "format": "awf-heavy-validation-plan-4",
   "isolation": {
     "filesystem": "WORKTREE",
     "network": "HOST_POLICY",
     "process_tree": "REQUIRED"
+  },
+  "target_environment": {
+    "strip_extra": [],
+    "values": {}
   },
   "partitions": [
     {

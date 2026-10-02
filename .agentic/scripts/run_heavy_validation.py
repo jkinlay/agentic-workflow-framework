@@ -132,7 +132,7 @@ def main(argv=None):
                          ensure_ascii=True, sort_keys=True, indent=2))
         return 0 if result["status"] == "PASS" else 1
     except (ValidationError, OSError, ValueError, TypeError, RecursionError) as error:
-        rejected = {"format": "awf-heavy-validation-result-6", "status": "REJECTED",
+        rejected = {"format": "awf-heavy-validation-result-7", "status": "REJECTED",
                     "all_partitions_terminal": False, "reason": str(error)}
         try:
             receipt = (write_result_log(args.result_log, args.result_receipt, rejected, receipt_key)
