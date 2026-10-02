@@ -6,7 +6,16 @@
     "tree_sha": "0000000000000000000000000000000000000000"
   },
   "engine": "python",
-  "format": "awf-heavy-validation-plan-2",
+  "determinism": {
+    "retry_limit": 0,
+    "seed": 0
+  },
+  "format": "awf-heavy-validation-plan-3",
+  "isolation": {
+    "filesystem": "WORKTREE",
+    "network": "HOST_POLICY",
+    "process_tree": "REQUIRED"
+  },
   "partitions": [
     {
       "accepted_exit_codes": [
@@ -26,7 +35,9 @@
         "path": "/replace/python",
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
       },
+      "framework": "python-unittest",
       "name": "partition-01",
+      "resources": {},
       "timeout_seconds": 900
     }
   ],

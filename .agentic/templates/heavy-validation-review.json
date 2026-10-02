@@ -7,12 +7,12 @@
   },
   "decision": "APPROVE",
   "expires_at": "2030-01-02T00:00:00Z",
-  "format": "awf-heavy-validation-review-2",
+  "format": "awf-heavy-validation-review-3",
   "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "reviewed_at": "2030-01-01T00:00:00Z",
   "reviewer": {
-    "immutable_id": "replace-with-provider-id",
+    "immutable_id": "replace-with-numeric-github-user-id",
     "login": "replace-with-observed-login",
-    "provider": "replace-with-provider"
+    "provider": "github"
   }
 }
