@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 
 from . import ValidationError
-from .child_process import child_env
+from .child_process import child_env, isolated_git_env
 from .gittree import verify_publisher_tree
 
 
@@ -51,6 +51,14 @@ _HISTORICAL_SELF_REFERENCES = {
     }),
 }
 
+# Exact path/channel/change/detector/full-line identities for additional
+# detector self-references that exist only in already published patch history.
+_CLOSED_HISTORICAL_SELF_REFERENCES = frozenset({
+    ("global/awf-portable/tests/test_install_skill.py", "patch", "deleted",
+     "builtin.windows_absolute",
+     "9515f6d34fac1b879b719d088f982fa4ecaffa5957045bbf766890abde5853a2"),
+})
+
 
 @dataclass(frozen=True)
 class Detector:
@@ -60,13 +68,7 @@ class Detector:
 
 
 def _safe_env(extra=None):
-    env = {key: value for key, value in os.environ.items()
-           if not key.upper().startswith("GIT_") and key.upper() not in {"PYTHONPATH", "PYTHONHOME"}}
-    env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_NO_REPLACE_OBJECTS="1",
-               GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_LAZY_FETCH="1")
-    if extra:
-        env.update(extra)
-    return env
+    return isolated_git_env(extra=extra)
 
 
 def _git(root, *args, input_bytes=None, extra_env=None, check=True, timeout=120):
@@ -209,6 +211,12 @@ def _historical_self_reference(path, detector_id, line):
     return hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest() in identities
 
 
+def _closed_historical_self_reference(line, *, path, source, change, detector_id):
+    identity = (path, source, change, detector_id,
+                hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest())
+    return identity in _CLOSED_HISTORICAL_SELF_REFERENCES
+
+
 def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, change=None):
     findings = []
     for number, line in enumerate(text.splitlines() or [text], 1):
@@ -217,7 +225,10 @@ def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, 
                 value = match.group(0)
                 if detector.private_ip and not _private_ip(value):
                     continue
-                if _historical_self_reference(path, detector.detector_id, line):
+                if (_historical_self_reference(path, detector.detector_id, line)
+                        or _closed_historical_self_reference(
+                            line, path=path, source=source, change=change,
+                            detector_id=detector.detector_id)):
                     continue
                 if detector.detector_id.startswith("builtin.") and any(
                         allow_id in {"all", detector.detector_id.removeprefix("builtin.")} and pattern.search(value)

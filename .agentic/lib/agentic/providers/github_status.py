@@ -21,7 +21,7 @@ from ..contracts import Contracts
 from ..installer import CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed, verify_installed
 from .github import (GITHUB_REST_API_VERSION, _gh_get, _gh_get_pr_files, _gh_graphql,
                      branch_name, repository_name)
-from ..release_trust import approved_manifest
+from ..release_trust import establish_release_trust
 from ..safeio import Tree, relative_parts
 
 MAX_BYTES = 1024 * 1024
@@ -118,10 +118,8 @@ class Observation:
         return value
 
     def git(self, *arguments):
-        env = {key: value for key, value in os.environ.items()
-               if not key.upper().startswith('GIT_') and key.upper() not in ('PYTHONPATH', 'PYTHONHOME')}
-        env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1',
-                   GIT_TERMINAL_PROMPT='0', GIT_OPTIONAL_LOCKS='0', GIT_NO_LAZY_FETCH='1')
+        from ..child_process import isolated_git_env
+        env = isolated_git_env()
         command = [self.git_exe, '--no-replace-objects', '-c', 'core.fsmonitor=false',
                    '-c', 'core.hooksPath=' + os.devnull, '-C', str(self.root), *arguments]
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
@@ -551,10 +549,12 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
     if receipt is not None:
         try:
             complete_receipt(receipt)
-            digest, trust_basis = approved_manifest(root, release_source=release_source,
+            release_trust = establish_release_trust(root, release_source=release_source,
                                                     expected_manifest_sha256=expected_manifest_sha256)
-            require(digest == receipt['source_manifest_sha256'], 'Installation differs from the independently approved release')
-            result['release_trust_basis'] = trust_basis
+            require(release_trust['manifest_sha256'] == receipt['source_manifest_sha256'],
+                    'Installation differs from the independently approved release')
+            result['release_trust'] = release_trust
+            result['release_trust_basis'] = release_trust['basis']
             trust_ready = True
             add('RELEASE_TRUST', 'release_trust', 'PASS', 'Independent release manifest matches the installation receipt',
                 'Refresh the trusted host receipt when changing AWF releases')
@@ -718,6 +718,10 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
 
 def render_status(report):
     lines = [report['line']]
+    trust = report.get('release_trust') or {}
+    if trust.get('basis') == 'trusted_host_installed_awf_skill':
+        lines.extend(('Codex home: ' + trust['codex_home'],
+                      'Host skill: ' + trust['host_skill_path']))
     summary = report.get('activation', {})
     blockers = summary.get('blockers', [])
     if blockers:

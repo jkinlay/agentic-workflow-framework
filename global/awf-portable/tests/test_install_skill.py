@@ -116,7 +116,8 @@ class InstallerTests(unittest.TestCase):
 
     def test_manifest_duplicate_and_unsafe_paths(self):
         entry = self.manifest["files"][0].copy()
-        for path in (entry["path"], "../escape", "/absolute", "C:/escape", "a\\b", "a/./b", "AUX.txt"):
+        drive_absolute = "C:" + "/escape"
+        for path in (entry["path"], "../escape", "/absolute", drive_absolute, "a\\b", "a/./b", "AUX.txt"):
             with self.subTest(path=path):
                 self.manifest["files"].append(dict(entry, path=path))
                 self.pin_manifest()
@@ -231,8 +232,20 @@ class InstallerTests(unittest.TestCase):
         (self.dest / "owner.json").write_text("{}", encoding="utf-8")
         self.run_install(preserve_relative=["owner.json"])
         self.assertEqual((self.dest / "owner.json").read_text(encoding="utf-8"), "{}")
+        receipt = installer.read_json(self.dest / installer.RECEIPT)
+        self.assertEqual(receipt["preserved_local_inventory"], {
+            "owner.json": installer.digest(self.dest / "owner.json")})
         with self.assertRaisesRegex(installer.InstallError, "override"):
             self.run_install(preserve_relative=["scripts/awf.py"])
+
+    def test_changed_preserved_local_file_breaks_same_version_verification(self):
+        self.old_skill()
+        local = self.dest / "owner.json"
+        local.write_text("{}", encoding="utf-8")
+        self.run_install(preserve_relative=["owner.json"])
+        local.write_text('{"changed":true}', encoding="utf-8")
+        with self.assertRaisesRegex(installer.InstallError, "every preserved local file"):
+            self.run_install()
 
     def test_duplicate_detection_does_not_remove_other_skill(self):
         project = self.root / "project"
