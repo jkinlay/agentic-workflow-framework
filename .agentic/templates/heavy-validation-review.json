@@ -7,7 +7,7 @@
   },
   "decision": "APPROVE",
   "expires_at": "2030-01-02T00:00:00Z",
-  "format": "awf-heavy-validation-review-4",
+  "format": "awf-heavy-validation-review-5",
   "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "reviewed_at": "2030-01-01T00:00:00Z",
   "reviewer": {
@@ -31,7 +31,17 @@
       "requested_parallelism": 1,
       "required_resources": [],
       "resource_class": "heavy",
-      "working_directory": "/replace/repository"
+      "working_directory": "/replace/repository",
+      "windows_launch_chain": {
+        "interpreter": {
+          "path": "/replace/controller-python",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "launcher": {
+          "repository_relative_path": ".agentic/lib/agentic/heavy_validation_child.py",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
     },
     "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
   }

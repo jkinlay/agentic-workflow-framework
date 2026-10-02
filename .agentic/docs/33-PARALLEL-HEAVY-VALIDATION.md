@@ -1,6 +1,6 @@
 # Bounded parallel heavy validation
 
-AWF 1.9.3 executes partitioned validation only from an exact reviewed candidate. It cannot merge, deploy, install, activate, upgrade, or mutate providers.
+AWF 1.9.3 executes partitioned validation only from an exact reviewed candidate. It cannot mutate providers.
 
 ## Frozen execution identity
 
@@ -12,9 +12,9 @@ A version 3 plan binds:
 - argv, timeouts, accepted exits, engine, framework, resource class, and named-resource quantities;
 - one deterministic seed, bounded retry limit, and required process-tree, host-network-policy, and worktree isolation declarations.
 
-Before launch, a trusted attestor proves the source root clean at the reviewed HEAD/tree. Execution uses a private snapshot from that Git object, so later worktree changes cannot affect dispatched bytes. Each executable is digest-checked under a Windows deny-write/delete handle or copied to a sealed POSIX artifact held through launch. Identity movement fails closed; `shell=False` is mandatory.
+Before launch, a trusted attestor proves the source root clean at the reviewed HEAD/tree. Execution uses a private snapshot from that Git object. On Windows, AWF holds deny-write/delete handles on every tracked snapshot path through execution; hosts without a mandatory mutation guard fail closed. The target executable, controller interpreter, and snapshot copy of `heavy_validation_child.py` are each reviewed, digest-checked, and fenced through launch. Identity movement fails closed; `shell=False` is mandatory.
 
-The version 4 review binds plan digest, cwd, argv, executables, resources, retries, and isolation. These remain claims until a trusted adapter finds that record digest in a formal provider review. Production read-only GitHub observations bind repository, PR tuple, immutable reviewer, APPROVED state, reviewed commit, and `AWF-HEAVY-VALIDATION-AUTHORIZATION-SHA256: <digest>`. Local `APPROVE` never authorizes work.
+The version 5 review binds plan digest, cwd, argv, launch chain, resources, retries, and isolation. A trusted adapter must find that digest in a formal provider review. GitHub observations bind repository, PR tuple, immutable reviewer, APPROVED state, reviewed commit, and `AWF-HEAVY-VALIDATION-AUTHORIZATION-SHA256: <digest>`. Local `APPROVE` never authorizes work.
 
 ## Broker lease and serial fallback
 
@@ -23,12 +23,12 @@ Parallel execution requires all of these:
 1. fresh capacity bound to the plan, config, and candidate tuple;
 2. configured and observed worker, heavy/GPU, engine, and named resource capacity;
 3. an actual broker lease bound to the complete request digest;
-4. a positive fence and expiry covering dispatch attestation, snapshot creation, every partition/retry timeout, startup, two cleanup/exit waits, both reader joins, and terminal-barrier overhead;
+4. a positive fence and duration covering dispatch attestation, snapshot creation, every partition/retry timeout, startup, cleanup/exit waits, both reader joins, and terminal-barrier overhead;
 5. exact lease release after every partition reaches a terminal result.
 
-Zero worker, class, engine, or named-resource capacity starts no child. Broker-enabled work always needs an exact lease, including serial work. A denied, stale, failed, or unavailable parallel acquisition may use serial only after a separate serial request is granted. Every stale acquired fence is released before another request; release failure blocks execution. Failure to release the execution fence keeps the aggregate result at `FAIL`. Capacity observations alone never grant shared resources.
+Zero worker, class, engine, or named-resource capacity starts no child. All broker-enabled work needs an exact lease. Parallel failure may use serial only after a separate grant. Every stale fence is released before another request; release failure blocks execution. Execution-fence release failure keeps the result at `FAIL`. Capacity observations never grant resources.
 
-The broker validates every field, positive quantity, resource, unique monotonic fence, and engine identity/slot before and after mutation. Its OS-locked file and directory are fsynced. Malformed state fails closed. Configured and observed limits govern every lease.
+The broker validates every field, positive quantity, resource, unique monotonic fence, and engine identity/slot before and after mutation. It anchors expiry at actual acquisition and rejects a grant without the full required duration remaining. A live guard terminates work and blocks PASS when authorization expires. Its OS-locked state is fsynced; malformed state fails closed.
 
 ## Process and credential containment
 
@@ -70,4 +70,4 @@ Run the synthetic regression with:
 python -B -m unittest discover -s .agentic/tests -p test_heavy_validation.py -v
 ```
 
-The regression covers authorization, checkout snapshot and executable races, exhausted capacity, serial/fallback leases, release failure, engine fencing, malformed state, worst-case expiry, tamper detection, GitHub authentication, Windows containment, determinism, adapters/resources, cancellation, descendant termination, tuple/cwd movement, credentials, aliases, caps, and bounded output. It uses no proprietary engine, GPU, or license server.
+The regression covers authorization, owner-write and launch-chain races, checkout mutation, delayed acquisition and runtime expiry, exhausted capacity, serial/fallback leases, release failure, engine fencing, malformed state, worst-case duration, tamper detection, GitHub authentication, Windows containment, determinism, adapters/resources, cancellation, descendant termination, tuple/cwd movement, credentials, aliases, caps, and bounded output. It uses no proprietary engine, GPU, or license server.

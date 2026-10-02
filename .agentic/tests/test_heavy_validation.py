@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import io
 import json
@@ -76,7 +76,7 @@ def plan(parts, *, engine="python", resource_class="heavy", resources=None,
 def review(plan_raw, *, decision="APPROVE", candidate=None):
     plan_value = json.loads(plan_raw)
     authorization = workload_authorization(plan_value, sha256(plan_raw))
-    return canonical({"format": "awf-heavy-validation-review-4",
+    return canonical({"format": "awf-heavy-validation-review-5",
         "plan_sha256": sha256(plan_raw), "candidate": candidate or CANDIDATE,
         "decision": decision, "workload_authorization": authorization,
         "reviewer": {"provider": "fixture", "immutable_id": "reviewer-101", "login": "critic"},
@@ -99,11 +99,16 @@ def checkout_attestor(candidate, working_directory):
 def checkout_snapshotter(candidate, working_directory):
     with tempfile.TemporaryDirectory(prefix="awf-heavy-test-snapshot-") as folder:
         snapshot = str(Path(folder).resolve())
+        launcher = Path(snapshot) / ".agentic/lib/agentic/heavy_validation_child.py"
+        launcher.parent.mkdir(parents=True)
+        shutil.copy2(SOURCE_ROOT / ".agentic/lib/agentic/heavy_validation_child.py", launcher)
         record = {"candidate": deepcopy(candidate),
                   "source_working_directory": working_directory,
                   "snapshot_working_directory": snapshot,
                   "tree_sha": candidate["tree_sha"],
-                  "archive_sha256": "f" * 64, "file_count": 0, "read_only": True}
+                  "archive_sha256": "f" * 64, "file_count": 1,
+                  "mutation_guard": "windows-deny-write-delete-handles",
+                  "guarded_paths": 5}
         yield {"status": "IMMUTABLE", **record,
                "evidence_sha256": fingerprint("heavy-validation-checkout-snapshot", record)}
 
@@ -137,7 +142,9 @@ class Broker:
             return {"status": "DENIED", "reason": "capacity raced"}
         if self.mode == "deny_parallel" and request["parallelism"] > 1:
             return {"status": "DENIED", "reason": "parallel capacity raced"}
-        expiry = request["required_until"]
+        expiry = (timestamp(NOW) + timedelta(
+            seconds=request["required_duration_seconds"])).isoformat(
+                timespec="seconds").replace("+00:00", "Z")
         if self.mode in {"stale", "stale_release_fail"}:
             expiry = "2026-10-02T08:59:59Z"
         return {"status": "GRANTED", "lease_id": "lease-1", "fencing_token": 7,
@@ -153,7 +160,7 @@ class Broker:
 
 
 def run(plan_raw, cfg, *, cap=None, broker=None, auth=authenticator,
-        cancel_event=None, candidate=None, cwd=None):
+        cancel_event=None, candidate=None, cwd=None, lease_clock=None):
     cfg_raw = canonical(cfg)
     review_raw = review(plan_raw)
     return run_validation(plan_raw=plan_raw, expected_plan_sha256=sha256(plan_raw),
@@ -164,7 +171,8 @@ def run(plan_raw, cfg, *, cap=None, broker=None, auth=authenticator,
         review_authenticator=auth, checkout_attestor=checkout_attestor,
         checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
         expected_capacity_sha256=sha256(cap) if cap is not None else None,
-        broker_client=broker, now=NOW, cancel_event=cancel_event)
+        broker_client=broker, now=NOW, cancel_event=cancel_event,
+        lease_clock=lease_clock or (lambda: NOW))
 
 
 class HeavyValidationTests(unittest.TestCase):
@@ -355,7 +363,8 @@ class HeavyValidationTests(unittest.TestCase):
                   "stdout_sha256": "0" * 64, "stderr_sha256": "1" * 64}
         with mock.patch.object(heavy, "_execute_attempt", return_value=failed) as execute:
             result = heavy._execute(part, value, executable, SOURCE_ROOT,
-                                    config(enabled=False), threading.Event())
+                                    config(enabled=False), threading.Event(),
+                                    heavy._windows_launch_chain(), lambda: None)
         self.assertEqual(1, execute.call_count)
         self.assertEqual(0, result["retry_count"])
 
@@ -459,7 +468,8 @@ class HeavyValidationTests(unittest.TestCase):
                                side_effect=ValidationError("containment unavailable")), \
              mock.patch.object(heavy, "_release_windows_launcher") as release:
             result = heavy._execute_attempt(part, value, executable, SOURCE_ROOT,
-                                            config(enabled=False), threading.Event(), 1)
+                                            config(enabled=False), threading.Event(), 1,
+                                            heavy._windows_launch_chain(), lambda: None)
         self.assertTrue(fake.killed)
         release.assert_not_called()
         self.assertEqual("FAILED", result["state"])
@@ -506,7 +516,7 @@ class HeavyValidationTests(unittest.TestCase):
         cfg_raw = canonical(config())
         cap = capacity(raw, cfg_raw, workers=2, heavy=2)
         authorization = workload_authorization(json.loads(raw), sha256(raw))
-        review_raw = canonical({"format": "awf-heavy-validation-review-4",
+        review_raw = canonical({"format": "awf-heavy-validation-review-5",
             "plan_sha256": sha256(raw), "candidate": CANDIDATE, "decision": "APPROVE",
             "workload_authorization": authorization,
             "reviewer": {"provider": "github", "immutable_id": "42", "login": "reviewer"},
@@ -537,7 +547,8 @@ class HeavyValidationTests(unittest.TestCase):
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
                 review_authenticator=auth, checkout_attestor=checkout_attestor,
                 checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
-                expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW)
+                expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                lease_clock=lambda: NOW)
         self.assertEqual("PASS", result["status"])
         self.assertEqual("PARALLEL", result["execution"]["mode"])
         self.assertTrue(result["admission"]["release_complete"])
@@ -549,7 +560,7 @@ class HeavyValidationTests(unittest.TestCase):
                 {"max_workers": 1, "max_heavy_jobs": 1, "max_gpu_jobs": 0,
                  "resources": {}, "engines": {"python": {
                      "identity_sha256": "d" * 64, "slots": 1}}}, clock=clock)
-            request = {"format": "awf-heavy-validation-lease-request-1",
+            request = {"format": "awf-heavy-validation-lease-request-2",
                        "candidate": CANDIDATE, "plan_sha256": "a" * 64,
                        "config_sha256": "b" * 64, "capacity_sha256": "c" * 64,
                        "parallelism": 1, "resource_class": "heavy", "engine": "python",
@@ -558,7 +569,7 @@ class HeavyValidationTests(unittest.TestCase):
                        "determinism": {"seed": 1, "retry_limit": 0},
                        "isolation": {"process_tree": "REQUIRED", "network": "HOST_POLICY",
                                      "filesystem": "WORKTREE"},
-                       "required_until": "2026-10-02T10:00:00Z"}
+                       "required_duration_seconds": 3600}
             first = broker.acquire(request)
             self.assertEqual("GRANTED", first["status"])
             self.assertEqual("DENIED", broker.acquire(request)["status"])
@@ -582,6 +593,17 @@ class HeavyValidationTests(unittest.TestCase):
         reviewed["workload_authorization"]["record"]["partitions"][0]["argv"].append("moved")
         changed = canonical(reviewed)
         cfg = canonical(config(enabled=False))
+        with self.assertRaisesRegex(ValidationError, "exact workload"):
+            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=changed, expected_review_sha256=sha256(changed),
+                config_raw=cfg, expected_config_sha256=sha256(cfg),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticator, checkout_attestor=checkout_attestor,
+                now=NOW)
+        reviewed = json.loads(review(raw))
+        reviewed["workload_authorization"]["record"]["windows_launch_chain"][
+            "launcher"]["sha256"] = "0" * 64
+        changed = canonical(reviewed)
         with self.assertRaisesRegex(ValidationError, "exact workload"):
             run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
                 review_raw=changed, expected_review_sha256=sha256(changed),
@@ -645,7 +667,7 @@ class HeavyValidationTests(unittest.TestCase):
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
                 review_authenticator=authenticator, checkout_attestor=moves,
                 capacity_raw=cap, expected_capacity_sha256=sha256(cap),
-                broker_client=broker, now=NOW)
+                broker_client=broker, now=NOW, lease_clock=lambda: NOW)
         self.assertEqual(2, len(calls))
         self.assertEqual([("lease-1", 7)], broker.released)
 
@@ -694,8 +716,13 @@ class HeavyValidationTests(unittest.TestCase):
                 self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
                 tracked.write_text("raced\n", encoding="utf-8", newline="\n")
                 self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
+                try:
+                    snapshot_file.chmod(0o600)
+                except OSError:
+                    pass
                 with self.assertRaises(OSError):
                     snapshot_file.write_text("bad\n", encoding="utf-8", newline="\n")
+                self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
                 self.assertEqual(tree, evidence["tree_sha"])
                 self.assertEqual("IMMUTABLE", evidence["status"])
 
@@ -716,6 +743,28 @@ class HeavyValidationTests(unittest.TestCase):
                     self.assertEqual(expected, file_digest(artifact["launch_path"]))
                     self.assertNotEqual(str(target), artifact["launch_path"])
 
+    def test_windows_launcher_bytes_are_reviewed_and_mutation_fenced(self):
+        chain = heavy._windows_launch_chain()
+        launcher = chain["launcher"]
+        self.assertEqual(file_digest(SOURCE_ROOT / launcher["repository_relative_path"]),
+                         launcher["sha256"])
+        with tempfile.TemporaryDirectory() as folder:
+            copied = Path(folder) / "heavy_validation_child.py"
+            shutil.copy2(SOURCE_ROOT / launcher["repository_relative_path"], copied)
+            expected = file_digest(copied)
+            with heavy._immutable_executable({"resolved_path": str(copied),
+                                              "sha256": expected}) as artifact:
+                if os.name == "nt":
+                    try:
+                        copied.chmod(0o600)
+                    except OSError:
+                        pass
+                    with self.assertRaises(OSError):
+                        copied.write_text("mutated", encoding="utf-8")
+                else:
+                    copied.write_text("mutated", encoding="utf-8")
+                    self.assertEqual(expected, file_digest(artifact["launch_path"]))
+
     def test_engine_identity_and_slots_are_fenced(self):
         raw = plan([partition("a"), partition("b")], parallelism=2)
         cfg, cfg_raw = config(), canonical(config())
@@ -729,7 +778,7 @@ class HeavyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             broker = FileLeaseBroker(Path(folder) / "broker.json", broker_id, limits, clock=clock)
             request = heavy._lease_request(json.loads(raw), sha256(raw), sha256(cfg_raw),
-                                           sha256(cap), 2, NOW)
+                                           sha256(cap), 2)
             first = broker.acquire(request)
             self.assertEqual("GRANTED", first["status"])
             self.assertEqual("DENIED", broker.acquire(request)["status"])
@@ -741,8 +790,8 @@ class HeavyValidationTests(unittest.TestCase):
         raw = plan([partition("a", timeout=5), partition("b", timeout=5)],
                    parallelism=2, retries=2)
         request = heavy._lease_request(json.loads(raw), sha256(raw), "a" * 64,
-                                       "b" * 64, 2, NOW)
-        duration = timestamp(request["required_until"]) - timestamp(NOW)
+                                       "b" * 64, 2)
+        duration = request["required_duration_seconds"]
         per_attempt = (heavy.PROCESS_STARTUP_BUDGET_SECONDS
                        + (2 * heavy.PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS)
                        + (2 * heavy.PROCESS_EXIT_WAIT_SECONDS)
@@ -753,7 +802,43 @@ class HeavyValidationTests(unittest.TestCase):
                     + 2 * 3 * (5 + per_attempt)
                     + heavy.TERMINAL_BARRIER_OVERHEAD_SECONDS)
         self.assertEqual(750, expected)
-        self.assertEqual(expected, duration.total_seconds())
+        self.assertEqual(expected, duration)
+
+    def test_broker_anchors_full_duration_at_delayed_acquisition(self):
+        acquired = timestamp(NOW) + timedelta(minutes=11)
+        clock = lambda: acquired
+        limits = {"max_workers": 1, "max_heavy_jobs": 1, "max_gpu_jobs": 0,
+                  "resources": {}, "engines": {"python": {
+                      "identity_sha256": "d" * 64, "slots": 1}}}
+        with tempfile.TemporaryDirectory() as folder:
+            broker = FileLeaseBroker(Path(folder) / "broker.json", "fixture", limits,
+                                     clock=clock)
+            request = {"format": "awf-heavy-validation-lease-request-2",
+                       "candidate": CANDIDATE, "plan_sha256": "a" * 64,
+                       "config_sha256": "b" * 64, "capacity_sha256": "c" * 64,
+                       "parallelism": 1, "resource_class": "heavy", "engine": "python",
+                       "engine_identity_sha256": "d" * 64, "engine_slots": 1,
+                       "required_resources": [], "resource_claims": {},
+                       "determinism": {"seed": 1, "retry_limit": 0},
+                       "isolation": {"process_tree": "REQUIRED", "network": "HOST_POLICY",
+                                     "filesystem": "WORKTREE"},
+                       "required_duration_seconds": 750}
+            lease = broker.acquire(request)
+        self.assertEqual(750, (timestamp(lease["expires_at"])
+                              - timestamp(lease["acquired_at"])).total_seconds())
+
+    def test_runtime_lease_expiry_terminates_and_blocks_pass(self):
+        calls = {"count": 0}
+        def clock():
+            calls["count"] += 1
+            return NOW if calls["count"] < 4 else "2026-10-03T09:00:00Z"
+        raw = plan([partition("expires", "import time; time.sleep(1)")], parallelism=1)
+        cfg, broker = config(), Broker()
+        result = run(raw, cfg, cap=capacity(raw, canonical(cfg), workers=1, heavy=1),
+                     broker=broker, lease_clock=clock)
+        self.assertEqual("FAIL", result["status"])
+        self.assertFalse(result["admission"]["runtime_lease_valid"])
+        self.assertEqual("ValidationError", result["partitions"][0]["error_type"])
 
     def test_malformed_durable_broker_state_fails_closed(self):
         limits = {"max_workers": 2, "max_heavy_jobs": 2, "max_gpu_jobs": 0,
