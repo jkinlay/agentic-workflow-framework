@@ -36,9 +36,10 @@ MAX_AGE_SECONDS = 900
 METADATA_DISCOVERY_SECONDS = 15
 FIELDS = {"format", "source", "host", "observed_at", "repository", "default_branch",
           "repository_response", "branch_pages", "rulesets", "complete"}
+MERGE_METHODS = ("merge", "squash", "rebase")
 PR_DEFAULT = {"required_approving_review_count": 0, "dismiss_stale_reviews_on_push": True,
               "require_code_owner_review": False, "require_last_push_approval": False,
-              "required_review_thread_resolution": True, "allowed_merge_methods": ["squash", "rebase"]}
+              "required_review_thread_resolution": True, "allowed_merge_methods": list(MERGE_METHODS)}
 CHECK_DEFAULT = {"strict_required_status_checks_policy": True, "do_not_enforce_on_create": False,
                  "required_status_checks": []}
 TEMPLATE = {"name": "AWF main", "target": "branch", "enforcement": "active",
@@ -57,6 +58,54 @@ def validate_ruleset_template(value):
     validate_value(value)
     require(canonical(value) == canonical(TEMPLATE), "Ruleset template must match the shipped default-branch baseline")
     return value
+
+
+def merge_method_name(value):
+    require(isinstance(value, str) and value in MERGE_METHODS,
+            "$.github.merge_method must be one of merge, squash, or rebase")
+    return value
+
+
+def _allowed_merge_methods(value):
+    require(isinstance(value, dict) and isinstance(value.get("rules"), list),
+            "Ruleset must contain a rule inventory")
+    pull_requests = [rule for rule in value["rules"]
+                     if isinstance(rule, dict) and rule.get("type") == "pull_request"]
+    require(len(pull_requests) == 1 and isinstance(pull_requests[0].get("parameters"), dict),
+            "Ruleset needs exactly one pull_request rule with parameters")
+    methods = pull_requests[0]["parameters"].get("allowed_merge_methods")
+    require(isinstance(methods, list) and methods and len(methods) == len(set(methods))
+            and all(isinstance(method, str) and method in MERGE_METHODS for method in methods),
+            "Ruleset allowed_merge_methods must be unique supported values")
+    return methods
+
+
+def validate_ruleset_for_merge_method(value, merge_method):
+    """Reject a provider proposal that disables the accepted configured method."""
+    validate_value(value)
+    method = merge_method_name(merge_method)
+    require(value.get("target") == "branch" and value.get("enforcement") == "active"
+            and value.get("conditions") == TEMPLATE["conditions"]
+            and value.get("bypass_actors") == [],
+            "Ruleset is not the active no-bypass default-branch baseline")
+    adequate, _, _ = _baseline(value.get("rules"))
+    require(adequate, "Ruleset does not satisfy the AWF default-branch baseline")
+    require(method in _allowed_merge_methods(value),
+            f"Ruleset disables configured merge method {method}")
+    return value
+
+
+def ruleset_for_config(config, *, configuration_status):
+    """Generate a deterministic provider request from an accepted configuration."""
+    require(configuration_status == "ACCEPTED",
+            "Ruleset generation requires an accepted PROJECT_CONFIG")
+    require(isinstance(config, dict) and isinstance(config.get("github"), dict)
+            and "merge_method" in config["github"],
+            "$.github.merge_method is missing from accepted PROJECT_CONFIG")
+    method = merge_method_name(config["github"]["merge_method"])
+    value = copy.deepcopy(TEMPLATE)
+    value["rules"][2]["parameters"]["allowed_merge_methods"] = [method]
+    return validate_ruleset_for_merge_method(value, method)
 
 
 def validate_codeowner(value):
@@ -208,7 +257,7 @@ def _baseline(rules):
         require(rule["type"] not in by_type, "Duplicate rule type in one ruleset")
         by_type[rule["type"]] = rule
     if not {"deletion", "non_fast_forward", "pull_request", "required_status_checks"} <= set(by_type):
-        return False, []
+        return False, [], []
     pr = by_type["pull_request"].get("parameters")
     checks = by_type["required_status_checks"].get("parameters")
     require(isinstance(pr, dict) and isinstance(checks, dict), "Missing rule parameters")
@@ -227,9 +276,9 @@ def _baseline(rules):
         require(isinstance(check, dict) and isinstance(check.get("context"), str) and 0 < len(check["context"]) <= 255
                 and (check.get("integration_id") is None or type(check["integration_id"]) is int and check["integration_id"] > 0), "Invalid check/App binding")
     adequate = (pr["dismiss_stale_reviews_on_push"] and pr["required_review_thread_resolution"]
-                and set(methods) <= {"squash", "rebase"} and checks["strict_required_status_checks_policy"]
+                and set(methods) <= set(MERGE_METHODS) and checks["strict_required_status_checks_policy"]
                 and not checks["do_not_enforce_on_create"])
-    return adequate, required_checks
+    return adequate, required_checks, methods
 
 
 def _validate_observation(value, repository, default_branch, now):
@@ -272,12 +321,15 @@ def _validate_observation(value, repository, default_branch, now):
     return groups, mapping
 
 
-def assess_repository_rules(observation=None, *, repository=None, default_branch=None, review_app_id=None, now=None):
+def assess_repository_rules(observation=None, *, repository=None, default_branch=None, review_app_id=None,
+                            merge_method=None, now=None):
     report = {"repository_rules": "UNOBSERVED", "repository": repository, "default_branch": default_branch,
               "expected_review_app_id": review_app_id,
               "adoption_allowed": True, "rules_enablement_ready": False, "execution_authority": False,
               "additional_live_qualification_required": True, "enablement_preflight": "BLOCKED",
               "observation_source": None, "observation_sha256": None, "baseline_ruleset_ids": [],
+              "configured_merge_method": merge_method, "configuration_compatible": None,
+              "incompatibility": None,
               "decision_codes": ["prepare_adoption_pr", "report_unobserved_ruleset"], "warnings": [],
               "ruleset_template": ".agentic/templates/awf-main-ruleset.json",
               "next_step": "Proceed with the adoption PR; report unobserved rules and offer the default-branch template. Observe rules before live enablement."}
@@ -303,8 +355,13 @@ def assess_repository_rules(observation=None, *, repository=None, default_branch
             effective_rules = [{key: value for key, value in rule.items() if key in ("type", "parameters")} for rule in rules]
             detail_rules = _rules(detail.get("rules"))
             require(sorted(map(canonical, effective_rules)) == sorted(map(canonical, detail_rules)), "Effective branch rules and ruleset details disagree")
-            adequate, checks = _baseline(effective_rules)
+            adequate, checks, methods = _baseline(effective_rules)
             if not adequate:
+                continue
+            if merge_method is not None and merge_method_name(merge_method) not in methods:
+                report["configuration_compatible"] = False
+                report["incompatibility"] = (
+                    f"Observed ruleset {identity} disables configured merge method {merge_method}")
                 continue
             if "bypass_actors" not in detail:
                 incomplete = True
@@ -317,7 +374,13 @@ def assess_repository_rules(observation=None, *, repository=None, default_branch
         if not report["baseline_ruleset_ids"] and incomplete:
             report["warnings"].append("Applicable baseline bypass actors were not visible; empty bypass cannot be assumed")
             return report
+        # Applicable rules combine. One incompatible baseline can disable the
+        # configured method even when another baseline permits it.
+        if report["incompatibility"] is not None:
+            report["baseline_ruleset_ids"] = []
         applied = bool(report["baseline_ruleset_ids"])
+        if merge_method is not None and report["configuration_compatible"] is None:
+            report["configuration_compatible"] = applied
         report["repository_rules"] = "APPLIED" if applied else "MISSING"
         report["decision_codes"] = ["prepare_adoption_pr"] + ([] if applied else ["report_missing_ruleset"])
         report["rules_enablement_ready"] = applied and app_bound and observation["source"] == "github_api"
@@ -325,6 +388,8 @@ def assess_repository_rules(observation=None, *, repository=None, default_branch
             report["enablement_preflight"] = "RULES_READY_QUALIFICATION_STILL_REQUIRED"
             report["next_step"] = "Proceed with adoption; rules prerequisite observed. Existing adapter/loop/secrets qualification and authorization still apply before any enablement."
         else:
+            if report["incompatibility"]:
+                report["warnings"].append(report["incompatibility"])
             report["warnings"].append("Live rules readiness needs a fresh API observation of the baseline plus awf/review bound to the expected GitHub App; an empty check list has no effective up-to-date check")
             report["next_step"] = "Proceed with the adoption PR and report rule gaps. Apply/configure the offered ruleset separately, then observe it before live enablement."
         report["limitations"] = ["The record and its source/time are trusted-host assertions, not authenticated by this helper.",
