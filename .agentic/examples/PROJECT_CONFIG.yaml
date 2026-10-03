@@ -10,8 +10,11 @@
   },
   "jira": {
     "enabled": true,
+    "cloud_id": "fixture-cloud",
     "site": "https://jira.example.invalid",
+    "provider_project_id": "fixture-project",
     "project_key": "EX",
+    "controller_actor_id": "fixture-controller",
     "scope": {
       "allow_entire_project": false,
       "selector_mode": "all",

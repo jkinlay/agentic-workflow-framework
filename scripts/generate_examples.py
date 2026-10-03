@@ -42,7 +42,11 @@ def config(example=True):
     }
     result = {"version": 3, "template": {"expected_workflow_version": VERSION},
         "project": {"id": uid("project") if example else str(uuid.UUID(int=0)), "name": "Offline Fixture" if example else "CHANGE_ME_PROJECT", "short_name": "EX" if example else "CHANGE_ME"},
-        "jira": {"enabled": example, "site": "https://jira.example.invalid" if example else None, "project_key": "EX" if example else None,
+        "jira": {"enabled": example, "cloud_id": "fixture-cloud" if example else None,
+            "site": "https://jira.example.invalid" if example else None,
+            "provider_project_id": "fixture-project" if example else None,
+            "project_key": "EX" if example else None,
+            "controller_actor_id": "fixture-controller" if example else None,
             "scope": {"allow_entire_project": False, "selector_mode": "all", "included_epics": [], "labels_any": ["awf-fixture"] if example else [], "components_any": [], "additional_jql": "", "ownership_required": True},
             "status_map": {"backlog": "Backlog", "ready": "Ready", "in_progress": "In Progress", "in_review": "In Review", "done": "Done"},
             "lifecycle_writes": {"in_progress": True, "in_review": True, "done": True},

@@ -13,6 +13,7 @@ import re
 import sqlite3
 import stat
 import subprocess
+import uuid
 
 from . import ValidationError
 from .canonical import canonical, loads, now_text, timestamp
@@ -557,14 +558,21 @@ class ContinuousControllerStore:
             return loads(row["payload_json"])
 
     def prepare_dispatches(self, now):
-        """Persist deterministic dispatch intents for newly scheduled work."""
+        """Persist one nonce-bound dispatch intent for newly scheduled work."""
         timestamp(now)
         from .canonical import fingerprint
         with self.transaction() as db:
             for row in db.execute("SELECT * FROM stream_status WHERE state='WORKING' ORDER BY stream_id"):
+                prior = db.execute(
+                    "SELECT * FROM controller_dispatch WHERE stream_id=? AND ticket=? AND exact_tuple=? "
+                    "ORDER BY rowid DESC LIMIT 1",
+                    (row["stream_id"], row["ticket"], row["exact_tuple"])).fetchone()
+                if prior is not None:
+                    continue
                 payload = {"stream": row["stream_id"], "ticket": row["ticket"],
                            "exact_tuple": row["exact_tuple"], "paths": loads(row["paths"]),
-                           "actor": row["actor"], "next_action": row["next_action"]}
+                           "actor": row["actor"], "next_action": row["next_action"],
+                           "dispatch_nonce": str(uuid.uuid4()), "prepared_at": now}
                 dispatch_id = fingerprint("controller-dispatch", payload)
                 payload["dispatch_id"] = dispatch_id
                 db.execute("INSERT OR IGNORE INTO controller_dispatch VALUES(?,?,?,?,? ,?,NULL,?)",
@@ -579,26 +587,35 @@ class ContinuousControllerStore:
         with self.transaction() as db:
             row = db.execute("SELECT * FROM controller_dispatch WHERE dispatch_id=?", (dispatch_id,)).fetchone()
             _require(row is not None and row["status"] == "PENDING", "Dispatch is not pending")
-            db.execute("UPDATE controller_dispatch SET status='IN_FLIGHT',updated_at=? WHERE dispatch_id=?",
-                       (now, dispatch_id))
-            return loads(row["payload_json"])
+            payload = loads(row["payload_json"])
+            _require("begun_at" not in payload, "Pending dispatch already has a begin time")
+            payload["begun_at"] = now
+            db.execute("UPDATE controller_dispatch SET status='IN_FLIGHT',payload_json=?,updated_at=? WHERE dispatch_id=?",
+                       (canonical(payload).decode(), now, dispatch_id))
+            return payload
 
     def finish_dispatch(self, dispatch_id, receipt, now, *, reconcile=False):
         """Accept only exact host readback; uncertain calls are never reissued."""
         timestamp(now)
-        required = {"dispatch_id", "stream", "ticket", "exact_tuple", "status", "observed_at"}
+        bound = {"dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce",
+                 "prepared_at", "begun_at"}
+        if reconcile:
+            bound |= {"reconcile_nonce", "reconcile_at"}
+        required = bound | {"status", "observed_at"}
         _require(isinstance(receipt, dict) and set(receipt) == required and
                  receipt["status"] == "ACCEPTED", "Dispatch receipt is not an exact accepted readback")
-        timestamp(receipt["observed_at"])
+        observed_at = timestamp(receipt["observed_at"])
         with self.transaction() as db:
             row = db.execute("SELECT * FROM controller_dispatch WHERE dispatch_id=?", (dispatch_id,)).fetchone()
             expected = "UNKNOWN" if reconcile else "IN_FLIGHT"
             _require(row is not None and row["status"] == expected,
                      "Dispatch receipt does not match the durable operation state")
             payload = loads(row["payload_json"])
-            _require(all(receipt[key] == payload[key] for key in
-                         ("dispatch_id", "stream", "ticket", "exact_tuple")),
+            _require(all(receipt[key] == payload[key] for key in bound),
                      "Dispatch receipt differs from the durable intent")
+            boundary = timestamp(payload["reconcile_at"] if reconcile else payload["begun_at"])
+            _require(observed_at >= boundary,
+                     "Dispatch receipt is stale relative to the durable intent or reconciliation")
             db.execute("UPDATE controller_dispatch SET status='ACCEPTED',receipt_json=?,updated_at=? WHERE dispatch_id=?",
                        (canonical(receipt).decode(), now, dispatch_id))
             return receipt
@@ -610,6 +627,20 @@ class ContinuousControllerStore:
             _require(row is not None and row["status"] == "IN_FLIGHT", "Only an in-flight dispatch can become unknown")
             db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?",
                        (now, dispatch_id))
+
+    def begin_dispatch_reconciliation(self, dispatch_id, now):
+        """Persist a fresh challenge before observing an UNKNOWN dispatch."""
+        timestamp(now)
+        with self.transaction() as db:
+            row = db.execute("SELECT * FROM controller_dispatch WHERE dispatch_id=?", (dispatch_id,)).fetchone()
+            _require(row is not None and row["status"] == "UNKNOWN",
+                     "Only an unknown dispatch can be reconciled")
+            payload = loads(row["payload_json"])
+            payload["reconcile_nonce"] = str(uuid.uuid4())
+            payload["reconcile_at"] = now
+            db.execute("UPDATE controller_dispatch SET payload_json=?,updated_at=? WHERE dispatch_id=?",
+                       (canonical(payload).decode(), now, dispatch_id))
+            return payload
 
     def recover_dispatches(self, now):
         """A crash while calling the host becomes UNKNOWN, never PENDING."""
@@ -856,6 +887,7 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                 receipt = dispatch_ticket(payload)
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now))
             else:
+                payload = store.begin_dispatch_reconciliation(dispatch_id, now)
                 receipt = observe_dispatch(payload)
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now, reconcile=True))
         except Exception as exc:
@@ -886,6 +918,22 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
             "errors": errors, "execution_authority": False}
 
 
+def _jira_provider_identity(config, binding, producer_id):
+    """Derive the immutable connector identity from accepted project policy."""
+    jira = config.get("jira", {})
+    keys = ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id")
+    _require(all(isinstance(jira.get(key), str) and jira[key] for key in keys),
+             "Enabled Jira lifecycle needs configured cloud, site, project, and controller actor identity")
+    expected = {"cloud_id": jira["cloud_id"], "site": jira["site"],
+                "project_id": jira["provider_project_id"], "project_key": jira["project_key"],
+                "controller_actor_id": jira["controller_actor_id"]}
+    _require(isinstance(binding, dict) and isinstance(binding.get("issue_id"), str) and binding["issue_id"],
+             "Jira lifecycle needs an immutable issue binding")
+    _require(producer_id == expected["controller_actor_id"],
+             "Jira lifecycle producer differs from the configured controller actor")
+    return expected
+
+
 def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
                               issue_type, state, producer_id, run_id, now, evidence, transition_id,
                               read_current_status, write_transition, read_transition,
@@ -899,15 +947,16 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
     if config.get("jira", {}).get("enabled", True) is False:
         return {"planned": False, "reason": "Jira is disabled; no reads or writes",
                 "execution_authority": False}
-    _require(isinstance(binding, dict) and isinstance(binding.get("issue_id"), str) and
-             binding["issue_id"], "Jira lifecycle needs an immutable issue binding")
+    provider = _jira_provider_identity(config, binding, producer_id)
+    adapter_binding = {"issue_id": binding["issue_id"], "jira_provider": provider}
     store.recover_jira_operations(now)
     start_time = timestamp(now)
     try:
-        current = read_current_status(binding)
+        current = read_current_status(adapter_binding)
         _require(isinstance(current, dict) and set(current) == {
-            "issue_id", "status_id", "observed_at"} and
+            "issue_id", "status_id", "observed_at", "jira_provider"} and
             current["issue_id"] == binding["issue_id"] and
+            current["jira_provider"] == provider and
             isinstance(current["status_id"], str) and current["status_id"],
             "Jira pre-write observation is missing or mismatched")
         current_time = timestamp(current["observed_at"])
@@ -919,6 +968,9 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
     from .jira_lifecycle import planned_write, transition_record, apply_read_back
     durable = store.jira_operations(binding["issue_id"])
     for operation_row in durable:
+        _require(operation_row["record"].get("binding") == binding and
+                 operation_row["record"].get("jira_provider") == provider,
+                 "Durable Jira intent belongs to a different connector/site/project/actor")
         if operation_row["status"] == "FAILED":
             return {"planned": False, "reason": "A durable Jira operation failed; writes remain stopped",
                     "writes_stopped": True, "operation_id": operation_row["operation_id"],
@@ -954,6 +1006,7 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
         return {"planned": False, "reason": target, "current_observation": current,
                 "execution_authority": False}
     record = transition_record(binding, event, current["status_id"], target, transition_id,
+                               jira_provider=provider,
                                merge_result_id=merge_result_id, producer_id=producer_id,
                                run_id=run_id, now=now, evidence=evidence)
     intent = store.prepare_jira_operation(record, now)
@@ -967,17 +1020,20 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
     try:
         operation = write_transition(record)
         _require(isinstance(operation, dict) and set(operation) == {
-            "operation_id", "issue_id", "status", "observed_at"} and
+            "operation_id", "issue_id", "status", "observed_at", "jira_provider"} and
             operation["operation_id"] == record["operation_id"] and
             operation["issue_id"] == binding["issue_id"] and
+            operation["jira_provider"] == provider and
             operation["status"] == "ATTEMPTED", "Jira write receipt is missing or mismatched")
         operation_time = timestamp(operation["observed_at"])
         _require(operation_time >= current_time,
                  "Jira write receipt predates the pre-write observation")
         observation = read_transition(record, operation)
         _require(isinstance(observation, dict) and set(observation) == {
-            "issue_id", "status", "actor", "observed_at"} and
-            observation["issue_id"] == binding["issue_id"],
+            "issue_id", "status", "actor", "observed_at", "jira_provider"} and
+            observation["issue_id"] == binding["issue_id"] and
+            observation["jira_provider"] == provider and
+            observation["actor"] == provider["controller_actor_id"],
             "Jira readback has an invalid or mismatched shape")
         readback_time = timestamp(observation["observed_at"])
         _require(readback_time >= operation_time,

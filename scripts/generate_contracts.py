@@ -76,6 +76,9 @@ EVIDENCE = arr(text(format="uri"), 1, uniqueItems=True)
 BINDING = obj({"project_id": UUID, "repository_id": integer(1), "issue_id": text(),
                "requirements_hash": DIGEST, "contract_hash": DIGEST, "policy_hash": DIGEST,
                "candidate_id": DIGEST})
+JIRA_PROVIDER = obj({"cloud_id": text(), "site": text(format="uri"), "project_id": text(),
+                     "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
+                     "controller_actor_id": text()})
 
 
 def bound(properties, **extra):
@@ -292,6 +295,7 @@ def catalog():
         "result_commit_sha": nullable(SHA), "result_tree_sha": nullable(SHA), "observed_base_before": nullable(SHA),
         "authorized_candidate_matched": BOOL, "evidence": EVIDENCE}, allOf=[when("merged", True, {"properties": {"result_commit_sha": SHA, "result_tree_sha": SHA}})])
     schemas["jira-transition"] = bound({"operation_id": UUID, "merge_result_id": nullable(UUID),
+        "jira_provider": JIRA_PROVIDER,
         "lifecycle_event": enum(*LIFECYCLE_EVENTS),
         "from_status_id": text(), "to_status_id": text(), "transition_id": text(),
         "status": enum("PROPOSED", "UNKNOWN", "SUCCEEDED", "FAILED"), "evidence": EVIDENCE,
@@ -372,7 +376,8 @@ def catalog():
         "permission_profile": text(), "network_allowlist": STRINGS})
     schemas["project-config"] = obj({"version": const(3), "template": obj({"expected_workflow_version": const(VERSION)}),
         "project": obj({"id": UUID, "name": text(), "short_name": text()}),
-        "jira": obj({"site": text(format="uri"), "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
+        "jira": obj({"cloud_id": text(), "site": text(format="uri"), "provider_project_id": text(),
+          "project_key": text(pattern="^[A-Z][A-Z0-9]*$"), "controller_actor_id": text(),
           "scope": obj({"allow_entire_project": BOOL, "selector_mode": enum("all", "any"),
               "included_epics": STRINGS, "labels_any": STRINGS, "components_any": STRINGS,
               "additional_jql": const(""), "ownership_required": TRUE}),
@@ -435,11 +440,17 @@ def catalog():
     # Null is an explicit installation residue, rejected by semantic acceptance.
     schemas["project-config"]["properties"]["github"]["properties"]["repository_id"] = {"anyOf": [integer(1), {"type": "null"}]}
     jira["properties"]["enabled"] = BOOL
+    for key in ("cloud_id", "provider_project_id", "controller_actor_id"):
+        jira["properties"][key] = {"anyOf": [text(), {"type": "null"}]}
     jira["properties"]["site"] = {"anyOf": [text(format="uri"), {"type": "null"}]}
     jira["properties"]["project_key"] = {"anyOf": [text(pattern="^[A-Z][A-Z0-9]*$"), {"type": "null"}]}
     jira["allOf"] = [{"if": {"properties": {"enabled": {"const": False}}, "required": ["enabled"]},
-        "then": {"properties": {"site": {"type": "null"}, "project_key": {"type": "null"}}},
-        "else": {"properties": {"site": text(format="uri"), "project_key": text(pattern="^[A-Z][A-Z0-9]*$")}}}]
+        "then": {"properties": {key: {"type": "null"} for key in
+                                  ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id")}},
+        "else": {"properties": {"cloud_id": text(), "site": text(format="uri"),
+                                  "provider_project_id": text(),
+                                  "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
+                                  "controller_actor_id": text()}}}]
     # Optional for migrated static configurations. Routing has a strict semantic
     # validator in model_routing.py, shared by configuration validation and CLI.
     schemas["project-config"]["properties"]["execution"]["properties"]["model_routing"] = {"type": "object"}

@@ -19,6 +19,13 @@
     },
     "operation_id": "00000000-0000-0000-0000-000000000000",
     "merge_result_id": null,
+    "jira_provider": {
+      "cloud_id": "UNFILLED",
+      "site": "urn:awf:UNFILLED",
+      "project_id": "UNFILLED",
+      "project_key": "UNFILLED",
+      "controller_actor_id": "UNFILLED"
+    },
     "lifecycle_event": "WORKER_STARTED",
     "from_status_id": "UNFILLED",
     "to_status_id": "UNFILLED",

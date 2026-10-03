@@ -54,12 +54,16 @@ def planned_write(config, contract, event, facts, *, issue_type="LEAF", current_
     return key, target
 
 
-def transition_record(binding, event, from_status, to_status, transition_id, *, merge_result_id=None, producer_id, run_id, now, evidence):
+def transition_record(binding, event, from_status, to_status, transition_id, *, jira_provider,
+                      merge_result_id=None, producer_id, run_id, now, evidence):
     if event == "JIRA_RECONCILED" and not merge_result_id:
         raise ValidationError("The Done write must reference the observed merge result")
     from .canonical import canonical
+    if not isinstance(jira_provider, dict):
+        raise ValidationError("Jira transition needs an immutable provider binding")
     intent = {"schema_version": 3, "producer_id": producer_id, "run_id": run_id,
-              "binding": binding, "merge_result_id": merge_result_id, "lifecycle_event": event,
+              "binding": binding, "jira_provider": jira_provider,
+              "merge_result_id": merge_result_id, "lifecycle_event": event,
               "from_status_id": from_status, "to_status_id": to_status,
               "transition_id": transition_id, "evidence": list(evidence)}
     seed = canonical(intent).decode("utf-8")
@@ -67,6 +71,7 @@ def transition_record(binding, event, from_status, to_status, transition_id, *, 
     record_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "awf-jira-record:" + seed))
     return {"schema_version": 3, "record_id": record_id, "created_at": now, "producer_id": producer_id,
             "run_id": run_id, "binding": binding, "operation_id": operation_id, "merge_result_id": merge_result_id,
+            "jira_provider": jira_provider,
             "lifecycle_event": event, "from_status_id": from_status, "to_status_id": to_status, "transition_id": transition_id,
             "status": "PROPOSED", "evidence": list(evidence),
             "read_back": {"observed_status": None, "observed_actor": None, "observed_at": None}}

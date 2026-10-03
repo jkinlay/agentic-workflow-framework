@@ -73,7 +73,9 @@ class AdoptionValidationTests(unittest.TestCase):
         self.assertEqual(result['gates']['ci_candidate_binding']['result'], 'FAIL')
 
     def test_disabled_jira_is_null_and_not_in_scope(self):
-        self.config['jira'].update(enabled=False, site=None, project_key=None)
+        self.config['jira'].update(enabled=False, cloud_id=None, site=None,
+                                   provider_project_id=None, project_key=None,
+                                   controller_actor_id=None)
         self.assertEqual(inspect_config(self.config, definition(), self.contracts)['status'], 'ACCEPTED')
         self.assertFalse(inside_scope({'project_key': None}, self.config))
         with self.assertRaisesRegex(ValidationError, 'Jira is disabled'):

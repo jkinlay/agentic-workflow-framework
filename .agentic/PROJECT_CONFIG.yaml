@@ -10,8 +10,11 @@
   },
   "jira": {
     "enabled": false,
+    "cloud_id": null,
     "site": null,
+    "provider_project_id": null,
     "project_key": null,
+    "controller_actor_id": null,
     "scope": {
       "allow_entire_project": false,
       "selector_mode": "all",

@@ -45,6 +45,27 @@ def inventory_observation(now, tickets):
                 "binding": INVENTORY_BINDING, "tickets": tickets}), "tickets": tickets}
 
 
+def dispatch_receipt(payload, observed_at):
+    keys = ["dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce",
+            "prepared_at", "begun_at"]
+    if "reconcile_nonce" in payload:
+        keys += ["reconcile_nonce", "reconcile_at"]
+    return {key: payload[key] for key in keys} | {
+        "status": "ACCEPTED", "observed_at": observed_at}
+
+
+def jira_current(binding, status, observed_at):
+    return {"issue_id": binding["issue_id"], "status_id": status,
+            "observed_at": observed_at, "jira_provider": binding["jira_provider"]}
+
+
+def configured_jira_provider(config):
+    jira = config["jira"]
+    return {"cloud_id": jira["cloud_id"], "site": jira["site"],
+            "project_id": jira["provider_project_id"], "project_key": jira["project_key"],
+            "controller_actor_id": jira["controller_actor_id"]}
+
+
 def ticket(name, priority, disposition="ELIGIBLE", paths=None, **overrides):
     value = {
         "ticket": name,
@@ -285,8 +306,7 @@ class ContinuousControllerTests(unittest.TestCase):
         calls = []
         def dispatch(payload):
             calls.append(("dispatch", payload["ticket"]))
-            return {key: payload[key] for key in ("dispatch_id", "stream", "ticket", "exact_tuple")} | {
-                "status": "ACCEPTED", "observed_at": NOW}
+            return dispatch_receipt(payload, NOW)
         def deliver(digest):
             calls.append(("deliver", digest["delivery_id"]))
             return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": NOW}
@@ -319,8 +339,7 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(first["errors"][0]["state"], "UNKNOWN")
         later = "2026-10-02T10:00:01Z"
         def observe(payload):
-            return {key: payload[key] for key in ("dispatch_id", "stream", "ticket", "exact_tuple")} | {
-                "status": "ACCEPTED", "observed_at": later}
+            return dispatch_receipt(payload, later)
         second_tickets = [ticket("EX-4", 1)]
         second = production_controller_cycle(store, now=later, host_capacity=1,
             inventory_binding=INVENTORY_BINDING,
@@ -332,6 +351,40 @@ class ContinuousControllerTests(unittest.TestCase):
                 "status": "DELIVERED", "observed_at": later})
         self.assertEqual(len(dispatch_calls), 1)
         self.assertEqual(second["dispatch_receipts"][0]["status"], "ACCEPTED")
+
+    def test_dispatch_rejects_stale_direct_and_cached_restart_receipts(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "dispatch-stale.sqlite3", ["A"])
+        payloads = []
+        first = production_controller_cycle(store, now=NOW, host_capacity=1,
+            inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+            observe_inventory=lambda: inventory_observation(NOW, [ticket("EX-6", 1)]),
+            dispatch_ticket=lambda payload: payloads.append(payload) or
+                dispatch_receipt(payload, "2026-10-02T09:59:59Z"),
+            observe_dispatch=lambda payload: self.fail("first cycle cannot reconcile"),
+            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": NOW})
+        self.assertEqual(first["errors"][0]["state"], "UNKNOWN")
+        cached_receipt = dispatch_receipt(payloads[0], NOW)
+        later = "2026-10-02T10:00:01Z"
+        cached = production_controller_cycle(store, now=later, host_capacity=1,
+            inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+            observe_inventory=lambda: inventory_observation(later, [ticket("EX-6", 1)]),
+            dispatch_ticket=lambda payload: self.fail("unknown dispatch was reissued"),
+            observe_dispatch=lambda payload: cached_receipt,
+            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": later})
+        self.assertEqual(cached["dispatch_receipts"], [])
+        self.assertEqual(cached["errors"][0]["state"], "UNKNOWN")
+        fresh = "2026-10-02T10:00:02Z"
+        accepted = production_controller_cycle(store, now=fresh, host_capacity=1,
+            inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+            observe_inventory=lambda: inventory_observation(fresh, [ticket("EX-6", 1)]),
+            dispatch_ticket=lambda payload: self.fail("unknown dispatch was reissued"),
+            observe_dispatch=lambda payload: dispatch_receipt(payload, fresh),
+            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": fresh})
+        self.assertEqual(accepted["dispatch_receipts"][0]["dispatch_nonce"],
+                         payloads[0]["dispatch_nonce"])
 
     def test_production_cycle_rejects_partial_or_wrong_scope_inventory(self):
         observed = inventory_observation(NOW, [ticket("EX-5", 1)])
@@ -494,19 +547,21 @@ class JiraProgressTests(unittest.TestCase):
         bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
         calls = []
         binding = bundle["critic"]["binding"]
+        provider = configured_jira_provider(config)
         result = production_jira_lifecycle(self.store, config=config, contract=bundle["contract"],
             event="WORKER_STARTED", facts={"run_registered": True, "worktree_verified": True},
             binding=binding, issue_type="LEAF", state="DISPATCHED",
             producer_id="fixture-controller", run_id=str(uuid.UUID(int=7)), now=NOW,
             evidence=["urn:awf:fixture:jira"], transition_id="31",
-            read_current_status=lambda value: calls.append("read-before") or {
-                "issue_id": value["issue_id"], "status_id": "Ready", "observed_at": NOW},
+            read_current_status=lambda value: calls.append("read-before") or jira_current(value, "Ready", NOW),
             write_transition=lambda record: calls.append("write") or {
                 "operation_id": record["operation_id"], "issue_id": binding["issue_id"],
-                "status": "ATTEMPTED", "observed_at": NOW},
+                "status": "ATTEMPTED", "observed_at": NOW,
+                "jira_provider": provider},
             read_transition=lambda record, operation: calls.append("read-after") or {
                 "issue_id": binding["issue_id"], "status": "In Progress",
-                "actor": "fixture-controller", "observed_at": NOW})
+                "actor": "fixture-controller", "observed_at": NOW,
+                "jira_provider": provider})
         self.assertEqual(calls, ["read-before", "write", "read-after"])
         self.assertEqual((result["record"]["status"], result["writes_stopped"]), ("SUCCEEDED", False))
 
@@ -541,16 +596,76 @@ class JiraProgressTests(unittest.TestCase):
             write_transition=lambda record: writes.append(record),
             read_transition=lambda record, operation: self.fail("invalid write cannot be read back"))
         result = production_jira_lifecycle(self.store, **common,
-            read_current_status=lambda value: {
-                "issue_id": "other", "status_id": "Ready", "observed_at": NOW})
+            read_current_status=lambda value: jira_current(value, "Ready", NOW) | {"issue_id": "other"})
         self.assertTrue(result["writes_stopped"])
         self.assertEqual(writes, [])
         result = production_jira_lifecycle(self.store, **common,
-            read_current_status=lambda value: {
-                "issue_id": value["issue_id"], "status_id": "Ready",
-                "observed_at": "2026-10-02T09:59:59Z"})
+            read_current_status=lambda value: jira_current(value, "Ready", "2026-10-02T09:59:59Z"))
         self.assertTrue(result["writes_stopped"])
         self.assertEqual(writes, [])
+
+    def test_jira_lifecycle_rejects_wrong_connector_site_project_or_actor_before_mutation(self):
+        config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text())
+        bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
+        original = bundle["critic"]["binding"]
+        provider = configured_jira_provider(config)
+        for field, replacement in (("cloud_id", "other-cloud"),
+                                   ("site", "https://other.example.invalid"),
+                                   ("project_id", "other-project"),
+                                   ("project_key", "OTHER"),
+                                   ("controller_actor_id", "other-controller")):
+            wrong = dict(provider)
+            wrong[field] = replacement
+            calls = []
+            with self.subTest(field=field):
+                result = production_jira_lifecycle(self.store, config=config, contract=bundle["contract"],
+                    event="WORKER_STARTED", facts={"run_registered": True, "worktree_verified": True},
+                    binding=original, issue_type="LEAF", state="DISPATCHED",
+                    producer_id="fixture-controller", run_id=str(uuid.UUID(int=18)), now=NOW,
+                    evidence=[], transition_id="31",
+                    read_current_status=lambda value, wrong=wrong:
+                        jira_current(value, "Ready", NOW) | {"jira_provider": wrong},
+                    write_transition=lambda record: calls.append("write"),
+                    read_transition=lambda record, operation: calls.append("readback"))
+                self.assertTrue(result["writes_stopped"])
+            self.assertEqual(calls, [])
+        calls = []
+        with self.assertRaisesRegex(ValidationError, "configured controller actor"):
+            production_jira_lifecycle(self.store, config=config, contract=bundle["contract"],
+                event="WORKER_STARTED", facts={"run_registered": True, "worktree_verified": True},
+                binding=original, issue_type="LEAF", state="DISPATCHED",
+                producer_id="other-controller", run_id=str(uuid.UUID(int=19)), now=NOW,
+                evidence=[], transition_id="31",
+                read_current_status=lambda value: calls.append("read"),
+                write_transition=lambda record: calls.append("write"),
+                read_transition=lambda record, operation: calls.append("readback"))
+        self.assertEqual(calls, [])
+
+    def test_jira_lifecycle_binds_write_and_readback_receipts_to_provider_identity(self):
+        config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text())
+        bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
+        binding = bundle["critic"]["binding"]
+        provider = configured_jira_provider(config)
+        wrong_site = dict(provider) | {"site": "https://second-connector.example.invalid"}
+        for stage in ("write", "readback"):
+            store = ContinuousControllerStore(
+                Path(self.temporary.name) / f"jira-wrong-{stage}.sqlite3", ["A"])
+            result = production_jira_lifecycle(store, config=config, contract=bundle["contract"],
+                event="WORKER_STARTED", facts={"run_registered": True, "worktree_verified": True},
+                binding=binding, issue_type="LEAF", state="DISPATCHED",
+                producer_id="fixture-controller", run_id=str(uuid.UUID(int=20)), now=NOW,
+                evidence=[], transition_id="31",
+                read_current_status=lambda value: jira_current(value, "Ready", NOW),
+                write_transition=lambda record, stage=stage: {
+                    "operation_id": record["operation_id"], "issue_id": binding["issue_id"],
+                    "status": "ATTEMPTED", "observed_at": NOW,
+                    "jira_provider": wrong_site if stage == "write" else provider},
+                read_transition=lambda record, operation, stage=stage: {
+                    "issue_id": binding["issue_id"], "status": "In Progress",
+                    "actor": "other-controller" if stage == "readback" else "fixture-controller",
+                    "observed_at": NOW, "jira_provider": provider})
+            self.assertTrue(result["writes_stopped"])
+            self.assertEqual(store.jira_operations(binding["issue_id"])[0]["status"], "UNKNOWN")
 
     def test_jira_intent_survives_crash_after_side_effect_without_reissue(self):
         path = Path(self.temporary.name) / "jira-crash.sqlite3"
@@ -561,8 +676,7 @@ class JiraProgressTests(unittest.TestCase):
         external = {"status": "Ready", "writes": 0}
 
         def observe(_binding, observed_at=NOW):
-            return {"issue_id": binding["issue_id"], "status_id": external["status"],
-                    "observed_at": observed_at}
+            return jira_current(_binding, external["status"], observed_at)
 
         def crash_after_mutation(record):
             external["writes"] += 1
@@ -605,8 +719,7 @@ class JiraProgressTests(unittest.TestCase):
             facts={"run_registered": True, "worktree_verified": True}, binding=binding,
             issue_type="LEAF", state="DISPATCHED", producer_id="fixture-controller",
             run_id=str(uuid.UUID(int=13)), now=NOW, evidence=[], transition_id="31",
-            read_current_status=lambda value: {
-                "issue_id": binding["issue_id"], "status_id": "Ready", "observed_at": NOW},
+            read_current_status=lambda value: jira_current(value, "Ready", NOW),
             read_transition=lambda record, operation: self.fail("no receipt exists"))
         first = production_jira_lifecycle(
             store, write_transition=lambda record: (_ for _ in ()).throw(RuntimeError("lost")), **common)
@@ -649,17 +762,20 @@ class JiraProgressTests(unittest.TestCase):
     def observe_inventory():
         return config["inventory"]
     def dispatch_ticket(payload):
-        return {key: payload[key] for key in ("dispatch_id", "stream", "ticket", "exact_tuple")} | {"status": "ACCEPTED", "observed_at": now}
+        keys = ["dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce", "prepared_at", "begun_at"]
+        if "reconcile_nonce" in payload:
+            keys += ["reconcile_nonce", "reconcile_at"]
+        return {key: payload[key] for key in keys} | {"status": "ACCEPTED", "observed_at": now}
     def observe_dispatch(payload):
         return dispatch_ticket(payload)
     def deliver_status(digest):
         return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": now}
     def read_current_status(binding):
-        return {"issue_id": binding["issue_id"], "status_id": config["jira_before"], "observed_at": now}
+        return {"issue_id": binding["issue_id"], "status_id": config["jira_before"], "observed_at": now, "jira_provider": binding["jira_provider"]}
     def write_transition(record):
-        return {"operation_id": record["operation_id"], "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED", "observed_at": now}
+        return {"operation_id": record["operation_id"], "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED", "observed_at": now, "jira_provider": record["jira_provider"]}
     def read_transition(record, operation):
-        return {"issue_id": record["binding"]["issue_id"], "status": config["jira_after"], "actor": record["producer_id"], "observed_at": now}
+        return {"issue_id": record["binding"]["issue_id"], "status": config["jira_after"], "actor": record["producer_id"], "observed_at": now, "jira_provider": record["jira_provider"]}
     def reconcile_merged_ticket(ticket):
         value = dict(config["reconcile_receipt"])
         value["ticket"] = ticket
