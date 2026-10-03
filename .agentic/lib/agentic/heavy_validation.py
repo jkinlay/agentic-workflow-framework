@@ -543,6 +543,45 @@ def _validate_review(raw: bytes, expected_sha256: str, plan: dict,
     return value, sha256(raw), authorization
 
 
+def _dispatch_freshness(review: dict, capacity: dict | None, now: str,
+                        max_capacity_age_seconds: int, *, capacity_required: bool) -> dict:
+    """Revalidate time-sensitive authority at the final child-launch boundary."""
+    instant = timestamp(now)
+    reviewed = timestamp(review["reviewed_at"])
+    expires = timestamp(review["expires_at"])
+    review_valid = reviewed <= instant < expires and expires > reviewed
+    capacity_age_microseconds = None
+    capacity_fresh = not capacity_required
+    if capacity is not None:
+        capacity_age = instant - timestamp(capacity["observed_at"])
+        capacity_age_microseconds = (
+            capacity_age.days * 86_400_000_000
+            + capacity_age.seconds * 1_000_000
+            + capacity_age.microseconds)
+        capacity_fresh = (-30_000_000 <= capacity_age_microseconds
+                          <= max_capacity_age_seconds * 1_000_000)
+    reasons = []
+    if not review_valid:
+        reasons.append("review_validity_interval_elapsed")
+    if capacity_required and not capacity_fresh:
+        reasons.append("observed_capacity_stale_at_dispatch")
+    record = {
+        "status": "PASS" if not reasons else "REJECTED",
+        "sampled_at": now,
+        "reviewed_at": review["reviewed_at"],
+        "review_expires_at": review["expires_at"],
+        "review_valid": review_valid,
+        "capacity_required": capacity_required,
+        "capacity_observed_at": capacity["observed_at"] if capacity is not None else None,
+        "capacity_max_age_seconds": max_capacity_age_seconds,
+        "capacity_age_microseconds": capacity_age_microseconds,
+        "capacity_fresh": capacity_fresh,
+        "reasons": reasons,
+    }
+    return {**record, "evidence_sha256": fingerprint(
+        "heavy-validation-dispatch-freshness", record)}
+
+
 def _authenticate_review(review: dict, review_digest: str, plan_digest: str,
                          candidate: dict, authorization: dict, authenticator) -> dict:
     if authenticator is None:
@@ -1446,7 +1485,8 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
                        capacity_raw: bytes | None = None,
                        expected_capacity_sha256: str | None = None, broker_client=None,
                        now: str, max_capacity_age_seconds: int = 300,
-                       cancel_event: threading.Event | None = None, lease_clock=None) -> dict:
+                       cancel_event: threading.Event | None = None, lease_clock=None,
+                       dispatch_clock=None) -> dict:
     """Execute a reviewed partition plan and return complete fail-closed evidence.
 
     Inputs are exact digest-bound documents. A trusted host authenticator must
@@ -1476,6 +1516,7 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
     effective, reasons = _parallelism(plan, config, capacity, stale)
     execution_config, broker, _ = _broker(config)
     lease_clock = lease_clock or (lambda: datetime.now(timezone.utc))
+    dispatch_clock = dispatch_clock or (lambda: now)
     lease_now = lambda: _clock_text(lease_clock)
     effective, reasons, lease, lease_release, admission_events, admitted = _admit(
         plan, plan_digest, config_digest, capacity_digest, effective, reasons,
@@ -1486,12 +1527,14 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
     dispatch_checkout = checkout
     checkout_snapshot = {"status": "NOT_CREATED"}
     dispatch_review_authority = {"status": "NOT_RECHECKED"}
+    dispatch_freshness = {"status": "NOT_CHECKED"}
+    dispatch_authorized = False
     lease_runtime_valid = True
     guard = lambda: _lease_runtime_guard(lease, lease_clock)
     try:
         if admitted:
             guard()
-            dispatch_review_authority = _authenticate_review(
+            _authenticate_review(
                 review, review_digest, plan_digest, plan["candidate"], authorization,
                 review_authenticator)
             dispatch_checkout = _attest_checkout(
@@ -1499,27 +1542,37 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
             with _immutable_checkout(checkout_snapshotter, plan["candidate"], root) as snapshot:
                 snapshot_root, checkout_snapshot = snapshot
                 launch_executables = _snapshot_executables(executables, root, snapshot_root)
-                with ThreadPoolExecutor(max_workers=effective,
-                                        thread_name_prefix="awf-heavy") as executor:
-                    futures = {
-                        executor.submit(_execute, part, plan, executable, snapshot_root,
-                                        config, event,
-                                        {**authorization["record"]["windows_launch_chain"],
-                                         "target_environment": authorization["record"][
-                                             "target_environment"]},
-                                        guard): (part, executable)
-                        for part, executable in zip(plan["partitions"], launch_executables)
-                    }
-                    for future in as_completed(futures):
-                        part, executable = futures[future]
-                        try:
-                            results.append(future.result())
-                        except Exception as exc:  # executor failures still get terminal evidence
-                            results.append(_unexpected_result(part, plan, executable, exc))
-                try:
-                    guard()
-                except ValidationError:
-                    lease_runtime_valid = False
+                dispatch_review_authority = _authenticate_review(
+                    review, review_digest, plan_digest, plan["candidate"], authorization,
+                    review_authenticator)
+                dispatch_instant = _clock_text(dispatch_clock)
+                dispatch_freshness = _dispatch_freshness(
+                    review, capacity, dispatch_instant, max_capacity_age_seconds,
+                    capacity_required=broker["enabled"])
+                guard()
+                dispatch_authorized = dispatch_freshness["status"] == "PASS"
+                if dispatch_authorized:
+                    with ThreadPoolExecutor(max_workers=effective,
+                                            thread_name_prefix="awf-heavy") as executor:
+                        futures = {
+                            executor.submit(_execute, part, plan, executable, snapshot_root,
+                                            config, event,
+                                            {**authorization["record"]["windows_launch_chain"],
+                                             "target_environment": authorization["record"][
+                                                 "target_environment"]},
+                                            guard): (part, executable)
+                            for part, executable in zip(plan["partitions"], launch_executables)
+                        }
+                        for future in as_completed(futures):
+                            part, executable = futures[future]
+                            try:
+                                results.append(future.result())
+                            except Exception as exc:  # executor failures still get terminal evidence
+                                results.append(_unexpected_result(part, plan, executable, exc))
+                    try:
+                        guard()
+                    except ValidationError:
+                        lease_runtime_valid = False
     finally:
         if lease is not None and lease.get("status") == "GRANTED":
             lease_release = _release_lease(broker_client, lease)
@@ -1532,7 +1585,7 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
     release_complete = (not broker["enabled"] or
                         (admitted and lease is not None and lease.get("status") == "GRANTED"
                          and lease_release["status"] == "RELEASED"))
-    passed = (admitted and terminal and cleanup_complete and release_complete
+    passed = (admitted and dispatch_authorized and terminal and cleanup_complete and release_complete
               and lease_runtime_valid and all(
         item["state"] == "PASS" for item in results)
               )
@@ -1562,6 +1615,7 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
         "review_sha256": review_digest,
         "review_authority": review_authority,
         "dispatch_review_authority": dispatch_review_authority,
+        "dispatch_freshness": dispatch_freshness,
         "workload_authorization": authorization,
         "checkout_attestation": {"initial": checkout, "dispatch": dispatch_checkout},
         "checkout_snapshot": checkout_snapshot,
@@ -1577,12 +1631,12 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
         "all_partitions_terminal": terminal,
         "execution_authority": False,
         "execution": {
-            "mode": ("PARALLEL" if effective > 1 else
-                     "SERIAL" if effective == 1 else "NOT_STARTED"),
+            "mode": ("PARALLEL" if dispatch_authorized and effective > 1 else
+                     "SERIAL" if dispatch_authorized and effective == 1 else "NOT_STARTED"),
             "requested_parallelism": plan["requested_parallelism"],
             "effective_parallelism": effective,
             "fallback_reasons": reasons,
-            "scheduled_partition_count": len(plan["partitions"]),
+            "scheduled_partition_count": len(plan["partitions"]) if dispatch_authorized else 0,
             "completed_terminal_count": sum(item["state"] in TERMINAL_STATES for item in results),
             "shell": False,
             "process_tree_cleanup_complete": cleanup_complete,
@@ -1593,6 +1647,7 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
             "plan_sha256": plan_digest, "review_sha256": review_digest,
             "config_sha256": config_digest, "capacity_sha256": capacity_digest,
             "checkout_snapshot": checkout_snapshot,
+            "dispatch_freshness": dispatch_freshness,
             "lease": lease, "lease_release": lease_release,
             "admission_events": admission_events, "partitions": stable}),
         "serial_equivalence_sha256": serial_equivalence_sha256,
@@ -1616,7 +1671,9 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
                    max_capacity_age_seconds: int = 300,
                    cancel_event: threading.Event | None = None) -> dict:
     """Run production validation against the trusted host UTC clock."""
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    host_clock = lambda: datetime.now(timezone.utc).isoformat(
+        timespec="microseconds").replace("+00:00", "Z")
+    now = host_clock()
     return _run_validation_at(
         plan_raw=plan_raw, expected_plan_sha256=expected_plan_sha256,
         review_raw=review_raw, expected_review_sha256=expected_review_sha256,
@@ -1629,4 +1686,4 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         expected_capacity_sha256=expected_capacity_sha256,
         broker_client=broker_client, now=now,
         max_capacity_age_seconds=max_capacity_age_seconds,
-        cancel_event=cancel_event)
+        cancel_event=cancel_event, dispatch_clock=host_clock)

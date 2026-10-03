@@ -798,6 +798,114 @@ class HeavyValidationTests(unittest.TestCase):
                     self.assertEqual([("lease-1", 7)], broker.released)
                     self.assertFalse(marker.exists())
 
+    def test_final_dispatch_gate_rejects_review_expired_during_provider_delay(self):
+        with tempfile.TemporaryDirectory() as folder:
+            marker = Path(folder) / "provider-delay-started.txt"
+            raw = plan([partition(
+                "guarded", f"from pathlib import Path; Path({str(marker)!r}).write_text('bad')")],
+                parallelism=1)
+            cfg, broker = config(), Broker()
+            cfg_raw = canonical(cfg)
+            cap = capacity(raw, cfg_raw, workers=1, heavy=1)
+            reviewed = json.loads(review(raw))
+            reviewed["expires_at"] = "2026-10-02T09:00:01Z"
+            review_raw = canonical(reviewed)
+            clock = {"now": NOW}
+            calls = 0
+
+            def delayed_provider(*args):
+                nonlocal calls
+                calls += 1
+                evidence = authenticator(*args)
+                if calls == 3:
+                    clock["now"] = "2026-10-02T09:00:02Z"
+                return evidence
+
+            with mock.patch.object(heavy, "_execute_attempt",
+                                   side_effect=AssertionError("target scheduled")):
+                result = _run_validation_at(
+                    plan_raw=raw, expected_plan_sha256=sha256(raw),
+                    review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                    config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                    expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                    review_authenticator=delayed_provider,
+                    checkout_attestor=checkout_attestor,
+                    checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
+                    expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                    lease_clock=lambda: clock["now"],
+                    dispatch_clock=lambda: clock["now"])
+            self.assertEqual(3, calls)
+            self.assertEqual("FAIL", result["status"])
+            self.assertEqual("NOT_STARTED", result["execution"]["mode"])
+            self.assertEqual(0, result["execution"]["scheduled_partition_count"])
+            self.assertEqual("REJECTED", result["dispatch_freshness"]["status"])
+            self.assertEqual(["review_validity_interval_elapsed"],
+                             result["dispatch_freshness"]["reasons"])
+            self.assertEqual([("lease-1", 7)], broker.released)
+            self.assertEqual("RELEASED", result["lease_release"]["status"])
+            self.assertFalse(marker.exists())
+
+    def test_final_dispatch_gate_rejects_capacity_stale_after_admission_and_snapshot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            marker = Path(folder) / "capacity-delay-started.txt"
+            raw = plan([partition(
+                "guarded", f"from pathlib import Path; Path({str(marker)!r}).write_text('bad')")],
+                parallelism=1)
+            cfg = config()
+            cfg_raw = canonical(cfg)
+            cap = capacity(raw, cfg_raw, workers=1, heavy=1)
+            clock = {"now": timestamp(NOW)}
+
+            class DelayedBroker(Broker):
+                def acquire(self, request):
+                    self.acquired.append(deepcopy(request))
+                    clock["now"] += timedelta(seconds=150)
+                    acquired = clock["now"]
+                    expiry = acquired + timedelta(
+                        seconds=request["required_duration_seconds"]
+                        + heavy_controller.LEASE_VALIDATION_TRANSPORT_MARGIN_SECONDS)
+                    return {"status": "GRANTED", "lease_id": "lease-1",
+                            "fencing_token": 7, "broker_id": "synthetic-broker",
+                            "acquired_at": acquired.isoformat(timespec="microseconds").replace(
+                                "+00:00", "Z"),
+                            "expires_at": expiry.isoformat(timespec="microseconds").replace(
+                                "+00:00", "Z"),
+                            "request_sha256": fingerprint(
+                                "heavy-validation-lease-request", request)}
+
+            @contextmanager
+            def delayed_snapshot(candidate, working_directory):
+                clock["now"] += timedelta(seconds=151)
+                with checkout_snapshotter(candidate, working_directory) as value:
+                    yield value
+
+            broker = DelayedBroker()
+            text_clock = lambda: clock["now"].isoformat(timespec="microseconds").replace(
+                "+00:00", "Z")
+            with mock.patch.object(heavy, "_execute_attempt",
+                                   side_effect=AssertionError("target scheduled")):
+                result = _run_validation_at(
+                    plan_raw=raw, expected_plan_sha256=sha256(raw),
+                    review_raw=review(raw), expected_review_sha256=sha256(review(raw)),
+                    config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                    expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                    review_authenticator=authenticator,
+                    checkout_attestor=checkout_attestor,
+                    checkout_snapshotter=delayed_snapshot, capacity_raw=cap,
+                    expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                    lease_clock=text_clock, dispatch_clock=text_clock)
+            self.assertEqual("FAIL", result["status"])
+            self.assertEqual("NOT_STARTED", result["execution"]["mode"])
+            self.assertEqual(0, result["execution"]["scheduled_partition_count"])
+            self.assertEqual("REJECTED", result["dispatch_freshness"]["status"])
+            self.assertEqual(301_000_000,
+                             result["dispatch_freshness"]["capacity_age_microseconds"])
+            self.assertEqual(["observed_capacity_stale_at_dispatch"],
+                             result["dispatch_freshness"]["reasons"])
+            self.assertEqual([("lease-1", 7)], broker.released)
+            self.assertEqual("RELEASED", result["lease_release"]["status"])
+            self.assertFalse(marker.exists())
+
     def test_durable_file_broker_fences_capacity_and_result_log_is_immutable(self):
         clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
         with tempfile.TemporaryDirectory() as folder:
