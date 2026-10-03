@@ -98,6 +98,10 @@ def evaluate(config, workflow, bundle, contracts, now):
     if not config["merge_gate"]["trusted_owner_ids"]:
         raise ValidationError("$.merge_gate.trusted_owner_ids: configure actual trusted owner IDs before merge authorization")
     contracts.validate("evidence-bundle", bundle)
+    from .review_completion import validate_gate_submission
+    review_submission = validate_gate_submission(
+        bundle["review_submission"], bundle["candidate"], bundle["contract"],
+        bundle["critic"], bundle["specialists"])
     timestamp(now)
     binding = expected_binding(config, workflow, bundle)
     candidate, contract, snapshot = bundle["candidate"], bundle["contract"], bundle["snapshot"]
@@ -274,6 +278,7 @@ def evaluate(config, workflow, bundle, contracts, now):
     ac_ok = ac_ok and closure_met(contract, worker, critic)
     parity_ok, parity_problems = local_ci_parity(config, contract, worker, ci)
     outcomes = {
+        "review_completion": True,
         "acceptance_criteria": ac_ok and commands_ok and worker["status"] == "COMPLETE" and worker["self_review_complete"] and not worker["blockers"],
         "scope": scope_ok,
         "critic_current_tuple": critic_ok,
@@ -294,6 +299,7 @@ def evaluate(config, workflow, bundle, contracts, now):
     # These are content-addressed references to the actual evaluated inputs.
     # They prove derivation identity, not the truth of externally supplied data.
     inputs = {
+        "review_completion": ["review_submission", "candidate", "contract", "critic", "specialists"],
         "acceptance_criteria": ["contract", "worker", "critic"], "scope": ["contract", "snapshot", "pr"],
         "critic_current_tuple": ["critic", "prior_findings"], "specialist_reviews": ["contract", "pr", "specialists"],
         "required_ci": ["ci"], "ci_candidate_binding": ["ci", "candidate"], "blocking_threads_zero": ["pr"],
@@ -318,6 +324,7 @@ def evaluate(config, workflow, bundle, contracts, now):
                if cap_disposition is not None else [])
             + [f"Provenance: {item}" for item in provenance_problems] + [f"Local/CI parity: {item}" for item in parity_problems],
         "accepted_findings": [item["finding_id"] for item in accepted],
+        "review_submission": review_submission,
         "conclusion": "READY_FOR_OWNER_AUTHORIZATION" if all(outcomes.values()) else "NOT_READY",
         "execution_authority": False, "evaluation_mode": "offline_reference", "expires_at": expires.isoformat().replace("+00:00", "Z")}
     if not required_domains:

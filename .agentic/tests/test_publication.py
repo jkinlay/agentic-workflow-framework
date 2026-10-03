@@ -100,6 +100,30 @@ class PublicationScanTests(unittest.TestCase):
                                      change="deleted", detectors=detectors, allows=allows)
                 self.assertTrue(any(item["detector_id"] == detector_id for item in changed))
 
+    def test_historical_synthetic_ticket_allow_is_exact_and_real_jira_still_blocks(self):
+        restricted = {"deny_regexes": [{
+            "id": "restricted_identifier", "pattern": r"\b" + "QA-" + r"\d+\b"}]}
+        detectors, allows = _detectors(restricted, {})
+        synthetic = "QA-" + "1"
+        line = '            ticket("' + synthetic + '", 1, "BLOCKED", reason="dependency unavailable"),'
+        path = ".agentic/tests/test_continuous_controller.py"
+        accepted = _scan_text(line, commit="published", path=path, source="patch", change="deleted",
+                              detectors=detectors, allows=allows)
+        self.assertEqual([], accepted)
+        real = "QA-" + "9310"
+        adversarial = (
+            (line + " ", path, synthetic),
+            (line, ".agentic/tests/other.py", synthetic),
+            (line.replace(synthetic, real), path, real),
+            (synthetic, "pr-body", synthetic),
+        )
+        for text, observed_path, value in adversarial:
+            with self.subTest(path=observed_path, value=value):
+                findings = _scan_text(text, commit="candidate", path=observed_path, source="patch",
+                                      detectors=detectors, allows=allows)
+                self.assertTrue(any(item["detector_id"] == "local.regex.restricted_identifier"
+                                    for item in findings))
+
     def test_ac43_removed_value_still_blocks_and_is_redacted(self):
         value = private_locator()
         self.repo.write("generated.txt", "locator=" + value + "\n")

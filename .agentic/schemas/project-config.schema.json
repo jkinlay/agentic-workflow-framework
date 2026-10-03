@@ -61,14 +61,28 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "cloud_id",
         "site",
+        "provider_project_id",
         "project_key",
+        "controller_actor_id",
         "scope",
         "status_map",
         "dependency_direction",
         "mutations_owner"
       ],
       "properties": {
+        "cloud_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "site": {
           "anyOf": [
             {
@@ -81,12 +95,34 @@
             }
           ]
         },
+        "provider_project_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "project_key": {
           "anyOf": [
             {
               "type": "string",
               "minLength": 1,
               "pattern": "^[A-Z][A-Z0-9]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "controller_actor_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
             },
             {
               "type": "null"
@@ -236,25 +272,46 @@
           },
           "then": {
             "properties": {
+              "cloud_id": {
+                "type": "null"
+              },
               "site": {
                 "type": "null"
               },
+              "provider_project_id": {
+                "type": "null"
+              },
               "project_key": {
+                "type": "null"
+              },
+              "controller_actor_id": {
                 "type": "null"
               }
             }
           },
           "else": {
             "properties": {
+              "cloud_id": {
+                "type": "string",
+                "minLength": 1
+              },
               "site": {
                 "type": "string",
                 "minLength": 1,
                 "format": "uri"
               },
+              "provider_project_id": {
+                "type": "string",
+                "minLength": 1
+              },
               "project_key": {
                 "type": "string",
                 "minLength": 1,
                 "pattern": "^[A-Z][A-Z0-9]*$"
+              },
+              "controller_actor_id": {
+                "type": "string",
+                "minLength": 1
               }
             }
           }
@@ -1160,6 +1217,11 @@
         },
         "auto_transition_jira": {
           "type": "boolean"
+        },
+        "status_cadence_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         }
       }
     },

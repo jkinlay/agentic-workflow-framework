@@ -9,6 +9,7 @@
     "run_id",
     "binding",
     "candidate",
+    "review_submission",
     "gates",
     "record_ids",
     "required_specialist_domains",
@@ -97,10 +98,14 @@
     "candidate": {
       "$ref": "urn:awf:1.2:candidate"
     },
+    "review_submission": {
+      "$ref": "urn:awf:1.2:review-submission"
+    },
     "gates": {
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "review_completion",
         "acceptance_criteria",
         "scope",
         "critic_current_tuple",
@@ -117,6 +122,33 @@
         "publication_safety"
       ],
       "properties": {
+        "review_completion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
         "acceptance_criteria": {
           "type": "object",
           "additionalProperties": false,
@@ -583,6 +615,13 @@
         "properties": {
           "gates": {
             "properties": {
+              "review_completion": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
               "acceptance_criteria": {
                 "properties": {
                   "result": {

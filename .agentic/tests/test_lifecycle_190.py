@@ -21,6 +21,7 @@ from agentic.jira_lifecycle import apply_read_back, closing_comment, owner_closu
 from agentic.lifecycle import JIRA_WRITES, definition, transition
 from agentic.review_loop import LoopStore, enroll, resume, tick, validate_review
 from agentic.store import Store
+from review_admission_fixture import bind_review_admission
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-09T12:00:00Z"
@@ -40,7 +41,12 @@ class JiraLifecycleTests(unittest.TestCase):
         self.binding = copy.deepcopy(self.bundle0["critic"]["binding"])
 
     def record(self, event, to_status, merge_result_id=None):
-        return transition_record(self.binding, event, "To Do", to_status, "31", merge_result_id=merge_result_id,
+        jira = self.config["jira"]
+        provider = {"cloud_id": jira["cloud_id"], "site": jira["site"],
+                    "project_id": jira["provider_project_id"], "project_key": jira["project_key"],
+                    "controller_actor_id": jira["controller_actor_id"]}
+        return transition_record(self.binding, event, "To Do", to_status, "31", jira_provider=provider,
+                                 merge_result_id=merge_result_id,
                                  producer_id="fixture-controller", run_id=str(uuid.uuid4()), now=NOW, evidence=EVIDENCE)
 
     def test_event_map_and_records(self):
@@ -102,6 +108,7 @@ class JiraLifecycleTests(unittest.TestCase):
         bundle = copy.deepcopy(self.bundle0)
         bundle["snapshot"]["summary"] = "Cutover: switch the nightly store build"
         bundle["contract"]["requirements_hash"] = __import__("agentic.canonical", fromlist=["fingerprint"]).fingerprint("requirements", bundle["snapshot"])
+        bind_review_admission(bundle)
         with self.assertRaisesRegex(ValidationError, "owner_closure_required|binding"):
             evaluate(self.config, definition(), bundle, self.contracts, NOW)
 

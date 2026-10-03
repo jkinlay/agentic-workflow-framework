@@ -34,4 +34,6 @@ New reviewer identities default to selected `--codeowner` (`@maintainer` unless 
 
 Use supported completion events or bounded polling. Scheduling later work requires a user request and a scheduler. The separate enrolled PR loop allows one active tick and must not race a native writer on the same branch.
 
+While a scoped backlog remains active, follow the [continuous controller contract](34-CONTINUOUS-CONTROLLER.md). Every configured stream is visibly `WORKING`, `PAUSED_INPUT`, `BLOCKED`, or `COMPLETE`; completion immediately triggers a refill decision. A pause or blocker affects only that stream. Freeze the complete independent reviewer set through the [review completion barrier](33-REVIEW-COMPLETION-BARRIER.md) before dispatch and never submit an aggregate while any required result is missing or unacceptable.
+
 Native status is supplied observation, not cryptographic attestation. Deployment-grade unforgeable writer records require a separate trusted adapter.

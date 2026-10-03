@@ -15,6 +15,7 @@ from agentic import VERSION
 from agentic.lifecycle import definition
 from agentic.policy import CAPABILITIES, PROTECTED_PATHS, policy_hash
 from agentic.review_policy import DEFAULT_RISK_TIERS
+from agentic.review_completion import gate_review_aggregate, gate_review_tuple
 from generate_contracts import catalog
 
 NOW = "2026-09-09T12:00:00Z"
@@ -41,7 +42,11 @@ def config(example=True):
     }
     result = {"version": 3, "template": {"expected_workflow_version": VERSION},
         "project": {"id": uid("project") if example else str(uuid.UUID(int=0)), "name": "Offline Fixture" if example else "CHANGE_ME_PROJECT", "short_name": "EX" if example else "CHANGE_ME"},
-        "jira": {"enabled": example, "site": "https://jira.example.invalid" if example else None, "project_key": "EX" if example else None,
+        "jira": {"enabled": example, "cloud_id": "fixture-cloud" if example else None,
+            "site": "https://jira.example.invalid" if example else None,
+            "provider_project_id": "fixture-project" if example else None,
+            "project_key": "EX" if example else None,
+            "controller_actor_id": "fixture-controller" if example else None,
             "scope": {"allow_entire_project": False, "selector_mode": "all", "included_epics": [], "labels_any": ["awf-fixture"] if example else [], "components_any": [], "additional_jql": "", "ownership_required": True},
             "status_map": {"backlog": "Backlog", "ready": "Ready", "in_progress": "In Progress", "in_review": "In Review", "done": "Done"},
             "lifecycle_writes": {"in_progress": True, "in_review": True, "done": True},
@@ -70,7 +75,8 @@ def config(example=True):
             "require_critic_approval_current_tuple": True, "require_specialist_reviews_current_tuple": True, "require_required_ci_green": True,
             "require_zero_unresolved_blocking_threads": True, "invalidate_on_head_change": True, "invalidate_on_target_base_change": True,
             "authorization_ttl_seconds": 900, "trusted_owner_ids": [1001] if example else [], "high_risk_owner_quorum": 1},
-        "controller": {key: False for key in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments", "auto_transition_jira"]},
+        "controller": {**{key: False for key in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments", "auto_transition_jira"]},
+                       "status_cadence_seconds": 900},
         "audit": {"store_must_be_outside_worktrees": True, "retention_days": 90, "redact_secrets": True},
         "portfolio": {"read_only": True, "cross_project_dispatch": False}}
     from agentic.model_routing import default_policy
@@ -128,6 +134,34 @@ def example_bundle(cfg):
     files = [{"path": "src/example.py", "blob_sha": "1" * 40}]
     critic = record("critic-review", "critic", verdict="APPROVE", acceptance_criteria=results, findings=[], prior_finding_ids=[],
         closure={"result": "MET", "evidence": evidence}, coverage={"complete": True, "file_manifest_sha256": fingerprint("file-manifest", files), "reviewed_paths": ["src/example.py"], "omissions": []}, evidence_checked=evidence)
+    aggregate = gate_review_aggregate(candidate, critic, [])
+    review_tuple = gate_review_tuple(candidate, contract, aggregate)
+    reviewers = aggregate["required_reviewers"]
+    cycle_id = uid("review-cycle")
+    completion_snapshot = {"cycle_id": cycle_id, "tuple": review_tuple,
+        "tuple_sha256": fingerprint("review-tuple", review_tuple),
+        "required_reviewers": reviewers,
+        "reviewer_set_sha256": fingerprint("reviewer-set", reviewers),
+        "counts": {"required": 1, "completed": 1, "acceptable": 1,
+                   "failed": 0, "stale": 0, "outstanding": 0},
+        "results": [{"reviewer_id": reviewers[0], "state": "ACCEPTABLE",
+            "result_sha256": fingerprint("reviewer-result", {
+                "reviewer": reviewers[0], "verdict": "APPROVE", "findings": []}),
+            "terminal_at": NOW}]}
+    submission_id = uid("review-submission")
+    review_submission = {"submission_id": submission_id, "cycle_id": cycle_id,
+        "completion_snapshot": completion_snapshot,
+        "completion_snapshot_sha256": fingerprint("review-completion", completion_snapshot),
+        "aggregate": aggregate, "aggregate_sha256": fingerprint("review-aggregate", aggregate),
+        "provider_preconditions": {"operation_id": submission_id, "prepared_at": NOW,
+            "repository": review_tuple["repository"],
+            "base_sha": review_tuple["base_sha"], "head_sha": review_tuple["head_sha"],
+            "head_tree_sha": review_tuple["head_tree_sha"],
+            "tuple_sha256": completion_snapshot["tuple_sha256"],
+            "reviewer_set_sha256": completion_snapshot["reviewer_set_sha256"],
+            "completion_snapshot_sha256": fingerprint("review-completion", completion_snapshot),
+            "aggregate_sha256": fingerprint("review-aggregate", aggregate)},
+        "execution_authority": False}
     ci = record("ci", "collector", retrieval_complete=True, candidate_type="synthetic_merge", checks=[{"name": "unit-tests", "check_id": "check-1", "app_id": 42,
         "workflow_path": ".github/workflows/test.yml", "workflow_sha": "a" * 40, "attempt": 1, "event": "pull_request", "conclusion": "success",
         "tested_tree_sha": candidate["integration_tree_sha"], "tested_commit_sha": candidate["tested_merge_sha"], "tests_executed": 2, "completed_at": NOW, "evidence": evidence, "checkout_depth": "full"}], collector_attestation_id=uid("attestation-collector"))
@@ -144,7 +178,7 @@ def example_bundle(cfg):
             "captured_command_output": "when committed or passed as provider text", "pr_bodies": True, "pr_comments": False},
         "execution_authority": False}
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,
-            "specialists": [], "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,
+            "specialists": [], "review_submission": review_submission, "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,
             "publication_scan": publication_scan, "evidence_registry": [{"uri": evidence[0],
                 "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"}], "provenance_mode": "offline_fixture"}
 
@@ -197,6 +231,27 @@ def main():
     write(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml", cfg)
     bundle = example_bundle(cfg)
     write(ROOT / ".agentic/examples/evidence-bundle.json", bundle)
+    write(ROOT / ".agentic/examples/controller-status-digest.json", {
+        "schema_version": 3, "observed_at": NOW, "kind": "REGULAR", "cadence_seconds": 900,
+        "delivery_id": "d" * 64, "all_complete": False,
+        "streams": [{"stream": stream, "state": state, "ticket": ticket,
+            "actor": actor, "reason": reason, "next_action": action, "resume_trigger": trigger,
+            "exact_tuple": "base:c/head:b/tree:d/contract:a/review:e", "activity": activity,
+            "verification_gate": "PENDING", "reviewer_completion": {"required": 1, "completed": 0,
+                "acceptable": 0, "failed": 0, "stale": 0, "outstanding": 1},
+            "open_findings": 0, "jira_status": jira, "updated_at": NOW}
+            for stream, state, ticket, actor, reason, action, trigger, activity, jira in [
+                ("A", "WORKING", "EX-1", "worker-a", "Eligible scoped action", "Continue implementation",
+                 "worker completion", "Implement EX-1", "In Progress"),
+                ("B", "PAUSED_INPUT", "EX-2", "owner", "Owner input required", "Await the named decision",
+                 "owner decision recorded", "Await input for EX-2", "Open"),
+                ("C", "BLOCKED", "EX-3", "controller", "Dependency unavailable", "Continue independent streams",
+                 "dependency becomes satisfied", "Blocked on EX-3 dependency", "Open")]]})
+    write(ROOT / ".agentic/examples/jira-progress.json", {"schema_version": 3, "merged_ticket": "EX-1",
+        "scope": "project=EX AND labels=awf-fixture", "observed_at": NOW, "closed": 4,
+        "remaining_open": 2, "jira_state": "COUNTED", "scope_sha256": "d" * 64,
+        "include_epics": False, "snapshot_id": "fixture-snapshot-1",
+        "reason": "authoritative complete scoped Jira observation"})
     from agentic.contracts import Contracts
     from agentic.digest import render
     from agentic.gates import evaluate

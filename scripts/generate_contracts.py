@@ -76,6 +76,9 @@ EVIDENCE = arr(text(format="uri"), 1, uniqueItems=True)
 BINDING = obj({"project_id": UUID, "repository_id": integer(1), "issue_id": text(),
                "requirements_hash": DIGEST, "contract_hash": DIGEST, "policy_hash": DIGEST,
                "candidate_id": DIGEST})
+JIRA_PROVIDER = obj({"cloud_id": text(), "site": text(format="uri"), "project_id": text(),
+                     "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
+                     "controller_actor_id": text()})
 
 
 def bound(properties, **extra):
@@ -96,7 +99,7 @@ NO_BLOCKERS = {"not": {"contains": {"type": "object", "required": ["severity", "
                                      "properties": {"severity": enum("BLOCKER", "MAJOR"),
                                                     "status": enum("OPEN", "DISPUTED")}}}}
 AC_RESULT = obj({"id": text(), "verdict": enum("PASS", "FAIL", "UNKNOWN"), "evidence": EVIDENCE})
-GATE_NAMES = ["acceptance_criteria", "scope", "critic_current_tuple", "specialist_reviews",
+GATE_NAMES = ["review_completion", "acceptance_criteria", "scope", "critic_current_tuple", "specialist_reviews",
               "required_ci", "ci_candidate_binding", "blocking_threads_zero", "dependencies",
               "merge_compatibility", "ticket_snapshot_current", "review_coverage", "provenance", "local_ci_parity",
               "publication_safety"]
@@ -110,6 +113,57 @@ def catalog():
         "target_base_sha": SHA, "merge_base_sha": SHA, "head_tree_sha": SHA,
         "integration_tree_sha": SHA, "tested_merge_sha": nullable(SHA),
         "diff_sha256": DIGEST, "merge_method": enum("merge", "squash", "rebase")})
+    review_tuple = obj({"repository": text(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"),
+        "base_sha": SHA, "head_sha": SHA, "head_tree_sha": SHA,
+        "contract_sha256": DIGEST, "review_input_sha256": DIGEST})
+    review_counts = obj({name: integer() for name in
+        ["required", "completed", "acceptable", "failed", "stale", "outstanding"]})
+    reviewer_state = obj({"reviewer_id": text(),
+        "state": enum("MISSING", "RUNNING", "ACCEPTABLE", "FAILED", "TIMED_OUT", "MALFORMED", "CANCELLED", "STALE", "DUPLICATE")})
+    schemas["review-completion"] = obj({"schema_version": const(3), "cycle_id": UUID,
+        "state": enum("COLLECTING", "SUBMITTING", "SUBMITTED", "SUBMISSION_UNKNOWN", "INVALIDATED"),
+        "current": BOOL, "ready": BOOL, "tuple": review_tuple, "tuple_sha256": DIGEST,
+        "required_reviewers": arr(text(), 1, uniqueItems=True), "reviewer_set_sha256": DIGEST,
+        "counts": review_counts, "reviewers": arr(reviewer_state, 1, uniqueItems=True),
+        "completion_snapshot_sha256": nullable(DIGEST)}, allOf=[
+            {"if": {"properties": {"ready": const(True)}}, "then": {"properties": {
+                "state": const("COLLECTING"), "current": const(True),
+                "counts": {"properties": {"failed": const(0), "stale": const(0), "outstanding": const(0)}},
+                "reviewers": {"items": {"properties": {"state": const("ACCEPTABLE")}}}}}}])
+    completion_snapshot = obj({"cycle_id": UUID, "tuple": review_tuple, "tuple_sha256": DIGEST,
+        "required_reviewers": arr(text(), 1, uniqueItems=True), "reviewer_set_sha256": DIGEST,
+        "counts": review_counts, "results": arr(obj({"reviewer_id": text(), "state": const("ACCEPTABLE"),
+            "result_sha256": DIGEST, "terminal_at": TIME}), 1, uniqueItems=True)})
+    schemas["review-submission"] = obj({"submission_id": UUID, "cycle_id": UUID,
+        "completion_snapshot": completion_snapshot, "completion_snapshot_sha256": DIGEST,
+        "aggregate": {}, "aggregate_sha256": DIGEST,
+        "provider_preconditions": obj({"operation_id": UUID, "prepared_at": TIME,
+            "repository": review_tuple["properties"]["repository"],
+            "base_sha": SHA, "head_sha": SHA, "head_tree_sha": SHA,
+            "tuple_sha256": DIGEST, "reviewer_set_sha256": DIGEST,
+            "completion_snapshot_sha256": DIGEST, "aggregate_sha256": DIGEST}),
+        "execution_authority": FALSE})
+    stream_status = obj({"stream": text(), "state": enum("WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"),
+        "ticket": nullable(text()), "actor": text(), "reason": text(), "next_action": text(),
+        "resume_trigger": text(), "exact_tuple": text(), "activity": text(), "verification_gate": text(),
+        "reviewer_completion": review_counts, "open_findings": integer(), "jira_status": text(),
+        "updated_at": TIME})
+    schemas["controller-status-digest"] = obj({"schema_version": const(3), "delivery_id": DIGEST, "observed_at": TIME,
+        "kind": enum("REGULAR", "CHANGE"), "cadence_seconds": integer(1), "all_complete": BOOL,
+        "streams": arr(stream_status, 1, uniqueItems=True)}, allOf=[
+            {"if": {"properties": {"all_complete": const(True)}},
+             "then": {"properties": {"streams": {"items": {"properties": {"state": const("COMPLETE")}}}}}},
+            {"if": {"properties": {"all_complete": const(False)}},
+             "then": {"properties": {"streams": {"contains": {"properties": {"state": {"not": const("COMPLETE")}}}}}}}])
+    count_or_unobserved = {"oneOf": [integer(), const("UNOBSERVED")]}
+    schemas["jira-progress"] = obj({"schema_version": const(3), "merged_ticket": text(), "scope": text(),
+        "scope_sha256": DIGEST, "include_epics": BOOL, "snapshot_id": nullable(text()),
+        "observed_at": TIME, "closed": count_or_unobserved, "remaining_open": count_or_unobserved,
+        "jira_state": enum("COUNTED", "RECONCILED", "UNOBSERVED", "JIRA_DISABLED"), "reason": text()}, allOf=[
+            {"if": {"properties": {"jira_state": const("COUNTED")}}, "then": {"properties": {
+                "closed": integer(), "remaining_open": integer(), "snapshot_id": text()}}},
+            {"if": {"properties": {"jira_state": {"enum": ["RECONCILED", "UNOBSERVED", "JIRA_DISABLED"]}}},
+             "then": {"properties": {"closed": const("UNOBSERVED"), "remaining_open": const("UNOBSERVED")}}}])
     ac = obj({"id": text(), "text": text(), "validation": text()})
     dependency = obj({"issue_id": text(), "ticket": text(), "kind": enum("code", "deployment", "migration", "environment"),
         "direction": const("requires"), "satisfied": BOOL, "target": text(), "evidence": arr(text(format="uri"), uniqueItems=True)})
@@ -211,7 +265,7 @@ def catalog():
     gate_pass = {"properties": {"gates": {"properties": {name: {"properties": {"result": const("PASS")}}
                     for name in GATE_NAMES if name != "specialist_reviews"}}, "execution_authority": FALSE}}
     gate_pass["properties"]["gates"]["properties"]["specialist_reviews"] = {"properties": {"result": enum("PASS", "N_A")}}
-    schemas["final-gate"] = bound({"candidate": ref("candidate"), "gates": gate_results,
+    schemas["final-gate"] = bound({"candidate": ref("candidate"), "review_submission": ref("review-submission"), "gates": gate_results,
         "record_ids": STRINGS, "required_specialist_domains": STRINGS, "residual_risks": STRINGS,
         "risk_tier": enum(1, 2), "tier_justification": text(), "closure_standard": enum("FULL", "DECLARED_LIMITATIONS"),
         "accepted_findings": STRINGS,
@@ -241,6 +295,7 @@ def catalog():
         "result_commit_sha": nullable(SHA), "result_tree_sha": nullable(SHA), "observed_base_before": nullable(SHA),
         "authorized_candidate_matched": BOOL, "evidence": EVIDENCE}, allOf=[when("merged", True, {"properties": {"result_commit_sha": SHA, "result_tree_sha": SHA}})])
     schemas["jira-transition"] = bound({"operation_id": UUID, "merge_result_id": nullable(UUID),
+        "jira_provider": JIRA_PROVIDER,
         "lifecycle_event": enum(*LIFECYCLE_EVENTS),
         "from_status_id": text(), "to_status_id": text(), "transition_id": text(),
         "status": enum("PROPOSED", "UNKNOWN", "SUCCEEDED", "FAILED"), "evidence": EVIDENCE,
@@ -310,6 +365,7 @@ def catalog():
     schemas["evidence-bundle"] = obj({"schema_version": const(3), "candidate": ref("candidate"),
         "snapshot": ref("jira-snapshot"), "contract": ref("ticket-contract"), "dispatch": ref("work-dispatch"),
         "worker": ref("worker-result"), "critic": ref("critic-review"), "specialists": arr(ref("specialist-review")),
+        "review_submission": ref("review-submission"),
         "ci": ref("ci-evidence"), "pr": ref("pr-snapshot"), "runs": arr(ref("run-attestation"), 3),
         "prior_findings": arr(FINDING), "finding_dispositions": arr(ref("finding-disposition")),
         "cap_disposition": nullable(ref("review-cap-disposition")), "publication_scan": ref("publication-scan"),
@@ -320,7 +376,8 @@ def catalog():
         "permission_profile": text(), "network_allowlist": STRINGS})
     schemas["project-config"] = obj({"version": const(3), "template": obj({"expected_workflow_version": const(VERSION)}),
         "project": obj({"id": UUID, "name": text(), "short_name": text()}),
-        "jira": obj({"site": text(format="uri"), "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
+        "jira": obj({"cloud_id": text(), "site": text(format="uri"), "provider_project_id": text(),
+          "project_key": text(pattern="^[A-Z][A-Z0-9]*$"), "controller_actor_id": text(),
           "scope": obj({"allow_entire_project": BOOL, "selector_mode": enum("all", "any"),
               "included_epics": STRINGS, "labels_any": STRINGS, "components_any": STRINGS,
               "additional_jql": const(""), "ownership_required": TRUE}),
@@ -368,7 +425,7 @@ def catalog():
           "authorization_ttl_seconds": integer(1, maximum=86400), "trusted_owner_ids": arr(integer(1), 0, uniqueItems=True),
           "high_risk_owner_quorum": integer(1)}),
         "controller": obj({**{k: FALSE for k in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments"]},
-                           "auto_transition_jira": BOOL}),
+                           "auto_transition_jira": BOOL, "status_cadence_seconds": integer(1)}),
         "audit": obj({"store_must_be_outside_worktrees": TRUE, "retention_days": integer(1), "redact_secrets": TRUE}),
         "portfolio": obj({"read_only": TRUE, "cross_project_dispatch": FALSE})})
     jira = schemas["project-config"]["properties"]["jira"]
@@ -383,11 +440,17 @@ def catalog():
     # Null is an explicit installation residue, rejected by semantic acceptance.
     schemas["project-config"]["properties"]["github"]["properties"]["repository_id"] = {"anyOf": [integer(1), {"type": "null"}]}
     jira["properties"]["enabled"] = BOOL
+    for key in ("cloud_id", "provider_project_id", "controller_actor_id"):
+        jira["properties"][key] = {"anyOf": [text(), {"type": "null"}]}
     jira["properties"]["site"] = {"anyOf": [text(format="uri"), {"type": "null"}]}
     jira["properties"]["project_key"] = {"anyOf": [text(pattern="^[A-Z][A-Z0-9]*$"), {"type": "null"}]}
     jira["allOf"] = [{"if": {"properties": {"enabled": {"const": False}}, "required": ["enabled"]},
-        "then": {"properties": {"site": {"type": "null"}, "project_key": {"type": "null"}}},
-        "else": {"properties": {"site": text(format="uri"), "project_key": text(pattern="^[A-Z][A-Z0-9]*$")}}}]
+        "then": {"properties": {key: {"type": "null"} for key in
+                                  ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id")}},
+        "else": {"properties": {"cloud_id": text(), "site": text(format="uri"),
+                                  "provider_project_id": text(),
+                                  "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
+                                  "controller_actor_id": text()}}}]
     # Optional for migrated static configurations. Routing has a strict semantic
     # validator in model_routing.py, shared by configuration validation and CLI.
     schemas["project-config"]["properties"]["execution"]["properties"]["model_routing"] = {"type": "object"}
@@ -396,6 +459,9 @@ def catalog():
     # operating changes never rewrite this protected governance field.
     schemas["project-config"]["properties"]["execution"]["properties"]["independent_reviewers"] = obj({
         "count": integer(0), "allocation": const("one_per_stream")}, required=["allocation"])
+    # Optional for upgraded configurations; absence means the documented
+    # 15-minute controller status cadence.
+    schemas["project-config"]["properties"]["controller"]["required"].remove("status_cadence_seconds")
     # Optional and append-only for upgrades: tracked declarations add detectors;
     # built-ins can be tuned only by the ignored operator-local mapping.
     schemas["project-config"]["properties"]["publication"] = obj({

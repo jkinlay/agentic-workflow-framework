@@ -10,8 +10,11 @@
   },
   "jira": {
     "enabled": true,
+    "cloud_id": "fixture-cloud",
     "site": "https://jira.example.invalid",
+    "provider_project_id": "fixture-project",
     "project_key": "EX",
+    "controller_actor_id": "fixture-controller",
     "scope": {
       "allow_entire_project": false,
       "selector_mode": "all",
@@ -446,7 +449,8 @@
     "auto_dispatch": false,
     "auto_request_critic": false,
     "auto_resume_amendments": false,
-    "auto_transition_jira": false
+    "auto_transition_jira": false,
+    "status_cadence_seconds": 900
   },
   "audit": {
     "store_must_be_outside_worktrees": true,

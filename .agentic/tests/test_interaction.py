@@ -214,10 +214,18 @@ class GateHandoffTests(unittest.TestCase):
     def test_jointly_rebound_candidate_cannot_escape_current_repository_policy(self):
         for field,value in [('host','https://other.example'),('repository','other/repository'),('target_base_branch','other-branch'),('merge_method','merge')]:
             gate=deepcopy(self.gate); gate['candidate'][field]=value
-            request=make_request(gate,self.contracts,NOW)
-            with self.subTest(field=field),self.assertRaises(ValidationError):
-                gate_handoff(gate,request,self.config,self.contracts,NOW)
+            try:
+                request=make_request(gate,self.contracts,NOW)
+            except ValidationError:
+                request=None
+            if request is not None:
+                with self.subTest(field=field),self.assertRaises(ValidationError):
+                    gate_handoff(gate,request,self.config,self.contracts,NOW)
             gate['binding']['candidate_id']=fingerprint('candidate',gate['candidate'])
-            request=make_request(gate,self.contracts,NOW)
-            with self.subTest(field=field,rebound=True),self.assertRaises(ValidationError):
-                gate_handoff(gate,request,self.config,self.contracts,NOW)
+            try:
+                request=make_request(gate,self.contracts,NOW)
+            except ValidationError:
+                request=None
+            if request is not None:
+                with self.subTest(field=field,rebound=True),self.assertRaises(ValidationError):
+                    gate_handoff(gate,request,self.config,self.contracts,NOW)

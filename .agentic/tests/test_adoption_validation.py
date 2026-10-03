@@ -13,6 +13,7 @@ from agentic.contracts import Contracts
 from agentic.gates import evaluate
 from agentic.lifecycle import definition
 from agentic.policy import inside_scope, policy_hash, validate_config
+from review_admission_fixture import bind_review_admission
 
 
 class AdoptionValidationTests(unittest.TestCase):
@@ -64,6 +65,7 @@ class AdoptionValidationTests(unittest.TestCase):
                 for child in value:
                     bind(child)
         bind(bundle)
+        bind_review_admission(bundle)
         result = evaluate(self.config, definition(), bundle, self.contracts, '2026-09-09T12:00:00Z')
         self.assertNotEqual(result['conclusion'], 'READY_FOR_OWNER_AUTHORIZATION')
         self.assertFalse(result['execution_authority'])
@@ -71,7 +73,9 @@ class AdoptionValidationTests(unittest.TestCase):
         self.assertEqual(result['gates']['ci_candidate_binding']['result'], 'FAIL')
 
     def test_disabled_jira_is_null_and_not_in_scope(self):
-        self.config['jira'].update(enabled=False, site=None, project_key=None)
+        self.config['jira'].update(enabled=False, cloud_id=None, site=None,
+                                   provider_project_id=None, project_key=None,
+                                   controller_actor_id=None)
         self.assertEqual(inspect_config(self.config, definition(), self.contracts)['status'], 'ACCEPTED')
         self.assertFalse(inside_scope({'project_key': None}, self.config))
         with self.assertRaisesRegex(ValidationError, 'Jira is disabled'):
