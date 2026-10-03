@@ -2,7 +2,7 @@
 
 332 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `c27ba7c1120d0f33a4074451cad0ebc1c209bf1d29ac4784cc0809585326e97d`
+MANIFEST.json SHA-256: `f86a5cef7b584bbe9cd206f95a34c50eff2afe1470fc442d46591ba0ea1e27c2`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -329,7 +329,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/publish_catalog.py` | `edcade1a8b59ff546527e11925997555aa9e646def09e2e82ef97b2934879dcc` |
 | `scripts/release_hygiene.py` | `0e5ddb5d14cc5f7bcc70c31acaf093e9b70a1e85382c798cd987640ebc672b60` |
 | `scripts/release_review.py` | `58db97d3cd910658678f3dde6f534f77cee8d8e7884803222d7b077ceadf53f7` |
-| `scripts/run_publication_pre_controller.py` | `d4fe0b0160f9235f1b49b0372916c55ac1bba02f659b66125b948af765f5c02b` |
+| `scripts/run_publication_pre_controller.py` | `44793220c714ecb4e1aec6506fdb5ce996aa1bbbe438886ff6f6f82f8764e25c` |
 | `scripts/self_test.py` | `b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496` |
 | `scripts/tests/test_cli_failure_paths.py` | `00fa08f3f0b090a9dae135b80fd2e365d141d49fafc6bc8c0e6316e89f537ddf` |
 | `scripts/tests/test_fresh_bootstrap.py` | `26d1285d0394b222076ede040f0af5e738c979eb232b9c3fb11ea5fdd8dcbcb0` |
