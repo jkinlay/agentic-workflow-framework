@@ -850,6 +850,36 @@ def _object_ids(root):
     return tuple(sorted(line.decode("ascii") for line in raw.splitlines() if line))
 
 
+def _reachability_metadata(root):
+    """Reject local metadata that can make Git silently truncate a closure.
+
+    The rewrite proof deliberately runs with replacement refs disabled.  Git's
+    shallow boundary and legacy grafts are different: both can change the
+    parents that ``rev-list`` walks without changing a commit object.  AWF
+    cannot safely share those mutable pathnames with an external writer, so a
+    rewrite is supported only when both are absent.  The checks are repeated
+    around every replacement-closure walk and by each repository snapshot.
+    """
+    common = _git_common_dir(root)
+    candidates = {
+        "shallow": common / "shallow",
+        "grafts": common / "objects" / "info" / "grafts",
+    }
+    result = {}
+    for name, path in candidates.items():
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            result[name] = None
+            continue
+        except OSError as exc:
+            raise ValidationError(
+                "Reachability-altering Git metadata could not be proved absent") from exc
+        raise ValidationError(
+            "Reachability-altering Git metadata is unsupported for publication rewrite: " + name)
+    return result
+
+
 def _fanout_snapshot(object_dir):
     """Capture every possible loose-object fanout while the rewrite lock is held."""
     result = {}
@@ -878,6 +908,7 @@ def _fanout_snapshot(object_dir):
 
 
 def _rewrite_snapshot(root):
+    reachability_metadata = _reachability_metadata(root)
     common = _git_common_dir(root)
     object_dir = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-path", "objects").stdout.decode("utf-8").strip())
     try:
@@ -900,6 +931,7 @@ def _rewrite_snapshot(root):
     return {"refs": dict(_ref_tips(root)), "worktrees": _worktree_state(root),
             "logs": logs, "indexes": indexes,
             "alternate": alternate, "object_format": object_format,
+            "reachability_metadata": reachability_metadata,
             "object_dir": str(object_resolved), "object_identity": object_identity,
             "fanouts": _fanout_snapshot(object_resolved),
             "objects": _object_ids(root)}
@@ -1099,10 +1131,14 @@ def _snapshot_object_evidence(root, snapshot, oid, extra_env=None, expected=None
 
 
 def _replacement_closure_evidence(root, created, snapshot, records, extra_env):
-    """Bind every snapshot-present object reachable from the replacement commit."""
+    """Bind every object reachable from the exact replacement commit."""
+    if _reachability_metadata(root) != snapshot["reachability_metadata"]:
+        raise ValidationError("Reachability-altering Git metadata changed before closure proof")
     limit = MAX_REWRITE_PROOF_OBJECTS * 70
     raw = _git_bounded_stdout(root, "rev-list", "--objects", "--no-object-names", created,
                               extra_env=extra_env, limit=limit)
+    if _reachability_metadata(root) != snapshot["reachability_metadata"]:
+        raise ValidationError("Reachability-altering Git metadata changed during closure proof")
     object_format = snapshot["object_format"]
     length = 40 if object_format == "sha1" else 64
     oids = []
@@ -1119,34 +1155,63 @@ def _replacement_closure_evidence(root, created, snapshot, records, extra_env):
     if created not in seen or not oids or len(oids) > MAX_REWRITE_PROOF_OBJECTS:
         raise ValidationError("Replacement graph object inventory is incomplete or over budget")
     snapshot_objects = set(snapshot["objects"])
-    installed = {record["oid"] for record in records}
+    record_by_oid = {record["oid"]: record for record in records}
+    installed = set(record_by_oid)
     if any(oid not in snapshot_objects and oid not in installed for oid in oids):
         raise ValidationError("Replacement graph contains an object without locked provenance")
     evidence = []
     total = 0
     for oid in oids:
-        if oid not in snapshot_objects:
-            continue
-        item = _snapshot_object_evidence(root, snapshot, oid, extra_env)
+        if oid in snapshot_objects:
+            item = _snapshot_object_evidence(root, snapshot, oid, extra_env)
+        else:
+            record = record_by_oid[oid]
+            raw_object = record["raw"]
+            item = {"oid": oid, "kind": record["kind"], "size": len(raw_object),
+                    "content_sha256": hashlib.sha256(raw_object).hexdigest(),
+                    "loose_identity": None}
+            if (_object_digest(record["kind"], raw_object, object_format) != oid or
+                    record["kind"] not in {"blob", "tree", "commit"} or
+                    len(raw_object) > MAX_REWRITE_PROOF_OBJECT_BYTES):
+                raise ValidationError("Replacement graph object evidence is invalid")
         total += item["size"]
         if total > MAX_REWRITE_PROOF_TOTAL_BYTES:
             raise ValidationError("Replacement graph evidence exceeds the total byte bound")
         evidence.append(item)
     if not evidence:
-        raise ValidationError("Replacement graph lacks snapshot-present closure evidence")
+        raise ValidationError("Replacement graph lacks complete closure evidence")
     return tuple(evidence)
 
 
 def _snapshot_closure_matches(root, snapshot, evidence):
     total = 0
+    snapshot_objects = set(snapshot["objects"])
     for expected in evidence:
         try:
-            current = _snapshot_object_evidence(root, snapshot, expected["oid"], expected=expected)
+            if expected["oid"] in snapshot_objects:
+                current = _snapshot_object_evidence(
+                    root, snapshot, expected["oid"], expected=expected)
+            else:
+                current = _git_object_evidence(
+                    root, expected["oid"], snapshot["object_format"])
         except ValidationError as exc:
             return False, str(exc)
         total += current["size"]
         if total > MAX_REWRITE_PROOF_TOTAL_BYTES or current != expected:
             return False, "snapshot-present replacement graph object changed"
+    return True, "proved"
+
+
+def _replacement_closure_matches(root, created, snapshot, records, expected):
+    """Re-walk and compare the complete post-CAS replacement closure."""
+    try:
+        current = _replacement_closure_evidence(root, created, snapshot, records, None)
+    except ValidationError as exc:
+        return False, str(exc)
+    if tuple(item["oid"] for item in current) != tuple(item["oid"] for item in expected):
+        return False, "replacement graph object inventory changed"
+    if current != expected:
+        return False, "replacement graph object evidence changed"
     return True, "proved"
 
 
@@ -1474,7 +1539,8 @@ def _post_cas_proof(root, snapshot, ref, created, old_commits, records, closure_
     for key in set(current["logs"]) | set(snapshot["logs"]):
         if key not in allowed_logs and current["logs"].get(key) != snapshot["logs"].get(key):
             return False, "unexpected reflog changed"
-    for key in ("indexes", "alternate", "object_format", "object_dir", "object_identity"):
+    for key in ("indexes", "alternate", "object_format", "reachability_metadata",
+                "object_dir", "object_identity"):
         if current[key] != snapshot[key]:
             return False, key + " changed"
     try:
@@ -1486,9 +1552,6 @@ def _post_cas_proof(root, snapshot, ref, created, old_commits, records, closure_
     expected_objects = set(snapshot["objects"]) | {record["oid"] for record in records}
     if set(current["objects"]) != expected_objects:
         return False, "object inventory changed"
-    closure_proved, closure_detail = _snapshot_closure_matches(root, snapshot, closure_evidence)
-    if not closure_proved:
-        return False, closure_detail
     object_dir = Path(snapshot["object_dir"])
     for record in records:
         if not record.get("created_by_operation"):
@@ -1520,6 +1583,10 @@ def _post_cas_proof(root, snapshot, ref, created, old_commits, records, closure_
     for old in old_commits:
         if any(_is_ancestor(root, old, tip) for tip in other_tips):
             return False, "old commit became reachable"
+    closure_proved, closure_detail = _replacement_closure_matches(
+        root, created, snapshot, records, closure_evidence)
+    if not closure_proved:
+        return False, closure_detail
     return True, "proved"
 
 
@@ -1572,6 +1639,7 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
         raise ValidationError("Checked-out HEAD differs from the named branch")
     if _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout:
         raise ValidationError("Rewrite requires a clean working tree and index")
+    _reachability_metadata(root)
     base_sha = _git(root, "rev-parse", "--verify", base + "^{commit}").stdout.decode("ascii").strip()
     if not _is_ancestor(root, base_sha, old_head):
         raise ValidationError("Rewrite base must be an ancestor of the branch")
