@@ -1437,22 +1437,22 @@ def _execution_context(plan: dict, expected_candidate: dict,
     return root, executables
 
 
-def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
-                   review_raw: bytes, expected_review_sha256: str,
-                   config_raw: bytes, expected_config_sha256: str,
-                   expected_candidate: dict, execution_root: str | os.PathLike[str],
-                   review_authenticator=None, checkout_attestor=None,
-                   checkout_snapshotter=None,
-                   capacity_raw: bytes | None = None,
-                   expected_capacity_sha256: str | None = None, broker_client=None,
-                   now: str | None = None, max_capacity_age_seconds: int = 300,
-                   cancel_event: threading.Event | None = None, lease_clock=None) -> dict:
+def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
+                       review_raw: bytes, expected_review_sha256: str,
+                       config_raw: bytes, expected_config_sha256: str,
+                       expected_candidate: dict, execution_root: str | os.PathLike[str],
+                       review_authenticator=None, checkout_attestor=None,
+                       checkout_snapshotter=None,
+                       capacity_raw: bytes | None = None,
+                       expected_capacity_sha256: str | None = None, broker_client=None,
+                       now: str, max_capacity_age_seconds: int = 300,
+                       cancel_event: threading.Event | None = None, lease_clock=None) -> dict:
     """Execute a reviewed partition plan and return complete fail-closed evidence.
 
     Inputs are exact digest-bound documents. A trusted host authenticator must
     independently authenticate the immutable reviewer and candidate tuple.
+    This fixed-time helper is private and exists only for deterministic tests.
     """
-    now = now or datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     timestamp(now)
     max_capacity_age_seconds = _positive_int(max_capacity_age_seconds,
                                              "max_capacity_age_seconds", maximum=86_400)
@@ -1603,3 +1603,30 @@ def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
         "credential_strip_names": authorization["record"][
             "target_environment"]["strip_names"],
     }
+
+
+def run_validation(*, plan_raw: bytes, expected_plan_sha256: str,
+                   review_raw: bytes, expected_review_sha256: str,
+                   config_raw: bytes, expected_config_sha256: str,
+                   expected_candidate: dict, execution_root: str | os.PathLike[str],
+                   review_authenticator=None, checkout_attestor=None,
+                   checkout_snapshotter=None,
+                   capacity_raw: bytes | None = None,
+                   expected_capacity_sha256: str | None = None, broker_client=None,
+                   max_capacity_age_seconds: int = 300,
+                   cancel_event: threading.Event | None = None) -> dict:
+    """Run production validation against the trusted host UTC clock."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return _run_validation_at(
+        plan_raw=plan_raw, expected_plan_sha256=expected_plan_sha256,
+        review_raw=review_raw, expected_review_sha256=expected_review_sha256,
+        config_raw=config_raw, expected_config_sha256=expected_config_sha256,
+        expected_candidate=expected_candidate, execution_root=execution_root,
+        review_authenticator=review_authenticator,
+        checkout_attestor=checkout_attestor,
+        checkout_snapshotter=checkout_snapshotter,
+        capacity_raw=capacity_raw,
+        expected_capacity_sha256=expected_capacity_sha256,
+        broker_client=broker_client, now=now,
+        max_capacity_age_seconds=max_capacity_age_seconds,
+        cancel_event=cancel_event)

@@ -26,7 +26,8 @@ from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, sha256, timestamp
 from agentic import heavy_validation as heavy
 from agentic import heavy_validation_controller as heavy_controller
-from agentic.heavy_validation import (_engine_identity, resolve_without_alias, run_validation,
+from agentic.heavy_validation import (_engine_identity, _run_validation_at,
+                                      resolve_without_alias, run_validation,
                                       workload_authorization)
 from agentic.heavy_validation_controller import (
     FileLeaseBroker, GitCheckoutAttestor, GitCheckoutSnapshotter,
@@ -192,7 +193,7 @@ def run(plan_raw, cfg, *, cap=None, broker=None, auth=authenticator,
         cancel_event=None, candidate=None, cwd=None, lease_clock=None):
     cfg_raw = canonical(cfg)
     review_raw = review(plan_raw)
-    return run_validation(plan_raw=plan_raw, expected_plan_sha256=sha256(plan_raw),
+    return _run_validation_at(plan_raw=plan_raw, expected_plan_sha256=sha256(plan_raw),
         review_raw=review_raw, expected_review_sha256=sha256(review_raw),
         config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
         expected_candidate=candidate or CANDIDATE,
@@ -623,6 +624,73 @@ class HeavyValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "exact workload"):
             bad(review_value, "d" * 64, "e" * 64, CANDIDATE, authorization)
 
+    def test_production_cli_rejects_arbitrary_clock_override(self):
+        command = [sys.executable, str(SOURCE_ROOT / ".agentic/scripts/run_heavy_validation.py"),
+                   "--config", "missing-config", "--expected-config-sha256", "a" * 64,
+                   "--plan", "missing-plan", "--expected-plan-sha256", "b" * 64,
+                   "--review", "missing-review", "--expected-review-sha256", "c" * 64,
+                   "--repository-id", "101", "--base-sha", "d" * 40,
+                   "--head-sha", "e" * 40, "--tree-sha", "f" * 40,
+                   "--result-log", "missing-result", "--result-receipt", "missing-receipt",
+                   "--receipt-key-file", "missing-key", "--github-repository", "example/project",
+                   "--github-pr", "7", "--github-review-id", "9", "--now", NOW]
+        completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True)
+        self.assertEqual(2, completed.returncode)
+        self.assertIn("unrecognized arguments: --now", completed.stderr)
+
+    def test_production_host_clock_rejects_expired_review(self):
+        raw = plan([partition("expired-review")], parallelism=1)
+        cfg_raw = canonical(config(enabled=False))
+        value = json.loads(review(raw))
+        value["reviewed_at"] = "2026-10-01T08:00:00Z"
+        value["expires_at"] = "2026-10-02T08:00:00Z"
+        review_raw = canonical(value)
+
+        class HostClock:
+            @classmethod
+            def now(cls, tz):
+                return datetime(2026, 10, 3, 8, 0, 0, tzinfo=tz)
+
+        with mock.patch.object(heavy, "datetime", HostClock):
+            with self.assertRaisesRegex(ValidationError,
+                                        "validity interval does not include execution time"):
+                run_validation(
+                    plan_raw=raw, expected_plan_sha256=sha256(raw),
+                    review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                    config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                    expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                    review_authenticator=authenticator,
+                    checkout_attestor=checkout_attestor)
+
+    def test_production_host_clock_keeps_stale_capacity_stale_and_authenticates_review(self):
+        raw = plan([partition("stale-capacity")], parallelism=1)
+        cfg = config()
+        cfg_raw = canonical(cfg)
+        cap = capacity(raw, cfg_raw, observed_at="2026-10-02T08:00:00Z")
+        review_raw = review(raw)
+        authenticated = mock.Mock(wraps=authenticator)
+
+        class HostClock:
+            @classmethod
+            def now(cls, tz):
+                return datetime(2026, 10, 3, 8, 0, 0, tzinfo=tz)
+
+        with mock.patch.object(heavy, "datetime", HostClock):
+            result = run_validation(
+                plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticated,
+                checkout_attestor=checkout_attestor,
+                capacity_raw=cap, expected_capacity_sha256=sha256(cap))
+        self.assertEqual("FAIL", result["status"])
+        self.assertEqual("NOT_STARTED", result["execution"]["mode"])
+        self.assertIn("observed_capacity_stale", result["execution"]["fallback_reasons"])
+        self.assertEqual("AUTHENTICATED", result["review_authority"]["status"])
+        authenticated.assert_called_once()
+
     def test_production_authenticator_and_durable_broker_run_parallel(self):
         raw = plan([partition("a"), partition("b")], parallelism=2)
         cfg_raw = canonical(config())
@@ -653,7 +721,7 @@ class HeavyValidationTests(unittest.TestCase):
                  "resources": {}, "engines": {"python": {
                      "identity_sha256": heavy._engine_identity(json.loads(raw)), "slots": 2}}},
                 clock=clock)
-            result = run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+            result = _run_validation_at(plan_raw=raw, expected_plan_sha256=sha256(raw),
                 review_raw=review_raw, expected_review_sha256=sha256(review_raw),
                 config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
@@ -682,7 +750,7 @@ class HeavyValidationTests(unittest.TestCase):
         with mock.patch.object(heavy, "_execute_attempt",
                                side_effect=AssertionError("target scheduled")):
             with self.assertRaisesRegex(ValidationError, "lookup failed"):
-                run_validation(
+                _run_validation_at(
                     plan_raw=raw, expected_plan_sha256=sha256(raw),
                     review_raw=review_raw, expected_review_sha256=sha256(review_raw),
                     config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
@@ -771,7 +839,7 @@ class HeavyValidationTests(unittest.TestCase):
         changed = canonical(reviewed)
         cfg = canonical(config(enabled=False))
         with self.assertRaisesRegex(ValidationError, "exact workload"):
-            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+            _run_validation_at(plan_raw=raw, expected_plan_sha256=sha256(raw),
                 review_raw=changed, expected_review_sha256=sha256(changed),
                 config_raw=cfg, expected_config_sha256=sha256(cfg),
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
@@ -782,7 +850,7 @@ class HeavyValidationTests(unittest.TestCase):
             "launcher"]["sha256"] = "0" * 64
         changed = canonical(reviewed)
         with self.assertRaisesRegex(ValidationError, "exact workload"):
-            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+            _run_validation_at(plan_raw=raw, expected_plan_sha256=sha256(raw),
                 review_raw=changed, expected_review_sha256=sha256(changed),
                 config_raw=cfg, expected_config_sha256=sha256(cfg),
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
@@ -793,7 +861,7 @@ class HeavyValidationTests(unittest.TestCase):
             "interpreter_flags"] = ["-B"]
         changed = canonical(reviewed)
         with self.assertRaisesRegex(ValidationError, "exact workload"):
-            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+            _run_validation_at(plan_raw=raw, expected_plan_sha256=sha256(raw),
                 review_raw=changed, expected_review_sha256=sha256(changed),
                 config_raw=cfg, expected_config_sha256=sha256(cfg),
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
@@ -805,7 +873,7 @@ class HeavyValidationTests(unittest.TestCase):
         cfg = canonical(config(enabled=False))
         review_raw = review(raw)
         with self.assertRaisesRegex(ValidationError, "attestation is unavailable"):
-            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+            _run_validation_at(plan_raw=raw, expected_plan_sha256=sha256(raw),
                 review_raw=review_raw, expected_review_sha256=sha256(review_raw),
                 config_raw=cfg, expected_config_sha256=sha256(cfg),
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
@@ -831,7 +899,7 @@ class HeavyValidationTests(unittest.TestCase):
         cfg = canonical(config(enabled=False))
         review_raw = review(raw)
         with self.assertRaisesRegex(ValidationError, "snapshot provider is unavailable"):
-            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+            _run_validation_at(plan_raw=raw, expected_plan_sha256=sha256(raw),
                 review_raw=review_raw, expected_review_sha256=sha256(review_raw),
                 config_raw=cfg, expected_config_sha256=sha256(cfg),
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
@@ -849,7 +917,7 @@ class HeavyValidationTests(unittest.TestCase):
             return checkout_attestor(candidate, working_directory)
         review_raw = review(raw)
         with self.assertRaisesRegex(ValidationError, "Checkout attestation failed"):
-            run_validation(plan_raw=raw, expected_plan_sha256=sha256(raw),
+            _run_validation_at(plan_raw=raw, expected_plan_sha256=sha256(raw),
                 review_raw=review_raw, expected_review_sha256=sha256(review_raw),
                 config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
                 expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
@@ -1075,7 +1143,7 @@ class HeavyValidationTests(unittest.TestCase):
                             candidate=candidate, cwd=root)
             config_raw = canonical(config(enabled=False))
             review_raw = review(plan_raw, candidate=candidate)
-            result = run_validation(
+            result = _run_validation_at(
                 plan_raw=plan_raw, expected_plan_sha256=sha256(plan_raw),
                 review_raw=review_raw, expected_review_sha256=sha256(review_raw),
                 config_raw=config_raw, expected_config_sha256=sha256(config_raw),
@@ -1129,7 +1197,7 @@ class HeavyValidationTests(unittest.TestCase):
             review_raw = review(plan_raw, candidate=candidate)
             with mock.patch.dict(os.environ, {
                     "PYTHONPATH": str(hostile), "PYTHONUSERBASE": str(hostile)}):
-                result = run_validation(
+                result = _run_validation_at(
                     plan_raw=plan_raw, expected_plan_sha256=sha256(plan_raw),
                     review_raw=review_raw, expected_review_sha256=sha256(review_raw),
                     config_raw=config_raw, expected_config_sha256=sha256(config_raw),
