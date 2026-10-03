@@ -628,17 +628,23 @@ class _ChildLaunchAuthorization:
             # Provider reauthentication can block.  Sample trusted UTC only
             # after it returns so review, capacity and lease authority are
             # revalidated for the instant immediately preceding child creation.
-            sampled_at = _clock_text(self._clock)
+            sampled_at = None
             try:
+                sampled_at = _clock_text(self._clock)
                 freshness = _dispatch_freshness(
                     self._review, self._capacity, sampled_at,
                     self._max_capacity_age_seconds,
                     capacity_required=self._capacity_required)
                 reasons.extend(freshness["reasons"])
             except Exception as exc:
+                # A failed or malformed trusted-clock observation is itself
+                # rejection evidence.  Keep the absent observation explicit;
+                # inventing a timestamp here would make the audit record claim
+                # authority that the host never supplied.
                 freshness = {"status": "REJECTED", "sampled_at": sampled_at,
                              "error_type": type(exc).__name__}
-                reasons.append("freshness_revalidation_failed")
+                reasons.append("trusted_clock_rejected" if sampled_at is None
+                               else "freshness_revalidation_failed")
             lease_fence = {
                 "required": self._capacity_required,
                 "status": "NOT_REQUIRED" if not self._capacity_required else "REJECTED",

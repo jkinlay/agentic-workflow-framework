@@ -1133,6 +1133,98 @@ class HeavyValidationTests(unittest.TestCase):
             self.assertEqual([("lease-1", 7)], broker.released)
             self.assertEqual("RELEASED", result["lease_release"]["status"])
 
+    def test_launch_clock_exception_rejects_all_queued_children_and_releases_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            markers = [Path(folder) / f"clock-exception-{index}.txt" for index in range(2)]
+            raw = plan([
+                partition(f"clock-exception-{index}",
+                          f"from pathlib import Path; Path({str(marker)!r}).write_text('bad')")
+                for index, marker in enumerate(markers)
+            ], parallelism=1)
+            cfg, broker = config(), Broker()
+            cfg_raw = canonical(cfg)
+            cap = capacity(raw, cfg_raw, workers=1, heavy=1)
+            cancelled = threading.Event()
+            calls = 0
+
+            def failing_clock():
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return NOW
+                raise RuntimeError("trusted clock unavailable")
+
+            result = _run_validation_at(
+                plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review(raw), expected_review_sha256=sha256(review(raw)),
+                config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticator,
+                checkout_attestor=checkout_attestor,
+                checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
+                expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                lease_clock=lambda: NOW, dispatch_clock=failing_clock,
+                cancel_event=cancelled)
+            self.assertEqual(2, calls)
+            self.assertTrue(cancelled.is_set())
+            self.assertTrue(result["all_partitions_terminal"])
+            self.assertEqual(2, result["execution"]["completed_terminal_count"])
+            self.assertTrue(all(not marker.exists() for marker in markers))
+            gates = result["child_launch_authorization"]
+            self.assertEqual("REJECTED", gates["status"])
+            self.assertEqual(1, len(gates["checks"]))
+            self.assertIsNone(gates["checks"][0]["sampled_at"])
+            self.assertEqual(["trusted_clock_rejected"], gates["checks"][0]["reasons"])
+            self.assertEqual("RuntimeError", gates["checks"][0]["freshness"]["error_type"])
+            self.assertRegex(gates["checks"][0]["evidence_sha256"], r"^[0-9a-f]{64}$")
+            self.assertRegex(gates["evidence_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual([("lease-1", 7)], broker.released)
+            self.assertEqual("RELEASED", result["lease_release"]["status"])
+
+    def test_malformed_launch_clock_rejects_all_retries_and_releases_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            marker = Path(folder) / "malformed-clock-retry.txt"
+            raw = plan([partition(
+                "malformed-clock-retry",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('bad'); raise SystemExit(9)",
+            )], parallelism=1, retries=1)
+            cfg, broker = config(), Broker()
+            cfg_raw = canonical(cfg)
+            cap = capacity(raw, cfg_raw, workers=1, heavy=1)
+            cancelled = threading.Event()
+            calls = 0
+
+            def malformed_clock():
+                nonlocal calls
+                calls += 1
+                return NOW if calls == 1 else {"not": "trusted UTC"}
+
+            result = _run_validation_at(
+                plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review(raw), expected_review_sha256=sha256(review(raw)),
+                config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticator,
+                checkout_attestor=checkout_attestor,
+                checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
+                expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                lease_clock=lambda: NOW, dispatch_clock=malformed_clock,
+                cancel_event=cancelled)
+            self.assertEqual(2, calls)
+            self.assertTrue(cancelled.is_set())
+            self.assertTrue(result["all_partitions_terminal"])
+            self.assertEqual(1, result["execution"]["completed_terminal_count"])
+            self.assertFalse(marker.exists())
+            self.assertEqual(0, result["partitions"][0]["retry_count"])
+            gates = result["child_launch_authorization"]
+            self.assertEqual("REJECTED", gates["status"])
+            self.assertEqual(1, len(gates["checks"]))
+            self.assertIsNone(gates["checks"][0]["sampled_at"])
+            self.assertEqual(["trusted_clock_rejected"], gates["checks"][0]["reasons"])
+            self.assertEqual("ValidationError", gates["checks"][0]["freshness"]["error_type"])
+            self.assertEqual([("lease-1", 7)], broker.released)
+            self.assertEqual("RELEASED", result["lease_release"]["status"])
+
     def test_durable_file_broker_fences_capacity_and_result_log_is_immutable(self):
         clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
         with tempfile.TemporaryDirectory() as folder:
