@@ -30,6 +30,17 @@ actor, provider identity, and a five-minute issue/review/expiry window. The
 protected ledger retains the record and review digests in an append-only audit.
 Equal freezes remain idempotent; supersets never need a weakening disposition.
 
+Reviewer-removal authority is derived from the accepted
+`.agentic/PROJECT_CONFIG.yaml`: `merge_gate.trusted_owner_ids` and the immutable
+GitHub host, repository name, and numeric repository ID. The production CLI has
+no flags that can replace those trust roots. A weakening request supplies only
+the exact disposition record and its digest; a trusted host adapter must make a
+fresh live provider observation. Its immutable artifact ID, approval, actor,
+provider identity, old cycle, tuple, old/new sets, removed IDs, and reason must
+all match. Provider artifacts are single-use. Caller-authored approval payloads,
+stale observations, configuration mismatches, and artifact replay fail without
+changing the active reviewer set or its audit.
+
 Persist one terminal result for every required reviewer. `FAILED`,
 `TIMED_OUT`, `MALFORMED`, `CANCELLED`, `STALE`, and `DUPLICATE` are completed observations
 but never acceptable completion. Missing and running reviewers remain

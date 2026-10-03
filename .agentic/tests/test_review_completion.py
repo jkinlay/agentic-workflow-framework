@@ -18,7 +18,7 @@ from agentic.cli import local_semantics
 from agentic.gates import evaluate
 from agentic.interaction import gate_handoff
 from agentic.lifecycle import definition, transition
-from agentic.review_completion import ReviewCompletionStore
+from agentic.review_completion import ReviewCompletionStore, review_authority_from_config
 from agentic.store import Store
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +42,33 @@ class ReviewCompletionTests(unittest.TestCase):
         self.store = ReviewCompletionStore(self.path)
         self.reviewers = ["reviewer-c", "reviewer-a", "reviewer-b"]
         self.current = candidate()
+        config = copy.deepcopy(load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml"))
+        config["github"]["repository"] = self.current["repository"]
+        self.authority = review_authority_from_config(config)
+
+    @staticmethod
+    def provider_review(request, *, artifact_id=None, observed_at=None):
+        record = request["record"]
+        return {
+            "status": "APPROVED",
+            "artifact_id": artifact_id or "provider-review-" + record["disposition_id"],
+            "record_sha256": request["record_sha256"],
+            "disposition_id": record["disposition_id"],
+            "old_cycle_id": record["old_cycle_id"],
+            "tuple_sha256": record["tuple_sha256"],
+            "old_reviewer_set_sha256": record["old_reviewer_set_sha256"],
+            "new_reviewer_set_sha256": record["new_reviewer_set_sha256"],
+            "removed_reviewers": record["removed_reviewers"],
+            "reason": record["reason"],
+            "owner_actor_id": record["owner_actor_id"],
+            "provider_identity": request["expected_provider_identity"],
+            "observed_at": observed_at or record["issued_at"],
+        }
+
+    def removal_store(self, path, observer=None):
+        return ReviewCompletionStore(
+            path, authority=self.authority,
+            provider_observer=observer or self.provider_review)
 
     def freeze_and_dispatch(self):
         frozen = self.store.freeze(self.current, self.reviewers)
@@ -72,18 +99,13 @@ class ReviewCompletionTests(unittest.TestCase):
             "new_reviewer_set_sha256": fingerprint("reviewer-set", new_reviewers),
             "removed_reviewers": sorted(set(old_reviewers) - set(new_reviewers)),
             "reason": reason,
-            "owner_actor_id": store.owner_actor_id,
-            "provider_identity": store.provider_identity,
+            "owner_actor_id": store.authority["trusted_owner_ids"][0],
+            "provider_identity": store.authority["provider_identity"],
             "issued_at": issued,
             "expires_at": expires,
         }
         record_hash = fingerprint("reviewer-removal-disposition", record)
-        return {"record": record, "record_sha256": record_hash,
-                "review": {"status": "APPROVED", "review_id": "provider-review-1",
-                           "record_sha256": record_hash,
-                           "owner_actor_id": store.owner_actor_id,
-                           "provider_identity": store.provider_identity,
-                           "observed_at": issued}}
+        return {"record": record, "record_sha256": record_hash}
 
     @staticmethod
     def receipt(admission):
@@ -161,8 +183,7 @@ class ReviewCompletionTests(unittest.TestCase):
         for state in ("QUEUED", "RUNNING", "FAILED", "CANCELLED", "ACCEPTABLE"):
             with self.subTest(state=state):
                 path = Path(self.temporary.name) / f"removal-{state}.sqlite3"
-                store = ReviewCompletionStore(path, owner_actor_id="owner-1",
-                                              provider_identity="github.example")
+                store = self.removal_store(path)
                 reviewers = ["drop", "keep"]
                 frozen = store.freeze(self.current, reviewers)
                 store.dispatch("keep", self.current, reviewers)
@@ -178,8 +199,7 @@ class ReviewCompletionTests(unittest.TestCase):
                 self.assertEqual(store.reviewer_set_audit(), [])
 
     def test_valid_reviewed_owner_disposition_allows_and_audits_exact_removal(self):
-        store = ReviewCompletionStore(Path(self.temporary.name) / "authorized-removal.sqlite3",
-                                      owner_actor_id="owner-1", provider_identity="github.example")
+        store = self.removal_store(Path(self.temporary.name) / "authorized-removal.sqlite3")
         reviewers = ["drop", "keep"]
         old = store.freeze(self.current, reviewers)
         store.dispatch("keep", self.current, reviewers)
@@ -198,6 +218,7 @@ class ReviewCompletionTests(unittest.TestCase):
         self.assertEqual(audit[0]["new_cycle_id"], new["cycle_id"])
         self.assertEqual(audit[0]["record"]["removed_reviewers"], ["drop"])
         self.assertEqual(audit[0]["record_sha256"], disposition["record_sha256"])
+        self.assertTrue(audit[0]["review"]["artifact_id"].startswith("provider-review-"))
         with store.transaction() as db:
             db.execute("UPDATE reviewer_set_dispositions SET record_json='{}' WHERE sequence=1")
         with self.assertRaisesRegex(ValidationError, "audit digest"):
@@ -205,20 +226,21 @@ class ReviewCompletionTests(unittest.TestCase):
 
     def test_reviewer_removal_disposition_is_exact_identity_bound_and_fresh(self):
         mutations = {
-            "actor": lambda value: value["record"].__setitem__("owner_actor_id", "other-owner"),
-            "provider": lambda value: value["review"].__setitem__("provider_identity", "other-provider"),
+            "actor": lambda value: value["record"].__setitem__("owner_actor_id", 9999),
+            "provider": lambda value: value["record"].__setitem__(
+                "provider_identity", {"host": "https://attacker.invalid",
+                                      "repository": "example/project", "repository_id": 101}),
             "tuple": lambda value: value["record"]["tuple"].__setitem__("head_sha", "9" * 40),
             "old cycle": lambda value: value["record"].__setitem__("old_cycle_id", str(uuid.uuid4())),
             "new set": lambda value: value["record"].__setitem__("new_required_reviewers", ["drop"]),
             "stale": lambda value: (value["record"].__setitem__("issued_at", "2000-01-01T00:00:00Z"),
                                      value["record"].__setitem__("expires_at", "2000-01-01T00:04:00Z"),
-                                     value["review"].__setitem__("observed_at", "2000-01-01T00:00:01Z")),
+                                     None),
         }
         for label, mutate in mutations.items():
             with self.subTest(label=label):
                 path = Path(self.temporary.name) / (label.replace(" ", "-") + ".sqlite3")
-                store = ReviewCompletionStore(path, owner_actor_id="owner-1",
-                                              provider_identity="github.example")
+                store = self.removal_store(path)
                 old = store.freeze(self.current, ["drop", "keep"])
                 store.dispatch("drop", self.current, ["drop", "keep"])
                 disposition = self.removal_disposition(store, old, ["keep"])
@@ -227,15 +249,95 @@ class ReviewCompletionTests(unittest.TestCase):
                 if label in {"actor", "tuple", "old cycle", "new set", "stale"}:
                     disposition["record_sha256"] = fingerprint(
                         "reviewer-removal-disposition", disposition["record"])
-                    disposition["review"]["record_sha256"] = disposition["record_sha256"]
                 with self.assertRaises(ValidationError):
                     store.freeze(self.current, ["keep"], disposition)
                 self.assertEqual(store.status()["cycle_id"], old["cycle_id"])
                 self.assertEqual(store.reviewer_set_audit(), [])
 
+    def test_fabricated_removal_authority_observation_and_replay_fail_closed(self):
+        def prepared(name, *, authority=None, observer=None):
+            path = Path(self.temporary.name) / (name + ".sqlite3")
+            store = ReviewCompletionStore(
+                path, authority=authority or self.authority,
+                provider_observer=observer or self.provider_review)
+            old = store.freeze(self.current, ["drop", "keep"])
+            store.dispatch("drop", self.current, ["drop", "keep"])
+            return store, old, self.removal_disposition(store, old, ["keep"])
+
+        calls = []
+        store, old, disposition = prepared(
+            "caller-review", observer=lambda request: calls.append(request))
+        disposition["review"] = {
+            "status": "APPROVED", "artifact_id": "fabricated-local-review"
+        }
+        with self.assertRaisesRegex(ValidationError, "exact record and digest"):
+            store.freeze(self.current, ["keep"], disposition)
+        self.assertEqual(calls, [])
+        self.assertEqual(store.status()["cycle_id"], old["cycle_id"])
+        self.assertEqual(store.reviewer_set_audit(), [])
+
+        def fabricated_provider(request):
+            review = self.provider_review(request)
+            review["provider_identity"] = {
+                "host": "https://attacker.invalid",
+                "repository": "example/project",
+                "repository_id": 101,
+            }
+            return review
+
+        store, old, disposition = prepared("fabricated-provider", observer=fabricated_provider)
+        with self.assertRaisesRegex(ValidationError, "exact disposition"):
+            store.freeze(self.current, ["keep"], disposition)
+        self.assertEqual(store.status()["cycle_id"], old["cycle_id"])
+        self.assertEqual(store.reviewer_set_audit(), [])
+
+        stale = "2000-01-01T00:00:01Z"
+        store, old, disposition = prepared(
+            "stale-observation", observer=lambda request: self.provider_review(
+                request, observed_at=stale))
+        with self.assertRaises(ValidationError):
+            store.freeze(self.current, ["keep"], disposition)
+        self.assertEqual(store.status()["cycle_id"], old["cycle_id"])
+        self.assertEqual(store.reviewer_set_audit(), [])
+
+        wrong_config = copy.deepcopy(load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml"))
+        wrong_config["github"]["repository"] = "other/project"
+        wrong_authority = review_authority_from_config(wrong_config)
+        store, old, disposition = prepared("config-mismatch", authority=wrong_authority)
+        with self.assertRaisesRegex(ValidationError, "PROJECT_CONFIG"):
+            store.freeze(self.current, ["keep"], disposition)
+        self.assertEqual(store.status()["cycle_id"], old["cycle_id"])
+        self.assertEqual(store.reviewer_set_audit(), [])
+
+        reused_artifact = "provider-artifact-replay"
+        observer = lambda request: self.provider_review(request, artifact_id=reused_artifact)
+        path = Path(self.temporary.name) / "artifact-replay.sqlite3"
+        store = self.removal_store(path, observer=observer)
+        first = store.freeze(self.current, ["a", "b", "c"])
+        store.dispatch("c", self.current, ["a", "b", "c"])
+        second = store.freeze(
+            self.current, ["a", "b"], self.removal_disposition(store, first, ["a", "b"]))
+        store.dispatch("b", self.current, ["a", "b"])
+        with self.assertRaisesRegex(ValidationError, "already used"):
+            store.freeze(
+                self.current, ["a"], self.removal_disposition(store, second, ["a"]))
+        self.assertEqual(store.status()["cycle_id"], second["cycle_id"])
+        self.assertEqual(len(store.reviewer_set_audit()), 1)
+
+    def test_production_cli_has_no_caller_supplied_reviewer_removal_trust_roots(self):
+        command = [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
+                   "--root", str(ROOT), "review-completion",
+                   "--state", str(Path(self.temporary.name) / "forbidden.sqlite3"),
+                   "--worktree-root", str(Path(self.temporary.name) / "candidate"),
+                   "--trusted-owner-actor", "1001", "--provider-identity", "fabricated",
+                   "recover"]
+        completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=30)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--state", completed.stderr)
+        self.assertFalse((Path(self.temporary.name) / "forbidden.sqlite3").exists())
+
     def test_equal_and_superset_freezes_never_weaken_dispatched_requirements(self):
-        store = ReviewCompletionStore(Path(self.temporary.name) / "monotonic.sqlite3",
-                                      owner_actor_id="owner-1", provider_identity="github.example")
+        store = self.removal_store(Path(self.temporary.name) / "monotonic.sqlite3")
         old = store.freeze(self.current, ["a", "b"])
         store.dispatch("a", self.current, ["a", "b"])
         equal = store.freeze(self.current, ["b", "a"])

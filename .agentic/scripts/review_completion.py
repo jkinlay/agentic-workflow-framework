@@ -10,15 +10,16 @@ import argparse
 import json
 
 from agentic.canonical import load
-from agentic.review_completion import ReviewCompletionStore, validate_submission_semantics
+from agentic.configuration import inspect_config
+from agentic.contracts import Contracts
+from agentic.review_completion import (ReviewCompletionStore, review_authority_from_config,
+                                       validate_submission_semantics)
 
 
 def main(argv=None, default_root=ROOT):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--worktree-root", type=Path, action="append", required=True)
-    parser.add_argument("--trusted-owner-actor")
-    parser.add_argument("--provider-identity")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("freeze", "dispatch", "status", "prepare"):
         command = sub.add_parser(name)
@@ -42,9 +43,20 @@ def main(argv=None, default_root=ROOT):
     sub.add_parser("recover")
     sub.add_parser("audit-reviewer-set")
     args = parser.parse_args(argv)
+    authority = None
+    if args.command == "freeze" and args.reviewer_removal_disposition:
+        config = load(default_root / ".agentic/PROJECT_CONFIG.yaml")
+        workflow = load(default_root / ".agentic/workflow.yaml")
+        contracts = Contracts(default_root / ".agentic/schemas")
+        instructions_path = default_root / "PROJECT_INSTRUCTIONS.md"
+        report = inspect_config(
+            config, workflow, contracts,
+            instructions_path.read_text(encoding="utf-8") if instructions_path.exists() else None)
+        if report["status"] != "ACCEPTED":
+            raise ValueError("Reviewer removal requires an accepted PROJECT_CONFIG")
+        authority = review_authority_from_config(config)
     store = ReviewCompletionStore(args.state, worktree_roots=args.worktree_root,
-                                  owner_actor_id=args.trusted_owner_actor,
-                                  provider_identity=args.provider_identity)
+                                  authority=authority)
     if args.command in {"freeze", "dispatch", "status", "prepare"}:
         candidate, reviewers = load(args.candidate), load(args.reviewers)
     if args.command == "freeze":

@@ -11,6 +11,7 @@ from contextlib import contextmanager
 import re
 import sqlite3
 import uuid
+from urllib.parse import urlsplit
 
 from . import ValidationError
 from .canonical import canonical, fingerprint, fresh, loads, now_text, timestamp
@@ -59,6 +60,9 @@ CREATE TABLE IF NOT EXISTS reviewer_set_dispositions(
  record_sha256 TEXT NOT NULL, review_json TEXT NOT NULL, review_sha256 TEXT NOT NULL,
  FOREIGN KEY(old_cycle_id) REFERENCES review_cycles(cycle_id),
  FOREIGN KEY(new_cycle_id) REFERENCES review_cycles(cycle_id));
+CREATE TABLE IF NOT EXISTS reviewer_removal_provider_artifacts(
+ artifact_id TEXT PRIMARY KEY, disposition_id TEXT NOT NULL UNIQUE,
+ observed_at TEXT NOT NULL, review_sha256 TEXT NOT NULL UNIQUE);
 """
 
 REVIEWER_REMOVAL_MAX_AGE_SECONDS = 300
@@ -132,12 +136,48 @@ def _canonical_uuid(value, label):
     return value
 
 
-def _reviewer_removal_disposition(value, *, active, binding, owner_actor_id,
-                                  provider_identity, now):
+def review_authority_from_config(config):
+    """Derive reviewer-removal authority only from reviewed project policy."""
+    _require(isinstance(config, dict), "Accepted PROJECT_CONFIG must be an object")
+    github, merge_gate = config.get("github"), config.get("merge_gate")
+    _require(isinstance(github, dict) and isinstance(merge_gate, dict),
+             "Accepted PROJECT_CONFIG lacks GitHub or merge-gate policy")
+    owners = merge_gate.get("trusted_owner_ids")
+    _require(isinstance(owners, list) and owners and
+             all(type(actor) is int and actor > 0 for actor in owners) and
+             len(owners) == len(set(owners)),
+             "Accepted PROJECT_CONFIG needs unique positive trusted owner IDs")
+    host, repository, repository_id = (github.get("host"), github.get("repository"),
+                                       github.get("repository_id"))
+    try:
+        parsed = urlsplit(host)
+        valid_host = (parsed.scheme == "https" and parsed.hostname and
+                      not (parsed.username or parsed.password or parsed.query or parsed.fragment) and
+                      parsed.path in ("", "/"))
+    except (TypeError, ValueError):
+        valid_host = False
+    _require(valid_host, "Accepted PROJECT_CONFIG has an invalid provider host identity")
+    _require(isinstance(repository, str) and re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository),
+        "Accepted PROJECT_CONFIG has an invalid repository identity")
+    _require(type(repository_id) is int and repository_id > 0,
+             "Accepted PROJECT_CONFIG has no immutable repository ID")
+    return {
+        "trusted_owner_ids": tuple(sorted(owners)),
+        "provider_identity": {
+            "host": host.rstrip("/"),
+            "repository": repository,
+            "repository_id": repository_id,
+        },
+    }
+
+
+def _reviewer_removal_disposition(value, *, active, binding, authority,
+                                  provider_observer, now):
     """Validate a fresh provider-observed owner decision to weaken one frozen set."""
-    _require(isinstance(value, dict) and set(value) == {"record", "record_sha256", "review"},
-             "Reviewer removal disposition must contain exact record, digest, and review fields")
-    record, review = value["record"], value["review"]
+    _require(isinstance(value, dict) and set(value) == {"record", "record_sha256"},
+             "Reviewer removal disposition must contain exact record and digest fields")
+    record = value["record"]
     record_fields = {
         "schema_version", "disposition_id", "decision", "old_cycle_id", "tuple",
         "tuple_sha256", "old_required_reviewers", "old_reviewer_set_sha256",
@@ -173,12 +213,16 @@ def _reviewer_removal_disposition(value, *, active, binding, owner_actor_id,
     _require(record["old_reviewer_set_sha256"] == fingerprint("reviewer-set", old_reviewers) and
              record["new_reviewer_set_sha256"] == fingerprint("reviewer-set", new_reviewers),
              "Reviewer removal disposition carries an invalid reviewer-set digest")
-    _require(isinstance(owner_actor_id, str) and owner_actor_id and
-             isinstance(provider_identity, str) and provider_identity,
-             "Reviewer removal requires configured owner actor and provider identities")
-    _require(record["owner_actor_id"] == owner_actor_id and
-             record["provider_identity"] == provider_identity,
-             "Reviewer removal actor or provider identity is not trusted")
+    _require(isinstance(authority, dict),
+             "Reviewer removal requires accepted PROJECT_CONFIG authority")
+    trusted_owner_ids = authority.get("trusted_owner_ids")
+    provider_identity = loads(canonical(authority.get("provider_identity")).decode())
+    _require(type(record["owner_actor_id"]) is int and
+             record["owner_actor_id"] in trusted_owner_ids,
+             "Reviewer removal actor is not a configured trusted owner")
+    _require(record["provider_identity"] == provider_identity and
+             record["tuple"]["repository"] == provider_identity["repository"],
+             "Reviewer removal provider or repository identity differs from PROJECT_CONFIG")
     issued, expires, observed_now = (timestamp(record["issued_at"]),
                                      timestamp(record["expires_at"]), timestamp(now))
     _require(expires > issued and (expires - issued).total_seconds() <= REVIEWER_REMOVAL_MAX_AGE_SECONDS,
@@ -188,16 +232,36 @@ def _reviewer_removal_disposition(value, *, active, binding, owner_actor_id,
     record_hash = fingerprint("reviewer-removal-disposition", record)
     _require(value["record_sha256"] == record_hash,
              "Reviewer removal disposition digest does not match its record")
-    review_fields = {"status", "review_id", "record_sha256", "owner_actor_id",
-                     "provider_identity", "observed_at"}
+    _require(callable(provider_observer),
+             "Reviewer removal requires a live provider observation adapter")
+    review = provider_observer({
+        "record": loads(canonical(record).decode()),
+        "record_sha256": record_hash,
+        "expected_provider_identity": loads(canonical(provider_identity).decode()),
+    })
+    _require(fingerprint("reviewer-removal-disposition", record) == record_hash,
+             "Provider observer mutated the reviewer removal disposition")
+    review_fields = {
+        "status", "artifact_id", "record_sha256", "disposition_id", "old_cycle_id",
+        "tuple_sha256", "old_reviewer_set_sha256", "new_reviewer_set_sha256",
+        "removed_reviewers", "reason", "owner_actor_id", "provider_identity", "observed_at",
+    }
     _require(isinstance(review, dict) and set(review) == review_fields and
              review["status"] == "APPROVED", "Reviewer removal needs an exact approved review")
-    _require(isinstance(review["review_id"], str) and review["review_id"].strip() == review["review_id"] and
-             review["review_id"], "Reviewer removal review_id must be nonempty")
+    _require(isinstance(review["artifact_id"], str) and
+             review["artifact_id"].strip() == review["artifact_id"] and
+             review["artifact_id"], "Reviewer removal provider artifact_id must be nonempty")
     _require(review["record_sha256"] == record_hash and
-             review["owner_actor_id"] == owner_actor_id and
+             review["disposition_id"] == record["disposition_id"] and
+             review["old_cycle_id"] == record["old_cycle_id"] and
+             review["tuple_sha256"] == record["tuple_sha256"] and
+             review["old_reviewer_set_sha256"] == record["old_reviewer_set_sha256"] and
+             review["new_reviewer_set_sha256"] == record["new_reviewer_set_sha256"] and
+             review["removed_reviewers"] == record["removed_reviewers"] and
+             review["reason"] == record["reason"] and
+             review["owner_actor_id"] == record["owner_actor_id"] and
              review["provider_identity"] == provider_identity,
-             "Reviewer removal review is not bound to the record, actor, and provider")
+             "Reviewer removal provider artifact is not bound to the exact disposition")
     fresh(review["observed_at"], now, REVIEWER_REMOVAL_MAX_AGE_SECONDS)
     observed = timestamp(review["observed_at"])
     _require(issued <= observed <= expires,
@@ -213,10 +277,13 @@ class ReviewCompletionStore:
     submitted aggregate and its completion snapshot are immutable thereafter.
     """
 
-    def __init__(self, path, worktree_roots=(), *, owner_actor_id=None, provider_identity=None):
+    def __init__(self, path, worktree_roots=(), *, authority=None, provider_observer=None):
         self.path = protected_state_path(path, worktree_roots)
-        self.owner_actor_id = owner_actor_id
-        self.provider_identity = provider_identity
+        self.authority = (None if authority is None else {
+            "trusted_owner_ids": tuple(authority.get("trusted_owner_ids", ())),
+            "provider_identity": loads(canonical(authority.get("provider_identity")).decode()),
+        })
+        self.provider_observer = provider_observer
         with self.connection() as db:
             db.executescript(DDL)
             columns = {row[1] for row in db.execute("PRAGMA table_info(review_cycles)")}
@@ -287,8 +354,13 @@ class ReviewCompletionStore:
                              "Reviewer removal disposition requires the unchanged exact candidate tuple")
                     disposition = _reviewer_removal_disposition(
                         reviewer_removal_disposition, active=active, binding=binding,
-                        owner_actor_id=self.owner_actor_id,
-                        provider_identity=self.provider_identity, now=now_text())
+                        authority=self.authority, provider_observer=self.provider_observer,
+                        now=now_text())
+                    duplicate_artifact = db.execute(
+                        "SELECT 1 FROM reviewer_removal_provider_artifacts WHERE artifact_id=?",
+                        (disposition[2]["artifact_id"],)).fetchone()
+                    _require(duplicate_artifact is None,
+                             "Reviewer removal provider artifact was already used")
                 else:
                     _require(reviewer_removal_disposition is None,
                              "Reviewer removal disposition supplied when no dispatched-cycle reviewer is removed")
@@ -310,6 +382,10 @@ class ReviewCompletionStore:
                      binding["tuple_sha256"], active["reviewer_set_sha256"], binding["reviewer_set_sha256"],
                      canonical(record).decode(), record_hash, canonical(review).decode(),
                      fingerprint("reviewer-removal-review", review)))
+                db.execute(
+                    "INSERT INTO reviewer_removal_provider_artifacts(artifact_id,disposition_id,observed_at,review_sha256) VALUES(?,?,?,?)",
+                    (review["artifact_id"], record["disposition_id"], review["observed_at"],
+                     fingerprint("reviewer-removal-review", review)))
             return self._summary(db, self._active(db), current=True)
 
     def reviewer_set_audit(self):
@@ -329,8 +405,25 @@ class ReviewCompletionStore:
                          record["tuple_sha256"] == row["tuple_sha256"] and
                          record["old_reviewer_set_sha256"] == row["old_reviewer_set_sha256"] and
                          record["new_reviewer_set_sha256"] == row["new_reviewer_set_sha256"] and
-                         review["record_sha256"] == row["record_sha256"],
+                         review["record_sha256"] == row["record_sha256"] and
+                         review["disposition_id"] == record["disposition_id"] and
+                         review["old_cycle_id"] == record["old_cycle_id"] and
+                         review["tuple_sha256"] == record["tuple_sha256"] and
+                         review["old_reviewer_set_sha256"] == record["old_reviewer_set_sha256"] and
+                         review["new_reviewer_set_sha256"] == record["new_reviewer_set_sha256"] and
+                         review["removed_reviewers"] == record["removed_reviewers"] and
+                         review["reason"] == record["reason"] and
+                         review["owner_actor_id"] == record["owner_actor_id"] and
+                         review["provider_identity"] == record["provider_identity"],
                          "Persisted reviewer removal audit binding is invalid")
+                artifact = db.execute(
+                    "SELECT * FROM reviewer_removal_provider_artifacts WHERE artifact_id=?",
+                    (review["artifact_id"],)).fetchone()
+                _require(artifact is not None and
+                         artifact["disposition_id"] == record["disposition_id"] and
+                         artifact["observed_at"] == review["observed_at"] and
+                         artifact["review_sha256"] == row["review_sha256"],
+                         "Persisted reviewer removal provider artifact binding is invalid")
                 result.append({**{key: row[key] for key in (
                     "sequence", "applied_at", "old_cycle_id", "new_cycle_id",
                     "record_sha256", "review_sha256")}, "record": record, "review": review})
