@@ -980,8 +980,17 @@ class PublicationRewriteTests(unittest.TestCase):
         seen = []
 
         def create_after_snapshot(root, records, snapshot):
-            record = next(item for item in records
-                          if snapshot["fanouts"][item["oid"][:2]] is None)
+            # This isolated fixture contains fewer than 256 loose-object
+            # fanouts, so an absent prefix is guaranteed independently of the
+            # replacement commit hash.  Add an unreachable synthetic record;
+            # the intended fanout race must reject before its bytes are used.
+            occupied = {prefix for prefix, identity in snapshot["fanouts"].items()
+                        if identity is not None}
+            self.assertLess(len(occupied), 256)
+            prefix = min(set(snapshot["fanouts"]) - occupied)
+            record = {"oid": prefix + "0" * 38, "kind": "blob", "raw": b"",
+                      "loose_bytes": zlib.compress(b"blob 0\0")}
+            records.append(record)
             fanout = Path(snapshot["object_dir"]) / record["oid"][:2]
             fanout.mkdir()
             marker = fanout / "external-after-snapshot"
@@ -1007,6 +1016,65 @@ class PublicationRewriteTests(unittest.TestCase):
             for fanout, marker in raced:
                 marker.unlink(missing_ok=True)
                 fanout.rmdir()
+
+    def test_ac44_oversized_rewrite_message_is_rejected_before_commit_tree(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "oversized-message.txt"
+        with message.open("wb") as handle:
+            handle.truncate(publication.MAX_REWRITE_PROOF_OBJECT_BYTES + 1)
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+        commit_tree_calls = []
+
+        def observe_git(root, *args, **kwargs):
+            if args and args[0] == "commit-tree":
+                commit_tree_calls.append(args)
+            return real_git(root, *args, **kwargs)
+
+        with mock.patch.object(publication, "_git", side_effect=observe_git):
+            with self.assertRaisesRegex(ValidationError,
+                                        "Rewrite message exceeds the publication proof bound"):
+                rewrite_unpublished(self.repo.path, self.repo.base,
+                                    "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual([], commit_tree_calls)
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_ac44_oversized_quarantine_loose_object_rejects_before_content_read(self):
+        objects = Path(self.temp.name) / "oversized-quarantine"
+        path = objects / "aa" / ("0" * 38)
+        path.parent.mkdir(parents=True)
+        with path.open("wb") as handle:
+            handle.truncate(publication.MAX_REWRITE_PROOF_OBJECT_BYTES * 2 + 1025)
+        with mock.patch.object(publication, "_git_bounded_stdout") as bounded:
+            with self.assertRaisesRegex(ValidationError,
+                                        "Quarantine loose object exceeds the publication proof bound"):
+                publication._quarantine_objects(
+                    self.repo.path, objects, {}, "sha1")
+        bounded.assert_not_called()
+
+    def test_ac44_quarantine_content_uses_bounded_git_retrieval(self):
+        objects = Path(self.temp.name) / "bounded-quarantine"
+        path = objects / "aa" / ("0" * 38)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(zlib.compress(b"blob 0\0"))
+        calls = []
+
+        def bounded(root, *args, **kwargs):
+            calls.append((args, kwargs.get("limit")))
+            if args[:2] == ("cat-file", "-t"):
+                return b"blob\n"
+            raise ValidationError("git cat-file output exceeded the publication proof bound")
+
+        with mock.patch.object(publication, "_git_bounded_stdout", side_effect=bounded):
+            with self.assertRaisesRegex(ValidationError, "output exceeded"):
+                publication._quarantine_objects(
+                    self.repo.path, objects, {}, "sha1")
+        self.assertEqual([
+            (("cat-file", "-t", "aa" + "0" * 38), 64),
+            (("cat-file", "blob", "aa" + "0" * 38),
+             publication.MAX_REWRITE_PROOF_OBJECT_BYTES),
+        ], calls)
 
     def test_ac44_empty_operation_created_fanout_is_retained_without_pathname_rmdir(self):
         snapshot = publication._rewrite_snapshot(self.repo.path)

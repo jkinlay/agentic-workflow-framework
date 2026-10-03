@@ -212,6 +212,39 @@ def _git_bounded_stdout(root, *args, input_bytes=None, extra_env=None,
     return bytes(stdout)
 
 
+def _bounded_regular_file(path, limit, label):
+    """Read one identity-stable regular file without retaining over ``limit`` bytes."""
+    path = Path(path)
+    try:
+        before = path.lstat()
+        attributes = getattr(before, "st_file_attributes", 0)
+        if (not stat.S_ISREG(before.st_mode) or path.is_symlink() or
+                attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+            raise ValidationError(f"{label} is not a canonical regular file")
+        if before.st_size > limit:
+            raise ValidationError(f"{label} exceeds the publication proof bound")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            identity = (opened.st_dev, opened.st_ino)
+            if ((before.st_dev, before.st_ino) != identity or opened.st_size > limit):
+                raise ValidationError(f"{label} identity or size changed before bounded read")
+            value = handle.read(limit + 1)
+        after = path.lstat()
+    except ValidationError:
+        raise
+    except OSError as exc:
+        raise ValidationError(f"{label} could not be read with a byte bound") from exc
+    if (len(value) > limit or (after.st_dev, after.st_ino) != identity or
+            before.st_size != opened.st_size or opened.st_size != after.st_size or
+            len(value) != opened.st_size or
+            getattr(after, "st_file_attributes", 0) &
+            getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+        raise ValidationError(f"{label} changed during bounded read")
+    return value
+
+
 def _json_file(path, label):
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -633,7 +666,9 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     origin_maps = {base_sha: {path: path for path in base_tree}}
     touched_head_paths = set()
     for commit in commits:
-        raw_commit = _git(root, "cat-file", "commit", commit, extra_env=extra_env).stdout
+        raw_commit = _git_bounded_stdout(
+            root, "cat-file", "commit", commit, extra_env=extra_env,
+            limit=MAX_REWRITE_PROOF_OBJECT_BYTES)
         message = raw_commit.split(b"\n\n", 1)[1] if b"\n\n" in raw_commit else b""
         try:
             message_text = message.decode("utf-8")
@@ -1041,16 +1076,33 @@ def _canonical_object_dir(root, snapshot):
 def _quarantine_objects(root, object_dir, extra_env, object_format):
     length = 40 if object_format == "sha1" else 64
     records = []
+    total_raw = 0
+    total_loose = 0
     for path in sorted(Path(object_dir).glob("[0-9a-f][0-9a-f]/*")):
+        if len(records) >= MAX_REWRITE_PROOF_OBJECTS:
+            raise ValidationError("Quarantine object inventory exceeds the object-count bound")
         oid = path.parent.name + path.name
         if not re.fullmatch(rf"[0-9a-f]{{{length}}}", oid):
             raise ValidationError("Quarantine contains an invalid object path")
-        kind = _git(root, "cat-file", "-t", oid, extra_env=extra_env).stdout.decode("ascii").strip()
-        raw = _git(root, "cat-file", kind, oid, extra_env=extra_env).stdout
+        loose_bytes = _bounded_regular_file(
+            path, MAX_REWRITE_PROOF_OBJECT_BYTES * 2 + 1024,
+            "Quarantine loose object")
         try:
-            loose_bytes = path.read_bytes()
-        except OSError as exc:
-            raise ValidationError("Quarantine loose object could not be read") from exc
+            kind = _git_bounded_stdout(
+                root, "cat-file", "-t", oid, extra_env=extra_env,
+                limit=64).decode("ascii").strip()
+        except UnicodeError as exc:
+            raise ValidationError("Quarantine object type is not ASCII") from exc
+        if kind not in {"blob", "tree", "commit"}:
+            raise ValidationError("Quarantine contains an unsupported object type")
+        raw = _git_bounded_stdout(
+            root, "cat-file", kind, oid, extra_env=extra_env,
+            limit=MAX_REWRITE_PROOF_OBJECT_BYTES)
+        total_raw += len(raw)
+        total_loose += len(loose_bytes)
+        if (total_raw > MAX_REWRITE_PROOF_TOTAL_BYTES or
+                total_loose > MAX_REWRITE_PROOF_TOTAL_BYTES * 2 + 1024):
+            raise ValidationError("Quarantine object inventory exceeds the total byte bound")
         records.append({"oid": oid, "kind": kind, "raw": raw, "loose_bytes": loose_bytes})
     if not records:
         raise ValidationError("Quarantine object inventory is empty")
@@ -1729,7 +1781,8 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
             continue
         if any(_is_ancestor(root, commit, tip) for commit in old_commits):
             raise ValidationError("Old branch commits are reachable from another local or remote-tracking ref; rewrite refused")
-    message = Path(message_file).read_bytes()
+    message = _bounded_regular_file(
+        message_file, MAX_REWRITE_PROOF_OBJECT_BYTES, "Rewrite message")
     if not message or b"\0" in message:
         raise ValidationError("Rewrite message file must contain a non-NUL commit message")
     try:
