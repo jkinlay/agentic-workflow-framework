@@ -479,6 +479,85 @@ class ReviewCompletionTests(unittest.TestCase):
                          "github-issue-comment:101:77:IC_production")
         self.assertEqual(audit[0]["record"]["old_cycle_id"], old["cycle_id"])
 
+    def test_production_route_rejects_alternate_root_and_authority_config_drift_atomically(self):
+        runtime = Path(self.temporary.name) / "authority-runtime"
+        alternate = Path(self.temporary.name) / "alternate-runtime"
+        for root in (runtime, alternate):
+            (root / ".agentic").mkdir(parents=True)
+            shutil.copyfile(ROOT / ".agentic/workflow.yaml", root / ".agentic/workflow.yaml")
+            shutil.copytree(ROOT / ".agentic/schemas", root / ".agentic/schemas")
+        config = copy.deepcopy(load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml"))
+        config["github"]["repository"] = self.current["repository"]
+        for root in (runtime, alternate):
+            (root / ".agentic/PROJECT_CONFIG.yaml").write_text(
+                json.dumps(config), encoding="utf-8")
+
+        spec = importlib.util.spec_from_file_location(
+            "awf_review_completion_authority_script",
+            ROOT / ".agentic/scripts/review_completion.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        state = Path(self.temporary.name) / "authority-production.sqlite3"
+        worktree = Path(self.temporary.name) / "authority-candidate"
+        worktree.mkdir()
+        candidate_path = Path(self.temporary.name) / "authority-candidate.json"
+        old_reviewers_path = Path(self.temporary.name) / "authority-old-reviewers.json"
+        new_reviewers_path = Path(self.temporary.name) / "authority-new-reviewers.json"
+        disposition_path = Path(self.temporary.name) / "authority-disposition.json"
+        candidate_path.write_text(json.dumps(self.current), encoding="utf-8")
+        old_reviewers_path.write_text(json.dumps(["drop", "keep"]), encoding="utf-8")
+        new_reviewers_path.write_text(json.dumps(["keep"]), encoding="utf-8")
+        prefix = ["--state", str(state), "--worktree-root", str(worktree)]
+
+        def invoke(root, arguments, factory=lambda authority, artifact: None):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                module.main(arguments, default_root=root, observer_factory=factory)
+            return json.loads(output.getvalue())
+
+        old = invoke(runtime, [*prefix, "freeze", "--candidate", str(candidate_path),
+                               "--reviewers", str(old_reviewers_path)])
+        invoke(runtime, [*prefix, "dispatch", "--candidate", str(candidate_path),
+                         "--reviewers", str(old_reviewers_path), "--reviewer", "drop"])
+        store = ReviewCompletionStore(state, worktree_roots=[worktree],
+                                      authority=self.authority)
+        disposition = self.removal_disposition(store, old, ["keep"])
+        disposition_path.write_text(json.dumps(disposition), encoding="utf-8")
+        observed = []
+
+        def factory(authority, artifact):
+            def observer(request):
+                observed.append(copy.deepcopy(request))
+                return self.provider_review(request)
+            return observer
+
+        removal = [*prefix, "freeze", "--candidate", str(candidate_path),
+                   "--reviewers", str(new_reviewers_path),
+                   "--reviewer-removal-disposition", str(disposition_path),
+                   "--reviewer-removal-artifact-id", "77"]
+        with self.assertRaisesRegex(ValidationError, "root or accepted configuration changed"):
+            invoke(alternate, removal, factory)
+        self.assertEqual(observed, [])
+        self.assertEqual(ReviewCompletionStore(state).status()["cycle_id"], old["cycle_id"])
+        self.assertEqual(ReviewCompletionStore(state).reviewer_set_audit(), [])
+
+        drifted = copy.deepcopy(config)
+        drifted["merge_gate"]["trusted_owner_ids"] = [9999]
+        (runtime / ".agentic/PROJECT_CONFIG.yaml").write_text(
+            json.dumps(drifted), encoding="utf-8")
+        with self.assertRaisesRegex(ValidationError, "root or accepted configuration changed"):
+            invoke(runtime, removal, factory)
+        self.assertEqual(observed, [])
+        self.assertEqual(ReviewCompletionStore(state).status()["cycle_id"], old["cycle_id"])
+        self.assertEqual(ReviewCompletionStore(state).reviewer_set_audit(), [])
+
+        (runtime / ".agentic/PROJECT_CONFIG.yaml").write_text(
+            json.dumps(config), encoding="utf-8")
+        new = invoke(runtime, removal, factory)
+        self.assertEqual(new["required_reviewers"], ["keep"])
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(len(ReviewCompletionStore(state).reviewer_set_audit()), 1)
+
     def test_equal_and_superset_freezes_never_weaken_dispatched_requirements(self):
         store = self.removal_store(Path(self.temporary.name) / "monotonic.sqlite3")
         old = store.freeze(self.current, ["a", "b"])
@@ -690,6 +769,14 @@ class ReviewCompletionTests(unittest.TestCase):
 
     def test_production_workflow_cli_exposes_review_completion_barrier(self):
         root = Path(self.temporary.name)
+        runtime = root / "runtime"
+        (runtime / ".agentic").mkdir(parents=True)
+        shutil.copyfile(ROOT / ".agentic/workflow.yaml", runtime / ".agentic/workflow.yaml")
+        shutil.copytree(ROOT / ".agentic/schemas", runtime / ".agentic/schemas")
+        config = copy.deepcopy(load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml"))
+        config["github"]["repository"] = self.current["repository"]
+        (runtime / ".agentic/PROJECT_CONFIG.yaml").write_text(
+            json.dumps(config), encoding="utf-8")
         worktree = root / "candidate"
         worktree.mkdir()
         state_path = root / "review.sqlite3"
@@ -697,7 +784,7 @@ class ReviewCompletionTests(unittest.TestCase):
         candidate_path.write_text(json.dumps(self.current), encoding="utf-8")
         reviewers_path.write_text(json.dumps(["one"]), encoding="utf-8")
         prefix = [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
-                  "--root", str(ROOT), "review-completion", "--state", str(state_path),
+                  "--root", str(runtime), "review-completion", "--state", str(state_path),
                   "--worktree-root", str(worktree)]
         command = [*prefix, "freeze", "--candidate", str(candidate_path),
                    "--reviewers", str(reviewers_path)]

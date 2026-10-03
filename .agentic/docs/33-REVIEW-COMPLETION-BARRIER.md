@@ -11,9 +11,8 @@ The production reference entry point is:
 python .agentic/scripts/workflow.py review-completion --state ABSOLUTE_PROTECTED_DB --worktree-root ABSOLUTE_WORKTREE freeze|dispatch|record|status|prepare|complete|reconcile|recover ...
 ```
 
-Keep the SQLite path on controller-owned storage outside every candidate and
-reviewer worktree. The CLI performs state transitions only; a reviewed host
-adapter is still responsible for launching reviewers or mutating a provider.
+Keep SQLite on controller-owned storage outside candidate and reviewer
+worktrees. A reviewed host adapter launches reviewers or mutates a provider.
 
 ## Freeze before dispatch
 
@@ -33,7 +32,14 @@ Equal freezes remain idempotent; supersets never need a weakening disposition.
 Reviewer-removal authority is derived from the accepted
 `.agentic/PROJECT_CONFIG.yaml`: `merge_gate.trusted_owner_ids` and the immutable
 GitHub host, repository name, and numeric repository ID. The production CLI has
-no flags that can replace those trust roots. A weakening request supplies only
+no flags that can replace those trust roots. On the first freeze it atomically
+pins project root, worktrees, accepted-configuration and authority digests, and
+exact candidate tuple. Later removal must match before provider observation;
+alternate roots, configuration drift, tuple substitution, or a corrupt pin
+leave the active cycle and audit unchanged. An unpinned ledger cannot remove a
+reviewer.
+
+A weakening request supplies only
 the exact disposition record, its digest, and a positive GitHub issue-comment
 ID through `--reviewer-removal-artifact-id`. The owner creates that comment in
 the configured repository with the exact `AWF-REVIEWER-REMOVAL-APPROVAL-1`

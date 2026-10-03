@@ -13,6 +13,7 @@ from agentic.canonical import load
 from agentic.configuration import inspect_config
 from agentic.contracts import Contracts
 from agentic.review_completion import (ReviewCompletionStore, review_authority_from_config,
+                                       review_authority_binding,
                                        validate_submission_semantics)
 from agentic.providers.github_reviewer_removal import github_reviewer_removal_observer
 
@@ -46,8 +47,10 @@ def main(argv=None, default_root=ROOT, observer_factory=github_reviewer_removal_
     sub.add_parser("audit-reviewer-set")
     args = parser.parse_args(argv)
     authority = None
+    authority_binding = None
     provider_observer = None
-    if args.command == "freeze" and args.reviewer_removal_disposition:
+    if args.command == "freeze":
+        candidate = load(args.candidate)
         config = load(default_root / ".agentic/PROJECT_CONFIG.yaml")
         workflow = load(default_root / ".agentic/workflow.yaml")
         contracts = Contracts(default_root / ".agentic/schemas")
@@ -56,16 +59,21 @@ def main(argv=None, default_root=ROOT, observer_factory=github_reviewer_removal_
             config, workflow, contracts,
             instructions_path.read_text(encoding="utf-8") if instructions_path.exists() else None)
         if report["status"] != "ACCEPTED":
-            raise ValueError("Reviewer removal requires an accepted PROJECT_CONFIG")
+            raise ValueError("Review freeze requires an accepted PROJECT_CONFIG")
         authority = review_authority_from_config(config)
-        if args.reviewer_removal_artifact_id is None:
+        authority_binding = review_authority_binding(
+            config, default_root, args.worktree_root, candidate)
+        if args.reviewer_removal_disposition and args.reviewer_removal_artifact_id is None:
             raise ValueError("Reviewer removal requires a live GitHub issue-comment artifact ID")
-        provider_observer = observer_factory(
-            authority, args.reviewer_removal_artifact_id)
-    elif args.command == "freeze" and args.reviewer_removal_artifact_id is not None:
+        if args.reviewer_removal_disposition:
+            provider_observer = observer_factory(
+                authority, args.reviewer_removal_artifact_id)
+    if (args.command == "freeze" and not args.reviewer_removal_disposition and
+            args.reviewer_removal_artifact_id is not None):
         raise ValueError("Reviewer removal artifact supplied without a disposition")
     store = ReviewCompletionStore(args.state, worktree_roots=args.worktree_root,
-                                  authority=authority, provider_observer=provider_observer)
+                                  authority=authority, authority_binding=authority_binding,
+                                  provider_observer=provider_observer)
     if args.command in {"freeze", "dispatch", "status", "prepare"}:
         candidate, reviewers = load(args.candidate), load(args.reviewers)
     if args.command == "freeze":

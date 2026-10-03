@@ -8,6 +8,8 @@ captured a complete, acceptable result set for one frozen candidate tuple.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
+from pathlib import Path
 import re
 import sqlite3
 import uuid
@@ -63,6 +65,9 @@ CREATE TABLE IF NOT EXISTS reviewer_set_dispositions(
 CREATE TABLE IF NOT EXISTS reviewer_removal_provider_artifacts(
  artifact_id TEXT PRIMARY KEY, disposition_id TEXT NOT NULL UNIQUE,
  observed_at TEXT NOT NULL, review_sha256 TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS reviewer_removal_authority(
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+ binding_json TEXT NOT NULL, binding_sha256 TEXT NOT NULL);
 """
 
 REVIEWER_REMOVAL_MAX_AGE_SECONDS = 300
@@ -172,6 +177,39 @@ def review_authority_from_config(config):
     }
 
 
+def review_authority_binding(config, project_root, worktree_roots, candidate):
+    """Bind accepted removal authority to its project and frozen candidate.
+
+    The production CLI records this value on the first freeze.  A later
+    reviewer-removal request therefore cannot select another ``--root`` or a
+    changed accepted configuration as a replacement trust root.
+    """
+    authority = review_authority_from_config(config)
+    candidate = _candidate(candidate)
+    _require(candidate["repository"] == authority["provider_identity"]["repository"],
+             "Frozen candidate repository differs from accepted PROJECT_CONFIG authority")
+
+    def resolved(path):
+        value = Path(path).resolve(strict=True)
+        return os.path.normcase(str(value))
+
+    roots = sorted({resolved(path) for path in worktree_roots})
+    _require(roots, "Reviewer-removal authority requires protected worktree roots")
+    value = {
+        "schema_version": 1,
+        "project_root": resolved(project_root),
+        "worktree_roots": roots,
+        "project_config_sha256": fingerprint("accepted-project-config", config),
+        "tuple": candidate,
+        "tuple_sha256": fingerprint("review-tuple", candidate),
+        "review_authority_sha256": fingerprint("review-authority", {
+            "trusted_owner_ids": list(authority["trusted_owner_ids"]),
+            "provider_identity": authority["provider_identity"],
+        }),
+    }
+    return value
+
+
 def _reviewer_removal_disposition(value, *, active, binding, authority,
                                   provider_observer, now):
     """Validate a fresh provider-observed owner decision to weaken one frozen set."""
@@ -277,12 +315,23 @@ class ReviewCompletionStore:
     submitted aggregate and its completion snapshot are immutable thereafter.
     """
 
-    def __init__(self, path, worktree_roots=(), *, authority=None, provider_observer=None):
+    def __init__(self, path, worktree_roots=(), *, authority=None,
+                 authority_binding=None, provider_observer=None):
         self.path = protected_state_path(path, worktree_roots)
         self.authority = (None if authority is None else {
             "trusted_owner_ids": tuple(authority.get("trusted_owner_ids", ())),
             "provider_identity": loads(canonical(authority.get("provider_identity")).decode()),
         })
+        self.authority_binding = (None if authority_binding is None else
+                                  loads(canonical(authority_binding).decode()))
+        if self.authority_binding is not None:
+            _require(self.authority is not None,
+                     "Reviewer-removal authority binding requires accepted authority")
+            _require(self.authority_binding.get("review_authority_sha256") == fingerprint(
+                "review-authority", {
+                    "trusted_owner_ids": list(self.authority["trusted_owner_ids"]),
+                    "provider_identity": self.authority["provider_identity"],
+                }), "Reviewer-removal authority binding differs from accepted authority")
         self.provider_observer = provider_observer
         with self.connection() as db:
             db.executescript(DDL)
@@ -322,6 +371,52 @@ class ReviewCompletionStore:
     def _matches(row, binding):
         return row["tuple_sha256"] == binding["tuple_sha256"] and row["reviewer_set_sha256"] == binding["reviewer_set_sha256"]
 
+    def _pin_or_match_authority(self, db, active, candidate_binding):
+        """Persist the trust root before dispatch and reject later substitution."""
+        row = db.execute(
+            "SELECT binding_json,binding_sha256 FROM reviewer_removal_authority WHERE singleton=1"
+        ).fetchone()
+        if self.authority is None:
+            _require(row is None,
+                     "Frozen reviewer cycle has pinned authority; accepted authority is required")
+            return
+        value = (self.authority_binding or {
+            "schema_version": 1,
+            "tuple": candidate_binding["tuple"],
+            "tuple_sha256": candidate_binding["tuple_sha256"],
+            "review_authority_sha256": fingerprint("review-authority", {
+                "trusted_owner_ids": list(self.authority["trusted_owner_ids"]),
+                "provider_identity": self.authority["provider_identity"],
+            }),
+        })
+        _require(value.get("tuple") == candidate_binding["tuple"] and
+                 value.get("tuple_sha256") == candidate_binding["tuple_sha256"],
+                 "Reviewer-removal authority is not bound to the exact frozen candidate")
+        raw = canonical(value).decode()
+        digest = fingerprint("reviewer-removal-authority-binding", value)
+        if row is None:
+            _require(active is None,
+                     "Existing reviewer cycle has no pinned removal authority; start a fresh cycle")
+            db.execute("INSERT INTO reviewer_removal_authority VALUES(1,?,?)", (raw, digest))
+            return
+        pinned = loads(row["binding_json"])
+        _require(row["binding_sha256"] == fingerprint(
+            "reviewer-removal-authority-binding", pinned),
+            "Reviewer-removal authority binding digest is invalid")
+        if row["binding_sha256"] == digest and row["binding_json"] == raw:
+            return
+        pinned_source = {key: item for key, item in pinned.items()
+                         if key not in {"tuple", "tuple_sha256"}}
+        current_source = {key: item for key, item in value.items()
+                          if key not in {"tuple", "tuple_sha256"}}
+        _require(pinned_source == current_source,
+                 "Reviewer-removal authority root or accepted configuration changed")
+        _require(active is not None and
+                 active["tuple_sha256"] != candidate_binding["tuple_sha256"],
+                 "Reviewer-removal authority differs from the exact frozen candidate")
+        db.execute("UPDATE reviewer_removal_authority SET binding_json=?,binding_sha256=? "
+                   "WHERE singleton=1", (raw, digest))
+
     def freeze(self, candidate, reviewers, reviewer_removal_disposition=None):
         """Freeze the complete reviewer set before any reviewer dispatch.
 
@@ -334,6 +429,7 @@ class ReviewCompletionStore:
         binding = _binding(candidate, reviewers)
         with self.transaction() as db:
             active = db.execute("SELECT c.* FROM active_cycle a JOIN review_cycles c ON c.cycle_id=a.cycle_id WHERE a.singleton=1").fetchone()
+            self._pin_or_match_authority(db, active, binding)
             if active is not None and self._matches(active, binding) and active["state"] != "INVALIDATED":
                 _require(reviewer_removal_disposition is None,
                          "Reviewer removal disposition supplied for an unchanged reviewer set")
