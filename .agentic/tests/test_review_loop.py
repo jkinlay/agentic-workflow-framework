@@ -279,6 +279,14 @@ class HostTests(unittest.TestCase):
         driver.git=local_git  # Explicit local transport seam; production forbids it.
         candidate={**CANDIDATE,'head':head,'base':base}
         driver.snapshot=lambda: {**candidate,'head':command('--git-dir',str(remote),'rev-parse','refs/heads/codex/test')}
+        api_calls=[]
+        def local_api(suffix, *args, **kwargs):
+            api_calls.append((suffix,args,kwargs))
+            if suffix == 'pulls/7' and not args and not kwargs:
+                return {'body':'Synthetic local fixture body; no provider called.'}
+            raise AssertionError('Unexpected provider API call in local Git fixture: '+suffix)
+        driver.api=local_api  # Exact PR-body read seam; production still uses authenticated GitHub API.
+        driver.local_api_calls=api_calls
         def agent(role,current,findings,run_id,files=None):
             (worker/'src/a.py').write_text('value = 3\n')
             return {'candidate':current,'outcome':'CHANGED','summary':'Synthetic file edit; no model called'}
@@ -292,6 +300,7 @@ class HostTests(unittest.TestCase):
         self.assertEqual(driver.snapshot(),amended)
         self.assertEqual(command('-C',str(driver.worker),'rev-parse','HEAD^'),candidate['head'])
         self.assertEqual(command('-C',str(driver.worker),'status','--porcelain'),'')
+        self.assertEqual(driver.local_api_calls,[('pulls/7',(),{})])
 
     def test_real_local_git_scope_escape_cannot_publish(self):
         driver,candidate,command=self.local_git_driver()
@@ -420,5 +429,5 @@ class HostTests(unittest.TestCase):
     def test_protected_paths_and_unsafe_names(self):
         for value in ['AGENTS.md','src/AGENTS.md','.agentic/a','x/.codex/a','.github/workflows/ci.yml','scripts/bootstrap_project.py']:
             self.assertTrue(protected(value))
-        for value in ['../a','/a','-a','C:/a','a\\b','a\nsecret']:
+        for value in ['../a','/a','-a','C:' + '/a','a\\b','a\nsecret']:
             self.assertFalse(safe_path(value))

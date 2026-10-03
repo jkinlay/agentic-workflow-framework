@@ -15,7 +15,11 @@
     "mapping_location",
     "commits_scanned",
     "findings",
+    "total_findings",
+    "blocking_findings",
+    "pre_existing_findings",
     "unscanned",
+    "unscanned_count",
     "coverage",
     "execution_authority"
   ],
@@ -120,6 +124,7 @@
           "source",
           "change",
           "detector_id",
+          "classification",
           "redacted_excerpt"
         ],
         "properties": {
@@ -165,6 +170,12 @@
             "type": "string",
             "minLength": 1
           },
+          "classification": {
+            "enum": [
+              "BLOCKING",
+              "PRE_EXISTING"
+            ]
+          },
           "redacted_excerpt": {
             "type": "string",
             "minLength": 1
@@ -172,6 +183,21 @@
         }
       },
       "minItems": 0
+    },
+    "total_findings": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "blocking_findings": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "pre_existing_findings": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
     },
     "unscanned": {
       "type": "array",
@@ -202,7 +228,8 @@
           "reason": {
             "enum": [
               "binary",
-              "oversize"
+              "oversize",
+              "invalid-utf8"
             ]
           },
           "parent": {
@@ -221,6 +248,11 @@
       },
       "minItems": 0
     },
+    "unscanned_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
     "coverage": {
       "type": "object",
       "additionalProperties": false,
@@ -230,6 +262,7 @@
         "every_patch",
         "generated_reports",
         "captured_command_output",
+        "strict_utf8",
         "pr_bodies",
         "pr_comments"
       ],
@@ -250,6 +283,9 @@
         "captured_command_output": {
           "type": "string",
           "minLength": 1
+        },
+        "strict_utf8": {
+          "const": true
         },
         "pr_bodies": {
           "type": "boolean"

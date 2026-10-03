@@ -16,13 +16,18 @@
     "mapping_location": ".agentic-state/publication-deny.json",
     "commits_scanned": [],
     "findings": [],
+    "total_findings": 0,
+    "blocking_findings": 0,
+    "pre_existing_findings": 0,
     "unscanned": [],
+    "unscanned_count": 0,
     "coverage": {
       "current_files": true,
       "commit_messages": true,
       "every_patch": true,
       "generated_reports": "UNFILLED",
       "captured_command_output": "UNFILLED",
+      "strict_utf8": true,
       "pr_bodies": false,
       "pr_comments": false
     },
