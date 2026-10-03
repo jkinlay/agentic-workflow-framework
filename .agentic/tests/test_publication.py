@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+import zlib
 
 from agentic import ValidationError
 from agentic import publication
@@ -911,9 +912,16 @@ class PublicationRewriteTests(unittest.TestCase):
             if key not in {"objects", "fanouts"}:
                 self.assertEqual(snapshot[key], current[key])
         prefix = installed[0][:2]
-        self.assertIsNone(snapshot["fanouts"][prefix])
-        self.assertIsNotNone(current["fanouts"][prefix])
-        self.assertIn("retained_fanouts=" + prefix + "@", str(caught.exception))
+        if snapshot["fanouts"][prefix] is None:
+            self.assertIsNotNone(current["fanouts"][prefix])
+            self.assertIn("retained_fanouts=" + prefix + "@", str(caught.exception))
+        else:
+            # The replacement commit hash can share one of the repository's
+            # existing fanouts.  The uncertain link is still retained and
+            # must fail closed, while the snapshot-present fanout identity is
+            # unchanged and must never be attributed to this operation.
+            self.assertEqual(snapshot["fanouts"][prefix], current["fanouts"][prefix])
+            self.assertIn("retained_objects=" + installed[0], str(caught.exception))
 
     def test_ac44_link_permission_failure_retains_operation_created_fanout(self):
         self.contaminate_then_remove()
@@ -1177,6 +1185,8 @@ class PublicationRewriteTests(unittest.TestCase):
         snapshot = publication._rewrite_snapshot(self.repo.path)
         ref = "refs/heads/awf/EX-6-publication"
         head = git(self.repo.path, "rev-parse", "HEAD")
+        closure = publication._replacement_closure_evidence(
+            self.repo.path, head, snapshot, [], None)
         object_dir = Path(snapshot["object_dir"])
         oid = next(value for value in snapshot["objects"]
                    if snapshot["fanouts"][value[:2]] is not None and
@@ -1190,13 +1200,13 @@ class PublicationRewriteTests(unittest.TestCase):
                   "created_by_operation": False, "installed_identity": None,
                   "fanout": state}
         self.assertEqual((True, "proved"), publication._post_cas_proof(
-            self.repo.path, snapshot, ref, head, [], [record]))
+            self.repo.path, snapshot, ref, head, [], [record], closure))
         held = object_dir / (oid[:2] + "-snapshot-held")
         fanout.rename(held)
         shutil.copytree(held, fanout)
         try:
             proved, detail = publication._post_cas_proof(
-                self.repo.path, snapshot, ref, head, [], [record])
+                self.repo.path, snapshot, ref, head, [], [record], closure)
             self.assertFalse(proved)
             self.assertEqual("loose object fanout identity map changed", detail)
         finally:
@@ -1207,6 +1217,8 @@ class PublicationRewriteTests(unittest.TestCase):
         snapshot = publication._rewrite_snapshot(self.repo.path)
         ref = "refs/heads/awf/EX-6-publication"
         head = git(self.repo.path, "rev-parse", "HEAD")
+        closure = publication._replacement_closure_evidence(
+            self.repo.path, head, snapshot, [], None)
         payload = None
         oid = None
         for value in range(512):
@@ -1234,14 +1246,14 @@ class PublicationRewriteTests(unittest.TestCase):
                   "installed_identity": (path_details.st_dev, path_details.st_ino),
                   "fanout": state}
         self.assertEqual((True, "proved"), publication._post_cas_proof(
-            self.repo.path, snapshot, ref, head, [], [record]))
+            self.repo.path, snapshot, ref, head, [], [record], closure))
 
         held_object = path.with_name(path.name + ".identity-held")
         path.rename(held_object)
         shutil.copy2(held_object, path)
         try:
             proved, detail = publication._post_cas_proof(
-                self.repo.path, snapshot, ref, head, [], [record])
+                self.repo.path, snapshot, ref, head, [], [record], closure)
             self.assertFalse(proved)
             self.assertEqual("installed loose object identity or content changed", detail)
         finally:
@@ -1254,12 +1266,96 @@ class PublicationRewriteTests(unittest.TestCase):
         shutil.copytree(held_fanout, fanout)
         try:
             proved, detail = publication._post_cas_proof(
-                self.repo.path, snapshot, ref, head, [], [record])
+                self.repo.path, snapshot, ref, head, [], [record], closure)
             self.assertFalse(proved)
             self.assertEqual("loose object fanout identity map changed", detail)
         finally:
             remove_synthetic_object_tree(fanout)
             remove_synthetic_object_tree(held_fanout)
+
+    def test_ac44_post_cas_proof_rejects_in_place_corruption_of_snapshot_present_graph_objects(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        ref = "refs/heads/awf/EX-6-publication"
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        closure = publication._replacement_closure_evidence(
+            self.repo.path, head, snapshot, [], None)
+        self.assertEqual({"blob", "tree", "commit"}, {item["kind"] for item in closure})
+        with mock.patch.object(publication, "_rewrite_snapshot", return_value=snapshot):
+            self.assertEqual((True, "proved"), publication._post_cas_proof(
+                self.repo.path, snapshot, ref, head, [], [], closure))
+            for kind in ("commit", "tree", "blob"):
+                item = next(value for value in closure
+                            if value["kind"] == kind and value["loose_identity"] is not None)
+                path = Path(snapshot["object_dir"]) / item["oid"][:2] / item["oid"][2:]
+                original = path.read_bytes()
+                path.chmod(stat.S_IWRITE)
+                corrupt = ("corrupt-snapshot-present-" + kind).encode("ascii")
+                path.write_bytes(zlib.compress(
+                    (kind + " " + str(len(corrupt))).encode("ascii") + b"\0" + corrupt))
+                try:
+                    proved, detail = publication._post_cas_proof(
+                        self.repo.path, snapshot, ref, head, [], [], closure)
+                    self.assertFalse(proved)
+                    self.assertRegex(detail, r"content or OID|changed")
+                    self.assertEqual(item["loose_identity"],
+                                     (path.lstat().st_dev, path.lstat().st_ino))
+                finally:
+                    path.write_bytes(original)
+                    path.chmod(stat.S_IREAD)
+
+    def test_ac44_snapshot_present_packed_graph_objects_get_bounded_content_oid_proof(self):
+        git(self.repo.path, "gc", "--prune=now")
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        closure = publication._replacement_closure_evidence(
+            self.repo.path, head, snapshot, [], None)
+        self.assertEqual({"blob", "tree", "commit"}, {item["kind"] for item in closure})
+        self.assertTrue(all(item["loose_identity"] is None for item in closure))
+        self.assertEqual((True, "proved"),
+                         publication._snapshot_closure_matches(
+                             self.repo.path, snapshot, closure))
+
+    def test_ac44_post_cas_rewrite_rolls_back_after_snapshot_present_blob_corruption(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        ref = "refs/heads/awf/EX-6-publication"
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        blob = git(self.repo.path, "rev-parse", "HEAD:seed.txt")
+        object_dir = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
+                              "--git-path", "objects"))
+        path = object_dir / blob[:2] / blob[2:]
+        original = path.read_bytes()
+        real_git = publication._git
+        corrupted = []
+
+        def corrupt_after_cas(root, *args, **kwargs):
+            result = real_git(root, *args, **kwargs)
+            if (not corrupted and args[:2] == ("update-ref", ref) and
+                    args[2] != old_head and result.returncode == 0):
+                before = path.lstat()
+                path.chmod(stat.S_IWRITE)
+                corrupt = b"corrupt-snapshot-present-blob-after-cas"
+                path.write_bytes(zlib.compress(
+                    b"blob " + str(len(corrupt)).encode("ascii") + b"\0" + corrupt))
+                after = path.lstat()
+                self.assertEqual((before.st_dev, before.st_ino),
+                                 (after.st_dev, after.st_ino))
+                corrupted.append(True)
+            return result
+
+        try:
+            with mock.patch.object(publication, "_git", side_effect=corrupt_after_cas):
+                with self.assertRaisesRegex(
+                        ValidationError, r"POST_CAS_RECOVERY_REQUIRED:.*[Ss]napshot-present"):
+                    rewrite_unpublished(self.repo.path, self.repo.base,
+                                        "awf/EX-6-publication", 1, message,
+                                        mapping_path=self.mapping)
+        finally:
+            path.write_bytes(original)
+            path.chmod(stat.S_IREAD)
+        self.assertEqual([True], corrupted)
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
 
     def test_ac44_post_cas_proof_failure_rolls_back_ref_and_retains_owned_object(self):
         self.contaminate_then_remove()

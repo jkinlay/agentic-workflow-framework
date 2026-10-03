@@ -53,6 +53,8 @@ CASE_GROUPS = {
         "PublicationRewriteTests.test_ac44_reflog_restore_refuses_absent_original_deletion",
         "PublicationRewriteTests.test_ac44_post_cas_proof_rejects_snapshot_present_fanout_replacement",
         "PublicationRewriteTests.test_ac44_post_cas_proof_rejects_created_fanout_and_object_replacement",
+        "PublicationRewriteTests.test_ac44_post_cas_proof_rejects_in_place_corruption_of_snapshot_present_graph_objects",
+        "PublicationRewriteTests.test_ac44_post_cas_rewrite_rolls_back_after_snapshot_present_blob_corruption",
         "PublicationRewriteTests.test_ac44_post_cas_snapshot_exception_uses_exact_rollback_and_recovery_evidence",
         "PublicationRewriteTests.test_ac44_post_cas_ancestor_exception_uses_exact_rollback_and_recovery_evidence",
         "PublicationRewriteTests.test_ac44_post_cas_proof_exception_contention_never_overwrites_concurrent_ref",

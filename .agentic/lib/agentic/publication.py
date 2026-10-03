@@ -18,6 +18,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import uuid
 import zlib
 
@@ -28,6 +29,9 @@ from .gittree import verify_publisher_tree
 
 DEFAULT_MAPPING = Path(".agentic-state/publication-deny.json")
 MAX_TEXT_BYTES = 32 * 1024 * 1024
+MAX_REWRITE_PROOF_OBJECT_BYTES = 32 * 1024 * 1024
+MAX_REWRITE_PROOF_TOTAL_BYTES = 512 * 1024 * 1024
+MAX_REWRITE_PROOF_OBJECTS = 100_000
 MAX_REGEX_ENTRIES = 64
 MAX_REGEX_CHARS = 256
 MAX_REGEX_REPEAT = 64
@@ -94,6 +98,68 @@ def _git(root, *args, input_bytes=None, extra_env=None, check=True, timeout=120)
         detail = re.sub(r"[^\x20-\x7e]", "?", result.stderr.decode("utf-8", "replace"))[:300]
         raise ValidationError(f"git {args[0]} failed with exit {result.returncode}: {detail}")
     return result
+
+
+def _git_bounded_stdout(root, *args, input_bytes=None, extra_env=None,
+                        limit=MAX_REWRITE_PROOF_OBJECT_BYTES + 1024, timeout=120):
+    """Run trusted Git plumbing while retaining at most ``limit`` output bytes."""
+    executable = shutil.which("git")
+    if not executable:
+        raise ValidationError("Git is required for publication safety")
+    command = [executable, "--no-replace-objects", "-c", "core.fsmonitor=false",
+               "-c", "core.hooksPath=" + os.devnull, "-c", "core.quotePath=false",
+               "-c", "protocol.file.allow=never", "-C", str(Path(root).resolve()), *args]
+    try:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE,
+                                   env=child_env(_safe_env(extra_env)))
+    except OSError as exc:
+        raise ValidationError(f"git {args[0]} did not start: {type(exc).__name__}") from exc
+    stdout = bytearray()
+    stderr = bytearray()
+    overflow = threading.Event()
+
+    def drain(stream, destination, bound):
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    break
+                room = bound + 1 - len(destination)
+                if room > 0:
+                    destination.extend(chunk[:room])
+                if len(destination) > bound:
+                    overflow.set()
+                    process.kill()
+        except OSError:
+            overflow.set()
+            process.kill()
+
+    out_thread = threading.Thread(target=drain, args=(process.stdout, stdout, limit), daemon=True)
+    err_thread = threading.Thread(target=drain, args=(process.stderr, stderr, 300), daemon=True)
+    out_thread.start()
+    err_thread.start()
+    try:
+        if input_bytes:
+            process.stdin.write(input_bytes)
+        process.stdin.close()
+        process.wait(timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        process.kill()
+        process.wait()
+        raise ValidationError(f"git {args[0]} did not complete: {type(exc).__name__}") from exc
+    finally:
+        out_thread.join(timeout=5)
+        err_thread.join(timeout=5)
+    if out_thread.is_alive() or err_thread.is_alive():
+        process.kill()
+        raise ValidationError(f"git {args[0]} output could not be bounded")
+    if overflow.is_set() or len(stdout) > limit:
+        raise ValidationError(f"git {args[0]} output exceeded the publication proof bound")
+    if process.returncode:
+        detail = re.sub(r"[^\x20-\x7e]", "?", bytes(stderr).decode("utf-8", "replace"))[:300]
+        raise ValidationError(f"git {args[0]} failed with exit {process.returncode}: {detail}")
+    return bytes(stdout)
 
 
 def _json_file(path, label):
@@ -921,6 +987,169 @@ def _loose_path(object_dir, oid, object_format):
     return path
 
 
+def _object_digest(kind, raw, object_format):
+    encoded = (kind + " " + str(len(raw))).encode("ascii") + b"\0" + raw
+    algorithm = hashlib.sha1 if object_format == "sha1" else hashlib.sha256
+    return algorithm(encoded).hexdigest()
+
+
+def _loose_object_evidence(path, oid, object_format, expected_identity=None):
+    """Read one primary loose object with no-follow identity and byte bounds."""
+    compressed_limit = MAX_REWRITE_PROOF_OBJECT_BYTES * 2 + 1024
+    try:
+        before = path.lstat()
+        attributes = getattr(before, "st_file_attributes", 0)
+        if (not stat.S_ISREG(before.st_mode) or path.is_symlink() or
+                attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or
+                before.st_size > compressed_limit):
+            raise ValidationError("Snapshot-present loose object storage is not canonical or bounded")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            identity = (opened.st_dev, opened.st_ino)
+            if ((before.st_dev, before.st_ino) != identity or
+                    expected_identity is not None and identity != expected_identity):
+                raise ValidationError("Snapshot-present loose object identity changed")
+            compressed = handle.read(compressed_limit + 1)
+        after = path.lstat()
+        if (len(compressed) > compressed_limit or
+                (after.st_dev, after.st_ino) != identity or
+                getattr(after, "st_file_attributes", 0) &
+                getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+            raise ValidationError("Snapshot-present loose object changed during bounded read")
+        inflater = zlib.decompressobj()
+        decoded = inflater.decompress(compressed, MAX_REWRITE_PROOF_OBJECT_BYTES + 128)
+        if inflater.unconsumed_tail or len(decoded) > MAX_REWRITE_PROOF_OBJECT_BYTES + 127:
+            raise ValidationError("Snapshot-present object exceeds the publication proof bound")
+        decoded += inflater.flush(MAX_REWRITE_PROOF_OBJECT_BYTES + 128 - len(decoded))
+    except (OSError, zlib.error) as exc:
+        raise ValidationError("Snapshot-present loose object evidence could not be read") from exc
+    if not inflater.eof or inflater.unused_data or inflater.unconsumed_tail or b"\0" not in decoded:
+        raise ValidationError("Snapshot-present loose object encoding is invalid")
+    header, raw = decoded.split(b"\0", 1)
+    try:
+        kind_bytes, declared = header.split(b" ", 1)
+        kind = kind_bytes.decode("ascii")
+        size = int(declared.decode("ascii"))
+    except (ValueError, UnicodeError) as exc:
+        raise ValidationError("Snapshot-present loose object header is invalid") from exc
+    if (kind not in {"blob", "tree", "commit"} or size != len(raw) or
+            size > MAX_REWRITE_PROOF_OBJECT_BYTES or
+            _object_digest(kind, raw, object_format) != oid):
+        raise ValidationError("Snapshot-present loose object content or OID is invalid")
+    return {"oid": oid, "kind": kind, "size": size,
+            "content_sha256": hashlib.sha256(raw).hexdigest(),
+            "loose_identity": identity}
+
+
+def _git_object_evidence(root, oid, object_format, extra_env=None):
+    """Read one packed/alternate object through bounded, replacement-disabled plumbing."""
+    output = _git_bounded_stdout(
+        root, "cat-file", "--batch", input_bytes=(oid + "\n").encode("ascii"),
+        extra_env=extra_env, limit=MAX_REWRITE_PROOF_OBJECT_BYTES + 1024)
+    header, separator, content = output.partition(b"\n")
+    if not separator or not content.endswith(b"\n"):
+        raise ValidationError("Snapshot-present object batch evidence is incomplete")
+    try:
+        actual_bytes, kind_bytes, size_bytes = header.split(b" ", 2)
+        actual = actual_bytes.decode("ascii")
+        kind = kind_bytes.decode("ascii")
+        size = int(size_bytes.decode("ascii"))
+    except (ValueError, UnicodeError) as exc:
+        raise ValidationError("Snapshot-present object batch header is invalid") from exc
+    raw = content[:-1]
+    if (actual != oid or kind not in {"blob", "tree", "commit"} or
+            size != len(raw) or size > MAX_REWRITE_PROOF_OBJECT_BYTES or
+            _object_digest(kind, raw, object_format) != oid):
+        raise ValidationError("Snapshot-present object content or OID is invalid")
+    return {"oid": oid, "kind": kind, "size": size,
+            "content_sha256": hashlib.sha256(raw).hexdigest(),
+            "loose_identity": None}
+
+
+def _snapshot_object_evidence(root, snapshot, oid, extra_env=None, expected=None):
+    object_dir = _canonical_object_dir(root, snapshot)
+    path = _loose_path(object_dir, oid, snapshot["object_format"])
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        if expected is not None and expected.get("loose_identity") is not None:
+            raise ValidationError("Snapshot-present loose object disappeared")
+        evidence = _git_object_evidence(root, oid, snapshot["object_format"], extra_env)
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return evidence
+        except OSError as exc:
+            raise ValidationError("Snapshot-present object storage could not be rechecked") from exc
+        raise ValidationError("Snapshot-present object storage changed during proof")
+    except OSError as exc:
+        raise ValidationError("Snapshot-present object storage could not be inspected") from exc
+    fanout_identity = snapshot["fanouts"].get(oid[:2])
+    parent = path.parent.lstat()
+    if fanout_identity is None or (parent.st_dev, parent.st_ino) != fanout_identity:
+        raise ValidationError("Snapshot-present loose object fanout identity changed")
+    expected_identity = expected.get("loose_identity") if expected is not None else None
+    evidence = _loose_object_evidence(path, oid, snapshot["object_format"], expected_identity)
+    parent_after = path.parent.lstat()
+    if (parent_after.st_dev, parent_after.st_ino) != fanout_identity:
+        raise ValidationError("Snapshot-present loose object fanout changed during proof")
+    return evidence
+
+
+def _replacement_closure_evidence(root, created, snapshot, records, extra_env):
+    """Bind every snapshot-present object reachable from the replacement commit."""
+    limit = MAX_REWRITE_PROOF_OBJECTS * 70
+    raw = _git_bounded_stdout(root, "rev-list", "--objects", "--no-object-names", created,
+                              extra_env=extra_env, limit=limit)
+    object_format = snapshot["object_format"]
+    length = 40 if object_format == "sha1" else 64
+    oids = []
+    seen = set()
+    for line in raw.splitlines():
+        try:
+            oid = line.decode("ascii")
+        except UnicodeError as exc:
+            raise ValidationError("Replacement graph contains a non-ASCII object identity") from exc
+        if not re.fullmatch(rf"[0-9a-f]{{{length}}}", oid) or oid in seen:
+            raise ValidationError("Replacement graph object inventory is invalid")
+        seen.add(oid)
+        oids.append(oid)
+    if created not in seen or not oids or len(oids) > MAX_REWRITE_PROOF_OBJECTS:
+        raise ValidationError("Replacement graph object inventory is incomplete or over budget")
+    snapshot_objects = set(snapshot["objects"])
+    installed = {record["oid"] for record in records}
+    if any(oid not in snapshot_objects and oid not in installed for oid in oids):
+        raise ValidationError("Replacement graph contains an object without locked provenance")
+    evidence = []
+    total = 0
+    for oid in oids:
+        if oid not in snapshot_objects:
+            continue
+        item = _snapshot_object_evidence(root, snapshot, oid, extra_env)
+        total += item["size"]
+        if total > MAX_REWRITE_PROOF_TOTAL_BYTES:
+            raise ValidationError("Replacement graph evidence exceeds the total byte bound")
+        evidence.append(item)
+    if not evidence:
+        raise ValidationError("Replacement graph lacks snapshot-present closure evidence")
+    return tuple(evidence)
+
+
+def _snapshot_closure_matches(root, snapshot, evidence):
+    total = 0
+    for expected in evidence:
+        try:
+            current = _snapshot_object_evidence(root, snapshot, expected["oid"], expected=expected)
+        except ValidationError as exc:
+            return False, str(exc)
+        total += current["size"]
+        if total > MAX_REWRITE_PROOF_TOTAL_BYTES or current != expected:
+            return False, "snapshot-present replacement graph object changed"
+    return True, "proved"
+
+
 def _install_quarantine_objects(root, records, snapshot):
     object_dir = _canonical_object_dir(root, snapshot)
     snapshot_objects = set(snapshot["objects"])
@@ -1224,7 +1453,7 @@ def _expected_post_cas_fanouts(snapshot, records):
     return expected
 
 
-def _post_cas_proof(root, snapshot, ref, created, old_commits, records):
+def _post_cas_proof(root, snapshot, ref, created, old_commits, records, closure_evidence):
     current = _rewrite_snapshot(root)
     expected_refs = dict(snapshot["refs"])
     expected_refs[ref] = created
@@ -1257,6 +1486,9 @@ def _post_cas_proof(root, snapshot, ref, created, old_commits, records):
     expected_objects = set(snapshot["objects"]) | {record["oid"] for record in records}
     if set(current["objects"]) != expected_objects:
         return False, "object inventory changed"
+    closure_proved, closure_detail = _snapshot_closure_matches(root, snapshot, closure_evidence)
+    if not closure_proved:
+        return False, closure_detail
     object_dir = Path(snapshot["object_dir"])
     for record in records:
         if not record.get("created_by_operation"):
@@ -1407,6 +1639,8 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
             for other_ref, tip in snapshot["refs"].items():
                 if other_ref != ref and any(_is_ancestor(root, commit, tip) for commit in old_commits):
                     raise ValidationError("Old commits became reachable before installation; rewrite refused without changes")
+            closure_evidence = _replacement_closure_evidence(
+                root, created, snapshot, records, extra)
             try:
                 _install_quarantine_objects(root, records, snapshot)
             except ValidationError as install_error:
@@ -1441,7 +1675,8 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
                 raise ValidationError(_recovery_message(
                     "CAS_FAILED_RECOVERED", records, old_head, created, "exact pre-operation snapshot restored"))
             try:
-                proved, detail = _post_cas_proof(root, snapshot, ref, created, old_commits, records)
+                proved, detail = _post_cas_proof(
+                    root, snapshot, ref, created, old_commits, records, closure_evidence)
             except Exception as proof_error:
                 # The target ref has already moved.  Snapshot, alias, identity,
                 # permission, and reachability failures are proof failures, not
