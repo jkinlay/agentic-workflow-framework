@@ -1,0 +1,78 @@
+{
+  "format": "awf-adversarial-regression-inventory-1",
+  "inventory_id": "awf-1.9.3-five-slot-permanent",
+  "regressions": [
+    {
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Default topology has one controller, one dedicated adversarial handler, and three workers",
+      "permanent": true,
+      "regression_id": "FIVE-SLOT-001",
+      "source_finding_id": null,
+      "test_id": "FiveSlotAccelerationTests.test_default_topology_and_complete_gate_chain_pass"
+    },
+    {
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Capacity below five fails without explicit degraded-mode authorization",
+      "permanent": true,
+      "regression_id": "FIVE-SLOT-002",
+      "source_finding_id": null,
+      "test_id": "FiveSlotAccelerationTests.test_capacity_shortfall_requires_explicit_authorized_degraded_mode"
+    },
+    {
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Pre-controller adversarial inventory is exact and precedes the full suite",
+      "permanent": true,
+      "regression_id": "FIVE-SLOT-003",
+      "source_finding_id": null,
+      "test_id": "FiveSlotAccelerationTests.test_gate_inventory_and_sequence_fail_closed"
+    },
+    {
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Provider PR body is UTF-8 LF canonical and byte-exact on readback",
+      "permanent": true,
+      "regression_id": "FIVE-SLOT-004",
+      "source_finding_id": null,
+      "test_id": "FiveSlotAccelerationTests.test_provider_body_canonicalization_and_exact_readback"
+    },
+    {
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Every accepted critic finding has one permanent named regression with evidence",
+      "permanent": true,
+      "regression_id": "FIVE-SLOT-005",
+      "source_finding_id": null,
+      "test_id": "FiveSlotAccelerationTests.test_accepted_finding_requires_permanent_inventory_member"
+    },
+    {
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Heavy tests use deterministic bounded shards and an exact aggregate receipt",
+      "permanent": true,
+      "regression_id": "FIVE-SLOT-006",
+      "source_finding_id": null,
+      "test_id": "FiveSlotAccelerationTests.test_shards_are_deterministic_bounded_and_exact"
+    },
+    {
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Each worker has one dependency-ordered active deliverable and explicit inactive Jira state",
+      "permanent": true,
+      "regression_id": "FIVE-SLOT-007",
+      "source_finding_id": null,
+      "test_id": "FiveSlotAccelerationTests.test_worker_delivery_invariants_fail_closed"
+    },
+    {
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Candidate freeze permits exactly one full-suite run on the exact tuple",
+      "permanent": true,
+      "regression_id": "FIVE-SLOT-008",
+      "source_finding_id": null,
+      "test_id": "FiveSlotAccelerationTests.test_candidate_freeze_and_single_full_suite_are_exact"
+    },
+    {
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Controller tuple, frozen review completion, both scans, and final independent review remain mandatory",
+      "permanent": true,
+      "regression_id": "FIVE-SLOT-009",
+      "source_finding_id": null,
+      "test_id": "FiveSlotAccelerationTests.test_mandatory_preservation_gates_fail_closed"
+    }
+  ]
+}
