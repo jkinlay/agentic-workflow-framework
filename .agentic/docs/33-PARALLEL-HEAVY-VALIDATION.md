@@ -13,7 +13,7 @@ A version 4 plan binds:
 - one deterministic seed, bounded retry limit, and required process-tree, host-network-policy, and worktree isolation declarations.
 - the normalized target environment values and credential/module-search stripping policy.
 
-Before launch, a trusted attestor proves the source root clean at the reviewed HEAD/tree. Execution uses a Git-object snapshot. On Windows, deny-write/delete handles and protected DACLs seal tracked paths and namespaces; unsupported hosts fail closed. The target, controller interpreter, archived launcher, and `-I -S -B` flags are reviewed and fenced. Identity movement fails closed; `shell=False` is mandatory.
+Before launch, a trusted attestor proves the reviewed HEAD/tree clean. Git reads use a minimal environment and ignore ambient configuration, global attributes, and replacements. Execution archives the exact tree. Independent inventory must match extracted paths, modes, and computed blob IDs; content SHA-256 is rechecked after sealing. On Windows, handles and protected DACLs seal paths and namespaces; unsupported hosts fail closed. Target, interpreter, tree-bound launcher, and `-I -S -B` flags are reviewed and fenced. Identity movement fails closed; `shell=False` is mandatory.
 
 The version 6 review binds plan digest, cwd, argv, launch chain, target environment, resources, retries, and isolation. A trusted adapter must find that digest in a formal provider review. GitHub observations bind repository, PR tuple, immutable reviewer, APPROVED state, reviewed commit, and `AWF-HEAVY-VALIDATION-AUTHORIZATION-SHA256: <digest>`. AWF repeats that authentication after admission and before snapshot or scheduling; tuple movement, review revocation, reviewer movement, or authorization movement releases the lease and starts no target. Local `APPROVE` never authorizes work.
 
@@ -71,4 +71,4 @@ Run the synthetic regression with:
 python -B -m unittest discover -s .agentic/tests -p test_heavy_validation.py -v
 ```
 
-The regression covers authorization, owner-write, launcher and snapshot-namespace injection races, checkout mutation, fractional delayed acquisition and runtime expiry, exhausted capacity, serial/fallback leases, release failure, engine fencing, malformed state, worst-case duration, tamper detection, GitHub authentication, Windows containment, determinism, adapters/resources, cancellation, descendant termination, tuple/cwd movement, credentials, aliases, caps, and bounded output. It uses no proprietary engine, GPU, or license server.
+The regression covers every control above, including replacement/config injection, mutation races, lease expiry/exhaustion, authorization movement, containment, tampering, cancellation, adapters, credentials, caps, and output bounds. It uses no proprietary engine, GPU, or license server.

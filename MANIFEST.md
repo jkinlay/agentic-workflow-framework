@@ -1,8 +1,8 @@
 # Release manifest — 1.9.3
 
-340 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
+341 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `dbf03fa9e88781e93f7e1e6d566d3617a9da7610e739429a7460331607b5cd95`
+MANIFEST.json SHA-256: `df19db138780119c35d57b79af61694f6a492a3c02e9134fe69445bf05e6d535`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -39,7 +39,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `be2ba691bd38a10a9256d99f25c5400aa4337f068e4fd1b3e42ca5b91e8a6d84` |
 | `.agentic/docs/31-PUBLICATION-SAFETY.md` | `8833253d42a541e77a17872061c10385ae572828bdba78ddd4dc570cfdb4c8e3` |
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `861a027bf807705a1fe3651bb274dd27ac24404567e0b440c21c338d8c227b3b` |
-| `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `557db95593cab119b6cfe83e34503be0c0009be3316bad76e7db9affccee1bd2` |
+| `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `c116e58231aff29d5c5b8d3e1c9dca377ffb681da7c5a6304f18bd5a2b1c17e2` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `73a25bafeaa92a93cd247a9d4e64fb9434e608dc9df583d3bfd2ce5acde47fc6` |
 | `.agentic/examples/OPERATING_CONFIG.yaml` | `37ae4dc7924aa9ebac65603ecee5c1823731d2ca25ab02a86af88c6e80ec3d3f` |
 | `.agentic/examples/PROJECT_CONFIG.yaml` | `0e8dc1c00424ccbc232d7fb9edf0fb31965106df622cc3631acf1fc30248086c` |
@@ -67,10 +67,11 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/contracts.py` | `5c724168a50554a9bcf7b61902995816771741251f6bf66457627ce98f2e3e04` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
 | `.agentic/lib/agentic/gates.py` | `d19525fc8b22004514add0ce314804f34955e3ad4c924dc64d31577fef3ce47e` |
+| `.agentic/lib/agentic/git_isolation.py` | `a574471c11654a9e82bb0e8529f63cc2e275b52e79a7cdffedb6fbf1f41b3383` |
 | `.agentic/lib/agentic/gittree.py` | `e2827e40987e45bd4575772869fd536918979fd64b182f24440adcf7d1a5b5c9` |
-| `.agentic/lib/agentic/heavy_validation.py` | `30e09e4462dfc84d7e7625bc9ddbe71e17587cb34395d6408e4ccaca2b7a5e2e` |
+| `.agentic/lib/agentic/heavy_validation.py` | `7b29f9ca0a91c4d73eb50c8591d3e327d2da3193ec14f0a79d8feb58e34ff631` |
 | `.agentic/lib/agentic/heavy_validation_child.py` | `ad03d5f26817da774213b1b75bd7e5147cef7421b6f534e0f38f4db0bf53c6df` |
-| `.agentic/lib/agentic/heavy_validation_controller.py` | `223585389f61554f8cf2674a54ef510ad4936dcf71c4c93ee5673217ede244bd` |
+| `.agentic/lib/agentic/heavy_validation_controller.py` | `190a33c2094f98d46b4f9e39a2be8f6bea75e8913fe53591c2f93a4a8e63b65d` |
 | `.agentic/lib/agentic/host_preflight.py` | `9e26810e09f6264b5f4a78d56707a5e55601b4c236d6d397f7c48f9b2e66935a` |
 | `.agentic/lib/agentic/installer.py` | `44360d59e178e39d8757a55e04dc4d90a0b7b559f8914e9162ff048d94512c90` |
 | `.agentic/lib/agentic/interaction.py` | `ee21c165d9deead0501cf26cb88d8a1f0834b4c8031c9d1948354a7df2595ee9` |
@@ -215,7 +216,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_config_diagnostics.py` | `e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07` |
 | `.agentic/tests/test_continuation.py` | `1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633` |
 | `.agentic/tests/test_gittree.py` | `6eb3a12e3c5edc126368b3446fcdac47737281c3ed1c2beb45458c67d1f7d483` |
-| `.agentic/tests/test_heavy_validation.py` | `a79e29b01bb9f026875f3e005cf657a6acd18e7cd366a497a3d10ddad19f992a` |
+| `.agentic/tests/test_heavy_validation.py` | `f80cf217ffc69e0bb9cd515e02a00dd12f9966d83f7c4dea991a65eff6df5db1` |
 | `.agentic/tests/test_host_process.py` | `e51ef1f41d87493eeb3e3dbf38d815e5cec3d0d90e2f06f83fdc23436d131083` |
 | `.agentic/tests/test_interaction.py` | `184d5faff4c18af704decfe2ea8e1a1aeae696cb1ae35149630ea4cca19da9aa` |
 | `.agentic/tests/test_lifecycle_190.py` | `d810658ca19fd8b2964b5bb20f417f418a0cb8ab0b7b532162597ff0d3c36fbb` |
