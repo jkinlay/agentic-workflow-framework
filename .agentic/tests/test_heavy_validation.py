@@ -906,6 +906,130 @@ class HeavyValidationTests(unittest.TestCase):
             self.assertEqual("RELEASED", result["lease_release"]["status"])
             self.assertFalse(marker.exists())
 
+    def test_each_queued_serial_partition_rechecks_review_before_child_launch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first = Path(folder) / "first-started.txt"
+            forbidden = Path(folder) / "expired-partition-started.txt"
+            raw = plan([
+                partition("first", f"from pathlib import Path; Path({str(first)!r}).write_text('ok')"),
+                partition("expired", f"from pathlib import Path; Path({str(forbidden)!r}).write_text('bad')"),
+            ], parallelism=1)
+            cfg, broker = config(), Broker()
+            cfg_raw = canonical(cfg)
+            cap = capacity(raw, cfg_raw, workers=1, heavy=1)
+            reviewed = json.loads(review(raw))
+            reviewed["expires_at"] = "2026-10-02T09:00:01Z"
+            review_raw = canonical(reviewed)
+            instants = iter([NOW, NOW, "2026-10-02T09:00:02Z"])
+            provider_calls = 0
+
+            def counted_provider(*args):
+                nonlocal provider_calls
+                provider_calls += 1
+                return authenticator(*args)
+
+            result = _run_validation_at(
+                plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=counted_provider,
+                checkout_attestor=checkout_attestor,
+                checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
+                expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                lease_clock=lambda: NOW, dispatch_clock=lambda: next(instants))
+            self.assertTrue(first.exists())
+            self.assertFalse(forbidden.exists())
+            self.assertEqual("FAIL", result["status"])
+            self.assertEqual(5, provider_calls)
+            gates = result["child_launch_authorization"]
+            self.assertEqual("REJECTED", gates["status"])
+            self.assertEqual(["PASS", "REJECTED"],
+                             [item["status"] for item in gates["checks"]])
+            self.assertEqual(["review_validity_interval_elapsed"],
+                             gates["checks"][1]["reasons"])
+            self.assertRegex(gates["evidence_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual([("lease-1", 7)], broker.released)
+            self.assertEqual("RELEASED", result["lease_release"]["status"])
+
+    def test_each_queued_serial_partition_rechecks_capacity_freshness(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first = Path(folder) / "first-capacity-started.txt"
+            forbidden = Path(folder) / "stale-capacity-started.txt"
+            raw = plan([
+                partition("first", f"from pathlib import Path; Path({str(first)!r}).write_text('ok')"),
+                partition("stale", f"from pathlib import Path; Path({str(forbidden)!r}).write_text('bad')"),
+            ], parallelism=1)
+            cfg, broker = config(), Broker()
+            cfg_raw = canonical(cfg)
+            cap = capacity(raw, cfg_raw, workers=1, heavy=1)
+            instants = iter([NOW, NOW, "2026-10-02T09:05:01Z"])
+            result = _run_validation_at(
+                plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review(raw), expected_review_sha256=sha256(review(raw)),
+                config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticator,
+                checkout_attestor=checkout_attestor,
+                checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
+                expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                lease_clock=lambda: NOW, dispatch_clock=lambda: next(instants))
+            self.assertTrue(first.exists())
+            self.assertFalse(forbidden.exists())
+            gates = result["child_launch_authorization"]
+            self.assertEqual("FAIL", result["status"])
+            self.assertEqual("REJECTED", gates["status"])
+            self.assertEqual(["observed_capacity_stale_at_dispatch"],
+                             gates["checks"][1]["reasons"])
+            self.assertEqual(301_000_000,
+                             gates["checks"][1]["freshness"]["capacity_age_microseconds"])
+            self.assertEqual([("lease-1", 7)], broker.released)
+            self.assertEqual("RELEASED", result["lease_release"]["status"])
+
+    def test_retry_rechecks_review_and_starts_no_expired_retry_child(self):
+        with tempfile.TemporaryDirectory() as folder:
+            forbidden = Path(folder) / "expired-retry-started.txt"
+            code = ("import os; from pathlib import Path; "
+                    f"Path({str(forbidden)!r}).write_text('bad') if "
+                    "os.environ['AWF_VALIDATION_ATTEMPT']=='2' else None; "
+                    "raise SystemExit(9)")
+            raw = plan([partition("retry", code)], parallelism=1, retries=1)
+            cfg, broker = config(), Broker()
+            cfg_raw = canonical(cfg)
+            cap = capacity(raw, cfg_raw, workers=1, heavy=1)
+            reviewed = json.loads(review(raw))
+            reviewed["expires_at"] = "2026-10-02T09:00:01Z"
+            review_raw = canonical(reviewed)
+            instants = iter([NOW, NOW, "2026-10-02T09:00:02Z"])
+            provider_calls = 0
+
+            def counted_provider(*args):
+                nonlocal provider_calls
+                provider_calls += 1
+                return authenticator(*args)
+
+            result = _run_validation_at(
+                plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=counted_provider,
+                checkout_attestor=checkout_attestor,
+                checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
+                expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                lease_clock=lambda: NOW, dispatch_clock=lambda: next(instants))
+            self.assertFalse(forbidden.exists())
+            self.assertEqual("FAIL", result["status"])
+            self.assertEqual(5, provider_calls)
+            gates = result["child_launch_authorization"]
+            self.assertEqual([1, 2], [item["attempt"] for item in gates["checks"]])
+            self.assertEqual(["PASS", "REJECTED"],
+                             [item["status"] for item in gates["checks"]])
+            self.assertEqual(["review_validity_interval_elapsed"],
+                             gates["checks"][1]["reasons"])
+            self.assertEqual([("lease-1", 7)], broker.released)
+            self.assertEqual("RELEASED", result["lease_release"]["status"])
+
     def test_durable_file_broker_fences_capacity_and_result_log_is_immutable(self):
         clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
         with tempfile.TemporaryDirectory() as folder:

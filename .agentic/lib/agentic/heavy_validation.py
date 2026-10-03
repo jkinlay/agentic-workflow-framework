@@ -582,6 +582,110 @@ def _dispatch_freshness(review: dict, capacity: dict | None, now: str,
         "heavy-validation-dispatch-freshness", record)}
 
 
+class _ChildLaunchAuthorization:
+    """Serialize the last authority check with each actual child creation.
+
+    The lock is deliberately held through ``Popen``. Therefore, after one
+    caller observes stale or moved authority and sets the shared cancellation
+    event, no other partition can pass a check and launch behind that failure.
+    """
+
+    def __init__(self, *, review: dict, review_digest: str, plan_digest: str,
+                 candidate: dict, authorization: dict, authenticator,
+                 capacity: dict | None, max_capacity_age_seconds: int,
+                 capacity_required: bool, lease: dict | None, lease_guard,
+                 clock, cancel_event: threading.Event):
+        self._review = review
+        self._review_digest = review_digest
+        self._plan_digest = plan_digest
+        self._candidate = candidate
+        self._authorization = authorization
+        self._authenticator = authenticator
+        self._capacity = capacity
+        self._max_capacity_age_seconds = max_capacity_age_seconds
+        self._capacity_required = capacity_required
+        self._lease = lease
+        self._lease_guard = lease_guard
+        self._clock = clock
+        self._cancel_event = cancel_event
+        self._lock = threading.Lock()
+        self._checks: list[dict] = []
+        self._blocked = False
+
+    @contextmanager
+    def authorize(self, partition: dict, attempt: int, partition_id: str):
+        with self._lock:
+            if self._cancel_event.is_set():
+                raise ValidationError("Child launch cancelled before authority check")
+            sampled_at = _clock_text(self._clock)
+            reasons: list[str] = []
+            try:
+                provider = _authenticate_review(
+                    self._review, self._review_digest, self._plan_digest,
+                    self._candidate, self._authorization, self._authenticator)
+            except Exception as exc:
+                provider = {"status": "REJECTED", "error_type": type(exc).__name__}
+                reasons.append("provider_authorization_rejected")
+            try:
+                freshness = _dispatch_freshness(
+                    self._review, self._capacity, sampled_at,
+                    self._max_capacity_age_seconds,
+                    capacity_required=self._capacity_required)
+                reasons.extend(freshness["reasons"])
+            except Exception as exc:
+                freshness = {"status": "REJECTED", "sampled_at": sampled_at,
+                             "error_type": type(exc).__name__}
+                reasons.append("freshness_revalidation_failed")
+            lease_fence = {
+                "required": self._capacity_required,
+                "status": "NOT_REQUIRED" if not self._capacity_required else "REJECTED",
+                "lease_id": self._lease.get("lease_id") if self._lease else None,
+                "fencing_token": self._lease.get("fencing_token") if self._lease else None,
+                "expires_at": self._lease.get("expires_at") if self._lease else None,
+            }
+            try:
+                if self._capacity_required and (
+                        self._lease is None or self._lease.get("status") != "GRANTED"):
+                    raise ValidationError("Exact granted lease fence is unavailable")
+                self._lease_guard()
+                if self._capacity_required:
+                    lease_fence["status"] = "PASS"
+            except Exception as exc:
+                lease_fence["error_type"] = type(exc).__name__
+                reasons.append("lease_fence_rejected")
+            reasons = list(dict.fromkeys(reasons))
+            record = {
+                "sequence": len(self._checks) + 1,
+                "partition_id": partition_id,
+                "partition_name": partition["name"],
+                "attempt": attempt,
+                "sampled_at": sampled_at,
+                "status": "PASS" if not reasons else "REJECTED",
+                "provider_authorization": provider,
+                "freshness": freshness,
+                "lease_fence": lease_fence,
+                "reasons": reasons,
+            }
+            record = {**record, "evidence_sha256": fingerprint(
+                "heavy-validation-child-launch-authorization", record)}
+            self._checks.append(record)
+            if reasons:
+                self._blocked = True
+                self._cancel_event.set()
+                raise ValidationError(
+                    "Child launch authority rejected: " + ", ".join(reasons))
+            # Retain the lock until the caller has created the child.
+            yield deepcopy(record)
+
+    def evidence(self) -> dict:
+        with self._lock:
+            status = ("REJECTED" if self._blocked else
+                      "PASS" if self._checks else "NOT_CHECKED")
+            record = {"status": status, "checks": deepcopy(self._checks)}
+            return {**record, "evidence_sha256": fingerprint(
+                "heavy-validation-child-launch-authorizations", record)}
+
+
 def _authenticate_review(review: dict, review_digest: str, plan_digest: str,
                          candidate: dict, authorization: dict, authenticator) -> dict:
     if authenticator is None:
@@ -1250,7 +1354,7 @@ def _result_shell(partition: dict, plan: dict, executable: dict) -> dict:
 
 def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, config: dict,
                      cancel_event: threading.Event, attempt: int, launch_chain: dict,
-                     lease_guard) -> dict:
+                     lease_guard, launch_authorizer=None) -> dict:
     result = _result_shell(partition, plan, executable)
     result["started_at"] = now_text()
     state = "FAILED"
@@ -1310,20 +1414,29 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
             target_environment = _target_child_env(
                 launch_chain["target_environment"], seed=plan["determinism"]["seed"],
                 attempt=attempt)
-            proc = subprocess.Popen(
-                command,
-                cwd=str(cwd),
-                stdin=child_stdin,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False,
-                env=target_environment,
-                **options,
-            )
-            if os.name == "nt":
-                _attach_windows_job(proc)
-                _release_windows_launcher(proc, target_argv, target_environment)
-                released = True
+            @contextmanager
+            def lease_only_authorization():
+                lease_guard()
+                yield None
+
+            authorization_context = (
+                launch_authorizer(partition, attempt, result["partition_id"])
+                if launch_authorizer is not None else lease_only_authorization())
+            with authorization_context:
+                proc = subprocess.Popen(
+                    command,
+                    cwd=str(cwd),
+                    stdin=child_stdin,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    shell=False,
+                    env=target_environment,
+                    **options,
+                )
+                if os.name == "nt":
+                    _attach_windows_job(proc)
+                    _release_windows_launcher(proc, target_argv, target_environment)
+                    released = True
             stdout_capture = _Capture(proc.stdout)
             stderr_capture = _Capture(proc.stderr)
             readers = [threading.Thread(target=stdout_capture.drain, daemon=True),
@@ -1415,13 +1528,14 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
 
 
 def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: dict,
-             cancel_event: threading.Event, launch_chain: dict, lease_guard) -> dict:
+             cancel_event: threading.Event, launch_chain: dict, lease_guard,
+             launch_authorizer=None) -> dict:
     attempts = []
     maximum = plan["determinism"]["retry_limit"] + 1
     final = None
     for attempt in range(1, maximum + 1):
         final = _execute_attempt(partition, plan, executable, cwd, config, cancel_event, attempt,
-                                 launch_chain, lease_guard)
+                                 launch_chain, lease_guard, launch_authorizer)
         attempts.append({key: final[key] for key in (
             "attempt", "state", "exit_code", "timed_out", "cancelled", "error_type",
             "process_tree_cleanup", "stdout_sha256", "stderr_sha256")})
@@ -1529,6 +1643,8 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
     dispatch_review_authority = {"status": "NOT_RECHECKED"}
     dispatch_freshness = {"status": "NOT_CHECKED"}
     dispatch_authorized = False
+    launch_authorization = {"status": "NOT_CHECKED", "checks": []}
+    launch_gate = None
     lease_runtime_valid = True
     guard = lambda: _lease_runtime_guard(lease, lease_clock)
     try:
@@ -1552,15 +1668,23 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
                 guard()
                 dispatch_authorized = dispatch_freshness["status"] == "PASS"
                 if dispatch_authorized:
+                    launch_gate = _ChildLaunchAuthorization(
+                        review=review, review_digest=review_digest,
+                        plan_digest=plan_digest, candidate=plan["candidate"],
+                        authorization=authorization, authenticator=review_authenticator,
+                        capacity=capacity,
+                        max_capacity_age_seconds=max_capacity_age_seconds,
+                        capacity_required=broker["enabled"], lease=lease,
+                        lease_guard=guard, clock=dispatch_clock, cancel_event=event)
                     with ThreadPoolExecutor(max_workers=effective,
                                             thread_name_prefix="awf-heavy") as executor:
                         futures = {
                             executor.submit(_execute, part, plan, executable, snapshot_root,
                                             config, event,
                                             {**authorization["record"]["windows_launch_chain"],
-                                             "target_environment": authorization["record"][
-                                                 "target_environment"]},
-                                            guard): (part, executable)
+                                                 "target_environment": authorization["record"][
+                                                     "target_environment"]},
+                                            guard, launch_gate.authorize): (part, executable)
                             for part, executable in zip(plan["partitions"], launch_executables)
                         }
                         for future in as_completed(futures):
@@ -1574,6 +1698,8 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
                     except ValidationError:
                         lease_runtime_valid = False
     finally:
+        if launch_gate is not None:
+            launch_authorization = launch_gate.evidence()
         if lease is not None and lease.get("status") == "GRANTED":
             lease_release = _release_lease(broker_client, lease)
     ended_at = now_text()
@@ -1585,7 +1711,9 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
     release_complete = (not broker["enabled"] or
                         (admitted and lease is not None and lease.get("status") == "GRANTED"
                          and lease_release["status"] == "RELEASED"))
-    passed = (admitted and dispatch_authorized and terminal and cleanup_complete and release_complete
+    passed = (admitted and dispatch_authorized
+              and launch_authorization["status"] == "PASS"
+              and terminal and cleanup_complete and release_complete
               and lease_runtime_valid and all(
         item["state"] == "PASS" for item in results)
               )
@@ -1616,6 +1744,7 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
         "review_authority": review_authority,
         "dispatch_review_authority": dispatch_review_authority,
         "dispatch_freshness": dispatch_freshness,
+        "child_launch_authorization": launch_authorization,
         "workload_authorization": authorization,
         "checkout_attestation": {"initial": checkout, "dispatch": dispatch_checkout},
         "checkout_snapshot": checkout_snapshot,
@@ -1648,6 +1777,7 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
             "config_sha256": config_digest, "capacity_sha256": capacity_digest,
             "checkout_snapshot": checkout_snapshot,
             "dispatch_freshness": dispatch_freshness,
+            "child_launch_authorization": launch_authorization,
             "lease": lease, "lease_release": lease_release,
             "admission_events": admission_events, "partitions": stable}),
         "serial_equivalence_sha256": serial_equivalence_sha256,
