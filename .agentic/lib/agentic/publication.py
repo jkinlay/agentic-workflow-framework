@@ -1048,14 +1048,30 @@ def _has_claimant(root, oid):
     return False
 
 
-def _loose_object_matches(record, object_format):
+def _loose_object_matches(record, object_format, expected_identity=None):
     path = record["path"]
     expected = (record["kind"] + " " + str(len(record["raw"]))).encode("ascii") + b"\0" + record["raw"]
     try:
-        size = path.stat().st_size
-        if size > len(expected) * 2 + 1024:
+        before = path.lstat()
+        attributes = getattr(before, "st_file_attributes", 0)
+        if (not stat.S_ISREG(before.st_mode) or path.is_symlink() or
+                attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
             return False
-        compressed = path.read_bytes()
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            identity = (opened.st_dev, opened.st_ino)
+            if ((before.st_dev, before.st_ino) != identity or
+                    expected_identity is not None and identity != expected_identity or
+                    opened.st_size > len(expected) * 2 + 1024):
+                return False
+            compressed = handle.read(len(expected) * 2 + 1025)
+        after = path.lstat()
+        if ((after.st_dev, after.st_ino) != identity or
+                getattr(after, "st_file_attributes", 0) &
+                getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+            return False
         inflater = zlib.decompressobj()
         decoded = inflater.decompress(compressed, len(expected) + 1)
         if len(decoded) > len(expected) or inflater.unconsumed_tail:
@@ -1136,21 +1152,16 @@ def _cleanup_new_objects(root, records, snapshot):
 
 
 def _restore_rewrite_reflogs(root, snapshot, ref):
-    common = _git_common_dir(root)
-    for relative in ("HEAD", ref):
-        key = relative if relative == "HEAD" else relative
-        path = common / "logs" / key
-        original = snapshot["logs"].get(key)
-        try:
-            if original is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                temporary = path.with_name(path.name + ".awf-restore")
-                temporary.write_bytes(original)
-                os.replace(temporary, path)
-        except OSError as exc:
-            raise ValidationError("Rewrite reflog restoration failed") from exc
+    # pathlib/open/replace/unlink pathname operations cannot bind every parent
+    # component and the destination identity across Windows junction, reparse,
+    # symlink, and directory-swap races.  Restoring or deleting even one
+    # reflog through a mutable alias could modify bytes outside the Git common
+    # directory.  Refuse before resolving, reading, creating, writing,
+    # replacing, or unlinking any destination.  The caller reports the exact
+    # retained objects/fanouts and leaves the repository in the named
+    # POST_CAS_RECOVERY_REQUIRED state for non-destructive owner recovery.
+    raise ValidationError(
+        "Automatic reflog restoration is unavailable without identity-bound no-follow replacement and deletion; reflogs retained")
 
 
 def _recovery_message(code, records, old_head, new_head, detail):
@@ -1185,6 +1196,34 @@ def _failure_state_matches(root, snapshot):
     return _rewrite_snapshot(root) == snapshot
 
 
+def _expected_post_cas_fanouts(snapshot, records):
+    expected = dict(snapshot["fanouts"])
+    object_dir = Path(snapshot["object_dir"])
+    for record in records:
+        oid = record.get("oid", "")
+        prefix = oid[:2]
+        state = record.get("fanout")
+        if prefix not in expected or state is None or state.get("ambiguous"):
+            raise ValidationError("Installed loose object fanout provenance is ambiguous")
+        canonical = object_dir / prefix
+        if os.path.normcase(str(Path(state.get("path", "")))) != os.path.normcase(str(canonical)):
+            raise ValidationError("Installed loose object fanout path is not canonical")
+        locked_identity = snapshot["fanouts"][prefix]
+        if (state.get("snapshot_identity") != locked_identity or
+                bool(state.get("snapshot_present")) != (locked_identity is not None)):
+            raise ValidationError("Installed loose object fanout disagrees with the locked snapshot")
+        if state.get("created_by_operation"):
+            installed = state.get("installed_identity")
+            if locked_identity is not None or installed is None:
+                raise ValidationError("Operation-created fanout provenance is inconsistent")
+            if expected[prefix] not in {None, installed}:
+                raise ValidationError("Operation-created fanout identities disagree")
+            expected[prefix] = installed
+        elif locked_identity is None and not record.get("snapshot_present"):
+            raise ValidationError("New loose object lacks an operation-created fanout")
+    return expected
+
+
 def _post_cas_proof(root, snapshot, ref, created, old_commits, records):
     current = _rewrite_snapshot(root)
     expected_refs = dict(snapshot["refs"])
@@ -1209,9 +1248,37 @@ def _post_cas_proof(root, snapshot, ref, created, old_commits, records):
     for key in ("indexes", "alternate", "object_format", "object_dir", "object_identity"):
         if current[key] != snapshot[key]:
             return False, key + " changed"
+    try:
+        expected_fanouts = _expected_post_cas_fanouts(snapshot, records)
+    except ValidationError as exc:
+        return False, str(exc)
+    if current["fanouts"] != expected_fanouts:
+        return False, "loose object fanout identity map changed"
     expected_objects = set(snapshot["objects"]) | {record["oid"] for record in records}
     if set(current["objects"]) != expected_objects:
         return False, "object inventory changed"
+    object_dir = Path(snapshot["object_dir"])
+    for record in records:
+        if not record.get("created_by_operation"):
+            continue
+        try:
+            canonical = _loose_path(object_dir, record["oid"], snapshot["object_format"])
+            if (os.path.normcase(str(Path(record.get("path", "")))) !=
+                    os.path.normcase(str(canonical))):
+                return False, "installed loose object path is not canonical"
+            state = record["fanout"]
+            parent = canonical.parent.lstat()
+            expected_parent = (state.get("installed_identity") if state.get("created_by_operation")
+                               else state.get("snapshot_identity"))
+            if ((parent.st_dev, parent.st_ino) != expected_parent or
+                    not _loose_object_matches(record, snapshot["object_format"],
+                                              record.get("installed_identity"))):
+                return False, "installed loose object identity or content changed"
+            parent_after = canonical.parent.lstat()
+            if (parent_after.st_dev, parent_after.st_ino) != expected_parent:
+                return False, "installed loose object fanout changed during proof"
+        except (OSError, KeyError, TypeError, ValueError, ValidationError):
+            return False, "installed loose object identity could not be proved"
     other_tips = set(current["refs"].values()) - {created}
     for path, state in current["worktrees"].items():
         if state["symbolic"] != ref:

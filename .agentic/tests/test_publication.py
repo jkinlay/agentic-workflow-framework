@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -32,6 +33,17 @@ def git(repository, *args, input_bytes=None, check=True):
 def object_exists(repository, oid):
     return subprocess.run(["git", "-C", str(repository), "cat-file", "-e", oid],
                           capture_output=True, check=False).returncode == 0
+
+
+def remove_synthetic_object_tree(path):
+    """Remove only an isolated test fanout after clearing Git's read-only bit."""
+    path = Path(path)
+    if not path.exists():
+        return
+    for item in path.rglob("*"):
+        if item.is_file():
+            item.chmod(stat.S_IWRITE)
+    shutil.rmtree(path)
 
 
 def private_locator():
@@ -1072,6 +1084,183 @@ class PublicationRewriteTests(unittest.TestCase):
             marker.unlink()
             fanout.rmdir()
 
+    def test_ac44_reflog_restore_refuses_file_symlink_before_external_mutation(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        common = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir"))
+        log = common / "logs" / "HEAD"
+        external = Path(self.temp.name) / "external-head-log"
+        external.write_bytes(b"external reflog bytes\n")
+        original = log.read_bytes()
+        log.unlink()
+        try:
+            try:
+                log.symlink_to(external)
+            except OSError as exc:
+                self.skipTest("file symlinks unavailable: " + type(exc).__name__)
+            with self.assertRaisesRegex(ValidationError,
+                                        "identity-bound no-follow replacement and deletion"):
+                publication._restore_rewrite_reflogs(
+                    self.repo.path, snapshot, "refs/heads/awf/EX-6-publication")
+            self.assertEqual(b"external reflog bytes\n", external.read_bytes())
+            self.assertTrue(log.is_symlink())
+        finally:
+            log.unlink(missing_ok=True)
+            log.write_bytes(original)
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction regression")
+    def test_ac44_reflog_restore_refuses_windows_junction_before_external_mutation(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        common = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir"))
+        logs = common / "logs"
+        held = common / "logs-held-for-test"
+        external = Path(self.temp.name) / "external-logs"
+        external.mkdir()
+        marker = external / "HEAD"
+        marker.write_bytes(b"external junction bytes\n")
+        logs.rename(held)
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(logs), str(external)],
+                              capture_output=True, check=False).returncode == 0
+        if not made:
+            held.rename(logs)
+            self.skipTest("directory junction unavailable")
+        try:
+            with self.assertRaisesRegex(ValidationError,
+                                        "identity-bound no-follow replacement and deletion"):
+                publication._restore_rewrite_reflogs(
+                    self.repo.path, snapshot, "refs/heads/awf/EX-6-publication")
+            self.assertEqual(b"external junction bytes\n", marker.read_bytes())
+            self.assertTrue(logs.is_junction())
+        finally:
+            logs.rmdir()
+            held.rename(logs)
+
+    def test_ac44_reflog_restore_refuses_parent_swap_before_namespace_mutation(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        common = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir"))
+        parent = common / "logs" / "refs" / "heads" / "awf"
+        held = parent.with_name("awf-held-for-test")
+        parent.rename(held)
+        parent.mkdir()
+        marker = parent / "external-parent-swap"
+        marker.write_bytes(b"external parent bytes\n")
+        try:
+            with self.assertRaisesRegex(ValidationError,
+                                        "identity-bound no-follow replacement and deletion"):
+                publication._restore_rewrite_reflogs(
+                    self.repo.path, snapshot, "refs/heads/awf/EX-6-publication")
+            self.assertEqual(b"external parent bytes\n", marker.read_bytes())
+            self.assertEqual([marker], list(parent.iterdir()))
+        finally:
+            marker.unlink()
+            parent.rmdir()
+            held.rename(parent)
+
+    def test_ac44_reflog_restore_refuses_absent_original_deletion(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        snapshot = copy.deepcopy(snapshot)
+        ref = "refs/heads/awf/EX-6-publication"
+        snapshot["logs"].pop(ref, None)
+        common = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir"))
+        log = common / "logs" / ref
+        before = log.read_bytes()
+        with self.assertRaisesRegex(ValidationError,
+                                    "identity-bound no-follow replacement and deletion"):
+            publication._restore_rewrite_reflogs(self.repo.path, snapshot, ref)
+        self.assertTrue(log.is_file())
+        self.assertEqual(before, log.read_bytes())
+
+    def test_ac44_post_cas_proof_rejects_snapshot_present_fanout_replacement(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        ref = "refs/heads/awf/EX-6-publication"
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        object_dir = Path(snapshot["object_dir"])
+        oid = next(value for value in snapshot["objects"]
+                   if snapshot["fanouts"][value[:2]] is not None and
+                   (object_dir / value[:2] / value[2:]).is_file())
+        fanout = object_dir / oid[:2]
+        state = {"path": fanout, "snapshot_present": True,
+                 "snapshot_identity": snapshot["fanouts"][oid[:2]],
+                 "created_by_operation": False, "installed_identity": None,
+                 "ambiguous": False}
+        record = {"oid": oid, "path": fanout / oid[2:], "snapshot_present": True,
+                  "created_by_operation": False, "installed_identity": None,
+                  "fanout": state}
+        self.assertEqual((True, "proved"), publication._post_cas_proof(
+            self.repo.path, snapshot, ref, head, [], [record]))
+        held = object_dir / (oid[:2] + "-snapshot-held")
+        fanout.rename(held)
+        shutil.copytree(held, fanout)
+        try:
+            proved, detail = publication._post_cas_proof(
+                self.repo.path, snapshot, ref, head, [], [record])
+            self.assertFalse(proved)
+            self.assertEqual("loose object fanout identity map changed", detail)
+        finally:
+            remove_synthetic_object_tree(fanout)
+            held.rename(fanout)
+
+    def test_ac44_post_cas_proof_rejects_created_fanout_and_object_replacement(self):
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        ref = "refs/heads/awf/EX-6-publication"
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        payload = None
+        oid = None
+        for value in range(512):
+            candidate = ("post-cas-created-object-" + str(value)).encode("ascii")
+            candidate_oid = git(self.repo.path, "hash-object", "--stdin",
+                                input_bytes=candidate)
+            if snapshot["fanouts"][candidate_oid[:2]] is None:
+                payload, oid = candidate, candidate_oid
+                break
+        self.assertIsNotNone(oid)
+        self.assertEqual(oid, git(self.repo.path, "hash-object", "-w", "--stdin",
+                                  input_bytes=payload))
+        object_dir = Path(snapshot["object_dir"])
+        fanout = object_dir / oid[:2]
+        path = fanout / oid[2:]
+        fanout_details = fanout.lstat()
+        path_details = path.lstat()
+        state = {"path": fanout, "snapshot_present": False, "snapshot_identity": None,
+                 "created_by_operation": True,
+                 "installed_identity": (fanout_details.st_dev, fanout_details.st_ino),
+                 "ambiguous": False}
+        record = {"oid": oid, "kind": "blob", "raw": payload,
+                  "loose_bytes": path.read_bytes(), "path": path,
+                  "snapshot_present": False, "created_by_operation": True,
+                  "installed_identity": (path_details.st_dev, path_details.st_ino),
+                  "fanout": state}
+        self.assertEqual((True, "proved"), publication._post_cas_proof(
+            self.repo.path, snapshot, ref, head, [], [record]))
+
+        held_object = path.with_name(path.name + ".identity-held")
+        path.rename(held_object)
+        shutil.copy2(held_object, path)
+        try:
+            proved, detail = publication._post_cas_proof(
+                self.repo.path, snapshot, ref, head, [], [record])
+            self.assertFalse(proved)
+            self.assertEqual("installed loose object identity or content changed", detail)
+        finally:
+            path.chmod(stat.S_IWRITE)
+            path.unlink()
+            held_object.rename(path)
+
+        held_fanout = object_dir / (oid[:2] + "-created-held")
+        fanout.rename(held_fanout)
+        shutil.copytree(held_fanout, fanout)
+        try:
+            proved, detail = publication._post_cas_proof(
+                self.repo.path, snapshot, ref, head, [], [record])
+            self.assertFalse(proved)
+            self.assertEqual("loose object fanout identity map changed", detail)
+        finally:
+            remove_synthetic_object_tree(fanout)
+            remove_synthetic_object_tree(held_fanout)
+
     def test_ac44_post_cas_proof_failure_rolls_back_ref_and_retains_owned_object(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
@@ -1088,8 +1277,9 @@ class PublicationRewriteTests(unittest.TestCase):
         self.assertTrue(object_exists(self.repo.path, created))
         current = publication._rewrite_snapshot(self.repo.path)
         for key in snapshot:
-            if key not in {"objects", "fanouts"}:
+            if key not in {"logs", "objects", "fanouts"}:
                 self.assertEqual(snapshot[key], current[key])
+        self.assertIn("Automatic reflog restoration is unavailable", str(caught.exception))
 
     def test_ac44_post_cas_snapshot_exception_uses_exact_rollback_and_recovery_evidence(self):
         self.contaminate_then_remove()
@@ -1186,7 +1376,8 @@ class PublicationRewriteTests(unittest.TestCase):
             return real_snapshot(root)
 
         with mock.patch.object(publication, "_rewrite_snapshot",
-                               side_effect=fail_proof_and_recovery_snapshots):
+                               side_effect=fail_proof_and_recovery_snapshots), \
+                mock.patch.object(publication, "_restore_rewrite_reflogs", return_value=None):
             with self.assertRaisesRegex(
                     ValidationError,
                     r"POST_CAS_RECOVERY_REQUIRED:.*post-CAS proof exception PermissionError.*recovery exception PermissionError") as caught:
