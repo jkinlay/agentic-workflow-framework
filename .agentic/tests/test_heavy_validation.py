@@ -131,7 +131,9 @@ def checkout_snapshotter(candidate, working_directory):
                   "source_working_directory": working_directory,
                   "snapshot_working_directory": snapshot,
                   "tree_sha": candidate["tree_sha"],
+                  "archive_source_object": candidate["tree_sha"],
                   "archive_sha256": "f" * 64, "file_count": 1,
+                  "reviewed_tree_inventory_sha256": "d" * 64,
                   "content_inventory_sha256": "e" * 64,
                   "mutation_guard": "windows-file-handles-and-sealed-directories",
                   "guarded_paths": 5, "sealed_directories": 4}
@@ -810,7 +812,7 @@ class HeavyValidationTests(unittest.TestCase):
                 review_authenticator=authenticator, now=NOW)
         outputs = {
             ("rev-parse", "--show-toplevel"): str(SOURCE_ROOT),
-            ("rev-parse", "--verify", "HEAD"): CANDIDATE["head_sha"],
+            ("rev-parse", "--verify", "HEAD^{commit}"): CANDIDATE["head_sha"],
             ("rev-parse", "--verify", "HEAD^{tree}"): CANDIDATE["tree_sha"],
             ("status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"):
                 "dirty.txt",
@@ -820,7 +822,7 @@ class HeavyValidationTests(unittest.TestCase):
             attestor(CANDIDATE, str(SOURCE_ROOT))
         outputs[("status", "--porcelain=v1", "--untracked-files=all",
                  "--ignored=matching")] = ""
-        outputs[("rev-parse", "--verify", "HEAD")] = "0" * 40
+        outputs[("rev-parse", "--verify", "HEAD^{commit}")] = "0" * 40
         with self.assertRaisesRegex(ValidationError, "HEAD/tree"):
             attestor(CANDIDATE, str(SOURCE_ROOT))
 
@@ -878,6 +880,121 @@ class HeavyValidationTests(unittest.TestCase):
             (root / "untracked.txt").write_text("dirty\n", encoding="utf-8", newline="\n")
             with self.assertRaisesRegex(ValidationError, "dirty"):
                 attestor(candidate, str(root))
+
+    def test_post_attestation_replace_and_ambient_git_config_cannot_redirect_snapshot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            outer = Path(folder)
+            root, other = outer / "reviewed", outer / "other"
+            root.mkdir()
+            other.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            tracked = root / "tracked.txt"
+            tracked.write_text("reviewed\n", encoding="utf-8", newline="\n")
+            launcher = root / ".agentic/lib/agentic/heavy_validation_child.py"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text("# reviewed launcher\n", encoding="utf-8", newline="\n")
+            reviewed_launcher_sha256 = file_digest(launcher)
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            commit = ["git", "-C", str(root), "-c", "user.name=fixture", "-c",
+                      "user.email=fixture@example.invalid", "commit", "-q", "-m"]
+            subprocess.run([*commit, "reviewed"], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            reviewed_head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
+                stdout=subprocess.PIPE, text=True).stdout.strip()
+            reviewed_tree = subprocess.run(
+                ["git", "-C", str(root), "show", "-s", "--format=%T", "HEAD"],
+                check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+            candidate = {**CANDIDATE, "head_sha": reviewed_head,
+                         "tree_sha": reviewed_tree}
+            attestor = GitCheckoutAttestor(root)
+            subprocess.run(["git", "init", "-q", str(other)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            attributes = outer / "ambient-attributes"
+            attributes.write_text("tracked.txt export-ignore\n", encoding="utf-8",
+                                  newline="\n")
+            hostile = {
+                "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.attributesFile",
+                "GIT_CONFIG_VALUE_0": str(attributes), "GIT_DIR": str(other / ".git"),
+                "GIT_REPLACE_REF_BASE": "refs/replace",
+            }
+            with mock.patch.dict(os.environ, hostile):
+                self.assertEqual("CLEAN", attestor(candidate, str(root))["status"])
+
+            tracked.write_text("replacement\n", encoding="utf-8", newline="\n")
+            launcher.write_text("# replacement launcher\n", encoding="utf-8", newline="\n")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run([*commit, "replacement"], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            replacement_head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
+                stdout=subprocess.PIPE, text=True).stdout.strip()
+            replacement_tree = subprocess.run(
+                ["git", "-C", str(root), "show", "-s", "--format=%T", "HEAD"],
+                check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+            subprocess.run(["git", "-C", str(root), "checkout", "-q", "--detach",
+                            reviewed_head], check=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+            subprocess.run(["git", "-C", str(root), "replace", reviewed_head,
+                            replacement_head], check=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
+            ambient_tree = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD^{tree}"], check=True,
+                stdout=subprocess.PIPE, text=True).stdout.strip()
+            self.assertEqual(replacement_tree, ambient_tree)
+            self.assertEqual("reviewed\n", tracked.read_text(encoding="utf-8"))
+            with mock.patch.dict(os.environ, hostile):
+                with GitCheckoutSnapshotter(root)(candidate, str(root)) as evidence:
+                    snapshot = Path(evidence["snapshot_working_directory"])
+                    self.assertEqual("reviewed\n",
+                                     (snapshot / "tracked.txt").read_text(encoding="utf-8"))
+                    self.assertEqual(reviewed_tree, evidence["archive_source_object"])
+                    self.assertRegex(evidence["reviewed_tree_inventory_sha256"], r"^[0-9a-f]{64}$")
+                chain_plan = json.loads(plan(
+                    [partition("reviewed-launcher")], parallelism=1,
+                    candidate=candidate, cwd=root))
+                chain = heavy._windows_launch_chain(chain_plan)
+                self.assertEqual(reviewed_launcher_sha256,
+                                 chain["launcher"]["sha256"])
+
+    def test_snapshot_rejects_archive_inventory_or_content_not_bound_to_reviewed_tree(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            subprocess.run(["git", "init", "-q", str(root)], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            tracked = root / "tracked.txt"
+            tracked.write_text("reviewed\n", encoding="utf-8", newline="\n")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            commit = ["git", "-C", str(root), "-c", "user.name=fixture", "-c",
+                      "user.email=fixture@example.invalid", "commit", "-q", "-m"]
+            subprocess.run([*commit, "reviewed"], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                  check=True, stdout=subprocess.PIPE,
+                                  text=True).stdout.strip()
+            tree = subprocess.run(["git", "-C", str(root), "show", "-s", "--format=%T",
+                                   "HEAD"], check=True, stdout=subprocess.PIPE,
+                                  text=True).stdout.strip()
+            candidate = {**CANDIDATE, "head_sha": head, "tree_sha": tree}
+            tracked.write_text("unreviewed\n", encoding="utf-8", newline="\n")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run([*commit, "unreviewed"], check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            other_tree = subprocess.run(
+                ["git", "-C", str(root), "show", "-s", "--format=%T", "HEAD"],
+                check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+            production = GitCheckoutSnapshotter(root)
+            wrong_archive = production._archive(other_tree)
+            snapshotter = GitCheckoutSnapshotter(
+                root, run_archive=lambda observed_tree: wrong_archive)
+            with self.assertRaisesRegex(ValidationError, "not bound to the reviewed tree"):
+                with snapshotter(candidate, str(root)):
+                    self.fail("tree-mismatched archive was dispatched")
 
     def test_git_object_snapshot_isolated_from_checkout_mutation(self):
         with tempfile.TemporaryDirectory() as folder:

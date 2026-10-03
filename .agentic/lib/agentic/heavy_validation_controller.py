@@ -20,12 +20,14 @@ from typing import Callable
 from . import ValidationError
 from .canonical import canonical, fingerprint, sha256, timestamp
 from .child_process import child_env
+from .git_isolation import run_isolated_git
 from .heavy_validation import (CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS,
                                GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS,
                                resolve_without_alias)
 
 
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_SHA1 = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _LABEL = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _MAX_PROVIDER_BYTES = 1024 * 1024
@@ -153,25 +155,11 @@ class GitCheckoutAttestor:
         self.run_git = run_git or self._git
 
     def _git(self, args: list[str]) -> str:
-        executable = shutil.which("git")
-        if not executable:
-            raise ValidationError("Git checkout attestation is unavailable")
-        executable = str(Path(executable).resolve())
-        if Path(executable).suffix.casefold() in {".cmd", ".bat", ".ps1"}:
-            raise ValidationError("Git checkout attestation needs a native executable")
         try:
-            done = subprocess.run([executable, *args], cwd=str(self.root),
-                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE, shell=False,
-                                  env=child_env(dict(os.environ)),
-                                  timeout=GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS,
-                                  check=False)
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise ValidationError("Git checkout attestation is unavailable") from exc
-        if done.returncode or len(done.stdout) > _MAX_PROVIDER_BYTES:
-            raise ValidationError("Git checkout attestation failed")
-        try:
-            return done.stdout.decode("utf-8").strip()
+            return run_isolated_git(
+                self.root, args, maximum=_MAX_PROVIDER_BYTES,
+                timeout=GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS,
+                label="Git checkout attestation").decode("utf-8").strip()
         except UnicodeError as exc:
             raise ValidationError("Git checkout attestation returned malformed evidence") from exc
 
@@ -181,7 +169,7 @@ class GitCheckoutAttestor:
         _require(os.path.normcase(str(observed_root)) == os.path.normcase(str(self.root)),
                  "Checkout attestor root mismatch")
         top = self.run_git(["rev-parse", "--show-toplevel"])
-        head = self.run_git(["rev-parse", "--verify", "HEAD"])
+        head = self.run_git(["rev-parse", "--verify", "HEAD^{commit}"])
         tree = self.run_git(["rev-parse", "--verify", "HEAD^{tree}"])
         dirty = self.run_git(["status", "--porcelain=v1", "--untracked-files=all",
                               "--ignored=matching"])
@@ -200,29 +188,57 @@ class GitCheckoutAttestor:
 class GitCheckoutSnapshotter:
     """Materialize execution only from the immutable reviewed Git object."""
 
-    def __init__(self, root: str | os.PathLike[str], run_archive=None):
+    def __init__(self, root: str | os.PathLike[str], run_archive=None,
+                 run_tree_inventory=None):
         self.root = resolve_without_alias(Path(root).absolute(), "execution checkout",
                                           directory=True)
         self.run_archive = run_archive or self._archive
+        self.run_tree_inventory = run_tree_inventory or self._tree_inventory
 
-    def _archive(self, head_sha: str) -> bytes:
-        executable = shutil.which("git")
-        if not executable:
-            raise ValidationError("Git checkout snapshot is unavailable")
-        executable = str(Path(executable).resolve())
-        if Path(executable).suffix.casefold() in {".cmd", ".bat", ".ps1"}:
-            raise ValidationError("Git checkout snapshot needs a native executable")
-        try:
-            done = subprocess.run(
-                [executable, "archive", "--format=tar", head_sha], cwd=str(self.root),
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                shell=False, env=child_env(dict(os.environ)),
-                timeout=CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS, check=False)
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise ValidationError("Git checkout snapshot is unavailable") from exc
-        if done.returncode or len(done.stdout) > _MAX_SNAPSHOT_BYTES:
-            raise ValidationError("Git checkout snapshot failed or exceeded its bound")
-        return done.stdout
+    def _archive(self, tree_sha: str) -> bytes:
+        _require(isinstance(tree_sha, str) and _SHA1.fullmatch(tree_sha),
+                 "Git checkout snapshot tree is invalid")
+        return run_isolated_git(
+            self.root, ["archive", "--format=tar", tree_sha],
+            maximum=_MAX_SNAPSHOT_BYTES, timeout=CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS,
+            label="Git checkout snapshot")
+
+    def _tree_inventory(self, tree_sha: str) -> dict:
+        _require(isinstance(tree_sha, str) and _SHA1.fullmatch(tree_sha),
+                 "Git checkout snapshot tree is invalid")
+        kind = run_isolated_git(
+            self.root, ["cat-file", "-t", tree_sha], maximum=32,
+            timeout=GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS,
+            label="Git checkout tree inspection")
+        _require(kind == b"tree\n", "Reviewed snapshot object is not a tree")
+        raw = run_isolated_git(
+            self.root, ["ls-tree", "-r", "-z", "--full-tree", tree_sha],
+            maximum=_MAX_SNAPSHOT_BYTES, timeout=CHECKOUT_SNAPSHOT_TIMEOUT_SECONDS,
+            label="Git checkout tree inventory")
+        files = []
+        directories: set[str] = set()
+        for raw_entry in raw.split(b"\0"):
+            if not raw_entry:
+                continue
+            try:
+                header, raw_path = raw_entry.split(b"\t", 1)
+                mode, kind, object_id = header.decode("ascii").split(" ")
+                path_text = raw_path.decode("utf-8")
+            except (UnicodeError, ValueError) as exc:
+                raise ValidationError("Git checkout tree inventory is malformed") from exc
+            path = PurePosixPath(path_text)
+            _require(path_text == path.as_posix() and not path.is_absolute()
+                     and ".." not in path.parts and "\\" not in path_text,
+                     "Git checkout tree inventory has an unsafe path")
+            _require(kind == "blob" and mode in {"100644", "100755"}
+                     and _SHA1.fullmatch(object_id) is not None,
+                     "Git checkout tree contains an alias, submodule, or unsupported mode")
+            for length in range(1, len(path.parts)):
+                directories.add(PurePosixPath(*path.parts[:length]).as_posix())
+            files.append({"path": path.as_posix(), "mode": mode,
+                          "git_object_sha1": object_id})
+        return {"files": sorted(files, key=lambda item: item["path"]),
+                "directories": sorted(directories)}
 
     @staticmethod
     def _extract(raw: bytes, destination: Path) -> tuple[int, dict]:
@@ -236,7 +252,8 @@ class GitCheckoutSnapshotter:
         with archive:
             for member in archive.getmembers():
                 name = PurePosixPath(member.name)
-                if name.is_absolute() or ".." in name.parts or not name.parts:
+                if (name.is_absolute() or ".." in name.parts or not name.parts
+                        or "\\" in member.name):
                     raise ValidationError("Git checkout snapshot has an unsafe path")
                 if member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
                     raise ValidationError("Git checkout snapshot contains an alias or special file")
@@ -255,13 +272,21 @@ class GitCheckoutSnapshotter:
                                      member.mode & 0o777 or 0o600)
                 with source, os.fdopen(descriptor, "wb") as output:
                     digest = hashlib.sha256()
+                    git_digest = hashlib.sha1()
+                    git_digest.update(
+                        b"blob " + str(member.size).encode("ascii") + b"\0")
                     while True:
                         chunk = source.read(1024 * 1024)
                         if not chunk:
                             break
                         digest.update(chunk)
+                        git_digest.update(chunk)
                         output.write(chunk)
-                files.append({"path": name.as_posix(), "sha256": digest.hexdigest()})
+                raw_digest = digest.hexdigest()
+                files.append({"path": name.as_posix(),
+                              "mode": "100755" if member.mode & 0o111 else "100644",
+                              "git_object_sha1": git_digest.hexdigest(),
+                              "sha256": raw_digest})
                 count += 1
         inventory = {"files": sorted(files, key=lambda item: item["path"]),
                      "directories": sorted(directories)}
@@ -396,17 +421,31 @@ class GitCheckoutSnapshotter:
                                          "execution checkout", directory=True)
         _require(os.path.normcase(str(observed)) == os.path.normcase(str(self.root)),
                  "Checkout snapshotter root mismatch")
-        raw = self.run_archive(candidate["head_sha"])
+        reviewed_tree_inventory = self.run_tree_inventory(candidate["tree_sha"])
+        raw = self.run_archive(candidate["tree_sha"])
         archive_sha = sha256(raw)
         with tempfile.TemporaryDirectory(prefix="awf-heavy-snapshot-") as folder:
             snapshot_root = resolve_without_alias(Path(folder).absolute(),
                                                   "checkout snapshot root", directory=True)
-            file_count, expected_inventory = self._extract(raw, snapshot_root)
+            file_count, extracted_inventory = self._extract(raw, snapshot_root)
+            extracted_tree_inventory = {
+                "files": [{key: item[key] for key in
+                           ("path", "mode", "git_object_sha1")}
+                          for item in extracted_inventory["files"]],
+                "directories": extracted_inventory["directories"],
+            }
+            _require(extracted_tree_inventory == reviewed_tree_inventory,
+                     "Git checkout archive is not bound to the reviewed tree inventory")
             self._freeze(snapshot_root)
             kernel, advapi, handles, original_security = self._lock_snapshot(snapshot_root)
             try:
                 observed_inventory = self._inventory(snapshot_root)
-                _require(observed_inventory == expected_inventory,
+                expected_content_inventory = {
+                    "files": [{"path": item["path"], "sha256": item["sha256"]}
+                              for item in extracted_inventory["files"]],
+                    "directories": extracted_inventory["directories"],
+                }
+                _require(observed_inventory == expected_content_inventory,
                          "Checkout snapshot content changed before namespace seal")
                 inventory_sha = fingerprint("heavy-validation-snapshot-inventory",
                                             observed_inventory)
@@ -414,7 +453,11 @@ class GitCheckoutSnapshotter:
                           "source_working_directory": str(self.root),
                           "snapshot_working_directory": str(snapshot_root),
                           "tree_sha": candidate["tree_sha"],
+                          "archive_source_object": candidate["tree_sha"],
                           "archive_sha256": archive_sha, "file_count": file_count,
+                          "reviewed_tree_inventory_sha256": fingerprint(
+                              "heavy-validation-reviewed-tree-inventory",
+                              reviewed_tree_inventory),
                           "content_inventory_sha256": inventory_sha,
                           "mutation_guard": "windows-file-handles-and-sealed-directories",
                           "guarded_paths": len(handles),

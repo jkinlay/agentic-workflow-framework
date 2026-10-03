@@ -24,6 +24,7 @@ import unicodedata
 from . import ValidationError
 from .canonical import fingerprint, load_yaml, loads, now_text, sha256, timestamp
 from .child_process import child_env
+from .git_isolation import run_isolated_git
 
 
 PLAN_FORMAT = "awf-heavy-validation-plan-4"
@@ -450,19 +451,17 @@ def _validate_plan(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
 def _reviewed_git_archive_sha256(plan: dict, repository_relative_path: str) -> str:
     root = resolve_without_alias(Path(plan["working_directory"]).absolute(),
                                  "reviewed working directory", directory=True)
-    head = _validate_candidate(plan["candidate"])["head_sha"]
+    tree = _validate_candidate(plan["candidate"])["tree_sha"]
+    archived = run_isolated_git(
+        root, ["archive", "--format=tar", tree, repository_relative_path],
+        maximum=2 * 1024 * 1024, timeout=GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS,
+        label="Reviewed launch artifact Git archive")
+    reviewed_blob = run_isolated_git(
+        root, ["cat-file", "blob", f"{tree}:{repository_relative_path}"],
+        maximum=1024 * 1024, timeout=GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS,
+        label="Reviewed launch artifact Git blob")
     try:
-        done = subprocess.run(
-            ["git", "-C", str(root), "archive", "--format=tar", head,
-             repository_relative_path],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            shell=False, env=child_env(), timeout=GIT_ATTESTATION_COMMAND_TIMEOUT_SECONDS)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise ValidationError("Reviewed launch artifact Git object is unavailable") from exc
-    if done.returncode or len(done.stdout) > 2 * 1024 * 1024:
-        raise ValidationError("Reviewed launch artifact Git object is unavailable or oversized")
-    try:
-        with tarfile.open(fileobj=io.BytesIO(done.stdout), mode="r:") as archive:
+        with tarfile.open(fileobj=io.BytesIO(archived), mode="r:") as archive:
             members = [member for member in archive.getmembers()
                        if member.name == repository_relative_path]
             if len(members) != 1 or not members[0].isfile():
@@ -475,6 +474,8 @@ def _reviewed_git_archive_sha256(plan: dict, repository_relative_path: str) -> s
         raise ValidationError("Reviewed launch artifact archive is invalid") from exc
     if len(raw) > 1024 * 1024:
         raise ValidationError("Reviewed launch artifact archive entry is oversized")
+    if raw != reviewed_blob:
+        raise ValidationError("Reviewed launch artifact archive is not bound to the reviewed tree")
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -598,7 +599,9 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
             value = _mapping(supplied, "checkout snapshot")
             _exact_keys(value, {"status", "candidate", "source_working_directory",
                                 "snapshot_working_directory", "tree_sha",
-                                "archive_sha256", "file_count", "content_inventory_sha256",
+                                "archive_source_object", "archive_sha256", "file_count",
+                                "reviewed_tree_inventory_sha256",
+                                "content_inventory_sha256",
                                 "mutation_guard",
                                 "guarded_paths", "sealed_directories",
                                 "evidence_sha256"},
@@ -611,7 +614,11 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
                 raise ValidationError("Checkout snapshot source root mismatch")
             if value["tree_sha"] != candidate["tree_sha"]:
                 raise ValidationError("Checkout snapshot tree mismatch")
+            if value["archive_source_object"] != candidate["tree_sha"]:
+                raise ValidationError("Checkout snapshot archive source is not the reviewed tree")
             _expected_digest(value["archive_sha256"], "checkout snapshot archive_sha256")
+            _expected_digest(value["reviewed_tree_inventory_sha256"],
+                             "checkout snapshot reviewed_tree_inventory_sha256")
             _expected_digest(value["content_inventory_sha256"],
                              "checkout snapshot content_inventory_sha256")
             _expected_digest(value["evidence_sha256"], "checkout snapshot evidence_sha256")
@@ -623,8 +630,9 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
                           "checkout snapshot sealed_directories")
             record = {key: deepcopy(value[key]) for key in
                       ("candidate", "source_working_directory",
-                       "snapshot_working_directory", "tree_sha", "archive_sha256",
-                       "file_count", "content_inventory_sha256", "mutation_guard", "guarded_paths",
+                       "snapshot_working_directory", "tree_sha", "archive_source_object",
+                       "archive_sha256", "file_count", "reviewed_tree_inventory_sha256",
+                       "content_inventory_sha256", "mutation_guard", "guarded_paths",
                        "sealed_directories")}
             if value["evidence_sha256"] != fingerprint(
                     "heavy-validation-checkout-snapshot", record):
