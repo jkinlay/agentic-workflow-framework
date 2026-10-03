@@ -60,7 +60,6 @@ def main(argv=None):
     parser.add_argument("--expected-review-sha256", required=True)
     parser.add_argument("--capacity", type=Path)
     parser.add_argument("--expected-capacity-sha256")
-    parser.add_argument("--now", help="Pinned RFC3339 controller time; defaults to local UTC time")
     parser.add_argument("--max-capacity-age-seconds", type=int, default=300)
     parser.add_argument("--repository-id", type=int, required=True)
     parser.add_argument("--base-sha", required=True)
@@ -121,7 +120,6 @@ def main(argv=None):
             capacity_raw=capacity_raw,
             expected_capacity_sha256=args.expected_capacity_sha256,
             broker_client=broker,
-            now=args.now,
             max_capacity_age_seconds=args.max_capacity_age_seconds,
             cancel_event=cancelled,
         )
