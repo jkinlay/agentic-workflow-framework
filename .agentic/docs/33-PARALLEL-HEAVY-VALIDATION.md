@@ -1,0 +1,74 @@
+# Bounded parallel heavy validation
+
+AWF 1.9.3 executes partitioned validation only from an exact reviewed candidate. It cannot mutate providers.
+
+## Frozen execution identity
+
+A version 4 plan binds:
+
+- numeric repository ID, base SHA, head SHA, and tree SHA;
+- the exact absolute working directory;
+- one absolute executable path and file SHA-256 per partition;
+- argv, timeouts, accepted exits, engine, framework, resource class, and named-resource quantities;
+- one deterministic seed, bounded retry limit, and required process-tree, host-network-policy, and worktree isolation declarations.
+- the normalized target environment values and credential/module-search stripping policy.
+
+Before launch, a trusted attestor proves the reviewed HEAD/tree clean. Git reads use a minimal environment and ignore ambient configuration, global attributes, and replacements. Execution archives the exact tree. Independent inventory must match extracted paths, modes, and computed blob IDs; content SHA-256 is rechecked after sealing. On Windows, handles and protected DACLs seal paths and namespaces; unsupported hosts fail closed. Target, interpreter, tree-bound launcher, and `-I -S -B` flags are reviewed and fenced. Identity movement fails closed; `shell=False` is mandatory.
+
+Version 6 binds plan and provider review. GitHub evidence binds repository, PR tuple, reviewer, `APPROVED` state, commit, and authorization digest. AWF authenticates before and after admission and snapshot creation. Before each child or retry, a serialized launch lock covers provider reauthentication, trusted-UTC sampling, authority revalidation and process creation. Clock failure or malformed output records digest-bound rejection with no invented timestamp. Rejection cancels and settles work, releases the exact lease, and blocks later launches. Local `APPROVE` authorizes nothing.
+
+## Broker lease and serial fallback
+
+Parallel execution requires all of these:
+
+1. fresh capacity bound to the plan, config, and candidate tuple;
+2. configured and observed worker, heavy/GPU, engine, and named resource capacity;
+3. an actual broker lease bound to the complete request digest;
+4. a positive fence and duration covering dispatch attestation, snapshot creation, every partition/retry timeout, startup, cleanup/exit waits, both reader joins, and terminal-barrier overhead;
+5. exact lease release after every partition reaches a terminal result.
+
+Zero capacity starts no child. All broker-enabled work needs an exact lease. Serial fallback needs a separate grant. Stale-fence release failure blocks work; execution-fence release failure keeps `FAIL`. Capacity observations never grant resources.
+
+The broker validates all fields, quantities, resources, monotonic fences, and engine identity/slots. Microsecond expiry starts at acquisition and covers the full request plus validation margin. A live guard terminates expired work. OS-locked state is fsynced; malformed state fails closed.
+
+## Process and credential containment
+
+Each target receives a new deterministic environment made only from reviewed normalized values, forced Python user-site and UTF-8 controls, and the reviewed seed/attempt additions. It never inherits the host environment. The bound strip set covers provider/GitHub credentials, Python module-search variables, and validated `execution.child_env_strip_extra`; that config list must exactly equal the plan list. Target values cannot redefine a stripped or forced name.
+
+POSIX children run in a new session/process group. On Windows, a trusted launcher waits for one bounded ASCII JSON record containing exact argv and target environment; plan validation enforces the same 65,536-byte limit, including spaces and Unicode escaping. AWF assigns that launcher to a kill-on-close Job Object before releasing it to start the workload. Containment setup failure terminates the waiting launcher, so workload code never starts outside the Job. Timeout/cancellation terminates the contained tree. Every partition records cleanup outcome; partial or failed cleanup prevents PASS.
+
+## Evidence and gate consumption
+
+The result records authorization, checkout/snapshot proof, fenced artifacts, pinned inputs, admission/release, determinism, resources/isolation, bounded output, and cleanup. It emits one sorted terminal record per partition and a timestamp-free serial-equivalence digest.
+
+The production command requires external result, receipt, and controller-held key paths. It exclusively creates and fsyncs a canonical result plus HMAC-SHA256 receipt, refuses overwrite, and verifies both before completion. Tampering fails verification; rejected runs attempt signed evidence.
+
+A consumer may use a result only when:
+
+- `status` is `PASS`;
+- `all_partitions_terminal` is true;
+- completed count equals scheduled count;
+- every partition is `PASS`;
+- process-tree cleanup is complete;
+- an acquired lease was released with the same fence;
+- the result remains bound to the current candidate tuple.
+
+The result always states `execution_authority: false`.
+
+## Templates and focused regression
+
+Start from:
+
+- `.agentic/templates/heavy-validation-plan.json`
+- `.agentic/templates/heavy-validation-review.json`
+- `.agentic/templates/heavy-validation-capacity.json`
+
+Replace every placeholder and compute independent pins. Invoke `run_heavy_validation.py` with the GitHub identity flags, three result/receipt flags, and, when enabled, `--broker-state` plus pinned capacity. Adapter labels are `command`, `python-unittest`, `pytest`, `matlab`, and `wolfram`; each enforces structured argv. No receipt key or other secret belongs in the checkout or records.
+
+Run the synthetic regression with:
+
+```powershell
+python -B -m unittest discover -s .agentic/tests -p test_heavy_validation.py -v
+```
+
+The regression covers every control above, including replacement/config injection, mutation races, lease expiry/exhaustion, authorization movement, containment, tampering, cancellation, adapters, credentials, caps, and output bounds. It uses no proprietary engine, GPU, or license server.

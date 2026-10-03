@@ -1,0 +1,57 @@
+{
+  "candidate": {
+    "base_sha": "0000000000000000000000000000000000000000",
+    "head_sha": "0000000000000000000000000000000000000000",
+    "repository_id": 1,
+    "tree_sha": "0000000000000000000000000000000000000000"
+  },
+  "decision": "APPROVE",
+  "expires_at": "2030-01-02T00:00:00Z",
+  "format": "awf-heavy-validation-review-6",
+  "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "reviewed_at": "2030-01-01T00:00:00Z",
+  "reviewer": {
+    "immutable_id": "replace-with-numeric-github-user-id",
+    "login": "replace-with-observed-login",
+    "provider": "github"
+  },
+  "workload_authorization": {
+    "record": {
+      "candidate": {
+        "base_sha": "0000000000000000000000000000000000000000",
+        "head_sha": "0000000000000000000000000000000000000000",
+        "repository_id": 1,
+        "tree_sha": "0000000000000000000000000000000000000000"
+      },
+      "determinism": {"retry_limit": 0, "seed": 0},
+      "engine": "python",
+      "isolation": {"filesystem": "WORKTREE", "network": "HOST_POLICY", "process_tree": "REQUIRED"},
+      "target_environment": {
+        "name_normalization": "UPPERCASE",
+        "runtime_additions": ["AWF_VALIDATION_ATTEMPT", "AWF_VALIDATION_SEED"],
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "strip_names": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY", "CODEX_API_KEY", "GEMINI_API_KEY", "GH_TOKEN", "GITHUB_TOKEN", "GOOGLE_API_KEY", "OPENAI_API_KEY", "PYTHONHOME", "PYTHONINSPECT", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE"],
+        "value_normalization": "NFC",
+        "values": {"PYTHONIOENCODING": "utf-8", "PYTHONNOUSERSITE": "1", "PYTHONUTF8": "1"}
+      },
+      "partitions": [],
+      "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "requested_parallelism": 1,
+      "required_resources": [],
+      "resource_class": "heavy",
+      "working_directory": "/replace/repository",
+      "windows_launch_chain": {
+        "interpreter": {
+          "path": "/replace/controller-python",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "interpreter_flags": ["-I", "-S", "-B"],
+        "launcher": {
+          "repository_relative_path": ".agentic/lib/agentic/heavy_validation_child.py",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    },
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}
