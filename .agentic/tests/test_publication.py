@@ -1320,12 +1320,66 @@ class PublicationRewriteTests(unittest.TestCase):
                     proved, detail = publication._post_cas_proof(
                         self.repo.path, snapshot, ref, head, [], [], closure)
                     self.assertFalse(proved)
-                    self.assertRegex(detail, r"content or OID|changed")
+                    self.assertRegex(
+                        detail, r"content or OID|changed|failed with exit|bad object|bogus commit|tree object")
                     self.assertEqual(item["loose_identity"],
                                      (path.lstat().st_dev, path.lstat().st_ino))
                 finally:
                     path.write_bytes(original)
                     path.chmod(stat.S_IREAD)
+
+    def test_ac44_shallow_boundary_is_rejected_before_rewrite_mutation(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        common = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir"))
+        shallow = common / "shallow"
+        shallow.write_text(self.repo.base + "\n", encoding="ascii")
+        try:
+            with self.assertRaisesRegex(
+                    ValidationError, "Reachability-altering Git metadata.*shallow"):
+                rewrite_unpublished(self.repo.path, self.repo.base,
+                                    "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        finally:
+            shallow.unlink()
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_ac44_post_cas_shallow_boundary_race_rolls_back_exact_ref(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        ref = "refs/heads/awf/EX-6-publication"
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        common = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir"))
+        shallow = common / "shallow"
+        real_git = publication._git
+        created = []
+
+        def mutate_boundary_after_cas(root, *args, **kwargs):
+            result = real_git(root, *args, **kwargs)
+            if (args[:2] == ("update-ref", ref) and result.returncode == 0 and
+                    args[2] != old_head and not created):
+                created.append(args[2])
+                shallow.write_text(args[2] + "\n", encoding="ascii")
+            elif (args[:2] == ("update-ref", ref) and result.returncode == 0 and
+                  args[2] == old_head and shallow.exists()):
+                shallow.unlink()
+            return result
+
+        with mock.patch.object(publication, "_git", side_effect=mutate_boundary_after_cas):
+            with self.assertRaisesRegex(
+                    ValidationError,
+                    r"POST_CAS_(?:PROOF_FAILED_RECOVERED|RECOVERY_REQUIRED):.*Reachability-altering Git metadata"):
+                rewrite_unpublished(self.repo.path, self.repo.base,
+                                    "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual(1, len(created))
+        self.assertFalse(shallow.exists())
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
 
     def test_ac44_snapshot_present_packed_graph_objects_get_bounded_content_oid_proof(self):
         git(self.repo.path, "gc", "--prune=now")
@@ -1339,47 +1393,59 @@ class PublicationRewriteTests(unittest.TestCase):
                          publication._snapshot_closure_matches(
                              self.repo.path, snapshot, closure))
 
-    def test_ac44_post_cas_rewrite_rolls_back_after_snapshot_present_blob_corruption(self):
+    def test_ac44_post_cas_rewrite_rolls_back_after_same_inode_graph_corruption(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
         message.write_text("clean squash\n", encoding="utf-8")
         ref = "refs/heads/awf/EX-6-publication"
         old_head = git(self.repo.path, "rev-parse", "HEAD")
-        blob = git(self.repo.path, "rev-parse", "HEAD:seed.txt")
+        snapshot = publication._rewrite_snapshot(self.repo.path)
+        closure = publication._replacement_closure_evidence(
+            self.repo.path, old_head, snapshot, [], None)
         object_dir = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
                               "--git-path", "objects"))
-        path = object_dir / blob[:2] / blob[2:]
-        original = path.read_bytes()
-        real_git = publication._git
-        corrupted = []
+        for kind in ("commit", "tree", "blob"):
+            with self.subTest(kind=kind):
+                item = next(value for value in closure
+                            if value["kind"] == kind and value["loose_identity"] is not None and
+                            (kind != "commit" or value["oid"] != old_head))
+                path = object_dir / item["oid"][:2] / item["oid"][2:]
+                original = path.read_bytes()
+                real_git = publication._git
+                corrupted = []
 
-        def corrupt_after_cas(root, *args, **kwargs):
-            result = real_git(root, *args, **kwargs)
-            if (not corrupted and args[:2] == ("update-ref", ref) and
-                    args[2] != old_head and result.returncode == 0):
-                before = path.lstat()
-                path.chmod(stat.S_IWRITE)
-                corrupt = b"corrupt-snapshot-present-blob-after-cas"
-                path.write_bytes(zlib.compress(
-                    b"blob " + str(len(corrupt)).encode("ascii") + b"\0" + corrupt))
-                after = path.lstat()
-                self.assertEqual((before.st_dev, before.st_ino),
-                                 (after.st_dev, after.st_ino))
-                corrupted.append(True)
-            return result
+                def corrupt_after_cas(root, *args, **kwargs):
+                    result = real_git(root, *args, **kwargs)
+                    if (not corrupted and args[:2] == ("update-ref", ref) and
+                            args[2] != old_head and result.returncode == 0):
+                        before = path.lstat()
+                        path.chmod(stat.S_IWRITE)
+                        corrupt = ("corrupt-snapshot-present-" + kind +
+                                   "-after-cas").encode("ascii")
+                        path.write_bytes(zlib.compress(
+                            (kind + " " + str(len(corrupt))).encode("ascii") +
+                            b"\0" + corrupt))
+                        after = path.lstat()
+                        self.assertEqual((before.st_dev, before.st_ino),
+                                         (after.st_dev, after.st_ino))
+                        corrupted.append(True)
+                    return result
 
-        try:
-            with mock.patch.object(publication, "_git", side_effect=corrupt_after_cas):
-                with self.assertRaisesRegex(
-                        ValidationError, r"POST_CAS_RECOVERY_REQUIRED:.*[Ss]napshot-present"):
-                    rewrite_unpublished(self.repo.path, self.repo.base,
-                                        "awf/EX-6-publication", 1, message,
-                                        mapping_path=self.mapping)
-        finally:
-            path.write_bytes(original)
-            path.chmod(stat.S_IREAD)
-        self.assertEqual([True], corrupted)
-        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+                try:
+                    with mock.patch.object(publication, "_git",
+                                           side_effect=corrupt_after_cas):
+                        with self.assertRaisesRegex(
+                                ValidationError,
+                                r"POST_CAS_RECOVERY_REQUIRED:"):
+                            rewrite_unpublished(
+                                self.repo.path, self.repo.base,
+                                "awf/EX-6-publication", 1, message,
+                                mapping_path=self.mapping)
+                finally:
+                    path.write_bytes(original)
+                    path.chmod(stat.S_IREAD)
+                self.assertEqual([True], corrupted)
+                self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
 
     def test_ac44_post_cas_proof_failure_rolls_back_ref_and_retains_owned_object(self):
         self.contaminate_then_remove()
