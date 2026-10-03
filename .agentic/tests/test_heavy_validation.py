@@ -1030,6 +1030,109 @@ class HeavyValidationTests(unittest.TestCase):
             self.assertEqual([("lease-1", 7)], broker.released)
             self.assertEqual("RELEASED", result["lease_release"]["status"])
 
+    def test_provider_delay_cannot_outlive_review_and_launch_child(self):
+        with tempfile.TemporaryDirectory() as folder:
+            forbidden = Path(folder) / "provider-delayed-review-child.txt"
+            raw = plan([partition(
+                "delayed-review",
+                f"from pathlib import Path; Path({str(forbidden)!r}).write_text('bad')",
+            )], parallelism=1)
+            cfg, broker = config(), Broker()
+            cfg_raw = canonical(cfg)
+            cap = capacity(raw, cfg_raw, workers=1, heavy=1)
+            reviewed = json.loads(review(raw))
+            reviewed["expires_at"] = "2026-10-02T09:00:01Z"
+            review_raw = canonical(reviewed)
+            clock = {"now": timestamp(NOW)}
+            provider_calls = 0
+            cancelled = threading.Event()
+
+            def delayed_provider(*args):
+                nonlocal provider_calls
+                provider_calls += 1
+                value = authenticator(*args)
+                if provider_calls == 4:
+                    clock["now"] += timedelta(seconds=2)
+                return value
+
+            def text_clock():
+                return clock["now"].isoformat(
+                    timespec="microseconds").replace("+00:00", "Z")
+            result = _run_validation_at(
+                plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review_raw, expected_review_sha256=sha256(review_raw),
+                config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=delayed_provider,
+                checkout_attestor=checkout_attestor,
+                checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
+                expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                lease_clock=text_clock, dispatch_clock=text_clock,
+                cancel_event=cancelled)
+            self.assertEqual(4, provider_calls)
+            self.assertFalse(forbidden.exists())
+            self.assertTrue(cancelled.is_set())
+            self.assertEqual("FAIL", result["status"])
+            self.assertTrue(result["all_partitions_terminal"])
+            self.assertEqual(1, result["execution"]["completed_terminal_count"])
+            self.assertEqual("REJECTED", result["child_launch_authorization"]["status"])
+            gate = result["child_launch_authorization"]["checks"][0]
+            self.assertEqual("2026-10-02T09:00:02.000000Z", gate["sampled_at"])
+            self.assertEqual(["review_validity_interval_elapsed"], gate["reasons"])
+            self.assertEqual([("lease-1", 7)], broker.released)
+            self.assertEqual("RELEASED", result["lease_release"]["status"])
+
+    def test_provider_delay_cannot_age_capacity_and_launch_child(self):
+        with tempfile.TemporaryDirectory() as folder:
+            forbidden = Path(folder) / "provider-delayed-capacity-child.txt"
+            raw = plan([partition(
+                "delayed-capacity",
+                f"from pathlib import Path; Path({str(forbidden)!r}).write_text('bad')",
+            )], parallelism=1)
+            cfg, broker = config(), Broker()
+            cfg_raw = canonical(cfg)
+            cap = capacity(raw, cfg_raw, workers=1, heavy=1)
+            clock = {"now": timestamp(NOW)}
+            provider_calls = 0
+            cancelled = threading.Event()
+
+            def delayed_provider(*args):
+                nonlocal provider_calls
+                provider_calls += 1
+                value = authenticator(*args)
+                if provider_calls == 4:
+                    clock["now"] += timedelta(seconds=301)
+                return value
+
+            def text_clock():
+                return clock["now"].isoformat(
+                    timespec="microseconds").replace("+00:00", "Z")
+            result = _run_validation_at(
+                plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=review(raw), expected_review_sha256=sha256(review(raw)),
+                config_raw=cfg_raw, expected_config_sha256=sha256(cfg_raw),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=delayed_provider,
+                checkout_attestor=checkout_attestor,
+                checkout_snapshotter=checkout_snapshotter, capacity_raw=cap,
+                expected_capacity_sha256=sha256(cap), broker_client=broker, now=NOW,
+                lease_clock=text_clock, dispatch_clock=text_clock,
+                cancel_event=cancelled)
+            self.assertEqual(4, provider_calls)
+            self.assertFalse(forbidden.exists())
+            self.assertTrue(cancelled.is_set())
+            self.assertEqual("FAIL", result["status"])
+            self.assertTrue(result["all_partitions_terminal"])
+            self.assertEqual(1, result["execution"]["completed_terminal_count"])
+            self.assertEqual("REJECTED", result["child_launch_authorization"]["status"])
+            gate = result["child_launch_authorization"]["checks"][0]
+            self.assertEqual("2026-10-02T09:05:01.000000Z", gate["sampled_at"])
+            self.assertEqual(["observed_capacity_stale_at_dispatch"], gate["reasons"])
+            self.assertEqual(301_000_000,
+                             gate["freshness"]["capacity_age_microseconds"])
+            self.assertEqual([("lease-1", 7)], broker.released)
+            self.assertEqual("RELEASED", result["lease_release"]["status"])
+
     def test_durable_file_broker_fences_capacity_and_result_log_is_immutable(self):
         clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
         with tempfile.TemporaryDirectory() as folder:

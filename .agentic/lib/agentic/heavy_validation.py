@@ -617,7 +617,6 @@ class _ChildLaunchAuthorization:
         with self._lock:
             if self._cancel_event.is_set():
                 raise ValidationError("Child launch cancelled before authority check")
-            sampled_at = _clock_text(self._clock)
             reasons: list[str] = []
             try:
                 provider = _authenticate_review(
@@ -626,6 +625,10 @@ class _ChildLaunchAuthorization:
             except Exception as exc:
                 provider = {"status": "REJECTED", "error_type": type(exc).__name__}
                 reasons.append("provider_authorization_rejected")
+            # Provider reauthentication can block.  Sample trusted UTC only
+            # after it returns so review, capacity and lease authority are
+            # revalidated for the instant immediately preceding child creation.
+            sampled_at = _clock_text(self._clock)
             try:
                 freshness = _dispatch_freshness(
                     self._review, self._capacity, sampled_at,
