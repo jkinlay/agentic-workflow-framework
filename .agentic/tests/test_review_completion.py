@@ -1,7 +1,11 @@
 import copy
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
+import importlib.util
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +23,8 @@ from agentic.gates import evaluate
 from agentic.interaction import gate_handoff
 from agentic.lifecycle import definition, transition
 from agentic.review_completion import ReviewCompletionStore, review_authority_from_config
+from agentic.providers.github_reviewer_removal import (approval_comment_body,
+    github_reviewer_removal_observer)
 from agentic.store import Store
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -335,6 +341,143 @@ class ReviewCompletionTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertIn("--state", completed.stderr)
         self.assertFalse((Path(self.temporary.name) / "forbidden.sqlite3").exists())
+
+    def test_live_github_observer_binds_exact_owner_repository_artifact_and_time(self):
+        artifact_id = 77
+
+        def prepared(name, mutate=None):
+            path = Path(self.temporary.name) / (name + ".sqlite3")
+            store = ReviewCompletionStore(path, authority=self.authority)
+            old = store.freeze(self.current, ["drop", "keep"])
+            store.dispatch("drop", self.current, ["drop", "keep"])
+            disposition = self.removal_disposition(store, old, ["keep"])
+            request = {"record": copy.deepcopy(disposition["record"]),
+                       "record_sha256": disposition["record_sha256"],
+                       "expected_provider_identity": copy.deepcopy(
+                           self.authority["provider_identity"])}
+            created = disposition["record"]["issued_at"]
+            metadata = {"id": 101, "full_name": "example/project"}
+            comment = {
+                "id": artifact_id,
+                "node_id": "IC_kwDO_exact",
+                "url": "https://api.github.com/repos/example/project/issues/comments/77",
+                "issue_url": "https://api.github.com/repos/example/project/issues/31",
+                "user": {"id": 1001},
+                "body": approval_comment_body(request),
+                "created_at": created,
+                "updated_at": created,
+            }
+            if mutate:
+                mutate(metadata, comment, disposition)
+
+            def get_json(endpoint, deadline):
+                self.assertGreater(deadline, 0)
+                return metadata if endpoint == "repos/example/project" else comment
+
+            observer = github_reviewer_removal_observer(
+                self.authority, artifact_id, get_json=get_json,
+                now=lambda: disposition["record"]["issued_at"])
+            store.provider_observer = observer
+            return store, old, disposition
+
+        store, old, disposition = prepared("live-good")
+        new = store.freeze(self.current, ["keep"], disposition)
+        audit = store.reviewer_set_audit()
+        self.assertNotEqual(new["cycle_id"], old["cycle_id"])
+        self.assertEqual(len(audit), 1)
+        review = audit[0]["review"]
+        self.assertEqual(review["artifact_id"],
+                         "github-issue-comment:101:77:IC_kwDO_exact")
+        self.assertEqual(review["owner_actor_id"], 1001)
+        self.assertEqual(review["provider_identity"], self.authority["provider_identity"])
+        self.assertEqual(review["old_cycle_id"], old["cycle_id"])
+        self.assertEqual(review["tuple_sha256"], old["tuple_sha256"])
+        self.assertEqual(review["removed_reviewers"], ["drop"])
+        self.assertEqual(review["reason"], disposition["record"]["reason"])
+
+        corruptions = {
+            "repository": lambda metadata, comment, value: metadata.__setitem__("id", 999),
+            "actor": lambda metadata, comment, value: comment["user"].__setitem__("id", 999),
+            "body": lambda metadata, comment, value: comment.__setitem__("body", "APPROVED"),
+            "artifact": lambda metadata, comment, value: comment.__setitem__("id", 78),
+            "edited": lambda metadata, comment, value: comment.__setitem__(
+                "updated_at", value["record"]["expires_at"]),
+            "stale": lambda metadata, comment, value: (
+                comment.__setitem__("created_at", "2000-01-01T00:00:00Z"),
+                comment.__setitem__("updated_at", "2000-01-01T00:00:00Z")),
+        }
+        for label, mutation in corruptions.items():
+            with self.subTest(label=label):
+                store, old, disposition = prepared("live-" + label, mutation)
+                with self.assertRaises(ValidationError):
+                    store.freeze(self.current, ["keep"], disposition)
+                self.assertEqual(store.status()["cycle_id"], old["cycle_id"])
+                self.assertEqual(store.reviewer_set_audit(), [])
+
+    def test_production_review_completion_route_wires_live_observer(self):
+        runtime = Path(self.temporary.name) / "runtime"
+        (runtime / ".agentic").mkdir(parents=True)
+        shutil.copyfile(ROOT / ".agentic/workflow.yaml", runtime / ".agentic/workflow.yaml")
+        shutil.copytree(ROOT / ".agentic/schemas", runtime / ".agentic/schemas")
+        config = copy.deepcopy(load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml"))
+        config["github"]["repository"] = self.current["repository"]
+        (runtime / ".agentic/PROJECT_CONFIG.yaml").write_text(
+            json.dumps(config), encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(
+            "awf_review_completion_script", ROOT / ".agentic/scripts/review_completion.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        state = Path(self.temporary.name) / "production.sqlite3"
+        worktree = Path(self.temporary.name) / "production-candidate"
+        worktree.mkdir()
+        candidate_path = Path(self.temporary.name) / "production-candidate.json"
+        old_reviewers_path = Path(self.temporary.name) / "production-old-reviewers.json"
+        new_reviewers_path = Path(self.temporary.name) / "production-new-reviewers.json"
+        candidate_path.write_text(json.dumps(self.current), encoding="utf-8")
+        old_reviewers_path.write_text(json.dumps(["drop", "keep"]), encoding="utf-8")
+        new_reviewers_path.write_text(json.dumps(["keep"]), encoding="utf-8")
+        prefix = ["--state", str(state), "--worktree-root", str(worktree)]
+
+        def invoke(arguments, factory=lambda authority, artifact: None):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(module.main(arguments, default_root=runtime,
+                                             observer_factory=factory), 0)
+            return json.loads(output.getvalue())
+
+        old = invoke([*prefix, "freeze", "--candidate", str(candidate_path),
+                      "--reviewers", str(old_reviewers_path)])
+        invoke([*prefix, "dispatch", "--candidate", str(candidate_path),
+                "--reviewers", str(old_reviewers_path), "--reviewer", "drop"])
+        store = ReviewCompletionStore(state, worktree_roots=[worktree],
+                                      authority=self.authority)
+        disposition = self.removal_disposition(store, old, ["keep"])
+        disposition_path = Path(self.temporary.name) / "production-disposition.json"
+        disposition_path.write_text(json.dumps(disposition), encoding="utf-8")
+        observed = []
+
+        def factory(authority, artifact):
+            self.assertEqual(authority, self.authority)
+            self.assertEqual(artifact, 77)
+            def observer(request):
+                observed.append(copy.deepcopy(request))
+                review = self.provider_review(request)
+                review["artifact_id"] = "github-issue-comment:101:77:IC_production"
+                review["observed_at"] = request["record"]["issued_at"]
+                return review
+            return observer
+
+        new = invoke([*prefix, "freeze", "--candidate", str(candidate_path),
+                      "--reviewers", str(new_reviewers_path),
+                      "--reviewer-removal-disposition", str(disposition_path),
+                      "--reviewer-removal-artifact-id", "77"], factory)
+        self.assertEqual(new["required_reviewers"], ["keep"])
+        self.assertEqual(len(observed), 1)
+        audit = ReviewCompletionStore(state, worktree_roots=[worktree]).reviewer_set_audit()
+        self.assertEqual(len(audit), 1)
+        self.assertEqual(audit[0]["review"]["artifact_id"],
+                         "github-issue-comment:101:77:IC_production")
+        self.assertEqual(audit[0]["record"]["old_cycle_id"], old["cycle_id"])
 
     def test_equal_and_superset_freezes_never_weaken_dispatched_requirements(self):
         store = self.removal_store(Path(self.temporary.name) / "monotonic.sqlite3")
