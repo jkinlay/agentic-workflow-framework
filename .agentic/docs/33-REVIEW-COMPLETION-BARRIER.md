@@ -21,11 +21,17 @@ Before launching any independent reviewer, freeze the complete required
 reviewer set against the repository, base commit, head commit, head tree,
 contract SHA-256, and review-input SHA-256. Persist `RUNNING` before each
 dispatch and give the reviewer the returned cycle, tuple, reviewer-set, and
-identity binding. Adding or removing a reviewer, or moving any candidate tuple
-field, invalidates the aggregate and requires a fresh cycle.
+identity binding. Adding a reviewer or moving any candidate tuple field
+invalidates the aggregate and requires a fresh cycle. After the first dispatch,
+removing or replacing a required reviewer also requires a fresh, provider-observed
+owner disposition. That disposition is bound to the unchanged exact tuple, old
+cycle, old and new reviewer sets, removed identities, reason, configured owner
+actor, provider identity, and a five-minute issue/review/expiry window. The
+protected ledger retains the record and review digests in an append-only audit.
+Equal freezes remain idempotent; supersets never need a weakening disposition.
 
 Persist one terminal result for every required reviewer. `FAILED`,
-`TIMED_OUT`, `MALFORMED`, `STALE`, and `DUPLICATE` are completed observations
+`TIMED_OUT`, `MALFORMED`, `CANCELLED`, `STALE`, and `DUPLICATE` are completed observations
 but never acceptable completion. Missing and running reviewers remain
 outstanding. A duplicate is audited without replacing the first terminal
 result and makes that reviewer's contribution unacceptable. Status always
@@ -35,7 +41,8 @@ reports `required`, `completed`, `acceptable`, `failed`, `stale`, and
 `ACCEPTABLE` is derived from the captured result, not asserted independently:
 the result must name the frozen reviewer, have verdict `APPROVE`, contain a
 findings list with no unresolved item, and fit within the bounded result size.
-Malformed, contradictory, or oversized results are refused.
+Malformed, contradictory, or oversized results are refused. `CANCELLED` is a
+terminal failed observation and cannot satisfy completion.
 
 ## Submit one immutable snapshot
 

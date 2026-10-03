@@ -8,13 +8,12 @@ captured a complete, acceptable result set for one frozen candidate tuple.
 from __future__ import annotations
 
 from contextlib import contextmanager
-import json
 import re
 import sqlite3
 import uuid
 
 from . import ValidationError
-from .canonical import canonical, fingerprint, loads, now_text, timestamp
+from .canonical import canonical, fingerprint, fresh, loads, now_text, timestamp
 from .controller_state import configure_database, protected_state_path, restrict_state_permissions
 
 
@@ -26,7 +25,7 @@ TUPLE_FIELDS = (
     "contract_sha256",
     "review_input_sha256",
 )
-TERMINAL_OUTCOMES = {"ACCEPTABLE", "FAILED", "TIMED_OUT", "MALFORMED"}
+TERMINAL_OUTCOMES = {"ACCEPTABLE", "FAILED", "TIMED_OUT", "MALFORMED", "CANCELLED"}
 FINAL_STATES = {"SUBMITTED", "SUBMISSION_UNKNOWN"}
 SHA40 = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -52,7 +51,17 @@ CREATE TABLE IF NOT EXISTS rejected_results(
  sequence INTEGER PRIMARY KEY AUTOINCREMENT, cycle_id TEXT NOT NULL,
  reviewer_id TEXT NOT NULL, observed_at TEXT NOT NULL, reason TEXT NOT NULL,
  result_sha256 TEXT);
+CREATE TABLE IF NOT EXISTS reviewer_set_dispositions(
+ sequence INTEGER PRIMARY KEY AUTOINCREMENT, disposition_id TEXT NOT NULL UNIQUE,
+ applied_at TEXT NOT NULL, old_cycle_id TEXT NOT NULL, new_cycle_id TEXT NOT NULL,
+ tuple_sha256 TEXT NOT NULL, old_reviewer_set_sha256 TEXT NOT NULL,
+ new_reviewer_set_sha256 TEXT NOT NULL, record_json TEXT NOT NULL,
+ record_sha256 TEXT NOT NULL, review_json TEXT NOT NULL, review_sha256 TEXT NOT NULL,
+ FOREIGN KEY(old_cycle_id) REFERENCES review_cycles(cycle_id),
+ FOREIGN KEY(new_cycle_id) REFERENCES review_cycles(cycle_id));
 """
+
+REVIEWER_REMOVAL_MAX_AGE_SECONDS = 300
 
 
 def _require(condition, message):
@@ -114,6 +123,88 @@ def _binding(candidate, reviewers):
     }
 
 
+def _canonical_uuid(value, label):
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValidationError(f"{label} must be a UUID") from exc
+    _require(str(parsed) == value, f"{label} must be canonical")
+    return value
+
+
+def _reviewer_removal_disposition(value, *, active, binding, owner_actor_id,
+                                  provider_identity, now):
+    """Validate a fresh provider-observed owner decision to weaken one frozen set."""
+    _require(isinstance(value, dict) and set(value) == {"record", "record_sha256", "review"},
+             "Reviewer removal disposition must contain exact record, digest, and review fields")
+    record, review = value["record"], value["review"]
+    record_fields = {
+        "schema_version", "disposition_id", "decision", "old_cycle_id", "tuple",
+        "tuple_sha256", "old_required_reviewers", "old_reviewer_set_sha256",
+        "new_required_reviewers", "new_reviewer_set_sha256", "removed_reviewers",
+        "reason", "owner_actor_id", "provider_identity", "issued_at", "expires_at",
+    }
+    _require(isinstance(record, dict) and set(record) == record_fields,
+             "Reviewer removal disposition record must be an exact object")
+    _require(record["schema_version"] == 1 and record["decision"] == "REMOVE_REQUIRED_REVIEWERS",
+             "Reviewer removal disposition has an unsupported version or decision")
+    _canonical_uuid(record["disposition_id"], "Reviewer removal disposition_id")
+    _canonical_uuid(record["old_cycle_id"], "Reviewer removal old_cycle_id")
+    _require(isinstance(record["reason"], str) and record["reason"].strip() == record["reason"] and
+             1 <= len(record["reason"]) <= 1000, "Reviewer removal needs a bounded nonempty reason")
+    old_reviewers = _reviewers(record["old_required_reviewers"])
+    new_reviewers = _reviewers(record["new_required_reviewers"])
+    _require(record["old_required_reviewers"] == old_reviewers and
+             record["new_required_reviewers"] == new_reviewers,
+             "Reviewer removal sets must use deterministic sorted order")
+    removed = sorted(set(old_reviewers) - set(new_reviewers))
+    _require(removed and record["removed_reviewers"] == removed,
+             "Reviewer removal disposition must name every and only removed reviewer")
+    _require(record["tuple"] == binding["tuple"] and
+             record["tuple_sha256"] == binding["tuple_sha256"],
+             "Reviewer removal disposition differs from the exact candidate tuple")
+    _require(record["old_cycle_id"] == active["cycle_id"] and
+             old_reviewers == loads(active["reviewers_json"]) and
+             record["old_reviewer_set_sha256"] == active["reviewer_set_sha256"],
+             "Reviewer removal disposition differs from the active old cycle or reviewer set")
+    _require(new_reviewers == binding["required_reviewers"] and
+             record["new_reviewer_set_sha256"] == binding["reviewer_set_sha256"],
+             "Reviewer removal disposition differs from the requested new reviewer set")
+    _require(record["old_reviewer_set_sha256"] == fingerprint("reviewer-set", old_reviewers) and
+             record["new_reviewer_set_sha256"] == fingerprint("reviewer-set", new_reviewers),
+             "Reviewer removal disposition carries an invalid reviewer-set digest")
+    _require(isinstance(owner_actor_id, str) and owner_actor_id and
+             isinstance(provider_identity, str) and provider_identity,
+             "Reviewer removal requires configured owner actor and provider identities")
+    _require(record["owner_actor_id"] == owner_actor_id and
+             record["provider_identity"] == provider_identity,
+             "Reviewer removal actor or provider identity is not trusted")
+    issued, expires, observed_now = (timestamp(record["issued_at"]),
+                                     timestamp(record["expires_at"]), timestamp(now))
+    _require(expires > issued and (expires - issued).total_seconds() <= REVIEWER_REMOVAL_MAX_AGE_SECONDS,
+             "Reviewer removal disposition freshness window is invalid")
+    fresh(record["issued_at"], now, REVIEWER_REMOVAL_MAX_AGE_SECONDS)
+    _require(observed_now <= expires, "Reviewer removal disposition has expired")
+    record_hash = fingerprint("reviewer-removal-disposition", record)
+    _require(value["record_sha256"] == record_hash,
+             "Reviewer removal disposition digest does not match its record")
+    review_fields = {"status", "review_id", "record_sha256", "owner_actor_id",
+                     "provider_identity", "observed_at"}
+    _require(isinstance(review, dict) and set(review) == review_fields and
+             review["status"] == "APPROVED", "Reviewer removal needs an exact approved review")
+    _require(isinstance(review["review_id"], str) and review["review_id"].strip() == review["review_id"] and
+             review["review_id"], "Reviewer removal review_id must be nonempty")
+    _require(review["record_sha256"] == record_hash and
+             review["owner_actor_id"] == owner_actor_id and
+             review["provider_identity"] == provider_identity,
+             "Reviewer removal review is not bound to the record, actor, and provider")
+    fresh(review["observed_at"], now, REVIEWER_REMOVAL_MAX_AGE_SECONDS)
+    observed = timestamp(review["observed_at"])
+    _require(issued <= observed <= expires,
+             "Reviewer removal review observation is outside the disposition freshness window")
+    return record, record_hash, review
+
+
 class ReviewCompletionStore:
     """SQLite ledger that closes the race between review completion and submit.
 
@@ -122,8 +213,10 @@ class ReviewCompletionStore:
     submitted aggregate and its completion snapshot are immutable thereafter.
     """
 
-    def __init__(self, path, worktree_roots=()):
+    def __init__(self, path, worktree_roots=(), *, owner_actor_id=None, provider_identity=None):
         self.path = protected_state_path(path, worktree_roots)
+        self.owner_actor_id = owner_actor_id
+        self.provider_identity = provider_identity
         with self.connection() as db:
             db.executescript(DDL)
             columns = {row[1] for row in db.execute("PRAGMA table_info(review_cycles)")}
@@ -162,31 +255,86 @@ class ReviewCompletionStore:
     def _matches(row, binding):
         return row["tuple_sha256"] == binding["tuple_sha256"] and row["reviewer_set_sha256"] == binding["reviewer_set_sha256"]
 
-    def freeze(self, candidate, reviewers):
+    def freeze(self, candidate, reviewers, reviewer_removal_disposition=None):
         """Freeze the complete reviewer set before any reviewer dispatch.
 
         Repeating the exact freeze is idempotent.  A changed candidate or set
         invalidates a collecting/ready aggregate and creates a fresh cycle.
+        Once any reviewer was dispatched, removing or replacing a required
+        reviewer needs a fresh reviewed owner disposition bound to both sets.
         An uncertain provider submission must be reconciled first.
         """
         binding = _binding(candidate, reviewers)
         with self.transaction() as db:
             active = db.execute("SELECT c.* FROM active_cycle a JOIN review_cycles c ON c.cycle_id=a.cycle_id WHERE a.singleton=1").fetchone()
             if active is not None and self._matches(active, binding) and active["state"] != "INVALIDATED":
+                _require(reviewer_removal_disposition is None,
+                         "Reviewer removal disposition supplied for an unchanged reviewer set")
                 return self._summary(db, active, current=True)
+            disposition = None
             if active is not None:
                 _require(active["state"] not in {"SUBMITTING", "SUBMISSION_UNKNOWN"},
                          "Reconcile the uncertain provider submission before freezing another cycle")
+                old_reviewers = loads(active["reviewers_json"])
+                removed = sorted(set(old_reviewers) - set(binding["required_reviewers"]))
+                dispatched = db.execute(
+                    "SELECT 1 FROM reviewer_results WHERE cycle_id=? LIMIT 1",
+                    (active["cycle_id"],)).fetchone() is not None
+                if removed and dispatched:
+                    _require(reviewer_removal_disposition is not None,
+                             "A reviewed owner disposition is required to remove a dispatched-cycle reviewer")
+                    _require(loads(active["tuple_json"]) == binding["tuple"],
+                             "Reviewer removal disposition requires the unchanged exact candidate tuple")
+                    disposition = _reviewer_removal_disposition(
+                        reviewer_removal_disposition, active=active, binding=binding,
+                        owner_actor_id=self.owner_actor_id,
+                        provider_identity=self.provider_identity, now=now_text())
+                else:
+                    _require(reviewer_removal_disposition is None,
+                             "Reviewer removal disposition supplied when no dispatched-cycle reviewer is removed")
                 if active["state"] != "SUBMITTED":
                     db.execute("UPDATE review_cycles SET state='INVALIDATED',invalidation_reason=? WHERE cycle_id=?",
-                               ("candidate or required reviewer set moved", active["cycle_id"]))
+                               (("reviewer set reduced by reviewed owner disposition " + disposition[0]["disposition_id"])
+                                if disposition else "candidate or required reviewer set moved", active["cycle_id"]))
             cycle_id = str(uuid.uuid4())
             created = now_text()
             db.execute("INSERT OR IGNORE INTO review_cycles(cycle_id,created_at,tuple_json,tuple_sha256,reviewers_json,reviewer_set_sha256,state) VALUES(?,?,?,?,?,?,'COLLECTING')",
                        (cycle_id, created, canonical(binding["tuple"]).decode(), binding["tuple_sha256"],
                         canonical(binding["required_reviewers"]).decode(), binding["reviewer_set_sha256"]))
             db.execute("INSERT INTO active_cycle VALUES(1,?) ON CONFLICT(singleton) DO UPDATE SET cycle_id=excluded.cycle_id", (cycle_id,))
+            if active is not None and disposition is not None:
+                record, record_hash, review = disposition
+                db.execute(
+                    "INSERT INTO reviewer_set_dispositions(disposition_id,applied_at,old_cycle_id,new_cycle_id,tuple_sha256,old_reviewer_set_sha256,new_reviewer_set_sha256,record_json,record_sha256,review_json,review_sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (record["disposition_id"], now_text(), active["cycle_id"], cycle_id,
+                     binding["tuple_sha256"], active["reviewer_set_sha256"], binding["reviewer_set_sha256"],
+                     canonical(record).decode(), record_hash, canonical(review).decode(),
+                     fingerprint("reviewer-removal-review", review)))
             return self._summary(db, self._active(db), current=True)
+
+    def reviewer_set_audit(self):
+        """Return append-only reviewer-set weakening evidence from protected state."""
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT sequence,applied_at,old_cycle_id,new_cycle_id,tuple_sha256,old_reviewer_set_sha256,"
+                "new_reviewer_set_sha256,record_json,record_sha256,review_json,review_sha256 "
+                "FROM reviewer_set_dispositions ORDER BY sequence").fetchall()
+            result = []
+            for row in rows:
+                record, review = loads(row["record_json"]), loads(row["review_json"])
+                _require(row["record_sha256"] == fingerprint("reviewer-removal-disposition", record) and
+                         row["review_sha256"] == fingerprint("reviewer-removal-review", review),
+                         "Persisted reviewer removal audit digest is invalid")
+                _require(record["old_cycle_id"] == row["old_cycle_id"] and
+                         record["tuple_sha256"] == row["tuple_sha256"] and
+                         record["old_reviewer_set_sha256"] == row["old_reviewer_set_sha256"] and
+                         record["new_reviewer_set_sha256"] == row["new_reviewer_set_sha256"] and
+                         review["record_sha256"] == row["record_sha256"],
+                         "Persisted reviewer removal audit binding is invalid")
+                result.append({**{key: row[key] for key in (
+                    "sequence", "applied_at", "old_cycle_id", "new_cycle_id",
+                    "record_sha256", "review_sha256")}, "record": record, "review": review})
+            return result
 
     def dispatch(self, reviewer_id, candidate, reviewers):
         """Persist RUNNING before dispatch and return the exact result binding."""
@@ -492,7 +640,7 @@ def validate_completion_semantics(value):
     terminal = [state for state in states if state not in {"MISSING", "RUNNING"}]
     expected = {"required": len(states), "completed": len(terminal),
                 "acceptable": states.count("ACCEPTABLE"),
-                "failed": sum(state in {"FAILED", "TIMED_OUT", "MALFORMED", "DUPLICATE"} for state in states),
+                "failed": sum(state in {"FAILED", "TIMED_OUT", "MALFORMED", "CANCELLED", "DUPLICATE"} for state in states),
                 "stale": states.count("STALE"), "outstanding": len(states) - len(terminal)}
     _require(counts == expected, "Reviewer counts contradict reviewer states")
     ready = (value.get("current") is True and value.get("state") == "COLLECTING" and

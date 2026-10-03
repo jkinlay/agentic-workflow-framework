@@ -17,6 +17,8 @@ def main(argv=None, default_root=ROOT):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--worktree-root", type=Path, action="append", required=True)
+    parser.add_argument("--trusted-owner-actor")
+    parser.add_argument("--provider-identity")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("freeze", "dispatch", "status", "prepare"):
         command = sub.add_parser(name)
@@ -26,22 +28,29 @@ def main(argv=None, default_root=ROOT):
             command.add_argument("--reviewer", required=True)
         if name == "prepare":
             command.add_argument("--aggregate", type=Path, required=True)
+        if name == "freeze":
+            command.add_argument("--reviewer-removal-disposition", type=Path)
     record = sub.add_parser("record")
     record.add_argument("--reviewer", required=True)
     record.add_argument("--binding", type=Path, required=True)
-    record.add_argument("--outcome", choices=["ACCEPTABLE", "FAILED", "TIMED_OUT", "MALFORMED"], required=True)
+    record.add_argument("--outcome", choices=["ACCEPTABLE", "FAILED", "TIMED_OUT", "MALFORMED", "CANCELLED"], required=True)
     record.add_argument("--result", type=Path, required=True)
     for name in ("complete", "reconcile"):
         command = sub.add_parser(name)
         command.add_argument("--admission", type=Path, required=True)
         command.add_argument("--receipt", type=Path, required=True)
     sub.add_parser("recover")
+    sub.add_parser("audit-reviewer-set")
     args = parser.parse_args(argv)
-    store = ReviewCompletionStore(args.state, worktree_roots=args.worktree_root)
+    store = ReviewCompletionStore(args.state, worktree_roots=args.worktree_root,
+                                  owner_actor_id=args.trusted_owner_actor,
+                                  provider_identity=args.provider_identity)
     if args.command in {"freeze", "dispatch", "status", "prepare"}:
         candidate, reviewers = load(args.candidate), load(args.reviewers)
     if args.command == "freeze":
-        output = store.freeze(candidate, reviewers)
+        disposition = (load(args.reviewer_removal_disposition)
+                       if args.reviewer_removal_disposition else None)
+        output = store.freeze(candidate, reviewers, disposition)
     elif args.command == "dispatch":
         output = store.dispatch(args.reviewer, candidate, reviewers)
     elif args.command == "status":
@@ -56,8 +65,10 @@ def main(argv=None, default_root=ROOT):
     elif args.command == "reconcile":
         admission = validate_submission_semantics(load(args.admission))
         output = store.reconcile_submission(admission, load(args.receipt))
-    else:
+    elif args.command == "recover":
         output = store.recover()
+    else:
+        output = store.reviewer_set_audit()
     print(json.dumps(output, indent=2))
     return 0
 

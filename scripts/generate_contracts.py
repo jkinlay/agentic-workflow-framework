@@ -119,7 +119,7 @@ def catalog():
     review_counts = obj({name: integer() for name in
         ["required", "completed", "acceptable", "failed", "stale", "outstanding"]})
     reviewer_state = obj({"reviewer_id": text(),
-        "state": enum("MISSING", "RUNNING", "ACCEPTABLE", "FAILED", "TIMED_OUT", "MALFORMED", "STALE", "DUPLICATE")})
+        "state": enum("MISSING", "RUNNING", "ACCEPTABLE", "FAILED", "TIMED_OUT", "MALFORMED", "CANCELLED", "STALE", "DUPLICATE")})
     schemas["review-completion"] = obj({"schema_version": const(3), "cycle_id": UUID,
         "state": enum("COLLECTING", "SUBMITTING", "SUBMITTED", "SUBMISSION_UNKNOWN", "INVALIDATED"),
         "current": BOOL, "ready": BOOL, "tuple": review_tuple, "tuple_sha256": DIGEST,

@@ -1,4 +1,5 @@
 import copy
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import subprocess
@@ -52,6 +53,37 @@ class ReviewCompletionTests(unittest.TestCase):
         return self.store.record_result(reviewer, binding, "ACCEPTABLE",
                                         {"verdict": "APPROVE", "reviewer": reviewer,
                                          "findings": []})
+
+    def removal_disposition(self, store, old, new, *, reason="Owner reviewed reviewer removal"):
+        now = datetime.now(timezone.utc)
+        issued = now.isoformat(timespec="microseconds").replace("+00:00", "Z")
+        expires = (now + timedelta(minutes=4)).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        old_reviewers, new_reviewers = sorted(old["required_reviewers"]), sorted(new)
+        record = {
+            "schema_version": 1,
+            "disposition_id": str(uuid.uuid4()),
+            "decision": "REMOVE_REQUIRED_REVIEWERS",
+            "old_cycle_id": old["cycle_id"],
+            "tuple": copy.deepcopy(self.current),
+            "tuple_sha256": old["tuple_sha256"],
+            "old_required_reviewers": old_reviewers,
+            "old_reviewer_set_sha256": old["reviewer_set_sha256"],
+            "new_required_reviewers": new_reviewers,
+            "new_reviewer_set_sha256": fingerprint("reviewer-set", new_reviewers),
+            "removed_reviewers": sorted(set(old_reviewers) - set(new_reviewers)),
+            "reason": reason,
+            "owner_actor_id": store.owner_actor_id,
+            "provider_identity": store.provider_identity,
+            "issued_at": issued,
+            "expires_at": expires,
+        }
+        record_hash = fingerprint("reviewer-removal-disposition", record)
+        return {"record": record, "record_sha256": record_hash,
+                "review": {"status": "APPROVED", "review_id": "provider-review-1",
+                           "record_sha256": record_hash,
+                           "owner_actor_id": store.owner_actor_id,
+                           "provider_identity": store.provider_identity,
+                           "observed_at": issued}}
 
     @staticmethod
     def receipt(admission):
@@ -124,6 +156,95 @@ class ReviewCompletionTests(unittest.TestCase):
         fresh = self.store.freeze(moved, [*self.reviewers, "reviewer-d"])
         self.assertNotEqual(fresh["cycle_id"], status["cycle_id"])
         self.assertEqual(fresh["counts"]["outstanding"], 4)
+
+    def test_dispatched_cycle_reviewer_cannot_be_silently_removed_in_any_state(self):
+        for state in ("QUEUED", "RUNNING", "FAILED", "CANCELLED", "ACCEPTABLE"):
+            with self.subTest(state=state):
+                path = Path(self.temporary.name) / f"removal-{state}.sqlite3"
+                store = ReviewCompletionStore(path, owner_actor_id="owner-1",
+                                              provider_identity="github.example")
+                reviewers = ["drop", "keep"]
+                frozen = store.freeze(self.current, reviewers)
+                store.dispatch("keep", self.current, reviewers)
+                if state != "QUEUED":
+                    binding = store.dispatch("drop", self.current, reviewers)
+                    if state not in {"RUNNING"}:
+                        payload = ({"verdict": "APPROVE", "reviewer": "drop", "findings": []}
+                                   if state == "ACCEPTABLE" else {"reason": state.lower()})
+                        store.record_result("drop", binding, state, payload)
+                with self.assertRaisesRegex(ValidationError, "reviewed owner disposition"):
+                    store.freeze(self.current, ["keep"])
+                self.assertEqual(store.status()["cycle_id"], frozen["cycle_id"])
+                self.assertEqual(store.reviewer_set_audit(), [])
+
+    def test_valid_reviewed_owner_disposition_allows_and_audits_exact_removal(self):
+        store = ReviewCompletionStore(Path(self.temporary.name) / "authorized-removal.sqlite3",
+                                      owner_actor_id="owner-1", provider_identity="github.example")
+        reviewers = ["drop", "keep"]
+        old = store.freeze(self.current, reviewers)
+        store.dispatch("keep", self.current, reviewers)
+        drop = store.dispatch("drop", self.current, reviewers)
+        store.record_result("drop", drop, "CANCELLED", {"reason": "reviewer unavailable"})
+        disposition = self.removal_disposition(store, old, ["keep"])
+        new = store.freeze(self.current, ["keep"], disposition)
+        self.assertNotEqual(new["cycle_id"], old["cycle_id"])
+        self.assertEqual(new["required_reviewers"], ["keep"])
+        self.assertFalse(new["ready"])
+        with self.assertRaisesRegex(ValidationError, "Every frozen independent reviewer"):
+            store.prepare_submission(self.current, ["keep"], {"verdict": "APPROVE"})
+        audit = store.reviewer_set_audit()
+        self.assertEqual(len(audit), 1)
+        self.assertEqual(audit[0]["old_cycle_id"], old["cycle_id"])
+        self.assertEqual(audit[0]["new_cycle_id"], new["cycle_id"])
+        self.assertEqual(audit[0]["record"]["removed_reviewers"], ["drop"])
+        self.assertEqual(audit[0]["record_sha256"], disposition["record_sha256"])
+        with store.transaction() as db:
+            db.execute("UPDATE reviewer_set_dispositions SET record_json='{}' WHERE sequence=1")
+        with self.assertRaisesRegex(ValidationError, "audit digest"):
+            store.reviewer_set_audit()
+
+    def test_reviewer_removal_disposition_is_exact_identity_bound_and_fresh(self):
+        mutations = {
+            "actor": lambda value: value["record"].__setitem__("owner_actor_id", "other-owner"),
+            "provider": lambda value: value["review"].__setitem__("provider_identity", "other-provider"),
+            "tuple": lambda value: value["record"]["tuple"].__setitem__("head_sha", "9" * 40),
+            "old cycle": lambda value: value["record"].__setitem__("old_cycle_id", str(uuid.uuid4())),
+            "new set": lambda value: value["record"].__setitem__("new_required_reviewers", ["drop"]),
+            "stale": lambda value: (value["record"].__setitem__("issued_at", "2000-01-01T00:00:00Z"),
+                                     value["record"].__setitem__("expires_at", "2000-01-01T00:04:00Z"),
+                                     value["review"].__setitem__("observed_at", "2000-01-01T00:00:01Z")),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                path = Path(self.temporary.name) / (label.replace(" ", "-") + ".sqlite3")
+                store = ReviewCompletionStore(path, owner_actor_id="owner-1",
+                                              provider_identity="github.example")
+                old = store.freeze(self.current, ["drop", "keep"])
+                store.dispatch("drop", self.current, ["drop", "keep"])
+                disposition = self.removal_disposition(store, old, ["keep"])
+                mutate(disposition)
+                # Recompute the outer digest only for mutations whose threat is not an edited record.
+                if label in {"actor", "tuple", "old cycle", "new set", "stale"}:
+                    disposition["record_sha256"] = fingerprint(
+                        "reviewer-removal-disposition", disposition["record"])
+                    disposition["review"]["record_sha256"] = disposition["record_sha256"]
+                with self.assertRaises(ValidationError):
+                    store.freeze(self.current, ["keep"], disposition)
+                self.assertEqual(store.status()["cycle_id"], old["cycle_id"])
+                self.assertEqual(store.reviewer_set_audit(), [])
+
+    def test_equal_and_superset_freezes_never_weaken_dispatched_requirements(self):
+        store = ReviewCompletionStore(Path(self.temporary.name) / "monotonic.sqlite3",
+                                      owner_actor_id="owner-1", provider_identity="github.example")
+        old = store.freeze(self.current, ["a", "b"])
+        store.dispatch("a", self.current, ["a", "b"])
+        equal = store.freeze(self.current, ["b", "a"])
+        self.assertEqual(equal["cycle_id"], old["cycle_id"])
+        superset = store.freeze(self.current, ["a", "b", "c"])
+        self.assertNotEqual(superset["cycle_id"], old["cycle_id"])
+        self.assertEqual(superset["required_reviewers"], ["a", "b", "c"])
+        self.assertEqual(superset["counts"]["outstanding"], 3)
+        self.assertEqual(store.reviewer_set_audit(), [])
 
     def test_restart_preserves_frozen_set_and_each_result_state(self):
         bindings = self.freeze_and_dispatch()
