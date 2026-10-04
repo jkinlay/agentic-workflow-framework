@@ -124,7 +124,7 @@ class PublicationScanTests(unittest.TestCase):
 
     def test_historical_synthetic_ticket_allow_is_exact_and_real_jira_still_blocks(self):
         restricted = {"deny_regexes": [{
-            "id": "restricted_identifier", "pattern": r"\b" + "QA-" + r"\d+\b"}]}
+            "id": "restricted_identifier", "pattern": r"\b" + "QA-" + r"\d{1,64}\b"}]}
         detectors, allows = _detectors(restricted, {})
         synthetic = "QA-" + "1"
         line = '            ticket("' + synthetic + '", 1, "BLOCKED", reason="dependency unavailable"),'
