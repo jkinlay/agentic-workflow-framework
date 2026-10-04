@@ -305,6 +305,7 @@ class FiveSlotAccelerationTests(unittest.TestCase):
             *(f"C25-F{number:02d}" for number in range(1, 6)),
             *(f"FRESH-F{number:02d}" for number in range(1, 4)),
             *(f"C26-F{number:02d}" for number in range(1, 7)),
+            "C26-F07",
             "C26-F08",
         )
         mapped_ids = [row["source_finding_id"] for row in self.inventory["regressions"]]

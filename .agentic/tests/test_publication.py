@@ -1810,6 +1810,113 @@ class PublicationRewriteTests(unittest.TestCase):
         self.assertEqual(created, git(self.repo.path, "rev-parse", "HEAD"))
         self.assertTrue(object_exists(self.repo.path, created))
 
+    def test_ac44_initial_cas_applied_then_exception_is_reconciled_and_rolled_back(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+        created = []
+
+        def apply_then_raise(root, *args, **kwargs):
+            if (args and args[0] == "update-ref" and
+                    args[1] == "refs/heads/awf/EX-6-publication" and args[2] != old_head):
+                result = real_git(root, *args, **kwargs)
+                created.append(args[2])
+                if result.returncode == 0:
+                    raise TimeoutError("synthetic lost update-ref response")
+                return result
+            return real_git(root, *args, **kwargs)
+
+        with mock.patch.object(publication, "_git", side_effect=apply_then_raise):
+            with self.assertRaisesRegex(ValidationError, "CAS_INDETERMINATE_RECOVERY_REQUIRED") as caught:
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertIn("reflogs retained", str(caught.exception))
+        self.assertTrue(object_exists(self.repo.path, created[0]))
+
+    def test_ac44_initial_cas_exception_without_apply_retains_recovery_evidence(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+        raised = False
+
+        def raise_before_apply(root, *args, **kwargs):
+            nonlocal raised
+            if (not raised and args and args[0] == "update-ref" and
+                    args[1] == "refs/heads/awf/EX-6-publication" and args[2] != old_head):
+                raised = True
+                raise TimeoutError("synthetic pre-apply timeout")
+            return real_git(root, *args, **kwargs)
+
+        with mock.patch.object(publication, "_git", side_effect=raise_before_apply):
+            with self.assertRaisesRegex(ValidationError,
+                                        r"CAS_INDETERMINATE_RECOVERY_REQUIRED:.*retained_objects=.*non_destructive_recovery=") as caught:
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+        retained = re.search(r"new_head=([0-9a-f]+)", str(caught.exception)).group(1)
+        self.assertTrue(object_exists(self.repo.path, retained))
+
+    def test_ac44_indeterminate_cas_concurrent_ref_is_preserved_with_evidence(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        concurrent = git(self.repo.path, "rev-parse", "HEAD~1")
+        real_git = publication._git
+        changed = False
+
+        def concurrent_then_raise(root, *args, **kwargs):
+            nonlocal changed
+            if (not changed and args and args[0] == "update-ref" and
+                    args[1] == "refs/heads/awf/EX-6-publication" and args[2] != old_head):
+                changed = True
+                real_git(root, "update-ref", args[1], concurrent, old_head)
+                raise TimeoutError("synthetic indeterminate concurrent update")
+            return real_git(root, *args, **kwargs)
+
+        with mock.patch.object(publication, "_git", side_effect=concurrent_then_raise):
+            with self.assertRaisesRegex(ValidationError,
+                                        r"CAS_INDETERMINATE_RECOVERY_REQUIRED:.*old_head=.*new_head=.*retained_objects=") as caught:
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertIn("concurrent value preserved", str(caught.exception))
+        self.assertEqual(concurrent, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_ac44_indeterminate_cas_rollback_exception_retains_recovery_evidence(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        real_git = publication._git
+        created = []
+
+        def apply_and_fail_rollback(root, *args, **kwargs):
+            if (args and args[0] == "update-ref" and
+                    args[1] == "refs/heads/awf/EX-6-publication" and args[2] != old_head):
+                result = real_git(root, *args, **kwargs)
+                created.append(args[2])
+                if result.returncode == 0:
+                    raise TimeoutError("synthetic lost response")
+                return result
+            if (args and args[0] == "update-ref" and
+                    args[1] == "refs/heads/awf/EX-6-publication" and args[2] == old_head):
+                raise OSError("synthetic rollback transport failure")
+            return real_git(root, *args, **kwargs)
+
+        with mock.patch.object(publication, "_git", side_effect=apply_and_fail_rollback):
+            with self.assertRaisesRegex(ValidationError,
+                                        r"CAS_INDETERMINATE_RECOVERY_REQUIRED:.*retained_objects=.*non_destructive_recovery=") as caught:
+                rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        self.assertIn("rollback invocation failed", str(caught.exception))
+        self.assertEqual(created[0], git(self.repo.path, "rev-parse", "HEAD"))
+        self.assertTrue(object_exists(self.repo.path, created[0]))
+
     def test_ac44_concurrent_ref_after_cas_is_detected_and_target_is_rolled_back(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"

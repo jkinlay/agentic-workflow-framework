@@ -1913,7 +1913,46 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
                 raise ValidationError(_recovery_message(
                     "PRE_CAS_FAILED_RECOVERED", records, old_head, created,
                     str(install_error) + "; exact pre-operation snapshot restored")) from install_error
-            update = _git(root, "update-ref", ref, created, old_head, check=False)
+            try:
+                update = _git(root, "update-ref", ref, created, old_head, check=False)
+            except Exception as update_error:
+                # update-ref can apply its CAS before the process/transport
+                # reports an error. Reconcile the exact target ref before
+                # deciding whether cleanup is safe; never replace a value we
+                # did not create.
+                detail = ("initial CAS invocation raised " + type(update_error).__name__ +
+                          ": " + (str(update_error) or "no detail"))
+                try:
+                    current = _rewrite_snapshot(root)
+                    actual = current["refs"].get(ref)
+                    if actual == created:
+                        try:
+                            rollback = _git(root, "update-ref", ref, old_head, created, check=False)
+                        except Exception as rollback_error:
+                            raise ValidationError(
+                                "exact-CAS rollback invocation failed: " + type(rollback_error).__name__ +
+                                ": " + (str(rollback_error) or "no detail")) from rollback_error
+                        if rollback.returncode:
+                            raise ValidationError("exact-CAS rollback failed")
+                        _restore_rewrite_reflogs(root, snapshot, ref)
+                    elif actual != old_head:
+                        raise ValidationError(
+                            "target ref is neither the original nor operation-created head; concurrent value preserved")
+                    current = _rewrite_snapshot(root)
+                    if any(current[key] != snapshot[key] for key in snapshot
+                           if key not in {"objects", "fanouts"}):
+                        raise ValidationError("repository state changed during indeterminate CAS recovery")
+                    _cleanup_new_objects(root, records, snapshot)
+                    if not _failure_state_matches(root, snapshot):
+                        raise ValidationError("repository snapshot was not restored")
+                except Exception as recovery_error:
+                    raise ValidationError(_recovery_message(
+                        "CAS_INDETERMINATE_RECOVERY_REQUIRED", records, old_head, created,
+                        detail + "; recovery: " + type(recovery_error).__name__ + ": " +
+                        (str(recovery_error) or "no detail"))) from recovery_error
+                raise ValidationError(_recovery_message(
+                    "CAS_INDETERMINATE_RECOVERED", records, old_head, created,
+                    detail + "; exact pre-operation snapshot restored")) from update_error
             if update.returncode:
                 try:
                     current = _rewrite_snapshot(root)
