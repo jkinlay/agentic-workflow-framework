@@ -4,18 +4,11 @@ AWF 1.9.3 executes partitioned validation only from an exact reviewed candidate.
 
 ## Frozen execution identity
 
-A version 4 plan binds:
-
-- numeric repository ID, base SHA, head SHA, and tree SHA;
-- the exact absolute working directory;
-- one absolute executable path and file SHA-256 per partition;
-- argv, timeouts, accepted exits, engine, framework, resource class, and named-resource quantities;
-- one deterministic seed, bounded retry limit, and required process-tree, host-network-policy, and worktree isolation declarations.
-- the normalized target environment values and credential/module-search stripping policy.
+A version 4 plan binds repository/base/head/tree IDs, exact working directory, executable paths and digests, argv, timeouts, engine/framework/resources, deterministic retries, process/network/worktree isolation, and normalized target-environment and credential-stripping policy.
 
 Before launch, a trusted attestor proves the reviewed HEAD/tree clean. Git reads use a minimal environment and ignore ambient configuration, global attributes, and replacements. Execution archives the exact tree. Independent inventory must match extracted paths, modes, and computed blob IDs; content SHA-256 is rechecked after sealing. Windows handles and DACLs seal namespaces; unsupported hosts fail closed. Target, interpreter, launcher, sanitizer, and isolation flags are reviewed and fenced. The launcher loads the pinned sanitizer from the immutable snapshot. Identity movement fails; `shell=False` remains mandatory.
 
-Version 6 binds plan and provider review. GitHub evidence binds repository, PR tuple, reviewer, `APPROVED` state, commit, and authorization digest. AWF authenticates before and after admission and snapshot creation. Before each child or retry, a serialized launch lock covers provider reauthentication, trusted-UTC sampling, authority revalidation and process creation. Clock failure or malformed output records digest-bound rejection with no invented timestamp. Rejection cancels and settles work, releases the exact lease, and blocks later launches. Local `APPROVE` authorizes nothing.
+Version 6 binds plan and provider review. GitHub evidence binds repository, PR, reviewer, approved commit and authorization digest. AWF reauthenticates before dispatch and under the launch lock before each child/retry. Clock or authority failure records rejection, cancels work and blocks later launches. Local `APPROVE` authorizes nothing.
 
 ## Broker lease and serial fallback
 
@@ -28,6 +21,8 @@ Parallel execution requires all of these:
 5. exact lease release after every partition reaches a terminal result.
 
 Zero capacity starts no child. All broker-enabled work needs an exact lease. Serial fallback needs a separate grant. Stale-fence release failure blocks work; execution-fence release failure keeps `FAIL`. Capacity observations never grant resources.
+
+Any engine reporting `parallel_available: false` caps dispatch and the broker request to one slot. Partial/failed cleanup cancels queued launches under the gate and retains the lease until termination is established; the run fails.
 
 The broker validates all fields, quantities, resources, monotonic fences, and engine identity/slots. Microsecond expiry starts at acquisition and covers the full request plus validation margin. A live guard terminates expired work. OS-locked state is fsynced; malformed state fails closed.
 

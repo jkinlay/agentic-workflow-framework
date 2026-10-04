@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta
 import hashlib
@@ -210,6 +211,35 @@ def run(plan_raw, cfg, *, cap=None, broker=None, auth=authenticator,
 
 
 class HeavyValidationTests(unittest.TestCase):
+    def test_parallel_unavailable_with_multiple_slots_caps_effective_and_lease_limits(self):
+        raw = plan([partition("a"), partition("b")], parallelism=2)
+        cfg, broker = config(), Broker()
+        observed = json.loads(capacity(raw, canonical(cfg)))
+        observed["engines"]["python"]["parallel_available"] = False
+        observed["engines"]["python"]["parallel_slots"] = 4
+        cap = canonical(observed)
+        result = run(raw, cfg, cap=cap, broker=broker)
+        self.assertEqual("PASS", result["status"])
+        self.assertEqual("SERIAL", result["execution"]["mode"])
+        self.assertEqual(1, result["execution"]["effective_parallelism"])
+        self.assertEqual([1], [request["parallelism"] for request in broker.acquired])
+        self.assertEqual([1], [request["engine_slots"] for request in broker.acquired])
+
+    def test_unavailable_unrelated_engine_also_caps_host_dispatch(self):
+        raw = plan([partition("a"), partition("b")], parallelism=2)
+        cfg, broker = config(), Broker()
+        observed = json.loads(capacity(raw, canonical(cfg)))
+        observed["engines"]["matlab"] = {
+            "identity_sha256": "2" * 64,
+            "parallel_available": False,
+            "parallel_slots": 5,
+        }
+        cap = canonical(observed)
+        result = run(raw, cfg, cap=cap, broker=broker)
+        self.assertEqual("PASS", result["status"])
+        self.assertEqual(1, result["execution"]["effective_parallelism"])
+        self.assertEqual(1, broker.acquired[0]["engine_slots"])
+
     def test_parallel_requires_exact_lease_and_releases_fence_after_barrier(self):
         raw = plan([partition("a"), partition("b")], parallelism=2)
         cfg, broker = config(), Broker()
@@ -481,6 +511,75 @@ class HeavyValidationTests(unittest.TestCase):
                                     heavy._windows_launch_chain(value), lambda: None)
         self.assertEqual(1, execute.call_count)
         self.assertEqual(0, result["retry_count"])
+
+    def test_incomplete_cleanup_cancels_queued_sibling_under_launch_gate(self):
+        value = json.loads(plan([partition("failed"), partition("queued")],
+                                parallelism=2, retries=1))
+        parts = value["partitions"]
+        executable = {"path": parts[0]["executable"]["path"],
+                      "resolved_path": parts[0]["executable"]["path"],
+                      "sha256": parts[0]["executable"]["sha256"]}
+        event = threading.Event()
+        sibling_queued = threading.Event()
+        gate = heavy._ChildLaunchAuthorization(
+            review={}, review_digest="0" * 64, plan_digest="1" * 64,
+            candidate=value["candidate"], authorization={}, authenticator=None,
+            capacity=None, max_capacity_age_seconds=300, capacity_required=False,
+            lease=None, lease_guard=lambda: None, clock=lambda: NOW,
+            cancel_event=event)
+        attempts = []
+        partial = {"attempt": 1, "state": "FAILED", "exit_code": None,
+                   "timed_out": False, "cancelled": False, "error_type": "CleanupError",
+                   "process_tree_cleanup": {"outcome": "PARTIAL",
+                                            "mechanism": "direct_process_only"},
+                   "stdout_sha256": "0" * 64, "stderr_sha256": "1" * 64}
+
+        def attempt(partition, *args):
+            attempts.append(partition["name"])
+            if partition["name"] == "failed":
+                with gate.authorize(partition, 1, "failed-id"):
+                    pass
+                return dict(partial)
+            sibling_queued.set()
+            event.wait(timeout=5)
+            with gate.authorize(partition, 1, "queued-id"):
+                self.fail("queued sibling passed authorization after cleanup failure")
+
+        with mock.patch.object(heavy, "_authenticate_review", return_value={"status": "PASS"}), \
+                mock.patch.object(heavy, "_dispatch_freshness", return_value={"status": "PASS", "reasons": []}), \
+                mock.patch.object(heavy, "_execute_attempt", side_effect=attempt):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(heavy._execute, parts[0], value, executable,
+                                        SOURCE_ROOT, config(enabled=False), event,
+                                        heavy._windows_launch_chain(value), lambda: None,
+                                        gate.authorize, gate.abort)
+                second = executor.submit(heavy._execute, parts[1], value, executable,
+                                         SOURCE_ROOT, config(enabled=False), event,
+                                         heavy._windows_launch_chain(value), lambda: None,
+                                         gate.authorize, gate.abort)
+                self.assertTrue(sibling_queued.wait(timeout=5))
+                first.result()
+                with self.assertRaises(heavy.ValidationError):
+                    second.result()
+        self.assertTrue(event.is_set())
+        self.assertEqual(["failed", "queued"], attempts)
+
+    def test_incomplete_cleanup_keeps_broker_lease_held(self):
+        raw = plan([partition("uncertain")], parallelism=1)
+        cfg, broker = config(), Broker()
+        cap = capacity(raw, canonical(cfg), workers=1, heavy=1)
+
+        def uncertain(*args):
+            part, candidate_plan, executable = args[:3]
+            return heavy._unexpected_result(
+                part, candidate_plan, executable, RuntimeError("cleanup uncertain"))
+
+        with mock.patch.object(heavy, "_execute", side_effect=uncertain):
+            result = run(raw, cfg, cap=cap, broker=broker)
+        self.assertEqual("FAIL", result["status"])
+        self.assertFalse(result["execution"]["process_tree_cleanup_complete"])
+        self.assertEqual([], broker.released)
+        self.assertNotEqual("RELEASED", result["lease_release"]["status"])
 
     def test_parallel_and_serial_results_have_same_equivalence_proof(self):
         raw = plan([partition("b", "print('b')"), partition("a", "print('a')")],

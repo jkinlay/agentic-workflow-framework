@@ -49,6 +49,10 @@
         "launcher": {
           "repository_relative_path": ".agentic/lib/agentic/heavy_validation_child.py",
           "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "sanitizer": {
+          "repository_relative_path": ".agentic/lib/agentic/child_process.py",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
         }
       }
     },

@@ -698,6 +698,11 @@ class _ChildLaunchAuthorization:
             return {**record, "evidence_sha256": fingerprint(
                 "heavy-validation-child-launch-authorizations", record)}
 
+    def abort(self):
+        """Cancel all queued launches while serialized with child creation."""
+        with self._lock:
+            self._cancel_event.set()
+
 
 def _authenticate_review(review: dict, review_digest: str, plan_digest: str,
                          candidate: dict, authorization: dict, authenticator) -> dict:
@@ -1060,7 +1065,11 @@ def _parallelism(plan: dict, config: dict, capacity: dict | None,
         raise ValidationError("Capacity engine identity does not match the reviewed plan")
     if not engine_capacity["parallel_available"] or engine_capacity["parallel_slots"] < 2:
         reasons.append(f"engine_parallel_unavailable:{engine}")
-    ceilings.append((f"capacity.engine.{engine}", engine_capacity["parallel_slots"]))
+    any_engine_serial = any(not observed["parallel_available"]
+                            for observed in capacity["engines"].values())
+    engine_limit = (1 if any_engine_serial
+                    else engine_capacity["parallel_slots"])
+    ceilings.append((f"capacity.engine.{engine}", engine_limit))
 
     observed_resources = capacity["resources_available"]
     for resource in plan["required_resources"]:
@@ -1552,7 +1561,7 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
 
 def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: dict,
              cancel_event: threading.Event, launch_chain: dict, lease_guard,
-             launch_authorizer=None) -> dict:
+             launch_authorizer=None, launch_abort=None) -> dict:
     attempts = []
     maximum = plan["determinism"]["retry_limit"] + 1
     final = None
@@ -1562,6 +1571,13 @@ def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: d
         attempts.append({key: final[key] for key in (
             "attempt", "state", "exit_code", "timed_out", "cancelled", "error_type",
             "process_tree_cleanup", "stdout_sha256", "stderr_sha256")})
+        if final["process_tree_cleanup"]["outcome"] in {"PARTIAL", "FAILED"}:
+            # Acquire the same gate used by launch authorization before setting
+            # cancellation, so no queued retry or sibling can launch afterward.
+            if launch_abort is not None:
+                launch_abort()
+            else:
+                cancel_event.set()
         if (final["state"] in {"PASS", "CANCELLED"}
                 or final["process_tree_cleanup"]["outcome"] in {"PARTIAL", "FAILED"}
                 or cancel_event.is_set()):
@@ -1707,7 +1723,8 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
                                             {**authorization["record"]["windows_launch_chain"],
                                                  "target_environment": authorization["record"][
                                                      "target_environment"]},
-                                            guard, launch_gate.authorize): (part, executable)
+                                            guard, launch_gate.authorize,
+                                            launch_gate.abort): (part, executable)
                             for part, executable in zip(plan["partitions"], launch_executables)
                         }
                         for future in as_completed(futures):
@@ -1715,6 +1732,7 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
                             try:
                                 results.append(future.result())
                             except Exception as exc:  # executor failures still get terminal evidence
+                                launch_gate.abort()
                                 results.append(_unexpected_result(part, plan, executable, exc))
                     try:
                         guard()
@@ -1723,7 +1741,11 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
     finally:
         if launch_gate is not None:
             launch_authorization = launch_gate.evidence()
-        if lease is not None and lease.get("status") == "GRANTED":
+        cleanup_established = all(
+            item.get("process_tree_cleanup", {}).get("outcome") not in {"PARTIAL", "FAILED"}
+            for item in results)
+        if (cleanup_established and lease is not None
+                and lease.get("status") == "GRANTED"):
             lease_release = _release_lease(broker_client, lease)
     ended_at = now_text()
     results.sort(key=lambda item: item["name"])
