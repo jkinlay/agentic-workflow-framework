@@ -1078,9 +1078,60 @@ def _quarantine_objects(root, object_dir, extra_env, object_format):
     records = []
     total_raw = 0
     total_loose = 0
-    for path in sorted(Path(object_dir).glob("[0-9a-f][0-9a-f]/*")):
-        if len(records) >= MAX_REWRITE_PROOF_OBJECTS:
-            raise ValidationError("Quarantine object inventory exceeds the object-count bound")
+    object_dir = Path(object_dir)
+
+    def census(retain_paths):
+        # The fanout namespace is fixed at 256 directories. scandir keeps the
+        # enumeration lazy; the bounded helper below retains at most the
+        # configured object limit plus the one over-count sentinel.
+        fanouts = {}
+
+        def pathnames():
+            for value in range(256):
+                fanout = object_dir / f"{value:02x}"
+                try:
+                    details = fanout.lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise ValidationError("Quarantine object inventory changed during enumeration") from exc
+                attributes = getattr(details, "st_file_attributes", 0)
+                if (not stat.S_ISDIR(details.st_mode) or fanout.is_symlink() or
+                        (hasattr(fanout, "is_junction") and fanout.is_junction()) or
+                        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+                    raise ValidationError("Quarantine fanout directory is not canonical")
+                fanouts[fanout.name] = (details.st_dev, details.st_ino,
+                                        details.st_mtime_ns, details.st_ctime_ns)
+                try:
+                    with os.scandir(fanout) as entries:
+                        for entry in entries:
+                            yield fanout / entry.name
+                except OSError as exc:
+                    raise ValidationError("Quarantine object inventory changed during enumeration") from exc
+
+        if retain_paths:
+            paths = _bounded_quarantine_paths(pathnames(), MAX_REWRITE_PROOF_OBJECTS)
+            return paths, fanouts, _quarantine_path_fingerprint(paths)
+        count = 0
+        xor_digest = bytearray(32)
+        sum_digest = 0
+        for path in pathnames():
+            count += 1
+            if count > MAX_REWRITE_PROOF_OBJECTS:
+                raise ValidationError("Quarantine object inventory exceeds the object-count bound")
+            digest = hashlib.sha256(str(path).encode("utf-8", "surrogatepass")).digest()
+            for index, value in enumerate(digest):
+                xor_digest[index] ^= value
+            sum_digest = (sum_digest + int.from_bytes(digest, "big")) % (1 << 256)
+        return None, fanouts, (count, bytes(xor_digest), sum_digest)
+
+    paths, fanouts, fingerprint = census(True)
+    # A second streaming census detects additions/removals without retaining a
+    # second pathname inventory; only fixed-size fingerprints are accumulated.
+    _, second_fanouts, second_fingerprint = census(False)
+    if fanouts != second_fanouts or fingerprint != second_fingerprint:
+        raise ValidationError("Quarantine object inventory changed during enumeration")
+    for path in paths:
         oid = path.parent.name + path.name
         if not re.fullmatch(rf"[0-9a-f]{{{length}}}", oid):
             raise ValidationError("Quarantine contains an invalid object path")
@@ -1107,6 +1158,27 @@ def _quarantine_objects(root, object_dir, extra_env, object_format):
     if not records:
         raise ValidationError("Quarantine object inventory is empty")
     return records
+
+
+def _bounded_quarantine_paths(paths, limit):
+    """Consume at most limit+1 quarantine names, then return a stable order."""
+    bounded = []
+    for path in paths:
+        bounded.append(Path(path))
+        if len(bounded) > limit:
+            raise ValidationError("Quarantine object inventory exceeds the object-count bound")
+    return tuple(sorted(bounded, key=lambda path: (path.parent.name, path.name)))
+
+
+def _quarantine_path_fingerprint(paths):
+    xor_digest = bytearray(32)
+    sum_digest = 0
+    for path in paths:
+        digest = hashlib.sha256(str(path).encode("utf-8", "surrogatepass")).digest()
+        for index, value in enumerate(digest):
+            xor_digest[index] ^= value
+        sum_digest = (sum_digest + int.from_bytes(digest, "big")) % (1 << 256)
+    return len(paths), bytes(xor_digest), sum_digest
 
 
 def _loose_path(object_dir, oid, object_format):

@@ -1053,6 +1053,35 @@ class PublicationRewriteTests(unittest.TestCase):
                     self.repo.path, objects, {}, "sha1")
         bounded.assert_not_called()
 
+    def test_ac44_quarantine_inventory_stops_at_overcount_sentinel_before_reads(self):
+        objects = Path(self.temp.name) / "overcount-quarantine"
+        fanout = objects / "aa"
+        fanout.mkdir(parents=True)
+        for value in range(4):
+            (fanout / f"{value:038x}").write_bytes(b"synthetic")
+        with mock.patch.object(publication, "MAX_REWRITE_PROOF_OBJECTS", 3), \
+                mock.patch.object(publication, "_git_bounded_stdout") as bounded, \
+                mock.patch.object(publication, "_bounded_regular_file") as read_file:
+            with self.assertRaisesRegex(ValidationError,
+                                        "Quarantine object inventory exceeds the object-count bound"):
+                publication._quarantine_objects(
+                    self.repo.path, objects, {}, "sha1")
+        bounded.assert_not_called()
+        read_file.assert_not_called()
+
+    def test_ac44_bounded_quarantine_path_consumer_stops_after_sentinel(self):
+        consumed = []
+
+        def oversized_names():
+            while True:
+                consumed.append(len(consumed))
+                yield Path("aa") / f"{len(consumed):038x}"
+
+        with self.assertRaisesRegex(ValidationError,
+                                    "Quarantine object inventory exceeds the object-count bound"):
+            publication._bounded_quarantine_paths(oversized_names(), 3)
+        self.assertEqual(4, len(consumed))
+
     def test_ac44_quarantine_content_uses_bounded_git_retrieval(self):
         objects = Path(self.temp.name) / "bounded-quarantine"
         path = objects / "aa" / ("0" * 38)
