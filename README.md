@@ -27,7 +27,7 @@ Read the [specification](.agentic/SPECIFICATION.md), then one guide:
 - [Operate the scheduled PR adapter](.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md).
 - [Run independent Codex reviews](.agentic/docs/28-EXTERNAL-REVIEW.md).
 
-Native defaults: three streams within ceiling six, one independent reviewer each; actual host capacity binds. [Operating configuration](.agentic/docs/29-OPERATING-CONFIGURATION.md) supports chat changes within governance. After CONFIGURED, show routes and offer keep, recommend from Epics, or custom. Recommendations require acceptance; caps require a PR. Running work retains reserved routes/hashes.
+Native defaults: three worker streams and one shared independent critic within ceiling six (five default slots including the controller); actual host capacity binds. [Operating configuration](.agentic/docs/29-OPERATING-CONFIGURATION.md) supports chat changes within governance. After CONFIGURED, show routes and offer keep, recommend from Epics, or custom. Recommendations require acceptance; caps require a PR. Running work retains reserved routes/hashes.
 
 The offline evaluator never grants execution authority. The reference adapter supports Codex/GitHub.com/Jira; Windows scheduling is optional. Other providers and live qualification are not implied.
 

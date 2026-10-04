@@ -4,21 +4,21 @@ Version 1.9.3. [SPECIFICATION](../SPECIFICATION.md) defines authority. The route
 
 ## Policy and escalation
 
-Configure `execution.model_routing`; `defaults` prints its complete schema-compatible settings.
+Configure `execution.model_routing`; `defaults` prints its schema-compatible settings. New projects use one shared critic; upgrades preserve existing reviewer allocation.
 
 | Role/condition | Model | Effort |
 | --- | --- | --- |
-| Controller | `gpt-5.6-sol` | medium |
-| Worker | `gpt-5.6-terra` | medium |
-| Simple worker | `gpt-5.6-luna` | low |
-| Independent critic | `gpt-5.6-sol` | high |
-| Specialist; high complexity, uncertainty or risk | `gpt-5.6-sol` | high |
+| Controller | `gpt-6-astra` | high |
+| Workers A/B/C | `gpt-6-luna` | medium |
+| Simple worker | `gpt-6-luna` | low |
+| Shared independent critic/adversarial handler | `gpt-6-astra` | high |
+| Specialist; high complexity, uncertainty or risk | `gpt-6-astra` | high |
 
 Simple means low complexity/risk/uncertainty, strong verification and no risk flags; Jira priority is insufficient. Preserve ticket/phase identities. Requests include observed `stream`; an `epic_id` also requires host-observed `epic_risk_flags`, explicitly empty when none. Never infer risk context.
 
 Precedence: role default, simple/risk rules, stream override, matching Epic-scoped override, agent override, ticket override; mandatory risk/review floors apply afterward. Root [operating configuration](29-OPERATING-CONFIGURATION.md) supplies stream/role choices without changing governance. Only the unchanged unpinned worker default permits qualifying simple work; custom stream/Epic routes override it. `pinned:true` blocks optional escalation, never floors. Allowlists intersect `role_allowed_models` with `execution.roles.*.approved_model_ids`. The host must support the route; otherwise return `unavailable`, without fallback. Review contexts must differ from workers; initially unknown contexts are checked at settlement.
 
-Escalation occurs between runs, from durable reasoning/implementation/validation failure history. Both model rank and effort remain nondecreasing, including after reclassification. Each approved model must support the configured effort ceiling. If monotonicity conflicts with that ceiling or a pin, block. Defaults allow two escalations per ticket and three reasoning failures per phase. Within accepted limits, escalation needs no repeated user prompt.
+Escalation occurs between runs, from durable reasoning/implementation/validation failure history. Both model rank and effort remain nondecreasing, including after reclassification. Each approved model must support the configured effort ceiling. If monotonicity conflicts with that ceiling or a pin, block. Defaults allow two escalations per ticket and three reasoning failures per phase. Worker escalation advances `gpt-6-luna` → `gpt-6-sol` / high → `gpt-6-astra` / high. Legacy model IDs and all budget caps remain unchanged. No repeated prompt is needed within accepted limits.
 
 Credentials, infrastructure, rate limits, cancellation and unknown outcomes require investigation. `resolve-failure` records verified recovery before a same-model retry; it preserves budgets, floors and pins.
 
@@ -30,11 +30,11 @@ A model/effort listed by policy or a host is a claim until a current observation
 
 ### Token-only hosts
 
-When every effective monetary ceiling is `null`, a host without verified dollar accounting may reserve and settle with `reservation_cost_microusd: null` and `actual_cost_microusd: null`; token and run ceilings remain mandatory. If any effective monetary ceiling is an integer, the existing hard cost reservation and actual-cost requirements still apply. New adoptions default to 2,000,000 tokens and 12 runs per ticket, plus 30,000,000 tokens and 250 runs per project day; upgrades preserve reviewed project configuration until an owner opts in through a governance PR.
+Token-only hosts may use null cost reservations and settlements only when every effective monetary ceiling is null; token/run ceilings still apply. Any integer cost cap requires known reservation and actual cost. New adoptions default to 2M tokens/12 runs per ticket and 30M tokens/250 runs per project day; upgrades preserve reviewed configuration until a governance PR.
 
-Outstanding runs block duplicate ticket/role/phase admission and remain charged across midnight. Ticket history survives policy changes. Usage counts on its start and closure UTC days; there are no timeout refunds.
+Outstanding runs block duplicate admission. History survives policy changes; usage counts on start/closure UTC days, with no timeout refunds.
 
-`settle` records actual model/effort/context, usage and results once. Mismatch or overrun quarantines the project and excludes positive evidence. Contexts must match. A reservation retains its model and `operating_hash`, separately from `policy_hash`; settlement never substitutes current settings. Cohorts stay separate and absent historical hashes stay unobserved.
+`settle` records actual model/effort/context, usage and results once. Mismatch or overrun quarantines the project and excludes positive evidence. Contexts must match. Settlements retain reserved model and operating hash; they never substitute current settings or combine policy cohorts.
 
 ### Settlement outcome shapes
 

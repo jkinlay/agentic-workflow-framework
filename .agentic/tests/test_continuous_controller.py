@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from agentic.continuous_controller import (
     ContinuousControllerStore,
@@ -16,7 +17,8 @@ from agentic.continuous_controller import (
     production_merge_observed,
     production_post_merge_progress,
 )
-from agentic.contracts import Contracts
+from agentic import continuous_controller
+from agentic.contracts import Contracts, schema_inventory
 from agentic import ValidationError
 from agentic.canonical import fingerprint, sha256
 from agentic.cli import local_semantics
@@ -92,6 +94,22 @@ def ticket(name, priority, disposition="ELIGIBLE", paths=None, **overrides):
 
 
 class ContinuousControllerTests(unittest.TestCase):
+    def test_git_child_environment_uses_provider_key_scrubbing_helper(self):
+        completed = subprocess.CompletedProcess(args=['git'], returncode=0, stdout=b'ok')
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'must-not-reach-child'}), \
+                patch.object(continuous_controller.subprocess, 'run', return_value=completed) as run:
+            self.assertEqual(continuous_controller._git(ROOT, 'status'), b'ok')
+        child_environment = run.call_args.kwargs['env']
+        self.assertNotIn('OPENAI_API_KEY', child_environment)
+        self.assertEqual(child_environment['GIT_TERMINAL_PROMPT'], '0')
+
+    def test_schema_inventory_matches_loaded_generated_catalog(self):
+        schema_dir = ROOT / '.agentic/schemas'
+        contracts = Contracts(schema_dir)
+        inventory = schema_inventory(schema_dir)
+        self.assertEqual(inventory, set(contracts.schemas))
+        self.assertIn('operating-config', inventory)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="awf-controller-")
         self.addCleanup(self.temporary.cleanup)

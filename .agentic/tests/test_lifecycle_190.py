@@ -263,27 +263,46 @@ class BootstrapPreflightTests(unittest.TestCase):
 
 class PreflightTests(unittest.TestCase):
     def route_config(self, model="gpt-5.6-sol", effort="high", age=30):
-        return {"execution": {"roles": {}, "model_routing": {"risk_route": {"model": model, "reasoning_effort": effort}},
+        return {"execution": {"roles": {
+                                  "controller": {"model": "gpt-6-astra", "reasoning_effort": "high"},
+                                  "worker": {"model": "gpt-6-luna", "reasoning_effort": "medium"},
+                                  "critic": {"model": "gpt-6-astra", "reasoning_effort": "high"}},
+                              "model_routing": {"risk_route": {"model": model, "reasoning_effort": effort}},
                               "route_capabilities": {"observation_path": ".agentic/route-capabilities.json", "max_age_days": age}}}
 
     def test_route_models_observed_passes_reference_defaults_and_warns_missing_refused_stale(self):
-        observed = load(ROOT / ".agentic/examples/routing-capabilities.json")
-        passed = route_models_observed(ROOT, config=self.route_config(), capabilities=observed,
-                                       now="2026-09-24T12:00:00Z")
+        observed = copy.deepcopy(load(ROOT / ".agentic/examples/routing-capabilities.json"))
+        observed["models"]["gpt-6-luna"] = {"status": "observed", "reasoning_efforts": ["low", "medium"],
+                                               "host_id": "synthetic-host", "host_software": "Codex",
+                                               "host_software_version": "test", "method": "successful_probe",
+                                               "observed_at": "2026-09-24T00:00:00Z"}
+        observed["models"]["gpt-6-astra"] = {"status": "observed", "reasoning_efforts": ["high"],
+                                                "host_id": "synthetic-host", "host_software": "Codex",
+                                                "host_software_version": "test", "method": "successful_probe",
+                                                "observed_at": "2026-09-24T00:00:00Z"}
+        with tempfile.TemporaryDirectory() as temporary:
+            passed = route_models_observed(temporary, config=self.route_config(), capabilities=observed,
+                                           now="2026-09-24T12:00:00Z")
         self.assertEqual("PASS", passed["status"])
 
-        missing = route_models_observed(ROOT, config=self.route_config("gpt-missing"), capabilities=observed,
-                                        now="2026-09-24T12:00:00Z")
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = route_models_observed(temporary, config=self.route_config("gpt-missing"), capabilities=observed,
+                                            now="2026-09-24T12:00:00Z")
         self.assertEqual("WARN", missing["status"])
         self.assertIn("missing", missing["detail"])
 
-        refused = route_models_observed(ROOT, config=self.route_config("gpt-6-astra"), capabilities=observed,
-                                        now="2026-09-24T12:00:00Z")
+        refused_observation = copy.deepcopy(observed)
+        refused_observation["models"]["gpt-6-astra"].update(status="refused", reasoning_efforts=[],
+                                                             method="recorded_refusal")
+        with tempfile.TemporaryDirectory() as temporary:
+            refused = route_models_observed(temporary, config=self.route_config("gpt-6-astra"),
+                                            capabilities=refused_observation, now="2026-09-24T12:00:00Z")
         self.assertEqual("WARN", refused["status"])
         self.assertIn("refused", refused["detail"])
 
-        stale = route_models_observed(ROOT, config=self.route_config(), capabilities=observed,
-                                      now="2026-11-01T00:00:00Z")
+        with tempfile.TemporaryDirectory() as temporary:
+            stale = route_models_observed(temporary, config=self.route_config(), capabilities=observed,
+                                          now="2026-11-01T00:00:00Z")
         self.assertEqual("WARN", stale["status"])
         self.assertIn("stale", stale["detail"])
         self.assertTrue(all(field in observed["models"]["gpt-5.6-sol"] for field in

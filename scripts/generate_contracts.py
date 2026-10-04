@@ -458,7 +458,7 @@ def catalog():
     # A retained explicit legacy count remains binding and must agree; chat
     # operating changes never rewrite this protected governance field.
     schemas["project-config"]["properties"]["execution"]["properties"]["independent_reviewers"] = obj({
-        "count": integer(0), "allocation": const("one_per_stream")}, required=["allocation"])
+        "count": integer(0), "allocation": enum("one_per_stream", "shared_critic")}, required=["allocation"])
     # Optional for upgraded configurations; absence means the documented
     # 15-minute controller status cadence.
     schemas["project-config"]["properties"]["controller"]["required"].remove("status_cadence_seconds")

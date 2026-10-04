@@ -86,18 +86,18 @@ def operating_capacity_proposal(config, *, existing, requested=False, dry_run=Fa
     ceiling = execution.get("max_parallel_tickets") if isinstance(execution, dict) else None
     reviewers = execution.get("independent_reviewers", {}) if isinstance(execution, dict) else None
     if (type(ceiling) is not int or ceiling < 1 or not isinstance(reviewers, dict)
-            or (reviewers and reviewers.get("allocation") != "one_per_stream")
+            or (reviewers and reviewers.get("allocation") not in {"one_per_stream", "shared_critic"})
             or ("count" in reviewers and (type(reviewers["count"]) is not int or reviewers["count"] < 1))):
         report.update(status="UNAVAILABLE", next_action="Resolve $.execution.max_parallel_tickets and $.execution.independent_reviewers before proposing a capacity migration.")
         if requested:
             raise ValidationError(report["next_action"])
         return proposed, report
     target = max(6, ceiling)
-    count = reviewers.get("count", "derived: one per operating stream")
+    count = reviewers.get("count", "one shared critic" if reviewers.get("allocation") == "shared_critic" else "derived: one per operating stream")
     report["values"] = [
         {"path": "$.execution.max_parallel_tickets", "current": ceiling, "proposed": target},
         {"path": "$.execution.independent_reviewers.count", "current": count,
-         "proposed": "derived: one per operating stream"}]
+         "proposed": count if reviewers.get("allocation") == "shared_critic" else "derived: one per operating stream"}]
     if target != ceiling:
         report["changes"].append({**report["values"][0], "action": "replace"})
     if "count" in reviewers:

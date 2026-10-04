@@ -19,7 +19,7 @@ from agentic.canonical import validate_value
 ROLES = ("controller", "worker", "critic", "specialist")
 RUN_ROLES = ("controller", "worker", "fix", "critic", "specialist")
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
-MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra")
+MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
 RISK_FLAGS = ("security", "permissions", "schema_or_migration", "data_loss",
               "concurrency", "production", "public_api", "architecture")
 REASONING_FAILURES = ("reasoning", "implementation", "validation")
@@ -52,16 +52,16 @@ def default_policy():
         "schema_version": 1,
         "profile": "balanced",
         "model_order": list(MODELS),
-        "models": {m: {"reasoning_efforts": list(EFFORTS if m != MODELS[0] else EFFORTS[:-1])}
+        "models": {m: {"reasoning_efforts": list(EFFORTS if m not in ("gpt-5.6-luna", "gpt-6-luna") else EFFORTS[:-1])}
                    for m in MODELS},
-        "role_defaults": {"controller": _pair(MODELS[2], "medium"),
-                          "worker": _pair(MODELS[1], "medium"),
-                          "critic": _pair(MODELS[2], "high"),
-                          "specialist": _pair(MODELS[2], "high")},
+        "role_defaults": {"controller": _pair(MODELS[5], "high"),
+                          "worker": _pair(MODELS[3], "medium"),
+                          "critic": _pair(MODELS[5], "high"),
+                          "specialist": _pair(MODELS[5], "high")},
         "role_allowed_models": {role: list(MODELS) for role in ROLES},
-        "simple_worker": _pair(MODELS[0], "low"),
-        "review_floor": _pair(MODELS[2], "high"),
-        "risk_route": _pair(MODELS[2], "high"),
+        "simple_worker": _pair(MODELS[3], "low"),
+        "review_floor": _pair(MODELS[5], "high"),
+        "risk_route": _pair(MODELS[5], "high"),
         "high_risk_flags": list(RISK_FLAGS),
         "agent_overrides": {},
         "ticket_overrides": {},
@@ -269,6 +269,13 @@ def _at_least(policy, pair, floor):
             and EFFORTS.index(pair["reasoning_effort"]) >= EFFORTS.index(floor["reasoning_effort"]))
 
 
+def _critic_route(default_route, stream_route):
+    """Apply an explicit stream reviewer pin over the shared critic default."""
+    if stream_route is not None and stream_route.get("pinned", False):
+        return stream_route
+    return default_route or stream_route
+
+
 def _request(request):
     _object(request, "request")
     for field in ("ticket_id", "agent_id", "phase", "task_class"):
@@ -357,7 +364,9 @@ def _select_route(policy, request, capabilities, operating_config):
         pinned = simple_route.get("pinned", False)
     if operating_config and role in ("worker", "fix", "critic"):
         _require("stream" in request, "Operating worker/reviewer routing requires an observed stream A–F")
-        stream_route = operating_config["streams"].get(request["stream"], {}).get("reviewer" if role == "critic" else "worker")
+        stream_config = operating_config["streams"].get(request["stream"], {})
+        stream_route = (_critic_route(operating_config.get("critic"), stream_config.get("reviewer"))
+                        if role == "critic" else stream_config.get("worker"))
         _require(stream_route is not None, "Requested stream has no retained operating route; reconcile stream ownership")
         # An ordinary unpinned stream route is the normal-work default. Keeping
         # the simple option effective avoids overriding Luna with default Terra.
@@ -372,7 +381,9 @@ def _select_route(policy, request, capabilities, operating_config):
     # An explicit Epic identity selects only that Epic's recorded route. The
     # global route stays intact for unrelated work and future Epics.
     epic_routes = operating_config.get("epic_overrides", {}).get(request.get("epic_id"), {}) if operating_config else {}
-    epic_route = (epic_routes.get("streams", {}).get(request.get("stream"), {}).get("reviewer" if role == "critic" else "worker")
+    epic_stream = epic_routes.get("streams", {}).get(request.get("stream"), {})
+    epic_route = (_critic_route(epic_routes.get("critic"), epic_stream.get("reviewer"))
+                  if role == "critic" else epic_stream.get("worker")
                   if role in ("worker", "fix", "critic") else epic_routes.get(role))
     if epic_route is not None:
         selected = {k: epic_route[k] for k in ("model", "reasoning_effort")}

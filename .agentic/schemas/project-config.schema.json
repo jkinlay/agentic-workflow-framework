@@ -892,7 +892,10 @@
               "maximum": 9007199254740991
             },
             "allocation": {
-              "const": "one_per_stream"
+              "enum": [
+                "one_per_stream",
+                "shared_critic"
+              ]
             }
           }
         }
