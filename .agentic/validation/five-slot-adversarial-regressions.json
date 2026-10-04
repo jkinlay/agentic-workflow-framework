@@ -280,6 +280,15 @@
       "regression_id": "C33-IC-F01-REGRESSION",
       "source_finding_id": "C33-IC-F01",
       "test_id": "HeavyValidationTests.test_interrupted_broker_replacement_preserves_quarantine_lease_and_fence"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_heavy_validation.py",
+      "name": "Failed first quarantine commit retains pending lease capacity across controller restart",
+      "permanent": true,
+      "regression_id": "C33-IC-F02-REGRESSION",
+      "source_finding_id": "C33-IC-F02",
+      "test_id": "HeavyValidationTests.test_C33_IC_F02_failed_first_quarantine_commit_retains_pending_lease_after_restart"
     }
   ]
 }

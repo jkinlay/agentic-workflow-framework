@@ -1534,6 +1534,51 @@ class HeavyValidationTests(unittest.TestCase):
                     lease["lease_id"], lease["fencing_token"])["status"])
                 self.assertEqual("DENIED", restarted.acquire(request)["status"])
 
+    def test_C33_IC_F02_failed_first_quarantine_commit_retains_pending_lease_after_restart(self):
+        now = {"value": datetime.fromisoformat(NOW.replace("Z", "+00:00"))}
+        clock = lambda: now["value"]
+        limits = {"max_workers": 1, "max_heavy_jobs": 1, "max_gpu_jobs": 0,
+                  "resources": {}, "engines": {"python": {
+                      "identity_sha256": "d" * 64, "slots": 1}}}
+        request = {"format": "awf-heavy-validation-lease-request-2",
+                   "candidate": CANDIDATE, "plan_sha256": "a" * 64,
+                   "config_sha256": "b" * 64, "capacity_sha256": "c" * 64,
+                   "parallelism": 1, "resource_class": "heavy", "engine": "python",
+                   "engine_identity_sha256": "d" * 64, "engine_slots": 1,
+                   "required_resources": [], "resource_claims": {},
+                   "determinism": {"seed": 1, "retry_limit": 0},
+                   "isolation": {"process_tree": "REQUIRED", "network": "HOST_POLICY",
+                                 "filesystem": "WORKTREE"},
+                   "required_duration_seconds": 10}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "broker.json"
+            broker = FileLeaseBroker(path, "fixture", limits, clock=clock)
+            lease = broker.acquire(request)
+            persisted = json.loads(path.read_bytes())
+            self.assertEqual("PENDING", persisted["leases"][0]["quarantine"]["outcome"])
+            # Simulate the first failure-path quarantine write failing before its
+            # atomic replacement, followed by controller death before any retry.
+            with mock.patch.object(heavy_controller.os, "replace",
+                                   side_effect=OSError("injected first quarantine commit failure")):
+                with self.assertRaisesRegex(OSError, "injected first quarantine commit failure"):
+                    broker.quarantine(lease["lease_id"], lease["fencing_token"],
+                                      {"outcome": "FAILED", "mechanism": "cleanup_unknown"})
+            self.assertEqual("PENDING", json.loads(path.read_bytes())[
+                "leases"][0]["quarantine"]["outcome"])
+            now["value"] += timedelta(days=2)
+            restarted = FileLeaseBroker(path, "fixture", limits, clock=clock)
+            self.assertEqual("DENIED", restarted.acquire(request)["status"])
+            evidence = {"format": "awf-heavy-validation-termination-evidence-1",
+                        "lease_id": lease["lease_id"],
+                        "fencing_token": lease["fencing_token"], "status": "TERMINATED",
+                        "source": "operator_recovery_record", "observed_at": NOW,
+                        "proof_sha256": "9" * 64}
+            evidence["evidence_sha256"] = fingerprint(
+                "heavy-validation-termination-evidence", evidence)
+            self.assertEqual("RELEASED", restarted.release_quarantined(
+                lease["lease_id"], lease["fencing_token"], evidence)["status"])
+            self.assertEqual("GRANTED", restarted.acquire(request)["status"])
+
     def test_workload_authorization_binds_every_dispatch_input(self):
         raw = plan([partition("bound")], parallelism=1)
         reviewed = json.loads(review(raw))

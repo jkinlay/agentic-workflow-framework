@@ -561,7 +561,7 @@ class FileLeaseBroker:
                      "Durable broker quarantine record is invalid")
             if quarantine is not None:
                 _require(set(quarantine) == {"outcome", "mechanism", "recorded_at"}
-                         and quarantine["outcome"] in {"PARTIAL", "FAILED"}
+                         and quarantine["outcome"] in {"PENDING", "PARTIAL", "FAILED"}
                          and isinstance(quarantine["mechanism"], str)
                          and 1 <= len(quarantine["mechanism"].encode("utf-8")) <= 128,
                          "Durable broker quarantine evidence is invalid")
@@ -786,7 +786,12 @@ class FileLeaseBroker:
                     "engine": request["engine"],
                     "engine_identity_sha256": request["engine_identity_sha256"],
                     "engine_slots": request["engine_slots"],
-                    "request_sha256": request_sha, "quarantine": None}
+                    # Persist ownership before returning the grant to the caller. A
+                    # controller crash at any point after this commit must retain
+                    # capacity until clean finalization or exact recovery evidence.
+                    "request_sha256": request_sha,
+                    "quarantine": {"outcome": "PENDING", "mechanism": "launch_pending",
+                                   "recorded_at": acquired}}
             state["leases"].append(item)
             return {"status": "GRANTED", "lease_id": lease_id,
                     "fencing_token": fence, "broker_id": self.broker_id,
@@ -802,7 +807,8 @@ class FileLeaseBroker:
             if len(matches) != 1:
                 return {"status": "STALE", "lease_id": lease_id,
                         "fencing_token": fencing_token}
-            if matches[0]["quarantine"] is not None:
+            if (matches[0]["quarantine"] is not None
+                    and matches[0]["quarantine"]["outcome"] != "PENDING"):
                 return {"status": "QUARANTINED", "lease_id": lease_id,
                         "fencing_token": fencing_token}
             state["leases"].remove(matches[0])
@@ -826,7 +832,7 @@ class FileLeaseBroker:
                 return {"status": "STALE", "lease_id": lease_id,
                         "fencing_token": fencing_token}
             item = matches[0]
-            if item["quarantine"] is not None:
+            if item["quarantine"] is not None and item["quarantine"]["outcome"] != "PENDING":
                 if (item["quarantine"]["outcome"] != cleanup["outcome"]
                         or item["quarantine"]["mechanism"] != cleanup["mechanism"]):
                     return {"status": "STALE", "lease_id": lease_id,
