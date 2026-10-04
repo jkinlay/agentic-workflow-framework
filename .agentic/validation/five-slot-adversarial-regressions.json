@@ -190,6 +190,33 @@
       "regression_id": "C39-F02-REGRESSION",
       "source_finding_id": "C39-F02",
       "test_id": "OperatingRoutingTests.test_pinned_global_and_epic_stream_reviewers_override_critic_defaults"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_continuous_controller.py",
+      "name": "Production Git children use the shared provider-key-scrubbing environment helper",
+      "permanent": true,
+      "regression_id": "CV39-F01-REGRESSION",
+      "source_finding_id": "CV39-F01",
+      "test_id": "ContinuousControllerTests.test_git_child_environment_uses_provider_key_scrubbing_helper"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_review_loop.py",
+      "name": "Local amendment keeps Git execution real and intercepts the exact provider GET without network",
+      "permanent": true,
+      "regression_id": "CV39-F02-REGRESSION",
+      "source_finding_id": "CV39-F02",
+      "test_id": "HostTests.test_real_local_git_amendment_commits_and_pushes_one_child"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_continuous_controller.py",
+      "name": "Self-test schema completeness follows the generated on-disk inventory without a stale count",
+      "permanent": true,
+      "regression_id": "CV39-F03-REGRESSION",
+      "source_finding_id": "CV39-F03",
+      "test_id": "ContinuousControllerTests.test_schema_inventory_matches_loaded_generated_catalog"
     }
   ]
 }

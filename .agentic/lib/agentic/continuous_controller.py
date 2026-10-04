@@ -17,6 +17,7 @@ import uuid
 
 from . import ValidationError
 from .canonical import canonical, loads, now_text, timestamp
+from .child_process import child_env
 from .controller_state import configure_database, protected_state_path, restrict_state_permissions
 
 
@@ -140,7 +141,7 @@ def _git(root, *args):
             ["git", "--no-replace-objects", "-c", "core.fsmonitor=false",
              "-c", "core.hooksPath=" + os.devnull, "-c", "core.quotePath=false",
              "-c", "protocol.file.allow=never", "-C", str(root), *args],
-            capture_output=True, timeout=30, check=False, env=environment)
+            capture_output=True, timeout=30, check=False, env=child_env(environment))
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValidationError(f"Git path inventory failed: {type(exc).__name__}") from exc
     _require(result.returncode == 0, "Git path inventory could not be observed")

@@ -279,6 +279,12 @@ class HostTests(unittest.TestCase):
         driver.git=local_git  # Explicit local transport seam; production forbids it.
         candidate={**CANDIDATE,'head':head,'base':base}
         driver.snapshot=lambda: {**candidate,'head':command('--git-dir',str(remote),'rev-parse','refs/heads/codex/test')}
+        def local_provider_api(suffix):
+            # Intercept the exact provider read used by amend(); never run the
+            # fixture's Python executable as gh or contact GitHub.
+            self.assertEqual(suffix, 'pulls/7')
+            return {'number': 7, 'body': 'Synthetic local amendment fixture'}
+        driver.api=local_provider_api
         def agent(role,current,findings,run_id,files=None):
             (worker/'src/a.py').write_text('value = 3\n')
             return {'candidate':current,'outcome':'CHANGED','summary':'Synthetic file edit; no model called'}
