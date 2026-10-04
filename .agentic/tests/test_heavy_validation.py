@@ -1463,6 +1463,77 @@ class HeavyValidationTests(unittest.TestCase):
             self.assertEqual("RELEASED", released["status"])
             self.assertEqual("GRANTED", restarted.acquire(request)["status"])
 
+    def test_existing_empty_broker_state_fails_closed_and_initialization_is_durable(self):
+        limits = {"max_workers": 1, "max_heavy_jobs": 1, "max_gpu_jobs": 0,
+                  "resources": {}, "engines": {"python": {
+                      "identity_sha256": "d" * 64, "slots": 1}}}
+        clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "broker.json"
+            broker = FileLeaseBroker(path, "fixture", limits, clock=clock)
+            for index, damaged in enumerate((b"", b" \r\n\t")):
+                path.write_bytes(damaged)
+                with self.subTest(index=index), self.assertRaises(ValidationError):
+                    broker._transaction(lambda state: None)
+                self.assertEqual(damaged, path.read_bytes())
+                path.unlink()
+            broker._transaction(lambda state: None)
+            marker = path.with_name(path.name + ".initialized")
+            self.assertTrue(marker.is_file())
+            path.unlink()
+            with self.assertRaisesRegex(ValidationError, "missing after initialization"):
+                broker._transaction(lambda state: None)
+
+    def test_interrupted_broker_replacement_preserves_quarantine_lease_and_fence(self):
+        limits = {"max_workers": 1, "max_heavy_jobs": 1, "max_gpu_jobs": 0,
+                  "resources": {}, "engines": {"python": {
+                      "identity_sha256": "d" * 64, "slots": 1}}}
+        clock = lambda: datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+        request = {"format": "awf-heavy-validation-lease-request-2",
+                   "candidate": CANDIDATE, "plan_sha256": "a" * 64,
+                   "config_sha256": "b" * 64, "capacity_sha256": "c" * 64,
+                   "parallelism": 1, "resource_class": "heavy", "engine": "python",
+                   "engine_identity_sha256": "d" * 64, "engine_slots": 1,
+                   "required_resources": [], "resource_claims": {},
+                   "determinism": {"seed": 1, "retry_limit": 0},
+                   "isolation": {"process_tree": "REQUIRED", "network": "HOST_POLICY",
+                                 "filesystem": "WORKTREE"},
+                   "required_duration_seconds": 10}
+        for interruption in ("before_replace", "torn_staging_write"):
+            with tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / "broker.json"
+                broker = FileLeaseBroker(path, "fixture", limits, clock=clock)
+                lease = broker.acquire(request)
+                self.assertEqual("GRANTED", lease["status"])
+                broker.quarantine(lease["lease_id"], lease["fencing_token"],
+                                  {"outcome": "PARTIAL",
+                                   "mechanism": "direct_process_only"})
+                before = path.read_bytes()
+                with self.subTest(interruption=interruption):
+                    if interruption == "before_replace":
+                        with mock.patch.object(heavy_controller.os, "replace",
+                                               side_effect=OSError("simulated interruption")):
+                            with self.assertRaisesRegex(OSError, "simulated interruption"):
+                                broker.release(lease["lease_id"], lease["fencing_token"])
+                    else:
+                        def tear_staged_file(descriptor):
+                            os.ftruncate(descriptor, 1)
+                            raise OSError("simulated torn staging write")
+                        with mock.patch.object(heavy_controller.os, "fsync",
+                                               side_effect=tear_staged_file):
+                            with self.assertRaisesRegex(OSError, "torn staging write"):
+                                broker.release(lease["lease_id"], lease["fencing_token"])
+                self.assertEqual(before, path.read_bytes())
+                persisted = json.loads(path.read_bytes())
+                self.assertEqual(2, persisted["next_fence"])
+                self.assertEqual(1, persisted["leases"][0]["fencing_token"])
+                self.assertEqual("PARTIAL",
+                                 persisted["leases"][0]["quarantine"]["outcome"])
+                restarted = FileLeaseBroker(path, "fixture", limits, clock=clock)
+                self.assertEqual("QUARANTINED", restarted.release(
+                    lease["lease_id"], lease["fencing_token"])["status"])
+                self.assertEqual("DENIED", restarted.acquire(request)["status"])
+
     def test_workload_authorization_binds_every_dispatch_input(self):
         raw = plan([partition("bound")], parallelism=1)
         reviewed = json.loads(review(raw))

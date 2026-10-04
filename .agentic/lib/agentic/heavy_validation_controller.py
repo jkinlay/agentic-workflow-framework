@@ -12,6 +12,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -43,6 +44,17 @@ def _require(condition, message):
 def _positive(value, label):
     _require(type(value) is int and value > 0, f"{label} must be a positive integer")
     return value
+
+
+def _regular_file_exists(path: Path, label: str) -> bool:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise ValidationError(f"{label} could not be inspected") from exc
+    _require(stat.S_ISREG(mode), f"{label} must be a regular file")
+    return True
 
 
 def _nonnegative(value, label):
@@ -488,6 +500,8 @@ class FileLeaseBroker:
         self.path = parent / Path(state_path).name
         _require(not self.path.is_symlink(),
                  "Broker state cannot be a symlink")
+        self.lock_path = self.path.with_name(self.path.name + ".lock")
+        self.marker_path = self.path.with_name(self.path.name + ".initialized")
         _require(isinstance(broker_id, str) and broker_id, "Broker identity is required")
         self.broker_id = broker_id
         self.limits = deepcopy(limits)
@@ -597,21 +611,40 @@ class FileLeaseBroker:
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
     def _transaction(self, operation):
-        descriptor = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        _regular_file_exists(self.lock_path, "Broker lock")
+        descriptor = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         with os.fdopen(descriptor, "r+b", buffering=0) as stream:
             if os.fstat(stream.fileno()).st_size == 0:
-                stream.write(b"\n")
+                stream.write(b"\0")
                 stream.flush()
+                os.fsync(stream.fileno())
             self._lock(stream)
             try:
-                stream.seek(0)
-                raw = stream.read().strip()
-                try:
-                    state = (json.loads(raw.decode("utf-8")) if raw else
-                             {"format": "awf-heavy-validation-broker-state-3",
-                              "broker_id": self.broker_id, "next_fence": 1, "leases": []})
-                except (UnicodeError, json.JSONDecodeError) as exc:
-                    raise ValidationError("Durable broker state is invalid") from exc
+                state_exists = _regular_file_exists(self.path, "Broker state")
+                marker_exists = _regular_file_exists(
+                    self.marker_path, "Broker initialization marker")
+                _require(state_exists or not marker_exists,
+                         "Durable broker state is missing after initialization")
+                if state_exists:
+                    try:
+                        raw = self.path.read_bytes()
+                        _require(bool(raw), "Durable broker state is empty")
+                        state = json.loads(raw.decode("utf-8"))
+                    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                        raise ValidationError("Durable broker state is invalid") from exc
+                else:
+                    state = {"format": "awf-heavy-validation-broker-state-3",
+                             "broker_id": self.broker_id, "next_fence": 1, "leases": []}
+                marker = canonical({
+                    "format": "awf-heavy-validation-broker-initialized-1",
+                    "broker_id": self.broker_id})
+                if marker_exists:
+                    try:
+                        _require(self.marker_path.read_bytes() == marker,
+                                 "Durable broker initialization marker is invalid")
+                    except OSError as exc:
+                        raise ValidationError(
+                            "Durable broker initialization marker is invalid") from exc
                 if (isinstance(state, dict)
                         and state.get("format") == "awf-heavy-validation-broker-state-2"
                         and state.get("broker_id") == self.broker_id
@@ -624,12 +657,26 @@ class FileLeaseBroker:
                 result = operation(state)
                 self._validate_state(state)
                 encoded = canonical(state)
-                stream.seek(0)
-                stream.truncate()
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-                _fsync_directory(self.path.parent)
+                if not marker_exists:
+                    _write_durable_exclusive(self.marker_path, marker,
+                                             "broker initialization marker")
+                descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=f".{self.path.name}.", suffix=".tmp",
+                    dir=self.path.parent)
+                temporary = Path(temporary_name)
+                try:
+                    with os.fdopen(descriptor, "wb") as staged:
+                        staged.write(encoded)
+                        staged.flush()
+                        os.fsync(staged.fileno())
+                    _regular_file_exists(self.path, "Broker state")
+                    os.replace(temporary, self.path)
+                    _fsync_directory(self.path.parent)
+                finally:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
                 return result
             finally:
                 self._unlock(stream)
