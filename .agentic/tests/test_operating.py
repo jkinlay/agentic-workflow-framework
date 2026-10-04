@@ -15,7 +15,7 @@ from agentic import ValidationError
 from agentic import operating as op
 from agentic.canonical import canonical, load, sha256
 from agentic.contracts import Contracts
-from agentic.model_routing import default_policy
+from agentic.model_routing import default_policy, policy_from_config, select_route
 
 
 def governance():
@@ -316,6 +316,31 @@ class RecommendationTests(unittest.TestCase):
             self.assertTrue(rows[path]["recommended"]["pinned"])
             self.assertIn("Keeps your pin unless you say otherwise", rows[path]["reason"])
         self.assertIn("epic_overrides.FIX-1.streams.A.worker", op.render_recommendation(record))
+
+    def test_legacy_pinned_reviewers_survive_recommendation_and_router_selection(self):
+        current = self.snapshot.config
+        current.pop("critic")
+        pinned = {**op._pair("gpt-6-astra", "high"), "pinned": True}
+        for label in "ABC":
+            current["streams"][label]["reviewer"] = deepcopy(pinned)
+        self.snapshot = op.validate_operating(current, self.gov)
+        record = self.recommend([epic(i, [f"component{i}/"]) for i in range(1, 4)])
+        rows = {row["path"]: row for row in record["rows"]}
+        for label in "ABC":
+            path = f"streams.{label}.reviewer"
+            self.assertEqual(rows[path]["current"], pinned)
+            self.assertEqual(rows[path]["recommended"], pinned)
+            self.assertNotIn("critic", {row["path"] for row in record["rows"]})
+        route = select_route(policy_from_config(self.gov), {
+            "ticket_id": "FIX-1", "role": "critic", "agent_id": "reviewer-A",
+            "context_id": "critic-context", "worker_context_id": "worker-context",
+            "phase": "review", "task_class": "independent-review", "complexity": "medium",
+            "risk": "low", "uncertainty": "low", "verification": "strong", "risk_flags": [],
+            "stream": "A", "reservation_tokens": 1000, "reservation_cost_microusd": None},
+            {"models": {model: info["reasoning_efforts"] for model, info in default_policy()["models"].items()}},
+            operating=self.snapshot, governance=self.gov)
+        self.assertEqual((route["model"], route["reasoning_effort"]), ("gpt-6-astra", "high"))
+        self.assertTrue(route["pinned"])
 
     def test_scoped_pin_rows_fit_schema_beyond_the_original_global_only_limit(self):
         current = self.snapshot.config

@@ -893,8 +893,9 @@ def recommend_operating(epics_raw, snapshot, governance, *, inventory_raw=None, 
                 why = ("High-risk flags " + ", ".join(high) if high else "Specialist triggers " + ", ".join(specialists)
                        if specialists else "Entire scope is simple with strong verification; retain the default worker ceiling"
                        if simple else "Default route for the declared bounded scope")
+                reviewer_path = "critic" if "critic" in current else "streams." + label + ".reviewer"
                 choices.extend((("streams." + label + ".worker", worker, why),
-                                ("critic", reviewer, "High-risk review" if high else "Governing review floor")))
+                                (reviewer_path, reviewer, "High-risk review" if high else "Governing review floor")))
                 if simple:
                     choices.append(("simple_worker.enabled", True, "Entire assigned scope is simple, low uncertainty and strongly verified"))
             controller = _governing_route("controller", policy)

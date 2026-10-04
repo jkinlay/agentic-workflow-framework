@@ -333,6 +333,9 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     enabled = policy["native_streams"]["enabled"]
     can_spawn = coordinator_spawn_depth < policy["max_spawn_depth"]
     shared_critic = policy["independent_reviewers"]["allocation"] == "shared_critic"
+    # The shared-critic topology reserves the coordinator/controller and one
+    # independent critic alongside worker agents in the observed host total.
+    shared_reserved_slots = 2 if shared_critic else 0
     retained_count = len(retained)
     coordinator_retained = any(owner["agent_id"] == coordinator_agent_id for owner in retained) if coordinator_agent_id is not None else (False if not retained else None)
     direct_available = not shared_critic and (not retained or coordinator_retained is False)
@@ -342,12 +345,18 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     from .operating import operating_ceiling
     configured = operating_ceiling({"execution": policy})
     physical_ceiling = configured["effective_ceiling"] if enabled else 0
-    physical_limit = min(physical_ceiling, host_writer_capacity) if host_writer_capacity is not None else physical_ceiling
+    host_worker_capacity = (max(0, host_writer_capacity - shared_reserved_slots)
+                            if host_writer_capacity is not None else None)
+    physical_limit = min(physical_ceiling, host_worker_capacity) if host_worker_capacity is not None else physical_ceiling
     ceiling = min(physical_ceiling, depth_limit, max(operating_count, retained_count))
     observed = host_writer_capacity is not None
-    effective = min(ceiling, host_writer_capacity) if observed else (0 if not enabled else None)
+    effective = min(ceiling, host_worker_capacity) if observed else (0 if not enabled else None)
     planning_limit = ceiling if effective is None else effective
-    over_capacity = retained_count > physical_limit
+    # Existing owners are never evicted because new controller/reviewer
+    # reservations consume headroom; only compare retained workers with the
+    # physical host/project total for preservation diagnostics.
+    retained_physical_limit = min(physical_ceiling, host_writer_capacity) if host_writer_capacity is not None else physical_ceiling
+    over_capacity = retained_count > retained_physical_limit
     available = max(0, min(planning_limit, operating_count) - retained_count)
     draining_labels = [stream["label"] for stream in streams if LABELS.index(stream["label"]) >= operating_count]
     limits = {"planner_structure": PLANNER_WRITER_LIMIT, "project_configuration": policy["max_parallel_tickets"],
@@ -357,7 +366,7 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     if not can_spawn:
         limits["spawn_depth"] = depth_limit
     if observed:
-        limits["observed_host_capacity"] = host_writer_capacity
+        limits["observed_host_capacity"] = host_worker_capacity
     if not enabled:
         limits["native_streams_disabled"] = 0
     limiting_sources = sorted(source for source, limit in limits.items() if limit == planning_limit)
@@ -383,8 +392,9 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
             reasons.append("The coordinator is already a retained stream owner, so its direct writer slot cannot be assigned to another stream.")
     if not observed:
         reasons.append("Native host total writer capacity has not been observed; selected packets are readiness candidates until the coordinator checks available host tools and slots.")
-    elif host_writer_capacity < ceiling:
-        reasons.append(f"The observed host total of {host_writer_capacity} writer slots lowers the project ceiling of {ceiling}; the total includes the coordinator, not just free child slots.")
+    elif host_worker_capacity < ceiling:
+        reserve_text = (" after reserving one controller and one shared critic slot" if shared_critic else "")
+        reasons.append(f"The observed host total of {host_writer_capacity} slots leaves {host_worker_capacity} worker slots{reserve_text}; the total includes the coordinator and reviewers.")
     if retained:
         reasons.append(f"{retained_count} retained active/paused stream owner(s) consume capacity before any new assignment; none may be replaced or counted as free.")
     if over_capacity:
@@ -457,7 +467,9 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
                 "coordinator_agent_id": coordinator_agent_id, "coordinator_is_retained_writer": coordinator_retained,
                 "direct_coordinator_available": direct_available,
                 "spawn_depth_writer_limit": depth_limit, "project_planning_ceiling": ceiling,
-                "host_writer_capacity": host_writer_capacity, "host_capacity_observed": observed,
+                "host_writer_capacity": host_writer_capacity, "host_worker_capacity": host_worker_capacity,
+                "host_reserved_non_worker_slots": shared_reserved_slots,
+                "host_capacity_observed": observed,
                 "host_capacity_source": "caller_reported_native_host_total_including_coordinator" if observed else "not_observed",
                 "effective_writer_capacity": effective, "planning_writer_capacity": planning_limit,
                 "retained_writer_count": retained_count, "retained_writers": retained,
@@ -711,7 +723,9 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
             ticket = tickets[first]
             packets.append({"stream": label, "ticket_id": first, "epic_id": ticket["epic_id"],
                             "action": "continue_existing_agent" if owners else "assign_native_writer",
-                            "placement_options": ["existing_owner"] if owners else ["coordinator_if_free", "available_native_agent"],
+                            "placement_options": (["existing_owner"] if owners else
+                                                  ["available_native_agent"] if policy["independent_reviewers"]["allocation"] == "shared_critic" else
+                                                  ["coordinator_if_free", "available_native_agent"]),
                             "existing_agent_id": next(iter(owners))[0] if owners else None,
                             "scope": ticket["scope"], "write_paths": ticket["write_paths"],
                             "dependency_evidence": deepcopy(ticket["dependencies"]),

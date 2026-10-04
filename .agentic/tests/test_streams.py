@@ -312,7 +312,7 @@ class NativeCapacityTests(unittest.TestCase):
         self.value = loads(FIXTURE.read_text(encoding="utf-8"))
         self.execution = deepcopy(DEFAULT_NATIVE_EXECUTION)
 
-    def plan(self, host=3, *, live_shaped=False, execution=None, depth=0, provenance=None, coordinator=None):
+    def plan(self, host=5, *, live_shaped=False, execution=None, depth=0, provenance=None, coordinator=None):
         value = deepcopy(self.value)
         if live_shaped:
             value["inventory"]["source"] = "jira_snapshot"
@@ -331,9 +331,23 @@ class NativeCapacityTests(unittest.TestCase):
         self.assertEqual(plan["capacity"]["observed_active_writer_count"], 0)
         self.assertFalse(plan["capacity"]["host_admission_confirmed"])
         self.assertTrue(all(p["action"] == "assign_native_writer" for p in plan["dispatch_packets"]))
-        self.assertTrue(all("coordinator_if_free" in p["placement_options"] for p in plan["dispatch_packets"]))
+        self.assertTrue(all(p["placement_options"] == ["available_native_agent"] for p in plan["dispatch_packets"]))
         paths = [set(p["write_paths"]) for p in plan["dispatch_packets"]]
         self.assertTrue(all(not left & right for index, left in enumerate(paths) for right in paths[index + 1:]))
+
+    def test_shared_critic_host_three_and_five_reserve_controller_and_critic_slots(self):
+        three = self.plan(host=3)
+        self.assertEqual(len(three["dispatch_packets"]), 1)
+        self.assertEqual(len(three["deferred_dispatch_packets"]), 2)
+        self.assertEqual(three["capacity"]["host_worker_capacity"], 1)
+        self.assertEqual(three["capacity"]["host_reserved_non_worker_slots"], 2)
+        self.assertEqual(three["review_plan"]["planned_or_retained_host_slots"], 2)
+        self.assertEqual(three["review_plan"]["concurrent_reviewer_planning_ceiling"], 1)
+        five = self.plan(host=5)
+        self.assertEqual(len(five["dispatch_packets"]), 3)
+        self.assertEqual(five["capacity"]["host_worker_capacity"], 3)
+        self.assertEqual(five["review_plan"]["planned_or_retained_host_slots"], 4)
+        self.assertEqual(five["review_plan"]["concurrent_reviewer_planning_ceiling"], 1)
 
     def test_above_three_project_capacity_discloses_operating_and_structural_limits(self):
         self.execution["max_parallel_tickets"] = 5
@@ -343,7 +357,7 @@ class NativeCapacityTests(unittest.TestCase):
         self.assertEqual(capacity["project_writer_limit"], 5)
         self.assertEqual(capacity["planner_writer_limit"], 6)
         self.assertEqual(capacity["effective_writer_capacity"], 3)
-        self.assertEqual(capacity["limiting_sources"], ["operating_count"])
+        self.assertEqual(capacity["limiting_sources"], ["observed_host_capacity", "operating_count"])
         self.assertEqual(len(plan["dispatch_packets"]), 3)
         self.assertEqual(self.execution, before)
         self.assertEqual(capacity["operating_state"], "UNOBSERVED_LEGACY")
@@ -376,14 +390,14 @@ class NativeCapacityTests(unittest.TestCase):
 
     def test_four_shared_host_slots_do_not_claim_six_concurrent_agents(self):
         review = self.plan(host=4)["review_plan"]
-        self.assertEqual(review["planned_or_retained_writer_slots"], 3)
-        self.assertEqual(review["concurrent_reviewer_planning_ceiling"], 0)
-        self.assertEqual(review["additional_shared_host_slot_ceiling"], 0)
+        self.assertEqual(review["planned_or_retained_writer_slots"], 2)
+        self.assertEqual(review["concurrent_reviewer_planning_ceiling"], 1)
+        self.assertEqual(review["additional_shared_host_slot_ceiling"], 1)
         self.assertEqual(review["separate_coordinator_slots"], 1)
         self.assertEqual(review["coordinator_slot_basis"], "separate_or_unconfirmed")
         self.assertEqual(review["configured_count"], 1)
         self.assertIsNone(review["observed_active_reviewer_count"])
-        self.assertEqual(self.plan(host=3)["review_plan"]["concurrent_reviewer_planning_ceiling"], 0)
+        self.assertEqual(self.plan(host=3)["review_plan"]["concurrent_reviewer_planning_ceiling"], 1)
 
     def test_lower_reviewer_pool_keeps_unassigned_streams_waiting_without_waiving_review(self):
         self.execution["independent_reviewers"] = {"allocation": "one_per_stream"}
@@ -461,7 +475,7 @@ class NativeCapacityTests(unittest.TestCase):
         for project, host, depth, sources in [(2, 5, 0, ["operating_count", "project_configuration"]),
                                               (5, 1, 0, ["observed_host_capacity"]),
                                               (5, 5, 1, ["spawn_depth"]),
-                                              (2, 2, 0, ["observed_host_capacity", "operating_count", "project_configuration"])]:
+                                              (2, 2, 0, ["observed_host_capacity"])]:
             with self.subTest(project=project, host=host, depth=depth):
                 self.execution["max_parallel_tickets"] = project
                 plan = self.plan(host=host, depth=depth)
@@ -487,9 +501,9 @@ class NativeCapacityTests(unittest.TestCase):
 
     def test_host_total_one_does_not_mean_one_free_child_plus_parent(self):
         plan = self.plan(host=1)
-        self.assertEqual(len(plan["dispatch_packets"]), 1)
-        self.assertEqual(len(plan["deferred_dispatch_packets"]), 2)
-        self.assertEqual(plan["capacity"]["effective_writer_capacity"], 1)
+        self.assertEqual(len(plan["dispatch_packets"]), 0)
+        self.assertEqual(len(plan["deferred_dispatch_packets"]), 3)
+        self.assertEqual(plan["capacity"]["effective_writer_capacity"], 0)
         self.assertIn("including_coordinator", plan["capacity"]["host_capacity_source"])
 
     def test_no_observed_host_capacity_retains_readiness_without_claiming_live_admission(self):
@@ -502,20 +516,20 @@ class NativeCapacityTests(unittest.TestCase):
         self.assertFalse(plan["next_step"]["authorization"]["required"])
 
     def test_synthetic_packets_stay_non_authoritative_after_capacity_is_supplied(self):
-        plan = self.plan(host=3)
+        plan = self.plan(host=5)
         self.assertTrue(all(not p["live_dispatch_eligible"] and not p["execution_authority"] for p in plan["dispatch_packets"]))
         self.assertTrue(all(not p["host_admission_confirmed"] for p in plan["dispatch_packets"]))
         self.assertFalse(plan["execution_authority"])
 
     def test_known_capacity_makes_live_shaped_packets_eligible_but_never_confirms_running_agents(self):
-        plan = self.plan(host=3, live_shaped=True)
+        plan = self.plan(host=5, live_shaped=True)
         self.assertTrue(all(p["live_dispatch_eligible"] for p in plan["dispatch_packets"]))
         self.assertTrue(all(not p["host_admission_confirmed"] and not p["execution_authority"] for p in plan["dispatch_packets"]))
         self.assertEqual(plan["capacity"]["observed_active_writer_count"], 0)
 
     def test_active_owner_consumes_capacity_before_a_new_writer(self):
         self.value["tickets"][2].update(status="in_progress", ownership=owner("C", "existing-C"), history=[history()])
-        plan = self.plan(host=2)
+        plan = self.plan(host=4)
         self.assertEqual(plan["capacity"]["retained_writer_count"], 1)
         self.assertEqual(plan["capacity"]["observed_active_writer_count"], 1)
         self.assertEqual(plan["capacity"]["selected_new_writer_count"], 1)
@@ -525,7 +539,7 @@ class NativeCapacityTests(unittest.TestCase):
 
     def test_paused_owner_is_not_a_free_slot_or_a_replacement_candidate(self):
         self.value["tickets"][0].update(status="in_progress", ownership=owner(state="paused"), history=[history()])
-        plan = self.plan(host=2)
+        plan = self.plan(host=4)
         self.assertEqual(plan["capacity"]["observed_paused_writer_count"], 1)
         self.assertEqual(len(plan["dispatch_packets"]), 1)
         self.assertEqual(plan["capacity"]["selected_new_writer_count"], 1)
@@ -556,7 +570,7 @@ class NativeCapacityTests(unittest.TestCase):
 
     def test_explicitly_disabled_native_streams_queue_without_inventing_an_activation_token(self):
         self.execution["native_streams"]["enabled"] = False
-        plan = self.plan(host=3)
+        plan = self.plan(host=5)
         self.assertEqual(plan["dispatch_packets"], [])
         self.assertEqual(len(plan["deferred_dispatch_packets"]), 3)
         self.assertEqual(plan["capacity"]["effective_writer_capacity"], 0)
@@ -658,29 +672,29 @@ class NativeCapacityTests(unittest.TestCase):
     def test_false_reference_and_broker_switches_are_not_native_gates(self):
         self.execution.update(dispatch_enabled=False, auto_dispatch=False, auto_request_critic=False,
                               auto_resume_amendments=False, broker={"enabled": False, "max_workers": 1})
-        plan = self.plan(host=3)
+        plan = self.plan(host=5)
         self.assertEqual(len(plan["dispatch_packets"]), 3)
         self.assertEqual(plan["capacity"]["effective_writer_capacity"], 3)
 
     def test_enabled_broker_ceiling_is_shared_but_observed_slots_are_separate(self):
         self.execution["host_broker"] = {"enabled": False, "max_workers": 1, "max_gpu_jobs": 0}
-        disabled = self.plan(host=4)
+        disabled = self.plan(host=5)
         self.assertEqual(6, disabled["capacity"]["effective_ceiling"])
         self.assertEqual(3, len(disabled["dispatch_packets"]))
         self.execution["host_broker"] = {"enabled": True, "max_workers": 2}
-        enabled = self.plan(host=1)
+        enabled = self.plan(host=3)
         self.assertEqual(2, enabled["capacity"]["effective_ceiling"])
         self.assertEqual('$.execution.host_broker.max_workers', enabled["capacity"]["effective_ceiling_governance_path"])
         self.assertEqual(1, enabled["capacity"]["effective_writer_capacity"])
-        self.assertEqual(1, enabled["capacity"]["host_writer_capacity"])
+        self.assertEqual(3, enabled["capacity"]["host_writer_capacity"])
         self.assertNotEqual(disabled["capacity"]["execution_policy_fingerprint"], enabled["capacity"]["execution_policy_fingerprint"])
         previous_hash = enabled["capacity"]["execution_policy_fingerprint"]
         self.execution["host_broker"]["max_workers"] = 3
-        self.assertNotEqual(previous_hash, self.plan(host=1)["capacity"]["execution_policy_fingerprint"])
+        self.assertNotEqual(previous_hash, self.plan(host=3)["capacity"]["execution_policy_fingerprint"])
 
     def test_disabled_broker_values_are_not_native_limits_and_invalid_enabled_shape_refuses(self):
         self.execution["host_broker"] = {"enabled": False, "max_workers": "unused", "max_heavy_jobs": -1}
-        self.assertEqual(3, len(self.plan(host=3)["dispatch_packets"]))
+        self.assertEqual(3, len(self.plan(host=5)["dispatch_packets"]))
         for broker in (None, {"enabled": 1}, {"enabled": True, "max_workers": False}):
             self.execution["host_broker"] = broker
             with self.subTest(broker=broker), self.assertRaises(ValidationError):
@@ -864,7 +878,7 @@ class PlannerCliTests(unittest.TestCase):
             output = io.StringIO()
             with patch.object(self.cli, "verify_installed", return_value="a" * 64), patch("sys.stdout", output):
                 code = self.cli.main(["--input", str(FIXTURE), "--expected-input-sha256", sha256(FIXTURE.read_bytes()),
-                    "--project-root", str(project), "--config", str(config_path), "--host-writer-capacity", "3",
+                    "--project-root", str(project), "--config", str(config_path), "--host-writer-capacity", "4",
                     "--allow-synthetic", "--now", NOW])
             report = json.loads(output.getvalue())
             self.assertEqual(code, 0)
@@ -889,7 +903,7 @@ class PlannerCliTests(unittest.TestCase):
                 output = io.StringIO()
                 with patch.object(self.cli, "verify_installed", return_value="a" * 64), patch("sys.stdout", output):
                     code = self.cli.main(["--input", str(FIXTURE), "--expected-input-sha256", sha256(FIXTURE.read_bytes()),
-                        "--project-root", str(project), "--host-writer-capacity", "3", "--allow-synthetic", "--now", NOW])
+                        "--project-root", str(project), "--host-writer-capacity", "4", "--allow-synthetic", "--now", NOW])
                 report = json.loads(output.getvalue())
                 self.assertEqual(code, 0)
                 self.assertEqual(len(report["dispatch_packets"]), expected)
