@@ -424,19 +424,27 @@ class NativeCapacityTests(unittest.TestCase):
                 self.assertEqual(review["concurrent_reviewer_planning_ceiling"], 0)
                 self.assertEqual(review["additional_shared_host_slot_ceiling"], 0)
 
-    def test_coordinator_retained_as_writer_is_counted_once_for_reviewer_headroom(self):
+    def test_C39_IC_F01_shared_critic_pauses_controller_identity_worker_continuation(self):
+        # Permanent accepted independent-critic finding ID: C39-IC-F01.
         for index, label in [(0, "A"), (2, "B"), (3, "C")]:
             self.value["tickets"][index].update(status="in_progress", ownership=owner(label, "writer-" + label), history=[history()])
-        plan = self.plan(host=4, coordinator="writer-A")
+        plan = self.plan(host=4, live_shaped=True, coordinator="writer-A")
         review = plan["review_plan"]
         self.assertEqual(review["separate_coordinator_slots"], 0)
         self.assertEqual(review["coordinator_slot_basis"], "retained_writer")
         self.assertEqual(review["planned_or_retained_host_slots"], 3)
         self.assertEqual(review["concurrent_reviewer_planning_ceiling"], 1)
-        self.assertEqual(plan["capacity"]["host_reserved_non_worker_slots"], 1)
-        self.assertEqual(plan["capacity"]["host_worker_capacity"], 3)
+        self.assertEqual(plan["capacity"]["host_reserved_non_worker_slots"], 2)
+        self.assertEqual(plan["capacity"]["host_worker_capacity"], 2)
         self.assertFalse(plan["capacity"]["ownership_over_capacity"])
-        self.assertEqual(len(plan["dispatch_packets"]), 3)
+        packets = {packet["stream"]: packet for packet in plan["deferred_dispatch_packets"]}
+        self.assertEqual(packets["A"]["existing_agent_id"], "writer-A")
+        self.assertFalse(packets["A"]["live_dispatch_eligible"])
+        self.assertEqual(packets["A"]["selection_reason"], "CONTROLLER_WORKER_IDENTITY_COLLISION")
+        self.assertEqual(packets["A"]["dispatch_state"], "PAUSED")
+        self.assertIn("distinct controller", packets["A"]["dispatch_pause_reason"])
+        self.assertEqual({packet["stream"] for packet in plan["dispatch_packets"]}, {"B", "C"})
+        self.assertTrue(all(packet["live_dispatch_eligible"] for packet in plan["dispatch_packets"]))
 
     def test_explicit_direct_coordinator_packet_is_counted_once_for_shared_headroom(self):
         self.execution["independent_reviewers"] = {"allocation": "one_per_stream"}
@@ -661,17 +669,20 @@ class NativeCapacityTests(unittest.TestCase):
         plan = self.plan(depth=1, coordinator="existing-A")
         self.assertEqual(plan["capacity"]["effective_writer_capacity"], 3)
         self.assertFalse(plan["capacity"]["ownership_over_capacity"])
-        self.assertEqual(len(plan["dispatch_packets"]), 3)
+        self.assertEqual(len(plan["dispatch_packets"]), 2)
         self.assertTrue(all(p["action"] == "continue_existing_agent" for p in plan["dispatch_packets"]))
+        collision = plan["deferred_dispatch_packets"][0]
+        self.assertEqual(collision["selection_reason"], "CONTROLLER_WORKER_IDENTITY_COLLISION")
+        self.assertFalse(collision["live_dispatch_eligible"])
         self.assertEqual(plan["capacity"]["selected_new_writer_count"], 0)
 
     def test_exhausted_depth_counts_an_existing_coordinator_only_once(self):
         self.value["tickets"][0].update(status="in_progress", ownership=owner("A", "coordinator"), history=[history()])
         plan = self.plan(depth=1, coordinator="coordinator")
         self.assertEqual(plan["capacity"]["selected_new_writer_count"], 0)
-        self.assertEqual(len(plan["dispatch_packets"]), 1)
+        self.assertEqual(len(plan["dispatch_packets"]), 0)
+        self.assertEqual(len(plan["deferred_dispatch_packets"]), 3)
         self.assertTrue(plan["capacity"]["coordinator_is_retained_writer"])
-        self.assertEqual(len(plan["deferred_dispatch_packets"]), 2)
 
     def test_exhausted_depth_allows_one_proven_free_coordinator_beside_an_existing_writer(self):
         self.execution["independent_reviewers"] = {"allocation": "one_per_stream"}

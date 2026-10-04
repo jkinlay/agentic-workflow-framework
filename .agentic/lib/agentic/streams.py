@@ -335,9 +335,11 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     shared_critic = policy["independent_reviewers"]["allocation"] == "shared_critic"
     retained_count = len(retained)
     coordinator_retained = any(owner["agent_id"] == coordinator_agent_id for owner in retained) if coordinator_agent_id is not None else (False if not retained else None)
-    # A retained coordinator is already included in retained_count; otherwise
-    # reserve its slot plus the shared critic from the observed host total.
-    shared_reserved_slots = (1 + int(coordinator_retained is not True)) if shared_critic else 0
+    coordinator_worker_count = int(coordinator_retained is True) if shared_critic else 0
+    retained_worker_count = retained_count - coordinator_worker_count
+    # Shared-critic dispatch requires distinct controller and critic slots,
+    # even when the current controller identity collides with a retained owner.
+    shared_reserved_slots = 2 if shared_critic else 0
     direct_available = not shared_critic and (not retained or coordinator_retained is False)
     # Depth is a limit on NEW child delegation. Already running/paused owners
     # keep their places; they are never invalidated merely by calling at depth1.
@@ -348,7 +350,7 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     host_worker_capacity = (max(0, host_writer_capacity - shared_reserved_slots)
                             if host_writer_capacity is not None else None)
     physical_limit = min(physical_ceiling, host_worker_capacity) if host_worker_capacity is not None else physical_ceiling
-    ceiling = min(physical_ceiling, depth_limit, max(operating_count, retained_count))
+    ceiling = min(physical_ceiling, depth_limit, max(operating_count, retained_worker_count))
     observed = host_writer_capacity is not None
     effective = min(ceiling, host_worker_capacity) if observed else (0 if not enabled else None)
     planning_limit = ceiling if effective is None else effective
@@ -356,8 +358,8 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     # when controller/reviewer reservations leave insufficient worker capacity.
     # The effective physical limit already subtracts those reserved host slots.
     retained_physical_limit = physical_limit
-    over_capacity = retained_count > retained_physical_limit
-    available = max(0, min(planning_limit, operating_count) - retained_count)
+    over_capacity = retained_worker_count > retained_physical_limit
+    available = max(0, min(planning_limit, operating_count) - (retained_worker_count if can_spawn else retained_count))
     draining_labels = [stream["label"] for stream in streams if LABELS.index(stream["label"]) >= operating_count]
     limits = {"planner_structure": PLANNER_WRITER_LIMIT, "project_configuration": policy["max_parallel_tickets"],
               "operating_count": max(operating_count, retained_count)}
@@ -409,6 +411,8 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
         reason = None
         if not enabled:
             reason = "NATIVE_STREAMS_DISABLED"
+        elif shared_critic and existing and packet["existing_agent_id"] == coordinator_agent_id:
+            reason = "CONTROLLER_WORKER_IDENTITY_COLLISION"
         elif existing and used_retained >= retained_dispatch_limit:
             reason = "RETAINED_OWNERSHIP_EXCEEDS_CAPACITY"
         elif not existing and over_capacity:
@@ -418,7 +422,9 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
         elif not existing and used_new >= available:
             reason = "SPAWN_DEPTH_OR_COORDINATOR_OWNERSHIP_LIMIT" if not can_spawn and planning_limit < physical_limit else "NO_FREE_WRITER_CAPACITY"
         if reason is not None:
-            pause_reason = (f"Retained writer ownership ({retained_count}) exceeds currently available worker capacity ({physical_limit}); preserve the existing reservation and do not dispatch its continuation."
+            pause_reason = ("The retained owner identity matches the controller; preserve its ownership and route, pause this worker continuation, and reconcile role identities before dispatching with a distinct controller."
+                            if reason == "CONTROLLER_WORKER_IDENTITY_COLLISION" else
+                            f"Retained worker ownership ({retained_worker_count}) exceeds currently available worker capacity ({physical_limit}); preserve the existing reservation and do not dispatch its continuation."
                             if reason == "RETAINED_OWNERSHIP_EXCEEDS_CAPACITY" else
                             f"Dispatch is deferred because {reason}; retain ticket and ownership evidence without starting or replacing a writer.")
             packet.update(selection_state="DEFERRED", selection_reason=reason, live_dispatch_eligible=False,
@@ -510,7 +516,7 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
                 "observed_paused_writer_count": sum(owner["state"] == "paused" for owner in retained),
                 "ownership_over_capacity": over_capacity, "selected_new_writer_count": used_new,
                 "selected_ready_packet_count": len(selected), "deferred_ready_packet_count": len(deferred),
-                "effective_free_new_writer_slots": None if effective is None else max(0, effective - retained_count),
+                "effective_free_new_writer_slots": None if effective is None else max(0, effective - retained_worker_count),
                 "reasons": reasons, "execution_policy": deepcopy(policy), "execution_policy_fingerprint": policy_hash,
                 "execution_provenance": deepcopy(execution_provenance), "capacity_binding": binding,
                 "capacity_fingerprint": capacity_hash, "host_admission_confirmed": False,
