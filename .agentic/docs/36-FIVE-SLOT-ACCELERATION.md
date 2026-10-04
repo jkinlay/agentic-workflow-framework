@@ -9,7 +9,13 @@ they do not weaken the independent-review requirements.
 Capacity is negotiated before dispatch. Fewer than five observed slots is a
 reported degraded mode and needs explicit authorization evidence; the host must
 authenticate that authority. The reference validator only checks the evidence
-shape and never grants authority. It never silently reduces the default.
+shape and never grants authority. It never silently reduces the default. Every
+role reports `RUNNING`, `PAUSED` or `BLOCKED`. Running roles cannot exceed the
+observed slots; every non-running role carries a reason, resume trigger and
+evidence digest. Degraded evidence names every paused role. A four-slot host
+therefore names the paused role, and a one-slot host cannot claim concurrent
+workers. `other_streams_continue` is derived from workers that are actually
+running rather than asserted by the plan.
 
 ## Acceleration order
 
@@ -17,7 +23,14 @@ shape and never grants authority. It never silently reduces the default.
    provider PR-body digest.
 2. Run the permanently named `pre-controller-adversarial-regression-gate` over
    the complete ordered inventory in
-   `validation/five-slot-adversarial-regressions.json`.
+   `validation/five-slot-adversarial-regressions.json`. The accumulated
+   `race`, `alias`, `replacement-object`, `provider-identity` and
+   `receipt-replay` categories are all mandatory. Each inventory member names a
+   repository-relative Python artifact and a test that must exist in it.
+   Receipts preserve inventory order and bind the frozen candidate, test ID,
+   evidence path, exact artifact digest and host result digest into one
+   recomputed execution digest. Missing tests and fabricated or replayed
+   receipts fail before the full controller cycle.
 3. Partition heavy tests deterministically into at most three resource-bounded
    shards. Every shard has an exact test list and result digest; the candidate,
    assignments and receipts produce one aggregate digest.
@@ -34,11 +47,14 @@ tuple. A semantically equivalent provider rewrite is a mismatch.
 
 ## Streams, Jira and findings
 
-Each worker has exactly one dependency-ordered active deliverable. Its remaining
-work is explicitly `Open` or `On Hold`; unresolved work is never disguised as an
-active item. A stream blocker carries evidence and does not stop unblocked
-streams. Only the controller performs Jira lifecycle writes and merge-count
-reporting; this evidence validator performs neither.
+Each worker has exactly one dependency-ordered current deliverable. Running work
+is `ACTIVE` and Jira `In Progress`. Paused and blocked started work stays
+`In Progress` because those events do not write Jira; PR-ready work is `In
+Review`. Remaining inactive work is `OPEN`/Jira `Open` or `ON_HOLD`/Jira `On
+Hold`. Started work cannot return to `Open`. A stream blocker does not stop an
+unblocked worker when capacity remains. Only the controller performs Jira
+lifecycle writes and merge-count reporting; this evidence validator performs
+neither.
 
 Every critic finding accepted into the implementation must be added to the
 permanent inventory with a stable regression ID, named test and evidence path.

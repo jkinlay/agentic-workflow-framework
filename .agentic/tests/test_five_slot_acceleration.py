@@ -13,6 +13,7 @@ from agentic.canonical import sha256  # noqa: E402
 from agentic.five_slot_acceleration import (  # noqa: E402
     GATE_NAME,
     aggregate_shard_receipts,
+    build_regression_receipt,
     canonicalize_pr_body,
     deterministic_shards,
     encode_plan,
@@ -67,40 +68,43 @@ class FiveSlotAccelerationTests(unittest.TestCase):
             "topology": {
                 "default_slots": 5,
                 "observed_slots": 5,
-                "controller": {"role": "sole-controller", "agent_id": "controller-1"},
+                "controller": {
+                    "role": "sole-controller", "agent_id": "controller-1",
+                    "execution": self._execution("RUNNING"),
+                },
                 "adversarial_handler": {
                     "role": "adversarial-case-handler",
                     "agent_id": "adversarial-1",
                     "dedicated": True,
                     "gate_name": GATE_NAME,
+                    "execution": self._execution("RUNNING"),
                 },
                 "workers": [
                     {
                         "stream": "A",
                         "agent_id": "worker-a",
+                        "execution": self._execution("BLOCKED"),
                         "active": {"deliverable_id": "EXAMPLE-1001", "dependency_order": 1,
-                                   "jira_status": "Open"},
+                                   "work_state": "BLOCKED", "jira_status": "In Progress"},
                         "inactive": [{"deliverable_id": "EXAMPLE-1002", "dependency_order": 2,
-                                      "jira_status": "On Hold"}],
-                        "blocker": {"reason": "waiting-for-reviewed-dependency",
-                                    "evidence_sha256": "a" * 64},
+                                      "work_state": "ON_HOLD", "jira_status": "On Hold"}],
                     },
                     {
                         "stream": "B",
                         "agent_id": "worker-b",
+                        "execution": self._execution("RUNNING"),
                         "active": {"deliverable_id": "EXAMPLE-2001", "dependency_order": 1,
-                                   "jira_status": "Open"},
+                                   "work_state": "ACTIVE", "jira_status": "In Progress"},
                         "inactive": [{"deliverable_id": "EXAMPLE-2002", "dependency_order": 2,
-                                      "jira_status": "Open"}],
-                        "blocker": None,
+                                      "work_state": "OPEN", "jira_status": "Open"}],
                     },
                     {
                         "stream": "C",
                         "agent_id": "worker-c",
+                        "execution": self._execution("RUNNING"),
                         "active": {"deliverable_id": "EXAMPLE-3001", "dependency_order": 1,
-                                   "jira_status": "Open"},
+                                   "work_state": "ACTIVE", "jira_status": "In Progress"},
                         "inactive": [],
-                        "blocker": None,
                     },
                 ],
                 "integration_steward": {
@@ -117,11 +121,9 @@ class FiveSlotAccelerationTests(unittest.TestCase):
                 "status": "PASS",
                 "candidate": deepcopy(candidate),
                 "inventory_sha256": self.inventory_sha,
-                "regression_receipts": [{
-                    "regression_id": row["regression_id"],
-                    "status": "PASS",
-                    "evidence_sha256": sha256(row["test_id"].encode()),
-                } for row in self.inventory["regressions"]],
+                "regression_receipts": [build_regression_receipt(
+                    candidate, row, sha256(row["test_id"].encode())
+                ) for row in self.inventory["regressions"]],
             },
             "sharded_validation": {
                 "sequence": 3,
@@ -153,6 +155,14 @@ class FiveSlotAccelerationTests(unittest.TestCase):
             "owner_ready": "NO",
         }
 
+    @staticmethod
+    def _execution(status):
+        if status == "RUNNING":
+            return {"status": status, "reason": None, "resume_trigger": None,
+                    "evidence_sha256": None}
+        return {"status": status, "reason": "waiting-for-reviewed-dependency",
+                "resume_trigger": "dependency-is-merged", "evidence_sha256": "a" * 64}
+
     def _validate(self, plan=None, inventory_raw=None):
         raw = encode_plan(plan or self.plan)
         inventory_raw = self.inventory_raw if inventory_raw is None else inventory_raw
@@ -181,11 +191,15 @@ class FiveSlotAccelerationTests(unittest.TestCase):
         plan = deepcopy(self.plan)
         plan["topology"]["observed_slots"] = 4
         self.assertRejected(plan, "explicit degraded-mode authorization")
+        plan["topology"]["workers"][1]["execution"] = self._execution("PAUSED")
+        plan["topology"]["workers"][1]["active"].update(
+            work_state="PAUSED", jira_status="In Progress")
         plan["topology"]["degraded_mode"] = {
             "authorized": True,
             "authorized_by": "release-owner",
             "authorization_evidence_sha256": "f" * 64,
             "reason": "host-capacity-shortfall",
+            "paused_roles": ["worker-b"],
         }
         self.assertEqual("AUTHORIZED_DEGRADED", self._validate(plan)["mode"])
 
@@ -196,6 +210,43 @@ class FiveSlotAccelerationTests(unittest.TestCase):
         plan = deepcopy(self.plan)
         plan["adversarial_gate"]["sequence"] = 4
         self.assertRejected(plan, "immediately after freeze")
+
+    def test_inventory_requires_all_accumulated_categories_and_ordered_receipts(self):
+        inventory = deepcopy(self.inventory)
+        inventory["regressions"] = [row for row in inventory["regressions"]
+                                    if row["category"] != "alias"]
+        inventory_raw = (json.dumps(inventory, sort_keys=True) + "\n").encode()
+        plan = deepcopy(self.plan)
+        plan["adversarial_gate"]["inventory_sha256"] = sha256(inventory_raw)
+        self.assertRejected(plan, "omits mandatory categories.*alias", inventory_raw)
+
+        plan = deepcopy(self.plan)
+        receipts = plan["adversarial_gate"]["regression_receipts"]
+        receipts[0], receipts[1] = receipts[1], receipts[0]
+        self.assertRejected(plan, "ordered permanent inventory")
+
+    def test_inventory_paths_tests_and_execution_receipts_are_exact(self):
+        for field, value, pattern in (
+            ("evidence_path", ".agentic/tests/does-not-exist.py", "path does not exist"),
+            ("test_id", "FiveSlotAccelerationTests.test_does_not_exist", "test ID does not exist"),
+        ):
+            with self.subTest(field=field):
+                inventory = deepcopy(self.inventory)
+                inventory["regressions"][0][field] = value
+                inventory_raw = (json.dumps(inventory, sort_keys=True) + "\n").encode()
+                plan = deepcopy(self.plan)
+                plan["adversarial_gate"]["inventory_sha256"] = sha256(inventory_raw)
+                self.assertRejected(plan, pattern, inventory_raw)
+
+        plan = deepcopy(self.plan)
+        plan["adversarial_gate"]["regression_receipts"][0]["candidate"]["head_sha"] = "7" * 40
+        self.assertRejected(plan, "frozen exact tuple")
+        plan = deepcopy(self.plan)
+        plan["adversarial_gate"]["regression_receipts"][0]["result_sha256"] = "7" * 64
+        self.assertRejected(plan, "fabricated or mismatched")
+        plan = deepcopy(self.plan)
+        plan["adversarial_gate"]["regression_receipts"][0]["artifact_sha256"] = "7" * 64
+        self.assertRejected(plan, "frozen test artifact")
 
     def test_provider_body_canonicalization_and_exact_readback(self):
         receipt = provider_body_receipt("alpha\r\n\r\n", b"alpha\n")
@@ -214,6 +265,7 @@ class FiveSlotAccelerationTests(unittest.TestCase):
         inventory = deepcopy(self.inventory)
         inventory["regressions"].append({
             "regression_id": "CRITIC-17-REGRESSION",
+            "category": "receipt-replay",
             "name": "Accepted critic finding CRITIC-17 remains covered",
             "test_id": "FiveSlotAccelerationTests.test_accepted_finding_requires_permanent_inventory_member",
             "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
@@ -222,10 +274,8 @@ class FiveSlotAccelerationTests(unittest.TestCase):
         })
         inventory_raw = (json.dumps(inventory, sort_keys=True) + "\n").encode()
         plan["adversarial_gate"]["inventory_sha256"] = sha256(inventory_raw)
-        plan["adversarial_gate"]["regression_receipts"].append({
-            "regression_id": "CRITIC-17-REGRESSION", "status": "PASS",
-            "evidence_sha256": "8" * 64,
-        })
+        plan["adversarial_gate"]["regression_receipts"].append(
+            build_regression_receipt(self.candidate, inventory["regressions"][-1], "8" * 64))
         self.assertEqual("PASS", self._validate(plan, inventory_raw)["status"])
 
     def test_shards_are_deterministic_bounded_and_exact(self):
@@ -245,13 +295,66 @@ class FiveSlotAccelerationTests(unittest.TestCase):
         plan["topology"]["workers"][0]["inactive"][0]["dependency_order"] = 1
         self.assertRejected(plan, "follow dependency order")
         plan = deepcopy(self.plan)
-        plan["topology"]["workers"][1]["active"]["jira_status"] = "On Hold"
-        self.assertRejected(plan, "active deliverable.*Open")
+        plan["topology"]["workers"][1]["active"]["jira_status"] = "Open"
+        self.assertRejected(plan, "Jira status is inconsistent")
         plan = deepcopy(self.plan)
         plan["topology"]["workers"][2]["inactive"] = [{
-            "deliverable_id": "EXAMPLE-1001", "dependency_order": 2, "jira_status": "On Hold",
+            "deliverable_id": "EXAMPLE-1001", "dependency_order": 2,
+            "work_state": "ON_HOLD", "jira_status": "On Hold",
         }]
         self.assertRejected(plan, "more than one stream")
+
+    def test_jira_lifecycle_matches_role_execution_and_started_work_never_reopens(self):
+        plan = deepcopy(self.plan)
+        plan["topology"]["workers"][1]["active"]["jira_status"] = "Open"
+        self.assertRejected(plan, "Jira status is inconsistent")
+
+        plan = deepcopy(self.plan)
+        plan["topology"]["workers"][1]["execution"] = self._execution("PAUSED")
+        plan["topology"]["workers"][1]["active"].update(
+            work_state="PR_READY", jira_status="In Review")
+        result = self._validate(plan)
+        self.assertIn("B", result["paused_streams"])
+
+        plan["topology"]["workers"][1]["active"].update(
+            work_state="ACTIVE", jira_status="In Progress")
+        self.assertRejected(plan, "Paused workers must have PAUSED or PR_READY")
+
+    def test_degraded_capacity_names_paused_roles_and_continuation_is_derived(self):
+        plan = deepcopy(self.plan)
+        plan["topology"]["observed_slots"] = 4
+        plan["topology"]["workers"][1]["execution"] = self._execution("PAUSED")
+        plan["topology"]["workers"][1]["active"].update(
+            work_state="PAUSED", jira_status="In Progress")
+        plan["topology"]["degraded_mode"] = {
+            "authorized": True, "authorized_by": "release-owner",
+            "authorization_evidence_sha256": "f" * 64,
+            "reason": "host-capacity-shortfall", "paused_roles": [],
+        }
+        self.assertRejected(plan, "name every explicitly paused role")
+        plan["topology"]["degraded_mode"]["paused_roles"] = ["worker-b"]
+        self.assertTrue(self._validate(plan)["other_streams_continue"])
+
+        one = deepcopy(self.plan)
+        one["topology"]["observed_slots"] = 1
+        one["topology"]["degraded_mode"] = {
+            "authorized": True, "authorized_by": "release-owner",
+            "authorization_evidence_sha256": "f" * 64,
+            "reason": "single-slot-host", "paused_roles": [],
+        }
+        self.assertRejected(one, "exceed.*observed slot capacity")
+
+        for role in [one["topology"]["adversarial_handler"],
+                     *one["topology"]["workers"]]:
+            role["execution"] = self._execution("PAUSED")
+        for worker in one["topology"]["workers"]:
+            worker["active"].update(work_state="PAUSED", jira_status="In Progress")
+        one["topology"]["degraded_mode"]["paused_roles"] = [
+            "adversarial-1", "worker-a", "worker-b", "worker-c",
+        ]
+        result = self._validate(one)
+        self.assertEqual(["controller-1"], result["running_roles"])
+        self.assertFalse(result["other_streams_continue"])
 
     def test_candidate_freeze_and_single_full_suite_are_exact(self):
         plan = deepcopy(self.plan)

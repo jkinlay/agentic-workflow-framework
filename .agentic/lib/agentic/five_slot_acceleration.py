@@ -6,7 +6,9 @@ may begin the single expensive full-suite cycle.
 """
 from __future__ import annotations
 
+import ast
 from copy import deepcopy
+from pathlib import Path
 import re
 from typing import Any
 
@@ -19,6 +21,22 @@ INVENTORY_FORMAT = "awf-adversarial-regression-inventory-1"
 GATE_NAME = "pre-controller-adversarial-regression-gate"
 WORKER_STREAMS = ("A", "B", "C")
 DEFAULT_SLOT_COUNT = 5
+ADVERSARIAL_CATEGORIES = (
+    "race",
+    "alias",
+    "replacement-object",
+    "provider-identity",
+    "receipt-replay",
+)
+ROLE_STATES = {"RUNNING", "PAUSED", "BLOCKED"}
+ACTIVE_LIFECYCLE = {
+    "ACTIVE": "In Progress",
+    "PAUSED": "In Progress",
+    "BLOCKED": "In Progress",
+    "PR_READY": "In Review",
+}
+INACTIVE_LIFECYCLE = {"OPEN": "Open", "ON_HOLD": "On Hold"}
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 SHA = re.compile(r"[0-9a-f]{40,64}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 TEXT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}")
@@ -79,6 +97,23 @@ def _positive(value: Any, label: str, maximum=1_000_000) -> int:
     _require(type(value) is int and 1 <= value <= maximum,
              f"{label} must be an integer from 1 to {maximum}")
     return value
+
+
+def _role_execution(value: Any, label: str) -> dict:
+    execution = _exact(value, {
+        "status", "reason", "resume_trigger", "evidence_sha256",
+    }, label)
+    status = execution["status"]
+    _require(status in ROLE_STATES, f"{label}.status is not a supported role state")
+    if status == "RUNNING":
+        _require(execution["reason"] is None and execution["resume_trigger"] is None
+                 and execution["evidence_sha256"] is None,
+                 f"{label} RUNNING state cannot carry pause or blocker evidence")
+    else:
+        _description(execution["reason"], f"{label}.reason")
+        _description(execution["resume_trigger"], f"{label}.resume_trigger")
+        _digest(execution["evidence_sha256"], f"{label}.evidence_sha256")
+    return deepcopy(execution)
 
 
 def canonicalize_pr_body(value: str | bytes) -> bytes:
@@ -151,16 +186,21 @@ def validate_topology(value: Any) -> tuple[dict, list[dict]]:
     _require(topology["default_slots"] == DEFAULT_SLOT_COUNT,
              "Default topology must declare exactly five slots")
     observed = _positive(topology["observed_slots"], "topology.observed_slots", 64)
-    controller = _exact(topology["controller"], {"role", "agent_id"}, "topology.controller")
+    controller = _exact(topology["controller"], {"role", "agent_id", "execution"},
+                        "topology.controller")
     _require(controller["role"] == "sole-controller", "Topology must contain one sole controller")
     _text(controller["agent_id"], "topology.controller.agent_id")
+    controller_execution = _role_execution(controller["execution"],
+                                            "topology.controller.execution")
     adversarial = _exact(topology["adversarial_handler"],
-                         {"role", "agent_id", "dedicated", "gate_name"},
+                         {"role", "agent_id", "dedicated", "gate_name", "execution"},
                          "topology.adversarial_handler")
     _require(adversarial["role"] == "adversarial-case-handler"
              and adversarial["dedicated"] is True and adversarial["gate_name"] == GATE_NAME,
              "A dedicated named pre-controller adversarial handler is mandatory")
     _text(adversarial["agent_id"], "topology.adversarial_handler.agent_id")
+    adversarial_execution = _role_execution(
+        adversarial["execution"], "topology.adversarial_handler.execution")
     workers = topology["workers"]
     _require(isinstance(workers, list) and len(workers) == 3,
              "Topology must contain exactly three worker streams")
@@ -169,29 +209,32 @@ def validate_topology(value: Any) -> tuple[dict, list[dict]]:
     deliverable_ids = set()
     normalized = []
     for expected_stream, worker in zip(WORKER_STREAMS, workers):
-        worker = _exact(worker, {"stream", "agent_id", "active", "inactive", "blocker"},
+        worker = _exact(worker, {"stream", "agent_id", "execution", "active", "inactive"},
                         f"worker {expected_stream}")
         _require(worker["stream"] == expected_stream,
                  "Worker streams must be ordered exactly A, B, C")
         agent_id = _text(worker["agent_id"], f"worker {expected_stream}.agent_id")
         _require(agent_id not in ids, "Every topology role must have a distinct agent identity")
         ids.add(agent_id)
-        active = _deliverable(worker["active"], f"worker {expected_stream}.active")
-        _require(active["jira_status"] == "Open",
-                 "The one active deliverable in each worker stream must be Open")
-        blocker = worker["blocker"]
-        if blocker is not None:
-            blocker = _exact(blocker, {"reason", "evidence_sha256"},
-                             f"worker {expected_stream}.blocker")
-            _text(blocker["reason"], f"worker {expected_stream}.blocker.reason")
-            _digest(blocker["evidence_sha256"], f"worker {expected_stream}.blocker.evidence_sha256")
+        execution = _role_execution(worker["execution"],
+                                    f"worker {expected_stream}.execution")
+        active = _deliverable(worker["active"], f"worker {expected_stream}.active",
+                              active=True)
+        expected_work_state = {
+            "RUNNING": "ACTIVE", "PAUSED": {"PAUSED", "PR_READY"}, "BLOCKED": "BLOCKED",
+        }[execution["status"]]
+        if isinstance(expected_work_state, set):
+            _require(active["work_state"] in expected_work_state,
+                     "Paused workers must have PAUSED or PR_READY lifecycle state")
+        else:
+            _require(active["work_state"] == expected_work_state,
+                     "Worker execution and active Jira lifecycle state are inconsistent")
         inactive = worker["inactive"]
         _require(isinstance(inactive, list), f"worker {expected_stream}.inactive must be a list")
         previous_order = active["dependency_order"]
         for index, item in enumerate(inactive):
-            item = _deliverable(item, f"worker {expected_stream}.inactive[{index}]")
-            _require(item["jira_status"] in {"Open", "On Hold"},
-                     "Inactive Jira work must remain explicitly Open or On Hold")
+            item = _deliverable(item, f"worker {expected_stream}.inactive[{index}]",
+                                active=False)
             _require(item["dependency_order"] > previous_order,
                      "Inactive deliverables must follow dependency order")
             previous_order = item["dependency_order"]
@@ -199,18 +242,31 @@ def validate_topology(value: Any) -> tuple[dict, list[dict]]:
             _require(item["deliverable_id"] not in deliverable_ids,
                      "A deliverable cannot appear in more than one stream")
             deliverable_ids.add(item["deliverable_id"])
-        normalized.append({**worker, "active": active, "inactive": inactive})
+        normalized.append({**worker, "execution": execution,
+                           "active": active, "inactive": inactive})
     steward = _exact(topology["integration_steward"], {"kind", "consumes_agent_slot"},
                      "topology.integration_steward")
     _require(steward == {"kind": "deterministic-non-model-infrastructure",
                          "consumes_agent_slot": False},
              "Integration/PR stewardship must be deterministic non-model infrastructure")
     degraded = topology["degraded_mode"]
+    role_states = {
+        controller["agent_id"]: controller_execution["status"],
+        adversarial["agent_id"]: adversarial_execution["status"],
+        **{worker["agent_id"]: worker["execution"]["status"] for worker in normalized},
+    }
+    running_roles = sorted(role_id for role_id, status in role_states.items()
+                           if status == "RUNNING")
+    paused_roles = sorted(role_id for role_id, status in role_states.items()
+                          if status == "PAUSED")
+    _require(len(running_roles) <= observed,
+             "Running roles exceed the host's observed slot capacity")
     if observed < DEFAULT_SLOT_COUNT:
         _require(degraded is not None,
                  "Fewer than five slots requires explicit degraded-mode authorization")
         degraded = _exact(degraded, {
             "authorized", "authorized_by", "authorization_evidence_sha256", "reason",
+            "paused_roles",
         }, "topology.degraded_mode")
         _require(degraded["authorized"] is True,
                  "Fewer than five slots requires explicit degraded-mode authorization")
@@ -218,21 +274,69 @@ def validate_topology(value: Any) -> tuple[dict, list[dict]]:
         _digest(degraded["authorization_evidence_sha256"],
                 "topology.degraded_mode.authorization_evidence_sha256")
         _text(degraded["reason"], "topology.degraded_mode.reason")
+        _require(degraded["paused_roles"] == paused_roles and paused_roles,
+                 "Degraded-mode evidence must name every explicitly paused role")
+        if observed == 1:
+            running_workers = [worker for worker in normalized
+                               if worker["execution"]["status"] == "RUNNING"]
+            _require(len(running_workers) <= 1,
+                     "One observed slot cannot claim concurrent worker streams")
     else:
         _require(degraded is None, "Degraded mode must be null when five slots are available")
-    return topology, normalized
+    normalized_topology = deepcopy(topology)
+    normalized_topology["controller"]["execution"] = controller_execution
+    normalized_topology["adversarial_handler"]["execution"] = adversarial_execution
+    normalized_topology["running_roles"] = running_roles
+    normalized_topology["paused_roles"] = paused_roles
+    return normalized_topology, normalized
 
 
-def _deliverable(value: Any, label: str) -> dict:
-    item = _exact(value, {"deliverable_id", "dependency_order", "jira_status"}, label)
+def _deliverable(value: Any, label: str, *, active: bool) -> dict:
+    item = _exact(value, {
+        "deliverable_id", "dependency_order", "work_state", "jira_status",
+    }, label)
     _text(item["deliverable_id"], f"{label}.deliverable_id")
     _positive(item["dependency_order"], f"{label}.dependency_order")
-    _require(item["jira_status"] in {"Open", "On Hold"},
-             f"{label}.jira_status must be Open or On Hold")
+    lifecycle = ACTIVE_LIFECYCLE if active else INACTIVE_LIFECYCLE
+    _require(item["work_state"] in lifecycle,
+             f"{label}.work_state is invalid for {'active' if active else 'inactive'} work")
+    _require(item["jira_status"] == lifecycle[item["work_state"]],
+             f"{label} Jira status is inconsistent with {item['work_state']}")
+    if active:
+        _require(item["jira_status"] != "Open",
+                 "Started active work cannot return to Jira Open")
     return item
 
 
-def validate_inventory(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
+def _inventory_test_artifact(row: dict, repository_root: Path) -> tuple[str, bytes]:
+    root = repository_root.resolve()
+    path = (root / row["evidence_path"]).resolve()
+    _require(path != root and root in path.parents and path.is_file(),
+             f"Inventory evidence path does not exist: {row['evidence_path']}")
+    _require(path.suffix == ".py", "Inventory evidence must be a Python test artifact")
+    raw = path.read_bytes()
+    try:
+        tree = ast.parse(raw, filename=row["evidence_path"])
+    except (SyntaxError, ValueError) as exc:
+        raise ValidationError("Inventory evidence is not a parseable Python test artifact") from exc
+    parts = row["test_id"].replace("::", ".").split(".")
+    parts = [part for part in parts if part and not part.endswith(".py")]
+    found = False
+    if len(parts) == 1:
+        found = any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == parts[0] for node in tree.body)
+    elif len(parts) == 2:
+        found = any(isinstance(node, ast.ClassDef) and node.name == parts[0]
+                    and any(isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and child.name == parts[1] for child in node.body)
+                    for node in tree.body)
+    _require(found,
+             f"Inventory test ID does not exist in evidence path: {row['test_id']}")
+    return sha256(raw), raw
+
+
+def validate_inventory(raw: bytes, expected_sha256: str,
+                       *, repository_root: Path = REPOSITORY_ROOT) -> tuple[dict, str]:
     _digest(expected_sha256, "expected inventory SHA-256")
     _require(sha256(raw) == expected_sha256,
              "Permanent adversarial inventory bytes differ from the expected digest")
@@ -249,14 +353,20 @@ def validate_inventory(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
              "Permanent adversarial inventory must contain named regressions")
     ids = set()
     findings = set()
+    categories = []
+    normalized_rows = []
     for index, row in enumerate(rows):
         row = _exact(row, {
-            "regression_id", "name", "test_id", "evidence_path", "permanent",
-            "source_finding_id",
+            "regression_id", "category", "name", "test_id", "evidence_path",
+            "permanent", "source_finding_id",
         }, f"regression[{index}]")
         regression_id = _text(row["regression_id"], f"regression[{index}].regression_id")
         _require(regression_id not in ids, "Duplicate permanent regression ID")
         ids.add(regression_id)
+        category = _text(row["category"], f"regression[{index}].category")
+        _require(category in ADVERSARIAL_CATEGORIES,
+                 "Every permanent regression must use a mandatory adversarial category")
+        categories.append(category)
         _description(row["name"], f"regression[{index}].name")
         _text(row["test_id"], f"regression[{index}].test_id")
         _relative_path(row["evidence_path"], f"regression[{index}].evidence_path")
@@ -267,7 +377,33 @@ def validate_inventory(raw: bytes, expected_sha256: str) -> tuple[dict, str]:
             _require(finding not in findings,
                      "An accepted critic finding must map to exactly one permanent regression")
             findings.add(finding)
-    return inventory, expected_sha256
+        artifact_sha256, _ = _inventory_test_artifact(row, repository_root)
+        normalized_rows.append({**row, "artifact_sha256": artifact_sha256})
+    missing = [category for category in ADVERSARIAL_CATEGORIES
+               if category not in categories]
+    _require(not missing,
+             "Permanent adversarial inventory omits mandatory categories: " + ", ".join(missing))
+    normalized_inventory = deepcopy(inventory)
+    normalized_inventory["regressions"] = normalized_rows
+    return normalized_inventory, expected_sha256
+
+
+def build_regression_receipt(candidate: dict, row: dict, result_sha256: str,
+                             *, repository_root: Path = REPOSITORY_ROOT) -> dict:
+    """Build a candidate and artifact-bound receipt from a host result digest."""
+    _digest(result_sha256, "regression result SHA-256")
+    artifact_sha256, _ = _inventory_test_artifact(row, repository_root)
+    core = {
+        "regression_id": row["regression_id"],
+        "category": row["category"],
+        "test_id": row["test_id"],
+        "evidence_path": row["evidence_path"],
+        "artifact_sha256": artifact_sha256,
+        "candidate": deepcopy(candidate),
+        "status": "PASS",
+        "result_sha256": result_sha256,
+    }
+    return {**core, "receipt_sha256": fingerprint("adversarial-regression-execution", core)}
 
 
 def deterministic_shards(test_ids: list[str], resource_capacity: int) -> list[dict]:
@@ -362,12 +498,29 @@ def validate_plan(plan_raw: bytes, expected_plan_sha256: str, *, local_pr_body: 
     _require(isinstance(receipts, list), "regression_receipts must be a list")
     expected_regressions = [row["regression_id"] for row in inventory["regressions"]]
     observed_regressions = []
-    for index, receipt in enumerate(receipts):
-        receipt = _exact(receipt, {"regression_id", "status", "evidence_sha256"},
+    for index, (receipt, row) in enumerate(zip(receipts, inventory["regressions"])):
+        receipt = _exact(receipt, {
+            "regression_id", "category", "test_id", "evidence_path",
+            "artifact_sha256", "candidate", "status", "result_sha256", "receipt_sha256",
+        },
                          f"regression receipt[{index}]")
         observed_regressions.append(receipt["regression_id"])
+        _require(receipt["regression_id"] == row["regression_id"]
+                 and receipt["category"] == row["category"]
+                 and receipt["test_id"] == row["test_id"]
+                 and receipt["evidence_path"] == row["evidence_path"],
+                 "Adversarial receipt differs from its ordered permanent inventory member")
+        _require(receipt["artifact_sha256"] == row["artifact_sha256"],
+                 "Adversarial receipt is not bound to the frozen test artifact")
+        _same_candidate(receipt["candidate"], candidate,
+                        f"regression receipt[{index}].candidate")
         _require(receipt["status"] == "PASS", "Every permanent adversarial regression must pass")
-        _digest(receipt["evidence_sha256"], f"regression receipt[{index}].evidence_sha256")
+        _digest(receipt["result_sha256"], f"regression receipt[{index}].result_sha256")
+        supplied = _digest(receipt["receipt_sha256"],
+                           f"regression receipt[{index}].receipt_sha256")
+        core = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+        _require(supplied == fingerprint("adversarial-regression-execution", core),
+                 "Adversarial execution receipt is fabricated or mismatched")
     _require(observed_regressions == expected_regressions,
              "Adversarial gate receipts must exactly cover the ordered permanent inventory")
 
@@ -440,8 +593,13 @@ def validate_plan(plan_raw: bytes, expected_plan_sha256: str, *, local_pr_body: 
         "inventory_sha256": inventory_digest,
         "shard_aggregate_sha256": aggregate,
         "plan_sha256": expected_plan_sha256,
-        "blocked_streams": [worker["stream"] for worker in workers if worker["blocker"] is not None],
-        "other_streams_continue": True,
+        "blocked_streams": [worker["stream"] for worker in workers
+                            if worker["execution"]["status"] == "BLOCKED"],
+        "paused_streams": [worker["stream"] for worker in workers
+                           if worker["execution"]["status"] == "PAUSED"],
+        "running_roles": topology["running_roles"],
+        "other_streams_continue": any(worker["execution"]["status"] == "RUNNING"
+                                      for worker in workers),
         "owner_ready": "NO",
         "execution_authority": False,
         "receipt_sha256": fingerprint("five-slot-acceleration-receipt", {

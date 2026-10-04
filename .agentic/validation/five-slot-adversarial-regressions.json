@@ -3,8 +3,54 @@
   "inventory_id": "awf-1.9.3-five-slot-permanent",
   "regressions": [
     {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_review_completion.py",
+      "name": "Concurrent final-review submitters admit only one provider mutation",
+      "permanent": true,
+      "regression_id": "ACCUMULATED-RACE-001",
+      "source_finding_id": null,
+      "test_id": "ReviewCompletionTests.test_two_concurrent_submitters_admit_only_one_provider_mutation"
+    },
+    {
+      "category": "alias",
+      "evidence_path": ".agentic/tests/test_continuous_controller.py",
+      "name": "Repository path aliases and traversal claims fail closed",
+      "permanent": true,
+      "regression_id": "ACCUMULATED-ALIAS-001",
+      "source_finding_id": null,
+      "test_id": "ContinuousControllerTests.test_path_aliases_overlap_and_external_or_traversal_paths_are_rejected"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_operating.py",
+      "name": "Publication never replaces an object whose final bytes differ",
+      "permanent": true,
+      "regression_id": "ACCUMULATED-REPLACEMENT-OBJECT-001",
+      "source_finding_id": null,
+      "test_id": "OperatingFileTests.test_publication_conflict_never_replaces_different_final_bytes"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_continuous_controller.py",
+      "name": "Jira mutation rejects a wrong connector site project or actor",
+      "permanent": true,
+      "regression_id": "ACCUMULATED-PROVIDER-IDENTITY-001",
+      "source_finding_id": null,
+      "test_id": "JiraProgressTests.test_jira_lifecycle_rejects_wrong_connector_site_project_or_actor_before_mutation"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_review_completion.py",
+      "name": "Fabricated or replayed reviewer-removal authority fails closed",
+      "permanent": true,
+      "regression_id": "ACCUMULATED-RECEIPT-REPLAY-001",
+      "source_finding_id": null,
+      "test_id": "ReviewCompletionTests.test_fabricated_removal_authority_observation_and_replay_fail_closed"
+    },
+    {
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Default topology has one controller, one dedicated adversarial handler, and three workers",
+      "category": "race",
       "permanent": true,
       "regression_id": "FIVE-SLOT-001",
       "source_finding_id": null,
@@ -13,6 +59,7 @@
     {
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Capacity below five fails without explicit degraded-mode authorization",
+      "category": "race",
       "permanent": true,
       "regression_id": "FIVE-SLOT-002",
       "source_finding_id": null,
@@ -21,6 +68,7 @@
     {
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Pre-controller adversarial inventory is exact and precedes the full suite",
+      "category": "receipt-replay",
       "permanent": true,
       "regression_id": "FIVE-SLOT-003",
       "source_finding_id": null,
@@ -29,6 +77,7 @@
     {
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Provider PR body is UTF-8 LF canonical and byte-exact on readback",
+      "category": "provider-identity",
       "permanent": true,
       "regression_id": "FIVE-SLOT-004",
       "source_finding_id": null,
@@ -37,6 +86,7 @@
     {
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Every accepted critic finding has one permanent named regression with evidence",
+      "category": "receipt-replay",
       "permanent": true,
       "regression_id": "FIVE-SLOT-005",
       "source_finding_id": null,
@@ -45,6 +95,7 @@
     {
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Heavy tests use deterministic bounded shards and an exact aggregate receipt",
+      "category": "race",
       "permanent": true,
       "regression_id": "FIVE-SLOT-006",
       "source_finding_id": null,
@@ -53,6 +104,7 @@
     {
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Each worker has one dependency-ordered active deliverable and explicit inactive Jira state",
+      "category": "alias",
       "permanent": true,
       "regression_id": "FIVE-SLOT-007",
       "source_finding_id": null,
@@ -61,6 +113,7 @@
     {
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Candidate freeze permits exactly one full-suite run on the exact tuple",
+      "category": "replacement-object",
       "permanent": true,
       "regression_id": "FIVE-SLOT-008",
       "source_finding_id": null,
@@ -69,10 +122,47 @@
     {
       "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
       "name": "Controller tuple, frozen review completion, both scans, and final independent review remain mandatory",
+      "category": "provider-identity",
       "permanent": true,
       "regression_id": "FIVE-SLOT-009",
       "source_finding_id": null,
       "test_id": "FiveSlotAccelerationTests.test_mandatory_preservation_gates_fail_closed"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "All accumulated adversarial categories are mandatory and receipts preserve inventory order",
+      "permanent": true,
+      "regression_id": "C37-F02-REGRESSION",
+      "source_finding_id": "C37-F02",
+      "test_id": "FiveSlotAccelerationTests.test_inventory_requires_all_accumulated_categories_and_ordered_receipts"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Evidence paths test IDs artifacts candidates and execution receipts are exact",
+      "permanent": true,
+      "regression_id": "C37-F03-REGRESSION",
+      "source_finding_id": "C37-F03",
+      "test_id": "FiveSlotAccelerationTests.test_inventory_paths_tests_and_execution_receipts_are_exact"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Jira lifecycle matches worker execution and started work never reopens",
+      "permanent": true,
+      "regression_id": "C37-F04-REGRESSION",
+      "source_finding_id": "C37-F04",
+      "test_id": "FiveSlotAccelerationTests.test_jira_lifecycle_matches_role_execution_and_started_work_never_reopens"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Degraded capacity names paused roles and derives actual continuation state",
+      "permanent": true,
+      "regression_id": "C37-F05-REGRESSION",
+      "source_finding_id": "C37-F05",
+      "test_id": "FiveSlotAccelerationTests.test_degraded_capacity_names_paused_roles_and_continuation_is_derived"
     }
   ]
 }
