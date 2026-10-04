@@ -950,20 +950,62 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_link_permission_failure_retains_operation_created_fanout(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
         snapshot = publication._rewrite_snapshot(self.repo.path)
         object_dir = Path(snapshot["object_dir"])
         namespace = {entry.name for entry in object_dir.iterdir()}
 
+        # Probe candidate commit IDs in a disposable object database so the
+        # test always exercises creation of a new fanout. The previous fixed
+        # message left the prefix to a timestamp-derived hash, which could
+        # collide with a fanout already present in this repository.
+        probe_objects = Path(self.temp.name) / "probe-objects"
+        probe_objects.mkdir()
+        fixed_dates = {
+            "GIT_AUTHOR_NAME": "Synthetic User",
+            "GIT_AUTHOR_EMAIL": "synthetic@example.invalid",
+            "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
+            "GIT_COMMITTER_NAME": "Synthetic User",
+            "GIT_COMMITTER_EMAIL": "synthetic@example.invalid",
+            "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
+        }
+        tree = git(self.repo.path, "rev-parse", "HEAD^{tree}")
+        candidate = None
+        for value in range(256):
+            candidate_message = f"clean squash\ncandidate {value:03d}\n".encode("utf-8")
+            probe_env = {
+                **fixed_dates,
+                "GIT_OBJECT_DIRECTORY": str(probe_objects),
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(object_dir),
+            }
+            candidate_oid = publication._git(
+                self.repo.path, "commit-tree", tree, "-p", self.repo.base,
+                input_bytes=candidate_message, extra_env=probe_env,
+            ).stdout.decode("ascii").strip()
+            if candidate_oid[:2] not in namespace:
+                candidate = candidate_message
+                break
+        self.assertIsNotNone(candidate, "could not select an absent object fanout")
+        message.write_bytes(candidate)
+        real_git = publication._git
+
+        def fixed_commit_dates(root, *args, **kwargs):
+            if args and args[0] == "commit-tree":
+                extra_env = dict(kwargs.get("extra_env") or {})
+                extra_env.update(fixed_dates)
+                kwargs["extra_env"] = extra_env
+            return real_git(root, *args, **kwargs)
+
         try:
-            with mock.patch.object(publication.os, "link",
-                                   side_effect=PermissionError("synthetic hard-link denial")):
+            with mock.patch.object(publication, "_git", side_effect=fixed_commit_dates), \
+                    mock.patch.object(publication.os, "link",
+                                      side_effect=PermissionError("synthetic hard-link denial")):
                 with self.assertRaisesRegex(ValidationError,
                                             r"PRE_CAS_RECOVERY_REQUIRED:.*retained_fanouts="):
                     rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                         mapping_path=self.mapping)
             created = [entry for entry in object_dir.iterdir() if entry.name not in namespace]
             self.assertEqual(1, len(created))
+            self.assertEqual(candidate_oid[:2], created[0].name)
             self.assertTrue(created[0].is_dir())
             self.assertEqual([], list(created[0].iterdir()))
         finally:
