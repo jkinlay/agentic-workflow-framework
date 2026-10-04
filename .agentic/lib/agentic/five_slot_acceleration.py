@@ -28,6 +28,7 @@ ADVERSARIAL_CATEGORIES = (
     "provider-identity",
     "receipt-replay",
 )
+OPTIONAL_ADVERSARIAL_CATEGORIES = ("capacity", "routing-precedence")
 ROLE_STATES = {"RUNNING", "PAUSED", "BLOCKED"}
 ACTIVE_LIFECYCLE = {
     "ACTIVE": "In Progress",
@@ -364,8 +365,8 @@ def validate_inventory(raw: bytes, expected_sha256: str,
         _require(regression_id not in ids, "Duplicate permanent regression ID")
         ids.add(regression_id)
         category = _text(row["category"], f"regression[{index}].category")
-        _require(category in ADVERSARIAL_CATEGORIES,
-                 "Every permanent regression must use a mandatory adversarial category")
+        _require(category in ADVERSARIAL_CATEGORIES + OPTIONAL_ADVERSARIAL_CATEGORIES,
+                 "Every permanent regression must use a supported adversarial category")
         categories.append(category)
         _description(row["name"], f"regression[{index}].name")
         _text(row["test_id"], f"regression[{index}].test_id")

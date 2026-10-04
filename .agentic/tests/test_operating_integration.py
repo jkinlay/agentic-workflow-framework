@@ -92,6 +92,28 @@ class OperatingRoutingTests(unittest.TestCase):
         self.assertEqual((self.route(role="critic", worker_context_id="independent")["model"],
                           self.route(role="critic", worker_context_id="independent")["reasoning_effort"]), (MODELS[5], "high"))
 
+    def test_pinned_global_and_epic_stream_reviewers_override_critic_defaults(self):
+        self.value["streams"]["A"]["reviewer"] = {
+            "model": MODELS[5], "reasoning_effort": "ultra", "pinned": True}
+
+        global_route = self.route(role="critic", worker_context_id="independent")
+
+        self.assertEqual((global_route["model"], global_route["reasoning_effort"]), (MODELS[5], "ultra"))
+        self.assertTrue(global_route["pinned"])
+        self.assertIn("operating stream route pinned by user", " ".join(global_route["reasons"]))
+
+        self.value["epic_overrides"] = {"DEMO-1": {
+            "critic": {"model": MODELS[5], "reasoning_effort": "high"},
+            "streams": {"A": {"reviewer": {
+                "model": MODELS[5], "reasoning_effort": "ultra", "pinned": True}}}}}
+
+        epic_route = self.route(role="critic", worker_context_id="independent",
+                                epic_id="DEMO-1", epic_risk_flags=[])
+
+        self.assertEqual((epic_route["model"], epic_route["reasoning_effort"]), (MODELS[5], "ultra"))
+        self.assertTrue(epic_route["pinned"])
+        self.assertIn("operating Epic-scoped route pinned by user", " ".join(epic_route["reasons"]))
+
     def test_unpinned_default_metadata_and_explicit_epic_inheritance(self):
         self.value["streams"]["A"]["worker"]["pinned"] = False
         self.assertEqual(self.route(complexity="low")["model"], MODELS[3])

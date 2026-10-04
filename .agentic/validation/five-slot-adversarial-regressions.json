@@ -172,6 +172,24 @@
       "regression_id": "C37-F06-REGRESSION",
       "source_finding_id": "C37-F06",
       "test_id": "FiveSlotAccelerationTests.test_receipt_cardinality_rejects_duplicate_unknown_and_extra_receipts"
+    },
+    {
+      "category": "capacity",
+      "evidence_path": ".agentic/tests/test_streams.py",
+      "name": "Retained continuations pause when capacity reduction leaves fewer post-reservation worker slots",
+      "permanent": true,
+      "regression_id": "C39-F01-REGRESSION",
+      "source_finding_id": "C39-F01",
+      "test_id": "NativeCapacityTests.test_retained_owners_after_capacity_reduction_pause_continuations_after_controller_and_critic_reservations"
+    },
+    {
+      "category": "routing-precedence",
+      "evidence_path": ".agentic/tests/test_operating_integration.py",
+      "name": "Explicit global and Epic-scoped stream reviewer pins override critic defaults",
+      "permanent": true,
+      "regression_id": "C39-F02-REGRESSION",
+      "source_finding_id": "C39-F02",
+      "test_id": "OperatingRoutingTests.test_pinned_global_and_epic_stream_reviewers_override_critic_defaults"
     }
   ]
 }

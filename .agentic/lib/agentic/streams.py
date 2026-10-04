@@ -333,11 +333,11 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     enabled = policy["native_streams"]["enabled"]
     can_spawn = coordinator_spawn_depth < policy["max_spawn_depth"]
     shared_critic = policy["independent_reviewers"]["allocation"] == "shared_critic"
-    # The shared-critic topology reserves the coordinator/controller and one
-    # independent critic alongside worker agents in the observed host total.
-    shared_reserved_slots = 2 if shared_critic else 0
     retained_count = len(retained)
     coordinator_retained = any(owner["agent_id"] == coordinator_agent_id for owner in retained) if coordinator_agent_id is not None else (False if not retained else None)
+    # A retained coordinator is already included in retained_count; otherwise
+    # reserve its slot plus the shared critic from the observed host total.
+    shared_reserved_slots = (1 + int(coordinator_retained is not True)) if shared_critic else 0
     direct_available = not shared_critic and (not retained or coordinator_retained is False)
     # Depth is a limit on NEW child delegation. Already running/paused owners
     # keep their places; they are never invalidated merely by calling at depth1.
@@ -352,10 +352,10 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     observed = host_writer_capacity is not None
     effective = min(ceiling, host_worker_capacity) if observed else (0 if not enabled else None)
     planning_limit = ceiling if effective is None else effective
-    # Existing owners are never evicted because new controller/reviewer
-    # reservations consume headroom; only compare retained workers with the
-    # physical host/project total for preservation diagnostics.
-    retained_physical_limit = min(physical_ceiling, host_writer_capacity) if host_writer_capacity is not None else physical_ceiling
+    # Preserve retained owners, but do not mark their continuations dispatchable
+    # when controller/reviewer reservations leave insufficient worker capacity.
+    # The effective physical limit already subtracts those reserved host slots.
+    retained_physical_limit = physical_limit
     over_capacity = retained_count > retained_physical_limit
     available = max(0, min(planning_limit, operating_count) - retained_count)
     draining_labels = [stream["label"] for stream in streams if LABELS.index(stream["label"]) >= operating_count]
@@ -398,23 +398,33 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     if retained:
         reasons.append(f"{retained_count} retained active/paused stream owner(s) consume capacity before any new assignment; none may be replaced or counted as free.")
     if over_capacity:
-        reasons.append(f"Retained ownership ({retained_count}) exceeds the actual project/host limit ({physical_limit}); preserve all writers, reconcile host/policy facts and issue no new or duplicate assignments.")
+        reasons.append(f"Retained ownership ({retained_count}) exceeds effective worker capacity after configured project and applicable host reservations ({physical_limit}); preserve all writers, reconcile host/policy facts and issue no new or duplicate assignments.")
     selected, deferred = [], []
     used_new = 0
+    used_retained = 0
+    retained_dispatch_limit = max(0, physical_limit)
     for original in sorted(packets, key=lambda packet: (packet["existing_agent_id"] is None, packet["stream"])):
         packet = deepcopy(original)
         existing = packet["existing_agent_id"] is not None
         reason = None
         if not enabled:
             reason = "NATIVE_STREAMS_DISABLED"
-        elif over_capacity:
+        elif existing and used_retained >= retained_dispatch_limit:
+            reason = "RETAINED_OWNERSHIP_EXCEEDS_CAPACITY"
+        elif not existing and over_capacity:
             reason = "RETAINED_OWNERSHIP_EXCEEDS_CAPACITY"
         elif not existing and packet["stream"] in draining_labels:
             reason = "OPERATING_STREAM_DRAINING"
         elif not existing and used_new >= available:
             reason = "SPAWN_DEPTH_OR_COORDINATOR_OWNERSHIP_LIMIT" if not can_spawn and planning_limit < physical_limit else "NO_FREE_WRITER_CAPACITY"
         if reason is not None:
-            packet.update(selection_state="DEFERRED", selection_reason=reason, live_dispatch_eligible=False)
+            pause_reason = (f"Retained writer ownership ({retained_count}) exceeds currently available worker capacity ({physical_limit}); preserve the existing reservation and do not dispatch its continuation."
+                            if reason == "RETAINED_OWNERSHIP_EXCEEDS_CAPACITY" else
+                            f"Dispatch is deferred because {reason}; retain ticket and ownership evidence without starting or replacing a writer.")
+            packet.update(selection_state="DEFERRED", selection_reason=reason, live_dispatch_eligible=False,
+                          dispatch_state="PAUSED", dispatch_pause_reason=pause_reason,
+                          resume_trigger="Reobserve total host capacity and controller/critic reservations; resume only after post-reservation worker capacity covers retained owners or an owner completes and its slot release is confirmed.",
+                          evidence_sha256=None)
             deferred.append(packet)
             continue
         if not existing:
@@ -424,6 +434,8 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
             if not can_spawn and not shared_critic:
                 packet["action"] = "run_in_coordinator"
                 packet["placement_options"] = ["current_coordinator_if_free"]
+        else:
+            used_retained += 1
         packet.update(selection_state="SELECTED" if observed else "READY_HOST_CAPACITY_UNVERIFIED",
                       selection_reason="RETAINED_OWNER_CONTINUATION" if existing else "WITHIN_NATIVE_WRITER_CAPACITY",
                       live_dispatch_eligible=observed and not synthetic,
@@ -437,12 +449,19 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
                "retained_writers": retained, "planner_writer_limit": PLANNER_WRITER_LIMIT,
                "observation_time": now if observed else None}
     capacity_hash = fingerprint("native-capacity", binding)
-    for packet in [*selected, *deferred]:
+    for packet in selected:
         packet["execution_policy_fingerprint"] = policy_hash
         packet["operating_hash"] = operating_hash
         packet["operating_state"] = "UNOBSERVED_LEGACY" if operating_hash is None else "VALIDATED_SNAPSHOT"
         packet["route_continuity"] = "Keep the immutable route and operating hash of each outstanding reservation; this packet does not reroute an active run."
         packet["capacity_fingerprint"] = capacity_hash
+    for packet in deferred:
+        packet["execution_policy_fingerprint"] = policy_hash
+        packet["operating_hash"] = operating_hash
+        packet["operating_state"] = "UNOBSERVED_LEGACY" if operating_hash is None else "VALIDATED_SNAPSHOT"
+        packet["route_continuity"] = "Keep the immutable route and operating hash of each outstanding reservation; this packet does not reroute an active run."
+        packet["capacity_fingerprint"] = capacity_hash
+        packet["evidence_sha256"] = capacity_hash
     for stream in streams:
         stream["operating_state"] = "DRAINING" if stream["label"] in draining_labels else "ADMISSIBLE"
         chosen = next((packet for packet in selected if packet["stream"] == stream["label"]), None)
@@ -450,8 +469,22 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
         stream["dispatch_selection"] = chosen["selection_state"] if chosen else "DEFERRED" if queued else "NO_READY_PACKET"
         stream["capacity_reason"] = queued["selection_reason"] if queued else None
         if queued:
+            stream["dispatch_state"] = queued["dispatch_state"]
+            stream["dispatch_pause_reason"] = queued["dispatch_pause_reason"]
+            stream["resume_trigger"] = queued["resume_trigger"]
+            stream["evidence_sha256"] = queued["evidence_sha256"]
+        elif chosen is None and over_capacity and stream["existing_writer"] is not None:
+            stream["capacity_reason"] = "RETAINED_OWNERSHIP_EXCEEDS_CAPACITY"
+            stream["dispatch_state"] = "PAUSED"
+            stream["dispatch_pause_reason"] = (f"Retained writer ownership ({retained_count}) exceeds currently available worker capacity ({physical_limit}); preserve the existing reservation.")
+            stream["resume_trigger"] = "Reobserve total host capacity and controller/critic reservations; resume only after post-reservation worker capacity covers retained owners or an owner completes and its slot release is confirmed."
+            stream["evidence_sha256"] = capacity_hash
+        if queued:
             stream["next_step"] = (f"Retain stream {stream['label']}'s ready ticket {queued['ticket_id']} and existing ownership. "
                                    f"Resolve {queued['selection_reason']} by observing host capacity, reconciling retained owners or waiting for a confirmed writer slot to be released; continue other admitted work. No routine authorization is required.")
+        elif chosen is None and over_capacity and stream["existing_writer"] is not None:
+            stream["next_step"] = (f"Pause dispatch for retained stream {stream['label']} because {stream['dispatch_pause_reason']} "
+                                   f"Resume trigger: {stream['resume_trigger']}")
         elif chosen and not observed:
             stream["next_step"] = (f"Observe total native host writer capacity including the coordinator, then re-evaluate {chosen['ticket_id']} for stream {stream['label']}; this readiness packet has no verified host capacity yet.")
         elif chosen and chosen["action"] == "run_in_coordinator":
@@ -767,8 +800,11 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
                             if packets else "Wait for a confirmed writer slot to be released or reconcile the actual lower host/project/depth limit, then rerun capacity selection; preserve queued tickets and continue other admitted work without a routine authorization prompt."
                             if deferred_packets else "Resolve the listed ownership/status/dependency barriers, refresh the inventory and regenerate the plan; no work is currently dispatchable."
                             + (" This is a synthetic demonstration; use the actual project inventory for live planning." if synthetic else ""),
-                            owner="host coordinator", trigger="now; report completed scope" if complete else "now; continue other ready project work while resolving any barriers",
-                            continue_independent_work=not complete)}
+                            owner="host coordinator", trigger="now; report completed scope" if complete else
+                            "now; continue the admitted retained continuation while observing for capacity to resume deferred owners" if capacity["ownership_over_capacity"] and packets else
+                            "after a fresh host observation shows enough post-reservation worker capacity or a retained owner completes with confirmed slot release" if capacity["ownership_over_capacity"] else
+                            "now; continue other ready project work while resolving any barriers",
+                            continue_independent_work=not complete and any(packet["live_dispatch_eligible"] for packet in packets))}
     if synthetic and not complete and "synthetic" not in result["next_step"]["action"].casefold():
         result["next_step"]["action"] += " This is a synthetic inventory; obtain verified actual project facts before live dispatch."
     return result

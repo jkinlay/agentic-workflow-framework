@@ -269,6 +269,13 @@ def _at_least(policy, pair, floor):
             and EFFORTS.index(pair["reasoning_effort"]) >= EFFORTS.index(floor["reasoning_effort"]))
 
 
+def _critic_route(default_route, stream_route):
+    """Apply an explicit stream reviewer pin over the shared critic default."""
+    if stream_route is not None and stream_route.get("pinned", False):
+        return stream_route
+    return default_route or stream_route
+
+
 def _request(request):
     _object(request, "request")
     for field in ("ticket_id", "agent_id", "phase", "task_class"):
@@ -358,7 +365,7 @@ def _select_route(policy, request, capabilities, operating_config):
     if operating_config and role in ("worker", "fix", "critic"):
         _require("stream" in request, "Operating worker/reviewer routing requires an observed stream A–F")
         stream_config = operating_config["streams"].get(request["stream"], {})
-        stream_route = (operating_config.get("critic") or stream_config.get("reviewer")
+        stream_route = (_critic_route(operating_config.get("critic"), stream_config.get("reviewer"))
                         if role == "critic" else stream_config.get("worker"))
         _require(stream_route is not None, "Requested stream has no retained operating route; reconcile stream ownership")
         # An ordinary unpinned stream route is the normal-work default. Keeping
@@ -375,7 +382,7 @@ def _select_route(policy, request, capabilities, operating_config):
     # global route stays intact for unrelated work and future Epics.
     epic_routes = operating_config.get("epic_overrides", {}).get(request.get("epic_id"), {}) if operating_config else {}
     epic_stream = epic_routes.get("streams", {}).get(request.get("stream"), {})
-    epic_route = ((epic_routes.get("critic") or epic_stream.get("reviewer"))
+    epic_route = (_critic_route(epic_routes.get("critic"), epic_stream.get("reviewer"))
                   if role == "critic" else epic_stream.get("worker")
                   if role in ("worker", "fix", "critic") else epic_routes.get(role))
     if epic_route is not None:

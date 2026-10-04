@@ -312,8 +312,8 @@ class NativeCapacityTests(unittest.TestCase):
         self.value = loads(FIXTURE.read_text(encoding="utf-8"))
         self.execution = deepcopy(DEFAULT_NATIVE_EXECUTION)
 
-    def plan(self, host=5, *, live_shaped=False, execution=None, depth=0, provenance=None, coordinator=None):
-        value = deepcopy(self.value)
+    def plan(self, host=5, *, live_shaped=False, execution=None, depth=0, provenance=None, coordinator=None, value=None):
+        value = deepcopy(self.value if value is None else value)
         if live_shaped:
             value["inventory"]["source"] = "jira_snapshot"
         raw = canonical(value)
@@ -427,11 +427,16 @@ class NativeCapacityTests(unittest.TestCase):
     def test_coordinator_retained_as_writer_is_counted_once_for_reviewer_headroom(self):
         for index, label in [(0, "A"), (2, "B"), (3, "C")]:
             self.value["tickets"][index].update(status="in_progress", ownership=owner(label, "writer-" + label), history=[history()])
-        review = self.plan(host=4, coordinator="writer-A")["review_plan"]
+        plan = self.plan(host=4, coordinator="writer-A")
+        review = plan["review_plan"]
         self.assertEqual(review["separate_coordinator_slots"], 0)
         self.assertEqual(review["coordinator_slot_basis"], "retained_writer")
         self.assertEqual(review["planned_or_retained_host_slots"], 3)
         self.assertEqual(review["concurrent_reviewer_planning_ceiling"], 1)
+        self.assertEqual(plan["capacity"]["host_reserved_non_worker_slots"], 1)
+        self.assertEqual(plan["capacity"]["host_worker_capacity"], 3)
+        self.assertFalse(plan["capacity"]["ownership_over_capacity"])
+        self.assertEqual(len(plan["dispatch_packets"]), 3)
 
     def test_explicit_direct_coordinator_packet_is_counted_once_for_shared_headroom(self):
         self.execution["independent_reviewers"] = {"allocation": "one_per_stream"}
@@ -556,6 +561,54 @@ class NativeCapacityTests(unittest.TestCase):
         self.assertTrue(all(p["selection_reason"] == "RETAINED_OWNERSHIP_EXCEEDS_CAPACITY" for p in plan["deferred_dispatch_packets"]))
         self.assertEqual(plan["tickets"]["DEMO-11"]["ownership"], self.value["tickets"][0]["ownership"])
         self.assertIn("Preserve every active or paused owner", plan["next_step"]["action"])
+
+    def test_retained_owners_after_capacity_reduction_pause_continuations_after_controller_and_critic_reservations(self):
+        for index, label in [(0, "A"), (2, "B"), (3, "C")]:
+            self.value["tickets"][index].update(
+                status="in_progress", ownership=owner(label, "retained-" + label), history=[history()])
+
+        plan = self.plan(host=3, live_shaped=True, coordinator="distinct-controller")
+        permuted_inventory = deepcopy(self.value)
+        permuted_inventory["tickets"].reverse()
+        permuted_plan = self.plan(host=3, live_shaped=True, coordinator="distinct-controller",
+                                  value=permuted_inventory)
+
+        self.assertEqual(plan["capacity"]["host_worker_capacity"], 1)
+        self.assertEqual(plan["capacity"]["host_reserved_non_worker_slots"], 2)
+        self.assertEqual(plan["capacity"]["retained_writer_count"], 3)
+        self.assertEqual(plan["review_plan"]["planned_or_retained_host_slots"], 4)
+        self.assertTrue(plan["capacity"]["ownership_over_capacity"])
+        self.assertTrue(any("effective worker capacity after configured project and applicable host reservations"
+                            in reason for reason in plan["capacity"]["reasons"]))
+        self.assertTrue(plan["next_step"]["continue_independent_work"])
+        self.assertIn("continue the admitted retained continuation", plan["next_step"]["trigger"])
+        self.assertEqual(len(plan["dispatch_packets"]), 1)
+        self.assertEqual(plan["dispatch_packets"][0]["existing_agent_id"], "retained-A")
+        self.assertEqual({packet["existing_agent_id"] for packet in plan["deferred_dispatch_packets"]},
+                         {"retained-B", "retained-C"})
+        self.assertEqual(permuted_plan["dispatch_packets"][0]["existing_agent_id"], "retained-A")
+        self.assertEqual({packet["existing_agent_id"] for packet in permuted_plan["deferred_dispatch_packets"]},
+                         {"retained-B", "retained-C"})
+        for stream in plan["streams"]:
+            if stream["label"] == "A":
+                self.assertEqual(stream["dispatch_selection"], "SELECTED")
+                self.assertNotIn("dispatch_state", stream)
+            else:
+                self.assertEqual(stream["dispatch_state"], "PAUSED")
+                self.assertEqual(stream["capacity_reason"], "RETAINED_OWNERSHIP_EXCEEDS_CAPACITY")
+                self.assertIn("Reobserve total host capacity", stream["resume_trigger"])
+                self.assertEqual(stream["evidence_sha256"], plan["capacity"]["capacity_fingerprint"])
+        for packet in [*plan["dispatch_packets"], *plan["deferred_dispatch_packets"]]:
+            self.assertEqual(packet["route_continuity"],
+                             "Keep the immutable route and operating hash of each outstanding reservation; this packet does not reroute an active run.")
+            self.assertEqual(packet["capacity_fingerprint"], plan["capacity"]["capacity_fingerprint"])
+        for packet in plan["deferred_dispatch_packets"]:
+            self.assertFalse(packet["live_dispatch_eligible"])
+            self.assertEqual(packet["selection_reason"], "RETAINED_OWNERSHIP_EXCEEDS_CAPACITY")
+            self.assertEqual(packet["dispatch_state"], "PAUSED")
+            self.assertIn("preserve the existing reservation", packet["dispatch_pause_reason"])
+            self.assertIn("Reobserve total host capacity", packet["resume_trigger"])
+            self.assertEqual(packet["evidence_sha256"], plan["capacity"]["capacity_fingerprint"])
 
     def test_a_fourth_ready_ticket_or_excess_host_slots_cannot_add_a_fourth_writer(self):
         self.value["tickets"][1]["dependencies"] = []
