@@ -49,7 +49,7 @@ def run_isolated_git(root: Path, args: list[str], *, maximum: int, timeout: int,
         done = subprocess.run(
             command, cwd=str(root), stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
-            env=isolated_git_environment(), timeout=timeout, check=False)
+            env=child_env(isolated_git_environment()), timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValidationError(f"{label} is unavailable") from exc
     if done.returncode or len(done.stdout) > maximum:

@@ -4,6 +4,15 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
+
+if __package__:
+    from .child_process import child_env
+else:
+    # The isolated Windows launcher runs outside package mode. Load the shared
+    # sanitizer from the reviewed, sealed checkout snapshot supplied as cwd.
+    sys.path.insert(0, str(Path.cwd() / ".agentic" / "lib"))
+    from agentic.child_process import child_env
 
 
 def main() -> int:
@@ -25,7 +34,7 @@ def main() -> int:
         return 125
     try:
         done = subprocess.run(argv, stdin=subprocess.DEVNULL, shell=False, check=False,
-                              env=environment)
+                              env=child_env(environment))
     except OSError:
         return 126
     return done.returncode

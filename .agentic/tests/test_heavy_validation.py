@@ -128,12 +128,16 @@ def checkout_snapshotter(candidate, working_directory):
         launcher.write_bytes(git_archive_file(
             SOURCE_ROOT, candidate["head_sha"],
             ".agentic/lib/agentic/heavy_validation_child.py"))
+        sanitizer = launcher.with_name("child_process.py")
+        sanitizer.write_bytes(git_archive_file(
+            SOURCE_ROOT, candidate["head_sha"],
+            ".agentic/lib/agentic/child_process.py"))
         record = {"candidate": deepcopy(candidate),
                   "source_working_directory": working_directory,
                   "snapshot_working_directory": snapshot,
                   "tree_sha": candidate["tree_sha"],
                   "archive_source_object": candidate["tree_sha"],
-                  "archive_sha256": "f" * 64, "file_count": 1,
+                  "archive_sha256": "f" * 64, "file_count": 2,
                   "reviewed_tree_inventory_sha256": "d" * 64,
                   "content_inventory_sha256": "e" * 64,
                   "mutation_guard": "windows-file-handles-and-sealed-directories",
@@ -574,8 +578,15 @@ class HeavyValidationTests(unittest.TestCase):
         launch_chain = heavy._windows_launch_chain(value)
         launch_chain["target_environment"] = heavy._target_environment_authorization(value)
         fake = FakeProcess()
+        @contextmanager
+        def artifact_context(executable):
+            path = executable.get("resolved_path", executable.get("path"))
+            yield {"method": "fixture", "source_path": path,
+                   "launch_path": path, "sha256": executable["sha256"],
+                   "pass_fds": ()}
         with mock.patch.object(heavy.os, "name", "nt"), \
              mock.patch.object(heavy.subprocess, "Popen", return_value=fake) as popen, \
+             mock.patch.object(heavy, "_immutable_executable", side_effect=artifact_context), \
              mock.patch.object(heavy, "_attach_windows_job",
                                side_effect=ValidationError("containment unavailable")), \
              mock.patch.object(heavy, "_release_windows_launcher") as release:
@@ -1274,6 +1285,17 @@ class HeavyValidationTests(unittest.TestCase):
                 now=NOW)
         reviewed = json.loads(review(raw))
         reviewed["workload_authorization"]["record"]["windows_launch_chain"][
+            "sanitizer"]["sha256"] = "0" * 64
+        changed = canonical(reviewed)
+        with self.assertRaisesRegex(ValidationError, "exact workload"):
+            _run_validation_at(plan_raw=raw, expected_plan_sha256=sha256(raw),
+                review_raw=changed, expected_review_sha256=sha256(changed),
+                config_raw=cfg, expected_config_sha256=sha256(cfg),
+                expected_candidate=CANDIDATE, execution_root=SOURCE_ROOT,
+                review_authenticator=authenticator, checkout_attestor=checkout_attestor,
+                now=NOW)
+        reviewed = json.loads(review(raw))
+        reviewed["workload_authorization"]["record"]["windows_launch_chain"][
             "launcher"]["sha256"] = "0" * 64
         changed = canonical(reviewed)
         with self.assertRaisesRegex(ValidationError, "exact workload"):
@@ -1389,6 +1411,8 @@ class HeavyValidationTests(unittest.TestCase):
             launcher = root / ".agentic/lib/agentic/heavy_validation_child.py"
             launcher.parent.mkdir(parents=True)
             launcher.write_text("# reviewed launcher\n", encoding="utf-8", newline="\n")
+            shutil.copy2(SOURCE_ROOT / ".agentic/lib/agentic/child_process.py",
+                         launcher.with_name("child_process.py"))
             reviewed_launcher_sha256 = file_digest(launcher)
             subprocess.run(["git", "-C", str(root), "add", "."], check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1548,6 +1572,8 @@ class HeavyValidationTests(unittest.TestCase):
             launcher.parent.mkdir(parents=True)
             shutil.copy2(SOURCE_ROOT / ".agentic/lib/agentic/heavy_validation_child.py",
                          launcher)
+            shutil.copy2(SOURCE_ROOT / ".agentic/lib/agentic/child_process.py",
+                         launcher.with_name("child_process.py"))
             subprocess.run(["git", "init", "-q", str(root)], check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             subprocess.run(["git", "-C", str(root), "add", "."], check=True,
@@ -1593,6 +1619,8 @@ class HeavyValidationTests(unittest.TestCase):
             hostile.mkdir()
             shutil.copy2(SOURCE_ROOT / ".agentic/lib/agentic/heavy_validation_child.py",
                          launcher)
+            shutil.copy2(SOURCE_ROOT / ".agentic/lib/agentic/child_process.py",
+                         launcher.with_name("child_process.py"))
             subprocess.run(["git", "init", "-q", str(root)], check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             subprocess.run(["git", "-C", str(root), "add", "."], check=True,
@@ -1663,6 +1691,11 @@ class HeavyValidationTests(unittest.TestCase):
             SOURCE_ROOT, value["candidate"]["head_sha"],
             launcher["repository_relative_path"])
         self.assertEqual(hashlib.sha256(reviewed).hexdigest(), launcher["sha256"])
+        sanitizer = chain["sanitizer"]
+        sanitizer_bytes = git_archive_file(
+            SOURCE_ROOT, value["candidate"]["head_sha"],
+            sanitizer["repository_relative_path"])
+        self.assertEqual(hashlib.sha256(sanitizer_bytes).hexdigest(), sanitizer["sha256"])
         with tempfile.TemporaryDirectory() as folder:
             copied = Path(folder) / "heavy_validation_child.py"
             copied.write_bytes(reviewed)

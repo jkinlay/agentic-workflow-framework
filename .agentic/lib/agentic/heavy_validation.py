@@ -51,6 +51,7 @@ _MAX_ENVIRONMENT_VALUE_BYTES = 8192
 _MAX_WINDOWS_LAUNCHER_PAYLOAD_BYTES = 64 * 1024
 _MAX_OUTPUT_BYTES = 256 * 1024
 _WINDOWS_LAUNCHER_RELATIVE = ".agentic/lib/agentic/heavy_validation_child.py"
+_WINDOWS_SANITIZER_RELATIVE = ".agentic/lib/agentic/child_process.py"
 _WINDOWS_LAUNCHER_FLAGS = ("-I", "-S", "-B")
 _TARGET_ENVIRONMENT_ALWAYS_STRIP = frozenset({
     *FROZEN_H_PROVIDER_API_KEY_ENV_VARS,
@@ -487,7 +488,10 @@ def _windows_launch_chain(plan: dict) -> dict:
             "interpreter_flags": list(_WINDOWS_LAUNCHER_FLAGS),
             "launcher": {"repository_relative_path": _WINDOWS_LAUNCHER_RELATIVE,
                          "sha256": _reviewed_git_archive_sha256(
-                             plan, _WINDOWS_LAUNCHER_RELATIVE)}}
+                             plan, _WINDOWS_LAUNCHER_RELATIVE)},
+            "sanitizer": {"repository_relative_path": _WINDOWS_SANITIZER_RELATIVE,
+                          "sha256": _reviewed_git_archive_sha256(
+                              plan, _WINDOWS_SANITIZER_RELATIVE)}}
 
 
 def workload_authorization(plan: dict, plan_digest: str) -> dict:
@@ -1204,7 +1208,7 @@ def _terminate_process_tree(proc: subprocess.Popen, config: dict) -> dict:
             done = subprocess.run([str(taskkill), "/PID", str(proc.pid), "/T", "/F"],
                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, shell=False,
-                                  env=_validation_child_env(config),
+                                  env=child_env(_validation_child_env(config)),
                                   timeout=PROCESS_TREE_TERMINATION_TIMEOUT_SECONDS)
             if done.returncode == 0:
                 return {"outcome": "COMPLETE", "mechanism": "windows_taskkill_tree"}
@@ -1406,11 +1410,21 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                     "sha256": launcher_record["sha256"]})
                 launcher = launcher_context.__enter__()
                 artifact_contexts.append(launcher_context)
+                sanitizer_record = launch_chain["sanitizer"]
+                if sanitizer_record["repository_relative_path"] != _WINDOWS_SANITIZER_RELATIVE:
+                    raise ValidationError("Windows sanitizer path is invalid")
+                sanitizer_path = cwd / sanitizer_record["repository_relative_path"]
+                if _file_sha256(sanitizer_path) != sanitizer_record["sha256"]:
+                    raise ValidationError("Windows sanitizer differs from reviewed bytes")
                 launch_chain_evidence = [
                     {key: interpreter[key] for key in
                      ("method", "source_path", "launch_path", "sha256")},
                     {key: launcher[key] for key in
                      ("method", "source_path", "launch_path", "sha256")},
+                    {"method": "sealed_reviewed_snapshot",
+                     "source_path": str(sanitizer_path),
+                     "launch_path": str(sanitizer_path),
+                     "sha256": sanitizer_record["sha256"]},
                 ]
                 command = [interpreter["launch_path"], *interpreter_flags,
                            launcher["launch_path"]]
@@ -1439,7 +1453,7 @@ def _execute_attempt(partition: dict, plan: dict, executable: dict, cwd: Path, c
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     shell=False,
-                    env=target_environment,
+                    env=child_env(target_environment),
                     **options,
                 )
                 if os.name == "nt":

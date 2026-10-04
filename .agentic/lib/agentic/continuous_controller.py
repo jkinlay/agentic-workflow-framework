@@ -16,6 +16,7 @@ import subprocess
 import uuid
 
 from . import ValidationError
+from .child_process import child_env
 from .canonical import canonical, loads, now_text, timestamp
 from .child_process import child_env
 from .controller_state import configure_database, protected_state_path, restrict_state_permissions

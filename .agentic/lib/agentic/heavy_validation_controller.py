@@ -95,7 +95,7 @@ class GitHubReviewAuthenticator:
             done = subprocess.run(
                 [executable, "api", "--hostname", "github.com", "--method", "GET", endpoint],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                shell=False, env=env, timeout=30, check=False)
+                shell=False, env=child_env(env), timeout=30, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
             raise ValidationError("GitHub review authentication is unavailable") from exc
         if done.returncode or len(done.stdout) > _MAX_PROVIDER_BYTES:
