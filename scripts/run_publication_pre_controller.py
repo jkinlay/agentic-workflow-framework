@@ -37,6 +37,7 @@ CASE_GROUPS = {
     "rewrite_reachability_and_recovery": (
         "PublicationRewriteTests.test_ac44_unpublished_squash_preserves_tree_and_cleans_refs",
         "PublicationRewriteTests.test_ac44_every_ref_namespace_is_in_the_reachability_census",
+        "PublicationRewriteTests.test_ac44_grafts_are_rejected_before_rewrite_mutation",
         "PublicationRewriteTests.test_ac44_reachability_lookup_error_refuses_before_mutation",
         "PublicationRewriteTests.test_ac44_failed_final_cas_preserves_objects_claimed_by_all_ref_namespaces",
         "PublicationRewriteTests.test_ac44_failed_final_cas_preserves_object_retained_only_by_reflog",
@@ -49,6 +50,10 @@ CASE_GROUPS = {
         "PublicationRewriteTests.test_ac44_oversized_rewrite_message_is_rejected_before_commit_tree",
         "PublicationRewriteTests.test_ac44_oversized_quarantine_loose_object_rejects_before_content_read",
         "PublicationRewriteTests.test_ac44_quarantine_content_uses_bounded_git_retrieval",
+        "PublicationRewriteTests.test_ac44_second_quarantine_census_pathname_change_fails_before_reads",
+        "PublicationRewriteTests.test_ac44_quarantine_inventory_stops_at_overcount_sentinel_before_reads",
+        "PublicationRewriteTests.test_ac44_bounded_quarantine_path_consumer_stops_after_sentinel",
+        "PublicationRewriteTests.test_ac44_link_permission_failure_retains_operation_created_fanout",
         "PublicationRewriteTests.test_ac44_identity_swap_before_fanout_removal_never_deletes_external_directory",
         "PublicationRewriteTests.test_ac44_reflog_restore_refuses_file_symlink_before_external_mutation",
         "PublicationRewriteTests.test_ac44_reflog_restore_refuses_windows_junction_before_external_mutation",

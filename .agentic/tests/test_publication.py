@@ -1147,6 +1147,32 @@ class PublicationRewriteTests(unittest.TestCase):
              publication.MAX_REWRITE_PROOF_OBJECT_BYTES),
         ], calls)
 
+    def test_ac44_second_quarantine_census_pathname_change_fails_before_reads(self):
+        objects = Path(self.temp.name) / "changed-quarantine"
+        fanout = objects / "aa"
+        fanout.mkdir(parents=True)
+        (fanout / ("0" * 38)).write_bytes(zlib.compress(b"blob 0\0"))
+        real_fingerprint = publication._quarantine_path_fingerprint
+        calls = []
+
+        def add_after_first_census(paths):
+            result = real_fingerprint(paths)
+            calls.append(True)
+            if len(calls) == 1:
+                (fanout / ("1" * 38)).write_bytes(b"changed namespace")
+            return result
+
+        with mock.patch.object(publication, "_quarantine_path_fingerprint",
+                               side_effect=add_after_first_census), \
+                mock.patch.object(publication, "_git_bounded_stdout") as bounded, \
+                mock.patch.object(publication, "_bounded_regular_file") as read_file:
+            with self.assertRaisesRegex(
+                    ValidationError, "Quarantine object inventory changed during enumeration"):
+                publication._quarantine_objects(self.repo.path, objects, {}, "sha1")
+        self.assertEqual(1, len(calls))
+        bounded.assert_not_called()
+        read_file.assert_not_called()
+
     def test_ac44_empty_operation_created_fanout_is_retained_without_pathname_rmdir(self):
         snapshot = publication._rewrite_snapshot(self.repo.path)
         object_dir = Path(snapshot["object_dir"])
@@ -1484,6 +1510,26 @@ class PublicationRewriteTests(unittest.TestCase):
                                     mapping_path=self.mapping)
         finally:
             shallow.unlink()
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_ac44_grafts_are_rejected_before_rewrite_mutation(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        common = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
+                          "--git-common-dir"))
+        grafts = common / "info" / "grafts"
+        grafts.parent.mkdir(parents=True, exist_ok=True)
+        grafts.write_text(self.repo.base + "\n", encoding="ascii")
+        try:
+            with self.assertRaisesRegex(
+                    ValidationError, "Reachability-altering Git metadata.*grafts"):
+                rewrite_unpublished(self.repo.path, self.repo.base,
+                                    "awf/EX-6-publication", 1, message,
+                                    mapping_path=self.mapping)
+        finally:
+            grafts.unlink()
         self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
 
     def test_ac44_post_cas_shallow_boundary_race_rolls_back_exact_ref(self):

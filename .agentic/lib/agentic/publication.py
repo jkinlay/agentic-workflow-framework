@@ -957,7 +957,9 @@ def _reachability_metadata(root):
     common = _git_common_dir(root)
     candidates = {
         "shallow": common / "shallow",
-        "grafts": common / "objects" / "info" / "grafts",
+        # Git reads legacy grafts from the common Git directory, alongside
+        # shallow, not from the object database's info directory.
+        "grafts": common / "info" / "grafts",
     }
     result = {}
     for name, path in candidates.items():

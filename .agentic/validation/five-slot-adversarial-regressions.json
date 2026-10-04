@@ -226,6 +226,15 @@
       "regression_id": "CV39-F03-REGRESSION",
       "source_finding_id": "CV39-F03",
       "test_id": "ContinuousControllerTests.test_schema_inventory_matches_loaded_generated_catalog"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Second quarantine census rejects pathname changes before reading file or Git content",
+      "permanent": true,
+      "regression_id": "C26-F07-REGRESSION",
+      "source_finding_id": "C26-F07",
+      "test_id": "PublicationRewriteTests.test_ac44_second_quarantine_census_pathname_change_fails_before_reads"
     }
   ]
 }
