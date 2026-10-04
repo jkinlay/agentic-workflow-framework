@@ -192,6 +192,15 @@
       "test_id": "OperatingRoutingTests.test_pinned_global_and_epic_stream_reviewers_override_critic_defaults"
     },
     {
+      "category": "capacity",
+      "evidence_path": ".agentic/tests/test_streams.py",
+      "name": "Shared-critic dispatch pauses a retained worker whose identity matches the controller",
+      "permanent": true,
+      "regression_id": "C39-IC-F01-REGRESSION",
+      "source_finding_id": "C39-IC-F01",
+      "test_id": "NativeCapacityTests.test_C39_IC_F01_shared_critic_pauses_controller_identity_worker_continuation"
+    },
+    {
       "category": "race",
       "evidence_path": ".agentic/tests/test_continuous_controller.py",
       "name": "Production Git children use the shared provider-key-scrubbing environment helper",
