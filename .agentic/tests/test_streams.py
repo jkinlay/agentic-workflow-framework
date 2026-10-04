@@ -349,19 +349,30 @@ class NativeCapacityTests(unittest.TestCase):
         self.assertEqual(capacity["operating_state"], "UNOBSERVED_LEGACY")
         self.assertIn("Planner structural writer limit: 6", render_markdown(plan).decode())
 
-    def test_default_review_pool_assigns_one_reviewer_per_stream_not_per_ticket(self):
+    def test_default_review_pool_assigns_one_shared_critic_not_per_ticket(self):
         plan = self.plan(host=7)
         review = plan["review_plan"]
-        self.assertEqual(review["configured_count"], 3)
+        self.assertEqual(review["configured_count"], 1)
         self.assertEqual(review["scope"], "project_total_not_per_ticket")
         self.assertEqual({item["stream"]: item["reviewer_slot"] for item in review["assignments"]},
-                         {"A": "independent-reviewer-1", "B": "independent-reviewer-2", "C": "independent-reviewer-3"})
+                         {"A": "shared-independent-critic", "B": "shared-independent-critic", "C": "shared-independent-critic"})
         self.assertEqual(review["planned_assignment_count"], 3)
-        self.assertEqual(review["concurrent_reviewer_planning_ceiling"], 3)
+        self.assertEqual(review["concurrent_reviewer_planning_ceiling"], 1)
         self.assertIsNone(review["observed_active_reviewer_count"])
         self.assertFalse(review["host_admission_confirmed"])
         self.assertTrue(all(item["agent_id"] is None and item["independent_context_required"] for item in review["assignments"]))
         self.assertTrue(all(stream["independent_review"]["stream"] == stream["label"] for stream in plan["streams"]))
+
+    def test_shared_critic_uses_one_slot_for_three_independent_stream_reviews(self):
+        execution = deepcopy(self.execution)
+        execution["independent_reviewers"] = {"allocation": "shared_critic"}
+        review = self.plan(host=7, execution=execution)["review_plan"]
+        self.assertEqual("shared_critic", review["allocation"])
+        self.assertEqual(1, review["configured_count"])
+        self.assertEqual(3, review["planned_assignment_count"])
+        self.assertEqual(1, review["reviewer_slot_count"])
+        self.assertEqual({"shared-independent-critic"}, {item["reviewer_slot"] for item in review["assignments"]})
+        self.assertEqual(1, review["concurrent_reviewer_planning_ceiling"])
 
     def test_four_shared_host_slots_do_not_claim_six_concurrent_agents(self):
         review = self.plan(host=4)["review_plan"]
@@ -370,11 +381,12 @@ class NativeCapacityTests(unittest.TestCase):
         self.assertEqual(review["additional_shared_host_slot_ceiling"], 0)
         self.assertEqual(review["separate_coordinator_slots"], 1)
         self.assertEqual(review["coordinator_slot_basis"], "separate_or_unconfirmed")
-        self.assertEqual(review["configured_count"], 3)
+        self.assertEqual(review["configured_count"], 1)
         self.assertIsNone(review["observed_active_reviewer_count"])
         self.assertEqual(self.plan(host=3)["review_plan"]["concurrent_reviewer_planning_ceiling"], 0)
 
     def test_lower_reviewer_pool_keeps_unassigned_streams_waiting_without_waiving_review(self):
+        self.execution["independent_reviewers"] = {"allocation": "one_per_stream"}
         for count in [0, 1, 2]:
             with self.subTest(count=count):
                 self.execution["independent_reviewers"]["count"] = count
@@ -408,6 +420,7 @@ class NativeCapacityTests(unittest.TestCase):
         self.assertEqual(review["concurrent_reviewer_planning_ceiling"], 1)
 
     def test_explicit_direct_coordinator_packet_is_counted_once_for_shared_headroom(self):
+        self.execution["independent_reviewers"] = {"allocation": "one_per_stream"}
         plan = self.plan(host=4, depth=1)
         self.assertEqual(plan["dispatch_packets"][0]["action"], "run_in_coordinator")
         review = plan["review_plan"]
@@ -420,7 +433,8 @@ class NativeCapacityTests(unittest.TestCase):
     def test_legacy_execution_defaults_review_pool_without_mutating_input(self):
         del self.execution["independent_reviewers"]
         plan = self.plan(host=4)
-        self.assertEqual(plan["review_plan"]["configured_count"], 3)
+        self.assertEqual(plan["review_plan"]["allocation"], "shared_critic")
+        self.assertEqual(plan["review_plan"]["configured_count"], 1)
         self.assertNotIn("independent_reviewers", self.execution)
 
     def test_unknown_host_and_exhausted_depth_do_not_imply_reviewer_launch_capacity(self):
@@ -550,6 +564,7 @@ class NativeCapacityTests(unittest.TestCase):
         self.assertFalse(plan["next_step"]["authorization"]["required"])
 
     def test_zero_spawn_depth_keeps_one_direct_coordinator_writer(self):
+        self.execution["independent_reviewers"] = {"allocation": "one_per_stream"}
         self.execution["max_spawn_depth"] = 0
         plan = self.plan(host=3)
         self.assertEqual(plan["capacity"]["effective_writer_capacity"], 1)
@@ -559,10 +574,19 @@ class NativeCapacityTests(unittest.TestCase):
         self.assertEqual(len(plan["deferred_dispatch_packets"]), 2)
 
     def test_non_root_coordinator_honors_its_actual_spawn_depth(self):
+        self.execution["independent_reviewers"] = {"allocation": "one_per_stream"}
         plan = self.plan(host=3, depth=1)
         self.assertEqual(plan["capacity"]["max_spawn_depth"], 1)
         self.assertEqual(plan["capacity"]["effective_writer_capacity"], 1)
         self.assertEqual(plan["dispatch_packets"][0]["action"], "run_in_coordinator")
+
+    def test_shared_critic_at_exhausted_depth_never_turns_controller_into_a_worker(self):
+        self.execution["max_spawn_depth"] = 0
+        plan = self.plan(host=5)
+        self.assertEqual(plan["dispatch_packets"], [])
+        self.assertEqual(len(plan["deferred_dispatch_packets"]), 3)
+        self.assertNotIn("run_in_coordinator", {p["action"] for p in plan["dispatch_packets"]})
+        self.assertEqual(plan["capacity"]["effective_writer_capacity"], 0)
 
     def test_exhausted_spawn_depth_does_not_invalidate_three_retained_writers(self):
         for index, label in [(0, "A"), (2, "B"), (3, "C")]:
@@ -583,6 +607,7 @@ class NativeCapacityTests(unittest.TestCase):
         self.assertEqual(len(plan["deferred_dispatch_packets"]), 2)
 
     def test_exhausted_depth_allows_one_proven_free_coordinator_beside_an_existing_writer(self):
+        self.execution["independent_reviewers"] = {"allocation": "one_per_stream"}
         self.value["tickets"][0].update(status="in_progress", ownership=owner("A", "existing-child"), history=[history()])
         plan = self.plan(depth=1, coordinator="free-coordinator")
         self.assertEqual(plan["capacity"]["effective_writer_capacity"], 2)

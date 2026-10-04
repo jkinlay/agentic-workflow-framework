@@ -30,7 +30,7 @@ JOURNAL = ".awf-streams-transaction.json"
 MAX_TICKETS = 500
 DEFAULT_NATIVE_EXECUTION = {
     "native_streams": {"enabled": True, "dispatch_policy": "ready_independent"},
-    "independent_reviewers": {"allocation": "one_per_stream"},
+    "independent_reviewers": {"allocation": "shared_critic"},
     "max_parallel_tickets": 6, "max_parallel_tickets_per_stream": 1, "max_spawn_depth": 1,
 }
 
@@ -245,8 +245,8 @@ def native_execution_policy(execution=None):
     if "count" in reviewers:
         require(type(reviewers["count"]) is int and 0 <= reviewers["count"] <= 9007199254740991,
                 "execution.independent_reviewers.count must be a nonnegative integer")
-    require(reviewers["allocation"] == "one_per_stream",
-            "execution.independent_reviewers.allocation must be one_per_stream")
+    require(reviewers["allocation"] in {"one_per_stream", "shared_critic"},
+            "execution.independent_reviewers.allocation must be one_per_stream or shared_critic")
     from .operating import operating_ceiling
     operating_ceiling({"execution": value})
     result = {name: deepcopy(reviewers if name == "independent_reviewers" else value[name]) for name in DEFAULT_NATIVE_EXECUTION}
@@ -257,12 +257,15 @@ def native_execution_policy(execution=None):
 
 def _reviewer_plan(streams, packets, capacity, policy):
     """Plan a project-wide pool without claiming reviewer observation/admission."""
-    count = capacity["operating_count"] if capacity["operating_hash"] is not None else policy["independent_reviewers"].get("count", capacity["operating_count"])
+    allocation = policy["independent_reviewers"]["allocation"]
+    count = (1 if allocation == "shared_critic" else
+             capacity["operating_count"] if capacity["operating_hash"] is not None else
+             policy["independent_reviewers"].get("count", capacity["operating_count"]))
     assignments = []
     for index, stream in enumerate(streams):
-        has_slot = index < count
+        has_slot = index < count if allocation == "one_per_stream" else True
         assignment = {"stream": stream["label"],
-                      "reviewer_slot": f"independent-reviewer-{index + 1}" if has_slot else None,
+                      "reviewer_slot": (f"independent-reviewer-{index + 1}" if allocation == "one_per_stream" else "shared-independent-critic") if has_slot else None,
                       "agent_id": None, "state": "PLANNED" if has_slot else "WAITING_FOR_REVIEWER_POOL",
                       "independent_context_required": True,
                       "excluded_implementer_agent_id": stream["existing_writer"]["agent_id"] if stream["existing_writer"] else None,
@@ -270,6 +273,7 @@ def _reviewer_plan(streams, packets, capacity, policy):
         assignments.append(assignment)
         stream["independent_review"] = deepcopy(assignment)
     planned = sum(item["reviewer_slot"] is not None for item in assignments)
+    reviewer_slots = min(planned, count) if allocation == "shared_critic" else planned
     # Writers and reviewers consume the same host pool. Do not count the
     # coordinator twice or treat a configured reviewer slot as a running agent.
     writer_slots = capacity["retained_writer_count"] + capacity["selected_new_writer_count"]
@@ -283,10 +287,11 @@ def _reviewer_plan(streams, packets, capacity, policy):
     remaining = None if host is None else max(0, host - occupied_slots)
     delegation_available = capacity["coordinator_spawn_depth"] < capacity["max_spawn_depth"]
     enabled = capacity["native_streams_enabled"]
-    ceiling = (0 if not enabled or not delegation_available or not planned else
-               None if remaining is None else min(planned, remaining))
-    return {"allocation": "one_per_stream", "scope": "project_total_not_per_ticket",
+    ceiling = (0 if not enabled or not delegation_available or not reviewer_slots else
+               None if remaining is None else min(reviewer_slots, remaining))
+    return {"allocation": allocation, "scope": "project_total_not_per_ticket",
             "configured_count": count, "planned_assignment_count": planned,
+            "reviewer_slot_count": reviewer_slots,
             "assignments": assignments, "observed_active_reviewer_count": None,
             "shared_host_total_capacity": host, "planned_or_retained_writer_slots": writer_slots,
             "separate_coordinator_slots": separate_coordinator_slots,
@@ -327,9 +332,10 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
                 for stream in streams if stream["existing_writer"] is not None]
     enabled = policy["native_streams"]["enabled"]
     can_spawn = coordinator_spawn_depth < policy["max_spawn_depth"]
+    shared_critic = policy["independent_reviewers"]["allocation"] == "shared_critic"
     retained_count = len(retained)
     coordinator_retained = any(owner["agent_id"] == coordinator_agent_id for owner in retained) if coordinator_agent_id is not None else (False if not retained else None)
-    direct_available = not retained or coordinator_retained is False
+    direct_available = not shared_critic and (not retained or coordinator_retained is False)
     # Depth is a limit on NEW child delegation. Already running/paused owners
     # keep their places; they are never invalidated merely by calling at depth1.
     depth_limit = PLANNER_WRITER_LIMIT if can_spawn else min(PLANNER_WRITER_LIMIT, retained_count + int(direct_available))
@@ -405,7 +411,7 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
             used_new += 1
             # With no child-spawn allowance, a free root/current coordinator can
             # still perform one stream's work directly without another agent.
-            if not can_spawn:
+            if not can_spawn and not shared_critic:
                 packet["action"] = "run_in_coordinator"
                 packet["placement_options"] = ["current_coordinator_if_free"]
         packet.update(selection_state="SELECTED" if observed else "READY_HOST_CAPACITY_UNVERIFIED",

@@ -56,7 +56,7 @@ def config(example=True):
             "base_branch": "main", "branch_pattern": "codex/{ticket}-{slug}", "merge_method": "squash", "draft_pr_first": True, "one_repository_per_controller": True},
         "execution": {"profile": "manual_reference", "max_parallel_tickets": 6, "max_parallel_tickets_per_stream": 1,
             "native_streams": {"enabled": True, "dispatch_policy": "ready_independent"},
-            "independent_reviewers": {"allocation": "one_per_stream"},
+            "independent_reviewers": {"allocation": "shared_critic"},
             "max_agent_runs_per_ticket": 12, "max_spawn_depth": 1, "max_amendment_cycles": 3, "max_cap_extensions": 2,
             "risk_tiers": copy.deepcopy(DEFAULT_RISK_TIERS), "transient_retry_limit": 2,
             "max_run_seconds": 3600, "max_tool_calls_per_run": 100, "max_tokens_per_ticket": 2000000,

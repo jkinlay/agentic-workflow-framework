@@ -59,13 +59,14 @@ def _pair(model, effort):
 
 
 def _stream():
-    return {"worker": _pair("gpt-5.6-terra", "medium"), "reviewer": _pair("gpt-5.6-sol", "high")}
+    return {"worker": _pair("gpt-6-luna", "medium")}
 
 
 def default_operating():
     return {"version": 1, "source": "default", "streams": {"count": 3, **{s: _stream() for s in LABELS[:3]}},
-            "controller": _pair("gpt-5.6-sol", "medium"), "specialist": _pair("gpt-5.6-sol", "high"),
-            "simple_worker": {"enabled": True, **_pair("gpt-5.6-luna", "low")}}
+            "critic": _pair("gpt-6-astra", "high"),
+            "controller": _pair("gpt-6-astra", "high"), "specialist": _pair("gpt-6-astra", "high"),
+            "simple_worker": {"enabled": True, **_pair("gpt-6-luna", "low")}}
 
 
 def operating_applicability(governance):
@@ -89,9 +90,10 @@ def _upgrade_safe_operating(governance):
     if not all(isinstance(defaults.get(role), dict)
                for role in ("controller", "worker", "critic", "specialist")) or not isinstance(simple, dict):
         return default_operating()
-    stream = {"worker": dict(defaults["worker"]), "reviewer": dict(defaults["critic"])}
+    stream = {"worker": dict(defaults["worker"])}
     return {"version": 1, "source": "default",
             "streams": {"count": 3, **{label: deepcopy(stream) for label in LABELS[:3]}},
+            "critic": dict(defaults["critic"]),
             "controller": dict(defaults["controller"]),
             "specialist": dict(defaults["specialist"]),
             "simple_worker": {"enabled": True, **dict(simple)}}
@@ -185,8 +187,12 @@ def validate_operating(value, governance):
     if type(count) is int and 1 <= count <= 6:
         for label in LABELS[:count]:
             if label not in streams:
-                errors.append(refusal("$.streams." + label, "Active stream requires worker and reviewer routes"))
-    pairs = [("$." + role, role, value.get(role)) for role in ("controller", "specialist")] if isinstance(value, dict) else []
+                errors.append(refusal("$.streams." + label, "Active stream requires a worker route"))
+            elif "critic" not in value and (not isinstance(streams.get(label), dict)
+                                              or "reviewer" not in streams[label]):
+                errors.append(refusal("$.streams." + label + ".reviewer",
+                                      "A shared critic route or a legacy reviewer route for every active stream is required"))
+    pairs = [("$." + role, role, value.get(role)) for role in ("controller", "specialist", "critic")] if isinstance(value, dict) else []
     if isinstance(value, dict):
         pairs.append(("$.simple_worker", "worker", value.get("simple_worker")))
     if isinstance(streams, dict):
@@ -201,7 +207,7 @@ def validate_operating(value, governance):
             if not isinstance(scoped, dict):
                 continue
             prefix = "$.epic_overrides." + epic_id
-            pairs.extend((prefix + "." + role, role, scoped[role]) for role in ("controller", "specialist") if role in scoped)
+            pairs.extend((prefix + "." + role, role, scoped[role]) for role in ("controller", "critic", "specialist") if role in scoped)
             scoped_streams = scoped.get("streams", {})
             if isinstance(scoped_streams, dict):
                 for label, entry in scoped_streams.items():
@@ -601,14 +607,14 @@ def _path(path, epic_id=None):
         return _path(qualified[2], qualified[1])
     if re.fullmatch(r"[A-F]\.(worker|reviewer)(\.pinned)?", path):
         path = "streams." + path
-    if path not in {"streams.count", "controller", "specialist", "simple_worker", "simple_worker.enabled",
-                    "controller.pinned", "specialist.pinned", "simple_worker.pinned"} and not re.fullmatch(r"streams\.[A-F]\.(worker|reviewer)(\.pinned)?", path):
+    if path not in {"streams.count", "controller", "critic", "specialist", "simple_worker", "simple_worker.enabled",
+                    "controller.pinned", "critic.pinned", "specialist.pinned", "simple_worker.pinned"} and not re.fullmatch(r"streams\.[A-F]\.(worker|reviewer)(\.pinned)?", path):
         fail("$." + path, "Unsupported operating path; use --epic with a stream/role route for an explicit Epic scope")
     if epic_id is not None:
         if not isinstance(epic_id, str) or len(epic_id) > 80 or not re.fullmatch(EPIC_ID, epic_id):
             fail("$.epic", "Supply the exact observed Epic ID (for example PROJ-123); scope is never inferred")
         if path == "streams.count" or path.startswith("simple_worker"):
-            fail("$." + path, "Epic scope supports only worker/reviewer stream routes and controller/specialist routes")
+            fail("$." + path, "Epic scope supports worker/reviewer stream routes and controller/critic/specialist routes")
         return "epic_overrides." + epic_id + "." + path
     return path
 
@@ -888,7 +894,7 @@ def recommend_operating(epics_raw, snapshot, governance, *, inventory_raw=None, 
                        if specialists else "Entire scope is simple with strong verification; retain the default worker ceiling"
                        if simple else "Default route for the declared bounded scope")
                 choices.extend((("streams." + label + ".worker", worker, why),
-                                ("streams." + label + ".reviewer", reviewer, "High-risk review" if high else "Governing review floor")))
+                                ("critic", reviewer, "High-risk review" if high else "Governing review floor")))
                 if simple:
                     choices.append(("simple_worker.enabled", True, "Entire assigned scope is simple, low uncertainty and strongly verified"))
             controller = _governing_route("controller", policy)
@@ -986,12 +992,14 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
     value, policy = snapshot.config, governance["execution"]["model_routing"]
     capacity = operating_ceiling(governance)
     lines = [f"AWF {version}: {state} — operating configuration (source: {snapshot.source})",
-             f"Streams: {snapshot.count} of ceiling {capacity['effective_ceiling']}, one reviewer per stream; binding limits: "
+             f"Streams: {snapshot.count} of ceiling {capacity['effective_ceiling']}; one shared independent critic/adversarial handler by default; binding limits: "
              + ", ".join(capacity["effective_ceiling_sources"]) + ". Observed host slots remain separate.",
-             "| Stream | Worker | Reviewer |", "|---|---|---|"]
+             "| Stream | Worker | Legacy per-stream reviewer |", "|---|---|---|"]
     for label in LABELS[:snapshot.count]:
         item = value["streams"][label]
-        lines.append(f"| {label} | {_display(item['worker'])} | {_display(item['reviewer'])} |")
+        lines.append(f"| {label} | {_display(item['worker'])} | {_display(item['reviewer']) if item.get('reviewer') else '—'} |")
+    if value.get("critic"):
+        lines.extend(["", "Shared critic/adversarial handler: " + _display(value["critic"])])
     for epic_id, scoped in sorted(value.get("epic_overrides", {}).items()):
         lines.extend(["", "Epic " + epic_id + " overrides (matching observed Epic only):",
                       "| Setting | Route |", "|---|---|"])
@@ -999,7 +1007,7 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
             for role in ("worker", "reviewer"):
                 if role in entry:
                     lines.append("| streams." + label + "." + role + " | " + _display(entry[role]) + " |")
-        for role in ("controller", "specialist"):
+        for role in ("controller", "critic", "specialist"):
             if role in scoped:
                 lines.append("| " + role + " | " + _display(scoped[role]) + " |")
     lines.extend(["Controller " + _display(value["controller"]) + "; Specialist " + _display(value["specialist"]),

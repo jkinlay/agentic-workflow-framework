@@ -31,9 +31,9 @@ New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organizat
 | Test command | Prefer an npm test script, then evident pytest markers; otherwise supply `--test-command COMMAND`. Run the selected project tests separately. |
 | Jira | Supply both `--jira-site URL` and `--jira-key KEY`. Neither sets `jira.enabled: false`, with null site/key, for a fresh project. Preserve existing Jira configuration. |
 
-Keep `template.expected_workflow_version: 1.9.3`, real paths, scope and protected limits. Bootstrap preserves root operating choices or seeds three streams within ceiling six, one reviewer each. Disabled/unscoped Jira permits no ticket mutations; use provisional local records.
+Keep `template.expected_workflow_version: 1.9.3`, real paths, scope and protected limits. Bootstrap preserves root operating choices or seeds three worker streams and one shared independent critic within ceiling six (five slots including the controller). Disabled/unscoped Jira permits no ticket mutations; use provisional local records.
 
-Existing projects get `governance_proposal.adoption_pr_section` with exact current/proposed ceiling and reviewer count. Ordinary upgrades preserve both. Explicit `--propose-operating-capacity` stages ceiling six (higher preserved) and derived one-per-stream reviewers for owner review/merge; `--dry-run` writes nothing. Other governance/operating choices remain unchanged.
+Existing projects get `governance_proposal.adoption_pr_section` with exact current/proposed ceiling and reviewer allocation/count. Ordinary upgrades preserve both. Explicit `--propose-operating-capacity` stages ceiling six (higher preserved) and retains the current reviewer allocation for owner review/merge; `--dry-run` writes nothing. Other governance/operating choices remain unchanged.
 
 Bootstrap appends [narrow ignore rules](../templates/operating.gitignore), preserving existing bytes. Commit operating configuration and `changes/` audit records; review broad owner rules that hide them. Preserve ignored recovery files until recovery completes.
 

@@ -4,7 +4,7 @@
 
 Adds Git-format-aware `tested_tree`; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match.
 
-Sets new-adoption risk and specialist routes to `gpt-5.6-sol` / high. Capability observations feed route preflight; owner-set routes persist.
+Sets AWF 1.9.3 defaults to `gpt-6-luna` / medium for workers A/B/C, `gpt-6-astra` / high for the controller, shared independent critic/adversarial handler, specialist, and risk/review floors. Automatic worker escalation proceeds through `gpt-6-sol` / high to `gpt-6-astra` / high. Three worker streams plus one critic and controller use five slots. Per-ticket and daily caps are unchanged; existing adopted operating configurations remain preserved, and legacy models/routes remain accepted.
 
 Adds outcome templates; verdicts remain separate.
 
@@ -18,7 +18,7 @@ Hardens activation with versioned REST/GraphQL merge identity, complete PR/base/
 
 ## 1.9.2 — 23 September 2026
 
-Adds token-only host budgets with larger new-project token/run defaults, an exact-tree publisher commit route for workers unable to write Git metadata, project lint-scope preflight, and the repository-owned portable skill source. Host child processes now consistently exclude Anthropic, Codex and OpenAI API keys. Release builds reject `.tmp`/`tmp` path components and `*.tmp` files before rewriting manifests or creating an archive, while retaining `.tmp-tests` as an excluded local test area whose links remain forbidden. The defaults reflect an owner workload of 10–20 tickets a day, signal-lab SL-1's 282,975 tokens in 3 runs, the 77-file AWF 1.9.2 PR's 1,402,537 tokens in 6 runs across three critic rounds, and 8–9 runs for a full ticket. Existing project configuration remains preserved on upgrade; review, merge, reconciliation and Jira boundaries are unchanged. No new model pilot.
+Adds token-only budgets, higher new-project caps, publisher commits for sandboxes unable to write Git metadata, lint-scope preflight and portable skills. Child processes exclude provider API keys. Release builds reject temp residue and forbid `.tmp-tests` links. Budgets reflect expected ticket volume and prior AWF workloads; existing project configuration remains preserved, and review, merge, reconciliation and Jira boundaries stay unchanged. No model pilot.
 
 ## 1.9.1 — 21 September 2026
 

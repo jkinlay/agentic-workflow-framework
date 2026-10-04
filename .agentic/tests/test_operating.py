@@ -49,6 +49,9 @@ class ValidationTests(unittest.TestCase):
         value = op.default_operating()
         self.assertEqual(3, value["streams"]["count"])
         self.assertEqual({"count", "A", "B", "C"}, set(value["streams"]))
+        self.assertEqual("gpt-6-luna", value["streams"]["A"]["worker"]["model"])
+        self.assertEqual("gpt-6-astra", value["critic"]["model"])
+        self.assertNotIn("reviewer", value["streams"]["A"])
         snapshot = op.validate_operating(value, self.gov)
         current = canonical(self.gov)
         value["streams"]["count"] = 2
@@ -68,12 +71,28 @@ class ValidationTests(unittest.TestCase):
         self.gov["execution"]["independent_reviewers"]["count"] = 2
         self.refuse(op.default_operating(), "$.streams.count", "$.execution.independent_reviewers.count")
 
+    def test_shared_and_legacy_reviewer_routes_and_epic_critic_override_are_preserved(self):
+        value = op.default_operating()
+        value.pop("critic")
+        for label in "ABC":
+            value["streams"][label]["worker"] = op._pair("gpt-5.6-terra", "medium")
+            value["streams"][label]["reviewer"] = op._pair("gpt-6-astra", "high")
+        value["epic_overrides"] = {"FIX-1": {"critic": op._pair("gpt-6-astra", "high")}}
+        snapshot = op.validate_operating(value, self.gov)
+        self.assertEqual(value, snapshot.config)
+        self.assertEqual(op._pair("gpt-6-astra", "high"), snapshot.config["epic_overrides"]["FIX-1"]["critic"])
+
+    def test_missing_shared_critic_requires_a_legacy_reviewer_for_every_active_stream(self):
+        value = op.default_operating()
+        value.pop("critic")
+        self.refuse(value, "$.streams.A.reviewer", None)
+
     def test_both_model_allowlists_bind_exact_path(self):
         value = op.default_operating()
-        self.gov["execution"]["model_routing"]["role_allowed_models"]["worker"].remove("gpt-5.6-terra")
+        self.gov["execution"]["model_routing"]["role_allowed_models"]["worker"].remove("gpt-6-luna")
         self.refuse(value, "$.streams.C.worker.model", "$.execution.model_routing.role_allowed_models.worker")
         self.gov = governance()
-        self.gov["execution"]["roles"]["worker"]["approved_model_ids"].remove("gpt-5.6-terra")
+        self.gov["execution"]["roles"]["worker"]["approved_model_ids"].remove("gpt-6-luna")
         self.refuse(value, "$.streams.C.worker.model", "$.execution.roles.worker.approved_model_ids")
 
     def test_effective_ceiling_ignores_disabled_broker_and_binds_enabled_workers(self):
@@ -106,10 +125,10 @@ class ValidationTests(unittest.TestCase):
     def test_effort_and_review_floor_bind(self):
         value = op.default_operating()
         value["streams"]["C"]["worker"]["reasoning_effort"] = "invalid"
-        self.refuse(value, "$.streams.C.worker.reasoning_effort", "$.execution.model_routing.models.gpt-5.6-terra.reasoning_efforts")
+        self.refuse(value, "$.streams.C.worker.reasoning_effort", "$.execution.model_routing.models.gpt-6-luna.reasoning_efforts")
         value = op.default_operating()
-        value["streams"]["C"]["reviewer"] = op._pair("gpt-5.6-terra", "medium")
-        self.refuse(value, "$.streams.C.reviewer", "$.execution.model_routing.review_floor")
+        value["critic"] = op._pair("gpt-6-sol", "medium")
+        self.refuse(value, "$.critic", "$.execution.model_routing.review_floor")
 
     def test_all_routes_support_explicit_pin_and_inactive_routes_survive(self):
         value = op.default_operating()
@@ -196,8 +215,8 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(first, self.recommend(epics))
         rows = {r["path"]: r["recommended"] for r in first["rows"]}
         self.assertEqual(4, rows["streams.count"])
-        self.assertEqual("gpt-5.6-sol", rows["streams.B.worker"]["model"])
-        self.assertNotIn("streams.B.reviewer", rows)  # already Sol/high in the accepted snapshot
+        self.assertEqual("gpt-6-astra", rows["streams.B.worker"]["model"])
+        self.assertNotIn("critic", rows)  # shared Astra/high route already satisfies the floor
         self.assertIn("streams.D.worker", rows)
         self.assertFalse(first["execution_authority"])
 
@@ -221,8 +240,8 @@ class RecommendationTests(unittest.TestCase):
                 self.assertEqual(expected, self.recommend(values)["rows"])
         rows = {row["path"]: row["recommended"] for row in expected}
         self.assertEqual(4, rows["streams.count"])
-        self.assertNotIn("streams.B.reviewer", rows)  # already Sol/high
-        self.assertEqual("gpt-5.6-sol", rows["streams.D.worker"]["model"])
+        self.assertNotIn("critic", rows)  # already Astra/high
+        self.assertEqual("gpt-6-astra", rows["streams.D.worker"]["model"])
 
     def test_unknown_scope_reason_identifies_epic_and_value(self):
         windows_root = "C:" + "/root"
@@ -271,14 +290,17 @@ class RecommendationTests(unittest.TestCase):
         policy["role_defaults"]["critic"] = op._pair("gpt-5.6-sol", "xhigh")
         self.snapshot = op.validate_operating(op.default_operating(), self.gov)
         rows = {row["path"]: row for row in self.recommend([epic(1, ["data/**"])])["rows"]}
-        for path, role in (("streams.A.worker", "worker"), ("streams.A.reviewer", "critic"),
+        for path, role in (("streams.A.worker", "worker"), ("critic", "critic"),
                            ("controller", "controller")):
-            self.assertEqual({**policy["role_defaults"][role], "pinned": False}, rows[path]["recommended"])
+            expected = {**policy["role_defaults"][role], "pinned": False}
+            if role == "critic":
+                expected["model"] = "gpt-6-astra"
+            self.assertEqual(expected, rows[path]["recommended"])
         self.assertNotIn("specialist", rows)
-        self.assertEqual(policy["role_defaults"]["specialist"], self.snapshot.config["specialist"])
+        self.assertEqual("gpt-6-astra", self.snapshot.config["specialist"]["model"])
         risky = self.recommend([epic(1, ["data/**"], risk_flags=["security"])])
-        reviewer = next(row["recommended"] for row in risky["rows"] if row["path"] == "streams.A.reviewer")
-        self.assertEqual(op._pair("gpt-5.6-sol", "xhigh"), {k: reviewer[k] for k in ("model", "reasoning_effort")})
+        reviewer = next(row["recommended"] for row in risky["rows"] if row["path"] == "critic")
+        self.assertEqual(op._pair("gpt-6-astra", "xhigh"), {k: reviewer[k] for k in ("model", "reasoning_effort")})
 
     def test_explicit_stream_role_and_epic_pins_are_displayed_and_preserved(self):
         current = self.snapshot.config
@@ -305,7 +327,7 @@ class RecommendationTests(unittest.TestCase):
         self.snapshot = op.validate_operating(current, self.gov)
         record = self.recommend([epic(i, [f"component{i}/**"]) for i in range(1, 6)])
         pins = [row for row in record["rows"] if row["path"].startswith("epic_overrides.")]
-        self.assertEqual(70, len(pins))
+        self.assertEqual(40, len(pins))
         self.assertTrue(all(row["current"] == row["recommended"] for row in pins))
         self.assertLess(len(op._json(record)), op.MAX_BYTES)
 
@@ -320,8 +342,8 @@ class RecommendationTests(unittest.TestCase):
         record = self.recommend([epic(i, ["infra/" if i == 1 else f"component{i}/"]) for i in range(1, 7)])
         rows = {r["path"]: r["recommended"] for r in record["rows"]}
         self.assertEqual(6, rows["streams.count"])
-        self.assertEqual("high", rows["controller"]["reasoning_effort"])
-        self.assertEqual("gpt-5.6-sol", rows["streams.A.worker"]["model"])
+        self.assertEqual("high", self.snapshot.config["controller"]["reasoning_effort"])
+        self.assertEqual("gpt-6-astra", rows["streams.A.worker"]["model"])
 
     def test_rendered_state_is_supplied_not_invented(self):
         table = op.render_operating(self.snapshot, self.gov, state="UNVERIFIED", version="1.8.9")
@@ -340,7 +362,7 @@ class RecommendationTests(unittest.TestCase):
                                         now=value["inventory"]["captured_at"])
         self.assertEqual(sha256(raw), record["inputs"]["inventory"])
         self.assertEqual(4, record["ticket_count"])
-        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == "gpt-5.6-sol" for row in record["rows"]))
+        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == "gpt-6-astra" for row in record["rows"]))
         value["project"]["repository"] = "other/repository"
         with self.assertRaises(op.OperatingError):
             op.recommend_operating(epic_bytes(epics), snapshot, self.gov, inventory_raw=canonical(value),
@@ -355,10 +377,9 @@ class RecommendationTests(unittest.TestCase):
             item["risk_flags"] = ["concurrency"]
         record = op.recommend_operating(epic_bytes(epics), op.validate_operating(op.default_operating(), self.gov), self.gov,
                                         inventory_raw=canonical(value), now=value["inventory"]["captured_at"])
-        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == "gpt-5.6-sol"
+        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == "gpt-6-astra"
                             for row in record["rows"]), record["rows"])
-        self.assertTrue(all(self.snapshot.config["streams"][label]["reviewer"] == op._pair("gpt-5.6-sol", "high")
-                            for label in "ABC"))
+        self.assertEqual(op._pair("gpt-6-astra", "high"), self.snapshot.config["critic"])
 
     def test_sparse_inventory_epics_preserve_observed_simple_markers(self):
         value = load(ROOT / ".agentic/examples/stream-input.json")
@@ -387,7 +408,7 @@ class RecommendationTests(unittest.TestCase):
             record = op.recommend_operating(epic_bytes(epics), op.validate_operating(op.default_operating(), self.gov), self.gov,
                                             inventory_raw=canonical(value), now=value["inventory"]["captured_at"])
             with self.subTest(source=source):
-                self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == "gpt-5.6-sol"
+                self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == "gpt-6-astra"
                                     and "Specialist triggers" in row["reason"] for row in record["rows"]), record["rows"])
 
     def test_planner_completed_inventory_recommends_no_new_work(self):
@@ -407,17 +428,18 @@ class RecommendationTests(unittest.TestCase):
         self.gov["execution"]["model_routing"]["risk_route"]["reasoning_effort"] = "xhigh"
         current = op.default_operating()
         for label in "ABC":
-            current["streams"][label]["reviewer"]["reasoning_effort"] = "xhigh"
+            current["critic"]["reasoning_effort"] = "xhigh"
         current["specialist"]["reasoning_effort"] = "xhigh"
         self.snapshot = op.validate_operating(current, self.gov)
         record = self.recommend([epic(1, ["data/"], risk_flags=["concurrency"])])
         rows = {row["path"]: row["recommended"] for row in record["rows"]}
-        self.assertNotIn("streams.A.reviewer", rows)
-        self.assertEqual("xhigh", self.snapshot.config["streams"]["A"]["reviewer"]["reasoning_effort"])
+        self.assertNotIn("critic", rows)
+        self.assertEqual("xhigh", self.snapshot.config["critic"]["reasoning_effort"])
         self.assertNotIn("specialist", rows)
         # A governed recommendation still refuses an unavailable risk route;
         # it cannot substitute a weaker allowed model to produce an offer.
-        self.gov["execution"]["roles"]["worker"]["approved_model_ids"].remove("gpt-5.6-sol")
+        self.gov["execution"]["roles"]["worker"]["approved_model_ids"].remove("gpt-6-astra")
+        self.gov["execution"]["model_routing"]["role_allowed_models"]["worker"].remove("gpt-6-astra")
         self.snapshot = op.validate_operating(current, self.gov)
         with self.assertRaises(op.OperatingError) as caught:
             self.recommend([epic(1, ["data/"], risk_flags=["concurrency"])])
@@ -623,9 +645,10 @@ class OperatingFileTests(unittest.TestCase):
         op.set_operating(self.root, self.gov, "FIX-1 worker Terra", ["B.worker=gpt-5.6-terra/medium"], epic_id="FIX-1")
         gov = deepcopy(self.gov)
         gov["execution"]["roles"]["worker"]["approved_model_ids"].remove("gpt-5.6-terra")
+        gov["execution"]["model_routing"]["role_allowed_models"]["worker"].remove("gpt-5.6-terra")
         (self.root / op.GOVERNANCE).write_bytes(op._json(gov))
-        with self.assertRaises(op.OperatingError):
-            op.set_operating(self.root, gov, "Fix Epic", ["B.worker=gpt-5.6-sol/high"], epic_id="FIX-1")
+        repaired = op.set_operating(self.root, gov, "Fix Epic", ["B.worker=gpt-5.6-sol/high"], epic_id="FIX-1")
+        self.assertEqual("gpt-5.6-sol", repaired.config["epic_overrides"]["FIX-1"]["streams"]["B"]["worker"]["model"])
         assignments = ["streams." + label + ".worker=gpt-5.6-sol/high" for label in "ABC"]
         assignments.append("epic_overrides.FIX-1.streams.B.worker=gpt-5.6-sol/high")
         result = op.set_operating(self.root, gov, "Repair global and FIX-1 workers under the accepted policy", assignments)
@@ -739,6 +762,7 @@ class OperatingFileTests(unittest.TestCase):
         value = self.initial.config
         value["epic_overrides"] = {"FIX-" + str(i): {"streams": {label: op._stream() for label in op.LABELS}}
                                    for i in range(1, 1001)}
+        value["epic_overrides"] = {f"FIX-{i}": {"streams": {label: {"worker": op._pair("gpt-6-astra", "xhigh"), "reviewer": op._pair("gpt-6-astra", "xhigh")} for label in op.LABELS}} for i in range(1,1001)}
         self.assertGreater(len(op._json(value)), op.MAX_BYTES)
         with op.Tree(self.root) as tree, op._lock(tree), self.assertRaises(op.OperatingError) as caught:
             op._commit(tree, self.gov, before, value, "Synthetic oversized scoped fixture", [], "chat")
