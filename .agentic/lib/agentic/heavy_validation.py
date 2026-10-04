@@ -598,7 +598,7 @@ class _ChildLaunchAuthorization:
                  candidate: dict, authorization: dict, authenticator,
                  capacity: dict | None, max_capacity_age_seconds: int,
                  capacity_required: bool, lease: dict | None, lease_guard,
-                 clock, cancel_event: threading.Event):
+                 clock, cancel_event: threading.Event, lease_quarantiner=None):
         self._review = review
         self._review_digest = review_digest
         self._plan_digest = plan_digest
@@ -612,6 +612,7 @@ class _ChildLaunchAuthorization:
         self._lease_guard = lease_guard
         self._clock = clock
         self._cancel_event = cancel_event
+        self._lease_quarantiner = lease_quarantiner
         self._lock = threading.Lock()
         self._checks: list[dict] = []
         self._blocked = False
@@ -698,10 +699,14 @@ class _ChildLaunchAuthorization:
             return {**record, "evidence_sha256": fingerprint(
                 "heavy-validation-child-launch-authorizations", record)}
 
-    def abort(self):
+    def abort(self, cleanup: dict | None = None):
         """Cancel all queued launches while serialized with child creation."""
         with self._lock:
-            self._cancel_event.set()
+            try:
+                if cleanup is not None and self._lease_quarantiner is not None:
+                    self._lease_quarantiner(cleanup)
+            finally:
+                self._cancel_event.set()
 
 
 def _authenticate_review(review: dict, review_digest: str, plan_digest: str,
@@ -1031,6 +1036,24 @@ def _release_lease(client, lease: dict | None) -> dict:
     return deepcopy(result)
 
 
+def _quarantine_lease(client, lease: dict | None, cleanup: dict) -> dict:
+    if lease is None or lease.get("status") != "GRANTED":
+        return {"status": "NOT_ACQUIRED"}
+    quarantine = getattr(client, "quarantine", None)
+    if not callable(quarantine):
+        return {"status": "RETAINED", "reason": "broker has no durable quarantine operation"}
+    try:
+        result = quarantine(lease["lease_id"], lease["fencing_token"], {
+            "outcome": cleanup.get("outcome"), "mechanism": cleanup.get("mechanism")})
+    except Exception as exc:
+        return {"status": "FAILED", "reason": f"{type(exc).__name__}: quarantine failed"}
+    if (not isinstance(result, dict) or result.get("status") != "QUARANTINED"
+            or result.get("lease_id") != lease["lease_id"]
+            or result.get("fencing_token") != lease["fencing_token"]):
+        return {"status": "FAILED", "reason": "broker did not confirm the exact fence quarantine"}
+    return deepcopy(result)
+
+
 def _parallelism(plan: dict, config: dict, capacity: dict | None,
                  stale: bool) -> tuple[int, list[str]]:
     execution, broker, configured_resources = _broker(config)
@@ -1160,6 +1183,12 @@ def _bounded_digest(data: bytes) -> tuple[str, int, bool, str]:
     truncated = total > _MAX_OUTPUT_BYTES
     shown = data[:_MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
     return digest, total, truncated, shown
+
+
+def _stable_launch_artifact_receipts(artifacts: list[dict]) -> list[dict]:
+    """Bind artifact identity while excluding per-run snapshot path names."""
+    return [{"method": item["method"], "sha256": item["sha256"]}
+            for item in artifacts]
 
 
 class _Capture:
@@ -1568,14 +1597,17 @@ def _execute(partition: dict, plan: dict, executable: dict, cwd: Path, config: d
     for attempt in range(1, maximum + 1):
         final = _execute_attempt(partition, plan, executable, cwd, config, cancel_event, attempt,
                                  launch_chain, lease_guard, launch_authorizer)
-        attempts.append({key: final[key] for key in (
+        attempt_record = {key: final[key] for key in (
             "attempt", "state", "exit_code", "timed_out", "cancelled", "error_type",
-            "process_tree_cleanup", "stdout_sha256", "stderr_sha256")})
+            "process_tree_cleanup", "stdout_sha256", "stderr_sha256")}
+        attempt_record["windows_launch_chain_artifacts"] = deepcopy(
+            final.get("windows_launch_chain_artifacts", []))
+        attempts.append(attempt_record)
         if final["process_tree_cleanup"]["outcome"] in {"PARTIAL", "FAILED"}:
             # Acquire the same gate used by launch authorization before setting
             # cancellation, so no queued retry or sibling can launch afterward.
             if launch_abort is not None:
-                launch_abort()
+                launch_abort(final["process_tree_cleanup"])
             else:
                 cancel_event.set()
         if (final["state"] in {"PASS", "CANCELLED"}
@@ -1598,6 +1630,7 @@ def _unexpected_result(partition: dict, plan: dict, executable: dict, exc: Excep
         "state": "FAILED", "exit_code": None,
         "timed_out": False, "cancelled": False, "error_type": type(exc).__name__,
         "process_tree_cleanup": {"outcome": "FAILED", "mechanism": "executor_failure"},
+        "windows_launch_chain_artifacts": [],
         "stdout_sha256": empty, "stdout_bytes": 0, "stdout_truncated": False, "stdout": "",
         "stderr_sha256": digest, "stderr_bytes": length, "stderr_truncated": truncated,
         "stderr": shown,
@@ -1714,7 +1747,9 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
                         capacity=capacity,
                         max_capacity_age_seconds=max_capacity_age_seconds,
                         capacity_required=broker["enabled"], lease=lease,
-                        lease_guard=guard, clock=dispatch_clock, cancel_event=event)
+                        lease_guard=guard, clock=dispatch_clock, cancel_event=event,
+                        lease_quarantiner=lambda cleanup: _quarantine_lease(
+                            broker_client, lease, cleanup))
                     with ThreadPoolExecutor(max_workers=effective,
                                             thread_name_prefix="awf-heavy") as executor:
                         futures = {
@@ -1747,6 +1782,12 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
         if (cleanup_established and lease is not None
                 and lease.get("status") == "GRANTED"):
             lease_release = _release_lease(broker_client, lease)
+        elif lease is not None and lease.get("status") == "GRANTED":
+            cleanup = next((item.get("process_tree_cleanup", {}) for item in results
+                            if item.get("process_tree_cleanup", {}).get("outcome")
+                            in {"PARTIAL", "FAILED"}),
+                           {"outcome": "FAILED", "mechanism": "unobserved_cleanup"})
+            lease_release = _quarantine_lease(broker_client, lease, cleanup)
     ended_at = now_text()
     results.sort(key=lambda item: item["name"])
     terminal = len(results) == len(plan["partitions"]) and all(
@@ -1762,11 +1803,18 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
               and lease_runtime_valid and all(
         item["state"] == "PASS" for item in results)
               )
-    stable = [{key: item[key] for key in (
-        "partition_id", "name", "engine", "command_sha256", "state", "exit_code",
-        "timed_out", "cancelled", "retry_count", "attempts", "process_tree_cleanup",
-        "stdout_sha256", "stderr_sha256")}
-        for item in results]
+    stable = []
+    for item in results:
+        record = {key: deepcopy(item[key]) for key in (
+            "partition_id", "name", "engine", "command_sha256", "state", "exit_code",
+            "timed_out", "cancelled", "retry_count", "attempts", "process_tree_cleanup",
+            "stdout_sha256", "stderr_sha256")}
+        record["windows_launch_chain_artifacts"] = _stable_launch_artifact_receipts(
+            item.get("windows_launch_chain_artifacts", []))
+        for attempt in record["attempts"]:
+            attempt["windows_launch_chain_artifacts"] = _stable_launch_artifact_receipts(
+                attempt.get("windows_launch_chain_artifacts", []))
+        stable.append(record)
     serial_equivalence_sha256 = fingerprint("heavy-validation-serial-equivalence", {
         "candidate": plan["candidate"], "plan_sha256": plan_digest,
         "partition_set": stable})

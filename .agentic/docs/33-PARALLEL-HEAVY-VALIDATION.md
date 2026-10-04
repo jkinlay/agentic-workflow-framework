@@ -67,3 +67,6 @@ python -B -m unittest discover -s .agentic/tests -p test_heavy_validation.py -v
 ```
 
 The regression covers every control above, including replacement/config injection, mutation races, lease expiry/exhaustion, authorization movement, containment, tampering, cancellation, adapters, credentials, caps, and output bounds. It uses no proprietary engine, GPU, or license server.
+
+Durable lease quarantine, recovery, and launch artifact receipt semantics are
+specified in [five-slot acceleration](36-FIVE-SLOT-ACCELERATION.md).

@@ -226,6 +226,51 @@
       "regression_id": "CV39-F03-REGRESSION",
       "source_finding_id": "CV39-F03",
       "test_id": "ContinuousControllerTests.test_schema_inventory_matches_loaded_generated_catalog"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_heavy_validation.py",
+      "name": "Selected engine parallel unavailability caps the granted dispatch and lease",
+      "permanent": true,
+      "regression_id": "C33-F01-REGRESSION",
+      "source_finding_id": "C33-F01",
+      "test_id": "HeavyValidationTests.test_parallel_unavailable_with_multiple_slots_caps_effective_and_lease_limits"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_heavy_validation.py",
+      "name": "Unrelated engine parallel unavailability conservatively caps host dispatch",
+      "permanent": true,
+      "regression_id": "C33-F02-REGRESSION",
+      "source_finding_id": "C33-F02",
+      "test_id": "HeavyValidationTests.test_unavailable_unrelated_engine_also_caps_host_dispatch"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_heavy_validation.py",
+      "name": "Incomplete cleanup cancels queued siblings and retries at the launch gate",
+      "permanent": true,
+      "regression_id": "C33-F03-REGRESSION",
+      "source_finding_id": "C33-F03",
+      "test_id": "HeavyValidationTests.test_incomplete_cleanup_cancels_queued_sibling_under_launch_gate"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_heavy_validation.py",
+      "name": "Authenticated result receipts bind the reviewed Windows sanitizer artifact",
+      "permanent": true,
+      "regression_id": "C33-F04-REGRESSION",
+      "source_finding_id": "C33-F04",
+      "test_id": "HeavyValidationTests.test_result_receipt_binds_windows_sanitizer_artifact"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_heavy_validation.py",
+      "name": "Durable quarantined leases block expiry reuse across restart until exact recovery evidence",
+      "permanent": true,
+      "regression_id": "CV33-F01-REGRESSION",
+      "source_finding_id": "CV33-F01",
+      "test_id": "HeavyValidationTests.test_expired_quarantined_file_lease_survives_restart_until_exact_recovery"
     }
   ]
 }

@@ -240,6 +240,45 @@ class HeavyValidationTests(unittest.TestCase):
         self.assertEqual(1, result["execution"]["effective_parallelism"])
         self.assertEqual(1, broker.acquired[0]["engine_slots"])
 
+    def test_result_receipt_binds_windows_sanitizer_artifact(self):
+        raw = plan([partition("receipt")], parallelism=1)
+        outputs = []
+        for sanitizer_sha in ("a" * 64, "b" * 64):
+            def execute(part, candidate_plan, executable, *args, **kwargs):
+                result = heavy._unexpected_result(
+                    part, candidate_plan, executable, RuntimeError("synthetic result"))
+                result.update(state="PASS", error_type=None,
+                              process_tree_cleanup={"outcome": "NOT_REQUIRED",
+                                                    "mechanism": "synthetic"},
+                              windows_launch_chain_artifacts=[{
+                                  "method": "sealed_reviewed_snapshot",
+                                  "source_path": ".agentic/lib/agentic/child_process.py",
+                                  "launch_path": ".agentic/lib/agentic/child_process.py",
+                                  "sha256": sanitizer_sha}])
+                result["attempts"][0].update(
+                    state="PASS", error_type=None,
+                    process_tree_cleanup=result["process_tree_cleanup"],
+                    windows_launch_chain_artifacts=result["windows_launch_chain_artifacts"])
+                return result
+            with mock.patch.object(heavy, "_execute", side_effect=execute):
+                outputs.append(run(raw, config(enabled=False)))
+        self.assertNotEqual(outputs[0]["aggregate_sha256"],
+                            outputs[1]["aggregate_sha256"])
+        self.assertNotEqual(outputs[0]["serial_equivalence_sha256"],
+                            outputs[1]["serial_equivalence_sha256"])
+        with tempfile.TemporaryDirectory() as folder:
+            key = b"s" * 32
+            authenticated = []
+            for index, output in enumerate(outputs):
+                log, receipt = (Path(folder) / f"result-{index}.json",
+                                Path(folder) / f"receipt-{index}.json")
+                write_result_log(log, receipt, output, key)
+                authenticated.append(read_result_log(log, receipt, key))
+            self.assertEqual("a" * 64, authenticated[0]["result"]["partitions"][0]
+                             ["windows_launch_chain_artifacts"][0]["sha256"])
+            self.assertEqual("b" * 64, authenticated[1]["result"]["partitions"][0]
+                             ["windows_launch_chain_artifacts"][0]["sha256"])
+
     def test_parallel_requires_exact_lease_and_releases_fence_after_barrier(self):
         raw = plan([partition("a"), partition("b")], parallelism=2)
         cfg, broker = config(), Broker()
@@ -1368,6 +1407,61 @@ class HeavyValidationTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 write_result_log(log, Path(folder) / "other.receipt.json",
                                  {"status": "PASS", "value": 2}, key)
+
+    def test_expired_quarantined_file_lease_survives_restart_until_exact_recovery(self):
+        now = {"value": datetime.fromisoformat(NOW.replace("Z", "+00:00"))}
+        clock = lambda: now["value"]
+        limits = {"max_workers": 1, "max_heavy_jobs": 1, "max_gpu_jobs": 0,
+                  "resources": {}, "engines": {"python": {
+                      "identity_sha256": "d" * 64, "slots": 1}}}
+        request = {"format": "awf-heavy-validation-lease-request-2",
+                   "candidate": CANDIDATE, "plan_sha256": "a" * 64,
+                   "config_sha256": "b" * 64, "capacity_sha256": "c" * 64,
+                   "parallelism": 1, "resource_class": "heavy", "engine": "python",
+                   "engine_identity_sha256": "d" * 64, "engine_slots": 1,
+                   "required_resources": [], "resource_claims": {},
+                   "determinism": {"seed": 1, "retry_limit": 0},
+                   "isolation": {"process_tree": "REQUIRED", "network": "HOST_POLICY",
+                                 "filesystem": "WORKTREE"},
+                   "required_duration_seconds": 10}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "broker.json"
+            broker = FileLeaseBroker(path, "fixture", limits, clock=clock)
+            lease = broker.acquire(request)
+            self.assertEqual("GRANTED", lease["status"])
+            self.assertEqual("QUARANTINED", broker.quarantine(
+                lease["lease_id"], lease["fencing_token"],
+                {"outcome": "PARTIAL", "mechanism": "direct_process_only"})["status"])
+            now["value"] += timedelta(days=2)
+            restarted = FileLeaseBroker(path, "fixture", limits, clock=clock)
+            denied = restarted.acquire(request)
+            self.assertEqual("DENIED", denied["status"])
+            self.assertIn("worker capacity", denied["reason"])
+            state = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual("awf-heavy-validation-broker-state-3", state["format"])
+            self.assertEqual("PARTIAL", state["leases"][0]["quarantine"]["outcome"])
+            self.assertEqual("QUARANTINED", restarted.release(
+                lease["lease_id"], lease["fencing_token"])["status"])
+            evidence = {"format": "awf-heavy-validation-termination-evidence-1",
+                        "lease_id": lease["lease_id"],
+                        "fencing_token": lease["fencing_token"], "status": "TERMINATED",
+                        "source": "operator_recovery_record", "observed_at": NOW,
+                        "proof_sha256": "9" * 64}
+            evidence["evidence_sha256"] = fingerprint(
+                "heavy-validation-termination-evidence", evidence)
+            wrong_fence = deepcopy(evidence)
+            wrong_fence["fencing_token"] += 1
+            wrong_fence_core = {key: value for key, value in wrong_fence.items()
+                                if key != "evidence_sha256"}
+            wrong_fence["evidence_sha256"] = fingerprint(
+                "heavy-validation-termination-evidence", wrong_fence_core)
+            with self.assertRaisesRegex(ValidationError, "does not bind"):
+                restarted.release_quarantined(
+                    lease["lease_id"], lease["fencing_token"], wrong_fence)
+            released = restarted.release_quarantined(
+                lease["lease_id"], lease["fencing_token"], evidence)
+            self.assertEqual("RELEASED", released["status"])
+            self.assertEqual("GRANTED", restarted.acquire(request)["status"])
 
     def test_workload_authorization_binds_every_dispatch_input(self):
         raw = plan([partition("bound")], parallelism=1)

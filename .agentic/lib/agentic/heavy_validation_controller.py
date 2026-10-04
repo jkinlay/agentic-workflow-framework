@@ -509,7 +509,7 @@ class FileLeaseBroker:
     def _validate_state(self, state: dict):
         _require(isinstance(state, dict)
                  and set(state) == {"format", "broker_id", "next_fence", "leases"}
-                 and state["format"] == "awf-heavy-validation-broker-state-2"
+                 and state["format"] == "awf-heavy-validation-broker-state-3"
                  and state["broker_id"] == self.broker_id
                  and isinstance(state["leases"], list),
                  "Durable broker state is invalid")
@@ -517,7 +517,7 @@ class FileLeaseBroker:
         fences, lease_ids = [], []
         expected = {"lease_id", "fencing_token", "expires_at", "parallelism",
                     "resource_class", "resource_claims", "engine", "engine_identity_sha256",
-                    "engine_slots", "request_sha256"}
+                    "engine_slots", "request_sha256", "quarantine"}
         for item in state["leases"]:
             _require(isinstance(item, dict) and set(item) == expected,
                      "Durable broker lease fields are invalid")
@@ -542,6 +542,16 @@ class FileLeaseBroker:
                      == self.limits["engines"][item["engine"]]["identity_sha256"],
                      "Durable broker engine identity is unknown")
             _digest(item["request_sha256"], "broker request_sha256")
+            quarantine = item["quarantine"]
+            _require(quarantine is None or isinstance(quarantine, dict),
+                     "Durable broker quarantine record is invalid")
+            if quarantine is not None:
+                _require(set(quarantine) == {"outcome", "mechanism", "recorded_at"}
+                         and quarantine["outcome"] in {"PARTIAL", "FAILED"}
+                         and isinstance(quarantine["mechanism"], str)
+                         and 1 <= len(quarantine["mechanism"].encode("utf-8")) <= 128,
+                         "Durable broker quarantine evidence is invalid")
+                timestamp(quarantine["recorded_at"])
             fences.append(item["fencing_token"])
             lease_ids.append(item["lease_id"])
         _require(len(fences) == len(set(fences)) and len(lease_ids) == len(set(lease_ids)),
@@ -598,10 +608,18 @@ class FileLeaseBroker:
                 raw = stream.read().strip()
                 try:
                     state = (json.loads(raw.decode("utf-8")) if raw else
-                             {"format": "awf-heavy-validation-broker-state-2",
+                             {"format": "awf-heavy-validation-broker-state-3",
                               "broker_id": self.broker_id, "next_fence": 1, "leases": []})
                 except (UnicodeError, json.JSONDecodeError) as exc:
                     raise ValidationError("Durable broker state is invalid") from exc
+                if (isinstance(state, dict)
+                        and state.get("format") == "awf-heavy-validation-broker-state-2"
+                        and state.get("broker_id") == self.broker_id
+                        and state.get("leases") == []
+                        and set(state) == {"format", "broker_id", "next_fence", "leases"}):
+                    # Empty v2 state has no owner whose termination could be uncertain.
+                    # Nonempty v2 state fails closed below rather than losing old leases.
+                    state["format"] = "awf-heavy-validation-broker-state-3"
                 self._validate_state(state)
                 result = operation(state)
                 self._validate_state(state)
@@ -677,7 +695,8 @@ class FileLeaseBroker:
             # Sample under the broker lock so queueing cannot consume the grant.
             capacity_now = self.clock()
             active = [item for item in state["leases"]
-                      if timestamp(item["expires_at"]) > capacity_now]
+                      if timestamp(item["expires_at"]) > capacity_now
+                      or item["quarantine"] is not None]
             state["leases"] = active
             requested = request["parallelism"]
             worker_use = sum(item["parallelism"] for item in active)
@@ -720,7 +739,7 @@ class FileLeaseBroker:
                     "engine": request["engine"],
                     "engine_identity_sha256": request["engine_identity_sha256"],
                     "engine_slots": request["engine_slots"],
-                    "request_sha256": request_sha}
+                    "request_sha256": request_sha, "quarantine": None}
             state["leases"].append(item)
             return {"status": "GRANTED", "lease_id": lease_id,
                     "fencing_token": fence, "broker_id": self.broker_id,
@@ -734,6 +753,76 @@ class FileLeaseBroker:
                        if item.get("lease_id") == lease_id
                        and item.get("fencing_token") == fencing_token]
             if len(matches) != 1:
+                return {"status": "STALE", "lease_id": lease_id,
+                        "fencing_token": fencing_token}
+            if matches[0]["quarantine"] is not None:
+                return {"status": "QUARANTINED", "lease_id": lease_id,
+                        "fencing_token": fencing_token}
+            state["leases"].remove(matches[0])
+            return {"status": "RELEASED", "lease_id": lease_id,
+                    "fencing_token": fencing_token}
+        return self._transaction(operation)
+
+    def quarantine(self, lease_id: str, fencing_token: int, cleanup: dict) -> dict:
+        """Persist uncertain process-tree termination against this exact fence."""
+        _require(isinstance(cleanup, dict) and set(cleanup) == {"outcome", "mechanism"}
+                 and cleanup["outcome"] in {"PARTIAL", "FAILED"}
+                 and isinstance(cleanup["mechanism"], str)
+                 and 1 <= len(cleanup["mechanism"].encode("utf-8")) <= 128,
+                 "Lease quarantine requires bounded failed-cleanup evidence")
+
+        def operation(state):
+            matches = [item for item in state["leases"]
+                       if item["lease_id"] == lease_id
+                       and item["fencing_token"] == fencing_token]
+            if len(matches) != 1:
+                return {"status": "STALE", "lease_id": lease_id,
+                        "fencing_token": fencing_token}
+            item = matches[0]
+            if item["quarantine"] is not None:
+                if (item["quarantine"]["outcome"] != cleanup["outcome"]
+                        or item["quarantine"]["mechanism"] != cleanup["mechanism"]):
+                    return {"status": "STALE", "lease_id": lease_id,
+                            "fencing_token": fencing_token}
+                return {"status": "QUARANTINED", "lease_id": lease_id,
+                        "fencing_token": fencing_token,
+                        "evidence": deepcopy(item["quarantine"])}
+            recorded_at = self.clock().isoformat(
+                timespec="microseconds").replace("+00:00", "Z")
+            evidence = {**cleanup, "recorded_at": recorded_at}
+            item["quarantine"] = evidence
+            return {"status": "QUARANTINED", "lease_id": lease_id,
+                    "fencing_token": fencing_token, "evidence": deepcopy(item["quarantine"])}
+        return self._transaction(operation)
+
+    def release_quarantined(self, lease_id: str, fencing_token: int,
+                            termination_evidence: dict) -> dict:
+        """Release retained capacity only for exact, explicit termination evidence."""
+        evidence = deepcopy(termination_evidence)
+        _require(isinstance(evidence, dict)
+                 and set(evidence) == {"format", "lease_id", "fencing_token", "status",
+                                       "source", "observed_at", "proof_sha256",
+                                       "evidence_sha256"}
+                 and evidence["format"] == "awf-heavy-validation-termination-evidence-1"
+                 and evidence["status"] == "TERMINATED"
+                 and evidence["source"] in ("host_termination_receipt",
+                                             "operator_recovery_record")
+                 and evidence["lease_id"] == lease_id
+                 and type(evidence["fencing_token"]) is int
+                 and evidence["fencing_token"] == fencing_token,
+                 "Termination evidence does not bind the quarantined lease fence")
+        timestamp(evidence["observed_at"])
+        _digest(evidence["proof_sha256"], "termination proof SHA-256")
+        supplied = evidence["evidence_sha256"]
+        core = {key: value for key, value in evidence.items() if key != "evidence_sha256"}
+        _require(supplied == fingerprint("heavy-validation-termination-evidence", core),
+                 "Termination evidence digest is invalid")
+
+        def operation(state):
+            matches = [item for item in state["leases"]
+                       if item["lease_id"] == lease_id
+                       and item["fencing_token"] == fencing_token]
+            if len(matches) != 1 or matches[0]["quarantine"] is None:
                 return {"status": "STALE", "lease_id": lease_id,
                         "fencing_token": fencing_token}
             state["leases"].remove(matches[0])
