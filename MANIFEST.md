@@ -2,7 +2,7 @@
 
 367 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `9ba8dd6bfe92ff2128f54f2c6b31f6350a56a959008900573df94c2a43a73969`
+MANIFEST.json SHA-256: `1e9ef68920adf10c964814f85dd4eed7bd9debd628eb4c99747cc0b6a878b09e`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -267,7 +267,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_upgrade_matrix.py` | `ead649c4e3b8b92bfe376deaf4bdeaf76855a0f697cb2e4bf921f8c81e5e33a4` |
 | `.agentic/tests/upgrade_fixtures.py` | `c93d8f8275a54645402778770e30f8a557db8872615121a774178ce231139dd0` |
 | `.agentic/upgrade/known-versions.json` | `74da8f94b5fa3fdd33bec73b23b964635f84ba012e5cb0325c5ff5b0cee4c762` |
-| `.agentic/validation/five-slot-adversarial-regressions.json` | `20518c50da8a2da2ceada77f32ef763edba3e407bb62dfa0b47608c1e42987e0` |
+| `.agentic/validation/five-slot-adversarial-regressions.json` | `e54acf2a94a143e41a2649874d9e29a937f059036e783517296de04ca001bf5b` |
 | `.agentic/validation/reference-tests.json` | `a47a1b470324b265f69f96299594b83ea7374e7a767039443c7b5b78bb0c7ada` |
 | `.agentic/workflow-version.yaml` | `7203719187cd2c57c684c568d428c2d6df3ce39824a12aad82770eef96c985df` |
 | `.agentic/workflow.yaml` | `a8cbc1248c1d0c4c40aed40fab1c0594071a0fbfe3d43dcf0f8844f4977771fc` |
