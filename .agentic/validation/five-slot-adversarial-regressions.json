@@ -487,6 +487,15 @@
       "regression_id": "C26-F08-REGRESSION",
       "source_finding_id": "C26-F08",
       "test_id": "FiveSlotAccelerationTests.test_canonical_retained_findings_have_exactly_one_permanent_mapping"
+    },
+    {
+      "category": "alias",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Alias collision cannot be reported as unavailable host capability",
+      "permanent": true,
+      "regression_id": "C26-IC-F01-REGRESSION",
+      "source_finding_id": "C26-IC-F01",
+      "test_id": "PublicationRewriteTests.test_ac44_fanout_alias_is_rejected_before_object_installation"
     }
   ]
 }

@@ -307,6 +307,7 @@ class FiveSlotAccelerationTests(unittest.TestCase):
             *(f"C26-F{number:02d}" for number in range(1, 7)),
             "C26-F07",
             "C26-F08",
+            "C26-IC-F01",
         )
         mapped_ids = [row["source_finding_id"] for row in self.inventory["regressions"]]
         for finding_id in canonical_ids:

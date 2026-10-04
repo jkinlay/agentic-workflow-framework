@@ -1944,8 +1944,20 @@ class PublicationRewriteTests(unittest.TestCase):
 
     def test_ac44_fanout_alias_is_rejected_before_object_installation(self):
         snapshot = publication._rewrite_snapshot(self.repo.path)
-        oid = "ab" + "0" * 38
+        oid = None
+        for index in range(256):
+            payload = f"controlled-alias-fanout-{index}".encode("ascii")
+            candidate = git(self.repo.path, "hash-object", "--stdin", input_bytes=payload)
+            candidate_fanout = Path(snapshot["object_dir"]) / candidate[:2]
+            if (not candidate_fanout.exists() and not candidate_fanout.is_symlink() and
+                    snapshot["fanouts"].get(candidate[:2]) is None):
+                oid = candidate
+                break
+        self.assertIsNotNone(oid, "failed to find a controlled object ID with a verified absent fanout")
         fanout = Path(snapshot["object_dir"]) / oid[:2]
+        self.assertFalse(fanout.exists(), "selected fanout must be absent before alias creation")
+        self.assertFalse(fanout.is_symlink(), "selected fanout must not already be an alias")
+        self.assertIsNone(snapshot["fanouts"].get(oid[:2]))
         target = Path(self.temp.name) / "fanout-target"
         target.mkdir()
         made_alias = False
@@ -1953,12 +1965,17 @@ class PublicationRewriteTests(unittest.TestCase):
             try:
                 fanout.symlink_to(target, target_is_directory=True)
                 made_alias = True
-            except OSError:
-                pass
+            except OSError as exc:
+                if fanout.exists() or fanout.is_symlink():
+                    self.fail(f"fanout appeared during alias setup; this is a collision, not a capability skip: {exc}")
         if not made_alias and os.name == "nt":
             made_alias = subprocess.run(["cmd", "/c", "mklink", "/J", str(fanout), str(target)],
                                         capture_output=True, check=False).returncode == 0
+            if not made_alias and (fanout.exists() or fanout.is_symlink()):
+                self.fail("fanout appeared during junction setup; this is a collision, not a capability skip")
         if not made_alias:
+            self.assertFalse(fanout.exists(), "capability skip is valid only while selected fanout remains absent")
+            self.assertFalse(fanout.is_symlink(), "capability skip is valid only while selected fanout remains absent")
             self.skipTest("directory alias creation is unavailable on this host")
         with self.assertRaisesRegex(ValidationError, "fanout directory is aliased"):
             publication._loose_path(Path(snapshot["object_dir"]), oid, snapshot["object_format"])
