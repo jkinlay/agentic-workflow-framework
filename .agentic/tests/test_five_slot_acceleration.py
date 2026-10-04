@@ -297,6 +297,21 @@ class FiveSlotAccelerationTests(unittest.TestCase):
             build_regression_receipt(self.candidate, inventory["regressions"][-1], "8" * 64))
         self.assertEqual("PASS", self._validate(plan, inventory_raw)["status"])
 
+    def test_canonical_retained_findings_have_exactly_one_permanent_mapping(self):
+        """C26-F08: guard the complete retained set; C26-F03/F05/F06 provenance is partial."""
+        canonical_ids = (
+            *(f"L-F{number:02d}" for number in range(1, 11)),
+            "PMF-21-2", "PMF-21-3", "PMF-21-4",
+            *(f"C25-F{number:02d}" for number in range(1, 6)),
+            *(f"FRESH-F{number:02d}" for number in range(1, 4)),
+            *(f"C26-F{number:02d}" for number in range(1, 7)),
+            "C26-F08",
+        )
+        mapped_ids = [row["source_finding_id"] for row in self.inventory["regressions"]]
+        for finding_id in canonical_ids:
+            with self.subTest(finding_id=finding_id):
+                self.assertEqual(1, mapped_ids.count(finding_id))
+
     def test_shards_are_deterministic_bounded_and_exact(self):
         first = deterministic_shards(["z", "b", "a", "c"], 99)
         second = deterministic_shards(["c", "a", "z", "b"], 3)

@@ -14,6 +14,21 @@ sys.path.insert(0, str(ROOT / ".agentic" / "lib"))
 sys.path.insert(0, str(ROOT / ".agentic" / "tests"))
 
 import test_publication  # noqa: E402
+import test_continuous_controller  # noqa: E402
+import test_five_slot_acceleration  # noqa: E402
+import test_operating  # noqa: E402
+import test_review_completion  # noqa: E402
+import test_review_loop  # noqa: E402
+
+
+INVENTORY_MODULES = {
+    ".agentic/tests/test_continuous_controller.py": test_continuous_controller,
+    ".agentic/tests/test_five_slot_acceleration.py": test_five_slot_acceleration,
+    ".agentic/tests/test_operating.py": test_operating,
+    ".agentic/tests/test_publication.py": test_publication,
+    ".agentic/tests/test_review_completion.py": test_review_completion,
+    ".agentic/tests/test_review_loop.py": test_review_loop,
+}
 
 
 # This inventory is intentionally explicit.  Adding a publication adversarial
@@ -93,21 +108,68 @@ def main() -> int:
                 raise RuntimeError(f"Pre-controller case is missing or ambiguous: {group}:{case_id}")
             suite.addTests(loaded)
             case_ids.append(case_id)
+
+    inventory_path = ROOT / ".agentic" / "validation" / "five-slot-adversarial-regressions.json"
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    inventory_rows = inventory["regressions"]
+    inventory_suite = unittest.TestSuite()
+    inventory_cases = []
+    for index, row in enumerate(inventory_rows):
+        module = INVENTORY_MODULES.get(row["evidence_path"])
+        if module is None:
+            raise RuntimeError(
+                f"No pre-controller test module is registered for inventory[{index}]: "
+                f"{row['evidence_path']}"
+            )
+        test_id = row["test_id"].replace("::", ".")
+        loaded = loader.loadTestsFromName(test_id, module)
+        if loaded.countTestCases() != 1:
+            raise RuntimeError(
+                f"Pre-controller inventory case is missing or ambiguous at index {index}: "
+                f"{row['regression_id']}:{test_id}"
+            )
+        case = next(iter(loaded))
+        inventory_suite.addTests(loaded)
+        inventory_cases.append((row["regression_id"], test_id, case))
+
     started = time.monotonic()
     result = unittest.TextTestRunner(verbosity=2).run(suite)
+    inventory_result = unittest.TextTestRunner(verbosity=2).run(inventory_suite)
     elapsed = time.monotonic() - started
+    failed_cases = {id(test) for test, _ in inventory_result.failures + inventory_result.errors}
+    skipped_cases = {id(test) for test, _ in inventory_result.skipped}
+    inventory_statuses = [
+        "FAIL" if id(case) in failed_cases else
+        "UNOBSERVED" if id(case) in skipped_cases else "PASS"
+        for _, _, case in inventory_cases
+    ]
+    inventory_passed = (
+        inventory_result.testsRun == len(inventory_rows)
+        and all(status == "PASS" for status in inventory_statuses)
+    )
+    passed = result.wasSuccessful() and inventory_result.wasSuccessful() and inventory_passed
     print(json.dumps({
         "gate": "publication_pre_controller_adversarial",
-        "status": "PASS" if result.wasSuccessful() else "FAIL",
+        "status": "PASS" if passed else "FAIL",
         "groups": {key: len(value) for key, value in CASE_GROUPS.items()},
         "cases": len(case_ids),
         "run": result.testsRun,
         "failures": len(result.failures),
         "errors": len(result.errors),
         "skipped": len(result.skipped),
+        "inventory": {
+            "members": len(inventory_rows),
+            "regression_ids": [regression_id for regression_id, _, _ in inventory_cases],
+            "test_ids": [test_id for _, test_id, _ in inventory_cases],
+            "statuses": inventory_statuses,
+            "run": inventory_result.testsRun,
+            "failures": len(inventory_result.failures),
+            "errors": len(inventory_result.errors),
+            "skipped": len(inventory_result.skipped),
+        },
         "elapsed_seconds": round(elapsed, 3),
     }, sort_keys=True))
-    return 0 if result.wasSuccessful() else 1
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":
