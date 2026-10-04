@@ -163,6 +163,15 @@
       "regression_id": "C37-F05-REGRESSION",
       "source_finding_id": "C37-F05",
       "test_id": "FiveSlotAccelerationTests.test_degraded_capacity_names_paused_roles_and_continuation_is_derived"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Receipt cardinality exactly matches the frozen inventory without duplicate unknown or trailing receipts",
+      "permanent": true,
+      "regression_id": "C37-F06-REGRESSION",
+      "source_finding_id": "C37-F06",
+      "test_id": "FiveSlotAccelerationTests.test_receipt_cardinality_rejects_duplicate_unknown_and_extra_receipts"
     }
   ]
 }

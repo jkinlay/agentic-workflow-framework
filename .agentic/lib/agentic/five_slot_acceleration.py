@@ -496,6 +496,8 @@ def validate_plan(plan_raw: bytes, expected_plan_sha256: str, *, local_pr_body: 
              "Adversarial gate did not run the frozen permanent inventory")
     receipts = adversarial["regression_receipts"]
     _require(isinstance(receipts, list), "regression_receipts must be a list")
+    _require(len(receipts) == len(inventory["regressions"]),
+             "Adversarial gate requires exactly one receipt per frozen inventory member")
     expected_regressions = [row["regression_id"] for row in inventory["regressions"]]
     observed_regressions = []
     for index, (receipt, row) in enumerate(zip(receipts, inventory["regressions"])):

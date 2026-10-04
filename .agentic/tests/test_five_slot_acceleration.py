@@ -206,7 +206,7 @@ class FiveSlotAccelerationTests(unittest.TestCase):
     def test_gate_inventory_and_sequence_fail_closed(self):
         plan = deepcopy(self.plan)
         plan["adversarial_gate"]["regression_receipts"].pop()
-        self.assertRejected(plan, "exactly cover")
+        self.assertRejected(plan, "exactly one receipt per frozen inventory member")
         plan = deepcopy(self.plan)
         plan["adversarial_gate"]["sequence"] = 4
         self.assertRejected(plan, "immediately after freeze")
@@ -247,6 +247,25 @@ class FiveSlotAccelerationTests(unittest.TestCase):
         plan = deepcopy(self.plan)
         plan["adversarial_gate"]["regression_receipts"][0]["artifact_sha256"] = "7" * 64
         self.assertRejected(plan, "frozen test artifact")
+
+    def test_receipt_cardinality_rejects_duplicate_unknown_and_extra_receipts(self):
+        receipts = self.plan["adversarial_gate"]["regression_receipts"]
+        trailing_receipts = {
+            "duplicate": deepcopy(receipts[-1]),
+            "unknown": {
+                **deepcopy(receipts[-1]),
+                "regression_id": "UNKNOWN-TRAILING-REGRESSION",
+            },
+            "extra": deepcopy(receipts[0]),
+        }
+        for case, trailing in trailing_receipts.items():
+            with self.subTest(case=case):
+                plan = deepcopy(self.plan)
+                plan["adversarial_gate"]["regression_receipts"].append(trailing)
+                self.assertRejected(
+                    plan,
+                    "exactly one receipt per frozen inventory member",
+                )
 
     def test_provider_body_canonicalization_and_exact_readback(self):
         receipt = provider_body_receipt("alpha\r\n\r\n", b"alpha\n")

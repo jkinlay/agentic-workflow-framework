@@ -29,8 +29,9 @@ running rather than asserted by the plan.
    repository-relative Python artifact and a test that must exist in it.
    Receipts preserve inventory order and bind the frozen candidate, test ID,
    evidence path, exact artifact digest and host result digest into one
-   recomputed execution digest. Missing tests and fabricated or replayed
-   receipts fail before the full controller cycle.
+   recomputed execution digest. Receipt cardinality must exactly equal the
+   frozen inventory cardinality before receipt iteration; duplicate, unknown,
+   missing or trailing receipts fail before the full controller cycle.
 3. Partition heavy tests deterministically into at most three resource-bounded
    shards. Every shard has an exact test list and result digest; the candidate,
    assignments and receipts produce one aggregate digest.
