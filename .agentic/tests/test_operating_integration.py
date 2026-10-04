@@ -76,29 +76,34 @@ class OperatingRoutingTests(unittest.TestCase):
                             operating=validate_operating(self.value, self.governance), governance=self.governance)
 
     def test_operating_role_stream_and_simple_routes(self):
-        self.assertEqual(self.route()["model"], MODELS[1])
+        self.assertEqual((self.route()["model"], self.route()["reasoning_effort"]), (MODELS[3], "medium"))
         simple = self.route(complexity="low")
-        self.assertEqual(simple["model"], MODELS[0])
+        self.assertEqual(simple["model"], MODELS[3])
         self.assertIn("unpinned ordinary stream default", " ".join(simple["reasons"]))
         self.value["streams"]["A"]["worker"] = {"model": MODELS[2], "reasoning_effort": "high", "pinned": True}
         self.assertEqual(self.route(complexity="low")["model"], MODELS[2])
         self.value["simple_worker"]["enabled"] = False
         self.assertEqual(self.route(complexity="low")["model"], MODELS[2])
+        self.assertEqual((self.route(role="controller")["model"], self.route(role="controller")["reasoning_effort"]),
+                         (MODELS[5], "high"))
         self.value["controller"] = {"model": MODELS[3], "reasoning_effort": "high"}
-        self.assertEqual(self.route(role="controller")["model"], MODELS[3])
+        self.assertEqual((self.route(role="controller")["model"], self.route(role="controller")["reasoning_effort"]),
+                         (MODELS[3], "high"))
+        self.assertEqual((self.route(role="critic", worker_context_id="independent")["model"],
+                          self.route(role="critic", worker_context_id="independent")["reasoning_effort"]), (MODELS[5], "high"))
 
     def test_unpinned_default_metadata_and_explicit_epic_inheritance(self):
         self.value["streams"]["A"]["worker"]["pinned"] = False
-        self.assertEqual(self.route(complexity="low")["model"], MODELS[0])
+        self.assertEqual(self.route(complexity="low")["model"], MODELS[3])
         # A recorded Epic route remains an explicit scoped override even when
         # its model/effort equals the global default; recommendation cannot
         # invent or remove that scope-specific direction.
         self.value["epic_overrides"] = {"DEMO-1": {"streams": {"A": {"worker": {
             **self.value["streams"]["A"]["worker"]}}}}}
         scoped = self.route(complexity="low", epic_id="DEMO-1", epic_risk_flags=[])
-        self.assertEqual(scoped["model"], MODELS[1])
+        self.assertEqual(scoped["model"], MODELS[3])
         self.assertFalse(scoped["pinned"])
-        self.assertEqual(self.route(complexity="low", epic_id="DEMO-2", epic_risk_flags=[])["model"], MODELS[0])
+        self.assertEqual(self.route(complexity="low", epic_id="DEMO-2", epic_risk_flags=[])["model"], MODELS[3])
 
     def test_unpinning_custom_worker_preserves_its_route_for_simple_work(self):
         self.value["streams"]["A"]["worker"] = {"model": MODELS[2], "reasoning_effort": "high", "pinned": False}
@@ -113,15 +118,15 @@ class OperatingRoutingTests(unittest.TestCase):
         self.assertEqual((scoped["model"], scoped["reasoning_effort"]), (MODELS[2], "xhigh"))
         self.assertTrue(scoped["pinned"])
         other = self.route(epic_id="DEMO-2", epic_risk_flags=[], complexity="low")
-        self.assertEqual(other["model"], MODELS[0])
-        self.assertEqual(self.route(complexity="low")["model"], MODELS[0])
+        self.assertEqual(other["model"], MODELS[3])
+        self.assertEqual(self.route(complexity="low")["model"], MODELS[3])
         risky = self.route(epic_id="DEMO-1", epic_risk_flags=["concurrency"])
-        self.assertEqual((risky["model"], risky["reasoning_effort"]), (MODELS[2], "xhigh"))
+        self.assertEqual((risky["model"], risky["reasoning_effort"]), (MODELS[5], "xhigh"))
 
     def test_mandatory_epic_risk_floor_wins_over_pin_without_lowering_effort(self):
         self.value["streams"]["A"]["worker"] = {"model": MODELS[0], "reasoning_effort": "max", "pinned": True}
         route = self.route(epic_id="DEMO-1", epic_risk_flags=["security"])
-        self.assertEqual((route["model"], route["reasoning_effort"]), (MODELS[2], "max"))
+        self.assertEqual((route["model"], route["reasoning_effort"]), (MODELS[5], "max"))
         self.assertTrue(route["pinned"])
         self.assertTrue(route["high_risk"])
         self.assertIn("mandatory risk/review floor", " ".join(route["reasons"]))
@@ -136,9 +141,9 @@ class OperatingRoutingTests(unittest.TestCase):
         policy["agent_overrides"] = {"synthetic-A": {"worker": {"model": MODELS[2], "reasoning_effort": "high"}}}
         policy["ticket_overrides"] = {"DEMO-11": {"worker": {"model": MODELS[0], "reasoning_effort": "low", "pinned": True}}}
         self.assertEqual(self.route()["model"], MODELS[0])
-        self.assertEqual(self.route(risk="high")["model"], MODELS[2])
+        self.assertEqual(self.route(risk="high")["model"], MODELS[5])
         review = self.route(role="critic", worker_context_id="other")
-        self.assertEqual((review["model"], review["reasoning_effort"]), (MODELS[2], "high"))
+        self.assertEqual((review["model"], review["reasoning_effort"]), (MODELS[5], "high"))
 
     def test_pin_blocks_optional_escalation_but_unavailable_floor_never_falls_back(self):
         self.value["streams"]["A"]["worker"]["pinned"] = True
@@ -149,14 +154,14 @@ class OperatingRoutingTests(unittest.TestCase):
         route = select_route(policy_from_config(self.governance), request(risk="high"), host,
                              operating=validate_operating(self.value, self.governance), governance=self.governance)
         self.assertEqual(route["status"], "unavailable")
-        self.assertEqual(route["requested"]["model"], MODELS[2])
+        self.assertEqual(route["requested"]["model"], MODELS[5])
 
     def test_new_mandatory_risk_floor_also_wins_over_pin_on_reasoning_retry(self):
         self.value["streams"]["A"]["worker"]["pinned"] = True
         route = self.route(risk="high", last_failure_kind="reasoning",
                            previous_route={"model": MODELS[1], "reasoning_effort": "medium"})
         self.assertEqual(route["status"], "ready")
-        self.assertEqual(route["model"], MODELS[2])
+        self.assertEqual(route["model"], MODELS[5])
 
     def test_forged_or_governance_mismatched_snapshot_rejected(self):
         snapshot = validate_operating(self.value, self.governance)
@@ -285,14 +290,14 @@ class OperatingRecommendationRoutingTests(unittest.TestCase):
         for label in "ACD":
             with self.subTest(stream=label):
                 simple = self.route(snapshot, stream=label, complexity="low")
-                self.assertEqual((simple["model"], simple["reasoning_effort"]), (MODELS[0], "low"))
+                self.assertEqual((simple["model"], simple["reasoning_effort"]), (MODELS[3], "low"))
                 self.assertFalse(simple["pinned"])
                 retry = self.route(snapshot, stream=label, last_failure_kind="reasoning",
                                    previous_route={"model": MODELS[1], "reasoning_effort": "medium"})
                 self.assertEqual(retry["status"], "ready")
                 self.assertTrue(retry["escalated"])
         self.assertTrue(snapshot.config["streams"]["B"]["worker"]["pinned"])
-        self.assertEqual(MODELS[2], self.route(snapshot, stream="B")["model"])
+        self.assertEqual(MODELS[5], self.route(snapshot, stream="B")["model"])
 
     def test_adoption_preserves_pins_until_explicit_custom_reversal(self):
         op.set_operating(self.root, self.governance, "Pin A to Sol/high", ["A.worker=gpt-5.6-sol/high"])
@@ -304,18 +309,18 @@ class OperatingRecommendationRoutingTests(unittest.TestCase):
         self.assertEqual(kept["current"], kept["recommended"])
         self.assertIn("Keeps your pin", kept["reason"])
         self.assertEqual(MODELS[2], self.route(snapshot, complexity="low")["model"])
-        self.assertEqual(MODELS[3], self.route(snapshot, complexity="low", epic_id="DEMO-1", epic_risk_flags=[])["model"])
+        self.assertEqual(MODELS[5], self.route(snapshot, complexity="low", epic_id="DEMO-1", epic_risk_flags=[])["model"])
         self.assertEqual("blocked", self.route(snapshot, last_failure_kind="reasoning",
                          previous_route={"model": MODELS[2], "reasoning_effort": "high"})["status"])
         risky = self.route(snapshot, risk="high")
-        self.assertEqual(MODELS[2], risky["model"])
+        self.assertEqual(MODELS[5], risky["model"])
         self.assertTrue(risky["pinned"])
         changed = op.set_operating(self.root, self.governance, "Set A worker back to Terra/medium",
                                    ["A.worker=gpt-5.6-terra/medium"])
         self.assertTrue(changed.config["streams"]["A"]["worker"]["pinned"])
         changed = op.set_operating(self.root, self.governance, "Unpin A's default worker", ["A.worker.pinned=false"])
-        self.assertEqual(MODELS[0], self.route(changed, complexity="low")["model"])
-        self.assertEqual(MODELS[3], self.route(changed, complexity="low", epic_id="DEMO-1", epic_risk_flags=[])["model"])
+        self.assertEqual(MODELS[1], self.route(changed, complexity="low")["model"])
+        self.assertEqual(MODELS[5], self.route(changed, complexity="low", epic_id="DEMO-1", epic_risk_flags=[])["model"])
         with self.assertRaisesRegex(op.OperatingError, "stale"):
             op.set_operating(self.root, self.governance, "adopt previous", recommendation_id=record["id"], accept="all")
 
@@ -327,7 +332,7 @@ class OperatingRecommendationRoutingTests(unittest.TestCase):
         row = next(row for row in record["rows"] if row["path"] == "streams.A.worker")
         self.assertEqual({"model": MODELS[2], "reasoning_effort": "medium", "pinned": False}, row["recommended"])
         self.assertEqual(row["recommended"], snapshot.config["streams"]["A"]["worker"])
-        self.assertEqual(MODELS[0], self.route(snapshot, complexity="low")["model"])
+        self.assertEqual(MODELS[3], self.route(snapshot, complexity="low")["model"])
         self.assertEqual(MODELS[2], self.route(snapshot)["model"])
 
 
@@ -346,17 +351,25 @@ class OperatingPlanningTests(unittest.TestCase):
         three, six = self.plan(), self.plan(6)
         self.assertEqual([s["label"] for s in three["streams"]], list("ABC"))
         self.assertEqual([s["label"] for s in six["streams"]], list("ABCDEF"))
-        self.assertEqual(len(six["dispatch_packets"]), 6)
-        self.assertEqual(six["review_plan"]["configured_count"], 6)
+        self.assertEqual(self.governance["execution"]["independent_reviewers"]["allocation"], "shared_critic")
+        self.assertEqual(six["review_plan"]["configured_count"], 1)
+        self.assertEqual(six["capacity"]["host_reserved_non_worker_slots"], 2)
+        self.assertEqual(len(six["dispatch_packets"]), 4)
         self.assertEqual(three["capacity"]["execution_policy_fingerprint"], six["capacity"]["execution_policy_fingerprint"])
         self.assertNotEqual(three["operating_hash"], six["operating_hash"])
         self.assertTrue(all(p["operating_hash"] == six["operating_hash"] for p in six["dispatch_packets"]))
 
     def test_real_host_capacity_still_limits_six_operating_streams(self):
         plan = self.plan(6, host=3)
-        self.assertEqual(len(plan["dispatch_packets"]), 3)
-        self.assertEqual(len(plan["deferred_dispatch_packets"]), 3)
+        self.assertEqual(len(plan["dispatch_packets"]), 1)
+        self.assertEqual(len(plan["deferred_dispatch_packets"]), 5)
         self.assertFalse(plan["capacity"]["host_admission_confirmed"])
+
+    def test_explicit_legacy_one_per_stream_retains_reviewer_slots(self):
+        self.governance["execution"]["independent_reviewers"]["allocation"] = "one_per_stream"
+        plan = self.plan(3)
+        self.assertEqual(plan["review_plan"]["configured_count"], 3)
+        self.assertEqual(len(plan["dispatch_packets"]), 3)
 
     def test_reduction_drains_existing_owners_without_admitting_surplus_tickets(self):
         prior = self.plan(6)

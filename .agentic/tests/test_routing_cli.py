@@ -65,7 +65,7 @@ class RoutingCLITests(unittest.TestCase):
                            "--ledger", self.root / "ledger.sqlite", *arguments, expected=expected)
 
     def test_real_cli_routing_and_defaults(self):
-        self.assertEqual(self.route()["model"], MODELS[1])
+        self.assertEqual((self.route()["model"], self.route()["reasoning_effort"]), (MODELS[3], "medium"))
         defaults = self.invoke("defaults")
         self.assertEqual(defaults["reconciliation"]["enabled"], False)
         self.assertEqual(12, defaults["budgets"]["max_runs_per_ticket"])
@@ -211,7 +211,7 @@ class RoutingCLITests(unittest.TestCase):
         self.policy["escalation"]["effort_ceiling"] = "xhigh"
         self.document("config.json", self.config)
         result = self.route()
-        self.assertEqual((result["model"], result["reasoning_effort"]), (MODELS[2], "xhigh"))
+        self.assertEqual((result["model"], result["reasoning_effort"]), (MODELS[5], "xhigh"))
 
     def test_real_cli_reserve_reconcile_history_and_idempotence(self):
         self.policy["reconciliation"] = {"enabled": True, "authorized_operator_ids": ["test-operator"]}
@@ -276,7 +276,7 @@ class RoutingCLITests(unittest.TestCase):
         with patch(__name__ + ".CLI", installed_script):
             policy = self.invoke("defaults")
             self.assertEqual(policy["reconciliation"]["max_reconciled_incident_retries_per_ticket"], 2)
-            self.assertEqual(self.route()["model"], MODELS[1])
+            self.assertEqual((self.route()["model"], self.route()["reasoning_effort"]), (MODELS[3], "medium"))
 
 
 if __name__ == "__main__":
