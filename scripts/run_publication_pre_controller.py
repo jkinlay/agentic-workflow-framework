@@ -17,17 +17,21 @@ import test_publication  # noqa: E402
 import test_continuous_controller  # noqa: E402
 import test_five_slot_acceleration  # noqa: E402
 import test_operating  # noqa: E402
+import test_operating_integration  # noqa: E402
 import test_review_completion  # noqa: E402
 import test_review_loop  # noqa: E402
+import test_streams  # noqa: E402
 
 
 INVENTORY_MODULES = {
     ".agentic/tests/test_continuous_controller.py": test_continuous_controller,
     ".agentic/tests/test_five_slot_acceleration.py": test_five_slot_acceleration,
     ".agentic/tests/test_operating.py": test_operating,
+    ".agentic/tests/test_operating_integration.py": test_operating_integration,
     ".agentic/tests/test_publication.py": test_publication,
     ".agentic/tests/test_review_completion.py": test_review_completion,
     ".agentic/tests/test_review_loop.py": test_review_loop,
+    ".agentic/tests/test_streams.py": test_streams,
 }
 
 
