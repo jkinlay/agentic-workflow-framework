@@ -8,6 +8,8 @@ Work within human-assigned scope, reviewed configuration and actual permissions.
 
 Native mode is host-dependent: three default operating streams, ceiling six, labels A–F; one independent reviewer each; named exclusive resources lease by name. Keep one writer per ticket/path and preserve owners. [Operating choices](docs/29-OPERATING-CONFIGURATION.md) follow direct instructions within governance: echo/apply/show, retain history, enforce floors, drain reductions. Recommendations need acceptance; caps need PRs. Running reservations retain their operating hash/route.
 
+The default accelerated host topology is five concurrent implementation slots: one sole controller, one dedicated named pre-controller adversarial-case handler and the three default worker streams. Capacity is negotiated before dispatch; fewer slots requires explicit degraded-mode authorization naming every paused role, and running roles never exceed observed capacity. The exact candidate and canonical provider-body bytes freeze before the one full-suite/controller cycle; deterministic bounded shards may precede it. Race, alias, replacement-object, provider-identity and receipt-replay regressions are mandatory candidate/artifact-bound pre-controller evidence. Accepted critic findings permanently join that ordered inventory. Exact-tuple controller verification, frozen review completion, publication/deny scans and final independent review remain mandatory ([contract](docs/36-FIVE-SLOT-ACCELERATION.md)).
+
 The offline evaluator returns `execution_authority: false`. The enrolled Codex/GitHub.com PR adapter permits bounded amendments, never merge/Jira writes. Its single active tick cannot share another writer's branch.
 
 ## Candidate and evidence
