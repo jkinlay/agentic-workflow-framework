@@ -446,7 +446,7 @@
     {
       "category": "replacement-object",
       "evidence_path": ".agentic/tests/test_publication.py",
-      "name": "C26-F03 source prose unavailable; verified packed snapshot content and recomputed OID proof remains covered",
+      "name": "Prove snapshot content by recomputing its object ID.",
       "permanent": true,
       "regression_id": "C26-F03-REGRESSION",
       "source_finding_id": "C26-F03",
@@ -464,7 +464,7 @@
     {
       "category": "replacement-object",
       "evidence_path": ".agentic/tests/test_publication.py",
-      "name": "C26-F05 source prose unavailable; verified fixed-fanout identity alias is refused before install",
+      "name": "Use a deterministic fixed fanout and identity fixture.",
       "permanent": true,
       "regression_id": "C26-F05-REGRESSION",
       "source_finding_id": "C26-F05",
@@ -473,7 +473,7 @@
     {
       "category": "replacement-object",
       "evidence_path": ".agentic/tests/test_publication.py",
-      "name": "C26-F06 source prose unavailable; verified oversized quarantine object is rejected before reads",
+      "name": "Bound rewrite-message and quarantine-object reads.",
       "permanent": true,
       "regression_id": "C26-F06-REGRESSION",
       "source_finding_id": "C26-F06",
