@@ -297,6 +297,38 @@ class FiveSlotAccelerationTests(unittest.TestCase):
             build_regression_receipt(self.candidate, inventory["regressions"][-1], "8" * 64))
         self.assertEqual("PASS", self._validate(plan, inventory_raw)["status"])
 
+    def test_canonical_retained_findings_have_exactly_one_permanent_mapping(self):
+        """C26-F08: guard the complete retained set with owner-supplied F03/F05/F06 text."""
+        canonical_ids = (
+            *(f"L-F{number:02d}" for number in range(1, 11)),
+            "PMF-21-2", "PMF-21-3", "PMF-21-4",
+            *(f"C25-F{number:02d}" for number in range(1, 6)),
+            *(f"FRESH-F{number:02d}" for number in range(1, 4)),
+            *(f"C26-F{number:02d}" for number in range(1, 7)),
+            "C26-F07",
+            "C26-F08",
+            "C26-IC-F01",
+        )
+        mapped_ids = [row["source_finding_id"] for row in self.inventory["regressions"]]
+        for finding_id in canonical_ids:
+            with self.subTest(finding_id=finding_id):
+                self.assertEqual(1, mapped_ids.count(finding_id))
+
+    def test_owner_supplied_c26_acceptance_text_matches_permanent_inventory(self):
+        provenance = json.loads((
+            ROOT / ".agentic/validation/pr26-owner-accepted-finding-provenance.json"
+        ).read_text(encoding="utf-8"))
+        self.assertEqual("owner_supplied_decision", provenance["authority"]["kind"])
+        self.assertFalse(provenance["authority"]["historical_source_claimed"])
+        for record in provenance["findings"]:
+            with self.subTest(finding_id=record["finding_id"]):
+                rows = [row for row in self.inventory["regressions"]
+                        if row["source_finding_id"] == record["finding_id"]]
+                self.assertEqual(1, len(rows))
+                self.assertEqual(record["inventory_regression_id"], rows[0]["regression_id"])
+                self.assertEqual(record["inventory_test_id"], rows[0]["test_id"])
+                self.assertEqual(record["acceptance_text"], rows[0]["name"])
+
     def test_shards_are_deterministic_bounded_and_exact(self):
         first = deterministic_shards(["z", "b", "a", "c"], 99)
         second = deterministic_shards(["c", "a", "z", "b"], 3)

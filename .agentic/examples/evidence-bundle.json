@@ -568,13 +568,18 @@
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     ],
     "findings": [],
+    "total_findings": 0,
+    "blocking_findings": 0,
+    "pre_existing_findings": 0,
     "unscanned": [],
+    "unscanned_count": 0,
     "coverage": {
       "current_files": true,
       "commit_messages": true,
       "every_patch": true,
       "generated_reports": "when committed or passed as provider text",
       "captured_command_output": "when committed or passed as provider text",
+      "strict_utf8": true,
       "pr_bodies": true,
       "pr_comments": false
     },

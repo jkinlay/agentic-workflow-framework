@@ -226,6 +226,276 @@
       "regression_id": "CV39-F03-REGRESSION",
       "source_finding_id": "CV39-F03",
       "test_id": "ContinuousControllerTests.test_schema_inventory_matches_loaded_generated_catalog"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Second quarantine census rejects pathname changes before reading file or Git content",
+      "permanent": true,
+      "regression_id": "C26-F07-REGRESSION",
+      "source_finding_id": "C26-F07",
+      "test_id": "PublicationRewriteTests.test_ac44_second_quarantine_census_pathname_change_fails_before_reads"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_review_loop.py",
+      "name": "Real local Git amendment uses the fixture API seam and commits one child",
+      "permanent": true,
+      "regression_id": "L-F01-REGRESSION",
+      "source_finding_id": "L-F01",
+      "test_id": "HostTests.test_real_local_git_amendment_commits_and_pushes_one_child"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Invalid UTF-8 in blobs messages and provider text remains unscanned",
+      "permanent": true,
+      "regression_id": "L-F02-REGRESSION",
+      "source_finding_id": "L-F02",
+      "test_id": "PublicationScanTests.test_invalid_utf8_blob_message_and_provider_text_are_unscanned"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Complete touched-head content is scanned and reports pre-existing context",
+      "permanent": true,
+      "regression_id": "L-F03-REGRESSION",
+      "source_finding_id": "L-F03",
+      "test_id": "PublicationScanTests.test_ac53_complete_touched_head_content_reports_preexisting_context"
+    },
+    {
+      "category": "alias",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Windows junction mapping to tracked content is refused",
+      "permanent": true,
+      "regression_id": "L-F04-REGRESSION",
+      "source_finding_id": "L-F04",
+      "test_id": "PublicationScanTests.test_mapping_windows_junction_to_tracked_content_is_refused"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Reachability lookup errors refuse publication before repository mutation",
+      "permanent": true,
+      "regression_id": "L-F05-REGRESSION",
+      "source_finding_id": "L-F05",
+      "test_id": "PublicationRewriteTests.test_ac44_reachability_lookup_error_refuses_before_mutation"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Concurrent ref change after CAS is detected and target rollback is attempted",
+      "permanent": true,
+      "regression_id": "L-F06-REGRESSION",
+      "source_finding_id": "L-F06",
+      "test_id": "PublicationRewriteTests.test_ac44_concurrent_ref_after_cas_is_detected_and_target_is_rolled_back"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Shipped detector source passes its own built-in detector scan",
+      "permanent": true,
+      "regression_id": "L-F07-REGRESSION",
+      "source_finding_id": "L-F07",
+      "test_id": "PublicationScanTests.test_builtin_detectors_do_not_flag_their_own_shipped_source"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Configured regex policy is bounded and rejects unsafe patterns",
+      "permanent": true,
+      "regression_id": "L-F08-REGRESSION",
+      "source_finding_id": "L-F08",
+      "test_id": "PublicationScanTests.test_custom_regex_policy_is_bounded_and_safe"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Publication findings expose digest-only redaction",
+      "permanent": true,
+      "regression_id": "L-F09-REGRESSION",
+      "source_finding_id": "L-F09",
+      "test_id": "PublicationScanTests.test_findings_use_digest_only_redaction"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Specification records the generated fourteen-gate catalogue",
+      "permanent": true,
+      "regression_id": "L-F10-REGRESSION",
+      "source_finding_id": "L-F10",
+      "test_id": "PublicationScanTests.test_specification_names_fourteen_gates"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Pre-existing-only receipts pass while finding counts are validated",
+      "permanent": true,
+      "regression_id": "PMF-21-2-REGRESSION",
+      "source_finding_id": "PMF-21-2",
+      "test_id": "PublicationGateTests.test_preexisting_only_pass_receipt_is_accepted_and_counts_fail_closed"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Deleted base matches remain reported as pre-existing and nonblocking",
+      "permanent": true,
+      "regression_id": "PMF-21-3-REGRESSION",
+      "source_finding_id": "PMF-21-3",
+      "test_id": "PublicationScanTests.test_deleted_preexisting_base_line_does_not_block"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_review_loop.py",
+      "name": "Real local amendment exercises the exact fixture API seam",
+      "permanent": true,
+      "regression_id": "PMF-21-4-REGRESSION",
+      "source_finding_id": "PMF-21-4",
+      "test_id": "HostTests.test_real_local_git_amendment_commits_and_pushes_one_child"
+    },
+    {
+      "category": "alias",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Base membership is exact raw equality and incomplete base search fails closed",
+      "permanent": true,
+      "regression_id": "C25-F01-REGRESSION",
+      "source_finding_id": "C25-F01",
+      "test_id": "PublicationScanTests.test_failed_base_classification_retains_known_positives_and_fails_closed"
+    },
+    {
+      "category": "alias",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Windows junction mapping to tracked content is refused",
+      "permanent": true,
+      "regression_id": "C25-F02-REGRESSION",
+      "source_finding_id": "C25-F02",
+      "test_id": "PublicationScanTests.test_mapping_windows_junction_to_tracked_content_is_refused"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Concurrent post-CAS ref change is detected and rolled back without overwriting the ref",
+      "permanent": true,
+      "regression_id": "C25-F03-REGRESSION",
+      "source_finding_id": "C25-F03",
+      "test_id": "PublicationRewriteTests.test_ac44_concurrent_ref_after_cas_is_detected_and_target_is_rolled_back"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Classified receipts and finding-count consistency control the final publication gate",
+      "permanent": true,
+      "regression_id": "C25-F04-REGRESSION",
+      "source_finding_id": "C25-F04",
+      "test_id": "PublicationGateTests.test_preexisting_only_pass_receipt_is_accepted_and_counts_fail_closed"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Provider bytes are streamed with bounded memory",
+      "permanent": true,
+      "regression_id": "C25-F05-REGRESSION",
+      "source_finding_id": "C25-F05",
+      "test_id": "PublicationScanTests.test_provider_file_is_streamed_with_bounded_memory"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "A claimant created after census retains the object and recovery evidence",
+      "permanent": true,
+      "regression_id": "FRESH-F01-REGRESSION",
+      "source_finding_id": "FRESH-F01",
+      "test_id": "PublicationRewriteTests.test_ac44_claimant_created_after_census_keeps_object_and_recovery_evidence"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Fanout created after locked snapshot is never treated as snapshot-present",
+      "permanent": true,
+      "regression_id": "FRESH-F02-REGRESSION",
+      "source_finding_id": "FRESH-F02",
+      "test_id": "PublicationRewriteTests.test_ac44_fanout_created_after_locked_snapshot_is_never_snapshot_present"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Malformed or partially parsed multi-OID pseudorefs fail closed",
+      "permanent": true,
+      "regression_id": "FRESH-F03-REGRESSION",
+      "source_finding_id": "FRESH-F03",
+      "test_id": "PublicationRewriteTests.test_ac44_malformed_or_partially_parsed_multi_oid_pseudoref_fails_closed"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Windows junction reflog restore refusal is covered before external mutation",
+      "permanent": true,
+      "regression_id": "C26-F01-REGRESSION",
+      "source_finding_id": "C26-F01",
+      "test_id": "PublicationRewriteTests.test_ac44_reflog_restore_refuses_windows_junction_before_external_mutation"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Post-CAS proof rejects fanout and object replacement across installed namespaces",
+      "permanent": true,
+      "regression_id": "C26-F02-REGRESSION",
+      "source_finding_id": "C26-F02",
+      "test_id": "PublicationRewriteTests.test_ac44_post_cas_proof_rejects_created_fanout_and_object_replacement"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Prove snapshot content by recomputing its object ID.",
+      "permanent": true,
+      "regression_id": "C26-F03-REGRESSION",
+      "source_finding_id": "C26-F03",
+      "test_id": "PublicationRewriteTests.test_ac44_snapshot_present_packed_graph_objects_get_bounded_content_oid_proof"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Post-CAS shallow-boundary race refuses and rolls back the exact target ref",
+      "permanent": true,
+      "regression_id": "C26-F04-REGRESSION",
+      "source_finding_id": "C26-F04",
+      "test_id": "PublicationRewriteTests.test_ac44_post_cas_shallow_boundary_race_rolls_back_exact_ref"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Use a deterministic fixed fanout and identity fixture.",
+      "permanent": true,
+      "regression_id": "C26-F05-REGRESSION",
+      "source_finding_id": "C26-F05",
+      "test_id": "PublicationRewriteTests.test_ac44_fanout_alias_is_rejected_before_object_installation"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Bound rewrite-message and quarantine-object reads.",
+      "permanent": true,
+      "regression_id": "C26-F06-REGRESSION",
+      "source_finding_id": "C26-F06",
+      "test_id": "PublicationRewriteTests.test_ac44_oversized_quarantine_loose_object_rejects_before_content_read"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Canonical retained findings remain complete with exactly one permanent mapping",
+      "permanent": true,
+      "regression_id": "C26-F08-REGRESSION",
+      "source_finding_id": "C26-F08",
+      "test_id": "FiveSlotAccelerationTests.test_canonical_retained_findings_have_exactly_one_permanent_mapping"
+    },
+    {
+      "category": "alias",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Alias collision cannot be reported as unavailable host capability",
+      "permanent": true,
+      "regression_id": "C26-IC-F01-REGRESSION",
+      "source_finding_id": "C26-IC-F01",
+      "test_id": "PublicationRewriteTests.test_ac44_fanout_alias_is_rejected_before_object_installation"
     }
   ]
 }
