@@ -61,7 +61,27 @@ Every critic finding accepted into the implementation must be added to the
 permanent inventory with a stable regression ID, named test and evidence path.
 The plan is rejected until each accepted finding has exactly one such member.
 Deleting an accepted finding's regression is therefore a tracked, manifest-bound
-change rather than an ephemeral review action.
+change rather than an ephemeral review action. The PR 33 controller findings
+remain individually mapped as `C33-F01` selected-engine parallel caps,
+`C33-F02` unrelated-engine host caps, `C33-F03` queued sibling/retry
+cancellation, `C33-F04` sanitizer receipt binding, and `CV33-F01` durable
+quarantined-lease retention.
+
+The file broker persists state format `awf-heavy-validation-broker-state-3`
+under its OS lock. `PARTIAL` or `FAILED` process-tree cleanup records a bounded
+outcome, mechanism and timestamp against the exact lease ID and fencing token
+before the launch gate releases queued work. Expiry retains all quarantined
+worker, engine, GPU and named-resource claims across restart. Ordinary expired
+leases remain reclaimable; ordinary `release` cannot remove quarantine. The
+separate `release_quarantined` path requires a `TERMINATED` evidence envelope
+with an allowlisted source, observation time and proof digest, itself bound by
+digest to the exact lease and fence. Malformed, mismatched or non-quarantined
+recovery requests fail closed. Live v2 state fails closed; empty v2 state
+upgrades safely.
+
+Result aggregate and serial-equivalence digests include each partition's
+Windows launch artifact method and SHA-256. Snapshot paths are omitted because
+they vary per run; the sanitizer's reviewed digest remains receipt-bound.
 
 ## Reference command
 

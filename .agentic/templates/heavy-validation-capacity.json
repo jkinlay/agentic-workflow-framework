@@ -1,0 +1,18 @@
+{
+  "broker_id": "replace-with-configured-broker-id",
+  "candidate": {
+    "base_sha": "0000000000000000000000000000000000000000",
+    "head_sha": "0000000000000000000000000000000000000000",
+    "repository_id": 1,
+    "tree_sha": "0000000000000000000000000000000000000000"
+  },
+  "config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "engines": {"python": {"identity_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "parallel_available": true, "parallel_slots": 2}},
+  "format": "awf-heavy-validation-capacity-4",
+  "gpu_jobs_available": 0,
+  "heavy_jobs_available": 2,
+  "observed_at": "2030-01-01T00:00:00Z",
+  "plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "resources_available": {},
+  "workers_available": 2
+}
