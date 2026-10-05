@@ -324,6 +324,39 @@ class RulesActivationTests(unittest.TestCase):
                 self.assertEqual(2, cli.main(bad_args))
             self.assertEqual("REJECTED", json.loads(err.getvalue())["status"])
 
+            wrong_initial_raw = canonical(observation(["squash"], repository_id=202))
+            path.write_bytes(wrong_initial_raw)
+            wrong_initial_args = list(args)
+            wrong_initial_args[7] = sha256(wrong_initial_raw)
+            out = io.StringIO()
+            err = io.StringIO()
+            with patch.object(cli, "verify_installed"), redirect_stdout(out), redirect_stderr(err):
+                self.assertEqual(2, cli.main(wrong_initial_args))
+            initial_result = json.loads(out.getvalue())
+            self.assertEqual("BLOCKED", initial_result["status"])
+            self.assertEqual("UNOBSERVED", initial_result["observed_rules_state"])
+            self.assertIn("RULES_OBSERVATION_WRONG_REPOSITORY_ID", initial_result["blocker_codes"])
+            self.assertEqual("", err.getvalue())
+
+            before_raw = canonical(observation())
+            path.write_bytes(before_raw)
+            after_raw = canonical(observation(["squash"], observed_at=AFTER, repository_id=202))
+            post_path = Path(directory) / "post-observation.json"
+            post_path.write_bytes(after_raw)
+            post_args = list(args)
+            post_args[7] = sha256(before_raw)
+            post_args.extend(["--owner-outcome", "APPLIED", "--post-observation", str(post_path),
+                              "--expected-post-observation-sha256", sha256(after_raw)])
+            out = io.StringIO()
+            err = io.StringIO()
+            with patch.object(cli, "verify_installed"), redirect_stdout(out), redirect_stderr(err):
+                self.assertEqual(2, cli.main(post_args))
+            post_result = json.loads(out.getvalue())
+            self.assertEqual("BLOCKED", post_result["status"])
+            self.assertIn("POST_ACTION_OBSERVATION_WRONG_REPOSITORY_ID", post_result["blocker_codes"])
+            self.assertEqual("UNOBSERVED", post_result["post_action_observation"]["state"])
+            self.assertEqual("", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
