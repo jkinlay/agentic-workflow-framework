@@ -20,4 +20,10 @@ if __name__ == "__main__":
     if options.command == "operating":
         from agentic.operating import main as operating_main
         raise SystemExit(operating_main(remaining, default_root=options.root))
+    if options.command == "controller":
+        from continuous_controller import main as controller_main
+        raise SystemExit(controller_main(remaining, default_root=options.root))
+    if options.command == "review-completion":
+        from review_completion import main as review_completion_main
+        raise SystemExit(review_completion_main(remaining, default_root=options.root))
     raise SystemExit(main(default_root=ROOT))

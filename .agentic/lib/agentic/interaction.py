@@ -217,6 +217,8 @@ def gate_handoff(gate, request, config, contracts, now):
     from .lifecycle import definition
     from .policy import validate_config
     contracts.validate('final-gate',gate)
+    from .review_completion import validate_ready_gate_completion
+    validate_ready_gate_completion(gate)
     contracts.validate('authorization-request',request)
     policy=validate_config(config,definition(),contracts)
     require(gate['conclusion']=='READY_FOR_OWNER_AUTHORIZATION','Complete the failing final gate before requesting owner authorization')

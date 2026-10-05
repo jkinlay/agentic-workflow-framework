@@ -31,9 +31,9 @@ New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organizat
 | Test command | Prefer an npm test script, then evident pytest markers; otherwise supply `--test-command COMMAND`. Run the selected project tests separately. |
 | Jira | Supply both `--jira-site URL` and `--jira-key KEY`. Neither sets `jira.enabled: false`, with null site/key, for a fresh project. Preserve existing Jira configuration. |
 
-Keep `template.expected_workflow_version: 1.9.3`, real paths, scope and protected limits. Bootstrap preserves root operating choices or seeds three streams within ceiling six, one reviewer each. Disabled/unscoped Jira permits no ticket mutations; use provisional local records.
+Keep `template.expected_workflow_version: 1.9.3`, real paths, scope and protected limits. Bootstrap preserves root operating choices or seeds three worker streams and one shared independent critic within ceiling six (five slots including the controller). Disabled/unscoped Jira permits no ticket mutations; use provisional local records.
 
-Existing projects get `governance_proposal.adoption_pr_section` with exact current/proposed ceiling and reviewer count. Ordinary upgrades preserve both. Explicit `--propose-operating-capacity` stages ceiling six (higher preserved) and derived one-per-stream reviewers for owner review/merge; `--dry-run` writes nothing. Other governance/operating choices remain unchanged.
+Existing projects get `governance_proposal.adoption_pr_section` with exact current/proposed ceiling and reviewer allocation/count. Ordinary upgrades preserve both. Explicit `--propose-operating-capacity` stages ceiling six (higher preserved) and retains the current reviewer allocation for owner review/merge; `--dry-run` writes nothing. Other governance/operating choices remain unchanged.
 
 Bootstrap appends [narrow ignore rules](../templates/operating.gitignore), preserving existing bytes. Commit operating configuration and `changes/` audit records; review broad owner rules that hide them. Preserve ignored recovery files until recovery completes.
 
@@ -65,7 +65,7 @@ INSTALLED/CONFIGURED prove local consistency. Status recomputes structured check
 gh api --method POST repos/OWNER/REPO/rulesets --input .agentic/templates/awf-main-ruleset.json
 ```
 
-`~DEFAULT_BRANCH` follows the actual default branch. Zero required approvals avoids sole-maintainer self-approval. Required CODEOWNERS approval needs eligible non-author reviewers, not merely two handles. Multi-maintainer projects may raise counts. The [activation decision](35-RULES-ACTIVATION.md) generates a proposal that permits the accepted configured merge method; incompatible rules stay `MISSING`. [GitHub rule behavior](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets).
+`~DEFAULT_BRANCH` follows the actual default branch. Zero required approvals avoids sole-maintainer self-approval. Required CODEOWNERS approval needs eligible non-author reviewers, not merely two handles. Multi-maintainer projects may raise counts. [Rules activation](35-RULES-ACTIVATION.md) proposes rules matching configured merge method; incompatible rules stay `MISSING`. [GitHub rule behavior](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets).
 
 An empty required-check list makes strict up-to-date policy ineffective. Approval dismissal does not refresh COMMENT evidence; thread resolution is not authenticity. Before live enablement configure observed `awf/review` with actual App `integration_id` and applicable CI. [Rules API](https://docs.github.com/en/rest/repos/rules).
 

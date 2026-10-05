@@ -31,6 +31,30 @@ def local_semantics(name, value):
             raise ValidationError("Raw authorization text disagrees with record fields")
         if sha256(value["source"]["raw_body"].encode()) != value["source"]["raw_body_sha256"]:
             raise ValidationError("Raw authorization digest mismatch")
+    if name == "review-completion":
+        from .review_completion import validate_completion_semantics
+        validate_completion_semantics(value)
+    if name == "review-submission":
+        from .review_completion import validate_submission_semantics
+        validate_submission_semantics(value)
+    if name == "controller-status-digest":
+        streams = value["streams"]
+        if value["all_complete"] != all(item["state"] == "COMPLETE" for item in streams):
+            raise ValidationError("Controller all_complete contradicts stream states")
+        if len({item["stream"] for item in streams}) != len(streams):
+            raise ValidationError("Controller digest has duplicate stream identities")
+        for stream in streams:
+            counts = stream["reviewer_completion"]
+            if (counts["completed"] + counts["outstanding"] != counts["required"] or
+                    counts["acceptable"] + counts["failed"] + counts["stale"] != counts["completed"]):
+                raise ValidationError("Controller reviewer counts are contradictory")
+            if (stream["state"] == "COMPLETE") != (stream["ticket"] is None):
+                raise ValidationError("Controller stream ticket contradicts its lifecycle state")
+    if name == "jira-progress":
+        counted = value["jira_state"] == "COUNTED"
+        observed = isinstance(value["closed"], int) and isinstance(value["remaining_open"], int)
+        if counted != observed or (counted and not value["snapshot_id"]):
+            raise ValidationError("Jira progress state contradicts count/snapshot evidence")
     for finding in value.get("findings", []):
         if finding["status"] == "RESOLVED" and not finding["resolution_evidence"]:
             raise ValidationError("Resolved finding needs evidence")
@@ -142,7 +166,11 @@ def main(argv=None, default_root=None):
                           "provider_enforced_usage_caps": False, "scheduled_pr_loop_integration": False},
                       "project_coordination": {"routine_authorization_prompts": False,
                           "explicit_next_step_reporting": True,"proactive_native_stream_agents": False,
-                          "native_coordination_mode": "host-dependent guidance",
+                          "native_coordination_mode": "durable reference controller with host adapters",
+                          "continuous_controller_entry_point": ".agentic/scripts/workflow.py controller",
+                          "review_completion_entry_point": ".agentic/scripts/workflow.py review-completion",
+                          "durable_digest_outbox": True,
+                          "all_reviewers_terminal_before_submission": True,
                           "launches_native_agents": False, "attests_active_writers": False,
                           "execution_cap_increases_require_human_direction": True,
                           "native_streams_enabled_by_default": True, "default_max_parallel_tickets": 6,

@@ -13,7 +13,9 @@
     "epic_overrides": {
       "type": "object",
       "maxProperties": 1000,
-      "propertyNames": {"maxLength": 80},
+      "propertyNames": {
+        "maxLength": 80
+      },
       "patternProperties": {
         "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$": {
           "type": "object",
@@ -27,16 +29,27 @@
                   "type": "object",
                   "minProperties": 1,
                   "properties": {
-                    "worker": {"$ref": "#/properties/controller"},
-                    "reviewer": {"$ref": "#/properties/controller"}
+                    "worker": {
+                      "$ref": "#/properties/controller"
+                    },
+                    "reviewer": {
+                      "$ref": "#/properties/controller"
+                    }
                   },
                   "additionalProperties": false
                 }
               },
               "additionalProperties": false
             },
-            "controller": {"$ref": "#/properties/controller"},
-            "specialist": {"$ref": "#/properties/specialist"}
+            "controller": {
+              "$ref": "#/properties/controller"
+            },
+            "specialist": {
+              "$ref": "#/properties/specialist"
+            },
+            "critic": {
+              "$ref": "#/properties/critic"
+            }
           },
           "additionalProperties": false
         }
@@ -112,8 +125,7 @@
             }
           },
           "required": [
-            "worker",
-            "reviewer"
+            "worker"
           ],
           "additionalProperties": false
         },
@@ -178,8 +190,7 @@
             }
           },
           "required": [
-            "worker",
-            "reviewer"
+            "worker"
           ],
           "additionalProperties": false
         },
@@ -244,8 +255,7 @@
             }
           },
           "required": [
-            "worker",
-            "reviewer"
+            "worker"
           ],
           "additionalProperties": false
         },
@@ -310,8 +320,7 @@
             }
           },
           "required": [
-            "worker",
-            "reviewer"
+            "worker"
           ],
           "additionalProperties": false
         },
@@ -376,8 +385,7 @@
             }
           },
           "required": [
-            "worker",
-            "reviewer"
+            "worker"
           ],
           "additionalProperties": false
         },
@@ -442,8 +450,7 @@
             }
           },
           "required": [
-            "worker",
-            "reviewer"
+            "worker"
           ],
           "additionalProperties": false
         }
@@ -540,6 +547,34 @@
         "enabled"
       ],
       "additionalProperties": false
+    },
+    "critic": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "reasoning_effort": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
+        },
+        "pinned": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "model",
+        "reasoning_effort"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
@@ -550,5 +585,194 @@
     "specialist",
     "simple_worker"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "not": {
+          "required": [
+            "critic"
+          ]
+        }
+      },
+      "then": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 1
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "A": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 2
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "B": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 3
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "C": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 4
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "D": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 5
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "E": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "count": {
+                      "minimum": 6
+                    }
+                  }
+                }
+              },
+              "required": [
+                "streams"
+              ]
+            },
+            "then": {
+              "properties": {
+                "streams": {
+                  "properties": {
+                    "F": {
+                      "required": [
+                        "reviewer"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
 }

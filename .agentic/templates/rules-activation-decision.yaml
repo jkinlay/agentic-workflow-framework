@@ -10,7 +10,7 @@
   ],
   "configuration": {
     "merge_method": "squash",
-    "policy_sha256": "26873b2d97ada983bc9320cdd789a58848d88421ef3cffc386f5fc903b74d493",
+    "policy_sha256": "ae1c1a36384a04a124463304cfe4c6a9cfe86674e061ad9168ebe4904f305c70",
     "status": "ACCEPTED"
   },
   "execution_authority": false,

@@ -2,7 +2,7 @@
 
 Version 1.9.3. This is coordinator guidance for a host with delegation tools. The planner does not launch agents or authenticate active-writer records.
 
-See [specification](../SPECIFICATION.md), [ticket lifecycle](23-TICKET-LIFECYCLE.md) and [operating configuration](29-OPERATING-CONFIGURATION.md). Default three streams each have one independent reviewer; their count is derived. Reviewers and any separate coordinator consume shared host slots; configured ceilings do not prove available agents.
+See [specification](../SPECIFICATION.md), [ticket lifecycle](23-TICKET-LIFECYCLE.md) and [operating configuration](29-OPERATING-CONFIGURATION.md). Default three worker streams share one independent critic/adversarial handler; with the controller this uses five host slots. The review-completion barrier still waits for every reviewer frozen for a candidate. Configured ceilings do not prove available agents.
 
 ## Plan and dispatch
 
@@ -33,5 +33,7 @@ Jira mirrors the lifecycle through the controller only (WORKER_STARTED → In Pr
 New reviewer identities default to selected `--codeowner` (`@maintainer` unless overridden); existing identities remain. Verify actual access, independence and eligible non-author review. Configured handles and CODEOWNERS files do not enforce these qualities.
 
 Use supported completion events or bounded polling. Scheduling later work requires a user request and a scheduler. The separate enrolled PR loop allows one active tick and must not race a native writer on the same branch.
+
+While a scoped backlog remains active, follow the [continuous controller contract](34-CONTINUOUS-CONTROLLER.md). Every configured stream is visibly `WORKING`, `PAUSED_INPUT`, `BLOCKED`, or `COMPLETE`; completion immediately triggers a refill decision. A pause or blocker affects only that stream. Freeze the complete independent reviewer set through the [review completion barrier](33-REVIEW-COMPLETION-BARRIER.md) before dispatch and never submit an aggregate while any required result is missing or unacceptable.
 
 Native status is supplied observation, not cryptographic attestation. Deployment-grade unforgeable writer records require a separate trusted adapter.

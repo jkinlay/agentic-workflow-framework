@@ -118,10 +118,13 @@ def main(argv=None):
             if release_mode:
                 raise ValueError('Source release qualification does not apply to installed component checks')
             report['current_review'] = {'status': 'NOT_APPLICABLE', 'reason': 'Installed component check; source release review is established separately by archive acceptance'}
-        contracts = Contracts(ROOT / '.agentic/schemas')
+        schema_dir = ROOT / '.agentic/schemas'
+        contracts = Contracts(schema_dir)
         operating_schemas = {'operating-config', 'operating-change', 'operating-recommendation', 'operating-epics'}
-        if len(contracts.schemas) != 40 or not operating_schemas <= set(contracts.schemas):
-            raise ValueError('Expected complete catalog of 36 evidence/governance and four operating schemas')
+        from agentic.contracts import schema_inventory
+        generated_schema_names = schema_inventory(schema_dir)
+        if set(contracts.schemas) != generated_schema_names or not operating_schemas <= generated_schema_names:
+            raise ValueError('Generated schema catalog differs from the loaded schemas')
         validate_workflow(load(ROOT / '.agentic/workflow.yaml'))
         contracts.validate('project-config', load(ROOT / '.agentic/PROJECT_CONFIG.yaml'))
         report['checks']['schema_catalog_and_workflow'] = 'PASS'

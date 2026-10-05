@@ -4,15 +4,15 @@ At CONFIGURED, run `python -B .agentic/scripts/workflow.py operating show`, past
 
 ## Two configuration layers
 
-Protected `.agentic/PROJECT_CONFIG.yaml` holds ceilings, budgets, model allowlists, floors, escalation and one reviewer per stream. Governance changes require a reviewed PR.
+Protected `.agentic/PROJECT_CONFIG.yaml` holds ceilings, budgets, model allowlists, floors, escalation and one shared critic route; legacy per-stream reviewer routes remain accepted. Governance changes require a reviewed PR.
 
 Show JSON/text, status and newly prepared `operating.state` share `effective_ceiling`: the minimum of six, `execution.max_parallel_tickets`, and enabled `execution.host_broker.max_workers`. `host_broker.*` limits bind only when `host_broker.enabled` is true. Disabled values cannot lower the ceiling; heavy/GPU limits are not stream counts. Configured capacity never proves observed host slots or reviewer availability.
 
 `effective_ceiling_governance_path` names the binding project/broker path, preferring project on ties. `effective_ceiling_sources` lists every tied path, including the schema's six-stream maximum. When only that structural limit binds, the governance path is null. Native planning separately considers observed host slots, ownership and spawn depth. Malformed inputs are refused.
 
-Project-owned `OPERATING_CONFIG.yaml` holds choices within governance. Bootstrap seeds three streams: Terra/medium workers, Sol/high reviewers, Sol/medium controller, Sol/high specialist and Luna/low simple work. Existing files are preserved; this file is mutable and unprotected. Missing/invalid choices prevent CONFIGURED; preserve evidence and follow the remedy.
+Project-owned `OPERATING_CONFIG.yaml` holds choices within governance. New AWF 1.9.3 defaults seed three `gpt-6-luna` / medium workers, one shared `gpt-6-astra` / high critic/adversarial handler, a `gpt-6-astra` / high controller and specialist, and `gpt-6-luna` / low simple work. The controller, critic and workers use five slots. Existing files are preserved byte-for-byte; legacy per-stream reviewer routes remain accepted and are not silently migrated. This file is mutable and unprotected. Missing/invalid choices prevent CONFIGURED; preserve evidence and follow the remedy.
 
-Reviewer count derives from streams; legacy fixed counts still bind. Bootstrap's `--propose-operating-capacity` stages a ceiling of at least six and removes fixed count for the adoption PR. Merge before use; ordinary upgrades preserve both. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
+New governance declares `independent_reviewers.allocation: shared_critic`; the shared reviewer pool has one slot, with candidate reviews scheduled through that handler. Legacy `one_per_stream` allocation and fixed counts remain valid and binding. Bootstrap preserves existing allocation and counts; `--propose-operating-capacity` only proposes a ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
 
 ## Apply the user's choices
 

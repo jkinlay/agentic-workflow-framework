@@ -91,6 +91,20 @@ def expected_binding(config, workflow, bundle):
             "candidate_id": fingerprint("candidate", bundle["candidate"])}
 
 
+def publication_receipt_consistent(publication):
+    """Validate semantic counts and PASS/BLOCKED classification, beyond JSON shape."""
+    findings = publication["findings"]
+    blocking = sum(item["classification"] == "BLOCKING" for item in findings)
+    pre_existing = sum(item["classification"] == "PRE_EXISTING" for item in findings)
+    blocked = bool(blocking or publication["unscanned"])
+    return (publication["total_findings"] == len(findings)
+            and publication["blocking_findings"] == blocking
+            and publication["pre_existing_findings"] == pre_existing
+            and publication["total_findings"] == blocking + pre_existing
+            and publication["unscanned_count"] == len(publication["unscanned"])
+            and publication["status"] == ("BLOCKED" if blocked else "PASS"))
+
+
 def evaluate(config, workflow, bundle, contracts, now):
     validate_config(config, workflow, contracts)
     if config["jira"].get("enabled", True) is False:
@@ -98,6 +112,10 @@ def evaluate(config, workflow, bundle, contracts, now):
     if not config["merge_gate"]["trusted_owner_ids"]:
         raise ValidationError("$.merge_gate.trusted_owner_ids: configure actual trusted owner IDs before merge authorization")
     contracts.validate("evidence-bundle", bundle)
+    from .review_completion import validate_gate_submission
+    review_submission = validate_gate_submission(
+        bundle["review_submission"], bundle["candidate"], bundle["contract"],
+        bundle["critic"], bundle["specialists"])
     timestamp(now)
     binding = expected_binding(config, workflow, bundle)
     candidate, contract, snapshot = bundle["candidate"], bundle["contract"], bundle["snapshot"]
@@ -274,6 +292,7 @@ def evaluate(config, workflow, bundle, contracts, now):
     ac_ok = ac_ok and closure_met(contract, worker, critic)
     parity_ok, parity_problems = local_ci_parity(config, contract, worker, ci)
     outcomes = {
+        "review_completion": True,
         "acceptance_criteria": ac_ok and commands_ok and worker["status"] == "COMPLETE" and worker["self_review_complete"] and not worker["blockers"],
         "scope": scope_ok,
         "critic_current_tuple": critic_ok,
@@ -286,14 +305,16 @@ def evaluate(config, workflow, bundle, contracts, now):
         "review_coverage": pr["retrieval_complete"] and pr["classification_complete"] and critic["coverage"]["complete"] and not critic["coverage"]["omissions"] and set(critic["coverage"]["reviewed_paths"]) == file_paths,
         "provenance": not provenance_problems,
         "local_ci_parity": parity_ok,
-        "publication_safety": publication["status"] == "PASS" and not publication["findings"]
-            and not publication["unscanned"] and publication["base_sha"] == candidate["target_base_sha"]
+        "publication_safety": publication_receipt_consistent(publication)
+            and publication["status"] == "PASS" and publication["blocking_findings"] == 0
+            and publication["unscanned_count"] == 0 and publication["base_sha"] == candidate["target_base_sha"]
             and publication["head_sha"] == candidate["head_sha"]
             and publication["pr_body_sha256"] == pr["body_sha256"],
     }
     # These are content-addressed references to the actual evaluated inputs.
     # They prove derivation identity, not the truth of externally supplied data.
     inputs = {
+        "review_completion": ["review_submission", "candidate", "contract", "critic", "specialists"],
         "acceptance_criteria": ["contract", "worker", "critic"], "scope": ["contract", "snapshot", "pr"],
         "critic_current_tuple": ["critic", "prior_findings"], "specialist_reviews": ["contract", "pr", "specialists"],
         "required_ci": ["ci"], "ci_candidate_binding": ["ci", "candidate"], "blocking_threads_zero": ["pr"],
@@ -318,6 +339,7 @@ def evaluate(config, workflow, bundle, contracts, now):
                if cap_disposition is not None else [])
             + [f"Provenance: {item}" for item in provenance_problems] + [f"Local/CI parity: {item}" for item in parity_problems],
         "accepted_findings": [item["finding_id"] for item in accepted],
+        "review_submission": review_submission,
         "conclusion": "READY_FOR_OWNER_AUTHORIZATION" if all(outcomes.values()) else "NOT_READY",
         "execution_authority": False, "evaluation_mode": "offline_reference", "expires_at": expires.isoformat().replace("+00:00", "Z")}
     if not required_domains:

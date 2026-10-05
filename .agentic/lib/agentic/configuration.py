@@ -113,7 +113,9 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
         jira = config['jira']
         enabled = jira.get('enabled', True)
         if not enabled:
-            require(jira['site'] is None and jira['project_key'] is None, '$.jira', 'disabled Jira uses null site and project_key')
+            identity_keys = ('cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id')
+            require(all(jira.get(key) is None for key in identity_keys), '$.jira',
+                    'disabled Jira uses null connector, site, project, and actor identity')
         scope = jira['scope']
         if enabled and not scope['allow_entire_project'] and not any(scope[k] for k in ('included_epics', 'labels_any', 'components_any')):
             warnings.append({'path': '$.jira.scope', 'code': 'JIRA_SCOPE_NOT_CONFIGURED',

@@ -10,6 +10,7 @@
     "binding",
     "operation_id",
     "merge_result_id",
+    "jira_provider",
     "lifecycle_event",
     "from_status_id",
     "to_status_id",
@@ -106,6 +107,41 @@
           "type": "null"
         }
       ]
+    },
+    "jira_provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cloud_id",
+        "site",
+        "project_id",
+        "project_key",
+        "controller_actor_id"
+      ],
+      "properties": {
+        "cloud_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "site": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project_key": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z][A-Z0-9]*$"
+        },
+        "controller_actor_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     },
     "lifecycle_event": {
       "enum": [

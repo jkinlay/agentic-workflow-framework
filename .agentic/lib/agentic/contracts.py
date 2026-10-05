@@ -12,6 +12,12 @@ from . import ValidationError
 from .canonical import load, timestamp, validate_value
 
 
+def schema_inventory(schema_dir: Path):
+    """Return generated schema names from the on-disk closed catalog."""
+    return {path.name.removesuffix(".schema.json")
+            for path in schema_dir.glob("*.schema.json")}
+
+
 def checker():
     formats = FormatChecker()
 

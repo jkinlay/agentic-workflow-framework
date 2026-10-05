@@ -50,6 +50,8 @@ def parse_text(raw):
 
 def make_request(gate, contracts, now):
     contracts.validate("final-gate", gate)
+    from .review_completion import validate_ready_gate_completion
+    validate_ready_gate_completion(gate)
     if gate["conclusion"] != "READY_FOR_OWNER_AUTHORIZATION" or timestamp(gate["expires_at"]) <= timestamp(now):
         raise ValidationError("Cannot request authorization for a failed or expired gate")
     request = {key: gate[key] for key in ["schema_version", "binding", "candidate", "expires_at"]}
@@ -68,6 +70,8 @@ def verify_record(record, request, gate, config, contracts, now):
     contracts.validate("owner-authorization", record)
     contracts.validate("authorization-request", request)
     contracts.validate("final-gate", gate)
+    from .review_completion import validate_ready_gate_completion
+    validate_ready_gate_completion(gate)
     if request["gate_hash"] != fingerprint("gate", gate) or request["gate_id"] != gate["record_id"]:
         raise ValidationError("Authorization request references a different gate")
     if gate["conclusion"] != "READY_FOR_OWNER_AUTHORIZATION":

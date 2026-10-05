@@ -1,6 +1,7 @@
 AWF EX-1 | state MERGED | PR 7 | head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb | base cccccccccccccccccccccccccccccccccccccccc | tree eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee | tier 2
 
 | Gate | Result |
+| review_completion | PASS |
 | acceptance_criteria | PASS |
 | scope | PASS |
 | critic_current_tuple | PASS |
