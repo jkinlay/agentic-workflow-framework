@@ -112,7 +112,7 @@ class RulesActivationTests(unittest.TestCase):
         self.assertIn("merge", assessed["incompatibility"])
         decision = self.decide("merge", before=observation(["squash"]))
         self.assertEqual(["merge"], decision["proposed_ruleset"]["rules"][2]["parameters"]["allowed_merge_methods"])
-        self.assertNotEqual(canonical(incompatible := ruleset(["squash"])),
+        self.assertNotEqual(canonical(ruleset(["squash"])),
                             canonical(decision["proposed_ruleset"]))
         self.assertEqual("BLOCKED", decision["status"])
 

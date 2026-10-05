@@ -2,7 +2,7 @@
 
 377 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `0f1ee3fd9176395f416eca4c596a030e2e72044158ac514faae872fbb31c9396`
+MANIFEST.json SHA-256: `c52605b4f3d97beab607ec9f1f3cf3f2f2bc626ed9b084c5b00fc80b4ab76003`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -267,7 +267,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_routine_publication.py` | `006a1f4203876510a9aae96f3be66a579d5b14cf4630f6aa3ede1b5a297d32f1` |
 | `.agentic/tests/test_routing_cli.py` | `20b8eda2409068c7d4d0eb2c0648dc51e19dd43739a867e09610b7d79351734e` |
 | `.agentic/tests/test_routing_integration.py` | `fa76c13c504ada646c428a0462715691d3da205aa699ee79c83f1b5c939a3696` |
-| `.agentic/tests/test_rules_activation.py` | `415e7965ed221fb4d9bf30f5abfeba33e24dde3e0814377ee527f1102c6a7336` |
+| `.agentic/tests/test_rules_activation.py` | `6f6c504af2b4dc906245c2934b7ff61bf0879768eefb5183af94c9b5e726c4cc` |
 | `.agentic/tests/test_store_regressions.py` | `2cf43379f37928ead367f3fc60e4e282a7814a84194765b6cdd759a99dc42859` |
 | `.agentic/tests/test_streams.py` | `f6fb0ab95c1aa0689a3459298106994075749729f89ec0110e9e8ab21b391c6c` |
 | `.agentic/tests/test_upgrade_matrix.py` | `ead649c4e3b8b92bfe376deaf4bdeaf76855a0f697cb2e4bf921f8c81e5e33a4` |
