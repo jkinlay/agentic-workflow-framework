@@ -73,7 +73,14 @@ def _allowed_merge_methods(value):
                      if isinstance(rule, dict) and rule.get("type") == "pull_request"]
     require(len(pull_requests) == 1 and isinstance(pull_requests[0].get("parameters"), dict),
             "Ruleset needs exactly one pull_request rule with parameters")
-    methods = pull_requests[0]["parameters"].get("allowed_merge_methods")
+    methods = _methods_from_pull_request(pull_requests[0])
+    return methods
+
+
+def _methods_from_pull_request(rule):
+    parameters = rule.get("parameters")
+    require(isinstance(parameters, dict), "Pull-request rule parameters are missing")
+    methods = parameters.get("allowed_merge_methods")
     require(isinstance(methods, list) and methods and len(methods) == len(set(methods))
             and all(isinstance(method, str) and method in MERGE_METHODS for method in methods),
             "Ruleset allowed_merge_methods must be unique supported values")
@@ -322,7 +329,7 @@ def _validate_observation(value, repository, default_branch, now):
 
 
 def assess_repository_rules(observation=None, *, repository=None, default_branch=None, review_app_id=None,
-                            merge_method=None, now=None):
+                            merge_method=None, expected_repository_id=None, now=None):
     report = {"repository_rules": "UNOBSERVED", "repository": repository, "default_branch": default_branch,
               "expected_review_app_id": review_app_id,
               "adoption_allowed": True, "rules_enablement_ready": False, "execution_authority": False,
@@ -339,6 +346,11 @@ def assess_repository_rules(observation=None, *, repository=None, default_branch
     try:
         require(review_app_id is None or type(review_app_id) is int and review_app_id > 0, "Review App ID must be a positive integer")
         groups, details = _validate_observation(observation, repository, default_branch, now or now_text())
+        if expected_repository_id is not None:
+            require(type(expected_repository_id) is int and expected_repository_id > 0,
+                    "Configured repository ID must be a positive integer")
+            require(observation["repository_response"]["id"] == expected_repository_id,
+                    "Observed immutable repository ID differs from configured repository ID")
         report.update(default_branch=observation["default_branch"], repository_id=observation["repository_response"]["id"],
                       observation_source=observation["source"], observation_sha256=sha256(canonical(observation)),
                       observed_at=observation["observed_at"])
@@ -355,12 +367,20 @@ def assess_repository_rules(observation=None, *, repository=None, default_branch
             effective_rules = [{key: value for key, value in rule.items() if key in ("type", "parameters")} for rule in rules]
             detail_rules = _rules(detail.get("rules"))
             require(sorted(map(canonical, effective_rules)) == sorted(map(canonical, detail_rules)), "Effective branch rules and ruleset details disagree")
+            if merge_method is not None:
+                for pull_request_rule in (rule for rule in effective_rules
+                                          if rule.get("type") == "pull_request"):
+                    methods = _methods_from_pull_request(pull_request_rule)
+                    if merge_method_name(merge_method) not in methods:
+                        report["configuration_compatible"] = False
+                        report["incompatibility"] = (
+                            f"Observed ruleset {identity} disables configured merge method {merge_method}")
             adequate, checks, methods = _baseline(effective_rules)
             if not adequate:
                 continue
             if merge_method is not None and merge_method_name(merge_method) not in methods:
                 report["configuration_compatible"] = False
-                report["incompatibility"] = (
+                report["incompatibility"] = report["incompatibility"] or (
                     f"Observed ruleset {identity} disables configured merge method {merge_method}")
                 continue
             if "bypass_actors" not in detail:

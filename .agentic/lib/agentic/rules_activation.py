@@ -62,13 +62,17 @@ def _owner_action(repository, proposal, proposal_digest, rules_state, outcome):
     }
 
 
-def _observation_issue(observation, repository, default_branch, now, *, post=False):
+def _observation_issue(observation, repository, repository_id, default_branch, now, *, post=False):
     prefix = "POST_ACTION_OBSERVATION_" if post else "RULES_OBSERVATION_"
     if not isinstance(observation, dict):
         return prefix + "INVALID"
     observed_repository = observation.get("repository")
     if not isinstance(observed_repository, str) or observed_repository.casefold() != repository.casefold():
         return prefix + "WRONG_REPOSITORY"
+    response = observation.get("repository_response")
+    if (not isinstance(response, dict) or type(response.get("id")) is not int
+            or response["id"] != repository_id):
+        return prefix + "WRONG_REPOSITORY_ID"
     if observation.get("default_branch") != default_branch:
         return prefix + "WRONG_DEFAULT_BRANCH"
     try:
@@ -94,7 +98,8 @@ def activation_rules_decision(config, workflow, contracts, *, before_observation
     proposal_digest = sha256(canonical(proposal))
     observed = github.assess_repository_rules(
         before_observation, repository=repository, default_branch=default_branch,
-        review_app_id=review_app_id, merge_method=merge_method, now=now)
+        review_app_id=review_app_id, merge_method=merge_method,
+        expected_repository_id=github_config["repository_id"], now=now)
     state = observed["repository_rules"]
     consequence_state = ("UNOBSERVED" if state == "APPLIED"
                          and observed.get("observation_source") != "github_api" else state)
@@ -107,7 +112,8 @@ def activation_rules_decision(config, workflow, contracts, *, before_observation
     if state == "UNOBSERVED":
         blockers.append("RULES_UNOBSERVED")
         blockers.append(_observation_issue(
-            before_observation, repository, default_branch, now) or "RULES_OBSERVATION_INVALID")
+            before_observation, repository, github_config["repository_id"], default_branch,
+            now) or "RULES_OBSERVATION_INVALID")
     elif state == "APPLIED" and observed.get("observation_source") != "github_api":
         blockers.append("RULES_OBSERVATION_NOT_LIVE")
     elif state == "MISSING":
@@ -121,7 +127,8 @@ def activation_rules_decision(config, workflow, contracts, *, before_observation
         else:
             assessed_post = github.assess_repository_rules(
                 post_observation, repository=repository, default_branch=default_branch,
-                review_app_id=review_app_id, merge_method=merge_method, now=now)
+                review_app_id=review_app_id, merge_method=merge_method,
+                expected_repository_id=github_config["repository_id"], now=now)
             post.update({
                 "state": assessed_post["repository_rules"],
                 "observation_sha256": assessed_post.get("observation_sha256"),
@@ -129,7 +136,8 @@ def activation_rules_decision(config, workflow, contracts, *, before_observation
                 "configuration_compatible": assessed_post.get("configuration_compatible"),
             })
             issue = _observation_issue(
-                post_observation, repository, default_branch, now, post=True)
+                post_observation, repository, github_config["repository_id"],
+                default_branch, now, post=True)
             if issue is not None:
                 blockers.append(issue)
             elif assessed_post.get("observation_source") != "github_api":

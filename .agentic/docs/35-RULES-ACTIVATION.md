@@ -8,8 +8,8 @@ would disable the project's merge policy.
 The shipped `.agentic/templates/awf-main-ruleset.json` permits all three supported
 methods and is therefore safe as a general baseline. The activation decision generates
 a narrower proposal containing exactly the accepted `github.merge_method`. Missing,
-invalid, or unaccepted configuration fails with the exact configuration path. Observed
-rules that omit the configured method are `MISSING`, with an incompatibility diagnostic.
+invalid, or unaccepted configuration fails with the exact configuration path. Any applicable
+pull-request rule that omits the configured method is `MISSING`, even in a partial ruleset.
 
 ## Decision flow
 
@@ -36,9 +36,10 @@ The helper performs no provider request and grants no execution authority. The o
 repository administrator decides whether to apply the exact digest-bound request through
 an authenticated provider session. A pending or declined decision remains blocked.
 
-If the owner reports the rules applied, collect a new read-only observation. It must bind
-the same repository and default branch, be later than the pre-action observation, be fresh
-at the trusted controller time, and show a baseline that permits the configured method:
+If the owner reports the rules applied, collect a new read-only observation. Both observations
+must bind the configured numeric repository ID, repository name, and default branch. The
+post-action observation must be later than the pre-action observation, be fresh at the trusted
+controller time, and show a baseline that permits the configured method:
 
 ```powershell
 python -B .agentic/scripts/rules_activation.py `

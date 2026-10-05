@@ -43,7 +43,7 @@ def ruleset(methods):
 
 
 def observation(methods=(), *, observed_at=BEFORE, repository=REPOSITORY, base=BASE,
-                source="github_api"):
+                source="github_api", repository_id=101):
     details = [ruleset(methods)] if methods else []
     effective = [] if not details else [
         {**copy.deepcopy(item), "ruleset_id": 7, "ruleset_source_type": "Repository",
@@ -51,7 +51,7 @@ def observation(methods=(), *, observed_at=BEFORE, repository=REPOSITORY, base=B
         for item in details[0]["rules"]
     ]
     value = github.synthetic_observation(repository, base, rules=effective, rulesets=details,
-                                         observed_at=observed_at, repository_id=101)
+                                         observed_at=observed_at, repository_id=repository_id)
     value["source"] = source
     return value
 
@@ -134,6 +134,72 @@ class RulesActivationTests(unittest.TestCase):
         self.assertEqual("MISSING", assessed["repository_rules"])
         self.assertEqual([], assessed["baseline_ruleset_ids"])
         self.assertFalse(assessed["configuration_compatible"])
+
+    def test_ac46_partial_pull_request_ruleset_merge_method_conflict_blocks(self):
+        partial = {
+            "id": 7, "source_type": "Repository", "source": REPOSITORY,
+            "target": "branch", "enforcement": "active",
+            "rules": [{"type": "pull_request", "parameters": {
+                "allowed_merge_methods": ["squash"]}}],
+        }
+        effective = [{**copy.deepcopy(rule), "ruleset_id": 7,
+                      "ruleset_source_type": "Repository", "ruleset_source": REPOSITORY}
+                     for rule in partial["rules"]]
+        before = github.synthetic_observation(
+            REPOSITORY, BASE, rules=effective, rulesets=[partial],
+            observed_at=BEFORE, repository_id=101)
+        before["source"] = "github_api"
+
+        assessed = github.assess_repository_rules(
+            before, repository=REPOSITORY, default_branch=BASE,
+            merge_method="merge", expected_repository_id=101, now=NOW)
+        self.assertEqual("MISSING", assessed["repository_rules"])
+        self.assertFalse(assessed["configuration_compatible"])
+        self.assertIn("disables configured merge method merge", assessed["incompatibility"])
+        decision = self.decide("merge", before=before)
+        self.assertEqual("BLOCKED", decision["status"])
+        self.assertEqual("MISSING", decision["observed_rules_state"])
+        self.assertFalse(decision["observed_rules"]["configuration_compatible"])
+
+    def test_ac58_numeric_repository_id_is_bound_before_and_after_owner_action(self):
+        config = accepted_config("merge")
+        wrong_initial = observation(["merge"], repository_id=202)
+        initial = activation_rules_decision(
+            config, self.workflow, self.contracts, before_observation=wrong_initial, now=NOW)
+        self.assertEqual("BLOCKED", initial["status"])
+        self.assertEqual("UNOBSERVED", initial["observed_rules_state"])
+        self.assertIn("RULES_OBSERVATION_WRONG_REPOSITORY_ID", initial["blocker_codes"])
+
+        before = observation(repository_id=101)
+        wrong_post = observation(["merge"], observed_at=AFTER, repository_id=202)
+        post = activation_rules_decision(
+            config, self.workflow, self.contracts, before_observation=before,
+            owner_outcome="APPLIED", post_observation=wrong_post, now=NOW)
+        self.assertEqual("BLOCKED", post["status"])
+        self.assertEqual("UNOBSERVED", post["post_action_observation"]["state"])
+        self.assertIn("POST_ACTION_OBSERVATION_WRONG_REPOSITORY_ID", post["blocker_codes"])
+        self.assertNotEqual("APPLIED", post["final_rules_state"])
+
+    def test_ac46_ac58_critic_findings_have_exactly_one_permanent_regression(self):
+        inventory = load(ROOT / ".agentic/validation/five-slot-adversarial-regressions.json")
+        expected = {
+            "PR35-C01": (
+                "PR35-C01-REGRESSION",
+                "RulesActivationTests.test_ac58_numeric_repository_id_is_bound_before_and_after_owner_action",
+            ),
+            "PR35-C02": (
+                "PR35-C02-REGRESSION",
+                "RulesActivationTests.test_ac46_partial_pull_request_ruleset_merge_method_conflict_blocks",
+            ),
+        }
+        for finding_id, (regression_id, test_id) in expected.items():
+            with self.subTest(finding_id=finding_id):
+                rows = [row for row in inventory["regressions"]
+                        if row["source_finding_id"] == finding_id]
+                self.assertEqual(1, len(rows))
+                self.assertEqual(regression_id, rows[0]["regression_id"])
+                self.assertEqual(test_id, rows[0]["test_id"])
+                self.assertTrue(rows[0]["permanent"])
 
     def test_ac58_missing_presents_five_parts_and_never_mutates_provider(self):
         with patch.object(github.subprocess, "Popen", side_effect=AssertionError("provider mutation attempted")):
