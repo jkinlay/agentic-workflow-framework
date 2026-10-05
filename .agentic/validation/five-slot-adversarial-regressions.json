@@ -577,6 +577,15 @@
       "regression_id": "PR35-C02-REGRESSION",
       "source_finding_id": "PR35-C02",
       "test_id": "RulesActivationTests.test_ac46_partial_pull_request_ruleset_merge_method_conflict_blocks"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": "scripts/tests/test_pre_controller_registry.py",
+      "name": "PR35 activation critic regressions resolve exactly once in the pre-controller gate",
+      "permanent": true,
+      "regression_id": "PR35-C03-REGRESSION",
+      "source_finding_id": "PR35-C03",
+      "test_id": "PreControllerRegistryTests.test_pr35_activation_findings_resolve_once_through_pre_controller_registry"
     }
   ]
 }
