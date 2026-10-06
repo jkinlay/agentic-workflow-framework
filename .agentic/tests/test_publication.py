@@ -538,6 +538,79 @@ class PublicationScanTests(unittest.TestCase):
                                  pr_body_texts=["private-1234"])
         self.assertTrue(any(item["detector_id"] == "local.regex.bounded" for item in result["findings"]))
 
+    def test_linear_terminal_repeat_alternation_preserves_reference_spans_on_long_runs(self):
+        pattern = r"(?:\btoken\w+|\bvalue\w+|fixed)"
+        accepted = publication._validate_safe_regex(pattern, "test mapping")
+        reference = re.compile(pattern, re.IGNORECASE)
+        text = "token" + ("x" * 100_000) + " VALUE" + ("y" * 50_000) + " fixed"
+        self.assertEqual(
+            [(match.start(), match.end()) for match in accepted.finditer(text)],
+            [(match.start(), match.end()) for match in reference.finditer(text)],
+        )
+
+    def test_linear_terminal_repeat_scans_long_provider_text(self):
+        pattern = r"(?:\btoken\w+|\bvalue\w+)"
+        self.mapping.write_text(json.dumps({"version": 1, "deny_regexes": [{
+            "id": "linear", "pattern": pattern}]}), encoding="utf-8")
+        text = "token" + ("x" * 100_000)
+        result = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping,
+                                 pr_body_texts=[text])
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertGreater(result["blocking_findings"], 0)
+        self.assertTrue(any(item["detector_id"] == "local.regex.linear" for item in result["findings"]))
+
+    def test_linear_terminal_repeat_rejects_backtracking_or_nonterminal_forms(self):
+        for pattern in (
+                r"(?:a+)+$",             # nested repetition
+                r"(?:a+|b+)c",            # suffix after a variable-length match
+                r"(?:a|b)+",              # alternation inside the repeat
+                r"(?:a+b+)",              # adjacent open repeats
+                r"(?:a|\w*)",             # empty-capable repeat
+                r"(?:a|\w+?)",            # lazy open repeat
+                r"(?:a|\w{65,})",          # excessive required prefix
+                r"(?:\b|\w+)",            # zero-width branch
+                r"(?=a)(?:b|\w+)",        # lookaround
+                r"(?:a|\w+){1}",          # repetition around the alternation
+                r"\w+",                    # no flat alternation
+        ):
+            with self.subTest(pattern=pattern):
+                with self.assertRaisesRegex(ValidationError, "regular expression"):
+                    publication._validate_safe_regex(pattern, "test mapping")
+
+    def test_linear_terminal_repeat_fails_closed_without_ast_parser(self):
+        with mock.patch.object(publication, "_re_parser", None):
+            with self.assertRaisesRegex(ValidationError, "regular expression"):
+                publication._validate_safe_regex(r"(?:\btoken\w+|\bvalue\w+)", "test mapping")
+            accepted = publication._validate_safe_regex(r"token[0-9]{1,4}", "test mapping")
+            self.assertIsNotNone(accepted.search("token1234"))
+
+    def test_linear_terminal_repeat_caps_branch_and_repeat_counts(self):
+        branch_prefixes = [chr(ord("a") + index) + "00" for index in range(17)]
+        too_many_branches = "(?:" + "|".join(branch_prefixes + [r"\w+"]) + ")"
+        too_many_repeat_branches = "(?:" + "|".join(
+            chr(ord("a") + index) + r"\w+" for index in range(5)
+        ) + ")"
+        for pattern in (too_many_branches, too_many_repeat_branches):
+            with self.subTest(pattern_length=len(pattern)):
+                with self.assertRaisesRegex(ValidationError, "regular expression"):
+                    publication._validate_safe_regex(pattern, "test mapping")
+
+    def test_linear_terminal_repeat_accepts_exact_complexity_boundaries(self):
+        branches = [chr(ord("a") + index) + "00" for index in range(12)]
+        branches.extend(chr(ord("m") + index) + r"\w+" for index in range(4))
+        sixteen_branches = "(?:" + "|".join(branches) + ")"
+        four_repeat_branches = "(?:" + "|".join(
+            chr(ord("a") + index) + r"\w+" for index in range(4)
+        ) + ")"
+        lower_bound_64 = r"(?:a\w{64,}|b00)"
+        for pattern, matching_text in (
+                (sixteen_branches, "m" + "x" * 64),
+                (four_repeat_branches, "d" + "x" * 64),
+                (lower_bound_64, "a" + "x" * 64)):
+            with self.subTest(pattern_length=len(pattern)):
+                accepted = publication._validate_safe_regex(pattern, "test mapping")
+                self.assertIsNotNone(accepted.search(matching_text))
+
     def test_findings_use_digest_only_redaction(self):
         value = private_locator()
         self.repo.write("generated.txt", value + "\n")
