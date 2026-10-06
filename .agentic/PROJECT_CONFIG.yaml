@@ -50,6 +50,9 @@
     "host": "https://github.com",
     "repository_id": null,
     "repository": "CHANGE_ME/CHANGE_ME",
+    "expected_actor_id": null,
+    "expected_actor_login": null,
+    "auth_profile": null,
     "base_branch": "main",
     "branch_pattern": "codex/{ticket}-{slug}",
     "merge_method": "squash",
@@ -60,6 +63,7 @@
     "profile": "manual_reference",
     "max_parallel_tickets": 6,
     "max_parallel_tickets_per_stream": 1,
+    "child_env_strip_extra": [],
     "native_streams": {
       "enabled": true,
       "dispatch_policy": "ready_independent"

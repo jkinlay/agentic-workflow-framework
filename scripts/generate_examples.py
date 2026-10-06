@@ -53,8 +53,12 @@ def config(example=True):
             "owner_closure_keywords": ["release", "publication", "qualification", "cutover", "production acceptance"],
             "dependency_direction": "requires", "mutations_owner": "controller"},
         "github": {"host": "https://github.com", "repository_id": 101 if example else None, "repository": "fixture/example" if example else "CHANGE_ME/CHANGE_ME",
+            "expected_actor_id": 1001 if example else None,
+            "expected_actor_login": "fixture-owner" if example else None,
+            "auth_profile": "fixture" if example else None,
             "base_branch": "main", "branch_pattern": "codex/{ticket}-{slug}", "merge_method": "squash", "draft_pr_first": True, "one_repository_per_controller": True},
         "execution": {"profile": "manual_reference", "max_parallel_tickets": 6, "max_parallel_tickets_per_stream": 1,
+            "child_env_strip_extra": [],
             "native_streams": {"enabled": True, "dispatch_policy": "ready_independent"},
             "independent_reviewers": {"allocation": "shared_critic"},
             "max_agent_runs_per_ticket": 12, "max_spawn_depth": 1, "max_amendment_cycles": 3, "max_cap_extensions": 2,
@@ -265,7 +269,9 @@ def main():
         validation=bundle["worker"]["validation"], ci=bundle["ci"]["checks"], reviewer={"engine": "codex", "run_id": "r-1"}), encoding="utf-8", newline="\n")
     (ROOT / ".agentic/examples/evidence.txt").write_text("Illustrative evidence; no external test was executed.\n", encoding="utf-8", newline="\n")
     for name, schema in schemas.items():
-        if name in {"project-config", "evidence-bundle", "candidate"}:
+        # The configuration-bound rules decision is owned by its dedicated
+        # generator; generic UNFILLED sampling cannot populate its open objects.
+        if name in {"project-config", "evidence-bundle", "candidate", "rules-activation-decision"}:
             continue
         draft = {"template_for": name, "status": "UNFILLED", "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.", "record": sample(schema, schemas)}
         filename = "project-status" if name == "project-state" else name

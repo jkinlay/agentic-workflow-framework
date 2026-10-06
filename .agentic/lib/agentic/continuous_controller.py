@@ -844,7 +844,8 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
 
 def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                                 repository_root, repository_head_sha, repository_tree_sha,
-                                observe_inventory, dispatch_ticket, observe_dispatch, deliver_status):
+                                observe_inventory, dispatch_ticket, observe_dispatch, deliver_status,
+                                publication_config=None, observe_publication=None):
     """Run one real host-controller cycle through explicit reviewed adapters.
 
     Inventory is observed before scheduling.  Dispatch intent is durable before
@@ -879,10 +880,39 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
     tickets, repository_binding = canonical_repository_paths(
         observation["tickets"], repository_root, repository_head_sha, repository_tree_sha)
     store.bind_repository(repository_binding)
+    from .publication_readiness import require_publication_readiness
+    publication_reports, errors = {}, []
+    for index, item in enumerate(tickets):
+        if item["disposition"] != "ELIGIBLE":
+            continue
+        try:
+            _require(callable(observe_publication) and isinstance(publication_config, dict),
+                     "PUBLICATION_UNOBSERVED: a reviewed publication observer and accepted configuration are required")
+            _require(str(publication_config.get("github", {}).get("repository_id")) ==
+                     inventory_binding["repository_id"],
+                     "Publication repository differs from the controller inventory binding")
+            publication_reports[item["ticket"]] = require_publication_readiness(
+                publication_config, observe_publication(loads(canonical(item).decode())),
+                ticket=item["ticket"], now=now)
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, ValidationError) else "PUBLICATION_UNOBSERVED: " + type(exc).__name__
+            tickets[index] = {**item, "disposition": "BLOCKED", "reason": reason,
+                              "next_action": "Resolve the named publication blocker and obtain a fresh observation",
+                              "resume_trigger": "the exact completion path passes publication readiness"}
+            errors.append({"operation": "publication_readiness", "ticket": item["ticket"],
+                           "state": "BLOCKED", "reason": reason})
     streams = store.schedule(tickets, now, host_capacity)
-    dispatches, errors = [], []
+    dispatches = []
     for operation in store.prepare_dispatches(now):
         payload, dispatch_id = operation["payload"], operation["dispatch_id"]
+        if operation["status"] == "PENDING" and not (
+                payload["ticket"] in publication_reports and any(
+                    stream["stream"] == payload["stream"] and stream["state"] == "WORKING"
+                    and stream["ticket"] == payload["ticket"] and stream["exact_tuple"] == payload["exact_tuple"]
+                    for stream in streams)):
+            # No host call has occurred. Preserve the intent for a later fresh
+            # preflight instead of classifying known non-execution as UNKNOWN.
+            continue
         try:
             if operation["status"] == "PENDING":
                 payload = store.begin_dispatch(dispatch_id, now)
@@ -917,28 +947,14 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                            "state": "PENDING", "reason": type(exc).__name__})
     return {"schema_version": 3, "observed_at": now, "streams": streams,
             "dispatch_receipts": dispatches, "status_delivery": delivery,
+            "publication_readiness": publication_reports,
             "errors": errors, "execution_authority": False}
-
-
-def _jira_provider_identity(config, binding, producer_id):
-    """Derive the immutable connector identity from accepted project policy."""
-    jira = config.get("jira", {})
-    keys = ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id")
-    _require(all(isinstance(jira.get(key), str) and jira[key] for key in keys),
-             "Enabled Jira lifecycle needs configured cloud, site, project, and controller actor identity")
-    expected = {"cloud_id": jira["cloud_id"], "site": jira["site"],
-                "project_id": jira["provider_project_id"], "project_key": jira["project_key"],
-                "controller_actor_id": jira["controller_actor_id"]}
-    _require(isinstance(binding, dict) and isinstance(binding.get("issue_id"), str) and binding["issue_id"],
-             "Jira lifecycle needs an immutable issue binding")
-    _require(producer_id == expected["controller_actor_id"],
-             "Jira lifecycle producer differs from the configured controller actor")
-    return expected
 
 
 def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
                               issue_type, state, producer_id, run_id, now, evidence, transition_id,
                               read_current_status, write_transition, read_transition,
+                              observe_provider_identity=None,
                               merge_result_id=None):
     """Reconcile durable intent, then perform at most one write and readback."""
     _require(isinstance(store, ContinuousControllerStore),
@@ -949,7 +965,39 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
     if config.get("jira", {}).get("enabled", True) is False:
         return {"planned": False, "reason": "Jira is disabled; no reads or writes",
                 "execution_authority": False}
-    provider = _jira_provider_identity(config, binding, producer_id)
+    from .provider_identity import (ProviderIdentityError, expected_jira_identity,
+                                    require_jira_write_identity)
+    expected = {"cloud_id": config.get("jira", {}).get("cloud_id"),
+                "site": config.get("jira", {}).get("site"),
+                "project_id": config.get("jira", {}).get("provider_project_id"),
+                "project_key": config.get("jira", {}).get("project_key"),
+                "account_id": config.get("jira", {}).get("controller_actor_id")}
+    observed_identity = None
+    try:
+        expected_jira_identity(config)
+        if not callable(observe_provider_identity):
+            raise ProviderIdentityError("IDENTITY_UNOBSERVED", "Jira provider identity adapter is unavailable",
+                                        expected=expected)
+        observed_identity = observe_provider_identity()
+        provider = require_jira_write_identity(config, observed_identity)
+        if producer_id != provider["controller_actor_id"]:
+            raise ProviderIdentityError("IDENTITY_MISMATCH",
+                "Jira lifecycle producer differs from the configured controller actor",
+                expected=expected, observed=observed_identity)
+        _require(isinstance(binding, dict) and isinstance(binding.get("issue_id"), str)
+                 and binding["issue_id"], "Jira lifecycle needs an immutable issue binding")
+    except ProviderIdentityError as exc:
+        return {"planned": False, "status": exc.code, "reason": str(exc),
+                "expected_identity": exc.expected or expected,
+                "observed_identity": exc.observed if exc.observed is not None else observed_identity,
+                "issue_lookups": 0, "writes_stopped": True, "reads_allowed": True,
+                "execution_authority": False}
+    except Exception as exc:
+        return {"planned": False, "status": "IDENTITY_UNOBSERVED",
+                "reason": "Jira provider identity observation failed: " + type(exc).__name__,
+                "expected_identity": expected, "observed_identity": None,
+                "issue_lookups": 0, "writes_stopped": True, "reads_allowed": True,
+                "execution_authority": False}
     adapter_binding = {"issue_id": binding["issue_id"], "jira_provider": provider}
     store.recover_jira_operations(now)
     start_time = timestamp(now)
@@ -1018,6 +1066,25 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
                 "operation_id": record["operation_id"], "current_observation": current,
                 "execution_authority": False}
     _require(intent["status"] == "PENDING", "Jira operation is unresolved; writes remain stopped")
+    try:
+        latest_identity = observe_provider_identity()
+        latest_provider = require_jira_write_identity(config, latest_identity)
+        if latest_provider != provider:
+            raise ProviderIdentityError("IDENTITY_MISMATCH",
+                "Jira provider identity moved after the issue pre-read",
+                expected=expected, observed=latest_identity)
+    except ProviderIdentityError as exc:
+        return {"planned": False, "status": exc.code, "reason": str(exc),
+                "expected_identity": exc.expected or expected,
+                "observed_identity": exc.observed,
+                "current_observation": current, "writes_stopped": True,
+                "execution_authority": False}
+    except Exception as exc:
+        return {"planned": False, "status": "IDENTITY_UNOBSERVED",
+                "reason": "Jira provider identity recheck failed: " + type(exc).__name__,
+                "expected_identity": expected, "observed_identity": None,
+                "current_observation": current, "writes_stopped": True,
+                "execution_authority": False}
     store.begin_jira_operation(record["operation_id"], now)
     try:
         operation = write_transition(record)

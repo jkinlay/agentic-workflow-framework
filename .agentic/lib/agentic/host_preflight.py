@@ -223,7 +223,45 @@ def route_models_observed(root, *, config=None, capabilities=None, now=None):
                    "Replace it with a current host-provenance record; this warning never blocks installation.")
 
 
-def preflight(root, *, platform=None):
+def _provider_identity_rows(root, config, github_observation, jira_connections):
+    from .provider_identity import (ProviderIdentityError, github_identity_preflight,
+                                    jira_identity_preflight)
+    if config is None:
+        path = Path(root) / ".agentic/PROJECT_CONFIG.yaml"
+        if not path.is_file():
+            return [row("github_identity", "N_A", "project configuration unavailable", ""),
+                    row("jira_identity", "N_A", "project configuration unavailable", "")]
+        config = _load_json_or_yaml(path)
+    rows = []
+    for name, observation, check in (
+            ("github_identity", github_observation,
+             lambda: github_identity_preflight(config, github_observation)),
+            ("jira_identity", jira_connections,
+             lambda: jira_identity_preflight(config, jira_connections))):
+        if name == "jira_identity" and config.get("jira", {}).get("enabled", True) is False:
+            rows.append(row(name, "N_A", "Jira is disabled", ""))
+            continue
+        if observation is None:
+            rows.append(row(name, "WARN", "IDENTITY_UNOBSERVED: no trusted host observation supplied",
+                            "Observe and bind the intended immutable provider identity before repository or Jira changes."))
+            continue
+        try:
+            result = check()
+            observed = result["observed"]
+            if name == "github_identity":
+                detail = (f"actor_id={observed['actor_id']}; login={observed['actor_login']}; "
+                          f"repository_id={observed['repository_id']}; protocol={observed['protocol']}")
+            else:
+                detail = (f"cloud_id={observed['cloud_id']}; account_id={observed['account_id']}; "
+                          f"project_id={observed['project_id']}; browse=true")
+            rows.append(row(name, "PASS", detail, ""))
+        except ProviderIdentityError as exc:
+            rows.append(row(name, "WARN", exc.code + ": " + str(exc),
+                            "Select or bind the intended account/resource; AWF never switches accounts automatically."))
+    return rows
+
+
+def preflight(root, *, platform=None, config=None, github_observation=None, jira_connections=None):
     root = Path(root)
     windows = (platform or os.name) == "nt"
     rows = []
@@ -232,6 +270,7 @@ def preflight(root, *, platform=None):
                     f"{depth} characters", "Relocate the checkout below a shorter path; nested evidence copies exceeded 260 characters on PR #11." if depth > PATH_WARN_LENGTH else ""))
     rows.append(project_lint_scope(root))
     rows.append(route_models_observed(root))
+    rows.extend(_provider_identity_rows(root, config, github_observation, jira_connections))
     if windows:
         longpaths = git_config(root, "core.longpaths")
         rows.append(row("core.longpaths", "PASS" if longpaths == "true" else "WARN", f"core.longpaths={longpaths or 'unset'}",

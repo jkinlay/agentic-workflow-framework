@@ -14,7 +14,7 @@ Use `.agentic/scripts/plan_streams.py` over verified inventory for project-owned
 
 Through supported host tools, assign bounded non-overlapping work within those limits. An implementing coordinator is a writer; reviewers and queued proposals are not. Record returned agent IDs and assignments, reuse existing owners and account for other occupied slots.
 
-Before dispatch, require every stream capability through `agentic.activation.require_capabilities`. ACTIVE alone is insufficient: an `UNAVAILABLE`, `UNOBSERVED` or `NOT_APPLICABLE` required capability refuses the stream. L3 supplies publication/PR readiness, K14/L6 external-resource readiness and K13 Jira identity observations; do not infer those rows before their observers exist.
+Before dispatch, require every stream capability through `agentic.activation.require_capabilities`. ACTIVE alone is insufficient: an `UNAVAILABLE`, `UNOBSERVED` or `NOT_APPLICABLE` required capability refuses the stream. The production controller requires the [publication readiness observer](37-PUBLICATION-READINESS.md) before assigning work; missing authentication, remote access, branch eligibility, allowed rules, push permission or draft-PR permission names a blocker. K14/L6 supply external-resource readiness and K13 supplies Jira identity observations; do not infer unobserved rows.
 
 Follow [routing](27-MODEL-ROUTING.md): reserve, launch through the host, settle observed results. Missing launch, usage or enforcement capability is a limitation, not inferred success.
 

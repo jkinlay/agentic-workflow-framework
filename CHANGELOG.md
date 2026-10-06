@@ -16,6 +16,8 @@ Adds a one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, sc
 
 Hardens activation with versioned REST/GraphQL merge identity, complete PR/base/head/state/time cross-checks, Git-object checkout comparison, lock-free inspection, structured blockers, strict ACTIVE exit and capabilities. Network detectors self-scan without weakening detection.
 
+Adds environment exclusions, launch inventory, provider identity gates, Jira binding proposals, publication readiness before dispatch, and durable owner-publication handoffs that resume draft PRs without repeating work.
+
 ## 1.9.2 — 23 September 2026
 
 Adds token-only budgets, higher new-project caps, publisher commits for sandboxes unable to write Git metadata, lint-scope preflight and portable skills. Child processes exclude provider API keys. Release builds reject temp residue and forbid `.tmp-tests` links. Budgets reflect expected ticket volume and prior AWF workloads; existing project configuration remains preserved, and review, merge, reconciliation and Jira boundaries stay unchanged. No model pilot.

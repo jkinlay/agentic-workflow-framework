@@ -171,6 +171,8 @@ def main(argv=None):
         for path in code:
             compile(path.read_bytes(), str(path), 'exec')
         report['checks']['python_syntax_files'] = len(code)
+        from agentic.launch_surfaces import validate_repository_launch_surfaces
+        report['checks']['launch_surfaces'] = validate_repository_launch_surfaces(ROOT)
         report['code_sha256'] = {p.relative_to(ROOT).as_posix(): sha256(p.read_bytes()) for p in code}
         markdown = list((ROOT / '.agentic').rglob('*.md')) + [ROOT / 'AGENTS.md', ROOT / '.github/PULL_REQUEST_TEMPLATE.md']
         if (ROOT / 'MANIFEST.json').exists():

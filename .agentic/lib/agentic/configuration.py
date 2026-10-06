@@ -117,6 +117,15 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
             require(all(jira.get(key) is None for key in identity_keys), '$.jira',
                     'disabled Jira uses null connector, site, project, and actor identity')
         scope = jira['scope']
+        if enabled and any(jira.get(key) is None for key in
+                           ('cloud_id', 'provider_project_id', 'controller_actor_id')):
+            warnings.append({'path': '$.jira', 'code': 'JIRA_IDENTITY_UNBOUND',
+                             'message': 'Jira reads and unrelated work may continue; writes are refused until immutable cloud, project, and actor identities are owner-bound.'})
+        github_identity = config.get('github', {})
+        if (github_identity.get('expected_actor_id') is None and
+                github_identity.get('auth_profile') is None):
+            warnings.append({'path': '$.github', 'code': 'GITHUB_IDENTITY_UNBOUND',
+                             'message': 'Repository changes are refused until an expected GitHub actor ID or authentication profile is configured and observed.'})
         if enabled and not scope['allow_entire_project'] and not any(scope[k] for k in ('included_epics', 'labels_any', 'components_any')):
             warnings.append({'path': '$.jira.scope', 'code': 'JIRA_SCOPE_NOT_CONFIGURED',
                              'message': 'No Jira ticket is in scope; configure explicit selectors before Jira work.'})
@@ -124,6 +133,11 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
             for index, value in enumerate(scope[key]):
                 require(bool(value.strip()), f'$.jira.scope.{key}[{index}]', 'empty/whitespace Jira selector')
         execution = config['execution']
+        from .child_process import ChildEnvironmentError, validate_child_env_strip_extra
+        try:
+            validate_child_env_strip_extra(execution.get('child_env_strip_extra', []))
+        except ChildEnvironmentError as exc:
+            problems.append(issue('$.execution.child_env_strip_extra', str(exc)))
         if 'model_routing' in execution:
             from .model_routing import policy_from_config
             try:
@@ -198,4 +212,7 @@ def require_enablement_config(config, workflow, contracts):
         raise ValidationError('$.validation.required_ci_checks: CI_NOT_CONFIGURED; configure pinned CI before live enablement')
     if not config['merge_gate']['trusted_owner_ids']:
         raise ValidationError('$.merge_gate.trusted_owner_ids: OWNER_GATE_NOT_CONFIGURED')
+    github = config['github']
+    if github.get('expected_actor_id') is None and github.get('auth_profile') is None:
+        raise ValidationError('$.github: GITHUB_IDENTITY_UNBOUND; configure an expected immutable actor ID or authentication profile before enablement')
     return report

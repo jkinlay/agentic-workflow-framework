@@ -5,10 +5,18 @@ import ast
 import os
 from pathlib import Path
 import re
+import tempfile
 import unittest
 from unittest import mock
 
-from agentic.child_process import PROVIDER_API_KEY_ENV_VARS, child_env, scrub_process_env
+from agentic.child_process import (
+    ChildEnvironmentError,
+    PROVIDER_API_KEY_ENV_VARS,
+    child_env,
+    configured_child_env_strip_extra,
+    scrub_process_env,
+    validate_child_env_strip_extra,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,8 +33,10 @@ class ChildEnvironmentTests(unittest.TestCase):
             "GIT_TERMINAL_PROMPT": "0",
         }
         result = child_env(base, extra={"OPENAI_API_KEY": "replacement", "EXTRA": "kept"})
-        self.assertEqual(PROVIDER_API_KEY_ENV_VARS,
-                         frozenset({"ANTHROPIC_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY"}))
+        self.assertEqual(PROVIDER_API_KEY_ENV_VARS, frozenset({
+            "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY",
+            "CODEX_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
+        }))
         self.assertFalse(PROVIDER_API_KEY_ENV_VARS & {key.upper() for key in result})
         self.assertEqual(result["GH_TOKEN"], "github")
         self.assertEqual(result["GIT_TERMINAL_PROMPT"], "0")
@@ -43,6 +53,36 @@ class ChildEnvironmentTests(unittest.TestCase):
         with mock.patch.dict(os.environ, environment, clear=True):
             scrub_process_env()
             self.assertEqual(dict(os.environ), {"UNRELATED_VALUE": "kept"})
+
+    def test_all_builtin_provider_names_are_removed_case_insensitively(self):
+        base = {name.swapcase(): "secret" for name in PROVIDER_API_KEY_ENV_VARS}
+        self.assertEqual(child_env(base), {})
+
+    def test_configured_extra_is_removed_and_cannot_be_restored(self):
+        result = child_env(
+            {"PRIVATE_TOKEN": "original", "SAFE": "kept"},
+            extra={"private_token": "replacement"},
+            strip_extra=["PRIVATE_TOKEN"],
+        )
+        self.assertEqual(result, {"SAFE": "kept"})
+
+    def test_configured_extra_loader_reads_bounded_json_project_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "PROJECT_CONFIG.yaml"
+            path.write_text('{"execution":{"child_env_strip_extra":["PRIVATE_TOKEN"]}}', encoding="utf-8")
+            self.assertEqual(configured_child_env_strip_extra(path), frozenset({"PRIVATE_TOKEN"}))
+
+    def test_configured_extra_validation_fails_closed(self):
+        invalid = [
+            "PRIVATE_TOKEN", "private_token",
+        ]
+        with self.assertRaisesRegex(ChildEnvironmentError, "case-insensitive duplicate"):
+            validate_child_env_strip_extra(invalid)
+        for value in ([""], [" PADDED"], ["LINE\nBREAK"], ["9INVALID"], ["GH_TOKEN"], ["github_token"]):
+            with self.subTest(value=value), self.assertRaises(ChildEnvironmentError):
+                validate_child_env_strip_extra(value)
+        with self.assertRaisesRegex(ChildEnvironmentError, "must be an array"):
+            validate_child_env_strip_extra("PRIVATE_TOKEN")
 
     def test_scheduled_entry_points_scrub_before_non_bootstrap_imports(self):
         for relative in (".agentic/scripts/scheduled_tick.py", ".agentic/scripts/review_loop.py"):
@@ -75,7 +115,10 @@ class ChildEnvironmentTests(unittest.TestCase):
         self.assertEqual(powershell_keys, PROVIDER_API_KEY_ENV_VARS)
         removal = source.index("$preflightStartInfo.EnvironmentVariables.Remove($name)")
         invocation = source.index("$preflightProcess.Start()")
-        self.assertIn("$providerApiKeyEnvVars -contains $name.ToUpperInvariant()", source)
+        self.assertIn("$childEnvStripNames -contains $name.ToUpperInvariant()", source)
+        self.assertIn("$projectConfig.execution.child_env_strip_extra", source)
+        self.assertIn("case-insensitive duplicate", source)
+        self.assertIn("may not remove GitHub host authorization", source)
         self.assertLess(key_list.start(), removal)
         self.assertLess(removal, invocation)
 

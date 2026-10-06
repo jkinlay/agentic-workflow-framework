@@ -108,7 +108,22 @@ def main(argv=None, default_root=None):
     cap_parser.add_argument("--extensions", type=int, default=0)
     cap_parser.add_argument("--head", required=True, help="Candidate head SHA the owner signed against")
     cap_parser.add_argument("--config", type=Path)
-    sub.add_parser("preflight", help="Host preflight rows (PASS/WARN/SKIP/N_A); never blocks INSTALLED")
+    preflight_parser = sub.add_parser("preflight", help="Host preflight rows (PASS/WARN/SKIP/N_A); never blocks INSTALLED")
+    preflight_parser.add_argument("--config", type=Path)
+    preflight_parser.add_argument("--github-identity", type=Path,
+                                  help="Trusted host GitHub identity observation JSON")
+    preflight_parser.add_argument("--jira-connections", type=Path,
+                                  help="Trusted host Jira connection observation JSON")
+    jira_parser = sub.add_parser("jira", help="Jira immutable-identity governance operations")
+    jira_sub = jira_parser.add_subparsers(dest="jira_command", required=True)
+    jira_bind = jira_sub.add_parser("bind", help="Discover binding candidates and create a confirmed config proposal")
+    jira_bind.add_argument("--connections", type=Path, required=True,
+                           help="Trusted host Jira connection observation JSON")
+    jira_bind.add_argument("--confirmation", type=Path,
+                           help="Owner-confirmed awf-jira-binding-confirmation-1 record")
+    jira_bind.add_argument("--config", type=Path)
+    jira_bind.add_argument("--output", type=Path,
+                           help="Create a new complete proposed PROJECT_CONFIG file; never overwrites")
     scan_parser = sub.add_parser("publication-scan", help="Scan every commit, patch, changed head file and supplied provider text")
     scan_parser.add_argument("--base", required=True)
     scan_parser.add_argument("--head", required=True)
@@ -190,7 +205,10 @@ def main(argv=None, default_root=None):
                           "native_host_delegation_required": True,"automatic_jira_mutations": False}}
         elif args.command == "preflight":
             from .host_preflight import preflight
-            output = preflight(root)
+            output = preflight(root,
+                config=load(args.config) if args.config else None,
+                github_observation=load(args.github_identity) if args.github_identity else None,
+                jira_connections=load(args.jira_connections) if args.jira_connections else None)
         elif args.command == "digest":
             from .digest import check_prose, digest_sha256, render
             value = load(args.input)
@@ -227,7 +245,25 @@ def main(argv=None, default_root=None):
             else:
                 contracts = Contracts(root / ".agentic/schemas")
                 workflow = load(root / ".agentic/workflow.yaml")
-                if args.command == "validate-config":
+                if args.command == "jira":
+                    from .provider_identity import jira_binding_plan
+                    config_path = args.config or root / ".agentic/PROJECT_CONFIG.yaml"
+                    config = load(config_path)
+                    confirmation = load(args.confirmation) if args.confirmation else None
+                    output = jira_binding_plan(config, load(args.connections), confirmation,
+                                               now=now_text())
+                    if args.output:
+                        if confirmation is None or output["status"] != "CONFIRMED":
+                            raise ValidationError("--output requires an exact owner-confirmed binding")
+                        proposed = json.loads(json.dumps(config))
+                        proposed["jira"].update(output["binding_patch"])
+                        args.output.parent.mkdir(parents=True, exist_ok=True)
+                        with args.output.open("x", encoding="utf-8", newline="\n") as stream:
+                            json.dump(proposed, stream, indent=2, ensure_ascii=False)
+                            stream.write("\n")
+                        output["recorded_path"] = str(args.output)
+                        output["source_config_unchanged"] = True
+                elif args.command == "validate-config":
                     config_path = args.config or root / ".agentic/PROJECT_CONFIG.yaml"
                     workflow_path = root / ".agentic/workflow.yaml"
                     before_config = config_path.read_bytes()
