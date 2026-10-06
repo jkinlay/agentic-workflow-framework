@@ -19,7 +19,7 @@ from agentic.continuous_controller import (
     production_jira_lifecycle,
     production_merge_observed,
 )
-from agentic.owner_publication import OwnerPublicationStore, resume_owner_publication
+from agentic.owner_publication import OwnerPublicationStore, prepare_owner_publication, resume_owner_publication
 
 
 def _load_reviewed_adapters(path, expected_sha256, config_path):
@@ -129,11 +129,13 @@ def main(argv=None, default_root=ROOT):
         store = ContinuousControllerStore(args.state, args.streams, cadence_seconds,
                                           worktree_roots=args.worktree_root)
     adapters = None
-    if args.command in {"cycle", "jira-lifecycle", "merge-observed", "owner-publication-resume"}:
+    if args.command in {"cycle", "jira-lifecycle", "merge-observed", "owner-publication-prepare",
+                        "owner-publication-resume"}:
         adapters = _load_reviewed_adapters(args.adapter_module, args.adapter_sha256,
                                            args.adapter_config)
     if args.command == "owner-publication-prepare":
-        output = store.prepare(config, load(args.request), now=args.now)
+        calls = _require_adapters(adapters, {"authorize_owner_publication"})
+        output = prepare_owner_publication(store, config, load(args.request), now=args.now, **calls)
     elif args.command == "owner-publication-resume":
         calls = _require_adapters(adapters, {"observe_identity", "observe_remote_heads", "create_draft_pr", "observe_draft_pr"})
         output = resume_owner_publication(store, args.batch, config, now=args.now, **calls)

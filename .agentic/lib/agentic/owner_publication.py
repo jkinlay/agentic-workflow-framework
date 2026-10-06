@@ -91,6 +91,97 @@ def _request(config, request):
     return loads(canonical(request).decode())
 
 
+def _scan_binding(value, *, kind, repository_id, base_sha, head_sha, tree_sha,
+                  body_sha256, comments_sha256):
+    required = {"format", "kind", "receipt_sha256", "result", "scan_complete",
+                "repository_id", "base_sha", "head_sha", "tree_sha", "body_sha256",
+                "comments_sha256", "blocking_findings", "unscanned", "mapping_loaded"}
+    _require(isinstance(value, dict) and set(value) == required,
+             "Malformed owner-publication scan binding")
+    _require(value["format"] == "awf-owner-publication-scan-binding-1" and value["kind"] == kind,
+             "Owner-publication scan binding has the wrong kind")
+    _require(isinstance(value["receipt_sha256"], str)
+             and re.fullmatch(r"[0-9a-f]{64}", value["receipt_sha256"]),
+             "Owner-publication scan binding needs a receipt digest")
+    _require(value["result"] == "PASS" and value["scan_complete"] is True
+             and type(value["blocking_findings"]) is int and value["blocking_findings"] == 0
+             and type(value["unscanned"]) is int and value["unscanned"] == 0,
+             "Owner-publication scans must be complete terminal PASS results")
+    expected = {"repository_id": repository_id, "base_sha": base_sha, "head_sha": head_sha,
+                "tree_sha": tree_sha, "body_sha256": body_sha256,
+                "comments_sha256": comments_sha256}
+    _require(all(value[name] == expected[name] and type(value[name]) is type(expected[name])
+                 for name in expected),
+             "Owner-publication scan binding differs from the authorized candidate")
+    _require(type(value["mapping_loaded"]) is bool
+             and (kind != "private_deny" or value["mapping_loaded"] is True),
+             "Private-deny scan binding requires its mapping")
+
+
+def _authorization(config, request, authorization, *, now):
+    required = {"format", "source", "observed_at", "repository", "repository_id", "base_branch",
+                "policy_evidence", "policy_authorized", "comments", "streams"}
+    _require(isinstance(authorization, dict) and set(authorization) == required
+             and authorization["format"] == "awf-owner-publication-authorization-1"
+             and authorization["source"] == "reviewed_host_adapter",
+             "Malformed reviewed-host owner-publication authorization")
+    github = config["github"]
+    _require(authorization["repository"] == github["repository"]
+             and type(authorization["repository_id"]) is int
+             and authorization["repository_id"] == github["repository_id"]
+             and authorization["base_branch"] == github["base_branch"],
+             "Owner-publication authorization has a foreign repository identity")
+    fresh(authorization["observed_at"], now, 300, skew_seconds=0)
+    _require(authorization["policy_authorized"] is True
+             and authorization["policy_evidence"] == request["owner_policy_evidence"],
+             "Reviewed host did not authorize the exact owner-publication policy evidence")
+    comments = authorization["comments"]
+    _require(isinstance(comments, dict)
+             and set(comments) == {"source", "scope", "complete", "count", "sha256"}
+             and comments["source"] == "host_observation"
+             and comments["scope"] == "pull_request_comments"
+             and comments["complete"] is True
+             and type(comments["count"]) is int and comments["count"] >= 0
+             and isinstance(comments["sha256"], str)
+             and re.fullmatch(r"[0-9a-f]{64}", comments["sha256"]),
+             "Owner-publication needs a complete host comment observation")
+    streams = authorization["streams"]
+    _require(isinstance(streams, list) and len(streams) == len(request["streams"]),
+             "Owner-publication authorization must cover every stream")
+    by_stream = {item["stream"]: item for item in request["streams"]}
+    seen = set()
+    stream_fields = {"stream", "branch", "base_sha", "head_sha", "tree_sha", "body_sha256",
+                     "completed_result_sha256", "publication_scan", "private_deny_scan"}
+    for item in streams:
+        _require(isinstance(item, dict) and set(item) == stream_fields
+                 and item["stream"] in by_stream and item["stream"] not in seen,
+                 "Malformed or duplicate owner-publication stream authorization")
+        expected = by_stream[item["stream"]]
+        _require(item["branch"] == expected["branch"] and item["head_sha"] == expected["head"]
+                 and item["completed_result_sha256"] == expected["completed_result_sha256"]
+                 and item["body_sha256"] == sha256(expected["body"].encode("utf-8")),
+                 "Owner-publication authorization differs from retained stream work")
+        _require(all(isinstance(item[name], str) and re.fullmatch(r"[0-9a-f]{40}", item[name])
+                     for name in ("base_sha", "head_sha", "tree_sha")),
+                 "Owner-publication authorization needs an exact base/head/tree tuple")
+        for kind, field in (("publication", "publication_scan"), ("private_deny", "private_deny_scan")):
+            _scan_binding(item[field], kind=kind, repository_id=authorization["repository_id"],
+                          base_sha=item["base_sha"], head_sha=item["head_sha"], tree_sha=item["tree_sha"],
+                          body_sha256=item["body_sha256"], comments_sha256=comments["sha256"])
+        seen.add(item["stream"])
+    _require(seen == set(by_stream), "Owner-publication authorization omitted a stream")
+    return loads(canonical(authorization).decode())
+
+
+def prepare_owner_publication(store, config, request, *, now, authorize_owner_publication):
+    """Authorize through one digest-pinned reviewed adapter before rendering a push command."""
+    _require(callable(authorize_owner_publication),
+             "Owner publication requires a reviewed host authorization adapter")
+    normalized = _request(config, request)
+    authorization = authorize_owner_publication(loads(canonical(normalized).decode()))
+    return store.prepare(config, normalized, authorization, now=now)
+
+
 class OwnerPublicationStore:
     def __init__(self, path, *, worktree_roots):
         _require(bool(worktree_roots), "Owner-publication state must name protected worktree exclusions")
@@ -121,9 +212,11 @@ class OwnerPublicationStore:
                 db.execute("ROLLBACK")
                 raise
 
-    def prepare(self, config, request, *, now):
+    def prepare(self, config, request, authorization, *, now):
         timestamp(now)
         request = _request(config, request)
+        authorization = _authorization(config, request, authorization, now=now)
+        request = {**request, "host_authorization": authorization}
         worktree = Path(request["worktree"]).resolve()
         _require(worktree in self.worktree_roots, "The command worktree must be a protected state exclusion")
         config_sha = fingerprint("owner-publication-config", config)

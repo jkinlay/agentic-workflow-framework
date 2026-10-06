@@ -51,9 +51,16 @@ amendment counts and completed validation remain in that retained snapshot.
 `owner-publication-prepare` produces one PowerShell literal command of at most
 8192 characters. It uses `git push --atomic`, an exact configured repository URL
 and commit-to-feature-ref mappings, without force or deletion. It never executes
-the command. The trusted host must authenticate the policy route and complete
-the ordinary candidate/body publication and deny scans before presenting the
-command for execution. A push-permission failure alone grants no fallback.
+the command. Preparation itself requires a digest-pinned reviewed adapter with
+`authorize_owner_publication`; a request-supplied policy URN is never sufficient.
+The adapter returns fresh host authorization bound to the numeric repository,
+base branch, exact base/head/tree tuple, canonical body digest, complete scoped
+comment observation and retained worker-result digest. It must include complete
+terminal-PASS publication and private-deny receipt bindings with zero blocking
+findings and zero unscanned items; the private-deny binding must prove its mapping
+was loaded. Any missing, stale, foreign, partial or mismatched binding fails before
+the handoff is stored or a command is rendered. A push-permission failure alone
+grants no fallback.
 
 After the owner runs the command, `owner-publication-resume` obtains fresh
 GitHub actor/repository identity and a complete observation of the exact remote
@@ -73,7 +80,8 @@ Jira transition is performed by this component.
 The existing controller entry point exposes `owner-publication-prepare`
 (`--request`, `--now`), `owner-publication-resume` (`--batch`, `--now`) and
 `owner-publication-status` (`--batch`). All use `--state`, `--worktree-root` and
-accepted `--project-config`; resume additionally requires the digest-pinned
-adapter with `observe_identity`, `observe_remote_heads`, `create_draft_pr` and
-`observe_draft_pr`. Protect those adapter and configuration inputs as controller
-authority; candidate-authored records cannot grant provider permissions.
+accepted `--project-config`. Prepare requires the digest-pinned adapter operation
+`authorize_owner_publication`; resume requires `observe_identity`,
+`observe_remote_heads`, `create_draft_pr` and `observe_draft_pr`. Protect those
+adapter and configuration inputs as controller authority; candidate-authored
+records cannot grant provider permissions or satisfy scan gates.
