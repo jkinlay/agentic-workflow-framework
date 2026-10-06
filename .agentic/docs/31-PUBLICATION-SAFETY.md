@@ -4,7 +4,7 @@ Version 1.9.3. Publication is blocked unless the exact candidate history and pro
 
 ## Operator-local deny mapping
 
-The default mapping is `.agentic-state/publication-deny.json`. The installed `.gitignore` rule keeps it untracked. For the external review host, the same filename lives in its configured external state directory. Use version 1 JSON with these optional fields:
+The default mapping is `.agentic-state/publication-deny.json`. The installed `.gitignore` rule keeps it untracked. External review hosts use the same filename in their configured state directory. Version 1 JSON supports these optional fields:
 
 ```json
 {
@@ -17,7 +17,7 @@ The default mapping is `.agentic-state/publication-deny.json`. The installed `.g
 }
 ```
 
-Aliases such as `{raw_estate}` and `{output_root}` are safe tracked forms. `publication-render --input REPORT` replaces mapped private values before saving a report or prompt. A repository-relative mapping is accepted only when Git proves it ignored and untracked. Lexical and resolved identities are checked against the index and `HEAD`, including Windows case, hard-link, symlink, junction, and reparse aliases. Local `builtin_allow` entries tune false positives by detector id (`unc_path`, `windows_absolute`, `home_path`, `private_ipv4`, `private_ipv6`) or `all`; tracked configuration cannot disable built-ins. Named regexes are limited to 256 characters, exclude grouping, alternation, optional/open repetition, lookaround, backreferences and empty matches, permit one ranged repeat, and cap positive bounds at 64.
+Aliases such as `{raw_estate}` and `{output_root}` are safe tracked forms. `publication-render --input REPORT` substitutes private mappings before saving reports or prompts. Mappings stay ignored and untracked; identity checks reject index/`HEAD` aliases, hard links, symlinks, junctions and reparse points. Tracked config cannot disable built-ins; operator-local `builtin_allow` can suppress matching findings. Regexes are limited to 256 characters and reject lookaround, backreferences and empty matches. The default subset permits at most one ranged repeat (bounds 1–64); multiple exact repeats are allowed, with no groups, alternation or open repeats. An AST-checked linear subset allows up to 16 flat branches and four terminal one-character open repeats with a lower bound at most 64; nested or suffixed repeats remain refused.
 
 Projects may add the optional tracked `publication` object with `deny_literals`, named `deny_regexes`, and `internal_hostnames`. These only add detectors. Keep actual machine paths and network mappings in the operator-local file.
 

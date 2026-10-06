@@ -22,6 +22,16 @@ import threading
 import uuid
 import zlib
 
+try:
+    # The public ``re`` API does not expose its parsed expression tree.  This
+    # internal parser is used only for an optional fail-closed complexity
+    # check; unsupported Python versions keep the original restricted grammar.
+    from re import _constants as _re_constants
+    from re import _parser as _re_parser
+except ImportError:  # pragma: no cover - exercised on older Python runtimes
+    _re_constants = None
+    _re_parser = None
+
 from . import ValidationError
 from .child_process import child_env
 from .gittree import verify_publisher_tree
@@ -35,6 +45,8 @@ MAX_REWRITE_PROOF_OBJECTS = 100_000
 MAX_REGEX_ENTRIES = 64
 MAX_REGEX_CHARS = 256
 MAX_REGEX_REPEAT = 64
+MAX_LINEAR_REGEX_BRANCHES = 16
+MAX_LINEAR_REGEX_REPEAT_BRANCHES = 4
 ALIAS = re.compile(r"^[a-z][a-z0-9_]*$")
 UNC = re.compile(r"(?<![\\])\\\\[A-Za-z0-9][A-Za-z0-9._-]*[\\/][^\s<>:\"|?*]+(?:[\\/][^\s<>:\"|?*]+)*")
 WINDOWS_ABSOLUTE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[^\s<>:\"|?*]+[\\/]?)+")
@@ -255,35 +267,105 @@ def _json_file(path, label):
     return value
 
 
+def _linear_terminal_repeat_regex(pattern):
+    """Recognize a small alternation subset with a linear matching bound.
+
+    A flat alternation has bounded branch work.  Its only open repeat may be a
+    terminal, consuming one-character atom.  Such a branch either fails before
+    the repeat or succeeds by consuming its run; with no suffix, the engine
+    never has to backtrack over the run to satisfy a later condition.  Branch
+    and source limits bound the constant factor.  Anything the parser cannot
+    represent is rejected by the caller.
+    """
+    if _re_parser is None or _re_constants is None:
+        return False
+    try:
+        parsed = _re_parser.parse(pattern, re.IGNORECASE)
+        constants = _re_constants
+        group = parsed
+        if len(parsed) == 1 and parsed[0][0] is constants.SUBPATTERN:
+            _, add_flags, del_flags, group = parsed[0][1]
+            if add_flags or del_flags:
+                return False
+        if not group or group[-1][0] is not constants.BRANCH:
+            return False
+        prefix = group[:-1]
+        one_character_ops = {
+            constants.LITERAL,
+            constants.NOT_LITERAL,
+            constants.ANY,
+            constants.CATEGORY,
+            constants.IN,
+        }
+        if any(op not in one_character_ops | {constants.AT} for op, _ in prefix):
+            return False
+        branches = group[-1][1][1]
+        if not 2 <= len(branches) <= MAX_LINEAR_REGEX_BRANCHES:
+            return False
+
+        repeat_branches = 0
+        for branch in branches:
+            if not branch:
+                return False
+            repeats = [
+                (index, op, argument)
+                for index, (op, argument) in enumerate(branch)
+                if op in (constants.MAX_REPEAT, constants.MIN_REPEAT)
+            ]
+            if not repeats:
+                if any(op not in one_character_ops | {constants.AT} for op, _ in branch):
+                    return False
+                if not any(op in one_character_ops for op, _ in branch):
+                    return False
+                continue
+            if len(repeats) != 1:
+                return False
+            index, op, (lower, upper, body) = repeats[0]
+            if (op is not constants.MAX_REPEAT or index != len(branch) - 1
+                    or lower < 1 or lower > MAX_REGEX_REPEAT or upper != constants.MAXREPEAT
+                    or len(body) != 1 or body[0][0] not in one_character_ops):
+                return False
+            if any(part_op not in one_character_ops | {constants.AT}
+                   for part_op, _ in branch[:index]):
+                return False
+            repeat_branches += 1
+            if repeat_branches > MAX_LINEAR_REGEX_REPEAT_BRANCHES:
+                return False
+        return repeat_branches > 0
+    except (re.error, ValueError, TypeError, AttributeError, IndexError):
+        return False
+
+
 def _validate_safe_regex(pattern, label):
-    """Accept a deliberately small, bounded-backtracking regular-expression subset."""
+    """Accept bounded regexes plus a small structurally linear subset."""
     if not isinstance(pattern, str) or not pattern or len(pattern) > MAX_REGEX_CHARS:
         raise ValidationError(f"{label} contains an empty or over-budget regular expression")
     # Character classes and escaped characters are literals for this structural
-    # check.  The remaining syntax permits anchors, dots, and explicitly
-    # bounded repeats, but no grouping, alternation, optional/open repetition,
-    # lookaround, or backreferences.  At most one ranged repeat is allowed;
-    # exact repeats do not introduce alternative match lengths.
+    # check.  The default grammar permits anchors, dots, and bounded repeats.
+    # Grouping, alternation, or open repetition is accepted only by the strict
+    # AST-checked terminal-repeat grammar above.
     structural = re.sub(r"\[(?:\\.|[^]\\])*\]", "", pattern)
     structural = re.sub(r"\\.", "", structural)
     if any(token in structural for token in ("(", ")", "|", "*", "+", "?")):
-        raise ValidationError(f"{label} contains an unsafe regular expression")
-    spans = []
-    ranged_repeats = 0
-    for match in re.finditer(r"\{([0-9]+)(?:,([0-9]+))?\}", structural):
-        lower = int(match.group(1))
-        upper = int(match.group(2)) if match.group(2) is not None else lower
-        if lower < 1 or lower > upper or upper > MAX_REGEX_REPEAT:
+        if not _linear_terminal_repeat_regex(pattern):
             raise ValidationError(f"{label} contains an unsafe regular expression")
-        ranged_repeats += lower != upper
-        spans.append(match.span())
-    if ranged_repeats > 1:
-        raise ValidationError(f"{label} contains an unsafe regular expression")
-    without_repeats = structural
-    for start, end in reversed(spans):
-        without_repeats = without_repeats[:start] + without_repeats[end:]
-    if "{" in without_repeats or "}" in without_repeats:
-        raise ValidationError(f"{label} contains an unsafe regular expression")
+    else:
+        spans = []
+        ranged_repeats = 0
+        for match in re.finditer(r"\{([0-9]+)(?:,([0-9]+))?\}", structural):
+            lower = int(match.group(1))
+            upper = int(match.group(2)) if match.group(2) is not None else lower
+            if lower < 1 or lower > upper or upper > MAX_REGEX_REPEAT:
+                raise ValidationError(f"{label} contains an unsafe regular expression")
+            ranged_repeats += lower != upper
+            spans.append(match.span())
+        if ranged_repeats > 1:
+            raise ValidationError(f"{label} contains an unsafe regular expression")
+        without_repeats = structural
+        for start, end in reversed(spans):
+            without_repeats = without_repeats[:start] + without_repeats[end:]
+        if "{" in without_repeats or "}" in without_repeats:
+            raise ValidationError(f"{label} contains an unsafe regular expression")
     try:
         compiled = re.compile(pattern, re.IGNORECASE)
     except re.error as exc:
