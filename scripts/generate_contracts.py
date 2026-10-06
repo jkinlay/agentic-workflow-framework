@@ -431,9 +431,12 @@ def catalog():
           "owner_closure_keywords": STRINGS,
           "dependency_direction": const("requires"), "mutations_owner": const("controller")}),
         "github": obj({"host": text(format="uri"), "repository_id": integer(1), "repository": text(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"),
+           "expected_actor_id": nullable(integer(1)), "expected_actor_login": nullable(text()),
+           "auth_profile": nullable(text()),
            "base_branch": text(), "branch_pattern": text(), "merge_method": enum("merge", "squash", "rebase"),
            "draft_pr_first": TRUE, "one_repository_per_controller": TRUE}),
         "execution": obj({"profile": const("manual_reference"), "max_parallel_tickets": integer(1),
+           "child_env_strip_extra": arr(text(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), 0, uniqueItems=True),
            "native_streams": obj({"enabled": BOOL, "dispatch_policy": const("ready_independent")}),
            "max_parallel_tickets_per_stream": integer(1), "max_agent_runs_per_ticket": integer(1),
            "max_spawn_depth": integer(0, maximum=1), "max_amendment_cycles": integer(1),
@@ -477,13 +480,16 @@ def catalog():
     # Current governance keys are optional for upgraded 1.8.9 configurations; the
     # code applies the documented defaults when they are absent. Bootstrap writes them.
     execution = schemas["project-config"]["properties"]["execution"]
-    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions", "route_capabilities"]),
+    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions", "route_capabilities", "child_env_strip_extra"]),
                             (execution["properties"]["host_broker"], ["resources"]),
                             (jira, ["lifecycle_writes", "owner_closure_keywords"]),
                             (schemas["project-config"]["properties"]["validation"]["properties"]["required_ci_checks"]["items"], ["verifies_history", "local_command"])):
         container["required"] = [key for key in container["required"] if key not in keys]
     # Null is an explicit installation residue, rejected by semantic acceptance.
     schemas["project-config"]["properties"]["github"]["properties"]["repository_id"] = {"anyOf": [integer(1), {"type": "null"}]}
+    github = schemas["project-config"]["properties"]["github"]
+    github["required"] = [key for key in github["required"]
+                          if key not in {"expected_actor_id", "expected_actor_login", "auth_profile"}]
     jira["properties"]["enabled"] = BOOL
     for key in ("cloud_id", "provider_project_id", "controller_actor_id"):
         jira["properties"][key] = {"anyOf": [text(), {"type": "null"}]}
@@ -492,10 +498,10 @@ def catalog():
     jira["allOf"] = [{"if": {"properties": {"enabled": {"const": False}}, "required": ["enabled"]},
         "then": {"properties": {key: {"type": "null"} for key in
                                   ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id")}},
-        "else": {"properties": {"cloud_id": text(), "site": text(format="uri"),
-                                  "provider_project_id": text(),
+        "else": {"properties": {"cloud_id": nullable(text()), "site": text(format="uri"),
+                                  "provider_project_id": nullable(text()),
                                   "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
-                                  "controller_actor_id": text()}}}]
+                                  "controller_actor_id": nullable(text())}}}]
     # Optional for migrated static configurations. Routing has a strict semantic
     # validator in model_routing.py, shared by configuration validation and CLI.
     schemas["project-config"]["properties"]["execution"]["properties"]["model_routing"] = {"type": "object"}

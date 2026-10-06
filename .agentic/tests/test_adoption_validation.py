@@ -87,6 +87,22 @@ class AdoptionValidationTests(unittest.TestCase):
         self.assertEqual(result['status'], 'REJECTED')
         self.assertIn('$.jira.site', {item['path'] for item in result['unresolved']})
 
+    def test_enabled_unbound_jira_is_adoptable_but_warns_and_cannot_write(self):
+        self.config['jira'].update(cloud_id=None, provider_project_id=None,
+                                   controller_actor_id=None)
+        result = inspect_config(self.config, definition(), self.contracts)
+        self.assertEqual(result['status'], 'ACCEPTED')
+        self.assertIn('JIRA_IDENTITY_UNBOUND', {item['code'] for item in result['warnings']})
+
+    def test_unbound_github_actor_or_profile_warns(self):
+        self.config['github'].update(expected_actor_id=None, expected_actor_login=None,
+                                     auth_profile=None)
+        result = inspect_config(self.config, definition(), self.contracts)
+        self.assertEqual(result['status'], 'ACCEPTED')
+        self.assertIn('GITHUB_IDENTITY_UNBOUND', {item['code'] for item in result['warnings']})
+        with self.assertRaisesRegex(ValidationError, 'GITHUB_IDENTITY_UNBOUND'):
+            require_enablement_config(self.config, definition(), self.contracts)
+
     def test_legacy_jira_without_enabled_remains_enabled(self):
         self.config['jira'].pop('enabled', None)
         self.assertEqual(len(validate_config(self.config, definition(), self.contracts)), 64)
@@ -129,6 +145,19 @@ class AdoptionValidationTests(unittest.TestCase):
         self.config['jira']['site'] = 'https://jira.example.invalid/path'
         report = inspect_config(self.config, definition(), self.contracts)
         self.assertEqual({item['path'] for item in report['unresolved']}, {'$.github.host', '$.jira.site'})
+
+    def test_child_environment_extra_denylist_accepts_distinct_names(self):
+        self.config['execution']['child_env_strip_extra'] = ['PRIVATE_TOKEN', 'VENDOR_SECRET']
+        self.assertEqual(inspect_config(self.config, definition(), self.contracts)['status'], 'ACCEPTED')
+
+    def test_child_environment_extra_denylist_rejects_ambiguous_or_host_auth_names(self):
+        for value in (['PRIVATE_TOKEN', 'private_token'], ['GH_TOKEN'], ['github_token']):
+            with self.subTest(value=value):
+                self.config['execution']['child_env_strip_extra'] = value
+                report = inspect_config(self.config, definition(), self.contracts)
+                self.assertEqual(report['status'], 'REJECTED')
+                self.assertIn('$.execution.child_env_strip_extra',
+                              {item['path'] for item in report['unresolved']})
 
     def test_no_mutation_of_configuration(self):
         prior = copy.deepcopy(self.config)

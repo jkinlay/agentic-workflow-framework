@@ -22,7 +22,8 @@ from agentic.installer import (CONFIG, INSTALLED, KNOWN_VERSIONS, PROVENANCE,  #
     install, managed, verify_installed)
 from agentic.contracts import Contracts  # noqa: E402
 from agentic.model_routing import RoutingLedger  # noqa: E402
-from agentic.upgrade import load_known_versions, state_schema  # noqa: E402
+from agentic.upgrade import (_insert_unbound_jira_identity, load_known_versions,  # noqa: E402
+                             state_schema)
 from upgrade_fixtures import (BLOB_ROOT, FIXTURE_ROOT, NEXT, advance_one_fixture_step,  # noqa: E402
     file_tree, fixture_blob, fixture_index, fixture_manifest, fixture_storage_statistics,
     managed_tree_from_receipt, materialize, verify_materialized)
@@ -164,11 +165,14 @@ class UpgradeMatrixTests(unittest.TestCase):
                 destination, before = self.fixture(version)
                 result = self.upgrade(destination)
                 after = (destination / CONFIG).read_bytes()
-                expected_config = before["configuration"].replace(version.encode(), VERSION.encode(), 1)
+                expected_config = _insert_unbound_jira_identity(
+                    before["configuration"].replace(version.encode(), VERSION.encode(), 1))
                 if version == "1.8.3":
                     before_value, after_value = load_yaml(before["configuration"]), load_yaml(after)
                     expected_owner = json.loads(json.dumps(before_value))
                     expected_owner["template"]["expected_workflow_version"] = VERSION
+                    expected_owner["jira"].update(cloud_id=None, provider_project_id=None,
+                                                   controller_actor_id=None)
                     routing = after_value["execution"].pop("model_routing")
                     self.assertEqual(after_value, expected_owner)
                     self.assertEqual(routing["role_defaults"]["worker"]["model"],

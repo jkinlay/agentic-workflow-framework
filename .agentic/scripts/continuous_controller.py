@@ -19,6 +19,7 @@ from agentic.continuous_controller import (
     production_jira_lifecycle,
     production_merge_observed,
 )
+from agentic.owner_publication import OwnerPublicationStore, prepare_owner_publication, resume_owner_publication
 
 
 def _load_reviewed_adapters(path, expected_sha256, config_path):
@@ -68,7 +69,7 @@ def _jira_progress_request(path):
 def main(argv=None, default_root=ROOT):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path, required=True)
-    parser.add_argument("--stream", action="append", dest="streams", required=True)
+    parser.add_argument("--stream", action="append", dest="streams")
     parser.add_argument("--worktree-root", type=Path, action="append", required=True)
     parser.add_argument("--cadence-seconds", type=int)
     parser.add_argument("--project-config", type=Path)
@@ -105,6 +106,15 @@ def main(argv=None, default_root=ROOT):
     merge.add_argument("--lifecycle-facts", type=Path, required=True)
     merge.add_argument("--jira-progress", type=Path, required=True)
 
+    owner_prepare = sub.add_parser("owner-publication-prepare", help="Retain completed streams and emit one owner push command")
+    owner_prepare.add_argument("--request", type=Path, required=True)
+    owner_prepare.add_argument("--now", required=True)
+    owner_resume = sub.add_parser("owner-publication-resume", help="Observe owner-pushed heads and resume draft PR creation")
+    owner_resume.add_argument("--batch", required=True)
+    owner_resume.add_argument("--now", required=True)
+    owner_status = sub.add_parser("owner-publication-status", help="Read the retained handoff without a provider call")
+    owner_status.add_argument("--batch", required=True)
+
     sub.add_parser("snapshot")
     args = parser.parse_args(argv)
     config_path = args.project_config or (default_root / ".agentic/PROJECT_CONFIG.yaml")
@@ -113,23 +123,35 @@ def main(argv=None, default_root=ROOT):
     cadence_seconds = args.cadence_seconds if args.cadence_seconds is not None else configured_cadence
     if not isinstance(cadence_seconds, int) or isinstance(cadence_seconds, bool) or cadence_seconds < 1:
         parser.error("controller.status_cadence_seconds must be a positive integer")
-    store = ContinuousControllerStore(args.state, args.streams, cadence_seconds,
-                                      worktree_roots=args.worktree_root)
+    if args.command.startswith("owner-publication-"):
+        store = OwnerPublicationStore(args.state, worktree_roots=args.worktree_root)
+    else:
+        store = ContinuousControllerStore(args.state, args.streams, cadence_seconds,
+                                          worktree_roots=args.worktree_root)
     adapters = None
-    if args.command in {"cycle", "jira-lifecycle", "merge-observed"}:
+    if args.command in {"cycle", "jira-lifecycle", "merge-observed", "owner-publication-prepare",
+                        "owner-publication-resume"}:
         adapters = _load_reviewed_adapters(args.adapter_module, args.adapter_sha256,
                                            args.adapter_config)
-    if args.command == "cycle":
+    if args.command == "owner-publication-prepare":
+        calls = _require_adapters(adapters, {"authorize_owner_publication"})
+        output = prepare_owner_publication(store, config, load(args.request), now=args.now, **calls)
+    elif args.command == "owner-publication-resume":
+        calls = _require_adapters(adapters, {"observe_identity", "observe_remote_heads", "create_draft_pr", "observe_draft_pr"})
+        output = resume_owner_publication(store, args.batch, config, now=args.now, **calls)
+    elif args.command == "owner-publication-status":
+        output = store.snapshot(args.batch, config)
+    elif args.command == "cycle":
         calls = _require_adapters(adapters, {"observe_inventory", "dispatch_ticket",
-                                             "observe_dispatch", "deliver_status"})
+                                             "observe_dispatch", "deliver_status", "observe_publication"})
         output = production_controller_cycle(
             store, now=args.now, host_capacity=args.host_capacity,
             inventory_binding=load(args.inventory_binding), repository_root=args.repository_root,
             repository_head_sha=args.repository_head_sha,
-            repository_tree_sha=args.repository_tree_sha, **calls)
+            repository_tree_sha=args.repository_tree_sha, publication_config=config, **calls)
 
     elif args.command == "jira-lifecycle":
-        calls = _require_adapters(adapters, {"read_current_status", "write_transition",
+        calls = _require_adapters(adapters, {"observe_provider_identity", "read_current_status", "write_transition",
                                              "read_transition"})
         output = production_jira_lifecycle(store,
             config=config, contract=load(args.contract), event=args.event,

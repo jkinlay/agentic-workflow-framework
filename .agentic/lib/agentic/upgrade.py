@@ -265,6 +265,35 @@ def _insert_legacy_routing(raw):
     return migrated
 
 
+def _insert_unbound_jira_identity(raw):
+    """Add 1.9.3 Jira identity slots without guessing provider identities."""
+    config = load_yaml(raw)
+    jira = config.get("jira") if isinstance(config, dict) else None
+    if not isinstance(jira, dict):
+        raise ValidationError(
+            "Migration is not deterministic. Owner question: which valid Jira policy should be retained?")
+    fields = {"cloud_id": None, "provider_project_id": None, "controller_actor_id": None}
+    missing = [name for name in fields if name not in jira]
+    if not missing:
+        return raw
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    pattern = re.compile(rb'(?m)^(?P<indent>[ \t]*)["\']?site["\']?[ \t]*:')
+    matches = list(pattern.finditer(raw))
+    if len(matches) != 1:
+        raise ValidationError(
+            "Migration is not deterministic. Owner question: where should the Jira identity bindings be inserted?")
+    indent = matches[0].group("indent").decode("ascii")
+    block = "".join(f'{indent}"{name}": null,{newline}' for name in missing)
+    migrated = raw[:matches[0].start()] + block.encode("utf-8") + raw[matches[0].start():]
+    expected = json.loads(json.dumps(config))
+    for name in missing:
+        expected["jira"][name] = None
+    if load_yaml(migrated) != expected:
+        raise ValidationError(
+            "Migration is not deterministic. Owner question: how should unbound Jira identity be serialized?")
+    return migrated
+
+
 @dataclass(frozen=True)
 class MigrationBundle:
     project_config: bytes
@@ -518,6 +547,8 @@ def migrate_step(bundle, previous, current, target):
         question=f"should the unique template.expected_workflow_version scalar be changed from {previous} to {current}?")
     if previous == "1.8.3" and current == "1.8.9":
         config = _insert_legacy_routing(config)
+    if previous == "1.9.2" and current == "1.9.3":
+        config = _insert_unbound_jira_identity(config)
     receipt = _target_receipt(bundle.receipt, current, target)
     provenance = _target_provenance(bundle.provenance, current, target)
     if bundle.operating_config is not None:
