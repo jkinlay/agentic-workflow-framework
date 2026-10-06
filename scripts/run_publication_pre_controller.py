@@ -12,6 +12,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic" / "lib"))
 sys.path.insert(0, str(ROOT / ".agentic" / "tests"))
+sys.path.insert(0, str(ROOT / "scripts" / "tests"))
 
 import test_publication  # noqa: E402
 import test_continuous_controller  # noqa: E402
@@ -22,6 +23,8 @@ import test_operating_integration  # noqa: E402
 import test_review_completion  # noqa: E402
 import test_review_loop  # noqa: E402
 import test_streams  # noqa: E402
+import test_rules_activation  # noqa: E402
+import test_pre_controller_registry  # noqa: E402
 
 
 INVENTORY_MODULES = {
@@ -34,6 +37,8 @@ INVENTORY_MODULES = {
     ".agentic/tests/test_review_completion.py": test_review_completion,
     ".agentic/tests/test_review_loop.py": test_review_loop,
     ".agentic/tests/test_streams.py": test_streams,
+    ".agentic/tests/test_rules_activation.py": test_rules_activation,
+    "scripts/tests/test_pre_controller_registry.py": test_pre_controller_registry,
 }
 
 

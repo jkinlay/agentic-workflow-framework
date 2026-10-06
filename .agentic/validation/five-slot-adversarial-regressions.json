@@ -559,6 +559,33 @@
       "regression_id": "C26-IC-F01-REGRESSION",
       "source_finding_id": "C26-IC-F01",
       "test_id": "PublicationRewriteTests.test_ac44_fanout_alias_is_rejected_before_object_installation"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_rules_activation.py",
+      "name": "Initial and post-owner rules observations bind the configured numeric repository identity",
+      "permanent": true,
+      "regression_id": "PR35-C01-REGRESSION",
+      "source_finding_id": "PR35-C01",
+      "test_id": "RulesActivationTests.test_ac58_numeric_repository_id_is_bound_before_and_after_owner_action"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_rules_activation.py",
+      "name": "A partial applicable pull-request ruleset cannot disable the configured merge method",
+      "permanent": true,
+      "regression_id": "PR35-C02-REGRESSION",
+      "source_finding_id": "PR35-C02",
+      "test_id": "RulesActivationTests.test_ac46_partial_pull_request_ruleset_merge_method_conflict_blocks"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": "scripts/tests/test_pre_controller_registry.py",
+      "name": "PR35 activation critic regressions resolve exactly once in the pre-controller gate",
+      "permanent": true,
+      "regression_id": "PR35-C03-REGRESSION",
+      "source_finding_id": "PR35-C03",
+      "test_id": "PreControllerRegistryTests.test_pr35_activation_findings_resolve_once_through_pre_controller_registry"
     }
   ]
 }

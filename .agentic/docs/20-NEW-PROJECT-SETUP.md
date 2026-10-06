@@ -65,7 +65,7 @@ INSTALLED/CONFIGURED prove local consistency. Status recomputes structured check
 gh api --method POST repos/OWNER/REPO/rulesets --input .agentic/templates/awf-main-ruleset.json
 ```
 
-`~DEFAULT_BRANCH` follows the actual default branch. Zero required approvals avoids sole-maintainer self-approval. Required CODEOWNERS approval needs eligible non-author reviewers, not merely two handles. Multi-maintainer projects may raise counts. Squash/rebase must also be permitted by repository settings. [GitHub rule behavior](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets).
+`~DEFAULT_BRANCH` follows the actual default branch. Zero required approvals avoids sole-maintainer self-approval. Required CODEOWNERS approval needs eligible non-author reviewers, not merely two handles. Multi-maintainer projects may raise counts. [Rules activation](35-RULES-ACTIVATION.md) proposes rules matching configured merge method; incompatible rules stay `MISSING`. [GitHub rule behavior](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets).
 
 An empty required-check list makes strict up-to-date policy ineffective. Approval dismissal does not refresh COMMENT evidence; thread resolution is not authenticity. Before live enablement configure observed `awf/review` with actual App `integration_id` and applicable CI. [Rules API](https://docs.github.com/en/rest/repos/rules).
 

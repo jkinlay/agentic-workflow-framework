@@ -266,6 +266,46 @@ def catalog():
             "generated_reports": text(), "captured_command_output": text(), "strict_utf8": TRUE,
             "pr_bodies": BOOL, "pr_comments": BOOL}),
         "execution_authority": FALSE})
+    schemas["rules-activation-decision"] = obj({
+        "format": const("awf-rules-activation-decision-1"),
+        "status": enum("BLOCKED", "RULES_OBSERVED"),
+        "configuration": obj({"status": const("ACCEPTED"), "policy_sha256": DIGEST,
+                              "merge_method": enum("merge", "squash", "rebase")}),
+        "binding": obj({"repository": text(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"),
+                        "repository_id": integer(1), "default_branch": text()}),
+        "observed_rules_state": enum("APPLIED", "MISSING", "UNOBSERVED"),
+        "observed_rules": {"type": "object"},
+        "publication_consequence": obj({"code": enum("PUBLICATION_GOVERNANCE_OBSERVED",
+            "PUBLICATION_GOVERNANCE_MISSING", "PUBLICATION_GOVERNANCE_UNOBSERVED"), "message": text()}),
+        "proposed_ruleset": {"type": "object"},
+        "proposed_ruleset_sha256": DIGEST,
+        "owner_approval_action": obj({"required": BOOL,
+            "state": enum("PENDING", "DECLINED", "APPLIED", "NOT_REQUIRED", "NOT_AVAILABLE"),
+            "actor": const("repository_owner_or_administrator"), "approval": text(),
+            "provider_request": obj({"method": const("POST"), "endpoint": text(),
+                                     "body_sha256": DIGEST, "body": {"type": "object"}})}),
+        "post_action_observation": obj({"required": BOOL,
+            "state": enum("APPLIED", "MISSING", "UNOBSERVED", "NOT_APPLICABLE"),
+            "observation_sha256": nullable(DIGEST), "observed_at": nullable(TIME),
+            "configuration_compatible": nullable(BOOL)}),
+        "final_rules_state": enum("APPLIED", "MISSING", "UNOBSERVED"),
+        "operational_blocker": BOOL,
+        "blocker_codes": arr(enum("RULES_UNOBSERVED", "RULES_OBSERVATION_NOT_LIVE", "RULES_OBSERVATION_INVALID",
+            "RULES_OBSERVATION_WRONG_REPOSITORY", "RULES_OBSERVATION_WRONG_REPOSITORY_ID",
+            "RULES_OBSERVATION_WRONG_DEFAULT_BRANCH", "RULES_OBSERVATION_STALE_OR_FUTURE",
+            "RULES_MISSING", "OWNER_APPROVAL_PENDING",
+            "OWNER_DECLINED", "POST_ACTION_OBSERVATION_MISSING", "POST_ACTION_OBSERVATION_INVALID",
+            "POST_ACTION_OBSERVATION_NOT_LIVE", "POST_ACTION_OBSERVATION_WRONG_REPOSITORY",
+            "POST_ACTION_OBSERVATION_WRONG_REPOSITORY_ID",
+            "POST_ACTION_OBSERVATION_WRONG_DEFAULT_BRANCH", "POST_ACTION_OBSERVATION_STALE_OR_FUTURE",
+            "POST_ACTION_OBSERVATION_NOT_FRESH", "RULES_MISSING_AFTER_ACTION"), uniqueItems=True),
+        "provider_mutation_performed": FALSE,
+        "execution_authority": FALSE,
+    }, allOf=[when("status", "RULES_OBSERVED", {"properties": {
+        "operational_blocker": FALSE, "blocker_codes": {"maxItems": 0},
+        "final_rules_state": const("APPLIED")}}),
+        when("status", "BLOCKED", {"properties": {
+            "operational_blocker": TRUE, "blocker_codes": {"minItems": 1}}})])
     gate_results = obj({name: obj({"result": enum("PASS", "FAIL", "N_A"), "evidence": EVIDENCE}) for name in GATE_NAMES})
     gate_pass = {"properties": {"gates": {"properties": {name: {"properties": {"result": const("PASS")}}
                     for name in GATE_NAMES if name != "specialist_reviews"}}, "execution_authority": FALSE}}
