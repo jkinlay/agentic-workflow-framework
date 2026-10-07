@@ -30,6 +30,8 @@ PR_FILES_PROJECTION = "map({filename: .filename, status: .status, sha: .sha})"
 MAX_BYTES = 1024 * 1024
 MAX_TOTAL_BYTES = 4 * MAX_BYTES
 MAX_PAGES = 5
+PR_FILES_PER_PAGE = 50
+MAX_PR_FILE_PAGES = 20
 MAX_RULESETS = 20
 MAX_SECONDS = 60
 MAX_AGE_SECONDS = 900
@@ -484,18 +486,18 @@ def _gh_get_pr_files(endpoint, deadline, *, gh="gh"):
             while process.poll() is None:
                 require(time.monotonic() < deadline, "PR file observation deadline exhausted")
                 require(os.fstat(out.fileno()).st_size <= MAX_BYTES and os.fstat(err.fileno()).st_size <= MAX_BYTES,
-                        "Projected PR file response exceeds byte limit")
+                        "Projected PR file response exceeds byte limit: GET " + endpoint)
                 try:
                     process.wait(timeout=min(0.05, max(0.001, deadline - time.monotonic())))
                 except subprocess.TimeoutExpired:
                     pass
             require(time.monotonic() <= deadline and process.returncode == 0,
-                    "PR file GET did not complete successfully")
+                    "PR file GET did not complete successfully: GET " + endpoint)
             require(os.fstat(err.fileno()).st_size <= MAX_BYTES,
-                    "PR file stderr exceeds byte limit")
+                    "PR file stderr exceeds byte limit: GET " + endpoint)
             out.seek(0)
             raw = out.read(MAX_BYTES + 1)
-            require(len(raw) <= MAX_BYTES, "Projected PR file response exceeds byte limit")
+            require(len(raw) <= MAX_BYTES, "Projected PR file response exceeds byte limit: GET " + endpoint)
             return loads(raw.decode("utf-8")), len(raw)
         finally:
             if process.poll() is None:

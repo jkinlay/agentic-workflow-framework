@@ -2,7 +2,7 @@
 
 413 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `65cd282e51aa44fa918eae9190f20d840eb7849b1112a4c5df8bb3bd597aee81`
+MANIFEST.json SHA-256: `16113e7dafc4a06cf70f8779d191f24ca3cd23ca5afe6f507bec3c996be701e2`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -103,10 +103,10 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
 | `.agentic/lib/agentic/provider_identity.py` | `d95ae1def1279357ca53b0c51151f4fe483a16ac5e8f8b843800afeb1176289c` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
-| `.agentic/lib/agentic/providers/github.py` | `76b63e33a615a53e7729ba937d3f9baeed998b6db7eb4498027b3f8cade1ed55` |
+| `.agentic/lib/agentic/providers/github.py` | `0228ed2d7c57617052ef97209c6ae357b893d3151dd97df267ab2a86d4e2f12d` |
 | `.agentic/lib/agentic/providers/github_review_host.py` | `916f8378b60c7bc1a990b460702cc9999d5fb89f8a708da0b21f8bb6f5cb1569` |
 | `.agentic/lib/agentic/providers/github_reviewer_removal.py` | `6bdbe9065e3ffe29561113e5c267b4cb033b9e01855b4597e09ec8056f3cbf8e` |
-| `.agentic/lib/agentic/providers/github_status.py` | `73ec8c6432416c2b62167ef1f80344fffaddac8d74bb9f7ac9c82527a534506a` |
+| `.agentic/lib/agentic/providers/github_status.py` | `69820fd9191039666142014b29c1e254218608ce33020a78cc6d133e99955776` |
 | `.agentic/lib/agentic/publication.py` | `3caa06b058fc8b6546877b8669f27476d2237c74f08c0f603f064eb29f165a19` |
 | `.agentic/lib/agentic/publication_readiness.py` | `cbc0a38cb74bc646bd77b81d914c088b7d2088ded6944c7d4a4cd631ca1e466e` |
 | `.agentic/lib/agentic/release_trust.py` | `a8d468759d1c974b5a06ae3855b7bf17ea2e1a937edf4d0c1c76a7bef8988896` |
@@ -257,7 +257,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/worker-result.yaml` | `d770c07863bcd51bbb3dd1d913251e07e13099fd41580b2c8597c1f799bda569` |
 | `.agentic/tests/fixtures/fake_host_process.py` | `01c5f76eecd2a7453ca8cadee05914f588d3d27610b6a96aa306303dfedb5e12` |
 | `.agentic/tests/review_admission_fixture.py` | `4ece32c0f91c1f1c7b4a6ec6f5789c046121ae59dc720075477925acea22389f` |
-| `.agentic/tests/test_adoption_status.py` | `0e679d509c42822846b0f7b8754f632dc4844b39c0d33918325c4782e23e4ebc` |
+| `.agentic/tests/test_adoption_status.py` | `22170e96a155f10461da2779963f31703161e8630dd6e4465f3fb8ba9ebe4267` |
 | `.agentic/tests/test_adoption_validation.py` | `40ec9ae752eaa17a42aac78b10e83ccc89f1adb1ccedcca97a8f29855279f4cb` |
 | `.agentic/tests/test_bootstrap_configuration.py` | `c375239b73522adf5a4a07ffbdf0d130d2fb253506049d867fc993f2ef15b113` |
 | `.agentic/tests/test_child_process.py` | `868d9e589906a328485bd20c1d82d61555ecc235989ed9adab293ca062948a85` |
