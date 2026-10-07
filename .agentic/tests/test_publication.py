@@ -1314,8 +1314,13 @@ class PublicationRewriteTests(unittest.TestCase):
                  "installed_identity": (original.st_dev, original.st_ino), "ambiguous": False}
         record = {"oid": prefix + "0" * 38, "snapshot_present": False,
                   "path": fanout / ("0" * 38), "fanout": state}
-        fanout.rmdir()
+        # Keep the original directory alive while recreating the path so the
+        # replacement cannot reuse its inode (ext4/overlayfs reuse freed inodes).
+        displaced = object_dir / (prefix + "-displaced")
+        fanout.rename(displaced)
         fanout.mkdir()
+        displaced.rmdir()
+        self.assertNotEqual(state["installed_identity"], (fanout.lstat().st_dev, fanout.lstat().st_ino))
         marker = fanout / "external-replacement"
         marker.write_bytes(b"external writer")
         try:
