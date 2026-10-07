@@ -21,13 +21,21 @@ sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION
 
 
-def complete_form(value, schema, schemas):
+def complete_form(value, schema, schemas, root=None):
+    root = schema if root is None else root
     if '$ref' in schema:
-        return complete_form(value, schemas[schema['$ref'].split(':')[-1]], schemas)
+        # Resolve "urn:...:name", "urn:...:name#/$defs/x" and local "#/$defs/x" references.
+        base, _, pointer = schema['$ref'].partition('#')
+        if base:
+            root = schemas[base.split(':')[-1]]
+        target = root
+        for part in filter(None, pointer.split('/')):
+            target = target[part]
+        return complete_form(value, target, schemas, root)
     if 'oneOf' in schema:
         if value is None:
             return
-        return complete_form(value, next(s for s in schema['oneOf'] if s.get('type') != 'null'), schemas)
+        return complete_form(value, next(s for s in schema['oneOf'] if s.get('type') != 'null'), schemas, root)
     if schema.get('type') == 'object':
         if 'properties' not in schema:
             # Open objects (e.g. the rules-activation decision) have no field list to complete.
@@ -37,12 +45,12 @@ def complete_form(value, schema, schemas):
         if not isinstance(value, dict) or set(value) != set(schema['properties']):
             raise ValueError('Draft form is missing fields or contains stale fields')
         for key, child in value.items():
-            complete_form(child, schema['properties'][key], schemas)
+            complete_form(child, schema['properties'][key], schemas, root)
     if schema.get('type') == 'array':
         if not isinstance(value, list) or len(value) < schema.get('minItems', 0):
             raise ValueError('Draft form is missing required example items')
         for child in value:
-            complete_form(child, schema['items'], schemas)
+            complete_form(child, schema['items'], schemas, root)
 
 
 def checked_scratch_root():

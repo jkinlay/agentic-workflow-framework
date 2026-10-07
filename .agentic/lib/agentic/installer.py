@@ -156,7 +156,8 @@ def _verify_installed(root, expected_version):
     ensure_usable(root)
     with Tree(root) as tree:
         if tree.inspect(INSTALLED) is None:
-            return verify_release(tree)[0]
+            # An uninstalled source template is normally a Git checkout.
+            return verify_release(tree, allow_source_checkout=True)[0]
         manifest = loads(tree.read(INSTALLED).decode())
         if manifest.get("template_version") != expected_version:
             raise ValidationError("Installed template version mismatch")
@@ -274,7 +275,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
     if overlap and not destination.is_relative_to(test_scratch):
         raise ValidationError("Source and destination trees must not overlap")
     with Tree(source) as src:
-        digest, content = verify_release(src, expected_digest)
+        # Installing from a pinned source checkout: root .git is excluded, never copied.
+        digest, content = verify_release(src, expected_digest, allow_source_checkout=True)
         source_manifest_json = src.read(MANIFEST).decode("utf-8")
     from .upgrade import (OPERATING, apply_chain, config_diff,
                           identify_installation, immutable_from_source_manifest,

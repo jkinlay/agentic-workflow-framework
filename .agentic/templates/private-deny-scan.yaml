@@ -1,0 +1,37 @@
+{
+  "template_for": "private-deny-scan",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "format": "awf-private-deny-scan-receipt-1",
+    "policy_id": "exact-current-tree-baseline-v1",
+    "status": "BLOCKED",
+    "classification": "NO_MATCHES",
+    "candidate": {
+      "repository_id": 1,
+      "pr_number": 1,
+      "base_sha": "0000000000000000000000000000000000000000",
+      "head_sha": "0000000000000000000000000000000000000000",
+      "tree_sha": "0000000000000000000000000000000000000000",
+      "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "provider_pr_body_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "provider_pr_body_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "mapping_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "scanner_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "counts": {
+      "history_matches": 0,
+      "diff_added_matches": 0,
+      "diff_deleted_matches": 0,
+      "body_matches": 0,
+      "base_matches": 0,
+      "head_matches": 0
+    },
+    "paths": [],
+    "unscanned": [],
+    "scan_complete": false,
+    "baseline_authorization_sha256": null,
+    "private_match_values_included": false,
+    "execution_authority": false
+  }
+}
