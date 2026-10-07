@@ -7,16 +7,12 @@ import sys
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
-<<<<<<< HEAD
-from agentic.installer import complete_runtime_transaction, install, recover
-=======
 import importlib.util
 _missing = [name for name in ("yaml", "jsonschema") if importlib.util.find_spec(name) is None]
 if _missing:
     raise SystemExit("BOOTSTRAP REJECTED: missing locked dependencies (" + ", ".join(_missing) + "). Install them first: "
                      "python -m pip install --require-hashes --only-binary=:all: -r .agentic/requirements.lock")
-from agentic.installer import install, recover
->>>>>>> 8dbef95
+from agentic.installer import complete_runtime_transaction, install, recover
 from agentic import ValidationError
 from agentic.adoption_config import (ensure_installed_runtime, post_install_checks,
                                      prevalidate_runtime_wheelhouse)
