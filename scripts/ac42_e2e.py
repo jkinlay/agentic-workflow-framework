@@ -52,7 +52,7 @@ def tree_digest(root):
             for path in sorted(root.rglob("*")) if path.is_file()}
 
 
-def run(command, cwd, timeout=1800, extra=None):
+def run(command, cwd, timeout=1800, extra=None, full_stdout=False):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", GIT_TERMINAL_PROMPT="0", **(extra or {}))
     started = time.monotonic()
     done = subprocess.run([str(part) for part in command], cwd=str(cwd), capture_output=True,
@@ -60,7 +60,8 @@ def run(command, cwd, timeout=1800, extra=None):
                           env=child_env(env), stdin=subprocess.DEVNULL)
     return {"command": [str(part) for part in command], "exit_code": done.returncode,
             "seconds": round(time.monotonic() - started, 1),
-            "stdout_tail": done.stdout[-2000:], "stderr_tail": done.stderr[-2000:]}
+            "stdout_tail": done.stdout[-2000:], "stderr_tail": done.stderr[-2000:],
+            **({"stdout_full": done.stdout} if full_stdout else {})}
 
 
 class Gate:
@@ -214,7 +215,23 @@ def main(argv=None):
         if args.skip_self_test:
             gate.record("self_test", False, "skipped (--skip-self-test)", covered=False)
         else:
-            step = run([python, "-B", project / ".agentic/scripts/self_test.py", "--checks-only"], project, timeout=5400)
+            step = run([python, "-B", project / ".agentic/scripts/self_test.py", "--checks-only"], project,
+                       timeout=5400, full_stdout=True)
+            full = step.pop("stdout_full")
+            sidecar = Path(str(args.evidence) + ".self-test.json")
+            sidecar.write_text(full, encoding="utf-8", newline="\n")
+            step["full_report"] = {"path": sidecar.name,
+                                   "sha256": hashlib.sha256(full.encode("utf-8")).hexdigest()}
+            try:
+                report = json.JSONDecoder().raw_decode(full.lstrip())[0]
+                tests = report.get("tests", {})
+                step["summary"] = {"status": report.get("status"), "error": report.get("error"),
+                                   "run": tests.get("run"), "failures": tests.get("failures"),
+                                   "errors": tests.get("errors"),
+                                   "failed_tests": [line for line in str(report.get("test_log", "")).splitlines()
+                                                    if line.startswith(("FAIL:", "ERROR:"))][:50]}
+            except ValueError:
+                step["summary"] = {"status": "UNPARSEABLE"}
             gate.record("self_test", step["exit_code"] == 0, step)
 
         git(project, "add", "-A")
