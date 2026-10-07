@@ -74,6 +74,8 @@ def main(argv=None, default_root=ROOT):
     parser.add_argument("--cadence-seconds", type=int)
     parser.add_argument("--disable-periodic-status", action="store_true",
                         help="disable scheduled status digests while keeping change digests enabled")
+    parser.add_argument("--migrate-status-cadence", action="store_true",
+                        help="explicitly replace the protected state database's saved cadence with the configured value")
     parser.add_argument("--project-config", type=Path)
     parser.add_argument("--adapter-module", type=Path)
     parser.add_argument("--adapter-sha256")
@@ -130,7 +132,8 @@ def main(argv=None, default_root=ROOT):
     else:
         store = ContinuousControllerStore(args.state, args.streams, cadence_seconds,
                                           worktree_roots=args.worktree_root,
-                                          periodic_status_enabled=not args.disable_periodic_status)
+                                          periodic_status_enabled=not args.disable_periodic_status,
+                                          migrate_cadence=args.migrate_status_cadence)
     adapters = None
     if args.command in {"cycle", "jira-lifecycle", "merge-observed", "owner-publication-prepare",
                         "owner-publication-resume"}:

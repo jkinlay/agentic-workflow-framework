@@ -28,7 +28,7 @@ Reviewer counts are admitted only when `required = completed + outstanding` and 
 
 Dispatch intent is durable before the host call. An interrupted call becomes `UNKNOWN` and is reconciled only by observation; it is never blindly replayed. Unrelated streams continue after one adapter failure.
 
-The default digest cadence is 600 seconds; configured cadence must be positive. The production CLI accepts `--disable-periodic-status` to suppress creation of scheduled digests. It does not suppress immediate `CHANGE` digests: blocker, failure, input-required and merge-readiness changes continue through the acknowledged outbox. An already pending digest is still delivered and acknowledged before the setting takes effect. Without the flag, changes can produce an immediate `CHANGE` digest without resetting the next regular deadline. The acknowledged outbox replays one `delivery_id` until exact delivery readback succeeds. Restarts preserve pending delivery, and clock rollback fails closed. Every digest covers all streams and their exact gate state.
+Cadence defaults to 600 seconds. Existing state keeps its stored value; `--migrate-status-cadence` explicitly applies the configured cadence, while mismatch otherwise fails closed. `--disable-periodic-status` suppresses scheduled digests, not immediate blocker, failure, input-required or merge-ready `CHANGE` digests. Pending outbox items replay unchanged until exact readback; newer changes follow afterward. Changes do not reset the regular deadline. Restarts preserve pending delivery; clock rollback fails closed. Digests cover every stream and gate state.
 
 ## Jira lifecycle and merge progress
 

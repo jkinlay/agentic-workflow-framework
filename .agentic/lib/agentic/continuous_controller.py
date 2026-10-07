@@ -305,7 +305,7 @@ class ContinuousControllerStore:
     """Durable scheduler in which every configured stream has a visible state."""
 
     def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS,
-                 worktree_roots=(), periodic_status_enabled=True):
+                 worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False):
         self.path = protected_state_path(path, worktree_roots)
         _require(isinstance(stream_ids, (list, tuple)) and stream_ids and
                  len(stream_ids) == len(set(stream_ids)) and
@@ -313,6 +313,7 @@ class ContinuousControllerStore:
                  "Configured stream identities must be unique nonempty strings")
         _require(type(cadence_seconds) is int and cadence_seconds > 0, "Status cadence must be positive seconds")
         _require(type(periodic_status_enabled) is bool, "Periodic status enablement must be boolean")
+        _require(type(migrate_cadence) is bool, "Cadence migration choice must be boolean")
         self.periodic_status_enabled = periodic_status_enabled
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
@@ -326,8 +327,13 @@ class ContinuousControllerStore:
                                    ("revision", "0"), ("last_regular_digest", ""),
                                    ("last_digest_revision", "-1")):
                     db.execute("INSERT OR IGNORE INTO controller_meta VALUES(?,?)", (key, value))
-                _require(int(self._meta(db, "cadence_seconds")) == cadence_seconds,
-                         "Configured status cadence changed; call set_cadence explicitly")
+                stored_cadence = int(self._meta(db, "cadence_seconds"))
+                if stored_cadence != cadence_seconds and migrate_cadence:
+                    db.execute("UPDATE controller_meta SET value=? WHERE key='cadence_seconds'",
+                               (str(cadence_seconds),))
+                else:
+                    _require(stored_cadence == cadence_seconds,
+                             "Configured status cadence changed; explicitly migrate the stored cadence")
                 for stream in sorted(stream_ids):
                     db.execute("INSERT OR IGNORE INTO stream_status VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                (stream, "COMPLETE", None, "controller", "No scoped work has been scheduled",
@@ -627,10 +633,26 @@ class ContinuousControllerStore:
     def mark_dispatch_unknown(self, dispatch_id, now):
         timestamp(now)
         with self.transaction() as db:
-            row = db.execute("SELECT status FROM controller_dispatch WHERE dispatch_id=?", (dispatch_id,)).fetchone()
-            _require(row is not None and row["status"] == "IN_FLIGHT", "Only an in-flight dispatch can become unknown")
-            db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?",
-                       (now, dispatch_id))
+            row = db.execute("SELECT status,payload_json FROM controller_dispatch WHERE dispatch_id=?",
+                             (dispatch_id,)).fetchone()
+            _require(row is not None and row["status"] in {"IN_FLIGHT", "UNKNOWN"},
+                     "Only an in-flight or reconciling dispatch can report an unknown outcome")
+            if row["status"] == "IN_FLIGHT":
+                db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?",
+                           (now, dispatch_id))
+            self._record_dispatch_unknown(db, dispatch_id, loads(row["payload_json"]), now)
+
+    def _record_dispatch_unknown(self, db, dispatch_id, payload, now):
+        stream = db.execute("SELECT * FROM stream_status WHERE stream_id=?", (payload["stream"],)).fetchone()
+        _require(stream is not None, "Unknown dispatch stream is missing from the protected state")
+        db.execute("UPDATE stream_status SET state='BLOCKED',actor='controller',"
+                   "reason=?,next_action=?,resume_trigger=?,updated_at=? WHERE stream_id=?",
+                   (f"Dispatch outcome unknown for {payload['ticket']} ({dispatch_id}); reconcile before retry",
+                    "Observe the exact durable dispatch intent before dispatching more work on this stream",
+                    "the host returns a fresh observation for this dispatch and its ticket",
+                    now, payload["stream"]))
+        revision = int(self._meta(db, "revision")) + 1
+        db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
 
     def begin_dispatch_reconciliation(self, dispatch_id, now):
         """Persist a fresh challenge before observing an UNKNOWN dispatch."""
@@ -650,7 +672,11 @@ class ContinuousControllerStore:
         """A crash while calling the host becomes UNKNOWN, never PENDING."""
         timestamp(now)
         with self.transaction() as db:
-            db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE status='IN_FLIGHT'", (now,))
+            rows = db.execute("SELECT dispatch_id,payload_json FROM controller_dispatch WHERE status='IN_FLIGHT'").fetchall()
+            for row in rows:
+                db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?",
+                           (now, row["dispatch_id"]))
+                self._record_dispatch_unknown(db, row["dispatch_id"], loads(row["payload_json"]), now)
 
     def prepare_jira_operation(self, record, now):
         """Persist an immutable deterministic Jira intent before any provider call."""
@@ -925,11 +951,10 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                 receipt = observe_dispatch(payload)
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now, reconcile=True))
         except Exception as exc:
-            if operation["status"] == "PENDING":
-                try:
-                    store.mark_dispatch_unknown(dispatch_id, now)
-                except Exception:
-                    pass
+            try:
+                store.mark_dispatch_unknown(dispatch_id, now)
+            except Exception:
+                pass
             errors.append({"operation": "dispatch", "dispatch_id": dispatch_id,
                            "state": "UNKNOWN", "reason": type(exc).__name__})
     digest = store.digest(now)
@@ -947,6 +972,7 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
         except Exception as exc:
             errors.append({"operation": "status_delivery", "delivery_id": digest["delivery_id"],
                            "state": "PENDING", "reason": type(exc).__name__})
+    streams = store.snapshot()
     return {"schema_version": 3, "observed_at": now, "streams": streams,
             "dispatch_receipts": dispatches, "status_delivery": delivery,
             "publication_readiness": publication_reports,

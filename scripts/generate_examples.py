@@ -80,7 +80,7 @@ def config(example=True):
             "require_zero_unresolved_blocking_threads": True, "invalidate_on_head_change": True, "invalidate_on_target_base_change": True,
             "authorization_ttl_seconds": 900, "trusted_owner_ids": [1001] if example else [], "high_risk_owner_quorum": 1},
         "controller": {**{key: False for key in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments", "auto_transition_jira"]},
-                       "status_cadence_seconds": 900},
+                       "status_cadence_seconds": 600},
         "audit": {"store_must_be_outside_worktrees": True, "retention_days": 90, "redact_secrets": True},
         "portfolio": {"read_only": True, "cross_project_dispatch": False}}
     from agentic.model_routing import default_policy
@@ -238,7 +238,7 @@ def main():
     bundle = example_bundle(cfg)
     write(ROOT / ".agentic/examples/evidence-bundle.json", bundle)
     write(ROOT / ".agentic/examples/controller-status-digest.json", {
-        "schema_version": 3, "observed_at": NOW, "kind": "REGULAR", "cadence_seconds": 900,
+        "schema_version": 3, "observed_at": NOW, "kind": "REGULAR", "cadence_seconds": 600,
         "delivery_id": "d" * 64, "all_complete": False,
         "streams": [{"stream": stream, "state": state, "ticket": ticket,
             "actor": actor, "reason": reason, "next_action": action, "resume_trigger": trigger,

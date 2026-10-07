@@ -240,6 +240,62 @@ class ContinuousControllerTests(unittest.TestCase):
         self.store.set_cadence(300)
         self.assertEqual(self.store.digest("2026-10-02T10:20:00Z")["cadence_seconds"], 300)
 
+    def test_disabled_periodic_status_suppresses_regular_and_keeps_urgent_stream_changes(self):
+        path = Path(self.temporary.name) / "disabled.sqlite3"
+        store = ContinuousControllerStore(path, ["A", "B", "C"], periodic_status_enabled=False)
+        self.assertIsNone(store.digest(NOW))
+        self.assertIsNone(store.digest("2026-10-02T10:20:00Z"))
+        store.schedule([
+            ticket("EX-BLOCKED", 1, "BLOCKED", reason="dependency blocker evidence"),
+            ticket("EX-INPUT", 2, "PAUSED_INPUT", reason="owner input required"),
+            ticket("EX-READY", 3, verification_gate="MERGE_READY"),
+        ], "2026-10-02T10:20:01Z", host_capacity=3)
+        digest = store.digest("2026-10-02T10:20:02Z")
+        self.assertEqual(digest["kind"], "CHANGE")
+        rows = {row["ticket"]: row for row in digest["streams"] if row["ticket"]}
+        self.assertEqual(rows["EX-BLOCKED"]["state"], "BLOCKED")
+        self.assertIn("blocker evidence", rows["EX-BLOCKED"]["reason"])
+        self.assertEqual(rows["EX-INPUT"]["state"], "PAUSED_INPUT")
+        self.assertIn("input required", rows["EX-INPUT"]["reason"])
+        self.assertEqual(rows["EX-READY"]["verification_gate"], "MERGE_READY")
+        store.acknowledge_digest(digest["delivery_id"], "2026-10-02T10:20:03Z")
+        self.assertIsNone(store.digest("2026-10-02T10:40:00Z"))
+
+    def test_pending_digest_replays_after_restart_while_periodic_status_is_disabled(self):
+        first = self.store.digest(NOW)
+        restarted = ContinuousControllerStore(self.path, ["A", "B", "C"],
+                                               periodic_status_enabled=False)
+        self.assertEqual(restarted.digest("2026-10-02T10:20:00Z"), first)
+
+    def test_crashed_dispatch_recovery_queues_immediate_failure_digest_while_disabled(self):
+        path = Path(self.temporary.name) / "crashed-dispatch.sqlite3"
+        store = ContinuousControllerStore(path, ["A"], periodic_status_enabled=False)
+        store.schedule([ticket("EX-CRASH", 1)], NOW, host_capacity=1)
+        operation = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(operation["dispatch_id"], NOW)
+        restarted = ContinuousControllerStore(path, ["A"], periodic_status_enabled=False)
+        restarted.recover_dispatches("2026-10-02T10:00:01Z")
+        digest = restarted.digest("2026-10-02T10:00:02Z")
+        self.assertEqual(digest["kind"], "CHANGE")
+        stream = digest["streams"][0]
+        self.assertEqual(stream["state"], "BLOCKED")
+        self.assertIn("Dispatch outcome unknown", stream["reason"])
+        with restarted.connection() as db:
+            status = db.execute("SELECT status FROM controller_dispatch WHERE dispatch_id=?",
+                                (operation["dispatch_id"],)).fetchone()[0]
+            pending = db.execute("SELECT acknowledged_at FROM controller_outbox WHERE delivery_id=?",
+                                 (digest["delivery_id"],)).fetchone()[0]
+        self.assertEqual(status, "UNKNOWN")
+        self.assertIsNone(pending)
+
+    def test_legacy_cadence_requires_and_supports_explicit_migration(self):
+        path = Path(self.temporary.name) / "legacy-cadence.sqlite3"
+        ContinuousControllerStore(path, ["A"], cadence_seconds=300)
+        with self.assertRaisesRegex(ValidationError, "explicitly migrate"):
+            ContinuousControllerStore(path, ["A"])
+        migrated = ContinuousControllerStore(path, ["A"], migrate_cadence=True)
+        self.assertEqual(migrated.digest(NOW)["cadence_seconds"], 600)
+
     def test_generated_digest_contract_accepts_runtime_record(self):
         self.store.schedule([ticket("EX-1", 1)], NOW, host_capacity=1)
         digest = self.store.digest(NOW)
@@ -359,7 +415,7 @@ class ContinuousControllerTests(unittest.TestCase):
         command = [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
                    "--root", str(ROOT), "controller", "--state", str(self.path),
                    "--stream", "A", "--stream", "B", "--stream", "C",
-                   "--worktree-root", str(worktree), "snapshot"]
+                   "--worktree-root", str(worktree), "--disable-periodic-status", "snapshot"]
         completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=30)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(len(json.loads(completed.stdout)["streams"]), 3)
@@ -386,8 +442,10 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(sum(kind == "deliver" for kind, _ in calls), 1)
 
     def test_uncertain_dispatch_is_observed_and_never_blindly_reissued(self):
-        store = ContinuousControllerStore(Path(self.temporary.name) / "unknown.sqlite3", ["A"])
+        store = ContinuousControllerStore(Path(self.temporary.name) / "unknown.sqlite3", ["A"],
+                                          periodic_status_enabled=False)
         dispatch_calls = []
+        delivered = []
         def fail_dispatch(payload):
             dispatch_calls.append(payload)
             raise RuntimeError("synthetic uncertain host result")
@@ -397,9 +455,13 @@ class ContinuousControllerTests(unittest.TestCase):
             **REPOSITORY,
             observe_inventory=lambda: inventory_observation(NOW, first_tickets),
             dispatch_ticket=fail_dispatch, observe_dispatch=lambda payload: self.fail("not yet"),
-            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
-                "status": "DELIVERED", "observed_at": NOW})
+            deliver_status=lambda digest: delivered.append(digest) or {
+                "delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": NOW})
         self.assertEqual(first["errors"][0]["state"], "UNKNOWN")
+        self.assertEqual(first["streams"][0]["state"], "BLOCKED")
+        self.assertIn("Dispatch outcome unknown", first["streams"][0]["reason"])
+        self.assertEqual(delivered[0]["kind"], "CHANGE")
+        self.assertIn("Dispatch outcome unknown", delivered[0]["streams"][0]["reason"])
         later = "2026-10-02T10:00:01Z"
         def observe(payload):
             return dispatch_receipt(payload, later)
