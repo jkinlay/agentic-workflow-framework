@@ -2,7 +2,7 @@
 
 388 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `c358a5590da48f32ba763f5fe3e02405d21648511af99210c908b8f32da23bb4`
+MANIFEST.json SHA-256: `5ae73ed7b491368093a219f458a84503a219e2f2b2c016dcda511c46219d911b`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -188,7 +188,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/scripts/rules_activation.py` | `4c0d2f6fec46caac39ff5f97a3c47cbf898122ba6e4f2901a90348d488dc7495` |
 | `.agentic/scripts/run_heavy_validation.py` | `3b5b3f571a2c4443ade9967b3326cb0adfa7d59320c32e748367dd1cb7a136f7` |
 | `.agentic/scripts/scheduled_tick.py` | `b3394cec9f48cbd4a8012be9e40eeefbba0befdcadd2dab63268c7c849899a3e` |
-| `.agentic/scripts/self_test.py` | `613dfd3524003089022e3a3f0219e991866545ee3d43488340600ca51e413398` |
+| `.agentic/scripts/self_test.py` | `94d45dc53d5f148f0f17e1501a541d09921ca204e7e49cd8aa5b9878e52a31dd` |
 | `.agentic/scripts/validate_config.py` | `527a8c219ec19f1c7b669476788a50dcc4bce829050c63eba297df6d74b86fc7` |
 | `.agentic/scripts/workflow.py` | `66134642edf2eac756db657562913518431f89de477a48a89ea8fc2ca67b2983` |
 | `.agentic/templates/activation-status.yaml` | `bf31c2fba4c14787b644baafb4fbaf306251e41747646c275abe2b2a0d01a318` |
@@ -231,7 +231,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/review-cap-disposition.yaml` | `1a8c1c8398ab1d0e129faec1d2b059e292d81ccf678d77ce7b487f5613b782ff` |
 | `.agentic/templates/review-completion.yaml` | `75e224a5547e2c1f4fcda755ac8f24f40286e41fbff8ba40a9a97dbf4e53281a` |
 | `.agentic/templates/review-submission.yaml` | `aeccb1b9d132bca7b4981f8af21ee46e353c6f52fd02e56593e0c1eb184a7927` |
-| `.agentic/templates/rules-activation-decision.yaml` | `c9921e934bd58550cef8c00ded5e5dc975635f35abfbcba394b760081da5da85` |
+| `.agentic/templates/rules-activation-decision.yaml` | `0020d9e3dc0ba4a96656879e46d10dc1dcb64a830e794a211c9edf3b54b213f0` |
 | `.agentic/templates/run-attestation.yaml` | `a14caf06ab480ed0a22cd2fb771bf1434395f781462e7f3364e0c955a2341d0b` |
 | `.agentic/templates/scope-change.yaml` | `e5078451787b84a33782bd4da9c1c188df8a00746e2cdbcf798b833ed13fefd6` |
 | `.agentic/templates/specialist-dispatch.yaml` | `70918627a68c663bcc93917958a40bd936c403fd2cc16da065eab2b73016fe04` |
@@ -278,7 +278,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_routine_publication.py` | `006a1f4203876510a9aae96f3be66a579d5b14cf4630f6aa3ede1b5a297d32f1` |
 | `.agentic/tests/test_routing_cli.py` | `20b8eda2409068c7d4d0eb2c0648dc51e19dd43739a867e09610b7d79351734e` |
 | `.agentic/tests/test_routing_integration.py` | `fa76c13c504ada646c428a0462715691d3da205aa699ee79c83f1b5c939a3696` |
-| `.agentic/tests/test_rules_activation.py` | `6f6c504af2b4dc906245c2934b7ff61bf0879768eefb5183af94c9b5e726c4cc` |
+| `.agentic/tests/test_rules_activation.py` | `64373234aa48438a3c9239f2581c05d756a489af763bf3573e006a10f7fec631` |
 | `.agentic/tests/test_store_regressions.py` | `2cf43379f37928ead367f3fc60e4e282a7814a84194765b6cdd759a99dc42859` |
 | `.agentic/tests/test_streams.py` | `f6fb0ab95c1aa0689a3459298106994075749729f89ec0110e9e8ab21b391c6c` |
 | `.agentic/tests/test_upgrade_matrix.py` | `883c2d6d361aba457b66c1795cc5e7db40938a7c8b578265349b1070e6ad7849` |
@@ -375,7 +375,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
 | `scripts/generate_review_loop.py` | `7043b0c1db9d1d8eef9ae82a845781dadf12643d47577df3c2edb6d11453b999` |
-| `scripts/generate_rules_activation.py` | `6057e9c905b317718d52ff3208ebacd8e780d4b835dc67e746f9b544f81ca03f` |
+| `scripts/generate_rules_activation.py` | `e9f72016edcb898ac1ddc480c4d12181fb889118de776b8e536d090757edcaaa` |
 | `scripts/prompt_templates/amendment.md` | `99fdf23206b59af9dc6cfcc4386afba5f2576263836878281f9aa4b7918fbec3` |
 | `scripts/prompt_templates/controller.md` | `9658efb7c66d5b9c45ad5cce46bfc9eea4ecdff6b5c7d1d2ea255325eff8c67a` |
 | `scripts/prompt_templates/critic.md` | `1ee8905a78bd23d64bb405da275ebf4cd366541e72d7ce55b335f82911fd8f78` |
@@ -392,7 +392,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
 | `scripts/tests/test_release_hygiene.py` | `4593f254507795ed20eae899022df6f04fde7b0f216e994043768165540b5f79` |
 | `scripts/tests/test_release_review.py` | `d8a06f43b87b6654e6542927ccadd21380b2430432de1888b76456389987701a` |
-| `scripts/tests/test_self_test_review.py` | `cc172fbd2e1570052ca52fd2914f0729459dfd200eb2724e97ffb8aa902a9273` |
+| `scripts/tests/test_self_test_review.py` | `047864cf68b5569fad517c861dfffa081d1e524cad2fa7bca15ebe646120b4ee` |
 | `scripts/tests/test_skill_distribution_launcher.py` | `26fcfe891d4be5a7fbaa638f0b6dbbfe418f6831d1973f889ebc97fe6a6dc64c` |
 | `scripts/validate_archive.py` | `5a3fe74159e7cbd81658b44f0400b87ca3f45dae69d9c4fd716183d9bcf7ba53` |
 | `scripts/validate_git_checkout.py` | `f7342af83bbf11638ffcb9f922a24251854f2432ef46bdd554fd8b5045e68d33` |

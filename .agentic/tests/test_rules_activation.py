@@ -291,7 +291,8 @@ class RulesActivationTests(unittest.TestCase):
         again = self.decide("merge")
         self.assertEqual(canonical(result), canonical(again))
         template = load(ROOT / ".agentic/templates/rules-activation-decision.yaml")
-        self.assertIs(template, self.contracts.validate("rules-activation-decision", template))
+        self.assertEqual(("rules-activation-decision", "UNFILLED"), (template["template_for"], template["status"]))
+        self.assertIs(template["record"], self.contracts.validate("rules-activation-decision", template["record"]))
         spec = importlib.util.spec_from_file_location(
             "awf_generate_rules_activation_test", ROOT / "scripts/generate_rules_activation.py")
         generator = importlib.util.module_from_spec(spec)

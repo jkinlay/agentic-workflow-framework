@@ -30,7 +30,10 @@ def render():
     value = activation_rules_decision(
         config, workflow, contracts, before_observation=observation, now=NOW)
     contracts.validate("rules-activation-decision", value)
-    return json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    draft = {"template_for": "rules-activation-decision", "status": "UNFILLED",
+             "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+             "record": value}
+    return json.dumps(draft, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
 
 
 def main():
