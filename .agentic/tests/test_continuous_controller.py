@@ -210,7 +210,7 @@ class ContinuousControllerTests(unittest.TestCase):
         later = "2026-10-02T10:00:02Z"
         replacement = ticket("EX-REPLACEMENT", 2)
         store.schedule([ticket("EX-RESERVED", 1, "COMPLETE"), replacement], later,
-                       host_capacity=1)
+                       host_capacity=2)
         replacement_intent = next(item for item in store.prepare_dispatches(later)
                                   if item["ticket"] == "EX-REPLACEMENT")
         begun = store.begin_dispatch(replacement_intent["dispatch_id"], "2026-10-02T10:00:03Z")
@@ -258,7 +258,7 @@ class ContinuousControllerTests(unittest.TestCase):
                     store.begin_dispatch(intent["dispatch_id"], NOW)
                 later = "2026-10-02T10:00:01Z"
                 store.schedule([ticket("EX-HELD", 1, "COMPLETE"), replacement], later,
-                               host_capacity=1)
+                               host_capacity=2 if status == "IN_FLIGHT" else 1)
                 snapshot = store.schedule([ticket("EX-HELD", 0), replacement],
                                           "2026-10-02T10:00:02Z", host_capacity=2)
                 self.assertEqual(next(row for row in snapshot if row["stream"] == "A")["ticket"],
@@ -269,6 +269,99 @@ class ContinuousControllerTests(unittest.TestCase):
                     rows = db.execute("SELECT stream_id,status FROM controller_dispatch "
                                       "WHERE ticket='EX-HELD'").fetchall()
                 self.assertEqual([(row["stream_id"], row["status"]) for row in rows], [("A", status)])
+
+    def test_unresolved_dispatches_consume_capacity_but_other_available_slots_continue(self):
+        for intent_state in ("PENDING", "IN_FLIGHT", "UNKNOWN"):
+            for capacity in (1, 2):
+                with self.subTest(intent_state=intent_state, capacity=capacity):
+                    path = Path(self.temporary.name) / f"capacity-{intent_state.lower()}-{capacity}.sqlite3"
+                    store = ContinuousControllerStore(path, ["A", "B"])
+                    store.schedule([ticket("EX-IN-FLIGHT", 1)], NOW, host_capacity=1)
+                    intent = store.prepare_dispatches(NOW)[0]
+                    if intent_state != "PENDING":
+                        store.begin_dispatch(intent["dispatch_id"], NOW)
+                    if intent_state == "UNKNOWN":
+                        store.mark_dispatch_unknown(intent["dispatch_id"], "2026-10-02T10:00:01Z")
+                    later = "2026-10-02T10:00:02Z"
+                    snapshot = store.schedule([
+                        ticket("EX-IN-FLIGHT", 1, "COMPLETE"),
+                        ticket("EX-AVAILABLE-1", 2),
+                        ticket("EX-AVAILABLE-2", 3),
+                    ], later, host_capacity=capacity)
+                    reserved = 0 if intent_state == "PENDING" else 1
+                    self.assertEqual(sum(row["state"] == "WORKING" for row in snapshot),
+                                     max(0, capacity - reserved))
+                    self.assertNotIn("EX-IN-FLIGHT", [row["ticket"] for row in snapshot])
+
+    def test_orphan_pending_dispatch_is_cancelled_and_recreated_after_fresh_preflight(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "orphan-pending.sqlite3", ["A", "B"])
+        store.schedule([ticket("EX-8", 1)], NOW, host_capacity=1)
+        original = store.prepare_dispatches(NOW)[0]
+        calls = []
+        blocked_at = "2026-10-02T10:00:01Z"
+        blocked_cycle = production_controller_cycle(store, now=blocked_at, host_capacity=1,
+            inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+            observe_inventory=lambda: inventory_observation(blocked_at, [
+                ticket("EX-8", 1, "BLOCKED", reason="fresh preflight paused this ticket"),
+                ticket("EX-9", 2),
+            ]),
+            dispatch_ticket=lambda payload: calls.append(payload["ticket"]) or
+                dispatch_receipt(payload, blocked_at),
+            observe_dispatch=lambda payload: self.fail("PENDING cancellation must not reconcile"),
+            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": blocked_at})
+        self.assertNotIn("EX-8", calls, repr(blocked_cycle))
+        with store.connection() as db:
+            cancelled = db.execute("SELECT status,payload_json FROM controller_dispatch "
+                                    "WHERE dispatch_id=?", (original["dispatch_id"],)).fetchone()
+        self.assertEqual(cancelled["status"], "CANCELLED")
+        self.assertIn("fresh preflight", json.loads(cancelled["payload_json"])["cancellation_reason"])
+
+        resumed_at = "2026-10-02T10:00:02Z"
+        resumed = production_controller_cycle(store, now=resumed_at, host_capacity=1,
+            inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+            observe_inventory=lambda: inventory_observation(resumed_at, [
+                ticket("EX-8", 1), ticket("EX-9", 2, "COMPLETE")]),
+            dispatch_ticket=lambda payload: calls.append(payload["ticket"]) or
+                dispatch_receipt(payload, resumed_at),
+            observe_dispatch=lambda payload: self.fail("cancelled PENDING intent cannot reconcile"),
+            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": resumed_at})
+        self.assertEqual(calls, ["EX-9", "EX-8"], repr((blocked_cycle, resumed)))
+        self.assertIn("EX-8", [receipt["ticket"] for receipt in resumed["dispatch_receipts"]])
+
+    def test_pending_dispatch_cancellation_refuses_any_intent_that_reached_begin(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "cancel-inflight.sqlite3", ["A"])
+        store.schedule([ticket("EX-CANCEL", 1)], NOW, host_capacity=1)
+        intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(intent["dispatch_id"], NOW)
+        with self.assertRaisesRegex(ValidationError, "never-begun pending"):
+            store.cancel_pending_dispatch(intent["dispatch_id"], "2026-10-02T10:00:01Z",
+                                          "preflight changed")
+
+    def test_pending_dispatch_cancels_when_preflight_pauses_or_completes_ticket(self):
+        for disposition in ("PAUSED_INPUT", "COMPLETE"):
+            with self.subTest(disposition=disposition):
+                path = Path(self.temporary.name) / f"cancel-{disposition.lower()}.sqlite3"
+                store = ContinuousControllerStore(path, ["A"])
+                ticket_id = "EX-10" if disposition == "PAUSED_INPUT" else "EX-11"
+                store.schedule([ticket(ticket_id, 1)], NOW, host_capacity=1)
+                intent = store.prepare_dispatches(NOW)[0]
+                observed_at = "2026-10-02T10:00:01Z"
+                result = production_controller_cycle(store, now=observed_at, host_capacity=1,
+                    inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+                    observe_inventory=lambda: inventory_observation(observed_at, [
+                        ticket(ticket_id, 1, disposition)]),
+                    dispatch_ticket=lambda payload: self.fail("non-eligible PENDING intent reached host"),
+                    observe_dispatch=lambda payload: self.fail("never-begun intent cannot reconcile"),
+                    deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                        "status": "DELIVERED", "observed_at": observed_at})
+                self.assertEqual(next(row for row in result["streams"] if row["stream"] == "A")["state"],
+                                 disposition)
+                with store.connection() as db:
+                    status = db.execute("SELECT status FROM controller_dispatch WHERE dispatch_id=?",
+                                        (intent["dispatch_id"],)).fetchone()[0]
+                self.assertEqual(status, "CANCELLED")
 
     def test_contradictory_reviewer_counts_fail_before_dispatch_or_delivery(self):
         malformed = ticket("QA-BAD", 1, reviewer_completion={

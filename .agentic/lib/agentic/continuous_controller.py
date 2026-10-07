@@ -433,11 +433,13 @@ class ContinuousControllerStore:
         # outcome is observed. Otherwise a priority change can move the same
         # ticket to another stream and create a second dispatch while the first
         # may still be running.
-        reserved_dispatches = {}
+        reserved_dispatches, capacity_intents = {}, []
         for intent in db.execute(
-                "SELECT DISTINCT ticket,stream_id FROM controller_dispatch "
+                "SELECT ticket,stream_id,status FROM controller_dispatch "
                 "WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN')"):
             reserved_dispatches.setdefault(intent["ticket"], set()).add(intent["stream_id"])
+            if intent["status"] in {"IN_FLIGHT", "UNKNOWN"}:
+                capacity_intents.append((intent["stream_id"], intent["ticket"]))
         reserved_tickets = set(reserved_dispatches)
         working, held_paths = [], []
         for row in rows:
@@ -453,7 +455,11 @@ class ContinuousControllerStore:
                 held_paths.append(item["paths"])
                 self._update_stream(db, row["stream_id"], "WORKING", item, now)
         assigned = {row["ticket"] for row in working}
-        slots = max(0, host_capacity - len(working))
+        represented_intents = {(row["stream_id"], row["ticket"]) for row in working}
+        represented_capacity = len({intent for intent in capacity_intents
+                                    if intent in represented_intents})
+        unresolved_capacity = max(0, len(capacity_intents) - represented_capacity)
+        slots = max(0, host_capacity - len(working) - unresolved_capacity)
         eligible = sorted((item for item in tickets if item["ticket"] not in assigned and
                            item["ticket"] not in reserved_tickets and
                            item["disposition"] == "ELIGIBLE"), key=lambda item: (item["priority"], item["ticket"]))
@@ -590,7 +596,7 @@ class ContinuousControllerStore:
             for row in db.execute("SELECT * FROM stream_status WHERE state='WORKING' ORDER BY stream_id"):
                 prior = db.execute(
                     "SELECT * FROM controller_dispatch WHERE stream_id=? AND ticket=? AND exact_tuple=? "
-                    "ORDER BY rowid DESC LIMIT 1",
+                    "AND status<>'CANCELLED' ORDER BY rowid DESC LIMIT 1",
                     (row["stream_id"], row["ticket"], row["exact_tuple"])).fetchone()
                 if prior is not None:
                     continue
@@ -605,6 +611,34 @@ class ContinuousControllerStore:
                             "PENDING", canonical(payload).decode(), now))
             return [dict(row) | {"payload": loads(row["payload_json"])} for row in db.execute(
                 "SELECT * FROM controller_dispatch WHERE status IN ('PENDING','UNKNOWN') ORDER BY stream_id,dispatch_id")]
+
+    def pending_dispatches(self):
+        """Read never-begun intents so fresh preflight can cancel them safely."""
+        with self.connection() as db:
+            return [dict(row) | {"payload": loads(row["payload_json"])} for row in db.execute(
+                "SELECT * FROM controller_dispatch WHERE status='PENDING' ORDER BY stream_id,dispatch_id")]
+
+    def cancel_pending_dispatch(self, dispatch_id, now, reason):
+        """Durably retire an intent proven not to have reached the host."""
+        timestamp(now)
+        _require(isinstance(reason, str) and reason.strip(),
+                 "Pending dispatch cancellation requires a preflight reason")
+        with self.transaction() as db:
+            row = db.execute("SELECT status,payload_json FROM controller_dispatch WHERE dispatch_id=?",
+                             (dispatch_id,)).fetchone()
+            _require(row is not None and row["status"] == "PENDING",
+                     "Only a never-begun pending dispatch can be cancelled")
+            payload = loads(row["payload_json"])
+            _require("begun_at" not in payload,
+                     "A dispatch with a host-call begin time cannot be cancelled")
+            payload["cancelled_at"] = now
+            payload["cancellation_reason"] = reason.strip()
+            db.execute("UPDATE controller_dispatch SET status='CANCELLED',payload_json=?,updated_at=? "
+                       "WHERE dispatch_id=? AND status='PENDING'",
+                       (canonical(payload).decode(), now, dispatch_id))
+            revision = int(self._meta(db, "revision")) + 1
+            db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
+            return dict(row) | {"status": "CANCELLED", "payload": payload}
 
     def begin_dispatch(self, dispatch_id, now):
         """Move one intent to IN_FLIGHT before the external host call."""
@@ -944,18 +978,56 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                               "resume_trigger": "the exact completion path passes publication readiness"}
             errors.append({"operation": "publication_readiness", "ticket": item["ticket"],
                            "state": "BLOCKED", "reason": reason})
+    # A never-begun intent is safe to retire when fresh inventory or publication
+    # preflight no longer admits its ticket. Do this before scheduling so the
+    # ticket's new PAUSED/BLOCKED/COMPLETE state remains visible immediately.
+    ticket_by_id = {item["ticket"]: item for item in tickets}
+    for operation in store.pending_dispatches():
+        payload = operation["payload"]
+        current = ticket_by_id.get(payload["ticket"])
+        if (current is not None and current["disposition"] == "ELIGIBLE" and
+                payload["ticket"] in publication_reports):
+            continue
+        if current is None:
+            reason = "Fresh complete inventory no longer contains the pending ticket"
+        elif current["disposition"] != "ELIGIBLE":
+            reason = f"Fresh preflight disposition is {current['disposition']}: {current['reason']}"
+        else:
+            reason = "Fresh publication preflight did not admit the pending ticket"
+        try:
+            store.cancel_pending_dispatch(operation["dispatch_id"], now, reason)
+        except Exception as exc:
+            errors.append({"operation": "dispatch_cancellation", "dispatch_id": operation["dispatch_id"],
+                           "state": "PENDING", "reason": type(exc).__name__})
     streams = store.schedule(tickets, now, host_capacity)
     dispatches = []
     for operation in store.prepare_dispatches(now):
         payload, dispatch_id = operation["payload"], operation["dispatch_id"]
-        if operation["status"] == "PENDING" and not (
-                payload["ticket"] in publication_reports and any(
+        if operation["status"] == "PENDING":
+            admitted = (payload["ticket"] in publication_reports and any(
                     stream["stream"] == payload["stream"] and stream["state"] == "WORKING"
                     and stream["ticket"] == payload["ticket"] and stream["exact_tuple"] == payload["exact_tuple"]
-                    for stream in streams)):
-            # No host call has occurred. Preserve the intent for a later fresh
-            # preflight instead of classifying known non-execution as UNKNOWN.
-            continue
+                    for stream in streams))
+            if not admitted:
+                current = next((item for item in tickets if item["ticket"] == payload["ticket"]), None)
+                if current is None:
+                    reason = "Fresh complete inventory no longer contains the pending ticket"
+                elif current["disposition"] != "ELIGIBLE":
+                    reason = (f"Fresh preflight disposition is {current['disposition']}: "
+                              f"{current['reason']}")
+                elif payload["ticket"] not in publication_reports:
+                    reason = "Fresh publication preflight did not admit the pending ticket"
+                else:
+                    reason = "Fresh schedule did not retain this exact stream, ticket, and tuple"
+                try:
+                    store.cancel_pending_dispatch(dispatch_id, now, reason)
+                except Exception as exc:
+                    errors.append({"operation": "dispatch_cancellation", "dispatch_id": dispatch_id,
+                                   "state": "PENDING", "reason": type(exc).__name__})
+                # PENDING proves begin_dispatch did not run, so this durable
+                # cancellation is safe and makes the ticket eligible for a
+                # newly prepared intent after a later fresh preflight.
+                continue
         try:
             if operation["status"] == "PENDING":
                 payload = store.begin_dispatch(dispatch_id, now)
