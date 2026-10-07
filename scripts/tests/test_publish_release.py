@@ -374,13 +374,18 @@ else: raise SystemExit(2)
         command(["git", "init", "--bare", str(bare)], self.base)
         command(["git", "remote", "add", "origin", str(bare)], self.repository)
         command(["git", "push", "-u", "origin", "main"], self.repository)
+        # A local bare origin has no HOST/OWNER/REPO; stand in for the resolver so
+        # the fake gh can assert the value is always passed (resolver tested below).
+        resolver = patch.object(publisher, "origin_repository", return_value="github.com/jkinlay/awf-fixture")
+        resolver.start(); self.addCleanup(resolver.stop)
         fake_bin = self.base / "fake-bin"; fake_bin.mkdir()
         store = self.base / "fake-release"; store.mkdir()
         log = self.base / "fake-gh.jsonl"
         executable = self.make_fake_gh(fake_bin, store, log)
         env = os.environ.copy()
         env.update(PATH=str(fake_bin) + os.pathsep + env.get("PATH", ""),
-                   AWF_FAKE_GH_LOG=str(log), AWF_FAKE_GH_STORE=str(store))
+                   AWF_FAKE_GH_LOG=str(log), AWF_FAKE_GH_STORE=str(store),
+                   GH_REPO="attacker/elsewhere")
         old = os.environ.copy()
         os.environ.update(env)
         try:
@@ -407,6 +412,71 @@ else: raise SystemExit(2)
         calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(call[:2] == ["release", "create"] and "--draft" in call for call in calls))
         self.assertTrue(any(call[:2] == ["release", "download"] for call in calls))
+        # Ambient GH_REPO must never choose the release repository.
+        for call in calls:
+            self.assertIn("--repo", call)
+            self.assertEqual("github.com/jkinlay/awf-fixture", call[call.index("--repo") + 1])
+
+    def test_origin_repository_binds_gh_to_the_tagged_origin(self):
+        def configure(fetch, *pushes):
+            subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repository, capture_output=True)
+            command(["git", "remote", "add", "origin", fetch], self.repository)
+            for index, url in enumerate(pushes):
+                command(["git", "remote", "set-url", "--push"] + (["--add"] if index else []) + ["origin", url],
+                        self.repository)
+        cases = {
+            "https://github.com/jkinlay/agentic-workflow-framework.git": "github.com/jkinlay/agentic-workflow-framework",
+            "https://token@github.com/jkinlay/agentic-workflow-framework": "github.com/jkinlay/agentic-workflow-framework",
+            "git@github.com:jkinlay/agentic-workflow-framework.git": "github.com/jkinlay/agentic-workflow-framework",
+            "ssh://git@ghe.example.com:2222/team/awf.git": "ghe.example.com/team/awf",
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url):
+                configure(url)
+                self.assertEqual(expected, publisher.origin_repository(self.repository))
+        same = "https://github.com/jkinlay/agentic-workflow-framework.git"
+        configure(same, "git@github.com:jkinlay/agentic-workflow-framework.git")
+        self.assertEqual("github.com/jkinlay/agentic-workflow-framework", publisher.origin_repository(self.repository))
+        rejected = {
+            "not a recognised": (str(self.base / "remote.git"),),
+            "different repositories": (same, "https://github.com/attacker/elsewhere.git"),
+            "exactly one": (same, same, "https://github.com/attacker/elsewhere.git"),
+        }
+        for message, urls in rejected.items():
+            with self.subTest(message=message):
+                configure(*urls)
+                with self.assertRaisesRegex(publisher.ReleaseError, message):
+                    publisher.origin_repository(self.repository)
+        for url in ("file:///tmp/remote.git", "https://github.com/onlyowner"):
+            with self.subTest(url=url):
+                configure(url)
+                with self.assertRaisesRegex(publisher.ReleaseError, "not a recognised"):
+                    publisher.origin_repository(self.repository)
+
+    def test_rejected_origin_fails_before_creating_a_tag(self):
+        fake_bin = self.base / "fake-bin-reject"; fake_bin.mkdir()
+        store = self.base / "fake-release-reject"; store.mkdir()
+        log = self.base / "fake-gh-reject.jsonl"
+        executable = self.make_fake_gh(fake_bin, store, log)
+        same = "https://github.com/jkinlay/agentic-workflow-framework.git"
+        def tag_list():
+            return subprocess.run(["git", "for-each-ref", "refs/tags", "--format=%(refname) %(objectname)"],
+                                  cwd=self.repository, capture_output=True, text=True, check=True).stdout
+        before = tag_list()
+        for message, pushes in {"different repositories": ("https://github.com/attacker/elsewhere.git",),
+                                "exactly one": (same, "https://github.com/attacker/elsewhere.git")}.items():
+            with self.subTest(message=message):
+                subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repository, capture_output=True)
+                command(["git", "remote", "add", "origin", same], self.repository)
+                for index, url in enumerate(pushes):
+                    command(["git", "remote", "set-url", "--push"] + (["--add"] if index else []) + ["origin", url],
+                            self.repository)
+                with self.assertRaisesRegex(publisher.ReleaseError, message):
+                    publisher.publish(self.repository, self.commit, self.base / f"reject-{len(pushes)}",
+                                      self.windows_check, self.windows_pin,
+                                      validation_runner=self.fake_validation, gh=str(executable))
+                self.assertEqual(before, tag_list())
+        self.assertFalse(log.exists() and log.read_text(encoding="utf-8").strip())
 
 
 if __name__ == "__main__":

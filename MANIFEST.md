@@ -2,7 +2,7 @@
 
 419 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `d6edc8df7e8b4f0ac16495dc927ec9408eebc2915f8942c20f2d1e9fae8804db`
+MANIFEST.json SHA-256: `e0490f2a5b74b22dd10fc9f36a2fa5ede5195c082fc5dc0b318c6893a1937d03`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -405,7 +405,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/prompt_templates/specialist-reviewer.md` | `6d0993a94d4272b711fa8beec9d8fcccf2d2f739856f94f5f530801a2329ac92` |
 | `scripts/prompt_templates/worker.md` | `1ec1ce7a14b3e2de59c0649c75485ccd3fc202142065570803800288bc316225` |
 | `scripts/publish_catalog.py` | `edcade1a8b59ff546527e11925997555aa9e646def09e2e82ef97b2934879dcc` |
-| `scripts/publish_release.py` | `676bccce09869c7f5ae003305df4758e3fba579d4bd7f14eb2b29eb4750b73b7` |
+| `scripts/publish_release.py` | `9385af23912ac9304884a3c0030c76ac28de4e74bcd53b29d451b28fb5fbd3c3` |
 | `scripts/release_hygiene.py` | `0e5ddb5d14cc5f7bcc70c31acaf093e9b70a1e85382c798cd987640ebc672b60` |
 | `scripts/release_modes.py` | `826010f26b85c40e4e63668b872263e829daf63357ac6a2538ad2628b2921c50` |
 | `scripts/release_review.py` | `58db97d3cd910658678f3dde6f534f77cee8d8e7884803222d7b077ceadf53f7` |
@@ -418,7 +418,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_installed_self_test.py` | `0ce445496c350221562e1d8ad925541cf04739a69ddf7c7eee38b3b14cd5f912` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
-| `scripts/tests/test_publish_release.py` | `fbbb2f930f453757565054ebead1fa5501f9a88c48b600392003d43180a378f4` |
+| `scripts/tests/test_publish_release.py` | `a749ac16fd1ad2b692adad4097c28b26c49958b3a9a76358907ad5fdc331dd7c` |
 | `scripts/tests/test_release_hygiene.py` | `6d287514cd24c90ad7ba5da7fd96e3286092658e79896ea4fd95ad72cc60f894` |
 | `scripts/tests/test_release_review.py` | `d8a06f43b87b6654e6542927ccadd21380b2430432de1888b76456389987701a` |
 | `scripts/tests/test_self_test_review.py` | `51d5b33199d2f93c1af51ef32cea3146f1fca72567db8c58efb80cd886bd97cf` |
