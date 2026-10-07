@@ -308,6 +308,9 @@ class FiveSlotAccelerationTests(unittest.TestCase):
             "C26-F07",
             "C26-F08",
             "C26-IC-F01",
+            "C-TRX-001",
+            "C-TRX-002",
+            "C-TRX-003",
         )
         mapped_ids = [row["source_finding_id"] for row in self.inventory["regressions"]]
         for finding_id in canonical_ids:

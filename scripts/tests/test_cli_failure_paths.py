@@ -21,10 +21,57 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from validate_archive import PREFIX, RELEASE_LINE, VERSION, preflight
 import validate_archive
+import validate_git_checkout
 
 
 def snapshot(root):
     return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+
+class ValidatorCommandContractTests(unittest.TestCase):
+    def test_expected_installed_commands_are_canonical_and_noninstalling(self):
+        destination = ROOT / '.tmp-tests' / 'nonexistent project with spaces'
+        expected_root, expected_interpreter, expected_entry = validate_archive.installed_paths(destination)
+        expected = [[str(expected_interpreter), '-B', '-I', str(expected_entry),
+                     '--root', str(expected_root), action]
+                    for action in ('verify-installation', 'validate-config')]
+        for helper in (validate_archive.expected_post_install_commands,
+                       validate_git_checkout.expected_post_install_commands):
+            with self.subTest(module=helper.__module__):
+                self.assertEqual(expected, helper(destination))
+        self.assertIn(str(Path('.agentic') / '.venv'), expected[0][0])
+        self.assertFalse(destination.exists())
+
+    def test_installed_acceptance_stage_selectors_never_return_developer_python(self):
+        destination = ROOT / '.tmp-tests' / 'another nonexistent installed project'
+        expected = validate_archive.installed_paths(destination)[1]
+        for selector in (validate_archive.installed_stage_python,
+                         validate_git_checkout.installed_stage_python):
+            with self.subTest(module=selector.__module__):
+                self.assertEqual(expected, selector(destination))
+                self.assertNotEqual(Path(sys.executable).resolve(), selector(destination))
+        self.assertFalse(destination.exists())
+
+    def test_installed_git_inventory_excludes_only_the_ignored_canonical_runtime(self):
+        managed = validate_git_checkout._managed
+        self.assertTrue(managed('.agentic/scripts/workflow.py'))
+        self.assertTrue(managed('.agentic/installed-manifest.json'))
+        self.assertTrue(managed('AGENTS.md'))
+        self.assertFalse(managed('.agentic/.venv'))
+        self.assertFalse(managed('.agentic/.venv/Scripts/python.exe'))
+        windows_path = chr(92).join((".agentic", ".venv", "bin", "python"))
+        self.assertFalse(managed(windows_path))
+
+    def test_installed_clone_runtime_provisioner_uses_target_and_pinned_wheelhouse(self):
+        destination = ROOT / '.tmp-tests' / 'pure clone selector'
+        wheelhouse = ROOT / '.tmp-tests' / 'pinned wheelhouse'
+        expected = {'interpreter': str(validate_git_checkout.installed_stage_python(destination))}
+        with mock.patch('agentic.adoption_config.ensure_installed_runtime', return_value=expected) as ensure:
+            observed = validate_git_checkout.provision_installed_clone_runtime(destination, wheelhouse)
+        self.assertEqual(expected, observed)
+        ensure.assert_called_once_with(destination, wheelhouse=wheelhouse)
+        self.assertFalse(destination.exists())
+        self.assertFalse(wheelhouse.exists())
 
 
 class CliFailurePathTests(unittest.TestCase):
@@ -32,6 +79,8 @@ class CliFailurePathTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.wheelhouse = self.root / 'wheelhouse'
+        self.wheelhouse.mkdir()
         self.env = {k: v for k, v in os.environ.items() if k.upper() not in {'PYTHONPATH', 'PYTHONHOME'}}
         self.env.update(PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8')
 
@@ -73,6 +122,7 @@ class CliFailurePathTests(unittest.TestCase):
     def archive_args(self, path, pin, work=None, report=None):
         return ['--archive', path, '--expected-zip-sha256', pin,
                 '--reviews',self.root/'independent-review.json','--expected-reviews-sha256','0'*64,
+                '--runtime-wheelhouse',self.wheelhouse,
                 '--workdir', work or self.root / 'unused-work', '--report', report or self.root / 'report.json']
 
     def test_each_entry_point_rejects_missing_required_arguments_without_writes(self):
@@ -100,6 +150,36 @@ class CliFailurePathTests(unittest.TestCase):
         self.reject(ROOT / 'scripts/bootstrap_project.py',
                     ['--dest', destination, '--expected-manifest-sha256', '0' * 64], 'approved digest')
         self.assertEqual(before, snapshot(destination))
+
+    def test_bootstrap_missing_or_invalid_wheelhouse_precedes_every_destination_write(self):
+        pin = hashlib.sha256((ROOT / 'MANIFEST.json').read_bytes()).hexdigest()
+        cases = [
+            ('missing-wheelhouse', [], '--runtime-wheelhouse is required'),
+            ('empty-wheelhouse', ['--runtime-wheelhouse', self.wheelhouse], 'wheelhouse is empty'),
+        ]
+        for mode in ('install', 'upgrade'):
+            for name, extra, reason in cases:
+                with self.subTest(mode=mode, name=name):
+                    destination = self.root / (mode + '-' + name)
+                    destination.mkdir()
+                    (destination / 'owner-file').write_bytes(b'preserve exactly\n')
+                    before = sorted((path.relative_to(destination).as_posix(), path.is_dir(),
+                                     None if path.is_dir() else path.read_bytes())
+                                    for path in destination.rglob('*'))
+                    self.reject(ROOT / 'scripts/bootstrap_project.py',
+                                ['--dest', destination, '--mode', mode,
+                                 '--expected-manifest-sha256', pin, *extra], reason)
+                    after = sorted((path.relative_to(destination).as_posix(), path.is_dir(),
+                                    None if path.is_dir() else path.read_bytes())
+                                   for path in destination.rglob('*'))
+                    self.assertEqual(before, after)
+                    self.assertFalse((destination / '.agentic').exists())
+                    self.assertFalse((destination / '.agentic-install').exists())
+                    self.assertFalse((destination / 'AGENTS.md').exists())
+                    self.assertFalse((destination / '.agentic/PROJECT_CONFIG.yaml').exists())
+                    self.assertFalse((destination / '.agentic/installed-manifest.json').exists())
+                    self.assertFalse((destination / '.agentic/workflow-version.yaml').exists())
+                    self.assertFalse((destination / '.github/CODEOWNERS').exists())
 
     def test_bootstrap_invalid_mode_rejects_before_mutation(self):
         destination = self.root / 'project'

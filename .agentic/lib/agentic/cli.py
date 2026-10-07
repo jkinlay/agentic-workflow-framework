@@ -12,6 +12,7 @@ from .contracts import Contracts
 from .gates import evaluate
 from .installer import verify_installed
 from .policy import inspect_config, validate_config
+from .output import configure_streams, emit_json, json_text, require_ascii_line
 
 
 def local_semantics(name, value):
@@ -62,6 +63,7 @@ def local_semantics(name, value):
 
 
 def main(argv=None, default_root=None):
+    configure_streams()
     parser = argparse.ArgumentParser(description=f"Agentic Workflow {VERSION} offline evidence tools; native streams use the host's delegation tools and PR automation uses review_loop.py")
     parser.add_argument("--root", type=Path, default=default_root or Path.cwd())
     sub = parser.add_subparsers(dest="command", required=True)
@@ -78,6 +80,10 @@ def main(argv=None, default_root=None):
     status_parser.add_argument("--gh", help="Trusted host GitHub CLI executable for read-only acceptance observation")
     status_parser.add_argument("--release-source", type=Path, help="Verified release source outside this project; requires an independently approved manifest pin")
     status_parser.add_argument("--expected-manifest-sha256", help="Independent approved source manifest pin; otherwise use the trusted host installed AWF skill")
+    doctor_parser = sub.add_parser("doctor", help="Print canonical installed runtime paths and copy/paste-safe PowerShell commands")
+    doctor_parser.add_argument("--json", action="store_true", help="Print the versioned doctor result as ASCII-safe JSON")
+    doctor_parser.add_argument("--handoff", type=Path,
+                               help="Instead compare a received handoff snapshot with this host's observations")
     record_parser = sub.add_parser("validate-record")
     record_parser.add_argument("type")
     record_parser.add_argument("file", type=Path)
@@ -146,12 +152,10 @@ def main(argv=None, default_root=None):
     handoff_parser = sub.add_parser("handoff", help="Read-only handoff snapshot of verified observations; grants no authority")
     handoff_parser.add_argument("--json", action="store_true", help="Print JSON instead of Markdown")
     handoff_parser.add_argument("--output", type=Path, help="Also create this new JSON file; never overwrites")
-    doctor_parser = sub.add_parser("doctor", help="Compare a received handoff snapshot with this host's observations")
-    doctor_parser.add_argument("--handoff", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         root = args.root.absolute()
-        if args.command in ("handoff", "doctor"):
+        if args.command == "handoff" or (args.command == "doctor" and args.handoff is not None):
             from .handoff import build_snapshot, compare_snapshot, render_markdown
             snapshot = build_snapshot(root)
             if args.command == "doctor":
@@ -168,14 +172,14 @@ def main(argv=None, default_root=None):
             from .publication import render_scan, scan_repository
             output = scan_repository(root, args.base, args.head, pr_body_paths=args.pr_body,
                                      comment_paths=args.comment, mapping_path=args.mapping, config_path=args.config)
-            print(json.dumps(output, indent=2, ensure_ascii=False) if args.json else render_scan(output), end="")
+            print(json_text(output) if args.json else render_scan(output), end="")
             return 0 if output["status"] == "PASS" else 2
         elif args.command == "publication-rewrite":
             from .publication import rewrite_unpublished
             output = rewrite_unpublished(root, args.base, args.branch, args.commits, args.message_file,
                                          mapping_path=args.mapping, config_path=args.config)
             if args.json:
-                print(json.dumps(output, indent=2, ensure_ascii=False))
+                emit_json(output)
             else:
                 print(f"Publication rewrite: {output['status']}\nOld head: {output['old_head']}\nNew head: {output['head_sha']}\nTree: {output['head_tree']}\n{output['reflog_notice']}")
             return 0
@@ -221,6 +225,16 @@ def main(argv=None, default_root=None):
                           "stream_plan_entry_point": ".agentic/scripts/plan_streams.py",
                           "status_entry_point": ".agentic/scripts/project_status.py",
                           "native_host_delegation_required": True,"automatic_jira_mutations": False}}
+        elif args.command == "doctor":
+            from .runtime_commands import command_catalog, render_doctor
+            output = command_catalog(root)
+            Contracts(root / ".agentic/schemas").validate("doctor-output", output)
+            if args.json:
+                emit_json(output)
+            else:
+                print(render_doctor(output), end="")
+            runtime = output["runtime"]
+            return 0 if runtime["interpreter_exists"] and runtime["entry_point_exists"] else 2
         elif args.command == "preflight":
             from .host_preflight import preflight
             output = preflight(root,
@@ -246,13 +260,18 @@ def main(argv=None, default_root=None):
             body = render(state, audience=args.audience, gate=value.get("gate"), findings=value.get("findings", []),
                           validation=value.get("validation"), reviewer=value.get("reviewer"), ci=value.get("ci"))
             print(body, end="")
-            print(json.dumps({"digest_sha256": digest_sha256(body), "event_type": "evidence_comment", "execution_authority": False}, indent=2), file=sys.stderr)
+            emit_json({"digest_sha256": digest_sha256(body), "event_type": "evidence_comment", "execution_authority": False}, stream=sys.stderr)
             return 0
         elif args.command == "status":
             from .providers.github_status import project_status, render_status
             output = project_status(root, adoption_pr=args.adoption_pr, gh=args.gh,
                                     release_source=args.release_source, expected_manifest_sha256=args.expected_manifest_sha256)
-            print(json.dumps(output, indent=2, ensure_ascii=False) if args.json else render_status(output))
+            if args.json:
+                emit_json(output)
+            else:
+                rendered = render_status(output)
+                require_ascii_line(rendered.splitlines()[0])
+                print(rendered)
             if args.require_active and output['project_state'] != 'ACTIVE':
                 return 4
             return 0 if output['project_state'] is not None else 2
@@ -304,7 +323,7 @@ def main(argv=None, default_root=None):
                         return 2
                     output.update(configuration_valid_for="adoption", policy_hash=output['policy_sha256'])
                     if output['status'] == 'REJECTED':
-                        print(json.dumps(output, indent=2, ensure_ascii=False))
+                        emit_json(output)
                         return 2
                     if args.require_enablement:
                         from .configuration import require_enablement_config
@@ -361,7 +380,7 @@ def main(argv=None, default_root=None):
                     output = verify_record(load(args.record), load(args.request), load(args.gate), config, contracts, args.now or now_text())
                 else:
                     raise ValidationError("Unsupported command")
-        print(json.dumps(output, indent=2, ensure_ascii=False))
+        emit_json(output)
         return 0
     except (ValidationError, OSError, ValueError, KeyError) as exc:
         if isinstance(exc, OSError):
@@ -373,5 +392,5 @@ def main(argv=None, default_root=None):
                       "execution_authority": False}
         else:
             output = {"status": "REJECTED", "reason": str(exc), "execution_authority": False}
-        print(json.dumps(output, indent=2), file=sys.stderr)
+        emit_json(output, stream=sys.stderr)
         return 2

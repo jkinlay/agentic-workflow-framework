@@ -9,6 +9,21 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from release_hygiene import check_release, stale_versions, word_budget
 from generate_prompts import render_prompts
 from agentic import ValidationError
+import build_release
+
+
+class ReleaseBuildTraversalTests(unittest.TestCase):
+    def test_manifest_and_zip_inventory_prune_excluded_directories_before_traversal(self):
+        class FakeTree:
+            def file_list(self, **kwargs):
+                self.kwargs = kwargs
+                return ['README.md']
+
+        tree = FakeTree()
+        self.assertEqual(['README.md'], build_release.release_paths(tree))
+        self.assertTrue(tree.kwargs['exclude_root_git'])
+        self.assertEqual(build_release.RELEASE_EXCLUDED_PREFIXES,
+                         tree.kwargs['exclude_prefixes'])
 
 class ReleaseHygieneTests(unittest.TestCase):
     def setUp(self):
