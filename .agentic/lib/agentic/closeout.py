@@ -75,35 +75,56 @@ def is_ancestor(repository, ancestor, descendant):
     return result.returncode == 0
 
 
-def squash_tree(repository, base, head):
-    """Tree a squash of head onto base must have; new objects go to a throwaway store."""
-    if is_ancestor(repository, base, head):
+def integration_tree(repository, onto, head):
+    """Tree of head integrated onto ``onto``; new objects go to a throwaway store."""
+    if is_ancestor(repository, onto, head):
         return git(repository, "rev-parse", head + "^{tree}")
     objects = git(repository, "rev-parse", "--path-format=absolute", "--git-path", "objects")
     with tempfile.TemporaryDirectory(prefix="awf-closeout-objects-") as scratch:
-        result = run_git(repository, "merge-tree", "--write-tree", "--no-messages", base, head,
+        result = run_git(repository, "merge-tree", "--write-tree", "--no-messages", onto, head,
                          extra_env={"GIT_OBJECT_DIRECTORY": scratch, "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects})
     if result.returncode != 0:
-        raise ValidationError("reviewed_head_sha does not merge cleanly onto base_sha; the squash merge is not the reviewed code")
+        raise ValidationError(f"reviewed_head_sha does not merge cleanly onto {onto}; the merged tree is not the reviewed code")
     return result.stdout.decode("utf-8").split("\n", 1)[0].strip()
 
 
 def validate_relationship(record, repository):
-    """The merge commit must integrate exactly the reviewed head onto the recorded base."""
+    """The merge commit must carry exactly the reviewed head integrated onto the recorded history.
+
+    Fast-forward: the merge commit is the reviewed head. Merge commit: two
+    parents, the second is the reviewed head, the first descends from base, and
+    the tree equals the reviewed head merged onto the first parent. Squash and
+    rebase: a linear first-parent chain from base (one commit for a squash, at
+    most one per reviewed commit for a rebase) whose tip tree equals the
+    reviewed head merged onto base. Anything else fails closed.
+    """
     head, base, merge = record["reviewed_head_sha"], record["base_sha"], record["merge_commit_sha"]
     if not is_ancestor(repository, base, merge):
         raise ValidationError(f"base_sha {base} is not an ancestor of merge_commit_sha {merge}")
     if merge == head:
         return "fast_forward"
+    unrelated = ValidationError(f"merge_commit_sha {merge} does not merge reviewed_head_sha {head} onto base_sha {base}")
+    tree = git(repository, "rev-parse", merge + "^{tree}")
+    mismatch = ValidationError(f"merge_commit_sha {merge} tree is not reviewed_head_sha {head} integrated onto base_sha {base}")
     parents = commit_parents(repository, merge)
-    if len(parents) == 2 and parents[1] == head and is_ancestor(repository, base, parents[0]):
+    if len(parents) == 2:
+        if parents[1] != head or not is_ancestor(repository, base, parents[0]):
+            raise unrelated
+        if tree != integration_tree(repository, parents[0], head):
+            raise mismatch
         return "merge_commit"
-    if len(parents) == 1 and parents[0] == base:
-        tree = git(repository, "rev-parse", merge + "^{tree}")
-        if tree != squash_tree(repository, base, head):
-            raise ValidationError(f"merge_commit_sha {merge} tree is not reviewed_head_sha {head} squashed onto base_sha {base}")
-        return "squash"
-    raise ValidationError(f"merge_commit_sha {merge} does not merge reviewed_head_sha {head} onto base_sha {base}")
+    reviewed = int(git(repository, "rev-list", "--count", "--no-merges", f"{base}..{head}"))
+    commit, length = merge, 0
+    while len(parents) == 1 and length < max(reviewed, 1):
+        commit, length = parents[0], length + 1
+        if commit == base:
+            break
+        parents = commit_parents(repository, commit)
+    if commit != base:
+        raise unrelated
+    if tree != integration_tree(repository, base, head):
+        raise mismatch
+    return "squash" if length == 1 else "rebase"
 
 
 def validate_closeout(record, repository, contracts=None):
