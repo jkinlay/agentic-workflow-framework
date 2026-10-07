@@ -44,7 +44,7 @@ def remove_synthetic_object_tree(path):
         return
     for item in path.rglob("*"):
         if item.is_file():
-            item.chmod(stat.S_IWRITE)
+            item.chmod(stat.S_IREAD | stat.S_IWRITE)
     shutil.rmtree(path)
 
 
@@ -1390,8 +1390,13 @@ class PublicationRewriteTests(unittest.TestCase):
                  "installed_identity": (original.st_dev, original.st_ino), "ambiguous": False}
         record = {"oid": prefix + "0" * 38, "snapshot_present": False,
                   "path": fanout / ("0" * 38), "fanout": state}
-        fanout.rmdir()
+        # Keep the original directory alive while recreating the path so the
+        # replacement cannot reuse its inode (ext4/overlayfs reuse freed inodes).
+        displaced = object_dir / (prefix + "-displaced")
+        fanout.rename(displaced)
         fanout.mkdir()
+        displaced.rmdir()
+        self.assertNotEqual(state["installed_identity"], (fanout.lstat().st_dev, fanout.lstat().st_ino))
         marker = fanout / "external-replacement"
         marker.write_bytes(b"external writer")
         try:
@@ -1595,7 +1600,7 @@ class PublicationRewriteTests(unittest.TestCase):
             self.assertFalse(proved)
             self.assertEqual("installed loose object identity or content changed", detail)
         finally:
-            path.chmod(stat.S_IWRITE)
+            path.chmod(stat.S_IREAD | stat.S_IWRITE)
             path.unlink()
             held_object.rename(path)
 
@@ -1626,7 +1631,7 @@ class PublicationRewriteTests(unittest.TestCase):
                             if value["kind"] == kind and value["loose_identity"] is not None)
                 path = Path(snapshot["object_dir"]) / item["oid"][:2] / item["oid"][2:]
                 original = path.read_bytes()
-                path.chmod(stat.S_IWRITE)
+                path.chmod(stat.S_IREAD | stat.S_IWRITE)
                 corrupt = ("corrupt-snapshot-present-" + kind).encode("ascii")
                 path.write_bytes(zlib.compress(
                     (kind + " " + str(len(corrupt))).encode("ascii") + b"\0" + corrupt))
@@ -1740,6 +1745,10 @@ class PublicationRewriteTests(unittest.TestCase):
                               "--git-path", "objects"))
         for kind in ("commit", "tree", "blob"):
             with self.subTest(kind=kind):
+                # A distinct message per subtest keeps the replacement commit
+                # new; an identical commit from an earlier subtest already in
+                # the object store would leave the quarantine empty.
+                message.write_text("clean squash " + kind + "\n", encoding="utf-8")
                 item = next(value for value in closure
                             if value["kind"] == kind and value["loose_identity"] is not None and
                             (kind != "commit" or value["oid"] != old_head))
@@ -1753,7 +1762,7 @@ class PublicationRewriteTests(unittest.TestCase):
                     if (not corrupted and args[:2] == ("update-ref", ref) and
                             args[2] != old_head and result.returncode == 0):
                         before = path.lstat()
-                        path.chmod(stat.S_IWRITE)
+                        path.chmod(stat.S_IREAD | stat.S_IWRITE)
                         corrupt = ("corrupt-snapshot-present-" + kind +
                                    "-after-cas").encode("ascii")
                         path.write_bytes(zlib.compress(

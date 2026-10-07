@@ -472,7 +472,10 @@ class HeavyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             marker = Path(folder) / "survived.txt"
             child = "import time,pathlib; time.sleep(2); pathlib.Path(" + repr(str(marker)) + ").write_text('bad')"
-            parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," + repr(child) + "]); time.sleep(10)"
+            # On Linux the partition runs from a sealed memfd, so its own
+            # sys.executable (/proc/self/fd/N) cannot launch a grandchild.
+            parent = ("import subprocess,time; subprocess.Popen([" + repr(os.path.realpath(sys.executable)) +
+                      ",'-c'," + repr(child) + "]); time.sleep(10)")
             result = run(plan([partition("tree", parent, timeout=1)]), config(enabled=False))
             time.sleep(2.2)
             self.assertFalse(marker.exists())
@@ -1707,6 +1710,7 @@ class HeavyValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "dirty"):
                 attestor(candidate, str(root))
 
+    @unittest.skipUnless(os.name == "nt", "Immutable snapshot lock (_lock_snapshot) is implemented only on Windows")
     def test_post_attestation_replace_and_ambient_git_config_cannot_redirect_snapshot(self):
         with tempfile.TemporaryDirectory() as folder:
             outer = Path(folder)
@@ -1824,6 +1828,7 @@ class HeavyValidationTests(unittest.TestCase):
                 with snapshotter(candidate, str(root)):
                     self.fail("tree-mismatched archive was dispatched")
 
+    @unittest.skipUnless(os.name == "nt", "Immutable snapshot lock (_lock_snapshot) is implemented only on Windows")
     def test_git_object_snapshot_isolated_from_checkout_mutation(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -1874,6 +1879,7 @@ class HeavyValidationTests(unittest.TestCase):
                     with snapshotter(candidate, str(root)):
                         self.fail("snapshot with an injected sibling was dispatched")
 
+    @unittest.skipUnless(os.name == "nt", "Immutable snapshot lock (_lock_snapshot) is implemented only on Windows")
     def test_production_snapshot_blocks_injection_during_execution(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
