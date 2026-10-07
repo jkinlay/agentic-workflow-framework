@@ -7,6 +7,11 @@ import sys
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
+import importlib.util
+_missing = [name for name in ("yaml", "jsonschema") if importlib.util.find_spec(name) is None]
+if _missing:
+    raise SystemExit("BOOTSTRAP REJECTED: missing locked dependencies (" + ", ".join(_missing) + "). Install them first: "
+                     "python -m pip install --require-hashes --only-binary=:all: -r .agentic/requirements.lock")
 from agentic.installer import install, recover
 from agentic import ValidationError
 from agentic.adoption_config import post_install_checks
@@ -34,6 +39,9 @@ def main():
     parser.add_argument("--default-branch", help="Optional expected branch; live observation discovers the repository's actual default")
     parser.add_argument("--review-app-id", type=int, help="Expected App ID for the awf/review rules prerequisite; not adapter qualification")
     args = parser.parse_args()
+    # Resolve platform aliases such as macOS /tmp -> /private/tmp before the
+    # installer's alias-refusing path checks run.
+    args.dest = args.dest.expanduser().resolve()
     try:
         if args.recover and args.propose_operating_capacity:
             raise ValidationError("Recovery cannot stage a governance proposal; recover first and rerun adoption explicitly")

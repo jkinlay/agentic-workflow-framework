@@ -22,6 +22,9 @@ from agentic.child_process import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+# Only the AWF source repository ships a root MANIFEST.json and owns scripts/;
+# in an adopting project, scripts/ is project-owned code (self_test.py uses the same test).
+AWF_SOURCE_REPOSITORY = (ROOT / "MANIFEST.json").is_file()
 LAUNCH_METHODS = {"run", "Popen", "check_output", "check_call"}
 
 
@@ -140,7 +143,7 @@ class ChildEnvironmentTests(unittest.TestCase):
         self.assertLess(removal, invocation)
 
     def test_every_production_subprocess_uses_shared_environment_helper(self):
-        roots = (ROOT / ".agentic/lib", ROOT / ".agentic/scripts", ROOT / "scripts")
+        roots = (ROOT / ".agentic/lib", ROOT / ".agentic/scripts") + ((ROOT / "scripts",) if AWF_SOURCE_REPOSITORY else ())
         failures = []
         for source in (path for root in roots for path in root.rglob("*.py")
                        if "tests" not in path.relative_to(ROOT).parts):
@@ -156,6 +159,7 @@ class ChildEnvironmentTests(unittest.TestCase):
                     failures.append(f"{source.relative_to(ROOT).as_posix()}:{node.lineno}")
         self.assertEqual(failures, [], "production subprocess launch lacks env=child_env(...): " + ", ".join(failures))
 
+    @unittest.skipUnless(AWF_SOURCE_REPOSITORY, "scripts/build_skill_distribution.py exists only in the AWF source repository")
     def test_generated_portable_launcher_uses_shared_environment_helper(self):
         source = (ROOT / "scripts/build_skill_distribution.py").read_text(encoding="utf-8")
         launch_lines = [line for line in source.splitlines() if "subprocess.call(" in line]

@@ -2,7 +2,7 @@
 
 405 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `3a4b9917bd071cd1d2f963bf6d8e383aabb637b5e76787afb141ce4b9cc1b96d`
+MANIFEST.json SHA-256: `9602293a2bcef5e95c13223fbcf042cf8c43327f1e409d6320530e26d924f81c`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -254,7 +254,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_adoption_status.py` | `cee1f1ebd0f61c947cdd9ee1b44b8ca92bd561511c42ec53f3350c2bf6d45708` |
 | `.agentic/tests/test_adoption_validation.py` | `40ec9ae752eaa17a42aac78b10e83ccc89f1adb1ccedcca97a8f29855279f4cb` |
 | `.agentic/tests/test_bootstrap_configuration.py` | `be61ac1075eeac7a4c4ce215eaddc8d75e9ac972f5d8567d02f19aec2d5abdc3` |
-| `.agentic/tests/test_child_process.py` | `15b4e8bd5d536939e796e148a373e3431bb25ee7444cc55384db7d6c3bccffe0` |
+| `.agentic/tests/test_child_process.py` | `868d9e589906a328485bd20c1d82d61555ecc235989ed9adab293ca062948a85` |
 | `.agentic/tests/test_codeowners.py` | `12c0b86ed561d24d4d3c6cbe2c713be9820e62ed862455658a9b792e0fac5184` |
 | `.agentic/tests/test_config_diagnostics.py` | `e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07` |
 | `.agentic/tests/test_continuation.py` | `1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633` |
@@ -332,7 +332,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `MIGRATION-v1.8.9-to-v1.9.0.md` | `75fe8b04600fabf0ef05c8c7441b895ed9092b767b14b82d1ec8f35b50d2a39e` |
 | `MIGRATION-v1.9.0-to-v1.9.1.md` | `5c75234dcda9d8d1ddef7dccbbcdf77ae1d9f66ee47d05d2afcb08b4e12f6822` |
 | `MIGRATION-v1.9.1-to-v1.9.2.md` | `4a484db5892d1f5689c54b68d2833bea2a5e0d166fd29b1937437d3dabeaba66` |
-| `MIGRATION-v1.9.2-to-v1.9.3.md` | `e082944fd5b04cbf52f9f5ccf6a754fe0558289b1259165988cb7584e8262ed1` |
+| `MIGRATION-v1.9.2-to-v1.9.3.md` | `1863a0d01164f3985fb11380982862e283fa93a1dd377af82630832736ba19b0` |
 | `NOTICE` | `778aa28d13e57cd0626adeb12099588fe0cf5e3eaa40e059b2409e855931ac57` |
 | `OPERATING_CONFIG.yaml` | `e44dfe0826822cbbd7881a81a5c9575ebd65a6e820a3e9059cf58140ce7f1450` |
 | `PUBLISHER.json` | `721657a4273781e068d71a7365644a09ba152a00bd0b97ab1789843c3086f481` |
@@ -379,7 +379,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf/tests/test_awf.py` | `33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077` |
 | `global/awf/tests/test_discovery_codeowners.py` | `42a2245cef352322327c9d72f80d9ce0cbdf831efbce1ec4f52c5c5fef460c16` |
 | `requirements.txt` | `42f89dd8f1c14da4d2cf3ef52ac3513592bc0b21efa709eead6cf138ba4bd92d` |
-| `scripts/bootstrap_project.py` | `a631c77447bd5303157dfe7ee7839927a04d3e75673dbab6854dd0a302c4dd99` |
+| `scripts/bootstrap_project.py` | `319c169ae5a6db562eb4c75ff38fea7b7f24be359493d093b358f9c2eb4130d9` |
 | `scripts/build_release.py` | `a41af3c825218179861bdafcac3419a892b80d17cc8e333a046134d735021085` |
 | `scripts/build_skill_distribution.py` | `744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8` |
 | `scripts/generate_contracts.py` | `4c1c175c82e53b330f8cf9e52d7a81c810411a5dc715224d064e40c54955d975` |
