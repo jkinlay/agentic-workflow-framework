@@ -694,6 +694,14 @@ class ContinuousControllerStore:
     def _record_dispatch_unknown(self, db, dispatch_id, payload, now):
         stream = db.execute("SELECT * FROM stream_status WHERE stream_id=?", (payload["stream"],)).fetchone()
         _require(stream is not None, "Unknown dispatch stream is missing from the protected state")
+        if (stream["ticket"] != payload["ticket"] or
+                stream["exact_tuple"] != payload["exact_tuple"]):
+            # The ticket may have been reallocated since this old operation
+            # became uncertain. Preserve the current stream owner and still
+            # emit an urgent revision for the retained UNKNOWN intent.
+            revision = int(self._meta(db, "revision")) + 1
+            db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
+            return
         db.execute("UPDATE stream_status SET state='BLOCKED',actor='controller',"
                    "reason=?,next_action=?,resume_trigger=?,updated_at=? WHERE stream_id=?",
                    (f"Dispatch outcome unknown for {payload['ticket']} ({dispatch_id}); reconcile before retry",

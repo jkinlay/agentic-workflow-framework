@@ -643,6 +643,48 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(len(dispatch_calls), 1)
         self.assertEqual(second["dispatch_receipts"][0]["status"], "ACCEPTED")
 
+    def test_old_unknown_reconciliation_failure_cannot_clobber_reassigned_stream(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "reassigned-unknown.sqlite3",
+                                          ["A", "B"])
+        old_ticket = ticket("EX-19", 1)
+        store.schedule([old_ticket], NOW, host_capacity=1)
+        old_intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(old_intent["dispatch_id"], NOW)
+        store.mark_dispatch_unknown(old_intent["dispatch_id"], "2026-10-02T10:00:01Z")
+
+        # A is reused for Y while T remains UNKNOWN; capacity two leaves the
+        # second slot available for this unrelated stream work.
+        replacement = ticket("EX-20", 2)
+        allocated_at = "2026-10-02T10:00:02Z"
+        store.schedule([ticket("EX-19", 1, "COMPLETE"), replacement], allocated_at,
+                       host_capacity=2)
+        replacement_intent = next(item for item in store.prepare_dispatches(allocated_at)
+                                  if item["ticket"] == "EX-20")
+        begun = store.begin_dispatch(replacement_intent["dispatch_id"], "2026-10-02T10:00:03Z")
+        store.finish_dispatch(replacement_intent["dispatch_id"],
+                              dispatch_receipt(begun, "2026-10-02T10:00:04Z"),
+                              "2026-10-02T10:00:04Z")
+
+        observed_at = "2026-10-02T10:00:05Z"
+        def fail_reconciliation(payload):
+            raise RuntimeError("observation unavailable")
+        result = production_controller_cycle(store, now=observed_at, host_capacity=2,
+            inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+            observe_inventory=lambda: inventory_observation(observed_at, [
+                ticket("EX-19", 1, "COMPLETE"), replacement]),
+            dispatch_ticket=lambda payload: self.fail("reassigned Y must not receive a duplicate intent"),
+            observe_dispatch=fail_reconciliation,
+            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": observed_at})
+        owner = next(row for row in result["streams"] if row["stream"] == "A")
+        self.assertEqual((owner["state"], owner["ticket"], owner["exact_tuple"]),
+                         ("WORKING", "EX-20", replacement["exact_tuple"]))
+        self.assertEqual([item["state"] for item in result["errors"] if item["operation"] == "dispatch"],
+                         ["UNKNOWN"])
+        with store.connection() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM controller_dispatch WHERE ticket='EX-20'").fetchone()[0], 1)
+
     def test_dispatch_rejects_stale_direct_and_cached_restart_receipts(self):
         store = ContinuousControllerStore(Path(self.temporary.name) / "dispatch-stale.sqlite3", ["A"])
         payloads = []
