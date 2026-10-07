@@ -2,7 +2,7 @@
 
 388 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `b786e1aac3b81d3a4c1dcc5808d1fd36d1dfeb41dbde9e530c9de9d96f7e3866`
+MANIFEST.json SHA-256: `3fe00423295c91ce8c8f2a6e964d9cebe1bf3b954b566e17e5f1bf209df9cb2e`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -244,7 +244,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/review_admission_fixture.py` | `4ece32c0f91c1f1c7b4a6ec6f5789c046121ae59dc720075477925acea22389f` |
 | `.agentic/tests/test_adoption_status.py` | `c6a141fc82bf6951bbc696983f03285e3ecef6495eb1002d38e5ad0268173882` |
 | `.agentic/tests/test_adoption_validation.py` | `40ec9ae752eaa17a42aac78b10e83ccc89f1adb1ccedcca97a8f29855279f4cb` |
-| `.agentic/tests/test_bootstrap_configuration.py` | `bb4537b1b491b6f38b396c26ac80e4ae3ef9b7acac0326551a6bf1c3cfa31a00` |
+| `.agentic/tests/test_bootstrap_configuration.py` | `f84246bec3b074c2433fed1007d9511bf55224d1dbbf7e16bf607710adef98c6` |
 | `.agentic/tests/test_child_process.py` | `c5cb05cc2ee5e0428cf5fa4f06dc17e8e6b848581d40dd4bbef14662aeb28d6a` |
 | `.agentic/tests/test_codeowners.py` | `12c0b86ed561d24d4d3c6cbe2c713be9820e62ed862455658a9b792e0fac5184` |
 | `.agentic/tests/test_config_diagnostics.py` | `e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07` |
