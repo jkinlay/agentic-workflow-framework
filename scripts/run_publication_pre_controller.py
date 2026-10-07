@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "tests"))
 
 import test_publication  # noqa: E402
 import test_continuous_controller  # noqa: E402
+import test_bootstrap_configuration  # noqa: E402
 import test_five_slot_acceleration  # noqa: E402
 import test_heavy_validation  # noqa: E402
 import test_operating  # noqa: E402
@@ -32,6 +33,7 @@ import test_skill_distribution_ordering  # noqa: E402
 
 
 INVENTORY_MODULES = {
+    ".agentic/tests/test_bootstrap_configuration.py": test_bootstrap_configuration,
     ".agentic/tests/test_continuous_controller.py": test_continuous_controller,
     ".agentic/tests/test_five_slot_acceleration.py": test_five_slot_acceleration,
     ".agentic/tests/test_heavy_validation.py": test_heavy_validation,

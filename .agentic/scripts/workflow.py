@@ -26,4 +26,4 @@ if __name__ == "__main__":
     if options.command == "review-completion":
         from review_completion import main as review_completion_main
         raise SystemExit(review_completion_main(remaining, default_root=options.root))
-    raise SystemExit(main(default_root=ROOT))
+    raise SystemExit(main(default_root=options.root))

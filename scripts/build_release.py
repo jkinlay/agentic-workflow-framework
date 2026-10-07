@@ -25,12 +25,17 @@ def archive_time():
     return (value.year, value.month, value.day, value.hour, value.minute, value.second // 2 * 2)
 
 
+def release_paths(tree):
+    """List release members without traversing governed excluded directories."""
+    return [path for path in tree.file_list(exclude_root_git=True,
+                                             exclude_prefixes=RELEASE_EXCLUDED_PREFIXES)
+            if release_member(path)]
+
+
 def manifest():
     check_release(ROOT)
     with Tree(ROOT) as tree:
-        all_paths = [path for path in tree.file_list(exclude_root_git=True,
-                                                     exclude_prefixes=RELEASE_EXCLUDED_PREFIXES)
-                     if release_member(path)]
+        all_paths = release_paths(tree)
         paths = [p for p in all_paths if p not in {'MANIFEST.json','MANIFEST.md'}]
         forbidden = {'.git', '.tmp', 'tmp', '__pycache__', '.venv', 'venv', '.pytest_cache', '.agentic-install', '.agentic-backup'}
         if any(set(Path(p).parts) & forbidden or p.endswith(('.pyc', '.tmp', '.zip')) for p in paths):
@@ -84,9 +89,7 @@ def main():
     prefix = 'agentic-workflow-template-v' + VERSION.removesuffix('.0') + '/'
     expected = {}
     with Tree(ROOT) as tree, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_STORED) as archive:
-        for relative in (path for path in tree.file_list(
-                exclude_root_git=True, exclude_prefixes=RELEASE_EXCLUDED_PREFIXES)
-                if release_member(path)):
+        for relative in release_paths(tree):
             data = tree.read(relative)
             info = zipfile.ZipInfo(prefix + relative.replace('\\', '/'), date_time=archive_time())
             info.create_system = 3

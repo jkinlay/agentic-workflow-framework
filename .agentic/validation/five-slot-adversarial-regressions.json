@@ -658,6 +658,33 @@
       "regression_id": "PR22-C22-CV-001-REGRESSION",
       "source_finding_id": "C22-CV-001",
       "test_id": "HostTests.test_ci_workflow_pin_and_failed_result"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_bootstrap_configuration.py",
+      "name": "Authenticated runtime cleanup refuses a replaced cleanup directory",
+      "permanent": true,
+      "regression_id": "C-TRX-001-REGRESSION",
+      "source_finding_id": "C-TRX-001",
+      "test_id": "BootstrapRuntimeTransactionRegressionTests.test_authenticated_cleanup_rejects_replaced_directory_without_deleting_it"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": ".agentic/tests/test_bootstrap_configuration.py",
+      "name": "Authenticated runtime cleanup refuses unknown cleanup members",
+      "permanent": true,
+      "regression_id": "C-TRX-002-REGRESSION",
+      "source_finding_id": "C-TRX-002",
+      "test_id": "BootstrapRuntimeTransactionRegressionTests.test_authenticated_cleanup_rejects_unknown_member_without_deleting_it"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_five_slot_acceleration.py",
+      "name": "Every retained transaction finding has exactly one permanent regression mapping",
+      "permanent": true,
+      "regression_id": "C-TRX-003-REGRESSION",
+      "source_finding_id": "C-TRX-003",
+      "test_id": "FiveSlotAccelerationTests.test_canonical_retained_findings_have_exactly_one_permanent_mapping"
     }
   ]
 }

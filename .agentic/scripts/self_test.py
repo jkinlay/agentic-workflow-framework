@@ -12,6 +12,7 @@ import platform
 import re
 import stat
 import sys
+import threading
 import time
 import unittest
 from urllib.parse import unquote
@@ -19,6 +20,158 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION
+
+HEARTBEAT_SECONDS = 15.0
+PHASES = ('discovery', 'syntax', 'documentation', 'release_hygiene', 'test_suite')
+NONDETERMINISTIC_REPORT_FIELDS = ('created_at', 'elapsed_seconds', 'phase_timings_seconds')
+
+
+class SelfTestProgress:
+    """Thread-safe JSON-lines progress for a potentially long full self-test."""
+    def __init__(self, stream=None, interval=HEARTBEAT_SECONDS, clock=time.monotonic):
+        self.stream = stream or sys.stderr
+        self.interval = interval
+        self.clock = clock
+        self.started = self.clock()
+        self.phase_started = None
+        self.current_phase = None
+        self.last_completed_phase = None
+        self.current_test = None
+        self.last_test = None
+        self.timings = {}
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = None
+
+    def emit(self, event, **fields):
+        with self._lock:
+            value = {'event': event, 'elapsed_seconds': round(self.clock() - self.started, 3), **fields}
+            self.stream.write(json.dumps(value, sort_keys=True, ensure_ascii=True) + '\n')
+            self.stream.flush()
+
+    def start(self):
+        self.emit('self_test_start', heartbeat_interval_seconds=self.interval, phases=list(PHASES))
+        self._thread = threading.Thread(target=self._heartbeat, name='awf-self-test-heartbeat', daemon=True)
+        self._thread.start()
+
+    def _heartbeat(self):
+        while not self._stop.wait(self.interval):
+            self.emit('self_test_heartbeat', phase=self.current_phase,
+                      last_completed_phase=self.last_completed_phase, current_test=self.current_test)
+
+    def begin_phase(self, name):
+        self.current_phase = name
+        self.phase_started = self.clock()
+        self.emit('self_test_phase_start', phase=name, last_completed_phase=self.last_completed_phase)
+
+    def complete_phase(self, name):
+        elapsed = round(self.clock() - self.phase_started, 3)
+        self.timings[name] = elapsed
+        self.last_completed_phase = name
+        self.current_phase = None
+        self.phase_started = None
+        self.emit('self_test_phase_complete', phase=name, phase_elapsed_seconds=elapsed)
+
+    def test_started(self, test):
+        self.current_test = test.id()
+        self.last_test = self.current_test
+        self.emit('self_test_case_start', phase='test_suite', current_test=self.current_test)
+
+    def test_stopped(self, test):
+        if self.current_test == test.id():
+            self.current_test = None
+
+    def interruption(self, kind):
+        self.emit('self_test_interrupted', interruption=kind, phase=self.current_phase,
+                  last_completed_phase=self.last_completed_phase,
+                  current_test=self.current_test or self.last_test)
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(1.0, self.interval * 2))
+
+
+class ProgressTestResult(unittest.TextTestResult):
+    def __init__(self, stream, descriptions, verbosity, progress):
+        super().__init__(stream, descriptions, verbosity)
+        self.progress = progress
+
+    def startTest(self, test):
+        self.progress.test_started(test)
+        super().startTest(test)
+
+    def stopTest(self, test):
+        try:
+            super().stopTest(test)
+        finally:
+            self.progress.test_stopped(test)
+
+    def addError(self, test, err):
+        if isinstance(err, tuple) and len(err) == 3 and issubclass(err[0], TimeoutError):
+            raise err[1].with_traceback(err[2])
+        super().addError(test, err)
+
+
+class ProgressTestRunner(unittest.TextTestRunner):
+    def __init__(self, *args, progress, **kwargs):
+        self.progress = progress
+        super().__init__(*args, **kwargs)
+
+    def _makeResult(self):
+        return ProgressTestResult(self.stream, self.descriptions, self.verbosity, self.progress)
+
+
+def execute_test_suite(suite, progress):
+    output = io.StringIO()
+    result = ProgressTestRunner(stream=output, verbosity=2, progress=progress).run(suite)
+    deterministic_log = re.sub(r'Ran (\d+) tests? in [0-9.]+s', r'Ran \1 tests', output.getvalue())
+    return result, deterministic_log
+
+
+def render_final_report(report, *, include_details=False):
+    """Render deterministic JSON ordering; only named timing fields may vary."""
+    omitted = set() if include_details else {'test_log', 'code_sha256'}
+    value = {key: item for key, item in report.items() if key not in omitted}
+    return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + '\n'
+
+
+def deterministic_report_bytes(report, *, include_details=False):
+    """Project out the documented timing fields for byte-for-byte comparisons."""
+    value = {key: item for key, item in report.items()
+             if key not in NONDETERMINISTIC_REPORT_FIELDS}
+    return render_final_report(value, include_details=include_details).encode('ascii')
+
+
+def documentation_command_problems(root):
+    """Reject command text damaged by path concatenation, escaping or Markdown links."""
+    roots = [root / '.agentic/docs', root / '.agentic/prompts', root / '.agentic/templates']
+    problems = []
+    checked = 0
+    for folder in roots:
+        for path in sorted(folder.rglob('*')):
+            if not path.is_file() or path.suffix.lower() not in {'.md', '.txt', '.yaml', '.yml', '.json'}:
+                continue
+            checked += 1
+            content = path.read_text(encoding='utf-8')
+            for line_number, line in enumerate(content.splitlines(), 1):
+                for message in documentation_command_line_problems(line):
+                    problems.append(f'{path.relative_to(root).as_posix()}:{line_number}: {message}')
+    return checked, problems
+
+
+def documentation_command_line_problems(line):
+    bad_join = '.agentic' + '.venv'
+    escaped_script = 'workflow' + '\\' + '.py'
+    markdown_command = re.compile(r'\[[^\]\r\n]*(?:workflow[.]py|python(?:[.]exe)?)[^\]\r\n]*\]\([^)]+\)', re.I)
+    problems = []
+    if bad_join in line:
+        problems.append('missing .agentic/.venv separator')
+    if escaped_script in line:
+        problems.append('escaped workflow.py filename')
+    if markdown_command.search(line):
+        problems.append('Markdown-linked command')
+    return problems
 
 
 def complete_form(value, schema, schemas, root=None):
@@ -92,6 +245,8 @@ def main(argv=None):
     if args.report and args.report.exists():
         parser.error('Use a new report path; preserve existing reports and review inputs')
     started = time.monotonic()
+    progress = SelfTestProgress()
+    progress.start()
     report = {'template_version': VERSION, 'profile': 'manual_reference', 'execution_authority': False,
         'tested_components': ['offline_evidence', 'review_tiers_and_cap_dispositions', 'jira_lifecycle_mirroring',
             'closeout_git_binding', 'evidence_digests', 'host_preflight', 'named_resource_leases',
@@ -103,6 +258,7 @@ def main(argv=None):
         'platform': platform.platform(), 'checks': {}, 'dependencies': {}, 'status': 'FAILED',
         'release_qualified': False, 'current_review': {'status': 'NOT_PROVIDED'}}
     try:
+        progress.begin_phase('discovery')
         from agentic import ValidationError
         from agentic.canonical import load, sha256
         from agentic.contracts import Contracts
@@ -179,6 +335,16 @@ def main(argv=None):
         if covered != set(contracts.schemas) - {'candidate','project-config','evidence-bundle'} - operating_schemas:
             raise ValueError('Incomplete form catalog')
         report['checks']['complete_unfilled_forms'] = len(forms)
+        suite = unittest.defaultTestLoader.discover(str(ROOT / '.agentic/tests'))
+        if (ROOT / 'MANIFEST.json').exists() and (ROOT / 'global/awf/tests').is_dir():
+            suite.addTests(unittest.TestLoader().discover(str(ROOT / 'global/awf/tests')))
+            report['tested_components'].append('local_release_discovery')
+        if (ROOT / 'MANIFEST.json').exists() and (ROOT / 'scripts/tests').is_dir():
+            suite.addTests(unittest.TestLoader().discover(str(ROOT / 'scripts/tests')))
+            report['tested_components'].append('local_catalog_publication')
+        progress.complete_phase('discovery')
+
+        progress.begin_phase('syntax')
         roots = [ROOT / '.agentic']
         if (ROOT / 'MANIFEST.json').exists():
             roots.append(ROOT / 'scripts')
@@ -190,6 +356,9 @@ def main(argv=None):
         from agentic.launch_surfaces import validate_repository_launch_surfaces
         report['checks']['launch_surfaces'] = validate_repository_launch_surfaces(ROOT)
         report['code_sha256'] = {p.relative_to(ROOT).as_posix(): sha256(p.read_bytes()) for p in code}
+        progress.complete_phase('syntax')
+
+        progress.begin_phase('documentation')
         markdown = list((ROOT / '.agentic').rglob('*.md')) + [ROOT / 'AGENTS.md', ROOT / '.github/PULL_REQUEST_TEMPLATE.md']
         if (ROOT / 'MANIFEST.json').exists():
             markdown += list(ROOT.glob('*.md')) + list((ROOT / 'global').rglob('*.md'))
@@ -207,6 +376,13 @@ def main(argv=None):
                     raise ValueError(f'Broken document link: {path.relative_to(ROOT)} -> {target}')
                 links += 1
         report['checks']['local_markdown_links'] = links
+        command_documents, command_problems = documentation_command_problems(ROOT)
+        if command_problems:
+            raise ValueError('Unsafe documented command form: ' + '; '.join(command_problems))
+        report['checks']['windows_command_document_lint'] = {'files': command_documents, 'problems': 0}
+        progress.complete_phase('documentation')
+
+        progress.begin_phase('release_hygiene')
         if (ROOT / 'MANIFEST.json').exists():
             sys.path.insert(0, str(ROOT / 'scripts'))
             from release_hygiene import check_release
@@ -214,21 +390,16 @@ def main(argv=None):
             report['tested_components'].append('real_source_release_hygiene')
         else:
             report['checks']['source_release_hygiene'] = 'NOT_APPLICABLE: installed runtime has no source generators'
-        suite = unittest.defaultTestLoader.discover(str(ROOT / '.agentic/tests'))
-        if (ROOT / 'MANIFEST.json').exists() and (ROOT / 'global/awf/tests').is_dir():
-            suite.addTests(unittest.TestLoader().discover(str(ROOT / 'global/awf/tests')))
-            report['tested_components'].append('local_release_discovery')
-        if (ROOT / 'MANIFEST.json').exists() and (ROOT / 'scripts/tests').is_dir():
-            suite.addTests(unittest.TestLoader().discover(str(ROOT / 'scripts/tests')))
-            report['tested_components'].append('local_catalog_publication')
-        output = io.StringIO()
-        result = unittest.TextTestRunner(stream=output, verbosity=2).run(suite)
-        print(output.getvalue())
+        progress.complete_phase('release_hygiene')
+
+        progress.begin_phase('test_suite')
+        result, test_log = execute_test_suite(suite, progress)
         report['tests'] = {'run': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
             'skipped': [{'test': str(test), 'reason': reason} for test, reason in result.skipped],
             'successful': result.wasSuccessful()}
-        report['test_log'] = output.getvalue()
+        report['test_log'] = test_log
         report['status'] = 'PASS' if result.wasSuccessful() else 'FAILED'
+        progress.complete_phase('test_suite')
         if report['current_review'].get('release_qualified') is True:
             final_review = review_source(ROOT, args.expected_manifest_sha256,
                 args.reviews, args.expected_reviews_sha256, args.review_required_paths,
@@ -236,6 +407,15 @@ def main(argv=None):
             if final_review != report['current_review']:
                 raise ValueError('Current review inputs changed during source validation')
         report['release_qualified'] = result.wasSuccessful() and report['current_review'].get('release_qualified') is True
+    except (KeyboardInterrupt, TimeoutError) as exc:
+        report['status'] = 'INTERRUPTED'
+        report['release_qualified'] = False
+        report['interruption'] = {'kind': type(exc).__name__,
+                                  'last_completed_phase': progress.last_completed_phase,
+                                  'current_phase': progress.current_phase,
+                                  'current_test': progress.current_test or progress.last_test}
+        report['error'] = f'{type(exc).__name__}: self-test did not complete'
+        progress.interruption(type(exc).__name__)
     except Exception as exc:
         report['status'] = 'FAILED'
         report['release_qualified'] = False
@@ -243,16 +423,21 @@ def main(argv=None):
         print(report['error'], file=sys.stderr)
     report['review'] = report['current_review']['status']
     report['elapsed_seconds'] = round(time.monotonic() - started, 3)
+    report['phase_timings_seconds'] = {name: progress.timings[name] for name in PHASES if name in progress.timings}
+    report['nondeterministic_fields'] = list(NONDETERMINISTIC_REPORT_FIELDS)
     if args.report:
         try:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             with args.report.open('x', encoding='utf-8', newline='\n') as stream:
-                stream.write(json.dumps(report, indent=2) + '\n')
+                stream.write(render_final_report(report, include_details=True))
         except OSError as error:
             report.update(status='FAILED', release_qualified=False, report_written=False,
                           report_write_error=type(error).__name__,
                           error='Could not create the new report; existing evidence was not overwritten')
-    print(json.dumps({k: v for k,v in report.items() if k not in {'test_log','code_sha256'}}, indent=2))
+    progress.stop()
+    print(render_final_report(report), end='')
+    if report['status'] == 'INTERRUPTED':
+        return 130
     return 0 if report['status'] == 'PASS' else 1
 
 

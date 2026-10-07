@@ -12,9 +12,11 @@ Adds byte-verified install/upgrade; unsafe evidence fails closed.
 
 Scans messages, patches, files and PR text; findings block, and receipts bind base/head/body. An ignored mapping supplements built-in detectors.
 
-Adds a one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, scanning the replacement and checking ref reachability. It refuses published evidence or unsupported counts and reports reflog retention. This covers L1, L2 and L9 scanning; producer retrofits remain P1.
+Adds one-commit unpublished-branch rewrite with tree preservation, replacement scanning and ref-reachability checks. It refuses published evidence or unsupported counts and reports reflog retention (L1/L2/L9; producer retrofits remain P1).
 
 Hardens activation with versioned REST/GraphQL merge identity, complete PR/base/head/state/time cross-checks, Git-object checkout comparison, lock-free inspection, structured blockers, strict ACTIVE exit and capabilities. Network detectors self-scan without weakening detection.
+
+Adds K8-K11 Windows diagnostics, preflight, self-test progress, safe encoding, and rollback-safe runtimes from pinned offline wheels.
 
 Adds environment exclusions, launch inventory, provider identity gates, Jira binding proposals, publication readiness before dispatch, and durable owner-publication handoffs that resume draft PRs without repeating work.
 
@@ -53,7 +55,7 @@ Bootstrap checks installed commands and reports configuration remedies. Empty CI
 
 ## 1.8.5 — 14 September 2026
 
-Ordinary self-tests run without release-review pins and report unqualified component success; explicit release checks, archive acceptance and catalog publication retain current-review requirements. Adoption proceeds with missing/unobserved repository rules as warnings. Live enablement retains observed-rule prerequisites and existing qualification. A shipped ruleset follows the default branch, requires PRs without solo-maintainer self-approval, permits squash/rebase and starts with no required checks. CODEOWNERS seeds a configurable owner, defaults to @maintainer and preserves project-owned policy. Read-only observations distinguish APPLIED, MISSING and UNOBSERVED without granting execution authority. New regression coverage and complete portable packaging preserve prior release/pilot evidence, including the strict 10/12 FAIL result; changed prompts have no new model measurements.
+Ordinary self-tests run without release-review pins and report unqualified component success; explicit release checks, archive acceptance and catalog publication retain current-review requirements. Adoption proceeds with missing/unobserved repository rules as warnings. Live enablement retains observed-rule prerequisites and existing qualification. A shipped ruleset follows the default branch, requires PRs without solo-maintainer self-approval, permits squash/rebase and starts with no required checks. CODEOWNERS seeds a configurable owner, defaults to @maintainer and preserves project-owned policy. Read-only observations distinguish APPLIED, MISSING and UNOBSERVED without granting execution authority. Prior release/pilot evidence, including the strict 10/12 FAIL, is preserved; changed prompts have no new model measurements.
 
 ## 1.8.4 — 14 September 2026
 

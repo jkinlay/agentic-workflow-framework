@@ -505,7 +505,7 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
                 add('OPERATING_SNAPSHOT', 'operating', 'PASS',
                     'Read-only operating snapshot is accepted at ' + operating['hash'],
                     'Run workflow.py operating show after operating changes')
-                stream_suffix = f" — streams {operating['streams']}/{operating['effective_ceiling']}"
+                stream_suffix = f" - streams {operating['streams']}/{operating['effective_ceiling']}"
                 result['line'] += stream_suffix
             elif operating['status'] == 'ACCESS_UNAVAILABLE':
                 add('OPERATING_ACCESS', 'operating', 'UNAVAILABLE',
@@ -669,7 +669,7 @@ def project_status(root, *, adoption_pr=None, gh=None, release_source=None, expe
                 require(inspect_operating(root, config) == result['operating'],
                         'Operating configuration changed during observation; run status again for its current snapshot')
                 result.update(project_state='ACTIVE', line=f'AWF {VERSION}: ACTIVE' + (
-                                  f" — streams {report['operating']['streams']}/{report['operating']['effective_ceiling']}"),
+                                  f" - streams {report['operating']['streams']}/{report['operating']['effective_ceiling']}"),
                               accepted_checkout='VERIFIED', accepted_head_sha=head,
                               adoption_acceptance_sha=merge,
                               adoption_acceptance_basis=merge_observation['accepted_surface'] + '_merge_commit',
