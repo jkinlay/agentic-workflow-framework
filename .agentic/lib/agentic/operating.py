@@ -59,14 +59,14 @@ def _pair(model, effort):
 
 
 def _stream():
-    return {"worker": _pair("gpt-6-luna", "medium")}
+    return {"worker": _pair("gpt-5.6-luna", "medium")}
 
 
 def default_operating():
     return {"version": 1, "source": "default", "streams": {"count": 3, **{s: _stream() for s in LABELS[:3]}},
-            "critic": _pair("gpt-6-astra", "high"),
-            "controller": _pair("gpt-6-astra", "high"), "specialist": _pair("gpt-6-astra", "high"),
-            "simple_worker": {"enabled": True, **_pair("gpt-6-luna", "low")}}
+            "critic": _pair("gpt-5.6-sol", "high"),
+            "controller": _pair("gpt-5.6-sol", "high"), "specialist": _pair("gpt-5.6-sol", "high"),
+            "simple_worker": {"enabled": True, **_pair("gpt-5.6-luna", "low")}}
 
 
 def operating_applicability(governance):
