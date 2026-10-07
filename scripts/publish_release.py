@@ -68,19 +68,33 @@ _ORIGIN_PATTERNS = (
 )
 
 
-def origin_repository(repository):
-    """Return HOST/OWNER/REPO for the ``origin`` remote that receives the tag.
-
-    ``gh`` otherwise resolves its target from ambient ``GH_REPO``/``GH_HOST`` or
-    other remotes, which could publish or verify a release in a different
-    repository from the one the tag was pushed to.
-    """
-    url = git(repository, "remote", "get-url", "origin").strip()
+def _parse_repository_url(url):
     for pattern in _ORIGIN_PATTERNS:
         match = pattern.match(url)
         if match and match["name"] not in {".", ".."} and match["owner"] not in {".", ".."}:
-            return f"{match['host']}/{match['owner']}/{match['name']}"
-    raise ReleaseError("origin remote is not a recognised HOST/OWNER/REPO URL; refusing to infer the release repository")
+            return f"{match['host']}/{match['owner']}/{match['name']}".casefold()
+    return None
+
+
+def origin_repository(repository):
+    """Return HOST/OWNER/REPO for the single repository ``git push origin`` targets.
+
+    ``gh`` otherwise resolves its target from ambient ``GH_REPO``/``GH_HOST`` or
+    other remotes. The tag goes to origin's *push* URL, so bind to that, and
+    refuse multiple push URLs or a push target that differs from the fetch URL.
+    """
+    push_urls = [line.strip() for line in
+                 git(repository, "remote", "get-url", "--push", "--all", "origin").splitlines() if line.strip()]
+    fetch_urls = [line.strip() for line in
+                  git(repository, "remote", "get-url", "--all", "origin").splitlines() if line.strip()]
+    if len(push_urls) != 1 or len(fetch_urls) != 1:
+        raise ReleaseError("origin must have exactly one fetch and one push URL; refusing to infer the release repository")
+    push, fetch = _parse_repository_url(push_urls[0]), _parse_repository_url(fetch_urls[0])
+    if push is None or fetch is None:
+        raise ReleaseError("origin remote is not a recognised HOST/OWNER/REPO URL; refusing to infer the release repository")
+    if push != fetch:
+        raise ReleaseError("origin push and fetch URLs name different repositories; refusing to publish")
+    return push
 
 
 def git(root, *args, text=True):

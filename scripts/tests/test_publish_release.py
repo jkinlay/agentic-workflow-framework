@@ -372,10 +372,12 @@ else: raise SystemExit(2)
     def test_local_bare_remote_fake_gh_and_verify_changed_byte(self):
         bare = self.base / "remote.git"
         command(["git", "init", "--bare", str(bare)], self.base)
-        # The fetch URL names the GitHub repository; pushes go to the local bare remote.
-        command(["git", "remote", "add", "origin", "https://github.com/jkinlay/awf-fixture.git"], self.repository)
-        command(["git", "remote", "set-url", "--push", "origin", str(bare)], self.repository)
+        command(["git", "remote", "add", "origin", str(bare)], self.repository)
         command(["git", "push", "-u", "origin", "main"], self.repository)
+        # A local bare origin has no HOST/OWNER/REPO; stand in for the resolver so
+        # the fake gh can assert the value is always passed (resolver tested below).
+        resolver = patch.object(publisher, "origin_repository", return_value="github.com/jkinlay/awf-fixture")
+        resolver.start(); self.addCleanup(resolver.stop)
         fake_bin = self.base / "fake-bin"; fake_bin.mkdir()
         store = self.base / "fake-release"; store.mkdir()
         log = self.base / "fake-gh.jsonl"
@@ -416,6 +418,12 @@ else: raise SystemExit(2)
             self.assertEqual("github.com/jkinlay/awf-fixture", call[call.index("--repo") + 1])
 
     def test_origin_repository_binds_gh_to_the_tagged_origin(self):
+        def configure(fetch, *pushes):
+            subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repository, capture_output=True)
+            command(["git", "remote", "add", "origin", fetch], self.repository)
+            for index, url in enumerate(pushes):
+                command(["git", "remote", "set-url", "--push"] + (["--add"] if index else []) + ["origin", url],
+                        self.repository)
         cases = {
             "https://github.com/jkinlay/agentic-workflow-framework.git": "github.com/jkinlay/agentic-workflow-framework",
             "https://token@github.com/jkinlay/agentic-workflow-framework": "github.com/jkinlay/agentic-workflow-framework",
@@ -423,11 +431,26 @@ else: raise SystemExit(2)
             "ssh://git@ghe.example.com:2222/team/awf.git": "ghe.example.com/team/awf",
         }
         for url, expected in cases.items():
-            with self.subTest(url=url), patch.object(publisher, "git", return_value=url + "\n"):
+            with self.subTest(url=url):
+                configure(url)
                 self.assertEqual(expected, publisher.origin_repository(self.repository))
-        for url in (str(self.base / "remote.git"), "file:///tmp/remote.git", "https://github.com/onlyowner"):
-            with self.subTest(url=url), patch.object(publisher, "git", return_value=url + "\n"):
-                with self.assertRaisesRegex(publisher.ReleaseError, "origin remote is not a recognised"):
+        same = "https://github.com/jkinlay/agentic-workflow-framework.git"
+        configure(same, "git@github.com:jkinlay/agentic-workflow-framework.git")
+        self.assertEqual("github.com/jkinlay/agentic-workflow-framework", publisher.origin_repository(self.repository))
+        rejected = {
+            "not a recognised": (str(self.base / "remote.git"),),
+            "different repositories": (same, "https://github.com/attacker/elsewhere.git"),
+            "exactly one": (same, same, "https://github.com/attacker/elsewhere.git"),
+        }
+        for message, urls in rejected.items():
+            with self.subTest(message=message):
+                configure(*urls)
+                with self.assertRaisesRegex(publisher.ReleaseError, message):
+                    publisher.origin_repository(self.repository)
+        for url in ("file:///tmp/remote.git", "https://github.com/onlyowner"):
+            with self.subTest(url=url):
+                configure(url)
+                with self.assertRaisesRegex(publisher.ReleaseError, "not a recognised"):
                     publisher.origin_repository(self.repository)
 
 
