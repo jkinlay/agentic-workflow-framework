@@ -147,9 +147,27 @@ def main(argv=None, default_root=None):
     render_parser = sub.add_parser("publication-render", help="Replace private mapping values in text with logical aliases")
     render_parser.add_argument("--input", type=Path, required=True)
     render_parser.add_argument("--mapping", type=Path)
+    handoff_parser = sub.add_parser("handoff", help="Read-only handoff snapshot of verified observations; grants no authority")
+    handoff_parser.add_argument("--json", action="store_true", help="Print JSON instead of Markdown")
+    handoff_parser.add_argument("--output", type=Path, help="Also create this new JSON file; never overwrites")
+    doctor_parser = sub.add_parser("doctor", help="Compare a received handoff snapshot with this host's observations")
+    doctor_parser.add_argument("--handoff", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         root = args.root.absolute()
+        if args.command in ("handoff", "doctor"):
+            from .handoff import build_snapshot, compare_snapshot, render_markdown
+            snapshot = build_snapshot(root)
+            if args.command == "doctor":
+                output = compare_snapshot(load(args.handoff), snapshot)
+                print(json.dumps(output, indent=2, ensure_ascii=False))
+                return {"MATCH": 0, "DRIFT": 2}.get(output["status"], 1)
+            if args.output:
+                with args.output.open("x", encoding="utf-8", newline="\n") as stream:
+                    json.dump(snapshot, stream, indent=2, ensure_ascii=False)
+                    stream.write("\n")
+            print(json.dumps(snapshot, indent=2, ensure_ascii=False) if args.json else render_markdown(snapshot), end="\n" if args.json else "")
+            return 0
         if args.command == "publication-scan":
             from .publication import render_scan, scan_repository
             output = scan_repository(root, args.base, args.head, pr_body_paths=args.pr_body,
