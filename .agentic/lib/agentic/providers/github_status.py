@@ -19,7 +19,7 @@ from ..child_process import child_env
 from ..configuration import inspect_config
 from ..contracts import Contracts
 from ..installer import CONFIG, CODEOWNERS, INSTALLED, PROVENANCE, managed, verify_installed
-from .github import (GITHUB_REST_API_VERSION, _gh_get, _gh_get_pr_files, _gh_graphql,
+from .github import (GITHUB_REST_API_VERSION, MAX_PR_FILE_PAGES, PR_FILES_PER_PAGE, _gh_get, _gh_get_pr_files, _gh_graphql,
                      branch_name, repository_name)
 from ..release_trust import approved_manifest
 from ..safeio import Tree, relative_parts
@@ -81,6 +81,7 @@ class Observation:
         self.deadline = time.monotonic() + MAX_SECONDS
         self.total = 0
         self.requests = 0
+        self.pr_file_requests = 0
 
     def account(self, raw):
         self.total += len(raw)
@@ -96,8 +97,9 @@ class Observation:
         return value
 
     def get_pr_files(self, endpoint):
-        self.requests += 1
-        require(self.requests <= 20 and time.monotonic() < self.deadline,
+        # PR file pages have their own page budget so large adoption PRs do not exhaust the general request limit.
+        self.pr_file_requests += 1
+        require(self.pr_file_requests <= MAX_PR_FILE_PAGES and time.monotonic() < self.deadline,
                 'Acceptance observation exceeds its request/time limit')
         value, count = _gh_get_pr_files(endpoint, self.deadline, gh=self.gh)
         self.total += count
@@ -281,9 +283,10 @@ def accepted_blobs(observation, repository, head, paths):
 def receipt_changed(observation, repository, number, raw):
     seen = set()
     receipt = None
-    for page in range(1, 6):
-        entries = observation.get_pr_files(f'repos/{repository}/pulls/{number}/files?per_page=100&page={page}')
-        require(isinstance(entries, list) and len(entries) <= 100, 'Malformed adoption PR file inventory')
+    for page in range(1, MAX_PR_FILE_PAGES + 1):
+        entries = observation.get_pr_files(
+            f'repos/{repository}/pulls/{number}/files?per_page={PR_FILES_PER_PAGE}&page={page}')
+        require(isinstance(entries, list) and len(entries) <= PR_FILES_PER_PAGE, 'Malformed adoption PR file inventory')
         for entry in entries:
             entry = object_value(entry)
             require(set(entry) == {'filename', 'status', 'sha'},
@@ -297,7 +300,7 @@ def receipt_changed(observation, repository, number, raw):
             seen.add(name)
             if name == INSTALLED:
                 receipt = entry
-        if len(entries) < 100:
+        if len(entries) < PR_FILES_PER_PAGE:
             break
     else:
         raise ValidationError('Adoption PR file inventory exceeds the complete observation limit')
