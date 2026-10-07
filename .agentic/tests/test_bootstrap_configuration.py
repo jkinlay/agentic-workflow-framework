@@ -1754,5 +1754,44 @@ class BootstrapMainTests(unittest.TestCase):
             self.assertEqual(module.main(), 2)
 
 
+@unittest.skipIf(os.name == "nt", "POSIX venvs create the lib64 -> lib link")
+class VenvInternalLinkRegressionTests(unittest.TestCase):
+    """64-bit POSIX venvs contain ``lib64 -> lib``; upgrades must tolerate it."""
+
+    setUp = ConfiguredInstallerTests.setUp
+    perform = ConfiguredInstallerTests.perform
+
+    def test_upgrade_tolerates_venv_internal_lib64_link(self):
+        self.perform()
+        runtime = self.dest / installer.RUNTIME
+        (runtime / "lib").mkdir(parents=True, exist_ok=True)
+        (runtime / "lib/marker.txt").write_bytes(b"runtime\n")
+        os.symlink("lib", runtime / "lib64")
+        self.perform(mode="upgrade")
+        self.assertTrue((runtime / "lib64").is_symlink())
+
+    def test_cleanup_proof_accepts_contained_link_and_rejects_escapes(self):
+        tree = self.base / "cleanup"
+        (tree / "lib").mkdir(parents=True)
+        (tree / "lib/site.py").write_bytes(b"x\n")
+        os.symlink("lib", tree / "lib64")
+        proof = installer._runtime_cleanup_proof(tree)
+        self.assertIn("link", [row[1] for row in proof["members"] if row[0] == "lib64"])
+        outside = self.base / "outside.txt"
+        outside.write_bytes(b"keep\n")
+        for target in ("../outside.txt", str(outside), "lib/../../outside.txt"):
+            with self.subTest(target=target):
+                escape = tree / "escape"
+                os.symlink(target, escape)
+                try:
+                    with self.assertRaisesRegex(ValidationError, "unsafe member"):
+                        installer._runtime_cleanup_proof(tree)
+                finally:
+                    escape.unlink()
+        installer._remove_runtime_transaction_path(tree)
+        self.assertFalse(tree.exists())
+        self.assertEqual(b"keep\n", outside.read_bytes())
+
+
 if __name__ == "__main__":
     unittest.main()
