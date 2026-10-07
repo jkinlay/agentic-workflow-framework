@@ -74,8 +74,13 @@ def config(*, enabled=True, heavy=2, gpu=1, resources=None, extras=None):
         "native_streams": {"enabled": True, "dispatch_policy": "ready_independent"}}}
 
 
+# Partitions run with -I -S, so the base interpreter suffices; a venv interpreter
+# can live inside an installed project's checkout, where it is refused.
+TEST_PYTHON = str(Path(getattr(sys, "_base_executable", None) or sys.executable).resolve())
+
+
 def partition(name, code="print('ok')", *, timeout=5, exits=None):
-    executable = str(Path(sys.executable).resolve())
+    executable = TEST_PYTHON
     return {"name": name, "framework": "command", "resources": {},
             "argv": [executable, "-c", code],
             "executable": {"path": executable, "sha256": file_digest(executable)},
@@ -430,7 +435,7 @@ class HeavyValidationTests(unittest.TestCase):
 
     def test_windows_launcher_payload_is_ascii_exact_and_bounded(self):
         environment = {"SAFE": "caf\u00e9", "PYTHONNOUSERSITE": "1"}
-        argv = [str(Path(sys.executable).resolve()), "space value", "snowman \u2603"]
+        argv = [TEST_PYTHON, "space value", "snowman \u2603"]
         payload = heavy._windows_launcher_payload(argv, environment)
         self.assertEqual(payload, payload.decode("ascii").encode("ascii"))
         self.assertEqual({"argv": argv, "environment": environment},
@@ -698,22 +703,28 @@ class HeavyValidationTests(unittest.TestCase):
             encoded = canonical(value)
             heavy._validate_plan(encoded, sha256(encoded))
 
-    def test_snapshot_executables_keep_untracked_checkout_interpreter(self):
+    def test_snapshot_executables_refuse_untracked_checkout_interpreter(self):
         import tempfile
         with tempfile.TemporaryDirectory() as folder:
             source_root, snapshot_root = Path(folder) / "checkout", Path(folder) / "snapshot"
-            venv_python = source_root / ".agentic/.venv/Scripts/python.exe"
+            venv = source_root / ".agentic/.venv"
+            venv_python = venv / "Scripts/python.exe"
             tracked = source_root / "tools/run.py"
             for path in (venv_python, tracked, snapshot_root / "tools/run.py"):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"x")
+            # A tampered live venv must never be reachable from the snapshot run.
+            (venv / "pyvenv.cfg").write_text("home = elsewhere\n", encoding="utf-8")
+            site = venv / "Lib/site-packages"
+            site.mkdir(parents=True)
+            (site / "sitecustomize.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "not in the reviewed snapshot"):
+                heavy._snapshot_executables(
+                    [{"resolved_path": str(venv_python), "sha256": "0" * 64}], source_root, snapshot_root)
             result = heavy._snapshot_executables(
-                [{"resolved_path": str(venv_python), "sha256": "0" * 64},
-                 {"resolved_path": str(tracked), "sha256": "0" * 64}], source_root, snapshot_root)
-        self.assertEqual(os.path.normcase(str(venv_python.resolve())),
-                         os.path.normcase(result[0]["launch_source_path"]))
+                [{"resolved_path": str(tracked), "sha256": "0" * 64}], source_root, snapshot_root)
         self.assertEqual(os.path.normcase(str((snapshot_root / "tools/run.py").resolve())),
-                         os.path.normcase(result[1]["launch_source_path"]))
+                         os.path.normcase(result[0]["launch_source_path"]))
 
     def test_windows_containment_failure_never_resumes_suspended_child(self):
         class FakeProcess:

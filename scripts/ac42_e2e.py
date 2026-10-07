@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
 
 from agentic import VERSION  # noqa: E402
-from agentic.child_process import child_env  # noqa: E402
+from agentic.child_process import child_env, isolated_git_env  # noqa: E402
 
 REQUIRED = ("fixture", "upgrade", "verify_installation", "validate_config", "self_test",
             "adoption_merge", "active_single_status_run", "handoff_snapshot",
@@ -61,6 +61,38 @@ def run(command, cwd, timeout=1800, extra=None):
     return {"command": [str(part) for part in command], "exit_code": done.returncode,
             "seconds": round(time.monotonic() - started, 1),
             "stdout_tail": done.stdout[-2000:], "stderr_tail": done.stderr[-2000:],}
+
+
+OWNER_BLOB_MAX_BYTES = 8 * 1024 * 1024
+
+
+def owner_blob(project, commit, name, max_bytes=OWNER_BLOB_MAX_BYTES):
+    """Committed bytes of one owner file, or None when the path is absent.
+
+    Git runs isolated (no ambient config, replace refs disabled). Any other
+    failure or an oversized blob raises, so the check fails closed.
+    """
+    def call(*args):
+        return subprocess.run(["git", "--no-replace-objects", "-c", "core.useReplaceRefs=false",
+                               "-C", str(project), *args], capture_output=True, timeout=60,
+                              env=isolated_git_env(dict(os.environ)))
+    listed = call("ls-tree", "-z", "--full-tree", commit, "--", name)
+    if listed.returncode != 0:
+        raise RuntimeError(f"git ls-tree {commit}:{name} failed")
+    entries = [item for item in listed.stdout.split(b"\0") if item]
+    if not entries:
+        return None
+    meta, _, path = entries[0].partition(b"\t")
+    mode, kind, oid = meta.split()
+    if len(entries) != 1 or kind != b"blob" or path.decode("utf-8") != name:
+        raise RuntimeError(f"{name} at {commit} is not a single blob")
+    size = call("cat-file", "-s", oid.decode())
+    if size.returncode != 0 or int(size.stdout) > max_bytes:
+        raise RuntimeError(f"{name} at {commit} is unreadable or exceeds {max_bytes} bytes")
+    done = call("cat-file", "blob", oid.decode())
+    if done.returncode != 0 or len(done.stdout) != int(size.stdout):
+        raise RuntimeError(f"{name} at {commit} could not be read completely")
+    return done.stdout
 
 
 class Gate:
@@ -268,10 +300,10 @@ def main(argv=None):
         # Compare committed blobs: core.autocrlf=true rewrites working-tree line
         # endings on checkout/merge, which is not an upgrader byte change.
         def blob(commit, name):
-            done = subprocess.run(["git", "-C", str(project), "show", f"{commit}:{name}"],
-                                  capture_output=True, env=child_env(dict(os.environ)))
-            return done.stdout if done.returncode == 0 else None
+            return owner_blob(project, commit, name)
         owner_before = {name: blob(base_commit, name) for name in owner_before}
+        if any(raw is None for raw in owner_before.values()):
+            raise RuntimeError("owner file absent from the base commit")
         changed = {}
         for name, raw in owner_before.items():
             after = blob("HEAD", name)
@@ -280,8 +312,9 @@ def main(argv=None):
                     (after or b"").decode("utf-8", "replace").splitlines(), lineterm="", n=0))[2:40]
         # AWF-managed records and the documented append-only .gitignore block.
         allowed = {CONFIG, INSTALLED, ".agentic/workflow-version.yaml", ".gitignore"}
-        ignore_after = blob("HEAD", ".gitignore") or b""
-        ignore_ok = owner_before.get(".gitignore") is None or ignore_after.startswith(owner_before[".gitignore"])
+        ignore_after = blob("HEAD", ".gitignore") if ".gitignore" in owner_before else None
+        ignore_ok = ".gitignore" not in owner_before or (
+            ignore_after is not None and ignore_after.startswith(owner_before[".gitignore"]))
         config_lines = [line for line in changed.get(CONFIG, []) if line[:1] in "+-"]
         config_ok = all("expected_workflow_version" in line or line.strip("+- ").startswith(
             ('"cloud_id"', '"provider_project_id"', '"controller_actor_id"')) for line in config_lines)

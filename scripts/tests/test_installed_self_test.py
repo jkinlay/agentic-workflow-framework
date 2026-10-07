@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.child_process import child_env  # noqa: E402
 from agentic.installer import install  # noqa: E402
+from agentic.runtime_commands import installed_paths  # noqa: E402
 
 
 def git(cwd, *args):
@@ -35,11 +36,27 @@ class InstalledSelfTestTests(unittest.TestCase):
             install(ROOT, project, pin, mode="install", discover=False)
             self.assertFalse((project / "scripts").exists())
             self.assertFalse((project / "MANIFEST.json").exists())
+            # The documented owner step: merge the installed attributes so
+            # managed bytes survive checkout under core.autocrlf on Windows.
+            (project / ".gitattributes").write_bytes(
+                (project / ".agentic/templates/installed.gitattributes").read_bytes())
+            # Managed runtime: .agentic/.venv with the hash-locked dependencies.
+            _, interpreter, _ = installed_paths(project)
+            base = getattr(sys, "_base_executable", None) or sys.executable
+            env = child_env(dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+            subprocess.run([base, "-m", "venv", str(project / ".agentic/.venv")], check=True,
+                           capture_output=True, env=env, timeout=600)
+            subprocess.run([str(interpreter), "-m", "pip", "install", "--disable-pip-version-check",
+                            "--require-hashes", "--only-binary=:all:", "-r",
+                            str(project / ".agentic/requirements.lock")], check=True,
+                           capture_output=True, env=env, timeout=1200)
             git(project, "init", "-q", "-b", "main")
+            if os.name == "nt":
+                git(project, "config", "core.autocrlf", "true")
             git(project, "add", "-A")
             git(project, "commit", "-q", "-m", "AWF install")
             report_path = Path(raw) / "self-test.json"
-            done = subprocess.run([sys.executable, "-B", str(project / ".agentic/scripts/self_test.py"),
+            done = subprocess.run([str(interpreter), "-B", str(project / ".agentic/scripts/self_test.py"),
                                    "--checks-only", "--report", str(report_path)], cwd=project,
                                   capture_output=True, text=True, timeout=3600,
                                   env=child_env(dict(os.environ, PYTHONDONTWRITEBYTECODE="1")))

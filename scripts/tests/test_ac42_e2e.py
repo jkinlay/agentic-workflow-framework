@@ -45,5 +45,40 @@ class AC42HarnessSmokeTests(unittest.TestCase):
             self.assertEqual(done.returncode, 1)
 
 
+def _load_harness():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("awf_ac42_e2e", ROOT / "scripts/ac42_e2e.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class OwnerBlobTests(unittest.TestCase):
+    def test_owner_blob_is_isolated_bounded_and_fails_closed(self):
+        harness = _load_harness()
+        with tempfile.TemporaryDirectory(prefix="awf-owner-blob-") as raw:
+            repo = Path(raw)
+            def git(*args):
+                return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                                       "-C", str(repo), *args], check=True, capture_output=True,
+                                      text=True).stdout.strip()
+            git("init", "-q")
+            (repo / ".gitignore").write_bytes(b"owner\n")
+            git("add", "-A")
+            git("commit", "-q", "-m", "base")
+            self.assertEqual(b"owner\n", harness.owner_blob(repo, "HEAD", ".gitignore"))
+            self.assertIsNone(harness.owner_blob(repo, "HEAD", "absent.txt"))
+            # Replacement objects must not substitute the committed bytes.
+            original = git("rev-parse", "HEAD:.gitignore")
+            (repo / "other").write_bytes(b"replaced\n")
+            substitute = git("hash-object", "-w", "other")
+            git("replace", original, substitute)
+            self.assertEqual(b"owner\n", harness.owner_blob(repo, "HEAD", ".gitignore"))
+            with self.assertRaises(RuntimeError):
+                harness.owner_blob(repo, "0" * 40, ".gitignore")  # unreadable commit
+            with self.assertRaises(RuntimeError):
+                harness.owner_blob(repo, "HEAD", ".gitignore", max_bytes=3)
+
+
 if __name__ == "__main__":
     unittest.main()
