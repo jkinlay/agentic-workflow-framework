@@ -331,6 +331,7 @@ class AdoptionStatusTests(unittest.TestCase):
             entry = lambda name, content: {
                 'path': name, 'type': 'blob', 'mode': '100644', 'sha': status.blob_sha(content)}
             base = 'repos/example-org/example-repo'
+            rest_identity = {'id': 101, 'node_id': 'R_ac34', 'full_name': 'example-org/example-repo'}
             accepted_names = (set(receipt['immutable_files'])
                               | {CONFIG, INSTALLED, PROVENANCE, '.github/CODEOWNERS'})
             groups = sorted({name.split('/', 1)[0] for name in accepted_names if '/' in name})
@@ -341,10 +342,14 @@ class AdoptionStatusTests(unittest.TestCase):
             root_entries.extend({'path': name, 'type': 'tree', 'mode': '040000', 'sha': group_shas[name]}
                                 for name in groups)
             api = {
-                base: {'id': 101, 'full_name': 'example-org/example-repo', 'default_branch': 'trunk'},
+                base: {'id': 101, 'node_id': 'R_ac34', 'full_name': 'example-org/example-repo',
+                       'default_branch': 'trunk'},
                 base + '/branches/trunk': {'name': 'trunk', 'commit': {'sha': head}},
-                base + '/pulls/7': {'number': 7, 'merged': True, 'merge_commit_sha': head,
-                                    'base': {'ref': 'trunk', 'repo': {'id': 101}}},
+                base + '/pulls/7': {
+                    'number': 7, 'node_id': 'PR_ac34', 'state': 'closed', 'merged': True,
+                    'merged_at': '2026-09-14T12:00:00+00:00', 'merge_commit_sha': None,
+                    'base': {'ref': 'trunk', 'repo': dict(rest_identity)},
+                    'head': {'ref': 'awf/adoption', 'sha': 'd' * 40, 'repo': dict(rest_identity)}},
                 base + '/pulls/7/files?per_page=100&page=1': [
                     {'filename': INSTALLED, 'status': 'added',
                      'sha': status.blob_sha(installed_files[INSTALLED])}],
@@ -371,11 +376,22 @@ class AdoptionStatusTests(unittest.TestCase):
             def read(endpoint, deadline, gh):
                 value = api[endpoint]
                 return copy.deepcopy(value), len(json_bytes(value))
+            repository = {'id': 'R_ac34', 'databaseId': 101, 'nameWithOwner': 'example-org/example-repo'}
+            graphql = {'data': {'repository': {
+                **repository, 'defaultBranchRef': {'name': 'trunk', 'target': {'oid': head}},
+                'pullRequest': {'id': 'PR_ac34', 'number': 7, 'baseRefName': 'trunk',
+                                'headRefName': 'awf/adoption', 'headRefOid': 'd' * 40,
+                                'headRepository': repository, 'state': 'MERGED', 'merged': True,
+                                'mergedAt': '2026-09-14T12:00:00Z',
+                                'mergeCommit': {'oid': head, 'repository': repository}}}}}
+            def read_graphql(query, variables, deadline, gh):
+                return copy.deepcopy(graphql), len(json_bytes(graphql))
             with patch.dict(os.environ, {'USERPROFILE': str(profile), 'CODEX_HOME': str(codex_home)}), \
                     patch.object(status, 'host_executable',
                                  side_effect=lambda name, root: self.git if name == 'git' else sys.executable), \
                     patch.object(status, '_gh_get', side_effect=read), \
-                    patch.object(status, '_gh_get_pr_files', side_effect=read):
+                    patch.object(status, '_gh_get_pr_files', side_effect=read), \
+                    patch.object(status, '_gh_graphql', side_effect=read_graphql):
                 result = status.project_status(project, adoption_pr=7)
             self.assertEqual(result['project_state'], 'ACTIVE', result)
             self.assertEqual(result['release_trust']['host_skill_path'], str(destination.resolve()))
