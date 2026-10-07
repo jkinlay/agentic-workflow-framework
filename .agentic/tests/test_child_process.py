@@ -92,6 +92,19 @@ class ChildEnvironmentTests(unittest.TestCase):
             path.write_text('{"execution":{"child_env_strip_extra":["PRIVATE_TOKEN"]}}', encoding="utf-8")
             self.assertEqual(configured_child_env_strip_extra(path), frozenset({"PRIVATE_TOKEN"}))
 
+    def test_configured_extra_loader_accepts_owner_comments_and_rejects_malformed(self):
+        # Upgrades preserve owner comments in PROJECT_CONFIG.yaml (JSON-shaped YAML).
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "PROJECT_CONFIG.yaml"
+            path.write_text('{\n  # owner note\n  "execution": {"child_env_strip_extra": ["PRIVATE_TOKEN"]}\n}\n',
+                            encoding="utf-8")
+            self.assertEqual(configured_child_env_strip_extra(path), frozenset({"PRIVATE_TOKEN"}))
+            for raw in ('{"execution": [unclosed', '{"execution": {"child_env_strip_extra": "PRIVATE_TOKEN"}}'):
+                with self.subTest(raw=raw):
+                    path.write_text(raw, encoding="utf-8")
+                    with self.assertRaises(ChildEnvironmentError):
+                        configured_child_env_strip_extra(path)
+
     def test_configured_extra_validation_fails_closed(self):
         invalid = [
             "PRIVATE_TOKEN", "private_token",

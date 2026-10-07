@@ -6,6 +6,7 @@ import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+AWF_SOURCE_REPOSITORY = (ROOT / "MANIFEST.json").is_file()  # source-only scripts/fixtures/inventory
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError  # noqa: E402
@@ -23,6 +24,7 @@ from agentic.five_slot_acceleration import (  # noqa: E402
 )
 
 
+@unittest.skipUnless(AWF_SOURCE_REPOSITORY, "needs AWF source-repository files absent from installed projects")
 class FiveSlotAccelerationTests(unittest.TestCase):
     maxDiff = None
 
