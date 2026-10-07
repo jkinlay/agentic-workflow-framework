@@ -4,21 +4,30 @@
 
 Adds Git-format-aware `tested_tree`; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match.
 
-Sets 1.9.3 defaults: workers A/B/C use `gpt-6-luna` / medium; the controller uses `gpt-6-astra` / high. Critic, adversarial handler and specialist remain independent, with risk/review floors. Escalation advances through `gpt-6-sol` / high to `gpt-6-astra` / high. Five slots cover three workers, critic and controller. Per-ticket/daily caps stay unchanged; adopted configurations and legacy models/routes remain accepted. New adoptions use the reviewed 16-run ticket ceiling; upgrades retain configured ceilings. Release trust binds host receipts and verified archives; ACTIVE requires fresh default-branch status.
+Defaults: workers A/B/C use `gpt-5.6-luna` / medium (simple work: low); the shared critic/adversarial handler, controller and specialist use `gpt-5.6-sol` / high, also the review/risk floor. Escalation advances through `gpt-5.6-terra` / high to `gpt-5.6-sol` / high. Five slots cover three workers, critic and controller. Caps, adopted configurations and legacy models/routes, including `gpt-6-*`, remain accepted. New adoptions use a 16-run ticket ceiling; upgrades retain theirs. Release trust binds host receipts and verified archives; ACTIVE requires fresh default-branch status.
 
-Adds outcome templates; verdicts remain separate.
-
-Adds byte-verified install/upgrade; unsafe evidence fails closed.
+Adds outcome templates; verdicts remain separate. Adds byte-verified install/upgrade; unsafe evidence fails closed.
 
 Scans messages, patches, files and PR text; findings block, and receipts bind base/head/body. An ignored mapping supplements built-in detectors.
 
-Adds one-commit unpublished-branch rewrite with tree preservation, replacement scanning and ref-reachability checks. It refuses published evidence or unsupported counts and reports reflog retention (L1/L2/L9; producer retrofits remain P1).
+Adds one-commit unpublished-branch rewrite with tree preservation, replacement scanning and ref-reachability checks; published evidence is refused and reflog retention reported.
 
-Hardens activation with versioned REST/GraphQL merge identity, complete PR/base/head/state/time cross-checks, Git-object checkout comparison, lock-free inspection, structured blockers, strict ACTIVE exit and capabilities. Network detectors self-scan without weakening detection.
+Hardens activation with versioned merge identity, PR/base/head cross-checks, Git-object checkout comparison and strict ACTIVE exit.
 
-Adds K8-K11 Windows diagnostics, preflight, self-test progress, safe encoding, and rollback-safe runtimes from pinned offline wheels.
+Adds K8-K11 Windows diagnostics, preflight, safe encoding and rollback-safe runtimes from pinned offline wheels.
 
-Adds environment exclusions, launch inventory, provider identity gates, Jira binding proposals, publication readiness before dispatch, and durable owner-publication handoffs that resume draft PRs without repeating work.
+Adds environment exclusions, launch inventory, provider identity gates, Jira binding proposals, publication readiness and resumable owner-publication handoffs.
+
+Upgrades tolerate a runtime venv `lib64` → `lib` link (#54). **[PENDING: #52, #55, AC42 evidence]**
+
+### Known issues (1.9.4)
+
+- AWF-18 (#22): Release tooling forces `core.autocrlf=true` on Windows, overriding repo setting.
+- AWF-19 (#23): Upgrade: crash during `managed_after` journal update can't be rolled back.
+- AWF-20 (#47): Source-repo detection: a downstream project with a root `MANIFEST.json` is treated as the AWF source.
+- AWF-21 (#48): `doctor --handoff` can MATCH an incomplete snapshot; `host_broker` read from wrong config location.
+- AWF-22 (#51): AC42 can pass without the admission check; ACTIVE check uses the source checkout, not the installed `workflow.py`.
+- AWF-23: Heavy validation: support POSIX hosts and symlinked managed-venv interpreters (`.agentic/.venv/bin/python`).
 
 ## 1.9.2 — 23 September 2026
 
@@ -55,7 +64,7 @@ Bootstrap checks installed commands and reports configuration remedies. Empty CI
 
 ## 1.8.5 — 14 September 2026
 
-Ordinary self-tests run without release-review pins and report unqualified component success; explicit release checks, archive acceptance and catalog publication retain current-review requirements. Adoption proceeds with missing/unobserved repository rules as warnings. Live enablement retains observed-rule prerequisites and existing qualification. A shipped ruleset follows the default branch, requires PRs without solo-maintainer self-approval, permits squash/rebase and starts with no required checks. CODEOWNERS seeds a configurable owner, defaults to @maintainer and preserves project-owned policy. Read-only observations distinguish APPLIED, MISSING and UNOBSERVED without granting execution authority. Prior release/pilot evidence, including the strict 10/12 FAIL, is preserved; changed prompts have no new model measurements.
+[Ordinary self-tests separated from release qualification, adoption warnings, rulesets, CODEOWNERS and read-only observations](MIGRATION-v1.8.4-to-v1.8.5.md). Prior release/pilot evidence, including the strict 10/12 FAIL, is preserved.
 
 ## 1.8.4 — 14 September 2026
 
