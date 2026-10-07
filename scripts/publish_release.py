@@ -420,13 +420,14 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
                   "assets": [str(path) for path in assets], "remote_changes": not dry_run}
         if dry_run:
             return result
+        # Resolve and validate the release target before any local or remote mutation.
+        release_repo = origin_repository(repository)
         tag_file = output / "tag-message.txt"
         body_file = output / "release-body.md"
         tag_file.write_text(tag_message, encoding="utf-8", newline="\n")
         body_file.write_text(body, encoding="utf-8", newline="\n")
         git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
                 "-F", str(tag_file))
-        release_repo = origin_repository(repository)
         git_run(repository, "push", "origin", f"refs/tags/{tag}")
         run([gh, "release", "create", tag, *map(str, assets), "--repo", release_repo, "--draft", "--verify-tag",
              "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)

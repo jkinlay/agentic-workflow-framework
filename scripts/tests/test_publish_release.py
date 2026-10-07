@@ -453,6 +453,31 @@ else: raise SystemExit(2)
                 with self.assertRaisesRegex(publisher.ReleaseError, "not a recognised"):
                     publisher.origin_repository(self.repository)
 
+    def test_rejected_origin_fails_before_creating_a_tag(self):
+        fake_bin = self.base / "fake-bin-reject"; fake_bin.mkdir()
+        store = self.base / "fake-release-reject"; store.mkdir()
+        log = self.base / "fake-gh-reject.jsonl"
+        executable = self.make_fake_gh(fake_bin, store, log)
+        same = "https://github.com/jkinlay/agentic-workflow-framework.git"
+        def tag_list():
+            return subprocess.run(["git", "for-each-ref", "refs/tags", "--format=%(refname) %(objectname)"],
+                                  cwd=self.repository, capture_output=True, text=True, check=True).stdout
+        before = tag_list()
+        for message, pushes in {"different repositories": ("https://github.com/attacker/elsewhere.git",),
+                                "exactly one": (same, "https://github.com/attacker/elsewhere.git")}.items():
+            with self.subTest(message=message):
+                subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repository, capture_output=True)
+                command(["git", "remote", "add", "origin", same], self.repository)
+                for index, url in enumerate(pushes):
+                    command(["git", "remote", "set-url", "--push"] + (["--add"] if index else []) + ["origin", url],
+                            self.repository)
+                with self.assertRaisesRegex(publisher.ReleaseError, message):
+                    publisher.publish(self.repository, self.commit, self.base / f"reject-{len(pushes)}",
+                                      self.windows_check, self.windows_pin,
+                                      validation_runner=self.fake_validation, gh=str(executable))
+                self.assertEqual(before, tag_list())
+        self.assertFalse(log.exists() and log.read_text(encoding="utf-8").strip())
+
 
 if __name__ == "__main__":
     unittest.main()
