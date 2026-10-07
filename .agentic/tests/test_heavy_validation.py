@@ -2202,5 +2202,27 @@ class HeavyValidationTests(unittest.TestCase):
                 read_result_log(log, receipt, key)
 
 
+class ControllerBaseInterpreterTests(unittest.TestCase):
+    """Round-2 #52: the Windows launcher must never run a venv interpreter."""
+
+    def test_launch_chain_prefers_base_interpreter_over_venv(self):
+        from agentic import heavy_validation as hv
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw) / "base"; base.mkdir()
+            base_python = base / "python.exe"; base_python.write_bytes(b"base")
+            venv = Path(raw) / "checkout" / ".agentic" / ".venv"; (venv / "Scripts").mkdir(parents=True)
+            (venv / "pyvenv.cfg").write_text("home = " + str(base) + "\n", encoding="utf-8")
+            venv_python = venv / "Scripts" / "python.exe"; venv_python.write_bytes(b"venv")
+            with mock.patch.object(hv.sys, "executable", str(venv_python)), \
+                    mock.patch.object(hv.sys, "_base_executable", str(base_python), create=True):
+                self.assertEqual(base_python.resolve(), hv._controller_base_interpreter())
+            for attribute in ("_base_executable", "executable"):
+                with self.subTest(source=attribute), \
+                        mock.patch.object(hv.sys, "executable", str(venv_python)), \
+                        mock.patch.object(hv.sys, "_base_executable", str(venv_python), create=True):
+                    with self.assertRaisesRegex(ValidationError, "virtual environment"):
+                        hv._controller_base_interpreter()
+
+
 if __name__ == "__main__":
     unittest.main()

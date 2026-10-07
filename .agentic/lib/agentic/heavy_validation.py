@@ -480,9 +480,25 @@ def _reviewed_git_archive_sha256(plan: dict, repository_relative_path: str) -> s
     return hashlib.sha256(raw).hexdigest()
 
 
+def _controller_base_interpreter() -> Path:
+    """Return the controller's base interpreter, never a virtual-environment one.
+
+    A venv interpreter (for example the ignored in-checkout ``.agentic/.venv``)
+    reads its mutable ``pyvenv.cfg`` and selects its DLL/stdlib tree even under
+    ``-I -S -B``, so the launcher must run from the base installation.
+    """
+    candidate = Path(getattr(sys, "_base_executable", None) or sys.executable).absolute()
+    interpreter = resolve_without_alias(candidate, "controller Python executable", directory=False)
+    for parent in (interpreter.parent, interpreter.parent.parent):
+        if os.path.lexists(parent / "pyvenv.cfg"):
+            raise ValidationError(
+                "Controller Python executable belongs to a virtual environment; "
+                "run the controller from a base Python installation outside the checkout")
+    return interpreter
+
+
 def _windows_launch_chain(plan: dict) -> dict:
-    interpreter = resolve_without_alias(Path(sys.executable).absolute(),
-                                        "controller Python executable", directory=False)
+    interpreter = _controller_base_interpreter()
     return {"interpreter": {"path": str(interpreter),
                              "sha256": _file_sha256(interpreter)},
             "interpreter_flags": list(_WINDOWS_LAUNCHER_FLAGS),
