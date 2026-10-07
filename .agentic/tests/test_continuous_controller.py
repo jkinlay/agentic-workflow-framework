@@ -666,6 +666,7 @@ class ContinuousControllerTests(unittest.TestCase):
                               "2026-10-02T10:00:04Z")
 
         observed_at = "2026-10-02T10:00:05Z"
+        delivered = []
         def fail_reconciliation(payload):
             raise RuntimeError("observation unavailable")
         result = production_controller_cycle(store, now=observed_at, host_capacity=2,
@@ -674,10 +675,19 @@ class ContinuousControllerTests(unittest.TestCase):
                 ticket("EX-19", 1, "COMPLETE"), replacement]),
             dispatch_ticket=lambda payload: self.fail("reassigned Y must not receive a duplicate intent"),
             observe_dispatch=fail_reconciliation,
-            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+            deliver_status=lambda digest: delivered.append(digest) or {"delivery_id": digest["delivery_id"],
                 "status": "DELIVERED", "observed_at": observed_at})
         owner = next(row for row in result["streams"] if row["stream"] == "A")
         self.assertEqual((owner["state"], owner["ticket"], owner["exact_tuple"]),
+                         ("WORKING", "EX-20", replacement["exact_tuple"]))
+        self.assertEqual(len(delivered), 1)
+        detached = next(item for item in delivered[0]["unresolved_dispatches"]
+                        if item["dispatch_id"] == old_intent["dispatch_id"])
+        self.assertEqual((detached["ticket"], detached["status"], detached["detached"]),
+                         ("EX-19", "UNKNOWN", True))
+        delivered_owner = next(row for row in delivered[0]["streams"] if row["stream"] == "A")
+        self.assertEqual((delivered_owner["state"], delivered_owner["ticket"],
+                          delivered_owner["exact_tuple"]),
                          ("WORKING", "EX-20", replacement["exact_tuple"]))
         self.assertEqual([item["state"] for item in result["errors"] if item["operation"] == "dispatch"],
                          ["UNKNOWN"])

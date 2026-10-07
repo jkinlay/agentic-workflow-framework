@@ -553,6 +553,19 @@ class ContinuousControllerStore:
             regular_due = self.periodic_status_enabled and (not last_regular or elapsed >= cadence)
             change_due = revision > last_revision and (self.periodic_status_enabled or revision > 0)
             streams = self._snapshot(db)
+            unresolved_dispatches = []
+            for row in db.execute(
+                    "SELECT dispatch_id,stream_id,ticket,exact_tuple,status,updated_at "
+                    "FROM controller_dispatch WHERE status='UNKNOWN' ORDER BY stream_id,dispatch_id"):
+                owner = db.execute("SELECT ticket,exact_tuple FROM stream_status WHERE stream_id=?",
+                                   (row["stream_id"],)).fetchone()
+                detached = (owner is None or owner["ticket"] != row["ticket"] or
+                            owner["exact_tuple"] != row["exact_tuple"])
+                unresolved_dispatches.append({
+                    "dispatch_id": row["dispatch_id"], "stream": row["stream_id"],
+                    "ticket": row["ticket"], "exact_tuple": row["exact_tuple"],
+                    "status": row["status"], "detached": detached,
+                    "updated_at": row["updated_at"]})
             all_complete = all(s["state"] == "COMPLETE" for s in streams)
             if all_complete and not change_due:
                 return None
@@ -561,7 +574,8 @@ class ContinuousControllerStore:
             kind = "REGULAR" if regular_due else "CHANGE"
             from .canonical import fingerprint
             body = {"schema_version": 3, "observed_at": now, "kind": kind,
-                    "cadence_seconds": cadence, "all_complete": all_complete, "streams": streams}
+                    "cadence_seconds": cadence, "all_complete": all_complete, "streams": streams,
+                    "unresolved_dispatches": unresolved_dispatches}
             delivery_id = fingerprint("controller-status-digest", {"revision": revision, **body})
             body["delivery_id"] = delivery_id
             db.execute("INSERT INTO controller_outbox VALUES(?,?,?,?,?,NULL)",
