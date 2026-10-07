@@ -305,7 +305,14 @@ def catalog():
         "operational_blocker": FALSE, "blocker_codes": {"maxItems": 0},
         "final_rules_state": const("APPLIED")}}),
         when("status", "BLOCKED", {"properties": {
-        "operational_blocker": TRUE, "blocker_codes": {"minItems": 1}}})])
+            "operational_blocker": TRUE, "blocker_codes": {"minItems": 1}}})])
+    schemas["run-disposition-request"] = obj({
+        "format": const("awf-run-disposition-request-1"), "request_id": UUID,
+        "project_id": text(), "ticket_id": text(), "run_id": UUID,
+        "runs_used": integer(1), "run_cap": integer(1),
+        "open_findings": STRINGS,
+        "recommended_action": enum("continue", "rescope", "park"),
+        "recorded_at": TIME, "owner_delivery_required": TRUE})
     schemas["doctor-output"] = obj({
         "format": const("awf-doctor-1"), "template_version": const(VERSION), "root": text(),
         "runtime": obj({"interpreter": text(), "entry_point": text(),

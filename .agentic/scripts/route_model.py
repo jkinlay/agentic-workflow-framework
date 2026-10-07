@@ -46,7 +46,7 @@ def admission_snapshot(args, config):
 
 def main(argv=None):
     parser = RoutingParser(description=__doc__)
-    parser.add_argument("command", choices=("defaults", "outcome-template", "suggest", "reserve", "settle", "evidence", "resolve-failure", "record-defect", "reconcile", "reconciliation-history"))
+    parser.add_argument("command", choices=("defaults", "outcome-template", "suggest", "reserve", "settle", "summary", "evidence", "resolve-failure", "record-defect", "reconcile", "reconciliation-history"))
     parser.add_argument("--role", choices=("worker", "fix", "critic", "specialist"))
     parser.add_argument("--config", type=Path)
     parser.add_argument("--request", type=Path)
@@ -55,6 +55,7 @@ def main(argv=None):
     parser.add_argument("--project-root", type=Path, help="Actual target checkout; defaults to CONFIG/../..")
     parser.add_argument("--legacy-without-operating", action="store_true", help="Explicit old standalone routing fixture only; no full project configuration or operating attribution")
     parser.add_argument("--run-id")
+    parser.add_argument("--ticket")
     parser.add_argument("--outcome", type=Path)
     parser.add_argument("--observation", type=Path, help="Verified failure recovery or late escaped-defect observation")
     try:
@@ -95,6 +96,10 @@ def main(argv=None):
                 if args.command == "reserve":
                     with admission_snapshot(args, config) as operating:
                         result = ledger.reserve(project_id, policy, request, capabilities, operating=operating, governance=config)
+                elif args.command == "summary":
+                    if not args.ticket:
+                        raise ValidationError("summary requires --ticket")
+                    result = ledger.summary(project_id, args.ticket)
                 elif args.command == "settle":
                     if not args.run_id or args.outcome is None:
                         raise ValidationError("--run-id and --outcome are required")

@@ -12,8 +12,11 @@ import unittest
 from unittest.mock import patch
 
 from agentic import ValidationError
+from agentic.contracts import Contracts
 from agentic.model_routing import (MODELS, RoutingLedger, default_policy,
                                    policy_from_config, select_route, validate_policy)
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def request(**updates):
@@ -185,6 +188,101 @@ class ModelRoutingTests(unittest.TestCase):
         self.policy["adaptive"]["min_reviewed_samples"] = 99
         with self.assertRaisesRegex(ValidationError, "run budget"):
             self.reserve(phase="test")
+
+    def test_ac1_cap_thresholds_disposition_and_role_summary(self):
+        signals = []
+        roles = ("worker", "fix", "critic", "specialist")
+        for index in range(16):
+            role = roles[index % len(roles)]
+            facts = {"role": role, "phase": "phase-" + str(index),
+                     "context_id": role + "-context-" + str(index)}
+            if role in ("critic", "specialist"):
+                facts["worker_context_id"] = "independent-worker-context"
+            if index == 14:
+                facts.update(open_findings=["FINDING-1"], recommended_disposition="rescope")
+            reserved = self.reserve(**facts)
+            signals.append(reserved["run_cap_signal"])
+            if index == 14:
+                request = reserved["disposition_request"]
+                self.assertEqual((request["runs_used"], request["run_cap"]), (15, 16))
+                self.assertEqual(request["open_findings"], ["FINDING-1"])
+                self.assertEqual(request["recommended_action"], "rescope")
+                Contracts(ROOT / ".agentic/schemas").validate("run-disposition-request", request)
+            observed = outcome(reserved, actual_context_id=facts["context_id"], actual_tokens=index + 1,
+                               independent_review_passed=role not in ("critic", "specialist"))
+            if role in ("critic", "specialist"):
+                observed.pop("reviewer_context_id", None)
+            self.ledger.settle(reserved["run_id"], observed)
+        self.assertEqual(signals[:11], ["OK"] * 11)
+        self.assertEqual(signals[11:14], ["WARN"] * 3)
+        self.assertEqual(signals[14:], ["NEEDS_DISPOSITION"] * 2)
+        with self.assertRaisesRegex(ValidationError, "ticket run budget exhausted"):
+            self.reserve(phase="phase-17")
+        summary = self.ledger.summary("project-1", "EX-10")
+        self.assertEqual(summary["runs"], 16)
+        self.assertEqual(summary["tokens"], sum(range(1, 17)))
+        self.assertEqual(set(summary["by_role"]), set(roles))
+        self.assertTrue(all(group["runs"] == 4 for group in summary["by_role"].values()))
+        self.assertEqual(sum(group["tokens"] for group in summary["by_role"].values()), sum(range(1, 17)))
+        self.assertEqual(len(summary["disposition_requests"]), 1)
+
+    def test_upgraded_ledger_past_threshold_emits_one_disposition_request(self):
+        # Simulate rows written by a pre-feature ledger without disposition
+        # requests, then retain the legacy twelve-run cap on upgrade.
+        self.policy["budgets"]["max_runs_per_ticket"] = 100
+        for index in range(11):
+            context = "legacy-context-" + str(index)
+            reserved = self.reserve(phase="legacy-phase-" + str(index), context_id=context)
+            self.ledger.settle(reserved["run_id"], outcome(reserved, actual_context_id=context))
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute("DROP TABLE model_disposition_requests")
+            connection.commit()
+        finally:
+            connection.close()
+        self.ledger = RoutingLedger(self.path)
+        self.policy["budgets"]["max_runs_per_ticket"] = 12
+        reserved = self.reserve(phase="post-upgrade", context_id="post-upgrade-context",
+                                open_findings=["FINDING-LEGACY"],
+                                recommended_disposition="continue")
+        self.assertEqual(reserved["run_cap_signal"], "NEEDS_DISPOSITION")
+        self.assertEqual((reserved["ticket_runs_used"], reserved["ticket_run_cap"]), (12, 12))
+        self.assertEqual(reserved["disposition_request"]["open_findings"], ["FINDING-LEGACY"])
+        self.assertEqual(reserved["disposition_request"]["runs_used"], 12)
+        summary = self.ledger.summary("project-1", "EX-10")
+        self.assertEqual(len(summary["disposition_requests"]), 1)
+
+    def test_summary_uses_one_read_snapshot_for_runs_and_dispositions(self):
+        reserved = self.reserve()
+        with closing(sqlite3.connect(self.path)) as setup:
+            self.assertEqual(setup.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+        reader = self.ledger._connect()
+        writer = sqlite3.connect(self.path, timeout=30)
+        observation = {"request_id": "concurrent-request", "run_id": reserved["run_id"]}
+
+        class CommitBetweenSummaryReads:
+            def __init__(self):
+                self.inserted = False
+
+            def execute(proxy, sql, parameters=()):
+                if sql.startswith("SELECT observation FROM model_disposition_requests"):
+                    writer.execute("INSERT INTO model_disposition_requests VALUES (?,?,?,?,?)", (
+                        "concurrent-request", "project-1", "EX-10", reserved["run_id"],
+                        json.dumps(observation)))
+                    writer.commit()
+                    proxy.inserted = True
+                return reader.execute(sql, parameters)
+
+            def close(proxy):
+                reader.close()
+                writer.close()
+
+        connection = CommitBetweenSummaryReads()
+        with patch.object(self.ledger, "_connect", return_value=connection):
+            summary = self.ledger.summary("project-1", "EX-10")
+        self.assertTrue(connection.inserted)
+        self.assertEqual((summary["runs"], summary["disposition_requests"]), (1, []))
+        self.assertEqual(len(self.ledger.summary("project-1", "EX-10")["disposition_requests"]), 1)
 
     def test_cost_caps_need_known_reservations_and_actuals(self):
         self.policy["budgets"]["max_cost_microusd_per_ticket"] = 100

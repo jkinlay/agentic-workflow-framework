@@ -156,11 +156,11 @@ class ConfigurationDerivationTests(unittest.TestCase):
     def test_new_adoption_budget_defaults(self):
         config = adoption.prepare_config(template(), overrides=explicit(), discover=False)["config"]
         self.assertEqual(2000000, config["execution"]["max_tokens_per_ticket"])
-        self.assertEqual(12, config["execution"]["max_agent_runs_per_ticket"])
+        self.assertEqual(16, config["execution"]["max_agent_runs_per_ticket"])
         self.assertIsNone(config["execution"]["max_cost_microusd_per_ticket"])
         self.assertIsNone(config["execution"]["daily_project_cost_microusd"])
         self.assertEqual({
-            "max_runs_per_ticket": 12,
+            "max_runs_per_ticket": 16,
             "max_runs_per_project_day": 250,
             "max_tokens_per_ticket": 2000000,
             "max_tokens_per_project_day": 30000000,

@@ -301,14 +301,15 @@ def operating_ignore_plan(existing, required):
     return proposed, report
 
 
-def verify_release(tree, expected_digest=None):
+def verify_release(tree, expected_digest=None, *, allow_source_checkout=False):
     raw = tree.read(MANIFEST)
     if expected_digest is not None and sha256(raw) != expected_digest:
         raise ValidationError("Release manifest does not match the approved digest")
     manifest = loads(raw.decode("utf-8"))
     if set(manifest) != {"format", "template_version", "files"} or manifest["format"] != "awf-manifest-1" or manifest["template_version"] != VERSION:
         raise ValidationError("Unsupported release manifest")
-    actual = {path for path in tree.file_list(exclude_root_git=True,
+    actual = {path for path in tree.file_list(exclude_root_git=allow_source_checkout,
+                                              reject_root_git=not allow_source_checkout,
                                               exclude_prefixes=RELEASE_EXCLUDED_PREFIXES)
               if path not in {MANIFEST, "MANIFEST.md"} and release_member(path)}
     if actual != set(manifest["files"]):
@@ -535,7 +536,8 @@ def _verify_installed(root, expected_version):
     ensure_usable(root)
     with Tree(root) as tree:
         if tree.inspect(INSTALLED) is None:
-            return verify_release(tree)[0]
+            # An uninstalled source template is normally a Git checkout.
+            return verify_release(tree, allow_source_checkout=True)[0]
         manifest = loads(tree.read(INSTALLED).decode())
         if manifest.get("template_version") != expected_version:
             raise ValidationError("Installed template version mismatch")
@@ -1107,7 +1109,8 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
     if overlap and not destination.is_relative_to(test_scratch):
         raise ValidationError("Source and destination trees must not overlap")
     with Tree(source) as src:
-        digest, content = verify_release(src, expected_digest)
+        # Installing from a pinned source checkout: root .git is excluded, never copied.
+        digest, content = verify_release(src, expected_digest, allow_source_checkout=True)
         source_manifest_json = src.read(MANIFEST).decode("utf-8")
     from .upgrade import (OPERATING, apply_chain, config_diff,
                           identify_installation, immutable_from_source_manifest,

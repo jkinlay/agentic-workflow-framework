@@ -26,6 +26,10 @@ import test_review_loop  # noqa: E402
 import test_streams  # noqa: E402
 import test_rules_activation  # noqa: E402
 import test_pre_controller_registry  # noqa: E402
+import test_model_routing  # noqa: E402
+import test_publish_release  # noqa: E402
+import test_release_trust  # noqa: E402
+import test_skill_distribution_ordering  # noqa: E402
 
 
 INVENTORY_MODULES = {
@@ -41,6 +45,10 @@ INVENTORY_MODULES = {
     ".agentic/tests/test_streams.py": test_streams,
     ".agentic/tests/test_rules_activation.py": test_rules_activation,
     "scripts/tests/test_pre_controller_registry.py": test_pre_controller_registry,
+    ".agentic/tests/test_model_routing.py": test_model_routing,
+    ".agentic/tests/test_release_trust.py": test_release_trust,
+    "scripts/tests/test_publish_release.py": test_publish_release,
+    "scripts/tests/test_skill_distribution_ordering.py": test_skill_distribution_ordering,
 }
 
 

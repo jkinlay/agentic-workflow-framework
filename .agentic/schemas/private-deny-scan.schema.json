@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:private-deny-scan",
+  "title": "Private deny scan receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format", "policy_id", "status", "classification", "candidate",
+    "provider_pr_body_sha256", "mapping_sha256", "scanner_sha256", "counts",
+    "paths", "unscanned", "scan_complete", "baseline_authorization_sha256",
+    "private_match_values_included", "execution_authority"
+  ],
+  "properties": {
+    "format": {"const": "awf-private-deny-scan-receipt-1"},
+    "policy_id": {"const": "exact-current-tree-baseline-v1"},
+    "status": {"enum": ["PASS", "BLOCKED"]},
+    "classification": {"enum": ["NO_MATCHES", "BASE_PREEXISTING_UNCHANGED"]},
+    "candidate": {"$ref": "#/$defs/candidate"},
+    "provider_pr_body_sha256": {"$ref": "#/$defs/sha256"},
+    "mapping_sha256": {"$ref": "#/$defs/sha256"},
+    "scanner_sha256": {"$ref": "#/$defs/sha256"},
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["history_matches", "diff_added_matches", "diff_deleted_matches", "body_matches", "base_matches", "head_matches"],
+      "properties": {
+        "history_matches": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "diff_added_matches": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "diff_deleted_matches": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "body_matches": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "base_matches": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "head_matches": {"type": "integer", "minimum": 0, "maximum": 1000000}
+      }
+    },
+    "paths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "base_count", "head_count", "multiset_equal"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[A-Za-z0-9._ -]+(/[A-Za-z0-9._ -]+)*$"},
+          "base_count": {"type": "integer", "minimum": 0, "maximum": 1000000},
+          "head_count": {"type": "integer", "minimum": 0, "maximum": 1000000},
+          "multiset_equal": {"type": "boolean"}
+        }
+      }
+    },
+    "unscanned": {"type": "array", "maxItems": 10000, "items": {"type": "string", "minLength": 1, "maxLength": 1024}},
+    "scan_complete": {"type": "boolean"},
+    "baseline_authorization_sha256": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/sha256"}
+      ]
+    },
+    "private_match_values_included": {"const": false},
+    "execution_authority": {"const": false}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "PASS"}}},
+      "then": {
+        "properties": {
+          "unscanned": {"maxItems": 0},
+          "scan_complete": {"const": true}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"classification": {"const": "NO_MATCHES"}}},
+      "then": {
+        "properties": {
+          "counts": {"properties": {"base_matches": {"const": 0}, "head_matches": {"const": 0}}},
+          "paths": {"maxItems": 0},
+          "baseline_authorization_sha256": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"status": {"const": "PASS"}, "classification": {"const": "BASE_PREEXISTING_UNCHANGED"}}},
+      "then": {
+        "properties": {
+          "counts": {
+            "properties": {
+              "base_matches": {"minimum": 1},
+              "head_matches": {"minimum": 1},
+              "history_matches": {"const": 0},
+              "diff_added_matches": {"const": 0},
+              "diff_deleted_matches": {"const": 0},
+              "body_matches": {"const": 0}
+            }
+          },
+          "paths": {"minItems": 1},
+          "baseline_authorization_sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_id", "pr_number", "base_sha", "head_sha", "tree_sha", "manifest_sha256", "provider_pr_body_sha256"],
+      "properties": {
+        "repository_id": {"type": "integer", "minimum": 1},
+        "pr_number": {"type": "integer", "minimum": 1},
+        "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "tree_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "provider_pr_body_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

@@ -589,6 +589,78 @@
     },
     {
       "category": "replacement-object",
+      "evidence_path": "scripts/tests/test_publish_release.py",
+      "name": "Release publication ignores replacement objects for commit bytes and identity",
+      "permanent": true,
+      "regression_id": "PR22-G001-REGRESSION",
+      "source_finding_id": "G-001",
+      "test_id": "PublishReleaseTests.test_g001_replacement_objects_cannot_substitute_release_bytes_or_identity"
+    },
+    {
+      "category": "alias",
+      "evidence_path": "scripts/tests/test_publish_release.py",
+      "name": "Outer release materialization preserves a concurrent destination winner",
+      "permanent": true,
+      "regression_id": "PR22-B001-REGRESSION",
+      "source_finding_id": "B-001",
+      "test_id": "PublishReleaseTests.test_b001_materialize_commit_preserves_concurrent_destination_winner"
+    },
+    {
+      "category": "replacement-object",
+      "evidence_path": "scripts/tests/test_skill_distribution_ordering.py",
+      "name": "Portable release ordering follows explicit POSIX path order",
+      "permanent": true,
+      "regression_id": "PR22-B002-REGRESSION",
+      "source_finding_id": "B-002",
+      "test_id": "PortableManifestOrderingTests.test_mixed_case_fixture_has_explicit_posix_order"
+    },
+    {
+      "category": "race",
+      "evidence_path": ".agentic/tests/test_model_routing.py",
+      "name": "Routing summary reads runs and dispositions from one snapshot",
+      "permanent": true,
+      "regression_id": "PR22-B003-REGRESSION",
+      "source_finding_id": "B-003",
+      "test_id": "ModelRoutingTests.test_summary_uses_one_read_snapshot_for_runs_and_dispositions"
+    },
+    {
+      "category": "receipt-replay",
+      "evidence_path": ".agentic/tests/test_release_trust.py",
+      "name": "Installed-host receipt closure rejects root Git metadata",
+      "permanent": true,
+      "regression_id": "PR22-K5-001-REGRESSION",
+      "source_finding_id": "K5-001",
+      "test_id": "ReleaseTrustTests.test_k5_root_git_directory_and_file_are_rejected_by_host_receipt_closure"
+    },
+    {
+      "category": "alias",
+      "evidence_path": ".agentic/tests/test_release_trust.py",
+      "name": "Extracted release sources reject root Git metadata",
+      "permanent": true,
+      "regression_id": "PR22-K7-001-REGRESSION",
+      "source_finding_id": "K7-001",
+      "test_id": "ReleaseTrustTests.test_k7_extracted_source_rejects_root_git_directory_and_file"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_publication.py",
+      "name": "Historical scanner exception binds exact identity and changed-line boundaries",
+      "permanent": true,
+      "regression_id": "PR22-HIST-SCANNER-001-REGRESSION",
+      "source_finding_id": "HIST-SCANNER-001",
+      "test_id": "PublicationScanTests.test_closed_historical_self_reference_has_exact_identity_boundaries"
+    },
+    {
+      "category": "provider-identity",
+      "evidence_path": ".agentic/tests/test_review_loop.py",
+      "name": "CI workflow provenance verifies the exact raw pinned bytes",
+      "permanent": true,
+      "regression_id": "PR22-C22-CV-001-REGRESSION",
+      "source_finding_id": "C22-CV-001",
+      "test_id": "HostTests.test_ci_workflow_pin_and_failed_result"
+    },
+    {
+      "category": "replacement-object",
       "evidence_path": ".agentic/tests/test_bootstrap_configuration.py",
       "name": "Authenticated runtime cleanup refuses a replaced cleanup directory",
       "permanent": true,

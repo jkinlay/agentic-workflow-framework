@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
@@ -260,6 +261,146 @@ class AdoptionStatusTests(unittest.TestCase):
                              '\nNext command: python -B .agentic/scripts/workflow.py status --require-active')
         else:
             self.assertNotIn('Next:', rendered)
+
+    def test_ac34_installed_host_skill_establishes_durable_trust_and_active(self):
+        with tempfile.TemporaryDirectory(prefix='awf-ac34-profile-') as raw:
+            profile = Path(raw)
+            codex_home = profile / 'codex-home'
+            release_source = profile / 'release-source'
+            shutil.copytree(ROOT, release_source,
+                            ignore=shutil.ignore_patterns('.git', '.tmp-tests', '__pycache__', '*.pyc'))
+            raw_modes = subprocess.run(
+                [self.git, '--no-replace-objects', '-c', 'core.useReplaceRefs=false', '-C', str(ROOT),
+                 'ls-tree', '-rz', '--full-tree', 'HEAD'], capture_output=True, check=True).stdout
+            mode_files = {}
+            for record in raw_modes.split(b'\0'):
+                if record:
+                    metadata, raw_path = record.split(b'\t', 1)
+                    mode, kind, _oid = metadata.decode('ascii').split(' ')
+                    self.assertEqual(kind, 'blob')
+                    mode_files[raw_path.decode('utf-8')] = mode
+            mode_manifest = profile / 'git-modes.json'
+            mode_manifest.write_text(json.dumps({'format': 'awf-raw-git-modes-1',
+                                                  'files': mode_files}, indent=2, sort_keys=True) + '\n',
+                                     encoding='utf-8', newline='\n')
+            manifest_run = subprocess.run(
+                [sys.executable, '-B', str(release_source / 'scripts/build_release.py'), '--manifest-only'],
+                cwd=release_source, capture_output=True, text=True, check=True)
+            release_pin = json.loads(manifest_run.stdout)['manifest_sha256']
+            build_output = profile / 'portable-build'
+            subprocess.run(
+                [sys.executable, '-B', str(release_source / 'scripts/build_skill_distribution.py'),
+                 '--skill-source', str(release_source / 'global/awf-portable'),
+                 '--output-dir', str(build_output), '--git-mode-manifest', str(mode_manifest),
+                 '--skill-git-prefix', 'global/awf-portable'],
+                cwd=release_source, capture_output=True, text=True, check=True,
+                env={**os.environ, 'SOURCE_DATE_EPOCH': '315532800'})
+            package_root = profile / 'package'
+            with zipfile.ZipFile(build_output / f'AWF-SKILL-v{VERSION}.zip') as bundle:
+                bundle.extractall(package_root)
+            package = package_root / 'awf'
+            import importlib.util
+            install_path = package / 'scripts/install_skill.py'
+            spec = importlib.util.spec_from_file_location('ac34_installer', install_path)
+            installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+            pin = sha256((package / installer.MANIFEST).read_bytes())
+            destination = codex_home / 'skills/awf'
+            installer.install(package, pin, dest=destination,
+                              backup_root=profile / 'skill-backups')
+
+            project = profile / 'project'
+            from agentic.installer import install as install_project
+            install_project(release_source, project, release_pin, configure=True, discover=False,
+                            overrides={'repository': 'example-org/example-repo', 'repository_id': 101,
+                                       'base_branch': 'trunk', 'test_command': 'python -m unittest'})
+            config = load(project / CONFIG)
+            receipt = load(project / INSTALLED)
+            def git(*arguments):
+                completed = subprocess.run(
+                    [self.git, '-c', 'core.autocrlf=false', '-c', 'core.fsmonitor=false',
+                     '-c', 'core.hooksPath=' + str(project / 'no-hooks'), '-C', str(project), *arguments],
+                    capture_output=True, text=True, timeout=60, check=True)
+                return completed.stdout.strip()
+            git('init', '-b', 'trunk')
+            git('remote', 'add', 'origin', 'https://github.com/example-org/example-repo.git')
+            git('add', '.')
+            git('-c', 'user.name=AWF Synthetic Fixture', '-c', 'user.email=awf@example.invalid',
+                'commit', '-m', 'Synthetic recorded adoption merge')
+            head = git('rev-parse', 'HEAD')
+            installed_files = {path.relative_to(project).as_posix(): path.read_bytes()
+                               for path in project.rglob('*') if path.is_file() and '.git' not in path.parts}
+            entry = lambda name, content: {
+                'path': name, 'type': 'blob', 'mode': '100644', 'sha': status.blob_sha(content)}
+            base = 'repos/example-org/example-repo'
+            rest_identity = {'id': 101, 'node_id': 'R_ac34', 'full_name': 'example-org/example-repo'}
+            accepted_names = (set(receipt['immutable_files'])
+                              | {CONFIG, INSTALLED, PROVENANCE, '.github/CODEOWNERS'})
+            groups = sorted({name.split('/', 1)[0] for name in accepted_names if '/' in name})
+            group_shas = {name: format(index + 11, 'x')[-1] * 40
+                          for index, name in enumerate(groups)}
+            root_entries = [entry(name, installed_files[name]) for name in sorted(accepted_names)
+                            if '/' not in name]
+            root_entries.extend({'path': name, 'type': 'tree', 'mode': '040000', 'sha': group_shas[name]}
+                                for name in groups)
+            api = {
+                base: {'id': 101, 'node_id': 'R_ac34', 'full_name': 'example-org/example-repo',
+                       'default_branch': 'trunk'},
+                base + '/branches/trunk': {'name': 'trunk', 'commit': {'sha': head}},
+                base + '/pulls/7': {
+                    'number': 7, 'node_id': 'PR_ac34', 'state': 'closed', 'merged': True,
+                    'merged_at': '2026-09-14T12:00:00+00:00', 'merge_commit_sha': None,
+                    'base': {'ref': 'trunk', 'repo': dict(rest_identity)},
+                    'head': {'ref': 'awf/adoption', 'sha': 'd' * 40, 'repo': dict(rest_identity)}},
+                base + '/pulls/7/files?per_page=50&page=1': [
+                    {'filename': INSTALLED, 'status': 'added',
+                     'sha': status.blob_sha(installed_files[INSTALLED])}],
+                base + f'/commits/{head}/pulls?per_page=100': [
+                    {'number': 7, 'merged_at': '2026-09-14T12:00:00Z',
+                     'base': {'ref': 'trunk', 'repo': {'id': 101}}}],
+                base + f'/contents/{INSTALLED}?ref={head}': {
+                    'type': 'file', 'path': INSTALLED,
+                    'sha': status.blob_sha(installed_files[INSTALLED]), 'encoding': 'base64',
+                    'content': base64.b64encode(installed_files[INSTALLED]).decode()},
+                base + f'/git/commits/{head}': {'sha': head, 'tree': {'sha': 'a' * 40}},
+                base + '/git/trees/' + 'a' * 40: {'truncated': False, 'tree': root_entries},
+            }
+            for group in groups:
+                prefix = group + '/'
+                api[base + '/git/trees/' + group_shas[group] + '?recursive=1'] = {
+                    'truncated': False,
+                    'tree': [entry(name.removeprefix(prefix), installed_files[name])
+                             for name in sorted(accepted_names) if name.startswith(prefix)]}
+            # Status must no longer depend on build output, release source, or a wrapper.
+            shutil.rmtree(release_source)
+            shutil.rmtree(build_output)
+            shutil.rmtree(package_root)
+            def read(endpoint, deadline, gh):
+                value = api[endpoint]
+                return copy.deepcopy(value), len(json_bytes(value))
+            repository = {'id': 'R_ac34', 'databaseId': 101, 'nameWithOwner': 'example-org/example-repo'}
+            graphql = {'data': {'repository': {
+                **repository, 'defaultBranchRef': {'name': 'trunk', 'target': {'oid': head}},
+                'pullRequest': {'id': 'PR_ac34', 'number': 7, 'baseRefName': 'trunk',
+                                'headRefName': 'awf/adoption', 'headRefOid': 'd' * 40,
+                                'headRepository': repository, 'state': 'MERGED', 'merged': True,
+                                'mergedAt': '2026-09-14T12:00:00Z',
+                                'mergeCommit': {'oid': head, 'repository': repository}}}}}
+            def read_graphql(query, variables, deadline, gh):
+                return copy.deepcopy(graphql), len(json_bytes(graphql))
+            with patch.dict(os.environ, {'USERPROFILE': str(profile), 'CODEX_HOME': str(codex_home)}), \
+                    patch.object(status, 'host_executable',
+                                 side_effect=lambda name, root: self.git if name == 'git' else sys.executable), \
+                    patch.object(status, '_gh_get', side_effect=read), \
+                    patch.object(status, '_gh_get_pr_files', side_effect=read), \
+                    patch.object(status, '_gh_graphql', side_effect=read_graphql):
+                result = status.project_status(project, adoption_pr=7)
+            self.assertEqual(result['project_state'], 'ACTIVE', result)
+            self.assertEqual(result['release_trust']['host_skill_path'], str(destination.resolve()))
+            self.assertEqual(result['release_trust']['codex_home'], str(codex_home.resolve()))
+            self.assertTrue(result['release_trust']['atomic_receipt'])
+            self.assertFalse(result['release_trust']['git_provenance_required'])
+            self.assertEqual(receipt['project_id'], config['project']['id'])
+            self.assertFalse(release_source.exists())
 
     def test_one_command_discovers_receipt_adoption_pr(self):
         result = self.observe(pr=None)

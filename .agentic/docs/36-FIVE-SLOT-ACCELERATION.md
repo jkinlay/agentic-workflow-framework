@@ -41,6 +41,10 @@ running rather than asserted by the plan.
    scan, and final independent review in that order. Any tuple drift invalidates
    the chain and requires a new freeze.
 
+Private deny baseline receipts follow the narrow, exact-tuple policy in
+[`37-PRIVATE-DENY-SCAN.md`](37-PRIVATE-DENY-SCAN.md). They are separate from
+publication-scan receipts; neither gate grants exceptions for the other.
+
 The PR body is canonicalized automatically as strict UTF-8 without a BOM, LF
 line endings, and exactly one trailing LF. The provider body is read back as raw
 bytes and must equal the canonical bytes before its SHA-256 enters the candidate

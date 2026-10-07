@@ -204,7 +204,7 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
             "protocol.allow": "never", "protocol.file.allow": "always", "submodule.recurse": "false",
             "fetch.recurseSubmodules": "false", "credential.helper": "", "core.askPass": "",
         }
-        git_prefix = [git, "--no-pager"]
+        git_prefix = [git, "--no-replace-objects", "--no-pager", "-c", "core.useReplaceRefs=false"]
         for key, value in configuration.items():
             git_prefix.extend(["-c", f"{key}={value}"])
 

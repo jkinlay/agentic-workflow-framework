@@ -14,6 +14,7 @@ from typing import Any
 
 from . import ValidationError
 from .canonical import canonical, fingerprint, loads, sha256
+from .private_deny_receipt import validate_private_deny_receipt
 
 
 FORMAT = "awf-five-slot-acceleration-plan-1"
@@ -444,7 +445,11 @@ def aggregate_shard_receipts(candidate: dict, assignments: list[dict], receipts:
 
 def validate_plan(plan_raw: bytes, expected_plan_sha256: str, *, local_pr_body: bytes,
                   provider_readback: bytes, inventory_raw: bytes,
-                  expected_inventory_sha256: str) -> dict:
+                  expected_inventory_sha256: str, deny_scan_receipt_raw: bytes,
+                  expected_private_mapping_sha256: str,
+                  expected_private_scanner_sha256: str,
+                  baseline_authorization_raw: bytes | None = None,
+                  expected_baseline_authorization_sha256: str | None = None) -> dict:
     """Validate a complete candidate-bound acceleration evidence bundle."""
     _digest(expected_plan_sha256, "expected plan SHA-256")
     _require(sha256(plan_raw) == expected_plan_sha256,
@@ -568,7 +573,22 @@ def validate_plan(plan_raw: bytes, expected_plan_sha256: str, *, local_pr_body: 
     _digest(completion["receipt_sha256"], "review_completion.receipt_sha256")
 
     _pass_gate(plan["publication_scan"], candidate, "publication_scan", 7)
-    _pass_gate(plan["deny_scan"], candidate, "deny_scan", 8)
+    deny_gate = _exact(plan["deny_scan"], {
+        "sequence", "status", "candidate", "receipt_sha256",
+    }, "deny_scan")
+    _require(deny_gate["sequence"] == 8 and deny_gate["status"] == "PASS",
+             "deny_scan must pass in sequence")
+    _same_candidate(deny_gate["candidate"], candidate, "deny_scan.candidate")
+    deny_receipt_sha = _digest(deny_gate["receipt_sha256"], "deny_scan.receipt_sha256")
+    validate_private_deny_receipt(
+        deny_scan_receipt_raw,
+        expected_receipt_sha256=deny_receipt_sha,
+        candidate=candidate,
+        expected_mapping_sha256=expected_private_mapping_sha256,
+        expected_scanner_sha256=expected_private_scanner_sha256,
+        baseline_authorization_raw=baseline_authorization_raw,
+        expected_baseline_authorization_sha256=expected_baseline_authorization_sha256,
+    )
     final = _exact(plan["final_independent_review"], {
         "sequence", "status", "independent", "reviewer_id", "candidate", "receipt_sha256",
     }, "final_independent_review")

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,6 +19,7 @@ sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION
 from agentic.child_process import child_env
 from release_hygiene import word_budget
+from release_modes import archive_mode, load_modes
 LINE = VERSION.removesuffix('.0')
 
 
@@ -26,6 +29,18 @@ def digest(data):
 
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def sorted_files(root):
+    """Return files in repository-style POSIX path order on every host OS."""
+    return sorted((path for path in root.rglob("*") if path.is_file()),
+                  key=lambda path: path.relative_to(root).as_posix())
+
+
+def archive_time():
+    epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "315532800"))
+    value = datetime.fromtimestamp(max(epoch, 315532800), timezone.utc)
+    return (value.year, value.month, value.day, value.hour, value.minute, value.second // 2 * 2)
 
 
 def render_launcher(skill_manifest_sha256, installer_sha256, release_zip_name, release_zip_sha256):
@@ -49,14 +64,19 @@ raise SystemExit(subprocess.call([sys.executable, "-B", str(root / "scripts/inst
 '''
 
 
-def package(root, output):
-    paths = sorted(p for p in root.rglob("*") if p.is_file())
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+def package(root, output, modes):
+    paths = sorted_files(root)
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as z:
         for p in paths:
-            info = zipfile.ZipInfo(root.name + "/" + p.relative_to(root).as_posix(), (2026, 9, 12, 0, 0, 0))
+            data = p.read_bytes()
+            info = zipfile.ZipInfo(root.name + "/" + p.relative_to(root).as_posix(), archive_time())
             info.create_system = 3
-            info.external_attr = 0o100644 << 16
-            z.writestr(info, p.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+            relative = p.relative_to(root).as_posix()
+            info.external_attr = archive_mode(modes, relative) << 16
+            info.compress_type = zipfile.ZIP_STORED
+            info.extra = b""
+            info.comment = b""
+            z.writestr(info, data, compress_type=zipfile.ZIP_STORED)
     with zipfile.ZipFile(output) as z:
         if z.testzip() or len(z.namelist()) != len(paths):
             raise ValueError("Archive verification failed")
@@ -69,8 +89,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skill-source", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--git-mode-manifest", type=Path)
+    parser.add_argument("--skill-git-prefix")
     args = parser.parse_args()
     skill = args.skill_source.resolve(strict=True)
+    git_modes = load_modes(ROOT, args.git_mode_manifest)
+    if args.skill_git_prefix:
+        skill_prefix = args.skill_git_prefix.strip("/")
+    elif skill.is_relative_to(ROOT):
+        skill_prefix = skill.relative_to(ROOT).as_posix()
+    else:
+        parser.error("an external skill source requires --skill-git-prefix and --git-mode-manifest")
     publisher = json.loads((ROOT / "PUBLISHER.json").read_text(encoding="utf-8"))
     publisher_name = publisher["name"]
     # MANIFEST.md is generated checksum inventory, not portable prose.  Its
@@ -95,23 +124,36 @@ def main():
             raise ValueError("Host-specific or generated metadata in skill source: " + p.name)
     output.mkdir(parents=True)
     release_zip = output / f"agentic-workflow-template-v{LINE}.zip"
-    result = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/build_release.py"), "--output", str(release_zip)],
+    release_command = [sys.executable, "-B", str(ROOT / "scripts/build_release.py"), "--output", str(release_zip)]
+    if args.git_mode_manifest:
+        release_command.extend(["--git-mode-manifest", str(args.git_mode_manifest.resolve())])
+    result = subprocess.run(release_command,
                             check=True, capture_output=True, text=True, encoding="utf-8", env=child_env())
     proof = json.loads(result.stdout)
     distribution = output / f"AWF-v{LINE}-distribution"
     packaged_skill = distribution / "awf"
     shutil.copytree(skill, packaged_skill, ignore=shutil.ignore_patterns("agentic-workflow-template-v*.zip", "release.json"))
+    skill_modes = {}
+    for path in sorted_files(packaged_skill):
+        relative = path.relative_to(packaged_skill).as_posix()
+        source_path = skill_prefix + "/" + relative
+        if source_path not in git_modes:
+            raise ValueError("portable source has no authoritative raw Git mode: " + source_path)
+        skill_modes[relative] = git_modes[source_path]
     assets = packaged_skill / "assets"
     assets.mkdir(exist_ok=True)
     for legal_name in ('LICENSE', 'NOTICE', 'PUBLISHER.json'):
         shutil.copyfile(ROOT / legal_name, distribution / legal_name)
     shutil.copyfile(release_zip, assets / release_zip.name)
+    skill_modes["assets/" + release_zip.name] = "100644"
     write_json(assets / "release.json", {"format": "awf-bundled-release-1", "version": VERSION,
         "archive": release_zip.name, "archive_sha256": proof["zip_sha256"], "manifest_sha256": proof["manifest_sha256"]})
+    skill_modes["assets/release.json"] = "100644"
     manifest = {"schema_version": 1, "name": "awf", "version": VERSION,
         "files": [{"path": p.relative_to(packaged_skill).as_posix(), "sha256": digest(p.read_bytes())}
-                  for p in sorted(packaged_skill.rglob("*")) if p.is_file()]}
+                  for p in sorted_files(packaged_skill)]}
     write_json(packaged_skill / "SKILL-MANIFEST.json", manifest)
+    skill_modes["SKILL-MANIFEST.json"] = "100644"
     pin = digest((packaged_skill / "SKILL-MANIFEST.json").read_bytes())
     installer_pin = digest((packaged_skill / "scripts/install_skill.py").read_bytes())
     launcher = render_launcher(pin, installer_pin, release_zip.name, proof['zip_sha256'])
@@ -146,11 +188,21 @@ No personal paths, credentials or local settings are shipped. A copied update ch
     write_json(distribution / "AWF_RELEASE_CHANNEL.json", {"format": "awf-update-channel-1", "releases": [{"version": VERSION,
         "archive": "awf/assets/" + release_zip.name, "archive_sha256": proof["zip_sha256"], "manifest_sha256": proof["manifest_sha256"]}]})
     skill_zip = output / f"AWF-SKILL-v{LINE}.zip"
-    skill_sha = package(packaged_skill, skill_zip)
-    members = {p.relative_to(distribution).as_posix(): digest(p.read_bytes()) for p in sorted(distribution.rglob("*")) if p.is_file()}
+    skill_sha = package(packaged_skill, skill_zip, skill_modes)
+    members = {p.relative_to(distribution).as_posix(): digest(p.read_bytes())
+               for p in sorted_files(distribution)}
     write_json(distribution / "DISTRIBUTION-MANIFEST.json", {"format": "awf-portable-distribution-1", "version": VERSION, "files": members})
     dist_zip = output / f"AWF-v{LINE}-distribution.zip"
-    dist_sha = package(distribution, dist_zip)
+    distribution_modes = {}
+    for path in sorted_files(distribution):
+        relative = path.relative_to(distribution).as_posix()
+        if relative.startswith("awf/"):
+            distribution_modes[relative] = skill_modes[relative.removeprefix("awf/")]
+        elif relative in {"LICENSE", "NOTICE", "PUBLISHER.json"}:
+            distribution_modes[relative] = git_modes[relative]
+        else:
+            distribution_modes[relative] = "100644"
+    dist_sha = package(distribution, dist_zip, distribution_modes)
     receipt = {"version": VERSION, "publisher": publisher_name, "license": publisher["license"],
         "skill_documentation_words": skill_words, "source_manifest_sha256": proof["manifest_sha256"], "source_archive_sha256": proof["zip_sha256"],
         "skill_manifest_sha256": pin, "skill_archive_sha256": skill_sha, "distribution_archive_sha256": dist_sha,
