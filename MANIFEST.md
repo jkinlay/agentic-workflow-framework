@@ -2,7 +2,7 @@
 
 416 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `c821e83b979bd7e0b551753f624ad2aeb04e0db3ee2a927149d3f58970b28aef`
+MANIFEST.json SHA-256: `bc5d14ae08a55d50014ae7fb8ad0b3dbc9735bc8044f32db0d9422aa703d02ac`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -73,7 +73,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/canonical.py` | `93677923594f97d186e525cc22cfbec4601ba189a95a271f6faa4095b93ef677` |
 | `.agentic/lib/agentic/child_process.py` | `db88d4cad559d8dedba578907ab756f537d5fccd17ff4fdfd02eb28f93cd8be6` |
 | `.agentic/lib/agentic/cli.py` | `28bd80ce3d9fbd150b377a50f78017b2fde132d036c6d05dce29b7e576da5230` |
-| `.agentic/lib/agentic/closeout.py` | `4e8c803d6d1c5ab820e1da377406eb4880c278df21478b6addfad2810be13f45` |
+| `.agentic/lib/agentic/closeout.py` | `8f94f55157bcadd61ad09c40f7920c8dea49a380dbb5547409d52ab0bfe390c6` |
 | `.agentic/lib/agentic/configuration.py` | `70d15ebf0fd7cbe3551db5ba9e533bfec91b5ac6a2e3c4f93df21f066acb29ac` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
 | `.agentic/lib/agentic/continuous_controller.py` | `7e4378efff4549a75dcee00cec8e42785116d5d5fafe6821516b4eaef64783b4` |
@@ -272,7 +272,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_host_process.py` | `e51ef1f41d87493eeb3e3dbf38d815e5cec3d0d90e2f06f83fdc23436d131083` |
 | `.agentic/tests/test_interaction.py` | `7b0ac687daa56b3e49e9d849b578e4c2d2bd640c89c96b2f4b543b071ae5a996` |
 | `.agentic/tests/test_launch_surfaces.py` | `53fe382ae85b44ca3e7b919d7808eec0c3c170e90df4f85d3dd08124628d1f98` |
-| `.agentic/tests/test_lifecycle_190.py` | `e46d756518b5b27fc770b9546995d2b5c9be2560f53f661aa9f5776a7cde333b` |
+| `.agentic/tests/test_lifecycle_190.py` | `5dce730991e36ef6cd01afef9bf6150d050e8b8b16cf7cb8c294d113905a17a6` |
 | `.agentic/tests/test_model_routing.py` | `cb0a7b5138004fc48341f75146643bcbc03f8be9db7c5685c0e0e36c212dda2b` |
 | `.agentic/tests/test_native_benchmark.py` | `21e12b7857e1e0af622087bcdd4db538d10b7477163116a1d7169b374c8e88fd` |
 | `.agentic/tests/test_native_decision_contract.py` | `b0b8f27b3315bf411a808bb5e10e2f87b00de9d623cee901782273359bda95e3` |

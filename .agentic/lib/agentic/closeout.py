@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
 from . import ValidationError
 from .child_process import child_env, isolated_git_env
@@ -30,16 +31,17 @@ def git_command(repository, *args):
             "-c", "core.quotePath=false", "-c", "protocol.file.allow=never", "-C", str(repository), *args]
 
 
-def run_git(repository, *args):
+def run_git(repository, *args, extra_env=None):
+    environment = isolated_git_env(extra=extra_env) if extra_env else git_environment()
     try:
         return subprocess.run(git_command(repository, *args), capture_output=True, timeout=120,
-                              env=child_env(git_environment()), stdin=subprocess.DEVNULL)
+                              env=child_env(environment), stdin=subprocess.DEVNULL)
     except subprocess.SubprocessError as exc:
         raise ValidationError(f"git {args[0]} did not complete: {type(exc).__name__}") from exc
 
 
 def git(repository, *args, binary=False):
-    # Read-only plumbing only: cat-file, rev-parse and ls-tree run no hooks.
+    # Read-only plumbing only: cat-file, rev-parse, ls-tree and merge-base run no hooks.
     result = run_git(repository, *args)
     if result.returncode != 0:
         detail = re.sub(r"[^\x20-\x7e]", "?", result.stderr.decode("utf-8", "replace"))[:200]
@@ -56,6 +58,54 @@ def object_exists(repository, sha, kind):
     return probe.stdout.decode("utf-8").strip()
 
 
+def commit_parents(repository, sha):
+    parents = []
+    for line in git(repository, "cat-file", "commit", sha, binary=True).split(b"\n"):
+        if not line:
+            break
+        if line.startswith(b"parent "):
+            parents.append(line[7:].decode("ascii"))
+    return parents
+
+
+def is_ancestor(repository, ancestor, descendant):
+    result = run_git(repository, "merge-base", "--is-ancestor", ancestor, descendant)
+    if result.returncode not in (0, 1):
+        raise ValidationError(f"git merge-base failed with exit {result.returncode}")
+    return result.returncode == 0
+
+
+def squash_tree(repository, base, head):
+    """Tree a squash of head onto base must have; new objects go to a throwaway store."""
+    if is_ancestor(repository, base, head):
+        return git(repository, "rev-parse", head + "^{tree}")
+    objects = git(repository, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+    with tempfile.TemporaryDirectory(prefix="awf-closeout-objects-") as scratch:
+        result = run_git(repository, "merge-tree", "--write-tree", "--no-messages", base, head,
+                         extra_env={"GIT_OBJECT_DIRECTORY": scratch, "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects})
+    if result.returncode != 0:
+        raise ValidationError("reviewed_head_sha does not merge cleanly onto base_sha; the squash merge is not the reviewed code")
+    return result.stdout.decode("utf-8").split("\n", 1)[0].strip()
+
+
+def validate_relationship(record, repository):
+    """The merge commit must integrate exactly the reviewed head onto the recorded base."""
+    head, base, merge = record["reviewed_head_sha"], record["base_sha"], record["merge_commit_sha"]
+    if not is_ancestor(repository, base, merge):
+        raise ValidationError(f"base_sha {base} is not an ancestor of merge_commit_sha {merge}")
+    if merge == head:
+        return "fast_forward"
+    parents = commit_parents(repository, merge)
+    if len(parents) == 2 and parents[1] == head and is_ancestor(repository, base, parents[0]):
+        return "merge_commit"
+    if len(parents) == 1 and parents[0] == base:
+        tree = git(repository, "rev-parse", merge + "^{tree}")
+        if tree != squash_tree(repository, base, head):
+            raise ValidationError(f"merge_commit_sha {merge} tree is not reviewed_head_sha {head} squashed onto base_sha {base}")
+        return "squash"
+    raise ValidationError(f"merge_commit_sha {merge} does not merge reviewed_head_sha {head} onto base_sha {base}")
+
+
 def validate_closeout(record, repository, contracts=None):
     """Resolve commit -> tree -> path/blob -> content digest; fail closed on any gap."""
     if contracts is not None:
@@ -66,6 +116,8 @@ def validate_closeout(record, repository, contracts=None):
         if object_exists(repository, record[field], field) != "commit":
             raise ValidationError(f"{field} {record[field]} is not a commit")
         report["checked"].append(field)
+    report["merge_relationship"] = validate_relationship(record, repository)
+    report["checked"].append("sha_relationship")
     tree = git(repository, "rev-parse", record["merge_commit_sha"] + "^{tree}")
     if tree != record["merge_tree_sha"]:
         raise ValidationError(f"merge_tree_sha {record['merge_tree_sha']} differs from the merge commit's tree {tree}")
