@@ -1,0 +1,57 @@
+# CI bootstrap for AWF: unit tests plus manifest and release-hygiene checks.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Configure git identity for local-git fixtures
+        run: |
+          git config --global user.name "awf-ci"
+          git config --global user.email "awf-ci@users.noreply.github.com"
+      - name: Resolve non-alias interpreter (framework refuses symlinked Python)
+        run: |
+          echo "PY=$(python -c 'import os,sys;print(os.path.realpath(sys.executable))')" >> "$GITHUB_ENV"
+      - name: Install hash-locked dependencies
+        run: |
+          "$PY" -m pip install --require-hashes "--only-binary=:all:" -r requirements.txt
+      - name: Manifest is current (regenerate and diff)
+        run: |
+          "$PY" -B scripts/build_release.py --manifest-only
+          git diff --exit-code -- MANIFEST.json MANIFEST.md
+      - name: Release hygiene
+        run: |
+          "$PY" -B scripts/release_hygiene.py > /dev/null
+      - name: Whitespace check (changed lines only)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: git diff --check "$BASE" HEAD
+      - name: Unit tests (.agentic/tests)
+        run: |
+          "$PY" -B -m unittest discover -s .agentic/tests -t .agentic/tests
+      - name: Unit tests (scripts/tests)
+        run: |
+          "$PY" -B -m unittest discover -s scripts/tests -t scripts/tests
