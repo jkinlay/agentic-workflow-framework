@@ -107,7 +107,7 @@ class ConfigTests(Fixture):
                 self.assertEqual(execution["native_streams"], {"enabled": True, "dispatch_policy": "ready_independent"})
                 self.assertFalse(execution["host_broker"]["enabled"])
                 self.assertEqual(execution["host_broker"]["max_workers"], 3)
-                self.assertEqual(config["controller"]["status_cadence_seconds"], 900)
+                self.assertEqual(config["controller"]["status_cadence_seconds"], 600)
                 self.assertFalse(any(value for key, value in config["controller"].items()
                                      if key != "status_cadence_seconds"))
                 self.assertFalse(config["merge_gate"]["automatic_merge_enabled"])

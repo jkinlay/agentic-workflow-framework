@@ -24,7 +24,7 @@ from .controller_state import configure_database, protected_state_path, restrict
 
 STREAM_STATES = {"WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"}
 TICKET_STATES = {"ELIGIBLE", "PAUSED_INPUT", "BLOCKED", "COMPLETE"}
-DEFAULT_STATUS_CADENCE_SECONDS = 15 * 60
+DEFAULT_STATUS_CADENCE_SECONDS = 10 * 60
 STATE_APPLICATION_ID = 0x41574631
 
 DDL = """
@@ -305,13 +305,15 @@ class ContinuousControllerStore:
     """Durable scheduler in which every configured stream has a visible state."""
 
     def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS,
-                 worktree_roots=()):
+                 worktree_roots=(), periodic_status_enabled=True):
         self.path = protected_state_path(path, worktree_roots)
         _require(isinstance(stream_ids, (list, tuple)) and stream_ids and
                  len(stream_ids) == len(set(stream_ids)) and
                  all(isinstance(item, str) and item.strip() for item in stream_ids),
                  "Configured stream identities must be unique nonempty strings")
         _require(type(cadence_seconds) is int and cadence_seconds > 0, "Status cadence must be positive seconds")
+        _require(type(periodic_status_enabled) is bool, "Periodic status enablement must be boolean")
+        self.periodic_status_enabled = periodic_status_enabled
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             db.executescript(DDL)
@@ -521,8 +523,8 @@ class ContinuousControllerStore:
             cadence = int(self._meta(db, "cadence_seconds"))
             elapsed = None if not last_regular else (current - timestamp(last_regular)).total_seconds()
             _require(elapsed is None or elapsed >= 0, "Host clock moved backwards; reconcile cadence before delivery")
-            regular_due = not last_regular or elapsed >= cadence
-            change_due = revision > last_revision
+            regular_due = self.periodic_status_enabled and (not last_regular or elapsed >= cadence)
+            change_due = revision > last_revision and (self.periodic_status_enabled or revision > 0)
             streams = self._snapshot(db)
             all_complete = all(s["state"] == "COMPLETE" for s in streams)
             if all_complete and not change_due:

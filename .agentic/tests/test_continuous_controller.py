@@ -223,7 +223,7 @@ class ContinuousControllerTests(unittest.TestCase):
 
     def test_default_and_configured_cadence_with_immediate_change_digest(self):
         first = self.store.digest(NOW)
-        self.assertEqual((first["kind"], first["cadence_seconds"]), ("REGULAR", 900))
+        self.assertEqual((first["kind"], first["cadence_seconds"]), ("REGULAR", 600))
         self.assertEqual(self.store.digest("2026-10-02T10:00:30Z"), first)
         self.store.acknowledge_digest(first["delivery_id"], "2026-10-02T10:00:31Z")
         self.assertIsNone(self.store.digest("2026-10-02T10:01:00Z"))
@@ -233,10 +233,10 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(len(changed["streams"]), 3)
         self.assertTrue(all(item["exact_tuple"] for item in changed["streams"]))
         self.store.acknowledge_digest(changed["delivery_id"], "2026-10-02T10:02:02Z")
-        # The change digest does not move the regular 15-minute deadline.
-        regular = self.store.digest("2026-10-02T10:15:00Z")
+        # The change digest does not move the regular 10-minute deadline.
+        regular = self.store.digest("2026-10-02T10:10:00Z")
         self.assertEqual(regular["kind"], "REGULAR")
-        self.store.acknowledge_digest(regular["delivery_id"], "2026-10-02T10:15:01Z")
+        self.store.acknowledge_digest(regular["delivery_id"], "2026-10-02T10:10:01Z")
         self.store.set_cadence(300)
         self.assertEqual(self.store.digest("2026-10-02T10:20:00Z")["cadence_seconds"], 300)
 
