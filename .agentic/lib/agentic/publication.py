@@ -275,6 +275,21 @@ def _json_file(path, label):
     return value
 
 
+def _config_file(path):
+    """PROJECT_CONFIG.yaml is JSON-shaped YAML; owner comments survive upgrades."""
+    try:
+        return _json_file(path, "project configuration")
+    except ValidationError:
+        from .canonical import load_yaml
+        try:
+            value = load_yaml(Path(path).read_bytes())
+        except (OSError, ValidationError) as exc:
+            raise ValidationError(f"Invalid project configuration: {type(exc).__name__}") from exc
+        if not isinstance(value, dict):
+            raise ValidationError("project configuration must be a JSON object")
+        return value
+
+
 def _linear_terminal_repeat_regex(pattern):
     """Recognize a small alternation subset with a linear matching bound.
 
@@ -499,7 +514,7 @@ def _project_declarations(root, config_path=None):
         path = Path(root) / path
     if not path.is_file():
         return {}, None
-    config = _json_file(path, "project configuration")
+    config = _config_file(path)
     publication = config.get("publication", {})
     if not isinstance(publication, dict) or set(publication) - {"deny_literals", "deny_regexes", "internal_hostnames"}:
         raise ValidationError("Project publication declarations have unsupported fields")

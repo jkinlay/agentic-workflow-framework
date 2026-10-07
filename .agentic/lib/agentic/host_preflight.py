@@ -562,9 +562,16 @@ def _configured_routes(value):
 
 
 def _load_json_or_yaml(path):
+    from . import ValidationError
     from .canonical import load_yaml, loads
     raw = path.read_bytes()
-    return loads(raw.decode("utf-8-sig")) if raw.lstrip().startswith((b"{", b"[")) else load_yaml(raw)
+    if raw.lstrip().startswith((b"{", b"[")):
+        try:
+            return loads(raw.decode("utf-8-sig"))
+        except ValidationError:
+            # JSON-shaped YAML with owner comments, which upgrades preserve.
+            pass
+    return load_yaml(raw)
 
 
 def route_models_observed(root, *, config=None, capabilities=None, now=None):
