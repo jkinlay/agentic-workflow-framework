@@ -4,13 +4,13 @@
 
 Adds Git-format-aware `tested_tree`; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match.
 
-Defaults: workers A/B/C use `gpt-5.6-luna` / medium (simple work: low); the shared critic/adversarial handler, controller and specialist use `gpt-5.6-sol` / high, also the review/risk floor. Escalation advances through `gpt-5.6-terra` / high to `gpt-5.6-sol` / high. Five slots cover three workers, critic and controller. Caps, adopted configurations and legacy models/routes, including `gpt-6-*`, remain accepted. New adoptions use a 16-run ticket ceiling; upgrades retain theirs. Release trust binds host receipts and verified archives; ACTIVE requires fresh default-branch status.
+Defaults: workers use `gpt-5.6-luna` / medium (simple work: low); the shared critic/adversarial handler, controller and specialist use `gpt-5.6-sol` / high, also the review/risk floor. Escalation: `gpt-5.6-terra` / high, then `gpt-5.6-sol` / high. Five slots cover three workers, critic and controller. Caps, adopted configurations and legacy models/routes, including `gpt-6-*`, remain accepted. New adoptions use a 16-run ticket ceiling; upgrades retain theirs. Release trust binds host receipts and verified archives; ACTIVE requires fresh default-branch status.
 
 Adds outcome templates; verdicts remain separate. Adds byte-verified install/upgrade; unsafe evidence fails closed.
 
 Scans messages, patches, files and PR text; findings block, and receipts bind base/head/body. An ignored mapping supplements built-in detectors.
 
-Adds one-commit unpublished-branch rewrite with tree preservation, replacement scanning and ref-reachability checks; published evidence is refused and reflog retention reported.
+Adds one-commit unpublished-branch rewrite with tree preservation, replacement scanning and ref-reachability checks; published evidence is refused.
 
 Hardens activation with versioned merge identity, PR/base/head cross-checks, Git-object checkout comparison and strict ACTIVE exit.
 
@@ -18,7 +18,7 @@ Adds K8-K11 Windows diagnostics, preflight, safe encoding and rollback-safe runt
 
 Adds environment exclusions, launch inventory, provider identity gates, Jira binding proposals, publication readiness and resumable owner-publication handoffs.
 
-Upgrades tolerate a runtime venv `lib64` → `lib` link (#54). **[PENDING: #52, #55, AC42 evidence]**
+Upgrades tolerate a venv `lib64` → `lib` link (#54). `gh release` binds `--repo`; origin is validated before tagging (#55). **[PENDING: #52, AC42 evidence]**
 
 ### Known issues (1.9.4)
 

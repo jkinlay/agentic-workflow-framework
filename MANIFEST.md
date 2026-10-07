@@ -2,7 +2,7 @@
 
 416 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `95778e14416c38e263adb03b155b7323b3a2881de45a117ef18a313781d4cb45`
+MANIFEST.json SHA-256: `f2cbcf7157a322d95487c99ef2d0cc98548107be5c6592e1e31b3ea896014134`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -315,7 +315,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `AGENTS.md` | `831e760a6f843cd8201095c9da3985635d258d70f51df2b2f90e8ffd0be9cb21` |
 | `ARCHITECTURE.md` | `761781e0581d5d2a75013bf5f131ff06f18180805f485c1e50dfbc0a9680042c` |
-| `CHANGELOG.md` | `4c823c029e1a76927aa668e3039dfb04fb1d40f43245522c8b4796597118af57` |
+| `CHANGELOG.md` | `4cf91a3aae8e5736685880ec7d3a88a423a6a9426b7e4ae508be72b3064f6ba2` |
 | `Claude outputs/AWF-1.9.1-Showcase-Presentation.html` | `5dbf524af67adee2327b33ac12064f63b5fc2314645e0a6cf306abccc8124386` |
 | `Claude outputs/AWF-1.9.2-Speaker-Script.md` | `335b8ff56c006166f155973bac8be8f52614fa78f6454230a3efa73576e35327` |
 | `Claude outputs/awf192-critic-prompt.md` | `77a12deaefd9029554b8ac718efed2da370fd3dc91b80c225bca80cbbaa8877c` |
