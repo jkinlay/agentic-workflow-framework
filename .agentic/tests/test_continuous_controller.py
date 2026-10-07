@@ -197,6 +197,79 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertTrue(all(item["state"] in {"WORKING", "BLOCKED", "PAUSED_INPUT", "COMPLETE"}
                             for item in snapshot))
 
+    def test_unresolved_dispatch_ticket_is_reserved_across_streams_after_priority_change(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "global-reservation.sqlite3", ["A", "B"])
+        original = ticket("EX-RESERVED", 1)
+        store.schedule([original], NOW, host_capacity=1)
+        old_intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(old_intent["dispatch_id"], NOW)
+        store.mark_dispatch_unknown(old_intent["dispatch_id"], "2026-10-02T10:00:01Z")
+
+        # The original stream is reprioritized onto another ticket while the
+        # old dispatch is unresolved. The second stream must not take EX-RESERVED.
+        later = "2026-10-02T10:00:02Z"
+        replacement = ticket("EX-REPLACEMENT", 2)
+        store.schedule([ticket("EX-RESERVED", 1, "COMPLETE"), replacement], later,
+                       host_capacity=1)
+        replacement_intent = next(item for item in store.prepare_dispatches(later)
+                                  if item["ticket"] == "EX-REPLACEMENT")
+        begun = store.begin_dispatch(replacement_intent["dispatch_id"], "2026-10-02T10:00:03Z")
+        store.finish_dispatch(replacement_intent["dispatch_id"],
+                              dispatch_receipt(begun, "2026-10-02T10:00:04Z"),
+                              "2026-10-02T10:00:04Z")
+
+        reprioritized = [ticket("EX-RESERVED", 0), ticket("EX-REPLACEMENT", 1)]
+        snapshot = store.schedule(reprioritized, "2026-10-02T10:00:05Z", host_capacity=2)
+        self.assertEqual(next(row for row in snapshot if row["stream"] == "A")["ticket"],
+                         "EX-REPLACEMENT")
+        self.assertNotEqual(next(row for row in snapshot if row["stream"] == "B")["ticket"],
+                            "EX-RESERVED")
+        pending = store.prepare_dispatches("2026-10-02T10:00:05Z")
+        self.assertEqual([item["ticket"] for item in pending], ["EX-RESERVED"])
+        with store.connection() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM controller_dispatch WHERE ticket='EX-RESERVED'").fetchone()[0], 1)
+
+        # A fresh reconciliation readback ends the old unresolved intent. A
+        # distinct exact tuple may then be admitted as later work.
+        recon_at = "2026-10-02T10:00:06Z"
+        recon = store.begin_dispatch_reconciliation(old_intent["dispatch_id"], recon_at)
+        store.finish_dispatch(old_intent["dispatch_id"],
+                              dispatch_receipt(recon, "2026-10-02T10:00:07Z"),
+                              "2026-10-02T10:00:07Z", reconcile=True)
+        next_work = ticket("EX-RESERVED", 0, exact_tuple="base:a/head:new/tree:new/contract:d/review:e")
+        snapshot = store.schedule([next_work, replacement], "2026-10-02T10:00:08Z", host_capacity=2)
+        self.assertEqual(next(row for row in snapshot if row["stream"] == "B")["ticket"],
+                         "EX-RESERVED")
+        created = store.prepare_dispatches("2026-10-02T10:00:08Z")
+        self.assertTrue(any(item["ticket"] == "EX-RESERVED" and item["stream_id"] == "B"
+                            for item in created), repr(created))
+
+    def test_pending_and_in_flight_dispatch_tickets_are_also_globally_reserved(self):
+        for status in ("PENDING", "IN_FLIGHT"):
+            with self.subTest(status=status):
+                path = Path(self.temporary.name) / f"reservation-{status.lower()}.sqlite3"
+                store = ContinuousControllerStore(path, ["A", "B"])
+                reserved = ticket("EX-HELD", 1)
+                replacement = ticket("EX-NEXT", 2)
+                store.schedule([reserved], NOW, host_capacity=1)
+                intent = store.prepare_dispatches(NOW)[0]
+                if status == "IN_FLIGHT":
+                    store.begin_dispatch(intent["dispatch_id"], NOW)
+                later = "2026-10-02T10:00:01Z"
+                store.schedule([ticket("EX-HELD", 1, "COMPLETE"), replacement], later,
+                               host_capacity=1)
+                snapshot = store.schedule([ticket("EX-HELD", 0), replacement],
+                                          "2026-10-02T10:00:02Z", host_capacity=2)
+                self.assertEqual(next(row for row in snapshot if row["stream"] == "A")["ticket"],
+                                 "EX-NEXT")
+                self.assertNotEqual(next(row for row in snapshot if row["stream"] == "B")["ticket"],
+                                    "EX-HELD")
+                with store.connection() as db:
+                    rows = db.execute("SELECT stream_id,status FROM controller_dispatch "
+                                      "WHERE ticket='EX-HELD'").fetchall()
+                self.assertEqual([(row["stream_id"], row["status"]) for row in rows], [("A", status)])
+
     def test_contradictory_reviewer_counts_fail_before_dispatch_or_delivery(self):
         malformed = ticket("QA-BAD", 1, reviewer_completion={
             "required": 2, "completed": 1, "acceptable": 1,

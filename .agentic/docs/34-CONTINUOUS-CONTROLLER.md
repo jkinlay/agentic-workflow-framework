@@ -26,7 +26,7 @@ Reviewer counts are admitted only when `required = completed + outstanding` and 
 
 ## Dispatch and cadence
 
-Dispatch intent is durable before the host call. An interrupted call becomes `UNKNOWN` and is reconciled only by observation; it is never blindly replayed. Unrelated streams continue after one adapter failure.
+Dispatch intent is durable before the host call. Tickets with `PENDING`, `IN_FLIGHT`, or `UNKNOWN` intents stay reserved across every stream until exact host observation resolves the intent; reprioritization cannot create a second dispatch elsewhere. An interrupted call becomes `UNKNOWN` and is reconciled only by observation; it is never blindly replayed. Unrelated streams continue after one adapter failure.
 
 Cadence defaults to 600 seconds. Existing state keeps its stored value; `--migrate-status-cadence` explicitly applies the configured cadence, while mismatch otherwise fails closed. `--disable-periodic-status` suppresses scheduled digests, not immediate blocker, failure, input-required or merge-ready `CHANGE` digests. Pending outbox items replay unchanged until exact readback; newer changes follow afterward. Changes do not reset the regular deadline. Restarts preserve pending delivery; clock rollback fails closed. Digests cover every stream and gate state.
 

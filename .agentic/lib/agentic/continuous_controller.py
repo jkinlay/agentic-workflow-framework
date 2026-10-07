@@ -429,13 +429,25 @@ class ContinuousControllerStore:
     def _schedule(self, db, tickets, now, host_capacity):
         rows = db.execute("SELECT * FROM stream_status ORDER BY stream_id").fetchall()
         inventory = {item["ticket"]: item for item in tickets}
+        # A durable dispatch intent reserves its ticket globally until the host
+        # outcome is observed. Otherwise a priority change can move the same
+        # ticket to another stream and create a second dispatch while the first
+        # may still be running.
+        reserved_dispatches = {}
+        for intent in db.execute(
+                "SELECT DISTINCT ticket,stream_id FROM controller_dispatch "
+                "WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN')"):
+            reserved_dispatches.setdefault(intent["ticket"], set()).add(intent["stream_id"])
+        reserved_tickets = set(reserved_dispatches)
         working, held_paths = [], []
         for row in rows:
             item = inventory.get(row["ticket"]) if row["state"] == "WORKING" else None
             prerequisites = item is not None and item["disposition"] == "ELIGIBLE" and all((
                 item["dependencies_satisfied"], item["budget_available"], item["cap_available"],
                 item["review_independent"]))
-            if (prerequisites and len(working) < host_capacity and
+            intent_streams = reserved_dispatches.get(item["ticket"], set()) if item else set()
+            intent_matches_stream = not intent_streams or intent_streams == {row["stream_id"]}
+            if (prerequisites and intent_matches_stream and len(working) < host_capacity and
                     not any(_overlap(item["paths"], paths) for paths in held_paths)):
                 working.append(row)
                 held_paths.append(item["paths"])
@@ -443,10 +455,13 @@ class ContinuousControllerStore:
         assigned = {row["ticket"] for row in working}
         slots = max(0, host_capacity - len(working))
         eligible = sorted((item for item in tickets if item["ticket"] not in assigned and
+                           item["ticket"] not in reserved_tickets and
                            item["disposition"] == "ELIGIBLE"), key=lambda item: (item["priority"], item["ticket"]))
         paused = sorted((item for item in tickets if item["ticket"] not in assigned and
+                         item["ticket"] not in reserved_tickets and
                          item["disposition"] == "PAUSED_INPUT"), key=lambda item: (item["priority"], item["ticket"]))
         blocked = sorted((item for item in tickets if item["ticket"] not in assigned and
+                          item["ticket"] not in reserved_tickets and
                           item["disposition"] == "BLOCKED"), key=lambda item: (item["priority"], item["ticket"]))
         free_rows = [row for row in rows if row not in working]
         for row in free_rows:
