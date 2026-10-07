@@ -2,7 +2,7 @@
 
 389 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `a0e816d7d12be586400c0b8501077e5f239ffbe0c2ff243f7114f75a66308ba7`
+MANIFEST.json SHA-256: `a189dd98c4749cdaff70eb72af244103b09167ec8a397160f3c916d91f0841e6`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -292,7 +292,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.gitattributes` | `bc1553b97cf129935e90d30d4d2854566a1882e8f83844f24568d4b25ae58402` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
-| `.github/workflows/ci.yml` | `d5b4db6313787bbce959d9fe46d19bf8aa371c9a8f92ee42ab9b1ea4e6bf63b6` |
+| `.github/workflows/ci.yml` | `469da3251767c5755683f4e956dbaf113edc06412f520aa47491f2f11b5c1257` |
 | `.gitignore` | `2c024fab2af2c8bf2312776cf30cf844ca00911ae2c1d4d20c91bd2d19e6b083` |
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `AGENTS.md` | `b2baf36217c83df131eb3545bc97172ea76eec8052f4f52cb8d09c982078d4ea` |

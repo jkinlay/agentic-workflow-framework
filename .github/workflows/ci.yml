@@ -48,7 +48,10 @@ jobs:
       - name: Whitespace check (changed lines only)
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: git diff --check "$BASE" HEAD
+        run: |
+          # New-branch pushes report an all-zero "before" SHA; fall back to the parent commit.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then BASE="$(git rev-parse HEAD~1)"; fi
+          git diff --check "$BASE" HEAD
       - name: Unit tests (.agentic/tests)
         run: |
           "$PY" -B -m unittest discover -s .agentic/tests -t .agentic/tests
