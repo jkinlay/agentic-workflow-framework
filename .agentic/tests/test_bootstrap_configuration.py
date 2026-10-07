@@ -410,18 +410,23 @@ class ConfiguredInstallerTests(unittest.TestCase):
         text = text.replace('  "execution": {', '  # owner budget policy\n  "execution": {')
         before = (text + "\n").replace("\n", "\r\n").encode("utf-8")
         config_path.write_bytes(before)
+        # MIGRATION-to-v1.9.3.md: "The migration inserts null immutable Jira
+        # bindings where absent, preserving owner values." Every other owner
+        # byte, including comments and CRLF endings, must be unchanged.
+        jira_anchor = b'  "jira": {\r\n    "enabled": true,\r\n'
+        self.assertEqual(before.count(jira_anchor), 1)
+        null_bindings = (b'    "cloud_id": null,\r\n    "provider_project_id": null,\r\n'
+                         b'    "controller_actor_id": null,\r\n')
         expected = before.replace(b'"expected_workflow_version": "1.9.2"',
-                                  b'"expected_workflow_version": "1.9.3"')
+                                  b'"expected_workflow_version": "1.9.3"'
+                                  ).replace(jira_anchor, jira_anchor + null_bindings)
 
         second = self.perform(mode="upgrade")
 
         after = config_path.read_bytes()
         self.assertEqual(after, expected)
-        changed_lines = [(old, new) for old, new in zip(before.splitlines(keepends=True), after.splitlines(keepends=True))
-                         if old != new]
-        self.assertEqual(changed_lines, [
-            (b'    "expected_workflow_version": "1.9.2"\r\n',
-             b'    "expected_workflow_version": "1.9.3"\r\n')])
+        removed = [line for line in before.splitlines(keepends=True) if line not in after.splitlines(keepends=True)]
+        self.assertEqual(removed, [b'    "expected_workflow_version": "1.9.2"\r\n'])
         current = json.loads(after.replace(b'  # owner budget policy\r\n', b''))
         self.assertEqual(current["execution"]["max_tokens_per_ticket"], 100000)
         self.assertEqual(current["execution"]["max_cost_microusd_per_ticket"], 2500000)
