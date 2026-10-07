@@ -488,7 +488,9 @@ def _controller_base_interpreter() -> Path:
     ``-I -S -B``, so the launcher must run from the base installation.
     """
     candidate = Path(getattr(sys, "_base_executable", None) or sys.executable).absolute()
-    interpreter = resolve_without_alias(candidate, "controller Python executable", directory=False)
+    # Base installations commonly alias python3 -> python3.X; pin the real file.
+    interpreter = resolve_without_alias(Path(os.path.realpath(candidate)),
+                                        "controller Python executable", directory=False)
     for parent in (interpreter.parent, interpreter.parent.parent):
         if os.path.lexists(parent / "pyvenv.cfg"):
             raise ValidationError(

@@ -2,7 +2,7 @@
 
 418 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `a9fa45fb5151a7c8638276aad657e7f2f0bd21055eeb0943a56dbc30d6b0bf73`
+MANIFEST.json SHA-256: `5adb09814258594c14666cfa48a8fbaf2de286918fc1a303354a5e32e7e8428f`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -85,7 +85,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/git_isolation.py` | `43b3258f19a9942a399a85ff21f78a26b45306b415a532ca9df3ec926cf91d26` |
 | `.agentic/lib/agentic/gittree.py` | `f1df153bf9f3e87cd95552aaf102fd0c6b0cd6f3a49bf51b6ef29c923340ff67` |
 | `.agentic/lib/agentic/handoff.py` | `0b22ed03bd59b86a108832fd1da6c42658881179d70ea0a8172c2b13202cd3fb` |
-| `.agentic/lib/agentic/heavy_validation.py` | `82cec3ff969cc2a02099b012c8650e1eb272a85c38f0116677e40a9c040066a9` |
+| `.agentic/lib/agentic/heavy_validation.py` | `d0d41b0f7c4df1a886045df5ad71e0c22aae0e05cdba9b4781f68827c8d19d8c` |
 | `.agentic/lib/agentic/heavy_validation_child.py` | `1098a432539cd38f290f4491f3bd5b9196ee4c54d1be0871bd0550d4477a3d69` |
 | `.agentic/lib/agentic/heavy_validation_controller.py` | `01f6c10fd93f97aee3d0cb1641af1a36dfa6d11a42d16fe9cc1e9caa49c792e2` |
 | `.agentic/lib/agentic/host_preflight.py` | `e7ff4de32ab5b13889c652215f1c9644581494bd586e6198f6b73955d3b61298` |
