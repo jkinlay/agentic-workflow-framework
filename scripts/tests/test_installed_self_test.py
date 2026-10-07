@@ -44,7 +44,10 @@ class InstalledSelfTestTests(unittest.TestCase):
             _, interpreter, _ = installed_paths(project)
             base = getattr(sys, "_base_executable", None) or sys.executable
             env = child_env(dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
-            subprocess.run([base, "-m", "venv", str(project / ".agentic/.venv")], check=True,
+            # POSIX venvs symlink python by default, which the heavy-validation
+            # controller refuses as an alias; Windows venvs always copy.
+            copies = [] if os.name == "nt" else ["--copies"]
+            subprocess.run([base, "-m", "venv", *copies, str(project / ".agentic/.venv")], check=True,
                            capture_output=True, env=env, timeout=600)
             subprocess.run([str(interpreter), "-m", "pip", "install", "--disable-pip-version-check",
                             "--require-hashes", "--only-binary=:all:", "-r",
