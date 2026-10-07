@@ -10,11 +10,13 @@ Adds outcome templates; verdicts remain separate.
 
 Adds byte-verified install/upgrade; unsafe evidence fails closed.
 
-Adds publication scanning of messages, patches, files, PR bodies and comments. Findings block; receipts bind base, head and body digest. An ignored mapping supplies aliases and deny entries beside built-in detectors.
+Adds publication scanning of messages, patches, files, PR bodies and comments. Findings block; receipts bind base, head and body digest. An ignored mapping supplies aliases and deny entries.
 
-Adds a one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, scanning the replacement and checking ref reachability. It refuses published evidence or unsupported counts and reports reflog retention. This covers L1, L2 and L9 scanning; producer retrofits remain P1.
+Adds one-commit unpublished-branch rewrite with tree preservation, replacement scanning and ref-reachability checks. It refuses published evidence or unsupported counts and reports reflog retention (L1/L2/L9; producer retrofits remain P1).
 
 Hardens activation with versioned REST/GraphQL merge identity, complete PR/base/head/state/time cross-checks, Git-object checkout comparison, lock-free inspection, structured blockers, strict ACTIVE exit and capabilities. Network detectors self-scan without weakening detection.
+
+Adds K8-K11 Windows diagnostics, preflight, self-test progress, safe encoding, and rollback-safe runtimes from pinned offline wheels.
 
 Adds environment exclusions, launch inventory, provider identity gates, Jira binding proposals, publication readiness before dispatch, and durable owner-publication handoffs that resume draft PRs without repeating work.
 

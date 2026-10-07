@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION, ValidationError
 from agentic.child_process import child_env
+from agentic.runtime_commands import installed_paths
 from release_review import add_review_arguments, review_arguments, review_source
 RELEASE_LINE = VERSION.removesuffix('.0')
 PREFIX = f'agentic-workflow-template-v{RELEASE_LINE}/'
@@ -99,15 +100,26 @@ def preflight(archive_path, approved_digest, workdir, report_path):
     return archive_path, workdir, report_path
 
 
+def expected_post_install_commands(destination):
+    root, interpreter, entry_point = installed_paths(destination)
+    return [[str(interpreter), '-B', '-I', str(entry_point), '--root', str(root), action]
+            for action in ('verify-installation', 'validate-config')]
+
+
+def installed_stage_python(destination):
+    """Select only the target installation's canonical interpreter."""
+    return installed_paths(destination)[1]
+
+
 def assert_bootstrap_checks(report, destination, manifest, *, configured):
     """Inspect evidence from both real installed CLI invocations, not copy status."""
     assert report['status'] == ('CONFIGURED' if configured else 'INSTALLED_UNCONFIGURED')
     assert report['installed'] is True and report['active'] is False
     observed = report['post_install_checks']
     assert len(observed) == 2
-    script = str(destination.resolve() / '.agentic/scripts/workflow.py')
-    for item, action in zip(observed, ('verify-installation', 'validate-config')):
-        assert item['command'] == [sys.executable, '-B', '-I', script, action]
+    expected = expected_post_install_commands(destination)
+    for item, command in zip(observed, expected):
+        assert item['command'] == command
         assert item.get('execution_status') != 'NOT_RUN'
         assert isinstance(item['output'], dict)
     integrity, configuration = observed
@@ -137,6 +149,8 @@ def validate(argv=None):
     parser.add_argument('--expected-zip-sha256', required=True)
     parser.add_argument('--report', type=Path, required=True, help='New report file path; existing attempt reports are preserved')
     parser.add_argument('--workdir', type=Path)
+    parser.add_argument('--runtime-wheelhouse', type=Path,
+                        help='Verified offline wheel directory required by installed-runtime acceptance stages')
     add_review_arguments(parser)
     parser.add_argument('--self-test-timeout-seconds', type=self_test_timeout, default=600,
                         help='Deadline for each full source/installed self-test only: 60..3600 seconds (default: 600). Other acceptance-stage deadlines remain unchanged; timed-out runs retain a FAILED partial report and fixture directory.')
@@ -169,12 +183,23 @@ def validate(argv=None):
     except (ValidationError, OSError, ValueError, TypeError, RecursionError) as error:
         parser.error(str(error))
     checks.append({'check':'Current independent review covers verified source bytes','status':'PASS'})
+    if args.runtime_wheelhouse is None:
+        parser.error('--runtime-wheelhouse is required for complete installed-runtime acceptance')
+    try:
+        runtime_wheelhouse = args.runtime_wheelhouse.resolve(strict=True)
+        if not runtime_wheelhouse.is_dir():
+            raise ValueError('Offline runtime wheelhouse is not a directory')
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     review_cli = review_arguments(args)
 
-    def command(args, cwd=SOURCE, code=0, name=None, timeout=180, error_output=False):
+    def command(args, cwd=SOURCE, code=0, name=None, timeout=180, error_output=False,
+                python_executable=None, isolated=False):
         label = name or ' '.join(map(str,args))
         try:
-            done = subprocess.run([sys.executable, '-B', *map(str,args)], cwd=cwd,
+            runtime = str(python_executable or sys.executable)
+            done = subprocess.run([runtime, '-B', *(['-I'] if isolated else []),
+                                   *map(str,args)], cwd=cwd,
                                   env=child_env(env), capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             def decoded(value):
@@ -209,6 +234,14 @@ def validate(argv=None):
         print(label + ': PASS',flush=True)
         return stderr if error_output and not stdout.strip() else stdout
 
+    def installed_command(args, *, cwd, **kwargs):
+        """Run an installed stage only through that target's canonical runtime."""
+        interpreter = installed_stage_python(cwd)
+        if not interpreter.is_file():
+            raise RuntimeError('Canonical installed runtime is unavailable for ' + str(cwd))
+        return command(args, cwd=cwd, python_executable=interpreter,
+                       isolated=True, **kwargs)
+
     selected_self_test_timeout = args.self_test_timeout_seconds
     args_archive_pin = args.expected_zip_sha256
     command(['scripts/self_test.py','--report',RUN/'default-self-test.json'],
@@ -219,7 +252,8 @@ def validate(argv=None):
     command(['scripts/self_test.py','--release'],code=1,
             name='Explicit source release check still refuses missing review pins')
     command(['scripts/validate_archive.py','--archive',ARCHIVE,'--expected-zip-sha256',args_archive_pin,
-             '--workdir',RUN/'missing-pins','--report',RUN/'missing-pins-report.json'],code=2,
+             '--workdir',RUN/'missing-pins','--report',RUN/'missing-pins-report.json',
+             '--runtime-wheelhouse',runtime_wheelhouse],code=2,
             name='Archive acceptance still refuses missing review pins')
     assert not (RUN/'missing-pins-report.json').exists()
     command(['scripts/self_test.py','--release','--report',RUN/'extracted-self-test.json',
@@ -278,7 +312,8 @@ def validate(argv=None):
     (DEST/'.github').mkdir()
     (DEST/'.github/EXISTING.md').write_bytes(b'Existing project metadata\n')
     (DEST/'AGENTS.md').write_bytes(b'Existing owner instructions\n')
-    bootstrap = ['scripts/bootstrap_project.py','--dest',DEST,'--expected-manifest-sha256',MANIFEST]
+    bootstrap = ['scripts/bootstrap_project.py','--dest',DEST,'--expected-manifest-sha256',MANIFEST,
+                 '--runtime-wheelhouse',runtime_wheelhouse]
     command(bootstrap+['--dry-run'],code=2,name='CLI conflict preflight')
     assert (DEST/'AGENTS.md').read_bytes()==b'Existing owner instructions\n'
     first = json.loads(command(bootstrap+['--on-conflict','backup'],code=1,
@@ -307,17 +342,17 @@ def validate(argv=None):
     assert (DEST/'README.md').read_bytes()==b'Existing project readme\n'
     assert (DEST/'.github/EXISTING.md').read_bytes()==b'Existing project metadata\n'
     assert any(p.read_bytes()==b'Existing owner instructions\n' for p in (DEST/'.agentic-backup').rglob('AGENTS.md'))
-    command([workflow,'verify-installation'],cwd=DEST,name='Installed integrity CLI')
-    unconfigured_status = json.loads(command([workflow,'status','--json'],cwd=DEST,
+    installed_command([workflow,'--root',DEST,'verify-installation'],cwd=DEST,name='Installed integrity CLI')
+    unconfigured_status = json.loads(installed_command([workflow,'--root',DEST,'status','--json'],cwd=DEST,
         name='Installed status names unconfigured paths and never claims active'))
     assert unconfigured_status['project_state']=='INSTALLED' and unconfigured_status['integrity_valid'] is True
-    assert unconfigured_status['line']==f'AWF {VERSION}: INSTALLED — streams 3/6'
+    assert unconfigured_status['line']==f'AWF {VERSION}: INSTALLED - streams 3/6'
     assert unconfigured_status['ci_gate']=='NOT_CONFIGURED' and unconfigured_status['accepted_checkout']=='UNOBSERVED'
     assert {item['path'] for item in unconfigured_status['configuration']['unresolved']}==expected_residue
     assert all(path in unconfigured_status['next_action'] for path in expected_residue)
     rules_cli = '.agentic/scripts/repository_rules.py'
     rules_observation = RUN/'synthetic-no-rules.json'
-    missing_rules = json.loads(command([rules_cli,'--repository','example/adoption-fixture','--synthetic-none',
+    missing_rules = json.loads(installed_command([rules_cli,'--repository','example/adoption-fixture','--synthetic-none',
         '--default-branch','trunk','--save-observation',rules_observation],cwd=DEST,
         name='Installed controller adoption preflight continues on synthetic missing default-branch rules'))
     assert missing_rules['repository_rules']=='MISSING' and missing_rules['adoption_allowed'] is True
@@ -325,12 +360,13 @@ def validate(argv=None):
     assert missing_rules['execution_authority'] is False
     assert missing_rules['rules_enablement_ready'] is False
     missing_rule_pin = hashlib.sha256(rules_observation.read_bytes()).hexdigest()
-    command([rules_cli,'--repository','example/adoption-fixture','--observation',rules_observation,
+    installed_command([rules_cli,'--repository','example/adoption-fixture','--observation',rules_observation,
         '--expected-observation-sha256',missing_rule_pin,'--require-enablement'],cwd=DEST,code=2,
         name='Installed enablement prerequisite refuses missing rules without blocking adoption')
     ADOPTION = RUN/'unprotected-adoption'; ADOPTION.mkdir()
     adopted = json.loads(command(['scripts/bootstrap_project.py','--dest',ADOPTION,
-        '--expected-manifest-sha256',MANIFEST,'--github-repo','example/adoption-fixture',
+        '--expected-manifest-sha256',MANIFEST,'--runtime-wheelhouse',runtime_wheelhouse,
+        '--github-repo','example/adoption-fixture',
         '--repository-id','54321','--project-name','Synthetic adoption fixture','--project-short-name','ADOPT',
         '--test-command','python -m unittest discover',
         '--codeowner','@other','--default-branch','trunk','--rules-observation',rules_observation,
@@ -342,17 +378,17 @@ def validate(argv=None):
     assert adopted['live_automation_enabled'] is False
     owner_text = (ADOPTION/'.github/CODEOWNERS').read_text(encoding='utf-8')
     assert '@other' in owner_text and '@maintainer' not in owner_text and 'HUMAN_OWNER' not in owner_text
-    command([workflow,'verify-installation'],cwd=ADOPTION,name='Custom CODEOWNERS installation verifies')
-    configured_status = json.loads(command([workflow,'status','--json','--release-source',SOURCE,
+    installed_command([workflow,'--root',ADOPTION,'verify-installation'],cwd=ADOPTION,name='Custom CODEOWNERS installation verifies')
+    configured_status = json.loads(installed_command([workflow,'--root',ADOPTION,'status','--json','--release-source',SOURCE,
         '--expected-manifest-sha256',MANIFEST,'--gh',RUN/'unavailable-gh-for-offline-acceptance'],cwd=ADOPTION,
         name='Configured status remains non-active without remote acceptance observations'))
     assert configured_status['project_state']=='CONFIGURED' and configured_status['integrity_valid'] is True
-    assert configured_status['line']==f'AWF {VERSION}: CONFIGURED — streams 3/6'
+    assert configured_status['line']==f'AWF {VERSION}: CONFIGURED - streams 3/6'
     assert configured_status['configuration']['status']=='ACCEPTED' and configured_status['configuration']['unresolved']==[]
     assert configured_status['ci_gate']=='NOT_CONFIGURED' and configured_status['accepted_checkout']=='UNOBSERVED'
     assert configured_status['adoption']=='UNOBSERVED' and configured_status['execution_authority'] is False
     assert configured_status['next_action']
-    ci_enablement_refusal = json.loads(command([workflow,'validate-config','--require-enablement'],cwd=ADOPTION,
+    ci_enablement_refusal = json.loads(installed_command([workflow,'--root',ADOPTION,'validate-config','--require-enablement'],cwd=ADOPTION,
         code=2,error_output=True,name='Configured adoption without pinned CI refuses live enablement configuration'))
     assert ci_enablement_refusal['status']=='REJECTED' and ci_enablement_refusal['execution_authority'] is False
     assert '$.validation.required_ci_checks' in ci_enablement_refusal['reason']
@@ -360,14 +396,14 @@ def validate(argv=None):
     # Component self-tests validate project-owned configuration. Run them on
     # the configured fixture; retain DEST's deliberate residue until mapping it
     # for the separate configuration/ownership/stream preservation upgrade.
-    command(['.agentic/scripts/self_test.py','--report',RUN/'installed-self-test.json'],cwd=ADOPTION,name='Complete configured installed self-test',timeout=selected_self_test_timeout)
-    command([status_cli,'report','.agentic/examples/project-status.json'],cwd=DEST,name='Installed project status Markdown CLI')
-    cycle_markdown = command([status_cli,'cycle','.agentic/examples/project-cycle.json','--now','2026-09-11T10:00:00Z'],cwd=DEST,name='Installed whole-project continuation and authorization presentation')
+    installed_command(['.agentic/scripts/self_test.py','--report',RUN/'installed-self-test.json'],cwd=ADOPTION,name='Complete configured installed self-test',timeout=selected_self_test_timeout)
+    installed_command([status_cli,'report','.agentic/examples/project-status.json'],cwd=DEST,name='Installed project status Markdown CLI')
+    cycle_markdown = installed_command([status_cli,'cycle','.agentic/examples/project-cycle.json','--now','2026-09-11T10:00:00Z'],cwd=DEST,name='Installed whole-project continuation and authorization presentation')
     assert 'State: RUNNING' in cycle_markdown and 'Required decision:' in cycle_markdown and '\u2014' in cycle_markdown
-    installed_plan = json.loads(command(['.agentic/scripts/plan_streams.py','--input','.agentic/examples/stream-input.json','--expected-input-sha256',hashlib.sha256(inventory.read_bytes()).hexdigest(),'--project-root',DEST,'--allow-synthetic','--now','2026-09-11T10:00:00Z'],cwd=DEST,name='Installed planner writes into project root'))
+    installed_plan = json.loads(installed_command(['.agentic/scripts/plan_streams.py','--input','.agentic/examples/stream-input.json','--expected-input-sha256',hashlib.sha256(inventory.read_bytes()).hexdigest(),'--project-root',DEST,'--allow-synthetic','--now','2026-09-11T10:00:00Z'],cwd=DEST,name='Installed planner writes into project root'))
     assert installed_plan['stream_labels']==['A','B','C'] and (DEST/'STREAMS.md').is_file()
     installed_streams = (DEST/'STREAMS.md').read_bytes(), (DEST/'STREAMS.json').read_bytes()
-    command([workflow,'operating','set','--instruction','Synthetic acceptance: preserve one operating stream under a lower governance ceiling',
+    installed_command([workflow,'--root',DEST,'operating','set','--instruction','Synthetic acceptance: preserve one operating stream under a lower governance ceiling',
         '--set','streams.count=1'],cwd=DEST,name='Audited operating reduction before lower-ceiling governance fixture')
     preserved_operating = (DEST/'OPERATING_CONFIG.yaml').read_bytes()
     assert json.loads(preserved_operating)['streams']['count'] == 1
@@ -380,7 +416,7 @@ def validate(argv=None):
     (DEST/'.agentic/PROJECT_CONFIG.yaml').write_bytes(custom_config_bytes)
     custom_owners = b'# Project-owned governance reviewers\n/.agentic/ @other\n'
     (DEST/'.github/CODEOWNERS').write_bytes(custom_owners)
-    command([workflow,'validate-config'],cwd=DEST,name='Customized installed configuration')
+    installed_command([workflow,'--root',DEST,'validate-config'],cwd=DEST,name='Customized installed configuration')
     second = json.loads(command(bootstrap+['--mode','upgrade','--on-conflict','backup'],name=f'Complete v{VERSION} upgrade'))
     assert_bootstrap_checks(second, DEST, MANIFEST, configured=True)
     assert first['install_id']==second['install_id']
@@ -391,13 +427,14 @@ def validate(argv=None):
     assert (DEST/'.github/CODEOWNERS').read_bytes()==custom_owners
     assert (DEST/'OPERATING_CONFIG.yaml').read_bytes()==preserved_operating
     assert installed_streams==((DEST/'STREAMS.md').read_bytes(),(DEST/'STREAMS.json').read_bytes())
-    command([workflow,'verify-installation'],cwd=DEST,name='Upgraded integrity CLI')
-    command([workflow,'validate-config'],cwd=DEST,name='Configuration preserved after upgrade')
+    installed_command([workflow,'--root',DEST,'verify-installation'],cwd=DEST,name='Upgraded integrity CLI')
+    installed_command([workflow,'--root',DEST,'validate-config'],cwd=DEST,name='Configuration preserved after upgrade')
     limited = json.loads(command(['.agentic/scripts/plan_streams.py','--input',inventory,'--expected-input-sha256',hashlib.sha256(inventory.read_bytes()).hexdigest(),'--project-root',DEST,'--allow-synthetic','--now','2026-09-11T10:00:00Z','--host-writer-capacity','3','--expected-plan-sha256',installed_plan['plan_sha256']],name='External runtime honors the target project\'s explicit lower capacity'))
     assert limited['capacity']['effective_writer_capacity']==1 and len(limited['dispatch_packets'])==1
     assert len(limited['deferred_dispatch_packets'])==2 and limited['prompt_user'] is False
     command(['scripts/validate_git_checkout.py','--source',SOURCE,'--expected-manifest-sha256',MANIFEST,
-        '--workdir',RUN/'g','--report',RUN/'git-checkout.json'],name='Windows-compatible Git checkout byte preservation and negative controls',timeout=360)
+        '--workdir',RUN/'g','--report',RUN/'git-checkout.json','--runtime-wheelhouse',runtime_wheelhouse],
+        name='Windows-compatible Git checkout byte preservation and negative controls',timeout=360)
     git_checkout = json.loads((RUN/'git-checkout.json').read_text(encoding='utf-8'))
     assert git_checkout['status']=='PASS'
     before = (SOURCE/'MANIFEST.json').read_bytes()
