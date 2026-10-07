@@ -61,6 +61,28 @@ def run(command, *, cwd, env=None, text=True, input_data=None):
     return result
 
 
+_ORIGIN_PATTERNS = (
+    re.compile(r"^https://(?:[^@/]+@)?(?P<host>[A-Za-z0-9.-]+(?::[0-9]+)?)/(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"),
+    re.compile(r"^ssh://(?:[^@/]+@)?(?P<host>[A-Za-z0-9.-]+)(?::[0-9]+)?/(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"),
+    re.compile(r"^(?:[^@/:]+@)?(?P<host>[A-Za-z0-9.-]+):(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+?)(?:\.git)?$"),
+)
+
+
+def origin_repository(repository):
+    """Return HOST/OWNER/REPO for the ``origin`` remote that receives the tag.
+
+    ``gh`` otherwise resolves its target from ambient ``GH_REPO``/``GH_HOST`` or
+    other remotes, which could publish or verify a release in a different
+    repository from the one the tag was pushed to.
+    """
+    url = git(repository, "remote", "get-url", "origin").strip()
+    for pattern in _ORIGIN_PATTERNS:
+        match = pattern.match(url)
+        if match and match["name"] not in {".", ".."} and match["owner"] not in {".", ".."}:
+            return f"{match['host']}/{match['owner']}/{match['name']}"
+    raise ReleaseError("origin remote is not a recognised HOST/OWNER/REPO URL; refusing to infer the release repository")
+
+
 def git(root, *args, text=True):
     return git_run(root, *args, text=text).stdout
 
@@ -390,8 +412,9 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
         body_file.write_text(body, encoding="utf-8", newline="\n")
         git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
                 "-F", str(tag_file))
+        release_repo = origin_repository(repository)
         git_run(repository, "push", "origin", f"refs/tags/{tag}")
-        run([gh, "release", "create", tag, *map(str, assets), "--draft", "--verify-tag",
+        run([gh, "release", "create", tag, *map(str, assets), "--repo", release_repo, "--draft", "--verify-tag",
              "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)
         return result
 
@@ -424,7 +447,8 @@ def verify_tag(repository, tag, output_dir, *, gh="gh"):
             raise ReleaseError("rebuilt assets or manifest differ from the annotated tag record")
         published = base / "published"
         published.mkdir()
-        run([gh, "release", "download", tag, "--dir", str(published)], cwd=repository)
+        run([gh, "release", "download", tag, "--repo", origin_repository(repository), "--dir", str(published)],
+            cwd=repository)
         observed = {}
         for path in published.iterdir():
             info = path.lstat()

@@ -372,7 +372,9 @@ else: raise SystemExit(2)
     def test_local_bare_remote_fake_gh_and_verify_changed_byte(self):
         bare = self.base / "remote.git"
         command(["git", "init", "--bare", str(bare)], self.base)
-        command(["git", "remote", "add", "origin", str(bare)], self.repository)
+        # The fetch URL names the GitHub repository; pushes go to the local bare remote.
+        command(["git", "remote", "add", "origin", "https://github.com/jkinlay/awf-fixture.git"], self.repository)
+        command(["git", "remote", "set-url", "--push", "origin", str(bare)], self.repository)
         command(["git", "push", "-u", "origin", "main"], self.repository)
         fake_bin = self.base / "fake-bin"; fake_bin.mkdir()
         store = self.base / "fake-release"; store.mkdir()
@@ -380,7 +382,8 @@ else: raise SystemExit(2)
         executable = self.make_fake_gh(fake_bin, store, log)
         env = os.environ.copy()
         env.update(PATH=str(fake_bin) + os.pathsep + env.get("PATH", ""),
-                   AWF_FAKE_GH_LOG=str(log), AWF_FAKE_GH_STORE=str(store))
+                   AWF_FAKE_GH_LOG=str(log), AWF_FAKE_GH_STORE=str(store),
+                   GH_REPO="attacker/elsewhere")
         old = os.environ.copy()
         os.environ.update(env)
         try:
@@ -407,6 +410,25 @@ else: raise SystemExit(2)
         calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(call[:2] == ["release", "create"] and "--draft" in call for call in calls))
         self.assertTrue(any(call[:2] == ["release", "download"] for call in calls))
+        # Ambient GH_REPO must never choose the release repository.
+        for call in calls:
+            self.assertIn("--repo", call)
+            self.assertEqual("github.com/jkinlay/awf-fixture", call[call.index("--repo") + 1])
+
+    def test_origin_repository_binds_gh_to_the_tagged_origin(self):
+        cases = {
+            "https://github.com/jkinlay/agentic-workflow-framework.git": "github.com/jkinlay/agentic-workflow-framework",
+            "https://token@github.com/jkinlay/agentic-workflow-framework": "github.com/jkinlay/agentic-workflow-framework",
+            "git@github.com:jkinlay/agentic-workflow-framework.git": "github.com/jkinlay/agentic-workflow-framework",
+            "ssh://git@ghe.example.com:2222/team/awf.git": "ghe.example.com/team/awf",
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url), patch.object(publisher, "git", return_value=url + "\n"):
+                self.assertEqual(expected, publisher.origin_repository(self.repository))
+        for url in (str(self.base / "remote.git"), "file:///tmp/remote.git", "https://github.com/onlyowner"):
+            with self.subTest(url=url), patch.object(publisher, "git", return_value=url + "\n"):
+                with self.assertRaisesRegex(publisher.ReleaseError, "origin remote is not a recognised"):
+                    publisher.origin_repository(self.repository)
 
 
 if __name__ == "__main__":
