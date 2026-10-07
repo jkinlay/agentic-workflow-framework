@@ -2,7 +2,7 @@
 
 388 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `21b1c2445d4bc69bd006c22fdc0fd0f5e6061c65a2b8f1b0a263c8d90c1198ee`
+MANIFEST.json SHA-256: `88c86e7707130228f7c3cdff3fe9ac45066494c16663704c5816df23706b5024`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -252,7 +252,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_continuous_controller.py` | `884fe9c9619a20354f8916d9eebe2aaef17cd6750cd0a65d168a5b6d7fed3735` |
 | `.agentic/tests/test_five_slot_acceleration.py` | `8693ec9dbf5f40a3429f5ea92a17ee3e117a9e5aea629b4b7b30ade375b8b6bb` |
 | `.agentic/tests/test_gittree.py` | `6eb3a12e3c5edc126368b3446fcdac47737281c3ed1c2beb45458c67d1f7d483` |
-| `.agentic/tests/test_heavy_validation.py` | `214cf30b5bc5dd5c0fce00d09c47a8d29984e6536b4920dfe05c87abc8e382be` |
+| `.agentic/tests/test_heavy_validation.py` | `6c7c45f02594e71153da59d4c042b1c3c19288f2445c5a79e30678d34d4fe193` |
 | `.agentic/tests/test_host_process.py` | `e51ef1f41d87493eeb3e3dbf38d815e5cec3d0d90e2f06f83fdc23436d131083` |
 | `.agentic/tests/test_interaction.py` | `7b0ac687daa56b3e49e9d849b578e4c2d2bd640c89c96b2f4b543b071ae5a996` |
 | `.agentic/tests/test_launch_surfaces.py` | `53fe382ae85b44ca3e7b919d7808eec0c3c170e90df4f85d3dd08124628d1f98` |

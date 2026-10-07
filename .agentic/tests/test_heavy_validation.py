@@ -1710,6 +1710,7 @@ class HeavyValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "dirty"):
                 attestor(candidate, str(root))
 
+    @unittest.skipUnless(os.name == "nt", "Immutable snapshot lock (_lock_snapshot) is implemented only on Windows")
     def test_post_attestation_replace_and_ambient_git_config_cannot_redirect_snapshot(self):
         with tempfile.TemporaryDirectory() as folder:
             outer = Path(folder)
@@ -1827,6 +1828,7 @@ class HeavyValidationTests(unittest.TestCase):
                 with snapshotter(candidate, str(root)):
                     self.fail("tree-mismatched archive was dispatched")
 
+    @unittest.skipUnless(os.name == "nt", "Immutable snapshot lock (_lock_snapshot) is implemented only on Windows")
     def test_git_object_snapshot_isolated_from_checkout_mutation(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -1877,6 +1879,7 @@ class HeavyValidationTests(unittest.TestCase):
                     with snapshotter(candidate, str(root)):
                         self.fail("snapshot with an injected sibling was dispatched")
 
+    @unittest.skipUnless(os.name == "nt", "Immutable snapshot lock (_lock_snapshot) is implemented only on Windows")
     def test_production_snapshot_blocks_injection_during_execution(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
