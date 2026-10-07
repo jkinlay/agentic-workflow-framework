@@ -8,7 +8,7 @@ import copy
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 import shutil
 import subprocess
 import sys
@@ -499,6 +499,7 @@ class HonestPreflightTests(unittest.TestCase):
 
         with patch("agentic.providers.github_status.host_executable", return_value=sys.executable), \
                 patch.object(host_preflight.os, "name", "nt"), \
+                patch.object(host_preflight, "Path", PurePath), \
                 patch.object(host_preflight, "_WindowsJob", return_value=Job()), \
                 patch.object(host_preflight.subprocess, "Popen", return_value=Process()):
             observed = host_preflight.run(["python", "-c", "pass"])
