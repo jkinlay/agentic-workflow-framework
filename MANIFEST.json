@@ -62,7 +62,7 @@
     ".agentic/lib/agentic/authorization.py": "ec568a2f9e62d76e2e874009cf5a68f23f6ae6e52a3a8d030ffe5952f732d073",
     ".agentic/lib/agentic/canonical.py": "93677923594f97d186e525cc22cfbec4601ba189a95a271f6faa4095b93ef677",
     ".agentic/lib/agentic/child_process.py": "42ee1e20145c586f2465a62e25ace8d213d0e294be165d5f12156433b281e1eb",
-    ".agentic/lib/agentic/cli.py": "2cd21043dcdde49bbc2db5e5d0be58d5c47314d6defa9ad7c0e4e10093ecf6b2",
+    ".agentic/lib/agentic/cli.py": "28bd80ce3d9fbd150b377a50f78017b2fde132d036c6d05dce29b7e576da5230",
     ".agentic/lib/agentic/closeout.py": "19e4e387e18ef947775198db5243eec8fb5b814f11165dc2a317706be77cad80",
     ".agentic/lib/agentic/configuration.py": "70d15ebf0fd7cbe3551db5ba9e533bfec91b5ac6a2e3c4f93df21f066acb29ac",
     ".agentic/lib/agentic/continuation.py": "4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db",

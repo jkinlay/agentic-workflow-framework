@@ -82,6 +82,8 @@ def main(argv=None, default_root=None):
     status_parser.add_argument("--expected-manifest-sha256", help="Independent approved source manifest pin; otherwise use the trusted host installed AWF skill")
     doctor_parser = sub.add_parser("doctor", help="Print canonical installed runtime paths and copy/paste-safe PowerShell commands")
     doctor_parser.add_argument("--json", action="store_true", help="Print the versioned doctor result as ASCII-safe JSON")
+    doctor_parser.add_argument("--handoff", type=Path,
+                               help="Instead compare a received handoff snapshot with this host's observations")
     record_parser = sub.add_parser("validate-record")
     record_parser.add_argument("type")
     record_parser.add_argument("file", type=Path)
@@ -150,12 +152,10 @@ def main(argv=None, default_root=None):
     handoff_parser = sub.add_parser("handoff", help="Read-only handoff snapshot of verified observations; grants no authority")
     handoff_parser.add_argument("--json", action="store_true", help="Print JSON instead of Markdown")
     handoff_parser.add_argument("--output", type=Path, help="Also create this new JSON file; never overwrites")
-    doctor_parser = sub.add_parser("doctor", help="Compare a received handoff snapshot with this host's observations")
-    doctor_parser.add_argument("--handoff", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         root = args.root.absolute()
-        if args.command in ("handoff", "doctor"):
+        if args.command == "handoff" or (args.command == "doctor" and args.handoff is not None):
             from .handoff import build_snapshot, compare_snapshot, render_markdown
             snapshot = build_snapshot(root)
             if args.command == "doctor":
