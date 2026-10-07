@@ -8,17 +8,17 @@ Configure `execution.model_routing`; `defaults` prints its schema-compatible set
 
 | Role/condition | Model | Effort |
 | --- | --- | --- |
-| Controller | `gpt-6-astra` | high |
-| Workers A/B/C | `gpt-6-luna` | medium |
-| Simple worker | `gpt-6-luna` | low |
-| Shared independent critic/adversarial handler | `gpt-6-astra` | high |
-| Specialist; high complexity, uncertainty or risk | `gpt-6-astra` | high |
+| Controller | `gpt-5.6-sol` | high |
+| Workers A/B/C | `gpt-5.6-luna` | medium |
+| Simple worker | `gpt-5.6-luna` | low |
+| Shared independent critic/adversarial handler | `gpt-5.6-sol` | high |
+| Specialist; high complexity, uncertainty or risk | `gpt-5.6-sol` | high |
 
 Simple means low complexity/risk/uncertainty, strong verification and no risk flags; Jira priority is insufficient. Preserve ticket/phase identities. Requests include observed `stream`; an `epic_id` requires host-observed `epic_risk_flags`. Never infer risk.
 
 Precedence: role default, simple/risk rules, stream override, matching Epic-scoped override, agent override, ticket override; mandatory risk/review floors apply afterward. Root [operating configuration](29-OPERATING-CONFIGURATION.md) supplies stream/role choices without changing governance. Only the unchanged unpinned worker default permits qualifying simple work; custom stream/Epic routes override it. `pinned:true` blocks optional escalation, never floors. Allowlists intersect `role_allowed_models` with `execution.roles.*.approved_model_ids`. The host must support the route; otherwise return `unavailable`, without fallback. Review contexts must differ from workers; initially unknown contexts are checked at settlement.
 
-Escalation occurs between runs, from durable reasoning/implementation/validation failure history. Both model rank and effort remain nondecreasing, including after reclassification. Each approved model must support the configured effort ceiling. If monotonicity conflicts with that ceiling or a pin, block. Defaults allow two escalations per ticket and three reasoning failures per phase. Worker escalation advances `gpt-6-luna` → `gpt-6-sol` / high → `gpt-6-astra` / high. Legacy model IDs and all budget caps remain unchanged.
+Escalation occurs between runs, from durable reasoning/implementation/validation failure history. Both model rank and effort remain nondecreasing, including after reclassification. Each approved model must support the configured effort ceiling. If monotonicity conflicts with that ceiling or a pin, block. Defaults allow two escalations per ticket and three reasoning failures per phase. Worker escalation advances `gpt-5.6-luna` → `gpt-5.6-terra` / high → `gpt-5.6-sol` / high. `gpt-6-*` IDs stay accepted when explicitly configured; budget caps remain unchanged.
 
 `resolve-failure` records verified recovery before a same-model retry and preserves budgets, floors and pins.
 
