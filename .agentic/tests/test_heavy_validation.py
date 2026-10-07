@@ -472,7 +472,10 @@ class HeavyValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             marker = Path(folder) / "survived.txt"
             child = "import time,pathlib; time.sleep(2); pathlib.Path(" + repr(str(marker)) + ").write_text('bad')"
-            parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," + repr(child) + "]); time.sleep(10)"
+            # On Linux the partition runs from a sealed memfd, so its own
+            # sys.executable (/proc/self/fd/N) cannot launch a grandchild.
+            parent = ("import subprocess,time; subprocess.Popen([" + repr(os.path.realpath(sys.executable)) +
+                      ",'-c'," + repr(child) + "]); time.sleep(10)")
             result = run(plan([partition("tree", parent, timeout=1)]), config(enabled=False))
             time.sleep(2.2)
             self.assertFalse(marker.exists())
