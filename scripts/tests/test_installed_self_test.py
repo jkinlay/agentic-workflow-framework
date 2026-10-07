@@ -36,6 +36,9 @@ class InstalledSelfTestTests(unittest.TestCase):
             install(ROOT, project, pin, mode="install", discover=False)
             self.assertFalse((project / "scripts").exists())
             self.assertFalse((project / "MANIFEST.json").exists())
+            # An adopter may own a root MANIFEST.json; it must not make the
+            # installed project look like the AWF source repository.
+            (project / "MANIFEST.json").write_text('{"adopter": "owned"}\n', encoding="utf-8")
             # The documented owner step: merge the installed attributes so
             # managed bytes survive checkout under core.autocrlf on Windows.
             (project / ".gitattributes").write_bytes(

@@ -10,7 +10,22 @@ from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-AWF_SOURCE_REPOSITORY = (ROOT / "MANIFEST.json").is_file()
+INSTALLATION_RECEIPT = ".agentic/installed-manifest.json"
+SOURCE_MARKER = "scripts/build_release.py"
+
+
+def is_awf_source_repository(root: Path) -> bool:
+    """True only for an AWF source tree, never for an installed project.
+
+    A root ``MANIFEST.json`` alone is not enough: adopters may own one. Installed
+    projects carry the installation receipt and lack the source-only release
+    builder.
+    """
+    return ((root / "MANIFEST.json").is_file() and (root / SOURCE_MARKER).is_file()
+            and not (root / INSTALLATION_RECEIPT).exists())
+
+
+AWF_SOURCE_REPOSITORY = is_awf_source_repository(ROOT)
 SOURCE_ONLY_REASON = "needs AWF source-repository files absent from installed projects"
 
 
