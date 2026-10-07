@@ -18,10 +18,18 @@ FIXTURES = ROOT / ".agentic/tests/fixtures/upgrades/versions.json"
 @unittest.skipUnless(FIXTURES.is_file(), "historical upgrade fixtures are source-repository only")
 class AC42HarnessSmokeTests(unittest.TestCase):
     def test_smoke_run_passes_every_covered_clause_except_the_skipped_self_test(self):
+        # 1.9.2 has an owner .gitignore that the upgrade appends to; under
+        # core.autocrlf=true its working-tree bytes change on checkout.
+        for version in ("1.9.1", "1.9.2"):
+            with self.subTest(version=version):
+                self._smoke(version)
+
+    def _smoke(self, version):
         with tempfile.TemporaryDirectory(prefix="awf-ac42-test-") as raw:
             evidence = Path(raw) / "evidence.json"
             done = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/ac42_e2e.py"), "--work",
-                                   str(Path(raw) / "work"), "--evidence", str(evidence), "--skip-self-test"],
+                                   str(Path(raw) / "work"), "--evidence", str(evidence), "--skip-self-test",
+                                   "--from-version", version],
                                   capture_output=True, text=True, timeout=600,
                                   env=child_env(dict(os.environ, PYTHONDONTWRITEBYTECODE="1")))
             report = json.loads(evidence.read_text(encoding="utf-8"))
@@ -33,6 +41,7 @@ class AC42HarnessSmokeTests(unittest.TestCase):
             self.assertEqual(report["rows"]["active_single_status_run"]["evidence"]["project_state"], "ACTIVE")
             self.assertEqual(report["result"], "FAIL")  # never a gate pass without the self-test
             self.assertFalse(report["gate_eligible"])
+            self.assertTrue(report["rows"]["project_values_preserved"]["evidence"]["gitignore_prefix_preserved"])
             self.assertEqual(done.returncode, 1)
 
 

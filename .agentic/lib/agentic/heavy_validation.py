@@ -824,7 +824,13 @@ def _snapshot_executables(executables: list[dict], source_root: Path,
         except ValueError:
             launch_source = source
         else:
+            # Untracked interpreters under the checkout (for example the
+            # project's ignored .agentic/.venv on Windows, where venv
+            # python.exe is a real file rather than a symlink) are absent from
+            # the reviewed-tree snapshot; launch the pinned original instead.
             launch_source = snapshot_root / relative
+            if not os.path.lexists(launch_source):
+                launch_source = source
         resolved = resolve_without_alias(launch_source, "snapshot executable", directory=False)
         result.append({**executable, "launch_source_path": str(resolved)})
     return result

@@ -698,6 +698,23 @@ class HeavyValidationTests(unittest.TestCase):
             encoded = canonical(value)
             heavy._validate_plan(encoded, sha256(encoded))
 
+    def test_snapshot_executables_keep_untracked_checkout_interpreter(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            source_root, snapshot_root = Path(folder) / "checkout", Path(folder) / "snapshot"
+            venv_python = source_root / ".agentic/.venv/Scripts/python.exe"
+            tracked = source_root / "tools/run.py"
+            for path in (venv_python, tracked, snapshot_root / "tools/run.py"):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"x")
+            result = heavy._snapshot_executables(
+                [{"resolved_path": str(venv_python), "sha256": "0" * 64},
+                 {"resolved_path": str(tracked), "sha256": "0" * 64}], source_root, snapshot_root)
+        self.assertEqual(os.path.normcase(str(venv_python.resolve())),
+                         os.path.normcase(result[0]["launch_source_path"]))
+        self.assertEqual(os.path.normcase(str((snapshot_root / "tools/run.py").resolve())),
+                         os.path.normcase(result[1]["launch_source_path"]))
+
     def test_windows_containment_failure_never_resumes_suspended_child(self):
         class FakeProcess:
             def __init__(self):

@@ -265,16 +265,23 @@ def main(argv=None):
         gate.record("handoff_snapshot", snapshot["awf"]["project_state"]["value"] == observed["project_state"]
                     and snapshot["repository"]["head"]["value"] == head, snapshot)
 
+        # Compare committed blobs: core.autocrlf=true rewrites working-tree line
+        # endings on checkout/merge, which is not an upgrader byte change.
+        def blob(commit, name):
+            done = subprocess.run(["git", "-C", str(project), "show", f"{commit}:{name}"],
+                                  capture_output=True, env=child_env(dict(os.environ)))
+            return done.stdout if done.returncode == 0 else None
+        owner_before = {name: blob(base_commit, name) for name in owner_before}
         changed = {}
         for name, raw in owner_before.items():
-            after = (project / name).read_bytes() if (project / name).is_file() else None
+            after = blob("HEAD", name)
             if after != raw:
-                changed[name] = list(difflib.unified_diff(raw.decode("utf-8", "replace").splitlines(),
+                changed[name] = list(difflib.unified_diff((raw or b"").decode("utf-8", "replace").splitlines(),
                     (after or b"").decode("utf-8", "replace").splitlines(), lineterm="", n=0))[2:40]
         # AWF-managed records and the documented append-only .gitignore block.
         allowed = {CONFIG, INSTALLED, ".agentic/workflow-version.yaml", ".gitignore"}
-        ignore_after = (project / ".gitignore").read_bytes() if (project / ".gitignore").is_file() else b""
-        ignore_ok = ".gitignore" not in owner_before or ignore_after.startswith(owner_before[".gitignore"])
+        ignore_after = blob("HEAD", ".gitignore") or b""
+        ignore_ok = owner_before.get(".gitignore") is None or ignore_after.startswith(owner_before[".gitignore"])
         config_lines = [line for line in changed.get(CONFIG, []) if line[:1] in "+-"]
         config_ok = all("expected_workflow_version" in line or line.strip("+- ").startswith(
             ('"cloud_id"', '"provider_project_id"', '"controller_actor_id"')) for line in config_lines)
