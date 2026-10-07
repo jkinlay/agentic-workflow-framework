@@ -2,7 +2,7 @@
 
 416 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `f2cbcf7157a322d95487c99ef2d0cc98548107be5c6592e1e31b3ea896014134`
+MANIFEST.json SHA-256: `04d8903e79e487764168585acb43fc5f270b002dc8ed45da41f44c9b22c8b0ee`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -245,7 +245,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/review-cap-disposition.yaml` | `1a8c1c8398ab1d0e129faec1d2b059e292d81ccf678d77ce7b487f5613b782ff` |
 | `.agentic/templates/review-completion.yaml` | `75e224a5547e2c1f4fcda755ac8f24f40286e41fbff8ba40a9a97dbf4e53281a` |
 | `.agentic/templates/review-submission.yaml` | `aeccb1b9d132bca7b4981f8af21ee46e353c6f52fd02e56593e0c1eb184a7927` |
-| `.agentic/templates/rules-activation-decision.yaml` | `e50ca11a45f183b598e367b5d9832ce880bb286cb6ece4e41f3be455d81e843e` |
+| `.agentic/templates/rules-activation-decision.yaml` | `7eff199ac62709491fe28a6e6de50875834bd513d51ce4298f259b0da2ef8668` |
 | `.agentic/templates/run-attestation.yaml` | `a14caf06ab480ed0a22cd2fb771bf1434395f781462e7f3364e0c955a2341d0b` |
 | `.agentic/templates/run-disposition-request.yaml` | `5cc29ae5c84525f5942ad37b232f01190fbce15b995733bdc6231a71f4874f3e` |
 | `.agentic/templates/scope-change.yaml` | `e5078451787b84a33782bd4da9c1c188df8a00746e2cdbcf798b833ed13fefd6` |
