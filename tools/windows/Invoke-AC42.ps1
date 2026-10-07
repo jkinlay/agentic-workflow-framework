@@ -22,9 +22,9 @@
   and then removed in branch history blocks publication (AC43).
 
 .EXAMPLE
-  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Invoke-AC42.ps1
-  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Invoke-AC42.ps1 -FromVersion 1.9.2
-  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Invoke-AC42.ps1 -Cleanup
+  powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\Invoke-AC42.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\Invoke-AC42.ps1 -FromVersion 1.9.2
+  powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\Invoke-AC42.ps1 -Cleanup
 
 .NOTES
   All writes (venv, wheelhouse, pip cache, fixture repositories, evidence)

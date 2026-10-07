@@ -8,7 +8,7 @@ PASS / FAIL / NOT_COVERED row per AC42 clause in an evidence JSON file.
 The adoption-PR merge and the GitHub observations are a recorded synthetic
 fixture built from the local Git objects; nothing contacts a provider, writes
 outside --work, or uses credentials. Exit 0 only when every required row
-passes. The real gate run is on Windows via scripts/windows/Invoke-AC42.ps1;
+passes. The real gate run is on Windows via tools/windows/Invoke-AC42.ps1;
 on other hosts the same harness is a smoke test.
 """
 from __future__ import annotations

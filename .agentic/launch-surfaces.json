@@ -6,11 +6,6 @@
       "path": ".agentic/scripts/register_review_loop.ps1",
       "mechanism": "sanitized_process_start",
       "entry_point": ".agentic/scripts/review_loop.py"
-    },
-    {
-      "path": "scripts/windows/Invoke-AC42.ps1",
-      "mechanism": "scrubbed_python_entrypoint",
-      "entry_point": "scripts/ac42_e2e.py"
     }
   ]
 }

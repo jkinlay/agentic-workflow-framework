@@ -56,7 +56,7 @@
     ".agentic/examples/routing-request.json": "961cd9c8a0850d69bd75e38343d3962f511b6f135f35e83aa0e3d44dd6323a0e",
     ".agentic/examples/stream-input.json": "37097f3c73d5de9941dbd049fa29c7e9f659b7fb02b882b2978916f7d3c9cc33",
     ".agentic/examples/unconfigured-project.yaml": "59cceb362c53ecc0b3d9904b01d423f60b38850b0807e215d6d5b4b610191d6f",
-    ".agentic/launch-surfaces.json": "11f477184f624ba131438f3b63308143db3ba7dcef13aaa32fc1a7cf7b97a462",
+    ".agentic/launch-surfaces.json": "10a85af93c9b5e224b30e37232cc6e30e265e10e54dd46f74db739293ce86e8b",
     ".agentic/lib/agentic/__init__.py": "84a536f9e16107d15a6e9ca1e4f8136501d9e457de6b75df03d5efaa789121ba",
     ".agentic/lib/agentic/activation.py": "ebb73dee3a03be049b46cb11787c77ace16965e938bb2fc371e07851ad00deb7",
     ".agentic/lib/agentic/adoption_config.py": "a716adec9df32346cc3815c0052bfee8d7605ada361b76b0b3f85d486fb43964",
@@ -379,7 +379,7 @@
     "global/awf/tests/test_awf.py": "33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077",
     "global/awf/tests/test_discovery_codeowners.py": "42a2245cef352322327c9d72f80d9ce0cbdf831efbce1ec4f52c5c5fef460c16",
     "requirements.txt": "42f89dd8f1c14da4d2cf3ef52ac3513592bc0b21efa709eead6cf138ba4bd92d",
-    "scripts/ac42_e2e.py": "9a50b5228f587c7bc51c6d1b470c717a756dc0b19e5d19038a51ea54228b7fdc",
+    "scripts/ac42_e2e.py": "af611ffa9981f293dacafa596d0b7d98c79de5c23a809249c75d63adfab485da",
     "scripts/bootstrap_project.py": "66c42e9455901c9e2a383a85b96780455c05580095fa336f95ed53e554109b56",
     "scripts/build_release.py": "a32b9f310659a2d55f865ec647aa15f288be6834504d1db8b79cadfd6827b56e",
     "scripts/build_skill_distribution.py": "744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8",
@@ -415,7 +415,7 @@
     "scripts/tests/test_skill_distribution_ordering.py": "4897f1406db51a786ccf4179363c93b50e1d99578c28f51a947154e448366955",
     "scripts/validate_archive.py": "b1f61c85c73be1bf3fa4f598b78c0930e31bc11d6b87b12d9250cf24c6f7ae6e",
     "scripts/validate_git_checkout.py": "eb3ccffe7383d98d8fea7ff5eca0777e64a25ce524ecf2c7e88ce4d545629489",
-    "scripts/windows/Invoke-AC42.ps1": "1d0f68aae65a34ab72025aa3f04c6bbe53d2ef89caf848802844da5d89384c2c"
+    "tools/windows/Invoke-AC42.ps1": "8a4ff942bcf27f7e280edc73ac6ded469e20b9126007184eaf5c21a24735ec50"
   },
   "format": "awf-manifest-1",
   "template_version": "1.9.3"
