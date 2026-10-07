@@ -61,6 +61,42 @@ def run(command, *, cwd, env=None, text=True, input_data=None):
     return result
 
 
+_ORIGIN_PATTERNS = (
+    re.compile(r"^https://(?:[^@/]+@)?(?P<host>[A-Za-z0-9.-]+(?::[0-9]+)?)/(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"),
+    re.compile(r"^ssh://(?:[^@/]+@)?(?P<host>[A-Za-z0-9.-]+)(?::[0-9]+)?/(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"),
+    re.compile(r"^(?:[^@/:]+@)?(?P<host>[A-Za-z0-9.-]+):(?P<owner>[A-Za-z0-9_.-]+)/(?P<name>[A-Za-z0-9_.-]+?)(?:\.git)?$"),
+)
+
+
+def _parse_repository_url(url):
+    for pattern in _ORIGIN_PATTERNS:
+        match = pattern.match(url)
+        if match and match["name"] not in {".", ".."} and match["owner"] not in {".", ".."}:
+            return f"{match['host']}/{match['owner']}/{match['name']}".casefold()
+    return None
+
+
+def origin_repository(repository):
+    """Return HOST/OWNER/REPO for the single repository ``git push origin`` targets.
+
+    ``gh`` otherwise resolves its target from ambient ``GH_REPO``/``GH_HOST`` or
+    other remotes. The tag goes to origin's *push* URL, so bind to that, and
+    refuse multiple push URLs or a push target that differs from the fetch URL.
+    """
+    push_urls = [line.strip() for line in
+                 git(repository, "remote", "get-url", "--push", "--all", "origin").splitlines() if line.strip()]
+    fetch_urls = [line.strip() for line in
+                  git(repository, "remote", "get-url", "--all", "origin").splitlines() if line.strip()]
+    if len(push_urls) != 1 or len(fetch_urls) != 1:
+        raise ReleaseError("origin must have exactly one fetch and one push URL; refusing to infer the release repository")
+    push, fetch = _parse_repository_url(push_urls[0]), _parse_repository_url(fetch_urls[0])
+    if push is None or fetch is None:
+        raise ReleaseError("origin remote is not a recognised HOST/OWNER/REPO URL; refusing to infer the release repository")
+    if push != fetch:
+        raise ReleaseError("origin push and fetch URLs name different repositories; refusing to publish")
+    return push
+
+
 def git(root, *args, text=True):
     return git_run(root, *args, text=text).stdout
 
@@ -384,6 +420,8 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
                   "assets": [str(path) for path in assets], "remote_changes": not dry_run}
         if dry_run:
             return result
+        # Resolve and validate the release target before any local or remote mutation.
+        release_repo = origin_repository(repository)
         tag_file = output / "tag-message.txt"
         body_file = output / "release-body.md"
         tag_file.write_text(tag_message, encoding="utf-8", newline="\n")
@@ -391,7 +429,7 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
         git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
                 "-F", str(tag_file))
         git_run(repository, "push", "origin", f"refs/tags/{tag}")
-        run([gh, "release", "create", tag, *map(str, assets), "--draft", "--verify-tag",
+        run([gh, "release", "create", tag, *map(str, assets), "--repo", release_repo, "--draft", "--verify-tag",
              "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)
         return result
 
@@ -424,7 +462,8 @@ def verify_tag(repository, tag, output_dir, *, gh="gh"):
             raise ReleaseError("rebuilt assets or manifest differ from the annotated tag record")
         published = base / "published"
         published.mkdir()
-        run([gh, "release", "download", tag, "--dir", str(published)], cwd=repository)
+        run([gh, "release", "download", tag, "--repo", origin_repository(repository), "--dir", str(published)],
+            cwd=repository)
         observed = {}
         for path in published.iterdir():
             info = path.lstat()
