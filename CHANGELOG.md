@@ -18,7 +18,9 @@ Adds K8-K11 Windows diagnostics, preflight, safe encoding and rollback-safe runt
 
 Adds environment exclusions, launch inventory, provider identity gates, Jira binding proposals, publication readiness and resumable owner-publication handoffs.
 
-Upgrades tolerate a venv `lib64` → `lib` link (#54). `gh release` binds `--repo`; origin is validated before tagging (#55). **[PENDING: #52, AC42 evidence]**
+Upgrades tolerate a venv `lib64` → `lib` link (#54). `gh release` binds `--repo`; origin is validated before tagging (#55).
+
+**Caveat:** the Windows installed self-test (AC42) is not certified; #52's Windows fixes move to 1.9.4/1.9.3.1. Release readiness relies on the AWF-11 minimal release check.
 
 ### Known issues (1.9.4)
 
@@ -41,10 +43,7 @@ Corrects the adoption-status regression test for Windows host-preflight WARN row
 
 [Review tiers, cap dispositions, Jira lifecycle mirroring, closeout binding, digests, host preflight and named resource leases](MIGRATION-v1.8.9-to-v1.9.0.md). This is a provider-neutral framework release; no new model pilot.
 
-The public upstream port from the earlier 0.1.x scaffold uses neutral resource
-fixtures and excludes product-specific material. Its contract semantics match
-the verified 1.9.1 source; the port has its own regenerated manifest and
-current-head review requirements. See [the port migration](MIGRATION-v0.1.2-to-v1.9.1.md).
+The public upstream port from the earlier 0.1.x scaffold uses neutral fixtures and its own regenerated manifest; see [the port migration](MIGRATION-v0.1.2-to-v1.9.1.md).
 
 ## 1.8.9 — 16 September 2026
 
