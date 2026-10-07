@@ -351,7 +351,7 @@ class AdoptionStatusTests(unittest.TestCase):
                     'merged_at': '2026-09-14T12:00:00+00:00', 'merge_commit_sha': None,
                     'base': {'ref': 'trunk', 'repo': dict(rest_identity)},
                     'head': {'ref': 'awf/adoption', 'sha': 'd' * 40, 'repo': dict(rest_identity)}},
-                base + '/pulls/7/files?per_page=100&page=1': [
+                base + '/pulls/7/files?per_page=50&page=1': [
                     {'filename': INSTALLED, 'status': 'added',
                      'sha': status.blob_sha(installed_files[INSTALLED])}],
                 base + f'/commits/{head}/pulls?per_page=100': [

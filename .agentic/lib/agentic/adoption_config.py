@@ -373,7 +373,9 @@ def prevalidate_runtime_wheelhouse(source, expected_manifest_sha256, wheelhouse)
     missing = wheelhouse is None
     from .installer import verify_release
     with Tree(Path(source).absolute()) as tree:
-        source_manifest_sha256, content = verify_release(tree, expected_manifest_sha256)
+        # The pinned bootstrap source is normally a Git checkout; root .git is excluded, never copied.
+        source_manifest_sha256, content = verify_release(tree, expected_manifest_sha256,
+                                                         allow_source_checkout=True)
     if missing:
         raise ValidationError(
             "--runtime-wheelhouse is required for non-dry-run installation and upgrade")
