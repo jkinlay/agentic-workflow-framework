@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -169,13 +170,16 @@ def _tree_blobs(repository, entries):
     return blobs
 
 
-def _verify_materialized_tree(destination, entries, blobs):
+def _verify_materialized_tree(destination, entries, blobs, *, ignored_top_level=(), check_modes=True):
     expected = {entry.path: entry for entry in entries}
     expected_directories = {"/".join(entry.path.split("/")[:index])
                             for entry in entries for index in range(1, len(entry.path.split("/")))}
     actual = {}
     actual_directories = set()
     for base, directories, files in os.walk(destination, followlinks=False):
+        if Path(base) == Path(destination) and ignored_top_level:
+            directories[:] = [name for name in directories if name not in ignored_top_level]
+            files = [name for name in files if name not in ignored_top_level]
         for name in directories + files:
             node = Path(base) / name
             relative = node.relative_to(destination).as_posix()
@@ -196,7 +200,7 @@ def _verify_materialized_tree(destination, entries, blobs):
         target = destination.joinpath(*path.split("/"))
         if target.read_bytes() != blobs[entry.oid]:
             raise ReleaseError("Materialized release bytes differ from the raw Git tree: " + path)
-        if os.name != "nt" and stat.S_IMODE(actual[path].st_mode) != int(entry.mode[-3:], 8):
+        if check_modes and os.name != "nt" and stat.S_IMODE(actual[path].st_mode) != int(entry.mode[-3:], 8):
             raise ReleaseError("Materialized release mode differs from the raw Git tree: " + path)
 
 
@@ -221,6 +225,33 @@ def materialize_commit(repository, commit, destination, *, mode_manifest=None):
             raise
         raise ReleaseError("No-follow release materialization failed: " + str(exc)) from exc
     return destination
+
+
+@contextlib.contextmanager
+def validation_checkout(repository, commit, destination):
+    """Yield a temporary detached Git worktree of exactly ``commit`` for validation.
+
+    Self-test cases inspect Git (HEAD, attributes, the raw tree), so they cannot
+    run in the Git-less release projection.  The worktree shares the release
+    repository's objects, must match the raw tree byte for byte with a clean
+    status, and is always removed afterwards.
+    """
+    repository, destination = Path(repository), Path(destination)
+    if destination.exists():
+        raise ReleaseError("Validation checkout destination already exists")
+    entries = _tree_entries(repository, commit)
+    blobs = _tree_blobs(repository, entries)
+    git_run(repository, "-c", "core.autocrlf=false", "worktree", "add", "--detach", str(destination), commit)
+    try:
+        if git(destination, "rev-parse", "HEAD").strip() != commit:
+            raise ReleaseError("Validation checkout HEAD differs from the release commit")
+        if git(destination, "status", "--porcelain=v1", "--untracked-files=all").strip():
+            raise ReleaseError("Validation checkout is not a clean checkout of the release commit")
+        # Modes follow the checkout umask; Git status above already proves the executable bits.
+        _verify_materialized_tree(destination, entries, blobs, ignored_top_level=(".git",), check_modes=False)
+        yield destination
+    finally:
+        git_run(repository, "worktree", "remove", "--force", str(destination))
 
 
 def version_problems(source):
@@ -408,7 +439,8 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
         env.update(SOURCE_DATE_EPOCH=str(epoch), TMP=str(Path(raw_temp) / "tmp"),
                    TEMP=str(Path(raw_temp) / "tmp"), PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
         Path(env["TMP"]).mkdir()
-        validations = validation_runner(source, output, env)
+        with validation_checkout(repository, commit, Path(raw_temp) / "validation") as checkout:
+            validations = validation_runner(checkout, output, env)
         record = render_record(commit, source_proof["manifest_sha256"], assets, validations, windows)
         tag = "v" + version
         tag_message = f"AWF {version}\n\n{RECORD_PREFIX}{json.dumps(record, sort_keys=True, separators=(',', ':'))}\n"
