@@ -71,9 +71,16 @@ def configured_child_env_strip_extra(config_path=None):
     if len(raw) > _MAX_CONFIG_BYTES:
         raise ChildEnvironmentError("PROJECT_CONFIG.yaml exceeds the child-environment bound")
     try:
-        value = json.loads(raw.decode("utf-8"))
+        text = raw.decode("utf-8")
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            # PROJECT_CONFIG.yaml is JSON-shaped YAML; owner comments are
+            # supported and preserved by upgrades, so read it as strict YAML.
+            from .canonical import load_yaml
+            value = load_yaml(raw)
         configured = value.get("execution", {}).get("child_env_strip_extra", [])
-    except (UnicodeError, json.JSONDecodeError, AttributeError) as exc:
+    except Exception as exc:
         raise ChildEnvironmentError(
             "PROJECT_CONFIG.yaml cannot supply child-environment exclusions") from exc
     return validate_child_env_strip_extra(configured)
