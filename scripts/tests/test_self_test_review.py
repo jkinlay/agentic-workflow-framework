@@ -78,23 +78,22 @@ class SelfTestReviewTests(unittest.TestCase):
         return args
 
     def invoke(self, args, during_run=None):
-        def run(_suite):
+        def run(_suite, _progress):
             if during_run:
                 during_run()
-            return SimpleNamespace(testsRun=1, failures=[], errors=[], skipped=[], wasSuccessful=lambda: True)
-        runner = mock.Mock()
-        runner.run.side_effect = run
+            return SimpleNamespace(testsRun=1, failures=[], errors=[], skipped=[], wasSuccessful=lambda: True), 'synthetic test log\n'
+        runner = mock.Mock(side_effect=run)
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.object(self_test, 'ROOT', self.source), mock.patch.object(sys, 'path', sys.path[:]), \
                 mock.patch('release_hygiene.check_release', return_value={'status': 'PASS', 'synthetic_fixture_stub': True}), \
                 mock.patch.object(unittest.defaultTestLoader, 'discover', return_value=unittest.TestSuite()), \
-                mock.patch.object(unittest, 'TextTestRunner', return_value=runner), \
+                mock.patch.object(self_test, 'execute_test_suite', runner), \
                 redirect_stdout(stdout), redirect_stderr(stderr):
             try:
                 code = self_test.main(args)
             except SystemExit as error:
                 code = error.code
-        return code, stdout.getvalue(), stderr.getvalue(), runner.run.call_count
+        return code, stdout.getvalue(), stderr.getvalue(), runner.call_count
 
     def test_stable_real_review_pins_qualify_after_bounded_runner(self):
         with mock.patch.object(release_review, 'review_source', wraps=release_review.review_source) as review:

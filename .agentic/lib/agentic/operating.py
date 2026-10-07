@@ -1054,8 +1054,8 @@ def _local_state(root, governance):
 
 
 def main(argv=None, default_root=None):
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    from .output import configure_streams, json_text
+    configure_streams()
     parser = argparse.ArgumentParser(description="Show, recommend or explicitly change project-owned operating choices; never change governance or launch models")
     parser.add_argument("--root", type=Path, default=default_root or Path.cwd())
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1082,7 +1082,7 @@ def main(argv=None, default_root=None):
             governance = load_yaml(tree.read(GOVERNANCE, maximum=MAX_BYTES))
         if args.command == "recommend":
             record = save_recommendation(args.root, governance, args.epics, args.inventory)
-            print(json.dumps(record, ensure_ascii=False, indent=2) if args.json else render_recommendation(record))
+            print(json_text(record) if args.json else render_recommendation(record))
             return 0
         if args.command == "set":
             snapshot = set_operating(args.root, governance, args.instruction, args.assignments,
@@ -1097,7 +1097,7 @@ def main(argv=None, default_root=None):
                   **operating_ceiling(governance),
                   "last_change_id": snapshot.last_change_id, "configuration": snapshot.config,
                   "execution_authority": False, "table": render_operating(snapshot, governance, state=state)}
-        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else result["table"])
+        print(json_text(result) if args.json else result["table"])
         return 0
     except (ValidationError, OSError, ValueError, UnicodeError) as exc:
         if isinstance(exc, OSError):
@@ -1110,5 +1110,5 @@ def main(argv=None, default_root=None):
             output = {"status": "REJECTED", "refusals": getattr(exc, "refusals", [refusal("$", str(exc))]),
                       "execution_authority": False,
                       "next_action": "Correct the named input or reconcile the pinned operating transaction; governance changes require a reviewed PR"}
-        print(json.dumps(output, ensure_ascii=False, indent=2))
+        print(json_text(output))
         return 2
