@@ -374,7 +374,8 @@ class AdoptionStatusTests(unittest.TestCase):
             with patch.dict(os.environ, {'USERPROFILE': str(profile), 'CODEX_HOME': str(codex_home)}), \
                     patch.object(status, 'host_executable',
                                  side_effect=lambda name, root: self.git if name == 'git' else sys.executable), \
-                    patch.object(status, '_gh_get', side_effect=read):
+                    patch.object(status, '_gh_get', side_effect=read), \
+                    patch.object(status, '_gh_get_pr_files', side_effect=read):
                 result = status.project_status(project, adoption_pr=7)
             self.assertEqual(result['project_state'], 'ACTIVE', result)
             self.assertEqual(result['release_trust']['host_skill_path'], str(destination.resolve()))
