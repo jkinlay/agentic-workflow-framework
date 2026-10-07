@@ -4,13 +4,13 @@
 
 Adds Git-format-aware `tested_tree`; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match.
 
-Sets AWF 1.9.3 defaults to `gpt-6-luna` / medium for workers A/B/C, `gpt-6-astra` / high for the controller, shared independent critic/adversarial handler, specialist, and risk/review floors. Automatic worker escalation proceeds through `gpt-6-sol` / high to `gpt-6-astra` / high. Three worker streams plus one critic and controller use five slots. Per-ticket and daily caps are unchanged; existing adopted operating configurations remain preserved, and legacy models/routes remain accepted.
+Sets 1.9.3 defaults: workers A/B/C use `gpt-6-luna` / medium; the controller uses `gpt-6-astra` / high. Critic, adversarial handler and specialist remain independent, with risk/review floors. Escalation advances through `gpt-6-sol` / high to `gpt-6-astra` / high. Five slots cover three workers, critic and controller. Per-ticket/daily caps stay unchanged; adopted configurations and legacy models/routes remain accepted. New adoptions use the reviewed 16-run ticket ceiling; upgrades retain configured ceilings. Release trust binds host receipts and verified archives; ACTIVE requires fresh default-branch status.
 
 Adds outcome templates; verdicts remain separate.
 
 Adds byte-verified install/upgrade; unsafe evidence fails closed.
 
-Adds publication scanning of messages, patches, files, PR bodies and comments. Findings block; receipts bind base, head and body digest. An ignored mapping supplies aliases and deny entries beside built-in detectors.
+Scans messages, patches, files and PR text; findings block, and receipts bind base/head/body. An ignored mapping supplements built-in detectors.
 
 Adds a one-commit rewrite for unpublished branches, preserving `HEAD^{tree}`, scanning the replacement and checking ref reachability. It refuses published evidence or unsupported counts and reports reflog retention. This covers L1, L2 and L9 scanning; producer retrofits remain P1.
 

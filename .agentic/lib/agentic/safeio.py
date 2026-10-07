@@ -166,7 +166,9 @@ class Tree:
             os.unlink(name, dir_fd=handle)
             os.fsync(handle)
 
-    def file_list(self, *, exclude_root_git=False, exclude_prefixes=()):
+    def file_list(self, *, exclude_root_git=False, reject_root_git=False, exclude_prefixes=()):
+        if exclude_root_git and reject_root_git:
+            raise ValueError("Root Git metadata cannot be both excluded and rejected")
         result = []
         excluded_roots = {prefix.rstrip('/') for prefix in exclude_prefixes}
         def walk(directory):
@@ -183,6 +185,8 @@ class Tree:
                 # A source checkout may have root Git metadata. Never traverse
                 # it or include it in release bytes; keep rejecting links,
                 # special entries, nested Git directories and unrelated extras.
+                if reject_root_git and relative == '.git':
+                    raise ValidationError('Root Git metadata is not permitted')
                 if exclude_root_git and relative == '.git':
                     if not (stat.S_ISDIR(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1)):
                         raise ValidationError('Unsupported root Git metadata')

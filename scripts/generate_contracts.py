@@ -306,6 +306,13 @@ def catalog():
         "final_rules_state": const("APPLIED")}}),
         when("status", "BLOCKED", {"properties": {
             "operational_blocker": TRUE, "blocker_codes": {"minItems": 1}}})])
+    schemas["run-disposition-request"] = obj({
+        "format": const("awf-run-disposition-request-1"), "request_id": UUID,
+        "project_id": text(), "ticket_id": text(), "run_id": UUID,
+        "runs_used": integer(1), "run_cap": integer(1),
+        "open_findings": STRINGS,
+        "recommended_action": enum("continue", "rescope", "park"),
+        "recorded_at": TIME, "owner_delivery_required": TRUE})
     gate_results = obj({name: obj({"result": enum("PASS", "FAIL", "N_A"), "evidence": EVIDENCE}) for name in GATE_NAMES})
     gate_pass = {"properties": {"gates": {"properties": {name: {"properties": {"result": const("PASS")}}
                     for name in GATE_NAMES if name != "specialist_reviews"}}, "execution_authority": FALSE}}

@@ -61,7 +61,7 @@ def config(example=True):
             "child_env_strip_extra": [],
             "native_streams": {"enabled": True, "dispatch_policy": "ready_independent"},
             "independent_reviewers": {"allocation": "shared_critic"},
-            "max_agent_runs_per_ticket": 12, "max_spawn_depth": 1, "max_amendment_cycles": 3, "max_cap_extensions": 2,
+            "max_agent_runs_per_ticket": 16, "max_spawn_depth": 1, "max_amendment_cycles": 3, "max_cap_extensions": 2,
             "risk_tiers": copy.deepcopy(DEFAULT_RISK_TIERS), "transient_retry_limit": 2,
             "max_run_seconds": 3600, "max_tool_calls_per_run": 100, "max_tokens_per_ticket": 2000000,
             "max_cost_microusd_per_ticket": None, "daily_project_cost_microusd": None, "one_writer_per_ticket": True,
@@ -203,7 +203,7 @@ def sample(schema, schemas):
     if kind == "object":
         # Draft forms expose optional evidence bindings as well as required
         # fields; nullable bindings remain explicitly unobserved until filled.
-        return {key: sample(child, schemas) for key, child in schema["properties"].items()}
+        return {key: sample(child, schemas) for key, child in schema.get("properties", {}).items()}
     if kind == "array":
         return [sample(schema["items"], schemas) for _ in range(schema.get("minItems", 0))]
     if kind == "boolean":

@@ -127,6 +127,14 @@ _HISTORICAL_SYNTHETIC_TEST_REFERENCES = {
 }
 
 
+# Exact historical deleted-line identity; path, channel, change, detector and full line must all match.
+_CLOSED_HISTORICAL_SELF_REFERENCES = frozenset({
+    ("global/awf-portable/tests/test_install_skill.py", "patch", "deleted",
+     "builtin.windows_absolute",
+     "9515f6d34fac1b879b719d088f982fa4ecaffa5957045bbf766890abde5853a2"),
+})
+
+
 @dataclass(frozen=True)
 class Detector:
     detector_id: str
@@ -558,7 +566,12 @@ def _historical_synthetic_test_reference(path, detector_id, line, value):
         return False
     identities = _HISTORICAL_SYNTHETIC_TEST_REFERENCES.get(path, ())
     return hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest() in identities
-def _matching_values(text, *, path, detectors, allows, line_offset=0):
+def _closed_historical_self_reference(line, *, path, source, change, detector_id):
+    identity = (path, source, change, detector_id,
+                hashlib.sha256(line.encode("utf-8", "surrogatepass")).hexdigest())
+    return identity in _CLOSED_HISTORICAL_SELF_REFERENCES
+
+def _matching_values(text, *, path, detectors, allows, line_offset=0, source=None, change=None):
     """Yield detector matches without normalizing the raw matched value."""
     for number, line in enumerate(text.splitlines() or [text], 1):
         for detector in detectors:
@@ -566,7 +579,10 @@ def _matching_values(text, *, path, detectors, allows, line_offset=0):
                 value = match.group(0)
                 if detector.private_ip and not _private_ip(value):
                     continue
-                if _historical_self_reference(path, detector.detector_id, line):
+                if (_historical_self_reference(path, detector.detector_id, line)
+                        or _closed_historical_self_reference(
+                            line, path=path, source=source, change=change,
+                            detector_id=detector.detector_id)):
                     continue
                 if _historical_synthetic_test_reference(path, detector.detector_id, line, value):
                     continue
@@ -581,7 +597,7 @@ def _scan_text(text, *, commit, path, source, detectors, allows, line_offset=0, 
                base_membership=(), force_blocking=False):
     findings = []
     for number, detector_id, value in _matching_values(
-            text, path=path, detectors=detectors, allows=allows, line_offset=line_offset):
+            text, path=path, detectors=detectors, allows=allows, line_offset=line_offset, source=source, change=change):
         classification = "BLOCKING" if force_blocking or change == "added" else (
             "PRE_EXISTING" if (detector_id, value) in base_membership else "BLOCKING")
         findings.append({"commit": commit, "path": path, "line": number,

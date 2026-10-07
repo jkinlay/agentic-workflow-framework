@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError  # noqa: E402
-from agentic.canonical import sha256  # noqa: E402
+from agentic.canonical import canonical, sha256  # noqa: E402
+from agentic.contracts import Contracts  # noqa: E402
 from agentic.five_slot_acceleration import (  # noqa: E402
     GATE_NAME,
     aggregate_shard_receipts,
@@ -42,7 +43,47 @@ class FiveSlotAccelerationTests(unittest.TestCase):
             "manifest_sha256": "4" * 64,
             "provider_pr_body_sha256": sha256(self.provider_body),
         }
+        self.mapping_sha = "f" * 64
+        self.scanner_sha = "e" * 64
+        self.authorization_raw = self._authorization(self.candidate)
         self.plan = self._plan()
+
+    def _authorization(self, candidate):
+        return canonical({
+            "format": "awf-private-deny-baseline-authorization-1",
+            "candidate": deepcopy(candidate),
+            "provider_pr_body_sha256": candidate["provider_pr_body_sha256"],
+            "mapping_sha256": self.mapping_sha,
+            "authorized_by": "synthetic-controller",
+            "authorization_ref": "synthetic-explicit-authorization",
+        })
+
+    def _deny_receipt(self, candidate, *, classification="NO_MATCHES", counts=None,
+                      paths=None, authorization_sha256=None, overrides=None):
+        counts = counts or {
+            "history_matches": 0, "diff_added_matches": 0,
+            "diff_deleted_matches": 0, "body_matches": 0,
+            "base_matches": 0, "head_matches": 0,
+        }
+        receipt = {
+            "format": "awf-private-deny-scan-receipt-1",
+            "policy_id": "exact-current-tree-baseline-v1",
+            "status": "PASS",
+            "classification": classification,
+            "candidate": deepcopy(candidate),
+            "provider_pr_body_sha256": candidate["provider_pr_body_sha256"],
+            "mapping_sha256": self.mapping_sha,
+            "scanner_sha256": self.scanner_sha,
+            "counts": deepcopy(counts),
+            "paths": deepcopy(paths or []),
+            "unscanned": [],
+            "scan_complete": True,
+            "baseline_authorization_sha256": authorization_sha256,
+            "private_match_values_included": False,
+            "execution_authority": False,
+        }
+        receipt.update(overrides or {})
+        return canonical(receipt)
 
     def _plan(self):
         candidate = deepcopy(self.candidate)
@@ -163,13 +204,27 @@ class FiveSlotAccelerationTests(unittest.TestCase):
         return {"status": status, "reason": "waiting-for-reviewed-dependency",
                 "resume_trigger": "dependency-is-merged", "evidence_sha256": "a" * 64}
 
-    def _validate(self, plan=None, inventory_raw=None):
-        raw = encode_plan(plan or self.plan)
+    def _validate(self, plan=None, inventory_raw=None, *, deny_receipt=None,
+                  authorization=None, mapping_sha=None, scanner_sha=None,
+                  authorization_sha=None):
+        chosen_plan = deepcopy(plan or self.plan)
         inventory_raw = self.inventory_raw if inventory_raw is None else inventory_raw
+        deny_receipt = deny_receipt or self._deny_receipt(chosen_plan["candidate"])
+        chosen_plan["deny_scan"]["receipt_sha256"] = sha256(deny_receipt)
+        raw = encode_plan(chosen_plan)
+        authorization = (None if authorization is False else
+                         self.authorization_raw if authorization is None else authorization)
         return validate_plan(
             raw, sha256(raw), local_pr_body=self.local_body,
             provider_readback=self.provider_body, inventory_raw=inventory_raw,
             expected_inventory_sha256=sha256(inventory_raw),
+            deny_scan_receipt_raw=deny_receipt,
+            expected_private_mapping_sha256=(mapping_sha or self.mapping_sha),
+            expected_private_scanner_sha256=(scanner_sha or self.scanner_sha),
+            baseline_authorization_raw=authorization,
+            expected_baseline_authorization_sha256=(
+                authorization_sha if authorization_sha is not None else sha256(authorization)
+            ) if authorization is not None else None,
         )
 
     def assertRejected(self, plan, pattern, inventory_raw=None):
@@ -308,11 +363,25 @@ class FiveSlotAccelerationTests(unittest.TestCase):
             "C26-F07",
             "C26-F08",
             "C26-IC-F01",
+            "C22-CV-001",
         )
         mapped_ids = [row["source_finding_id"] for row in self.inventory["regressions"]]
         for finding_id in canonical_ids:
             with self.subTest(finding_id=finding_id):
                 self.assertEqual(1, mapped_ids.count(finding_id))
+        b001 = [row for row in self.inventory["regressions"]
+                if row["source_finding_id"] == "B-001"]
+        self.assertEqual(1, len(b001))
+        self.assertEqual("scripts/tests/test_publish_release.py", b001[0]["evidence_path"])
+        self.assertEqual(
+            "PublishReleaseTests.test_b001_materialize_commit_preserves_concurrent_destination_winner",
+            b001[0]["test_id"],
+        )
+        c22_cv_001 = [row for row in self.inventory["regressions"]
+                      if row["source_finding_id"] == "C22-CV-001"]
+        self.assertEqual(1, len(c22_cv_001))
+        self.assertEqual(".agentic/tests/test_review_loop.py", c22_cv_001[0]["evidence_path"])
+        self.assertEqual("HostTests.test_ci_workflow_pin_and_failed_result", c22_cv_001[0]["test_id"])
 
     def test_owner_supplied_c26_acceptance_text_matches_permanent_inventory(self):
         provenance = json.loads((
@@ -437,6 +506,137 @@ class FiveSlotAccelerationTests(unittest.TestCase):
         plan = deepcopy(self.plan)
         plan["owner_ready"] = "YES"
         self.assertRejected(plan, "OWNER_READY=NO")
+
+    def test_private_deny_baseline_pass_requires_exact_bound_authorization(self):
+        counts = {
+            "history_matches": 0, "diff_added_matches": 0,
+            "diff_deleted_matches": 0, "body_matches": 0,
+            "base_matches": 2, "head_matches": 2,
+        }
+        receipt = self._deny_receipt(
+            self.candidate, classification="BASE_PREEXISTING_UNCHANGED",
+            counts=counts, paths=[{
+                "path": "docs/example.md", "base_count": 2,
+                "head_count": 2, "multiset_equal": True,
+            }], authorization_sha256=sha256(self.authorization_raw),
+        )
+        result = self._validate(deny_receipt=receipt)
+        self.assertEqual("NO", result["owner_ready"])
+        self.assertFalse(result["execution_authority"])
+        contracts = Contracts(ROOT / ".agentic/schemas")
+        contracts.validate("private-deny-scan", json.loads(receipt))
+        contracts.validate("private-deny-baseline-authorization",
+                           json.loads(self.authorization_raw))
+
+        with self.assertRaisesRegex(ValidationError, "separately pinned authorization"):
+            self._validate(deny_receipt=receipt, authorization=False)
+
+    def test_private_deny_history_diff_and_body_findings_block_baseline(self):
+        for channel in ("history_matches", "diff_added_matches",
+                        "diff_deleted_matches", "body_matches"):
+            with self.subTest(channel=channel):
+                counts = {
+                    "history_matches": 0, "diff_added_matches": 0,
+                    "diff_deleted_matches": 0, "body_matches": 0,
+                    "base_matches": 1, "head_matches": 1,
+                }
+                counts[channel] = 1
+                receipt = self._deny_receipt(
+                    self.candidate, classification="BASE_PREEXISTING_UNCHANGED",
+                    counts=counts, paths=[{
+                        "path": "docs/example.md", "base_count": 1,
+                        "head_count": 1, "multiset_equal": True,
+                    }], authorization_sha256=sha256(self.authorization_raw),
+                )
+                with self.assertRaisesRegex(ValidationError, "channels must be clear"):
+                    self._validate(deny_receipt=receipt)
+
+    def test_private_deny_new_moved_deleted_or_changed_paths_block(self):
+        cases = [
+            ([{"path": "docs/new.md", "base_count": 0, "head_count": 1,
+               "multiset_equal": False}], "new, deleted, or changed"),
+            ([{"path": "docs/old.md", "base_count": 1, "head_count": 0,
+               "multiset_equal": False}], "new, deleted, or changed"),
+            ([{"path": "docs/example.md", "base_count": 1, "head_count": 1,
+               "multiset_equal": False}], "new, deleted, or changed"),
+            ([{"path": "docs/example.md", "base_count": 1, "head_count": 2,
+               "multiset_equal": True}], "new, deleted, or changed"),
+        ]
+        for paths, message in cases:
+            with self.subTest(paths=paths):
+                counts = {
+                    "history_matches": 0, "diff_added_matches": 0,
+                    "diff_deleted_matches": 0, "body_matches": 0,
+                    "base_matches": 1, "head_matches": 1,
+                }
+                receipt = self._deny_receipt(
+                    self.candidate, classification="BASE_PREEXISTING_UNCHANGED",
+                    counts=counts, paths=paths,
+                    authorization_sha256=sha256(self.authorization_raw),
+                )
+                with self.assertRaisesRegex(ValidationError, message):
+                    self._validate(deny_receipt=receipt)
+
+    def test_private_deny_receipt_rejects_mapping_body_auth_and_tuple_drift(self):
+        counts = {
+            "history_matches": 0, "diff_added_matches": 0,
+            "diff_deleted_matches": 0, "body_matches": 0,
+            "base_matches": 1, "head_matches": 1,
+        }
+        good = self._deny_receipt(
+            self.candidate, classification="BASE_PREEXISTING_UNCHANGED",
+            counts=counts, paths=[{
+                "path": "docs/example.md", "base_count": 1,
+                "head_count": 1, "multiset_equal": True,
+            }], authorization_sha256=sha256(self.authorization_raw),
+        )
+        with self.assertRaisesRegex(ValidationError, "trusted mapping pin"):
+            self._validate(deny_receipt=good, mapping_sha="a" * 64)
+        with self.assertRaisesRegex(ValidationError, "trusted scanner pin"):
+            self._validate(deny_receipt=good, scanner_sha="a" * 64)
+
+        bad_auth = canonical({
+            "format": "awf-private-deny-baseline-authorization-1",
+            "candidate": deepcopy(self.candidate),
+            "provider_pr_body_sha256": "0" * 64,
+            "mapping_sha256": self.mapping_sha,
+            "authorized_by": "synthetic-controller",
+            "authorization_ref": "wrong-body",
+        })
+        bad_auth_receipt = self._deny_receipt(
+            self.candidate, classification="BASE_PREEXISTING_UNCHANGED",
+            counts=counts, paths=[{
+                "path": "docs/example.md", "base_count": 1,
+                "head_count": 1, "multiset_equal": True,
+            }], authorization_sha256=sha256(bad_auth),
+        )
+        with self.assertRaisesRegex(ValidationError, "authorization body differs"):
+            self._validate(deny_receipt=bad_auth_receipt, authorization=bad_auth,
+                           authorization_sha=sha256(bad_auth))
+
+        wrong_candidate = deepcopy(self.candidate)
+        wrong_candidate["head_sha"] = "9" * 40
+        wrong_receipt = self._deny_receipt(
+            wrong_candidate, classification="BASE_PREEXISTING_UNCHANGED",
+            counts=counts, paths=[{
+                "path": "docs/example.md", "base_count": 1,
+                "head_count": 1, "multiset_equal": True,
+            }], authorization_sha256=sha256(self.authorization_raw),
+        )
+        with self.assertRaisesRegex(ValidationError, "Receipt candidate differs"):
+            self._validate(deny_receipt=wrong_receipt)
+
+    def test_private_deny_receipt_rejects_unscanned_or_disclosing_output(self):
+        receipt = self._deny_receipt(
+            self.candidate, overrides={"unscanned": ["docs/unreadable.md"]},
+        )
+        with self.assertRaisesRegex(ValidationError, "incomplete or unscanned"):
+            self._validate(deny_receipt=receipt)
+        receipt = self._deny_receipt(
+            self.candidate, overrides={"private_match_values_included": True},
+        )
+        with self.assertRaisesRegex(ValidationError, "must not expose matched values"):
+            self._validate(deny_receipt=receipt)
 
 
 if __name__ == "__main__":

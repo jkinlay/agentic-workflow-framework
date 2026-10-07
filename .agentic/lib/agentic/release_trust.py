@@ -58,19 +58,32 @@ def bundled_manifest(archive, expected):
     return expected
 
 
-def approved_manifest(root, *, release_source=None, expected_manifest_sha256=None):
+def establish_release_trust(root, *, release_source=None, expected_manifest_sha256=None):
+    """Verify one external source or the atomically installed host-skill receipt."""
     if release_source is not None or expected_manifest_sha256 is not None:
         require(release_source is not None and isinstance(expected_manifest_sha256, str)
                 and PIN.fullmatch(expected_manifest_sha256),
                 'Use --release-source with an independently approved --expected-manifest-sha256')
         source = outside_project(release_source, root)
-        with Tree(source) as tree:
-            digest, _ = verify_release(tree, expected_manifest_sha256)
-        return digest, 'explicit_external_source_and_approved_pin'
-    skill = outside_project(Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex') / 'skills/awf', root)
+        if source.is_file():
+            require(source.stat().st_size <= LIMIT, 'Release source archive exceeds its byte limit')
+            digest = bundled_manifest(source.read_bytes(), expected_manifest_sha256)
+            kind = 'verified_release_zip_and_approved_pin'
+        else:
+            with Tree(source) as tree:
+                digest, _ = verify_release(tree, expected_manifest_sha256)
+            kind = 'verified_extracted_release_and_approved_pin'
+        return {'manifest_sha256': digest, 'basis': kind,
+                'release_source': str(source), 'git_provenance_required': False}
+    codex_home = Path(os.environ.get('CODEX_HOME') or (Path.home() / '.codex')).expanduser().resolve()
+    skill = outside_project(codex_home / 'skills' / 'awf', root)
     try:
         with Tree(skill) as tree:
             receipt = loads(tree.read('.awf-install-receipt.json', maximum=1024 * 1024).decode('utf-8'))
+            require(receipt.get('format') == 'awf-host-skill-trust-1'
+                    and receipt.get('schema_version') == 1
+                    and receipt.get('inventory_complete') is True,
+                    'Host skill trust receipt is not atomic/complete format 1')
             raw = tree.read('SKILL-MANIFEST.json', maximum=1024 * 1024)
             require(sha256(raw) == receipt.get('manifest_sha256'), 'Host skill installation receipt mismatch')
             manifest = loads(raw.decode('utf-8'))
@@ -86,12 +99,31 @@ def approved_manifest(root, *, release_source=None, expected_manifest_sha256=Non
                 require(name.casefold() not in {p.casefold() for p in approved}, 'Duplicate host skill path')
                 approved[name] = entry['sha256']
             require(approved == receipt.get('files'), 'Host skill approved inventory differs from its receipt')
+            local = receipt.get('preserved_local_files', [])
+            require(isinstance(local, list) and all(isinstance(name, str) for name in local),
+                    'Host skill local-file inventory is invalid')
+            for name in local:
+                relative_parts(name)
+            local_inventory = receipt.get('preserved_local_inventory')
+            require(isinstance(local_inventory, dict) and set(local_inventory) == set(local)
+                    and all(isinstance(value, str) and PIN.fullmatch(value)
+                            for value in local_inventory.values()),
+                    'Host skill local-file digest inventory is invalid')
+            expected_paths = set(approved) | set(local) | {
+                'SKILL-MANIFEST.json', '.awf-install-receipt.json'}
+            require(set(tree.file_list(reject_root_git=True)) == expected_paths,
+                    'Host skill inventory is not closed by its receipt')
             total = 0
             content = {}
             for name, digest in approved.items():
                 content[name] = tree.read(name, maximum=LIMIT)
                 total += len(content[name])
                 require(total <= LIMIT and sha256(content[name]) == digest, 'Host skill content/size mismatch: ' + name)
+            for name, digest in local_inventory.items():
+                raw = tree.read(name, maximum=LIMIT)
+                total += len(raw)
+                require(total <= LIMIT and sha256(raw) == digest,
+                        'Host skill preserved local content/size mismatch: ' + name)
             metadata = loads(content['assets/release.json'].decode('utf-8'))
             require(metadata.get('format') == 'awf-bundled-release-1' and metadata.get('version') == VERSION,
                     'Trusted host bundled release metadata mismatch')
@@ -100,8 +132,24 @@ def approved_manifest(root, *, release_source=None, expected_manifest_sha256=Non
             require('/' not in name, 'Trusted host archive name must be a basename')
             archive = content['assets/' + name]
             require(sha256(archive) == metadata['archive_sha256'], 'Trusted host archive digest mismatch')
-            return bundled_manifest(archive, metadata['manifest_sha256']), 'trusted_host_installed_awf_skill'
+            digest = bundled_manifest(archive, metadata['manifest_sha256'])
+            return {'manifest_sha256': digest, 'basis': 'trusted_host_installed_awf_skill',
+                    'codex_home': str(codex_home), 'host_skill_path': str(skill),
+                    'host_receipt_path': str(skill / '.awf-install-receipt.json'),
+                    'verified_inventory': len(approved) + len(local_inventory), 'atomic_receipt': True,
+                    'git_provenance_required': False}
     except (ValidationError, OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError, zipfile.BadZipFile) as exc:
         detail = ': ' + str(exc) if isinstance(exc, ValidationError) else ''
         raise ValidationError('Verify/update the trusted host AWF skill or use status --release-source ABS_SOURCE '
                               '--expected-manifest-sha256 TRUSTED_PIN' + detail) from exc
+
+
+def approved_manifest(root, *, release_source=None, expected_manifest_sha256=None):
+    """Compatibility projection for callers that only need the digest and basis."""
+    trust = establish_release_trust(root, release_source=release_source,
+                                    expected_manifest_sha256=expected_manifest_sha256)
+    basis = trust['basis']
+    if basis in {'verified_release_zip_and_approved_pin',
+                 'verified_extracted_release_and_approved_pin'}:
+        basis = 'explicit_external_source_and_approved_pin'
+    return trust['manifest_sha256'], basis

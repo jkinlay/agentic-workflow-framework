@@ -59,14 +59,15 @@ def merge_operating_ignores(existing, required):
     return existing + (b"\n" if existing and not existing.endswith(b"\n") else b"") + required
 
 
-def verify_release(tree, expected_digest=None):
+def verify_release(tree, expected_digest=None, *, allow_source_checkout=False):
     raw = tree.read(MANIFEST)
     if expected_digest is not None and sha256(raw) != expected_digest:
         raise ValidationError("Release manifest does not match the approved digest")
     manifest = loads(raw.decode("utf-8"))
     if set(manifest) != {"format", "template_version", "files"} or manifest["format"] != "awf-manifest-1" or manifest["template_version"] != VERSION:
         raise ValidationError("Unsupported release manifest")
-    actual = {path for path in tree.file_list(exclude_root_git=True,
+    actual = {path for path in tree.file_list(exclude_root_git=allow_source_checkout,
+                                              reject_root_git=not allow_source_checkout,
                                               exclude_prefixes=RELEASE_EXCLUDED_PREFIXES)
               if path not in {MANIFEST, "MANIFEST.md"} and release_member(path)}
     if actual != set(manifest["files"]):

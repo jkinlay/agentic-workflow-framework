@@ -68,7 +68,7 @@ class RoutingCLITests(unittest.TestCase):
         self.assertEqual((self.route()["model"], self.route()["reasoning_effort"]), (MODELS[3], "medium"))
         defaults = self.invoke("defaults")
         self.assertEqual(defaults["reconciliation"]["enabled"], False)
-        self.assertEqual(12, defaults["budgets"]["max_runs_per_ticket"])
+        self.assertEqual(16, defaults["budgets"]["max_runs_per_ticket"])
         self.assertEqual(250, defaults["budgets"]["max_runs_per_project_day"])
         self.assertEqual(2000000, defaults["budgets"]["max_tokens_per_ticket"])
         self.assertEqual(30000000, defaults["budgets"]["max_tokens_per_project_day"])
@@ -87,6 +87,11 @@ class RoutingCLITests(unittest.TestCase):
             row = connection.execute("SELECT reserved_cost,actual_tokens,actual_cost FROM model_runs WHERE run_id=?",
                                      (reserved["run_id"],)).fetchone()
         self.assertEqual((None, 321, None), row)
+        summary = self.ledger_command("summary", "--ticket", "LOCAL-1")
+        self.assertEqual(summary["runs"], 1)
+        self.assertEqual(summary["tokens"], 321)
+        self.assertEqual(summary["by_role"]["worker"]["runs"], 1)
+        self.assertEqual(summary["by_role"]["worker"]["tokens"], 321)
 
     def test_outcome_templates_for_every_role_settle_reserved_runs(self):
         for index, role in enumerate(("worker", "fix", "critic", "specialist")):

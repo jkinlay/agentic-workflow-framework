@@ -167,13 +167,27 @@ class GitTreeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "scope violation"):
                 verify_publisher_tree(self.root, expected)
 
+    def test_publisher_comparison_ignores_local_replacement_commits(self):
+        self.write("file.txt", b"reviewed\n")
+        reviewed = self.commit("reviewed")
+        expected = self.git("rev-parse", reviewed + "^{tree}")
+        self.write("file.txt", b"publisher substitution\n")
+        actual = self.commit("unreviewed publisher tree")
+        self.git("replace", actual, reviewed)
+        # Demonstrate the attack precondition: ordinary Git now reports the
+        # replacement tree for HEAD even though the ref names another commit.
+        self.assertEqual(expected, self.git("rev-parse", "HEAD^{tree}"))
+        with self.assertRaisesRegex(ValidationError, "scope violation"):
+            verify_publisher_tree(self.root, expected)
+
     def test_sha256_repository_uses_detected_object_format(self):
         other = Path(self.temp.name) / "sha256"
         probe = subprocess.run([shutil.which("git"), "init", "--object-format=sha256", "--initial-branch=main", str(other)],
                                capture_output=True, text=True)
         if probe.returncode:
             self.skipTest("TOOLCHAIN_ABSENT: installed Git lacks SHA-256 repository support")
-        for key, value in (("user.name", "AWF fixture"), ("user.email", "fixture@example.invalid")):
+        for key, value in (("user.name", "AWF fixture"), ("user.email", "fixture@example.invalid"),
+                           ("core.autocrlf", "false")):
             subprocess.run([shutil.which("git"), "-C", str(other), "config", key, value], check=True)
         (other / "a.txt").write_text("base\n", encoding="utf-8")
         subprocess.run([shutil.which("git"), "-C", str(other), "add", "a.txt"], check=True)
