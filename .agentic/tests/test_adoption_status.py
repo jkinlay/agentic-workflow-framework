@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -103,7 +104,7 @@ class AdoptionStatusTests(unittest.TestCase):
                 'base': {'ref': 'trunk', 'repo': copy.deepcopy(repository_identity)},
                 'head': {'ref': 'awf/EX-6-activation', 'sha': cls.pr_head,
                          'repo': copy.deepcopy(repository_identity)}},
-            cls.base + '/pulls/7/files?per_page=100&page=1': [
+            cls.base + '/pulls/7/files?per_page=50&page=1': [
                 {'filename': INSTALLED, 'status': 'added', 'sha': status.blob_sha(files[INSTALLED])}],
             cls.base + f'/commits/{cls.head}/pulls?per_page=100': [
                 {'number': 7, 'merged_at': '2026-09-14T12:00:00Z', 'base': {'ref': 'trunk', 'repo': {'id': 101}}}],
@@ -625,7 +626,7 @@ class AdoptionStatusTests(unittest.TestCase):
             def kill(self):
                 self.returncode = -9
 
-        endpoint = self.base + '/pulls/7/files?per_page=100&page=1'
+        endpoint = self.base + '/pulls/7/files?per_page=50&page=1'
         with patch('agentic.providers.github.subprocess.Popen', side_effect=Process):
             value, count = status._gh_get_pr_files(endpoint, status.time.monotonic() + 5,
                                                    gh='/trusted/gh')
@@ -666,34 +667,77 @@ class AdoptionStatusTests(unittest.TestCase):
             def kill(self):
                 self.returncode = -9
 
-        endpoint = self.base + '/pulls/7/files?per_page=100&page=1'
+        endpoint = self.base + '/pulls/7/files?per_page=50&page=1'
         with patch('agentic.providers.github.subprocess.Popen', side_effect=Process):
-            with self.assertRaisesRegex(ValidationError, 'Projected PR file response exceeds byte limit'):
+            with self.assertRaisesRegex(ValidationError, 'Projected PR file response exceeds byte limit: GET '
+                                        + re.escape(endpoint)):
                 status._gh_get_pr_files(endpoint, status.time.monotonic() + 5, gh='/trusted/gh')
 
         observation = status.Observation.__new__(status.Observation)
         observation.deadline = status.time.monotonic() + 5
         observation.gh = '/trusted/gh'
-        observation.requests = 20
+        observation.requests = 0
+        observation.pr_file_requests = status.MAX_PR_FILE_PAGES
         observation.total = 0
         with patch.object(status, '_gh_get_pr_files') as reader:
             with self.assertRaisesRegex(ValidationError, 'request/time limit'):
                 observation.get_pr_files(endpoint)
             reader.assert_not_called()
 
-        observation.requests = 0
+        observation.pr_file_requests = 0
         observation.total = status.MAX_TOTAL
         with patch.object(status, '_gh_get_pr_files', return_value=([], 1)):
             with self.assertRaisesRegex(ValidationError, 'aggregate byte limit'):
                 observation.get_pr_files(endpoint)
 
+    def test_large_adoption_pr_raw_inventory_over_cap_is_paged_under_cap(self):
+        receipt_sha = status.blob_sha(self.files[INSTALLED])
+        names = [INSTALLED] + [f'product/file-{index}.txt' for index in range(218)]
+        patch_body = 'x' * 6000
+        raw_pages = {}
+        for page in range(1, 6):
+            chunk = names[(page - 1) * status.PR_FILES_PER_PAGE:page * status.PR_FILES_PER_PAGE]
+            raw_pages[self.base + f'/pulls/7/files?per_page={status.PR_FILES_PER_PAGE}&page={page}'] = [
+                {'filename': name, 'status': 'added', 'sha': receipt_sha if name == INSTALLED else 'a' * 40,
+                 'patch': patch_body} for name in chunk]
+        self.assertGreater(sum(len(json_bytes(v)) for v in raw_pages.values()), status.MAX_BYTES)
+        self.assertTrue(all(len(json_bytes(v)) < status.MAX_BYTES for v in raw_pages.values()))
+        requested = []
+
+        class Process:
+            def __init__(self, command, stdin, stdout, stderr, env):
+                requested.append(command[-1])
+                raw = raw_pages.get(command[-1], [])
+                stdout.write(json_bytes([{key: entry[key] for key in ('filename', 'status', 'sha')}
+                                         for entry in raw]))
+                self.returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        observation = status.Observation.__new__(status.Observation)
+        observation.deadline = status.time.monotonic() + 30
+        observation.gh = '/trusted/gh'
+        observation.requests = 19
+        observation.pr_file_requests = 0
+        observation.total = 0
+        with patch('agentic.providers.github.subprocess.Popen', side_effect=Process):
+            status.receipt_changed(observation, 'fixture/example', 7, self.files[INSTALLED])
+        self.assertEqual(requested, list(raw_pages))
+
     def test_pr_file_inventory_pagination_is_complete_and_deterministic(self):
         receipt = {'filename': INSTALLED, 'status': 'modified',
                    'sha': status.blob_sha(self.files[INSTALLED])}
         first = [receipt] + [{'filename': f'product/file-{index}.txt', 'status': 'modified',
-                              'sha': f'{index + 1:040x}'} for index in range(99)]
+                              'sha': f'{index + 1:040x}'} for index in range(49)]
         second = [{'filename': 'product/terminal.txt', 'status': 'added', 'sha': 'a' * 40}]
-        endpoints = [self.base + f'/pulls/7/files?per_page=100&page={page}' for page in (1, 2)]
+        endpoints = [self.base + f'/pulls/7/files?per_page=50&page={page}' for page in (1, 2)]
 
         class Observation:
             def __init__(self, pages):
@@ -719,10 +763,10 @@ class AdoptionStatusTests(unittest.TestCase):
             status.receipt_changed(duplicate, 'fixture/example', 7, self.files[INSTALLED])
 
         full_pages = {}
-        for page in range(1, 6):
-            full_pages[self.base + f'/pulls/7/files?per_page=100&page={page}'] = [
+        for page in range(1, status.MAX_PR_FILE_PAGES + 1):
+            full_pages[self.base + f'/pulls/7/files?per_page=50&page={page}'] = [
                 {'filename': f'page-{page}/file-{index}.txt', 'status': 'added',
-                 'sha': f'{page * 100 + index:040x}'} for index in range(100)]
+                 'sha': f'{page * 100 + index:040x}'} for index in range(50)]
         full_pages[endpoints[0]][0] = receipt
         with self.assertRaisesRegex(ValidationError, 'complete observation limit'):
             status.receipt_changed(Observation(full_pages), 'fixture/example', 7, self.files[INSTALLED])
@@ -871,17 +915,17 @@ class AdoptionStatusTests(unittest.TestCase):
         self.assertIn('source_manifest_json', result['next_action'])
 
     def test_receipt_must_actually_change_in_adoption_pr(self):
-        self.api[self.base + '/pulls/7/files?per_page=100&page=1'] = []
+        self.api[self.base + '/pulls/7/files?per_page=50&page=1'] = []
         result = self.observe()
         self.assertEqual(result['project_state'], 'CONFIGURED')
         self.assertIn('did not add or modify', result['next_action'])
 
     def test_large_adoption_pr_projects_every_file_page(self):
         endpoints = []
-        for page, count in enumerate((100, 100, 34), 1):
-            endpoint = self.base + f'/pulls/7/files?per_page=100&page={page}'
+        for page, count in enumerate((50, 50, 50, 50, 19), 1):
+            endpoint = self.base + f'/pulls/7/files?per_page=50&page={page}'
             endpoints.append(endpoint)
-            start = (page - 1) * 100
+            start = (page - 1) * 50
             entries = [{'filename': f'docs/fixture-{index}.md', 'status': 'added',
                         'sha': 'f' * 40} for index in range(start, start + count)]
             if page == 1:
