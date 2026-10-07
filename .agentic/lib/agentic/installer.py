@@ -447,6 +447,21 @@ def _runtime_tree_sha256(path):
     return digest.hexdigest()
 
 
+def _contained_cleanup_link(relative, target):
+    """True for a relative POSIX link target that stays inside the cleanup root."""
+    if not isinstance(target, str) or not target or "\\" in target or target.startswith("/") or ":" in target:
+        return False
+    depth = len(relative.split("/")) - 1
+    for part in target.split("/"):
+        if part == "..":
+            depth -= 1
+            if depth < 0:
+                return False
+        elif part not in ("", "."):
+            depth += 1
+    return True
+
+
 def _runtime_cleanup_proof(path):
     """Return stable root identity and the exact surviving member identities/content."""
     def identity(info):
@@ -474,6 +489,14 @@ def _runtime_cleanup_proof(path):
                     for block in iter(lambda: stream.read(1024 * 1024), b""):
                         h.update(block)
                 proof["members"].append([relative, "file", mode, object_identity, h.hexdigest()])
+            elif stat.S_ISLNK(info.st_mode) and not reparse:
+                # Venvs on 64-bit POSIX create ``lib64 -> lib``. Accept only a
+                # relative link whose lexical target stays inside the cleanup root;
+                # rmtree removes the link itself and never follows it.
+                target = os.readlink(entry.path)
+                if not _contained_cleanup_link(relative, target):
+                    raise ValidationError("Authenticated runtime cleanup contains an unsafe member")
+                proof["members"].append([relative, "link", mode, object_identity, target])
             else:
                 raise ValidationError("Authenticated runtime cleanup contains an unsafe member")
     if not stat.S_ISDIR(root.st_mode) or stat.S_ISLNK(root.st_mode):
@@ -636,11 +659,12 @@ def _validated_runtime_journal(journal):
             seen_members = set()
             for row in members:
                 if (not isinstance(row, list) or len(row) != 5 or not isinstance(row[0], str) or
-                        row[1] not in {"directory", "file"} or type(row[2]) is not int or
+                        row[1] not in {"directory", "file", "link"} or type(row[2]) is not int or
                         not valid_identity(row[3]) or
                         (row[1] == "file" and (not isinstance(row[4], str) or
                          re.fullmatch(r"[0-9a-f]{64}", row[4]) is None)) or
-                        (row[1] == "directory" and row[4] is not None)):
+                        (row[1] == "directory" and row[4] is not None) or
+                        (row[1] == "link" and not _contained_cleanup_link(row[0], row[4]))):
                     raise ValidationError("Invalid authenticated cleanup member")
                 relative_parts(row[0])
                 if row[0].casefold() in seen_members:
@@ -1216,7 +1240,10 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             if _exists_read(dst, INSTALLED) is None or existing_config is None:
                 raise ValidationError("Upgrade requires a verified AWF installation receipt and project configuration")
             installed_version = existing_receipt.get("template_version") if isinstance(existing_receipt, dict) else None
-            state = {path: dst.read(path) for path in dst.file_list(exclude_root_git=True)
+            # The managed runtime may legitimately contain venv-internal links
+            # (POSIX ``lib64 -> lib``); it is not project state, so never walk it.
+            state = {path: dst.read(path) for path in dst.file_list(exclude_root_git=True,
+                                                                     exclude_prefixes=(RUNTIME + "/",))
                      if path.startswith(".agentic-state/")}
             operating = _exists_read(dst, OPERATING)
             provenance_raw = _exists_read(dst, PROVENANCE)
