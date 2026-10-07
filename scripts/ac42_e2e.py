@@ -75,7 +75,7 @@ def owner_blob(project, commit, name, max_bytes=OWNER_BLOB_MAX_BYTES):
     def call(*args):
         return subprocess.run(["git", "--no-replace-objects", "-c", "core.useReplaceRefs=false",
                                "-C", str(project), *args], capture_output=True, timeout=60,
-                              env=isolated_git_env(dict(os.environ)))
+                              env=child_env(isolated_git_env(dict(os.environ))))
     listed = call("ls-tree", "-z", "--full-tree", commit, "--", name)
     if listed.returncode != 0:
         raise RuntimeError(f"git ls-tree {commit}:{name} failed")
