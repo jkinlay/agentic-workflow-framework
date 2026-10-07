@@ -49,6 +49,9 @@ class SelfTestReviewTests(unittest.TestCase):
                      '.agentic/review-loop/critic-result.schema.json', '.agentic/review-loop/worker-result.schema.json',
                      '.agentic/review-loop/host-config.example.json']:
             shutil.copyfile(ROOT / name, self.source / name)
+        # Synthetic source ships no launch scripts, so its launch-surface inventory is empty.
+        (self.source / '.agentic/launch-surfaces.json').write_text(json.dumps(
+            {'version': 1, 'python_allowlist': [], 'scripts': []}), encoding='utf-8')
         (self.source / 'AGENTS.md').write_text('Synthetic acceptance fixture; no execution authority.\n', encoding='utf-8')
         (self.source / '.github/PULL_REQUEST_TEMPLATE.md').write_text('Synthetic fixture.\n', encoding='utf-8')
         (self.source / 'README.md').write_text('Synthetic reviewed content.\n', encoding='utf-8')

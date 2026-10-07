@@ -29,6 +29,11 @@ def complete_form(value, schema, schemas):
             return
         return complete_form(value, next(s for s in schema['oneOf'] if s.get('type') != 'null'), schemas)
     if schema.get('type') == 'object':
+        if 'properties' not in schema:
+            # Open objects (e.g. the rules-activation decision) have no field list to complete.
+            if not isinstance(value, dict):
+                raise ValueError('Draft form is missing fields or contains stale fields')
+            return
         if not isinstance(value, dict) or set(value) != set(schema['properties']):
             raise ValueError('Draft form is missing fields or contains stale fields')
         for key, child in value.items():
@@ -141,7 +146,10 @@ def main(argv=None):
         report['checks']['repository_ruleset_template'] = 'PASS'
         forms = list((ROOT / '.agentic/templates').glob('*.yaml')) + [
             path for path in (ROOT / '.agentic/templates').glob('*.json')
-            if path.name != 'awf-main-ruleset.json']
+            # Not contract-catalog forms: the ruleset template and the heavy
+            # validation records, which agentic.heavy_validation validates in code.
+            if path.name not in {'awf-main-ruleset.json', 'heavy-validation-capacity.json',
+                                 'heavy-validation-plan.json', 'heavy-validation-review.json'}]
         covered = set()
         for path in forms:
             value = load(path)
