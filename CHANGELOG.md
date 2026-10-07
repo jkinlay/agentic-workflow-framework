@@ -1,6 +1,6 @@
 # Change history
 
-## 1.9.3 — 24 September 2026
+## 1.9.3 — 9 October 2026
 
 Adds Git-format-aware `tested_tree`; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match.
 
