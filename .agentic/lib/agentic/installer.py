@@ -36,6 +36,10 @@ RELEASE_EXCLUDED_PATHS = frozenset({
 })
 
 
+# safeio.Tree.write creates files with this mode before replacing the target.
+INSTALLER_WRITE_MODE = 0o600
+
+
 def json_bytes(value):
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
@@ -755,7 +759,11 @@ def rollback(tree, journal):
         if version3 and current is not None:
             mode = stat.S_IMODE(tree.inspect(item["path"]).st_mode)
             expected_mode = item["old_mode"] if current == old else item["new_mode"]
-            if expected_mode is not None and mode != expected_mode:
+            # An identical-byte rewrite interrupted before new_mode was recorded
+            # carries the installer's own private write mode; rollback restores old_mode.
+            own_write = (current == old and item["new_mode"] is None and
+                         item["new_sha256"] == sha256(current) and mode == INSTALLER_WRITE_MODE)
+            if expected_mode is not None and mode != expected_mode and not own_write:
                 raise ValidationError(f"Recovery found an external mode edit at {item['path']}; marker retained")
     if version3:
         before = {item["path"]: item for item in journal["managed_before"]}
