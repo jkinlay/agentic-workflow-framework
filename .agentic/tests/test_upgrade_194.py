@@ -26,6 +26,13 @@ class Upgrade194Tests(unittest.TestCase):
             self.assertEqual(result["status"], "PLAN")
             self.assertEqual(result["upgrade"]["detected_version"], "1.9.3")
             self.assertEqual(result["conflicts"], [])
+            diff = result["upgrade"]["configuration_diff_total"]
+            self.assertIn('-    "expected_workflow_version": "1.9.3"', diff)
+            self.assertIn('+    "expected_workflow_version": "1.9.4"', diff)
+            self.assertEqual(diff.count("\n-"), 1)
+            self.assertEqual(diff.count("\n+"), 2)  # header plus the one added setting
+            self.assertNotIn("tier3_review", json.dumps(result["upgrade"]))
+            self.assertNotIn("migrate_1_9_3_to_1_9_4", json.dumps(result["upgrade"]))
         finally:
             for path in destination.rglob("*"):
                 if path.is_file():

@@ -2,7 +2,7 @@
 
 419 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `31373269420eb2d5b825f19680ad3fa85f54558eac1c1aa4f8e2063743385387`
+MANIFEST.json SHA-256: `6285f7a9ddd62b14fda904bbeb05dcab9d523764899e98e0b7d931f0a6fe3a1e`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -298,7 +298,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_rules_activation.py` | `2466e0168dfcb2cb858f862ca1972da7b78527bfd73e90f6a6c83f546af6f533` |
 | `.agentic/tests/test_store_regressions.py` | `2cf43379f37928ead367f3fc60e4e282a7814a84194765b6cdd759a99dc42859` |
 | `.agentic/tests/test_streams.py` | `f6fb0ab95c1aa0689a3459298106994075749729f89ec0110e9e8ab21b391c6c` |
-| `.agentic/tests/test_upgrade_194.py` | `808c6e2c368a67804d454aee4aca766ab7f21fe2c803639e79d8f42406297ed6` |
+| `.agentic/tests/test_upgrade_194.py` | `22bb4589f9a2eff7451bd6e27566c6f947e475c8e7308e1f11c447549e22749e` |
 | `.agentic/tests/test_upgrade_matrix.py` | `50c72faf404e5c2adb25dbe3938efbe4f3bc7dfed8e072530e1d37e69b781926` |
 | `.agentic/tests/test_windows_diagnostics.py` | `e6c45221c245dfb875b8118a7617ba28280c23bc1bfaea5bb3dade0447938d15` |
 | `.agentic/tests/upgrade_fixtures.py` | `876f43c093c4d8969e083c772e6794081394984ff001f96683459e291cf1e470` |
@@ -316,7 +316,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `AGENTS.md` | `dc2a7603f45f01fdfc9505a51af7747527582434b3daaa964d26464fd6293a75` |
 | `ARCHITECTURE.md` | `761781e0581d5d2a75013bf5f131ff06f18180805f485c1e50dfbc0a9680042c` |
-| `CHANGELOG.md` | `176136bfa2445a4d728ae2eaef8549a22c1ff2ecf884182fe614dceb27f5d303` |
+| `CHANGELOG.md` | `1e7a333cae4ed4fbd0a9a9e5b4146c076c26cb9167548566f3ff3e7e2afc466d` |
 | `Claude outputs/AWF-1.9.1-Showcase-Presentation.html` | `5dbf524af67adee2327b33ac12064f63b5fc2314645e0a6cf306abccc8124386` |
 | `Claude outputs/AWF-1.9.2-Speaker-Script.md` | `335b8ff56c006166f155973bac8be8f52614fa78f6454230a3efa73576e35327` |
 | `Claude outputs/awf192-critic-prompt.md` | `77a12deaefd9029554b8ac718efed2da370fd3dc91b80c225bca80cbbaa8877c` |
@@ -325,7 +325,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `Claude outputs/run-awf192-critic.bat` | `84d507708205d17d6474852231f91ba1fc58469d073b4d76735389fbb9d41f4c` |
 | `LICENSE` | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
 | `MIGRATION-to-v1.9.3.md` | `2fc7fc09c18dade045b9bcadb9dd39b4b16c5a0553e8a252c90cc5f80d4adc64` |
-| `MIGRATION-to-v1.9.4.md` | `a98f37a16087e08172ea403d1b5a9840c333b712a60d9a27a9d97f9094e1cbab` |
+| `MIGRATION-to-v1.9.4.md` | `b12d39c4f785638e51c5ede683bcf2e80e715f743ec32133a5a60262e85e4097` |
 | `MIGRATION-v0.1.2-to-v1.9.1.md` | `5cb4ecd7423c64ef9b4239548564bf600ab4890b8fb2ce5a81b410e65a19ffe7` |
 | `MIGRATION-v1.5-to-v1.6.md` | `9de2b85adfb09b446a72aaf5b38c5c64cdd25da592ab673d2690fa6cfc9f6dd3` |
 | `MIGRATION-v1.6-to-v1.7.md` | `6ccd5a216a0c7db09887bd7696e8daaa093cd47ab79b52f6c9e097a2ac99d1d1` |
@@ -343,7 +343,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `MIGRATION-v1.9.0-to-v1.9.1.md` | `5c75234dcda9d8d1ddef7dccbbcdf77ae1d9f66ee47d05d2afcb08b4e12f6822` |
 | `MIGRATION-v1.9.1-to-v1.9.2.md` | `4a484db5892d1f5689c54b68d2833bea2a5e0d166fd29b1937437d3dabeaba66` |
 | `MIGRATION-v1.9.2-to-v1.9.3.md` | `70b47892e0db995c5a1ea7f619ffc14f75b0470313f7685581c3a036b0706ae8` |
-| `MIGRATION-v1.9.3-to-v1.9.4.md` | `2f37f470afb868cfbc089019d708013e5d89128890bcebd37300337b5a599448` |
+| `MIGRATION-v1.9.3-to-v1.9.4.md` | `3c55f0a26baf1e111c38e8a704748c7f8f17c445738f533fb697038e20e0e448` |
 | `NOTICE` | `778aa28d13e57cd0626adeb12099588fe0cf5e3eaa40e059b2409e855931ac57` |
 | `OPERATING_CONFIG.yaml` | `f92108e68715147bb2e1b93f0bc3456f683a84ffde96d89db32870cb9893cd37` |
 | `PUBLISHER.json` | `721657a4273781e068d71a7365644a09ba152a00bd0b97ab1789843c3086f481` |
