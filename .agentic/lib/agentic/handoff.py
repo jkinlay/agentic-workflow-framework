@@ -23,11 +23,19 @@ FIELDS = ("repository.path", "repository.origin", "repository.numeric_id", "repo
           "repository.head", "awf.version", "awf.project_state", "awf.integrity_valid",
           "awf.trust_basis", "adoption.state", "adoption.pr", "adoption.merge_commit",
           "operating.hash", "operating.routes", "jira.cloud_id", "jira.provider_project_id",
-          "jira.project_key", "jira.controller_actor_id", "external_resources", "blockers")
-# Host-local facts (checkout path, current blockers) are recorded but not compared.
-COMPARED = tuple(key for key in FIELDS if key not in ("repository.path", "blockers"))
+          "jira.project_key", "jira.controller_actor_id", "external_resources",
+          "continuity.completed_tickets", "blockers")
+CONTINUITY = "continuity.completed_tickets"
+# Host-local facts (checkout path, current blockers) are recorded but not compared
+# by value. Completed tickets are re-verified instead: each recorded merge commit
+# must be reachable from the receiving checkout's HEAD.
+COMPARED = tuple(key for key in FIELDS if key not in ("repository.path", "blockers", CONTINUITY))
 _AUTHORITY = ("execution_authority", "merge_authority", "jira_authority")
-_USERINFO = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@")
+# A received snapshot older than this (or carrying older observations) is STALE, never MATCH.
+MAX_AGE_SECONDS = 86400
+# Tolerated clock difference before a received snapshot counts as future-dated.
+SKEW_SECONDS = 30
+_SCHEME = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)(.*)$", re.DOTALL)
 
 
 def _field(value, basis, observed_at):
@@ -36,23 +44,77 @@ def _field(value, basis, observed_at):
     return {"value": value, "basis": basis, "observed_at": observed_at}
 
 
-def _git(root, *arguments):
+def _run_git(root, *arguments):
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
     try:
-        process = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", str(root), *arguments],
-                                 stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                 timeout=20, env=child_env(env))
+        return subprocess.run(["git", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", str(root), *arguments],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=20, env=child_env(env))
     except (OSError, subprocess.SubprocessError):
         return None
-    if process.returncode != 0:
+
+
+def _git(root, *arguments):
+    process = _run_git(root, *arguments)
+    if process is None or process.returncode != 0:
         return None
     return process.stdout.strip() or None
 
 
+def _reachable(root, commit):
+    """True only when ``commit`` is in the history of the checkout's HEAD."""
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        return False
+    process = _run_git(root, "merge-base", "--is-ancestor", commit, "HEAD")
+    return process is not None and process.returncode == 0
+
+
 def safe_origin(url):
-    """Drop any user-info (tokens, passwords) from a remote URL."""
-    return None if url is None else _USERINFO.sub(r"\1", url)
+    """A remote URL without credentials: no user-info, query string or fragment.
+
+    ``scheme://user:token@host/path?access_token=x#y`` becomes
+    ``scheme://host/path``. An scp-like ``git@host:path`` keeps its login name,
+    which is not a secret, but still loses any query string or fragment.
+    """
+    if url is None:
+        return None
+    match = _SCHEME.match(url)
+    if match:
+        scheme, rest = match.groups()
+        authority, slash, path = rest.partition("/")
+        # Strip user-info first: a password may itself contain '?' or '#'.
+        authority = authority.rpartition("@")[2]
+        url = scheme + authority + slash + path
+    return re.split(r"[?#]", url, maxsplit=1)[0]
+
+
+def _completed_tickets(root, records, repository_id):
+    """Completed tickets proven by closeout records, else None when none are supplied.
+
+    Each record must validate against its recorded commit, tree and blobs, belong
+    to this repository, and name a merge commit reachable from HEAD. A supplied
+    record that fails any check is refused rather than silently dropped.
+    """
+    if not records:
+        return None
+    from .closeout import validate_closeout
+    from .contracts import Contracts
+    contracts = Contracts(Path(__file__).resolve().parents[2] / "schemas")
+    tickets = []
+    for record in records:
+        validate_closeout(record, root, contracts)
+        binding = record["binding"]
+        if repository_id is not None and binding["repository_id"] != repository_id:
+            raise ValidationError(f"Closeout record {record['record_id']} is bound to repository "
+                                  f"{binding['repository_id']}, not {repository_id}")
+        if not _reachable(root, record["merge_commit_sha"]):
+            raise ValidationError(f"Closeout record {record['record_id']} merge commit "
+                                  f"{record['merge_commit_sha']} is not in the history of HEAD")
+        entry = {"issue_id": binding["issue_id"], "pr": record["pr_number"], "merge_commit": record["merge_commit_sha"]}
+        if entry not in tickets:
+            tickets.append(entry)
+    return sorted(tickets, key=lambda item: (item["issue_id"], item["pr"], item["merge_commit"]))
 
 
 def _operating_routes(root, config, operating):
@@ -81,7 +143,8 @@ def _declared_resources(config):
     return {name: resources[name] for name in sorted(resources)}
 
 
-def build_snapshot(root, *, status=None, now=None):
+def build_snapshot(root, *, status=None, now=None, closeouts=None):
+    """Observe the K15 facts. ``closeouts`` are loaded closeout records for completed tickets."""
     root = Path(root).absolute()
     now = now or now_text()
     if status is None:
@@ -135,6 +198,8 @@ def build_snapshot(root, *, status=None, now=None):
         "jira": {key: _field(jira.get(key), "configured", now)
                  for key in ("cloud_id", "provider_project_id", "project_key", "controller_actor_id")},
         "external_resources": _field(_declared_resources(config), "configured", now),
+        "continuity": {"completed_tickets": _field(_completed_tickets(root, closeouts, numeric_id["value"]),
+                                                   "verified", now)},
         "blockers": _field(blockers, "verified", now),
     }
 
@@ -184,6 +249,13 @@ def _resources(value):
                                            for key, slots in value.items())
 
 
+def _completed(value):
+    return isinstance(value, list) and all(
+        isinstance(item, dict) and set(item) == {"issue_id", "pr", "merge_commit"} and _text(item["issue_id"])
+        and _positive_integer(item["pr"]) and isinstance(item["merge_commit"], str)
+        and re.fullmatch(r"[0-9a-f]{40}", item["merge_commit"]) is not None for item in value)
+
+
 def _blockers(value):
     return isinstance(value, list) and all(
         isinstance(item, dict) and set(item) == {"code", "state", "evidence"}
@@ -192,7 +264,9 @@ def _blockers(value):
 
 # Value type of every K15 field when it is observed (a null value means unavailable).
 VALUE_CHECKS = {
-    "repository.path": _text, "repository.origin": _text, "repository.numeric_id": _positive_integer,
+    "repository.path": _text,
+    # A received origin must already be credential-free, so drift output never echoes a token.
+    "repository.origin": lambda value: _text(value) and safe_origin(value) == value, "repository.numeric_id": _positive_integer,
     "repository.branch": _text, "repository.head": _object_id,
     "awf.version": lambda value: isinstance(value, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value) is not None,
     "awf.project_state": _text, "awf.integrity_valid": lambda value: type(value) is bool, "awf.trust_basis": _text,
@@ -200,20 +274,23 @@ VALUE_CHECKS = {
     "operating.hash": lambda value: isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None,
     "operating.routes": _routes,
     "jira.cloud_id": _text, "jira.provider_project_id": _text, "jira.project_key": _text,
-    "jira.controller_actor_id": _text, "external_resources": _resources, "blockers": _blockers,
+    "jira.controller_actor_id": _text, "external_resources": _resources, CONTINUITY: _completed,
+    "blockers": _blockers,
 }
 _SECTIONS = {section: {key.split(".")[1] for key in FIELDS if key.startswith(section + ".")}
              for section in dict.fromkeys(key.split(".")[0] for key in FIELDS if "." in key)}
 _TOP_LEVEL = {"schema", "generated_at", *_AUTHORITY, *_SECTIONS, *(key for key in FIELDS if "." not in key)}
 
 
-def _field_problem(item, check):
+def _field_problem(item, check, generated_at=None):
     if not isinstance(item, dict) or set(item) != {"value", "basis", "observed_at"}:
         return "malformed"
     if item["basis"] not in BASES or (item["value"] is None) != (item["basis"] == "unavailable"):
         return "malformed"
     if not _timestamp(item["observed_at"]):
         return "invalid observed_at"
+    if generated_at is not None and timestamp(item["observed_at"]) > generated_at:
+        return "observed after generated_at"
     if item["value"] is not None and not check(item["value"]):
         return "invalid value"
     return None
@@ -225,13 +302,17 @@ def structural_problems(snapshot):
     A missing field is not an explicit ``unavailable`` one: only a present
     field with ``basis: unavailable`` and a null value records an unobservable
     fact.  Values must have the field's type and timestamps must be RFC 3339,
-    so a malformed value can never compare equal to a current one.
+    so a malformed value can never compare equal to a current one.  No fact
+    may be observed after the snapshot was generated.
     """
     problems = []
+    generated_at = None
     if "generated_at" not in snapshot:
         problems.append({"field": "generated_at", "problem": "missing"})
     elif not _timestamp(snapshot["generated_at"]):
         problems.append({"field": "generated_at", "problem": "invalid timestamp"})
+    else:
+        generated_at = timestamp(snapshot["generated_at"])
     problems.extend({"field": key, "problem": "unexpected"} for key in sorted(set(snapshot) - _TOP_LEVEL))
     for section, names in sorted(_SECTIONS.items()):
         if isinstance(snapshot.get(section), dict):
@@ -239,7 +320,7 @@ def structural_problems(snapshot):
                             for key in sorted(set(snapshot[section]) - names))
     for key in FIELDS:
         item = _entry(snapshot, key)
-        problem = "missing" if item is _MISSING else _field_problem(item, VALUE_CHECKS[key])
+        problem = "missing" if item is _MISSING else _field_problem(item, VALUE_CHECKS[key], generated_at)
         if problem:
             problems.append({"field": key, "problem": problem})
     return problems
@@ -250,8 +331,26 @@ def _same(left, right):
     return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
 
 
-def compare_snapshot(received, current):
-    """Compare a received snapshot with a freshly built one; never adopts received state."""
+def _continuity_drift(received, current):
+    """Received completed tickets whose merge commit this checkout's HEAD does not contain."""
+    tickets = _lookup(received, CONTINUITY)
+    if tickets is None:
+        return []
+    root = _lookup(current, "repository.path")
+    missing = [item for item in tickets if root is None or not _reachable(root, item["merge_commit"])]
+    if not missing:
+        return []
+    return [{"field": CONTINUITY, "received": missing, "current": None,
+             "reason": "Completed-ticket merge commits are not in the history of this checkout's HEAD"}]
+
+
+def compare_snapshot(received, current, *, max_age_seconds=MAX_AGE_SECONDS):
+    """Compare a received snapshot with a freshly built one; never adopts received state.
+
+    A future-dated snapshot is REJECTED. One generated, or carrying a fact
+    observed, more than ``max_age_seconds`` before this host's observation is
+    STALE, even when every value matches.
+    """
     if not isinstance(received, dict) or received.get("schema") != SCHEMA:
         return {"status": "REJECTED", "reason": "Not an " + SCHEMA + " document", "execution_authority": False}
     if any(received.get(key) is not False for key in _AUTHORITY):
@@ -260,10 +359,19 @@ def compare_snapshot(received, current):
     if problems:
         return {"status": "REJECTED", "reason": "Incomplete or malformed handoff snapshot; export it again with workflow.py handoff",
                 "problems": problems, "execution_authority": False}
+    now = timestamp(current["generated_at"])
+    if (timestamp(received["generated_at"]) - now).total_seconds() > SKEW_SECONDS:
+        return {"status": "REJECTED", "reason": "Handoff snapshot is dated after this host's observation",
+                "problems": [{"field": "generated_at", "problem": "future-dated"}], "execution_authority": False}
+    stale = [key for key in ("generated_at", *FIELDS)
+             if (now - timestamp(received["generated_at"] if key == "generated_at"
+                                 else _entry(received, key)["observed_at"])).total_seconds() > max_age_seconds]
     drift = [{"field": key, "received": _lookup(received, key), "current": _lookup(current, key)}
              for key in COMPARED if not _same(_lookup(received, key), _lookup(current, key))]
-    return {"status": "MATCH" if not drift else "DRIFT", "received_at": received.get("generated_at"),
-            "observed_at": current["generated_at"], "drift": drift, "execution_authority": False}
+    drift += _continuity_drift(received, current)
+    status = "STALE" if stale else "MATCH" if not drift else "DRIFT"
+    return {"status": status, "received_at": received.get("generated_at"), "observed_at": current["generated_at"],
+            "max_age_seconds": max_age_seconds, "stale": stale, "drift": drift, "execution_authority": False}
 
 
 def _cell(value):

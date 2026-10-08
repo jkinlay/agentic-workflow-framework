@@ -152,16 +152,20 @@ def main(argv=None, default_root=None):
     handoff_parser = sub.add_parser("handoff", help="Read-only handoff snapshot of verified observations; grants no authority")
     handoff_parser.add_argument("--json", action="store_true", help="Print JSON instead of Markdown")
     handoff_parser.add_argument("--output", type=Path, help="Also create this new JSON file; never overwrites")
+    handoff_parser.add_argument("--closeout", type=Path, action="append", default=[],
+                                help="Closeout record JSON of a completed ticket (repeatable); each is validated "
+                                     "against Git and must be merged into HEAD")
     args = parser.parse_args(argv)
     try:
         root = args.root.absolute()
         if args.command == "handoff" or (args.command == "doctor" and args.handoff is not None):
             from .handoff import build_snapshot, compare_snapshot, render_markdown
-            snapshot = build_snapshot(root)
+            closeouts = [load(path) for path in args.closeout] if args.command == "handoff" else None
+            snapshot = build_snapshot(root, closeouts=closeouts)
             if args.command == "doctor":
                 output = compare_snapshot(load(args.handoff), snapshot)
                 print(json.dumps(output, indent=2, ensure_ascii=False))
-                return {"MATCH": 0, "DRIFT": 2}.get(output["status"], 1)
+                return {"MATCH": 0, "DRIFT": 2, "STALE": 2}.get(output["status"], 1)
             if args.output:
                 with args.output.open("x", encoding="utf-8", newline="\n") as stream:
                     json.dump(snapshot, stream, indent=2, ensure_ascii=False)

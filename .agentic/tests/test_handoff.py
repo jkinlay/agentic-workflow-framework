@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,12 +10,16 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
+import uuid
 
+from agentic import ValidationError
+from agentic import cli
 from agentic.canonical import load
 from agentic.child_process import child_env
 from agentic.contracts import Contracts
-from agentic.handoff import (BASES, COMPARED, FIELDS, build_snapshot, compare_snapshot, render_markdown,
-                             safe_origin)
+from agentic.handoff import (BASES, COMPARED, FIELDS, MAX_AGE_SECONDS, build_snapshot, compare_snapshot,
+                             render_markdown, safe_origin)
 from agentic.operating import read_operating
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +27,22 @@ STATUS = {"project_state": "ACTIVE", "integrity_valid": True, "adoption": "MERGE
           "operating": {"hash": "a" * 64},
           "checks": [{"code": "INSTALLATION_INTEGRITY", "state": "PASS", "evidence": "ok"},
                      {"code": "RELEASE_TRUST", "state": "UNOBSERVED", "evidence": "no receipt"}]}
+# The K15 handoff facts, listed independently of the implementation's FIELDS so a
+# fact dropped from the snapshot cannot hide behind the same list.
+K15_FACTS = {
+    "repository.path", "repository.origin", "repository.numeric_id", "repository.branch", "repository.head",
+    "awf.version", "awf.project_state", "awf.integrity_valid", "awf.trust_basis",
+    "adoption.state", "adoption.pr", "adoption.merge_commit", "operating.hash", "operating.routes",
+    "jira.cloud_id", "jira.provider_project_id", "jira.project_key", "jira.controller_actor_id",
+    "external_resources", "continuity.completed_tickets", "blockers",
+}
+
+
+def git_out(root, *arguments):
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+    return subprocess.run(["git", "-C", str(root), *arguments], check=True, capture_output=True, text=True,
+                          env=child_env(env)).stdout.strip()
 
 
 def git(root, *arguments):
@@ -53,11 +74,38 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.write_config(project_config())
         git(self.root, "commit", "-q", "--allow-empty", "-m", "base")
 
+    def completed_ticket(self, issue_id="2001", pr=7, repository_id=4242, merge=True):
+        """Merge a ticket branch into main and return its closeout record."""
+        base = git_out(self.root, "rev-parse", "HEAD")
+        branch = "ticket-" + issue_id
+        git(self.root, "checkout", "-q", "-b", branch)
+        content = f"ticket {issue_id}\n".encode()
+        (self.root / f"{branch}.txt").write_bytes(content)
+        git(self.root, "add", f"{branch}.txt")
+        git(self.root, "commit", "-q", "-m", branch)
+        head = git_out(self.root, "rev-parse", "HEAD")
+        git(self.root, "checkout", "-q", "main")
+        git(self.root, "merge", "-q", "--no-ff", "-m", "merge " + branch, branch)
+        merge_sha = git_out(self.root, "rev-parse", "HEAD")
+        tree = git_out(self.root, "rev-parse", "HEAD^{tree}")
+        blob = git_out(self.root, "rev-parse", f"HEAD:{branch}.txt")
+        if not merge:
+            git(self.root, "reset", "-q", "--hard", base)
+        binding = deepcopy(load(ROOT / ".agentic/examples/evidence-bundle.json")["critic"]["binding"])
+        binding.update(issue_id=issue_id, repository_id=repository_id)
+        return {"schema_version": 3, "record_id": str(uuid.uuid4()), "created_at": "2026-10-06T00:00:00Z",
+                "producer_id": "fixture-controller", "run_id": str(uuid.uuid4()), "binding": binding,
+                "pr_number": pr, "reviewed_head_sha": head, "base_sha": base, "merge_commit_sha": merge_sha,
+                "merge_tree_sha": tree,
+                "bound_files": [{"path": f"{branch}.txt", "blob_sha": blob, "sha256": hashlib.sha256(content).hexdigest()}],
+                "gate_record_id": str(uuid.uuid4()), "review_record_ids": [str(uuid.uuid4())],
+                "jira_transition_record_id": None, "evidence": ["urn:awf:fixture:example-evidence"]}
+
     def write_config(self, config):
         (self.root / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(config, indent=2), encoding="utf-8")
 
-    def snapshot(self, now="2026-10-07T00:00:00Z", status=STATUS):
-        return build_snapshot(self.root, status=status, now=now)
+    def snapshot(self, now="2026-10-07T00:00:00Z", status=STATUS, closeouts=None):
+        return build_snapshot(self.root, status=status, now=now, closeouts=closeouts)
 
     def active_status(self):
         """A status as project_status reports a verified ACTIVE project, with real operating routes."""
@@ -106,7 +154,8 @@ class HandoffSnapshotTests(unittest.TestCase):
     def test_snapshot_carries_every_k15_fact_with_basis_and_observation_time(self):
         status, operating = self.active_status()
         snapshot = self.snapshot(status=status)
-        for key in FIELDS:
+        self.assertEqual(set(FIELDS), K15_FACTS)
+        for key in sorted(K15_FACTS):
             item = snapshot
             for part in key.split("."):
                 item = item[part]
@@ -135,7 +184,7 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["repository"]["numeric_id"]["basis"], "configured")
         self.assertEqual(snapshot["repository"]["numeric_id"]["value"], 4242)
         for section, key in (("awf", "trust_basis"), ("adoption", "pr"), ("adoption", "merge_commit"),
-                             ("operating", "routes")):
+                             ("operating", "routes"), ("continuity", "completed_tickets")):
             with self.subTest(field=section + "." + key):
                 self.assertEqual(snapshot[section][key]["value"], None)
                 self.assertEqual(snapshot[section][key]["basis"], "unavailable")
@@ -242,7 +291,96 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.assertIn("## Blockers (verified, observed at 2026-10-07T01:02:03.456789Z)", render_markdown(snapshot))
 
     def test_compared_fields_are_cross_host_identities(self):
-        self.assertEqual(set(FIELDS) - set(COMPARED), {"repository.path", "blockers"})
+        # Completed tickets are not compared by value; they are re-verified against Git.
+        self.assertEqual(set(FIELDS) - set(COMPARED),
+                         {"repository.path", "blockers", "continuity.completed_tickets"})
+
+    def test_completed_tickets_come_from_closeout_records_merged_into_head(self):
+        first = self.completed_ticket("2001", pr=7)
+        second = self.completed_ticket("2002", pr=9)
+        snapshot = self.snapshot(closeouts=[second, first, first])
+        self.assertEqual(snapshot["continuity"]["completed_tickets"], {
+            "value": [{"issue_id": "2001", "pr": 7, "merge_commit": first["merge_commit_sha"]},
+                      {"issue_id": "2002", "pr": 9, "merge_commit": second["merge_commit_sha"]}],
+            "basis": "verified", "observed_at": "2026-10-07T00:00:00Z"})
+        self.assertIn("| continuity.completed_tickets | [", render_markdown(snapshot))
+        self.assertEqual(self.snapshot()["continuity"]["completed_tickets"],
+                         {"value": None, "basis": "unavailable", "observed_at": "2026-10-07T00:00:00Z"})
+
+    def test_unprovable_closeout_records_are_refused(self):
+        other_repository = self.completed_ticket("2003", repository_id=101)
+        with self.assertRaisesRegex(ValidationError, "bound to repository 101"):
+            self.snapshot(closeouts=[other_repository])
+        unmerged = self.completed_ticket("2004", merge=False)
+        with self.assertRaisesRegex(ValidationError, "not in the history of HEAD"):
+            self.snapshot(closeouts=[unmerged])
+        tampered = self.completed_ticket("2005")
+        tampered["bound_files"][0]["sha256"] = "0" * 64
+        with self.assertRaises(ValidationError):
+            self.snapshot(closeouts=[tampered])
+        with self.assertRaises(ValidationError):
+            self.snapshot(closeouts=[{"schema_version": 3}])
+
+    def test_receiving_host_reverifies_completed_tickets_against_its_history(self):
+        record = self.completed_ticket("2001")
+        received = self.snapshot(closeouts=[record])
+        # The receiving checkout contains the merge: continuity holds without the records.
+        self.assertEqual(compare_snapshot(received, self.snapshot("2026-10-07T06:00:00Z"))["status"], "MATCH")
+        # A checkout whose history lacks the merge reports the ticket as drift.
+        elsewhere = Path(self.temp.name) / "elsewhere"
+        git(self.root, "clone", "-q", "--no-local", str(self.root), str(elsewhere))
+        git(elsewhere, "reset", "-q", "--hard", "HEAD~1")
+        receiving = build_snapshot(elsewhere, status=STATUS, now="2026-10-07T06:00:00Z")
+        result = compare_snapshot(received, receiving)
+        self.assertEqual(result["status"], "DRIFT")
+        continuity = [item for item in result["drift"] if item["field"] == "continuity.completed_tickets"]
+        self.assertEqual(len(continuity), 1)
+        self.assertEqual(continuity[0]["received"],
+                         [{"issue_id": "2001", "pr": 7, "merge_commit": record["merge_commit_sha"]}])
+        damaged = deepcopy(received)
+        damaged["continuity"]["completed_tickets"]["value"][0]["pr"] = 0
+        result = compare_snapshot(damaged, self.snapshot("2026-10-07T06:00:00Z"))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn({"field": "continuity.completed_tickets", "problem": "invalid value"}, result["problems"])
+
+    def test_observation_times_must_be_consistent_with_generation_time(self):
+        received = self.snapshot()
+        current = self.snapshot("2026-10-07T06:00:00Z")
+        later = deepcopy(received)
+        later["repository"]["head"]["observed_at"] = "2026-10-07T00:00:01Z"
+        result = compare_snapshot(later, current)
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn({"field": "repository.head", "problem": "observed after generated_at"}, result["problems"])
+        # An observation in the future of the receiving host, even if consistently dated.
+        future = deepcopy(received)
+        future["repository"]["head"]["observed_at"] = "2026-10-07T07:00:00Z"
+        self.assertEqual(compare_snapshot(future, current)["status"], "REJECTED")
+        future["generated_at"] = "2026-10-07T07:00:00Z"
+        result = compare_snapshot(future, current)
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn({"field": "generated_at", "problem": "future-dated"}, result["problems"])
+        # A matching snapshot from the future of this host is still rejected, small clock skew is not.
+        self.assertEqual(compare_snapshot(self.snapshot("2026-10-07T06:10:00Z"), current)["status"], "REJECTED")
+        self.assertEqual(compare_snapshot(self.snapshot("2026-10-07T06:00:20Z"), current)["status"], "MATCH")
+
+    def test_stale_snapshot_never_matches(self):
+        received = self.snapshot()
+        self.assertEqual(MAX_AGE_SECONDS, 86400)
+        self.assertEqual(compare_snapshot(received, self.snapshot("2026-10-08T00:00:00Z"))["status"], "MATCH")
+        result = compare_snapshot(received, self.snapshot("2026-10-08T00:00:01Z"))
+        self.assertEqual(result["status"], "STALE")
+        self.assertEqual(result["drift"], [])
+        self.assertIn("generated_at", result["stale"])
+        self.assertIs(result["execution_authority"], False)
+        # A recently generated snapshot that carries an old observation is stale too.
+        old_fact = self.snapshot("2026-10-09T00:00:00Z")
+        old_fact["repository"]["head"]["observed_at"] = "2026-10-07T00:00:00Z"
+        result = compare_snapshot(old_fact, self.snapshot("2026-10-09T01:00:00Z"))
+        self.assertEqual(result["status"], "STALE")
+        self.assertEqual(result["stale"], ["repository.head"])
+        # A stricter limit can be requested.
+        result = compare_snapshot(received, self.snapshot("2026-10-07T06:00:00Z"), max_age_seconds=3600)
+        self.assertEqual(result["status"], "STALE")
 
     def test_snapshot_claiming_authority_or_unknown_schema_is_rejected(self):
         forged = self.snapshot()
@@ -250,10 +388,64 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.assertEqual(compare_snapshot(forged, self.snapshot())["status"], "REJECTED")
         self.assertEqual(compare_snapshot({"schema": "other"}, self.snapshot())["status"], "REJECTED")
 
-    def test_safe_origin_strips_userinfo_only(self):
+    def test_safe_origin_strips_userinfo_query_and_fragment(self):
         self.assertEqual(safe_origin("ssh://git@example.invalid/o/r.git"), "ssh://example.invalid/o/r.git")
         self.assertEqual(safe_origin("git@example.invalid:o/r.git"), "git@example.invalid:o/r.git")
         self.assertIsNone(safe_origin(None))
+        for url in ("https://example.invalid/o/r.git?access_token=SECRET",
+                    "https://example.invalid/o/r.git#SECRET",
+                    "https://x-access-token:SECRET@example.invalid/o/r.git?token=SECRET&a=b#frag",
+                    "https://user:pa?ss#SECRET@example.invalid/o/r.git",
+                    "https://example.invalid?private_token=SECRET"):
+            with self.subTest(url=url):
+                self.assertNotIn("SECRET", safe_origin(url))
+                self.assertNotIn("?", safe_origin(url))
+                self.assertNotIn("#", safe_origin(url))
+        self.assertEqual(safe_origin("https://x-access-token:SECRET@example.invalid/o/r.git?token=SECRET#frag"),
+                         "https://example.invalid/o/r.git")
+        self.assertEqual(safe_origin("git@example.invalid:o/r.git?token=SECRET"), "git@example.invalid:o/r.git")
+
+    def test_query_string_credentials_never_reach_the_snapshot_or_drift(self):
+        git(self.root, "remote", "set-url", "origin",
+            "https://example.invalid/o/r.git?access_token=SECRETTOKEN#SECRETFRAGMENT")
+        snapshot = self.snapshot()
+        self.assertEqual(snapshot["repository"]["origin"]["value"], "https://example.invalid/o/r.git")
+        self.assertNotIn("SECRET", json.dumps(snapshot) + render_markdown(snapshot))
+        # A received snapshot carrying a credential-bearing origin is rejected, not echoed as drift.
+        received = deepcopy(snapshot)
+        received["repository"]["origin"]["value"] = "https://example.invalid/o/r.git?access_token=LEAKED"
+        result = compare_snapshot(received, self.snapshot("2026-10-07T06:00:00Z"))
+        self.assertEqual(result["status"], "REJECTED")
+        self.assertIn({"field": "repository.origin", "problem": "invalid value"}, result["problems"])
+        self.assertNotIn("LEAKED", json.dumps(result))
+
+    def test_cli_exports_completed_tickets_and_reports_stale_handoffs(self):
+        record = self.completed_ticket("2001")
+        record_path = Path(self.temp.name) / "closeout.json"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        exported = Path(self.temp.name) / "handoff.json"
+        with mock.patch("agentic.providers.github_status.project_status", return_value=deepcopy(STATUS)), \
+                mock.patch("sys.stdout"):
+            self.assertEqual(cli.main(["--root", str(self.root), "handoff", "--json", "--output", str(exported),
+                                       "--closeout", str(record_path)]), 0)
+            snapshot = load(exported)
+            self.assertEqual(snapshot["continuity"]["completed_tickets"]["value"][0]["issue_id"], "2001")
+            self.assertEqual(cli.main(["--root", str(self.root), "doctor", "--handoff", str(exported)]), 0)
+            stale = deepcopy(snapshot)
+            for key in FIELDS:
+                item = stale
+                for part in key.split("."):
+                    item = item[part]
+                item["observed_at"] = "2020-01-01T00:00:00Z"
+            stale["generated_at"] = "2020-01-01T00:00:00Z"
+            stale_path = Path(self.temp.name) / "stale.json"
+            stale_path.write_text(json.dumps(stale), encoding="utf-8")
+            self.assertEqual(cli.main(["--root", str(self.root), "doctor", "--handoff", str(stale_path)]), 2)
+            record["bound_files"][0]["sha256"] = "0" * 64
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+            with mock.patch("sys.stderr"):
+                self.assertEqual(cli.main(["--root", str(self.root), "handoff", "--json",
+                                           "--closeout", str(record_path)]), 2)
 
 
 if __name__ == "__main__":
