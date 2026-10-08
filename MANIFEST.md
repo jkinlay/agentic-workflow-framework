@@ -2,7 +2,7 @@
 
 416 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `71166e4992d1f46d35d06cae2d404f1cb5a74042d2368f7178fd77d28739225f`
+MANIFEST.json SHA-256: `5285589c72d6ede030d1ade4d7c9fea8a1dc2583cf55a97b4e2bc016e572a2c2`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -30,7 +30,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/benchmarks/native/routine-rubric.json` | `c9b2bf9d1953b8b1c777964c1d20e813e76f002937e22ab9b0945aa5c247c653` |
 | `.agentic/benchmarks/native/rubric.json` | `61e719369395e2721f8a7aa9a819ca8203947547dd6793ed9f6994df4442628f` |
 | `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `098be369dfaa316e5cbe9c91a140a18b28c22f1c1e8919caf00b88360ed48c4f` |
-| `.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md` | `0b3201890e8ffd8aa4907d5e46aad3f481a05fd724433266fd643c17d5208200` |
+| `.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md` | `b3d641c9cadcc6b713a5b0ac9550e48c25f4e61200f946ae5372f20dc0e205f4` |
 | `.agentic/docs/23-TICKET-LIFECYCLE.md` | `61d193f874899b383a68d7709094b4d4ade50c57c1de85f00bc44b59fda68cba` |
 | `.agentic/docs/24-STREAM-STARTUP.md` | `6c45da377c5f030f94126ee55bd3d3e073178ca17ab257083f80ba0827cdb7ac` |
 | `.agentic/docs/27-MODEL-ROUTING.md` | `45317fe79cfef562544285d7235be954488ff5b4e8dffc72dd9053fa29ff1b44` |
