@@ -2,6 +2,6 @@
 
 Use the verified 1.9.4 release manifest and the standard bootstrap upgrade flow. Projects with a valid 1.9.3 receipt upgrade through the version-only step in [the detailed migration](MIGRATION-v1.9.3-to-v1.9.4.md); older supported receipts use the registered adjacent chain. Preserve owner configuration and state, and review the Tier 1–3 policy before enabling any host adapter.
 
-The 1.9.3 → 1.9.4 upgrade adds the `tier3_review` review-tier defaults through the 1.9.4 migration step. This AWF-16 behavior is provisional until PR #64 merges; `tier3_review` remains optional and is not added to `new_required_settings`.
+The 1.9.3 → 1.9.4 upgrade adds the `tier3_review` review-tier defaults through the 1.9.4 migration step. AWF-30 is deferred to 1.9.5. AWF-40 (#68) fixes the doc 22 automated-review-loop guidance. This AWF-16 behavior is provisional until PR #64 merges; `tier3_review` remains optional and is not added to `new_required_settings`.
 
 Known issues: AWF-34 and AWF-35 (accepted for 1.9.4 installs, fix in 1.9.5).

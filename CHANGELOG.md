@@ -2,14 +2,19 @@
 
 ## 1.9.4 — 8 October 2026
 
-AWF-15 (#56) binds closeout records to the merge SHA. AWF-16 adds tier review caps, escalation and Tier 3 owner review. The 1.9.3 → 1.9.4 upgrade adds the `tier3_review` review-tier defaults through the 1.9.4 migration step; this AWF-16 behavior is provisional until PR #64 merges. AWF-29 fixes source protected-path refusal, critic-schema compatibility, and sandbox/effort pass-through. AWF-30 documents the ticket-to-first-draft-PR worker path.
+AWF-15 (#56) binds closeout records to the merge SHA. AWF-16 adds tier caps, escalation and Tier 3 owner review. The 1.9.3 → 1.9.4 upgrade adds optional `tier3_review` defaults; this behavior is provisional until PR #64 merges. AWF-29 fixes protected-path refusal, critic-schema compatibility, and sandbox/effort pass-through. AWF-30 is deferred to 1.9.5. AWF-40 (#68) fixes doc 22 guidance.
 
 ### Known issues (1.9.5)
 
 - AWF-24 (#52): AC42 Windows fixes moved to 1.9.5; the caveat still applies.
-- AWF-31: review-loop operator qualification flags.
-- AWF-32: missing continuous-controller adapter.
-- AWF-33: sessions can pick up an older global awf skill.
+- AWF-31: operator qualification flags.
+- AWF-32: missing controller adapter.
+- AWF-33: sessions can pick up an older skill.
+- AWF-18 (#22): Release tooling forces `core.autocrlf=true` on Windows, overriding repo setting.
+- AWF-19 (#23): Upgrade: crash during `managed_after` journal update can't be rolled back.
+- AWF-21 (#48): `doctor --handoff` can MATCH an incomplete snapshot; `host_broker` read from wrong config location.
+- AWF-22 (#51): AC42 can pass without the admission check; ACTIVE check uses the source checkout, not the installed `workflow.py`.
+- AWF-23: Heavy validation: support POSIX hosts and symlinked managed-venv interpreters (`.agentic/.venv/bin/python`).
 - AWF-34: Publication scan can never PASS on a repo with an existing tracked file over 32 MB: add a recorded allowance or baseline.
 - AWF-35: self_test fails on project-owned scripts not listed in install-pinned .agentic/launch-surfaces.json.
 
@@ -17,11 +22,9 @@ Known issues: AWF-34 and AWF-35 (accepted for 1.9.4 installs, fix in 1.9.5).
 
 ## 1.9.3 — 8 October 2026
 
-Adds Git-format-aware `tested_tree`, bounded model routing, byte-verified install/upgrade, publication scanning and strict release trust. Unsafe evidence fails closed; publisher tree equality and the existing review, activation, Windows, provider, Jira and handoff safeguards remain in force.
+Adds Git-aware `tested_tree`, bounded routing, byte-verified upgrades, publication scanning and strict release trust; unsafe evidence fails closed.
 
 Upgrades tolerate a venv `lib64` → `lib` link (#54). `gh release` binds `--repo`; origin is validated before tagging (#55).
-
-**Caveat:** the Windows installed self-test (AC42) is not certified; #52's Windows fixes move to 1.9.4/1.9.3.1. Release readiness relies on the AWF-11 minimal release check.
 
 ### Known issues (1.9.4)
 

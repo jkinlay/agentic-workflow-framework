@@ -380,10 +380,10 @@ class UpgradeMatrixTests(unittest.TestCase):
                     self.assertEqual(actions[relative]["action"], "retained_schema_compatible")
                     expected_schema = state_schema(relative, raw)
                     if (relative.endswith("reviews/critic-review.json") and
-                            step["from"] in {"1.9.1", "1.9.2"}):
+                            step["from"] in {"1.9.1", "1.9.2", "1.9.3"}):
                         expected_schema = "critic-review:3"
                     if (relative.endswith("lifecycle/controller-event.json") and
-                            step["from"] in {"1.9.1", "1.9.2"}):
+                            step["from"] in {"1.9.1", "1.9.2", "1.9.3"}):
                         expected_schema = "controller-event:3"
                     if (relative.endswith("routing/ledger.sqlite") and
                             step["from"] != "1.8.3"):
