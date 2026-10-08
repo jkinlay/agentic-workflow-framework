@@ -648,7 +648,7 @@
       "provider_receipt": {
         "immutable_id": "fixture-verdict-receipt-1",
         "provider": "fixture-provider",
-        "evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "evidence_sha256": "9701f32841a7f0e2a6c9496384a68061f61e01478768582917df9c7612f53e21",
         "candidate_binding": {
           "repository_id": 101,
           "pr_number": 7,

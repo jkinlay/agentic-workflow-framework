@@ -96,11 +96,30 @@ def round_cap(tier, config=None):
 
 
 def _cap_disposition_valid(value):
-    return (isinstance(value, dict)
-            and value.get("decision") == "EXTEND_ONE_CYCLE"
-            and isinstance(value.get("record_id"), str)
-            and bool(value.get("authenticated"))
-            and bool(value.get("bounded")))
+    """Accept only the schema-shaped owner record already verified by the gate.
+
+    The policy helper cannot authenticate a provider comment itself, but it must
+    not accept caller-added ``authenticated``/``bounded`` booleans as a
+    substitute for the retained owner record.  ``gates.evaluate`` performs the
+    actual owner-record verification before calling this predicate.
+    """
+    if not isinstance(value, dict) or value.get("decision") != "EXTEND_ONE_CYCLE":
+        return False
+    required = {"record_id", "created_at", "producer_id", "run_id", "binding",
+                "open_finding_ids", "notes", "cycles", "cap_extensions",
+                "successor_ticket", "authorization_request_id", "owner_source",
+                "evidence"}
+    if not required.issubset(value) or not isinstance(value["record_id"], str):
+        return False
+    source = value["owner_source"]
+    return (isinstance(source, dict)
+            and source.get("channel") == "github_pr_comment"
+            and isinstance(source.get("comment_id"), int)
+            and isinstance(value.get("evidence"), list)
+            and bool(value["evidence"])
+            and isinstance(value.get("open_finding_ids"), list)
+            and type(value.get("cycles")) is int
+            and type(value.get("cap_extensions")) is int)
 
 
 def _ticketed_finding_ids(records):
@@ -154,7 +173,7 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
     # always consult the shared predicate first.
     if any(is_boundary(f) or f.get("boundary") or f.get("boundary_code") for f in findings):
         return {"status": "BLOCKED", "reason": "boundary finding blocks in every tier", "cap": cap}
-    if tier == TIER_3 and not owner_review:
+    if tier == TIER_3 and not _owner_review_valid(owner_review):
         return {"status": "OWNER_REVIEW_REQUIRED", "cap": cap}
     if tier == TIER_2 and rounds >= cap and p1:
         return {"status": "ROUTE_TO_OWNER", "reason": "P1 remains open at Tier 2 cap", "cap": cap}
@@ -167,6 +186,26 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
     if latest_pass and not p1 and (tier != TIER_3 or owner_review):
         return {"status": "QUALIFIED", "cap": cap}
     return {"status": "CONTINUE", "cap": cap}
+
+
+def _owner_review_valid(value):
+    """Require a retained provider-observed owner verdict, never a boolean."""
+    if not isinstance(value, dict):
+        return False
+    receipt = value.get("provider_receipt")
+    binding = value.get("candidate_binding")
+    return (value.get("owner_review") is True
+            and value.get("provider_observed") is True
+            and isinstance(value.get("record_id"), str)
+            and isinstance(value.get("run_id"), str)
+            and isinstance(value.get("producer_id"), str)
+            and isinstance(value.get("owner_id"), int)
+            and isinstance(binding, dict)
+            and isinstance(receipt, dict)
+            and receipt.get("immutable_id")
+            and receipt.get("provider")
+            and receipt.get("candidate_binding") == binding
+            and receipt.get("owner_id") == value.get("owner_id"))
 
 
 def diff_effect(previous_diff_sha, current_diff_sha, *, base_only=False):

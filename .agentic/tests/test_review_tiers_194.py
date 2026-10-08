@@ -1,4 +1,5 @@
 import copy
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -43,9 +44,16 @@ class ReviewTiers194Tests(unittest.TestCase):
     def test_cap_requires_authenticated_bounded_record(self):
         with self.assertRaises(ValidationError):
             review_decision(2, 4, owner_cap_disposition=True)
-        self.assertEqual("CONTINUE", review_decision(2, 4, owner_cap_disposition={
+        disposition = {
             "decision": "EXTEND_ONE_CYCLE", "record_id": "owner-record",
-            "authenticated": True, "bounded": True})["status"])
+            "created_at": "2026-09-09T12:00:00Z", "producer_id": "verifier",
+            "run_id": "run", "binding": {}, "open_finding_ids": [],
+            "notes": "extend", "cycles": 3, "cap_extensions": 1,
+            "successor_ticket": None, "authorization_request_id": "request",
+            "owner_source": {"channel": "github_pr_comment", "comment_id": 1},
+            "evidence": ["urn:awf:fixture:evidence"]}
+        self.assertEqual("CONTINUE", review_decision(2, 4,
+                         owner_cap_disposition=disposition)["status"])
 
     def test_tier2_cap_p1_routes_owner(self):
         self.assertEqual("ROUTE_TO_OWNER", review_decision(
@@ -53,7 +61,19 @@ class ReviewTiers194Tests(unittest.TestCase):
 
     def test_tier3_requires_owner_review(self):
         self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(3, 3, latest_pass=True)["status"])
-        self.assertEqual("QUALIFIED", review_decision(3, 3, latest_pass=True, owner_review=True)["status"])
+        owner = {"owner_review": True, "provider_observed": True,
+                 "record_id": "owner-record", "run_id": "verify-run",
+                 "producer_id": "verifier", "owner_id": 1001,
+                 "candidate_binding": {"repository_id": 1, "pr_number": 1,
+                                        "base_sha": "a" * 40, "head_sha": "b" * 40},
+                 "provider_receipt": {"immutable_id": "receipt", "provider": "github",
+                                      "candidate_binding": {"repository_id": 1, "pr_number": 1,
+                                                             "base_sha": "a" * 40, "head_sha": "b" * 40},
+                                      "owner_id": 1001}}
+        self.assertEqual("QUALIFIED", review_decision(3, 3, latest_pass=True,
+                         owner_review=owner)["status"])
+        self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(
+            3, 3, latest_pass=True, owner_review=True)["status"])
 
     def test_highest_precedence_and_escalation_evidence(self):
         result = classify(self.config, [".agentic/PROJECT_CONFIG.yaml"], risk_flags=["release"])
@@ -87,6 +107,25 @@ class ReviewTiers194Tests(unittest.TestCase):
     def test_run_cap_is_independent_from_review_cap(self):
         self.assertEqual(3, round_cap(2))
         self.assertEqual(1, round_cap(1))
+
+    def test_real_apply_chain_dispatches_193_to_194_and_preserves_yaml_bytes(self):
+        from agentic.upgrade import apply_chain
+        table = {"target": "1.9.4", "versions": {
+            "1.9.3": {"migration": {"to": "1.9.4", "new_required_settings": []}},
+        }}
+        target = {"source_manifest_sha256": "a" * 64, "_immutable_files": {}}
+        config = (b"# retained comment\ntemplate:\n  expected_workflow_version: 1.9.3\n"
+                  b"execution:\n  risk_tiers:\n"
+                  b"    tier1_review: {max_rounds: 1} # retained inline\n")
+        receipt = json.dumps({"template_version": "1.9.3"}).encode()
+        provenance = json.dumps({"template": {"version": "1.9.3"}}).encode()
+        migrated, reports = apply_chain(table, "1.9.3", config, None, receipt,
+                                        provenance, {}, target)
+        self.assertEqual("1.9.3", reports[0]["from"])
+        self.assertEqual("1.9.4", reports[0]["to"])
+        self.assertIn(b"# retained comment", migrated.project_config)
+        self.assertIn(b"# retained inline", migrated.project_config)
+        self.assertIn(b"tier3_review", migrated.project_config)
 
 
 if __name__ == "__main__":

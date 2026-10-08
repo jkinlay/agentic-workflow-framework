@@ -594,24 +594,62 @@ def review_tier_defaults(config):
     """
     import copy
     raw = isinstance(config, (bytes, bytearray))
-    original_comments = []
-    if raw:
-        original_text = bytes(config).decode("utf-8")
-        original_comments = [line for line in original_text.splitlines()
-                             if line.lstrip().startswith("#")]
+    original_text = bytes(config).decode("utf-8") if raw else None
     value = copy.deepcopy(load_yaml(config) if raw else config)
     if not isinstance(value, dict):
         raise ValidationError("Migration is not deterministic. Project configuration must be a mapping")
     execution = value.setdefault("execution", {})
     tiers = execution.setdefault("risk_tiers", {})
+    had_tier3 = "tier3_review" in tiers
     tiers.setdefault("tier3_review", {"roles": ["critic", "specialist"],
                                        "findings": "blocking", "max_rounds": 3})
     if not raw:
         return value
-    rendered = json.dumps(value, indent=2, ensure_ascii=False)
-    if original_comments:
-        rendered += "\n" + "\n".join(original_comments)
-    return (rendered + "\n").encode("utf-8")
+    # The migration is byte-preserving apart from the one additive mapping.
+    # Re-emitting parsed YAML as JSON loses comments, quoting and scalar style.
+    if had_tier3:
+        return bytes(config)
+    lines = original_text.splitlines(keepends=True)
+    newline = "\r\n" if "\r\n" in original_text else "\n"
+    execution = next((i for i, line in enumerate(lines)
+                      if re.match(r"^execution:\s*(?:#.*)?(?:\r?\n)?$", line)), None)
+    if execution is None:
+        suffix = "" if not lines or lines[-1].endswith(("\n", "\r")) else newline
+        return (original_text + suffix
+                + "execution:" + newline
+                + "  risk_tiers:" + newline
+                + "    tier3_review:" + newline
+                + "      roles: [critic, specialist]" + newline
+                + "      findings: blocking" + newline
+                + "      max_rounds: 3" + newline).encode("utf-8")
+    execution_end = len(lines)
+    for i in range(execution + 1, len(lines)):
+        if lines[i].strip() and not lines[i].lstrip().startswith("#") and not lines[i].startswith((" ", "\t")):
+            execution_end = i
+            break
+    risk = next((i for i in range(execution + 1, execution_end)
+                 if re.match(r"^\s{2}risk_tiers:\s*(?:#.*)?(?:\r?\n)?$", lines[i])), None)
+    addition = ["    tier3_review:" + newline,
+                "      roles: [critic, specialist]" + newline,
+                "      findings: blocking" + newline,
+                "      max_rounds: 3" + newline]
+    if risk is None:
+        lines[execution_end:execution_end] = ["  risk_tiers:" + newline] + addition
+    else:
+        risk_indent = len(lines[risk]) - len(lines[risk].lstrip(" "))
+        risk_end = execution_end
+        for i in range(risk + 1, execution_end):
+            stripped = lines[i].strip()
+            if stripped and not stripped.startswith("#") and len(lines[i]) - len(lines[i].lstrip(" ")) <= risk_indent:
+                risk_end = i
+                break
+        adjusted = [line.replace("    tier3_review:", " " * (risk_indent + 2) + "tier3_review:", 1)
+                    .replace("      roles:", " " * (risk_indent + 4) + "roles:", 1)
+                    .replace("      findings:", " " * (risk_indent + 4) + "findings:", 1)
+                    .replace("      max_rounds:", " " * (risk_indent + 4) + "max_rounds:", 1)
+                    for line in addition]
+        lines[risk_end:risk_end] = adjusted
+    return "".join(lines).encode("utf-8")
 
 
 def config_diff(before, after, previous, current):

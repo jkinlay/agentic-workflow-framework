@@ -193,7 +193,7 @@ def example_bundle(cfg):
         candidate_binding={"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
                            "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
         provider_receipt={"immutable_id": "fixture-verdict-receipt-1", "provider": "fixture-provider",
-                          "evidence_sha256": "c" * 64,
+                          "evidence_sha256": "9701f32841a7f0e2a6c9496384a68061f61e01478768582917df9c7612f53e21",
                           "candidate_binding": {"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
                                                  "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
                           "owner_id": 1001})
