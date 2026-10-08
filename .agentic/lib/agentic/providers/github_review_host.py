@@ -46,7 +46,17 @@ def is_source_repository(root, revision='HEAD'):
 
 def reviewed_model_effort_pairs(root, revision):
     """Read routing policy from an accepted Git object, never the worktree."""
+    require(isinstance(revision, str) and re.fullmatch(r'[0-9a-f]{40}', revision),
+            'Reviewed model/effort policy requires the observed immutable base SHA')
     try:
+        resolved = subprocess.run(
+            ['git', '--no-replace-objects', '-c', 'core.useReplaceRefs=false',
+             '-c', 'protocol.file.allow=never', '-C', str(Path(root)),
+             'rev-parse', '--verify', revision + '^{commit}'],
+            capture_output=True, text=True, encoding='utf-8', errors='strict',
+            env=child_env(isolated_git_env(dict(os.environ))), check=False)
+        if resolved.returncode != 0 or resolved.stdout.strip() != revision:
+            return {}
         result = subprocess.run(
             ['git', '--no-replace-objects', '-c', 'core.useReplaceRefs=false',
              '-c', 'protocol.file.allow=never', '-C', str(Path(root)),
@@ -154,11 +164,16 @@ def load_config(path, runtime_root):
     # external, digest-bound review input; otherwise read the PR base object,
     # never the candidate worktree.  Missing/empty policy fails closed below.
     host_pairs = config.get('approved_model_effort_pairs') or {}
-    pairs = host_pairs or reviewed_model_effort_pairs(config['worker_checkout'], config['base_branch'])
-    for role, effort in efforts.items():
-        model = config['models'][role]
-        require(model in pairs and effort in pairs[model],
-                f'{role} reasoning_effort is not an approved model/effort pair in the reviewed project policy')
+    if host_pairs:
+        for role, effort in efforts.items():
+            model = config['models'][role]
+            require(model in host_pairs and effort in host_pairs[model],
+                    f'{role} reasoning_effort is not an approved model/effort pair in the reviewed project policy')
+    elif efforts:
+        # The fallback policy is bound only after the provider returns the
+        # immutable candidate base SHA.  A mutable base-branch ref is never
+        # sufficient evidence for model routing.
+        config['_requires_reviewed_effort_policy'] = True
     require(isinstance(config['required_checks'], list) and config['required_checks'], 'At least one pinned CI check is required')
     names = set()
     for check in config['required_checks']:
@@ -289,11 +304,24 @@ class HostDriver:
         require(pr['head']['ref'] == self.c['head_branch'] and pr['base']['ref'] == self.c['base_branch'], 'PR branch/target changed')
         for side in ['head','base']:
             require(re.fullmatch('[0-9a-f]{40}',pr[side]['sha']), 'Malformed Git commit')
-        return {'repository_id':self.c['repository_id'], 'pr':number, 'head':pr['head']['sha'],
+        candidate = {'repository_id':self.c['repository_id'], 'pr':number, 'head':pr['head']['sha'],
             'base':pr['base']['sha'], 'head_ref':pr['head']['ref'], 'base_ref':pr['base']['ref']}
+        self.bind_reviewed_policy(candidate)
+        return candidate
+
+    def bind_reviewed_policy(self, candidate):
+        if not self.c.get('_requires_reviewed_effort_policy'):
+            return
+        pairs = reviewed_model_effort_pairs(self.worker, candidate['base'])
+        require(pairs, 'Reviewed model/effort policy is missing or empty at the observed candidate base SHA')
+        for role, effort in (self.c.get('reasoning_effort') or {}).items():
+            model = self.c['models'][role]
+            require(model in pairs and effort in pairs[model],
+                    f'{role} reasoning_effort is not an approved model/effort pair at the observed candidate base SHA')
 
     def preflight(self, candidate):
         require(candidate is not None, 'Cannot enroll a closed PR')
+        self.bind_reviewed_policy(candidate)
         (self.state / 'empty-hooks').mkdir(exist_ok=True)
         require(not any((self.state / 'empty-hooks').iterdir()), 'Hook-disabled directory is not empty')
         common = []
