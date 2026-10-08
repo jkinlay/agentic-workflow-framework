@@ -108,6 +108,58 @@ def git_run(root, *args, text=True, input_data=None):
                input_data=input_data)
 
 
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s]+@")
+
+
+def _redact_url_userinfo(text):
+    """Drop any user/password/token embedded in a URL before it reaches an error."""
+    return _URL_USERINFO.sub(r"\1", text)
+
+
+def _sh_single_quote(value):
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def tag_push_credential_arguments(repository, gh="gh"):
+    """Return the push-only Git options that authenticate the tag push.
+
+    Every release Git call runs with ``isolated_git_env()``, which hides the
+    user's global and system configuration and with it any credential helper
+    (for example ``gh auth setup-git``).  An ``https://`` origin then cannot
+    authenticate.  For that case only, route credentials explicitly through the
+    same ``gh`` executable the release step uses: reset every inherited or
+    repository-local helper, then name ``gh auth git-credential`` by absolute
+    path.  Git hands the secret straight to ``git push``; nothing is captured
+    or recorded here.  SSH and local origins do not use credential helpers and
+    keep the plain isolated push.
+    """
+    push_urls = [line.strip() for line in
+                 git(repository, "remote", "get-url", "--push", "--all", "origin").splitlines() if line.strip()]
+    if len(push_urls) != 1:
+        raise ReleaseError("origin must have exactly one push URL; refusing to infer the release repository")
+    if not push_urls[0].lower().startswith("https://"):
+        return ()
+    resolved = shutil.which(str(gh))
+    if resolved is None:
+        raise ReleaseError(f"cannot authenticate the HTTPS tag push: GitHub CLI executable not found: {gh}")
+    # Git runs "!" helpers through its POSIX shell on every host, Git for Windows included.
+    executable = os.path.abspath(resolved)
+    return ("-c", "credential.helper=",
+            "-c", f"credential.helper=!{_sh_single_quote(executable)} auth git-credential")
+
+
+def push_release_tag(repository, tag, release_repo, credential_arguments):
+    """Push one tag to origin; a failure is reported without leaking URL credentials."""
+    try:
+        git_run(repository, *credential_arguments, "push", "origin", f"refs/tags/{tag}")
+    except ReleaseError as exc:
+        raise ReleaseError(
+            f"Tag push to origin ({release_repo}) failed; no GitHub release was created. "
+            f"The local annotated tag {tag} remains; check `gh auth status` for {release_repo.split('/', 1)[0]} "
+            f"and push refs/tags/{tag} before creating the draft release.\n"
+            + _redact_url_userinfo(str(exc))) from None
+
+
 def _tree_entries(repository, commit):
     """Read and validate the exact raw commit tree before creating any path."""
     resolved = git(repository, "rev-parse", "--verify", f"{commit}^{{commit}}").strip()
@@ -454,13 +506,14 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
             return result
         # Resolve and validate the release target before any local or remote mutation.
         release_repo = origin_repository(repository)
+        push_credentials = tag_push_credential_arguments(repository, gh)
         tag_file = output / "tag-message.txt"
         body_file = output / "release-body.md"
         tag_file.write_text(tag_message, encoding="utf-8", newline="\n")
         body_file.write_text(body, encoding="utf-8", newline="\n")
         git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
                 "-F", str(tag_file))
-        git_run(repository, "push", "origin", f"refs/tags/{tag}")
+        push_release_tag(repository, tag, release_repo, push_credentials)
         run([gh, "release", "create", tag, *map(str, assets), "--repo", release_repo, "--draft", "--verify-tag",
              "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)
         return result

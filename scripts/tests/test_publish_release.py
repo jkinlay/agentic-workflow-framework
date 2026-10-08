@@ -523,5 +523,140 @@ else: raise SystemExit(2)
         self.assertFalse(log.exists() and log.read_text(encoding="utf-8").strip())
 
 
+    # AWF-26: the isolated Git environment hides the user's credential helper,
+    # so the HTTPS tag push needs an explicit route through gh's authentication.
+
+    def use_https_origin(self, url="https://github.com/jkinlay/awf-fixture.git"):
+        subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repository, capture_output=True)
+        command(["git", "remote", "add", "origin", url], self.repository)
+
+        def restore():
+            subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repository, capture_output=True)
+            subprocess.run(["git", "tag", "-d", "v1.9.3"], cwd=self.repository, capture_output=True)
+        self.addCleanup(restore)
+
+    def spy_run(self, gh, push_error=None):
+        """Record every child command; stand in for the network push and for gh."""
+        calls = []
+        real_run = publisher.run
+
+        def spy(command_line, *, cwd, env=None, text=True, input_data=None):
+            command_line = [str(item) for item in command_line]
+            calls.append((command_line, dict(env) if env is not None else None))
+            if command_line[0] == gh:
+                return subprocess.CompletedProcess(command_line, 0, "", "")
+            if command_line[0] == "git" and "push" in command_line:
+                if push_error is not None:
+                    raise publisher.ReleaseError(push_error)
+                return subprocess.CompletedProcess(command_line, 0, "", "")
+            return real_run(command_line, cwd=cwd, env=env, text=text, input_data=input_data)
+        return calls, patch.object(publisher, "run", side_effect=spy)
+
+    def test_awf26_https_tag_push_uses_gh_credential_route_and_other_git_calls_stay_isolated(self):
+        self.use_https_origin()
+        fake_bin = self.base / "fake-bin-awf26"; fake_bin.mkdir()
+        executable = str(self.make_fake_gh(fake_bin, self.base / "fake-release-awf26", self.base / "awf26.jsonl"))
+        # An ambient global config naming another helper must not reach any release Git call.
+        ambient = self.base / "ambient-global.gitconfig"
+        ambient.write_text("[credential]\n\thelper = store\n", encoding="utf-8")
+        calls, spy = self.spy_run(executable)
+        with spy, patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(ambient)}):
+            result = publisher.publish(self.repository, self.commit, self.base / "awf26-https-output",
+                                       self.windows_check, self.windows_pin,
+                                       validation_runner=self.fake_validation, gh=executable)
+        self.assertEqual("DRAFT_CREATED", result["status"])
+        git_calls = [(line, env) for line, env in calls if line[0] == "git"]
+        pushes = [line for line, _env in git_calls if "push" in line]
+        self.assertEqual(1, len(pushes))
+        push = pushes[0]
+        helper = "credential.helper=!'" + os.path.abspath(executable) + "' auth git-credential"
+        position = push.index("push")
+        self.assertEqual(["-c", "credential.helper=", "-c", helper], push[position - 4:position])
+        self.assertEqual(["push", "origin", "refs/tags/v1.9.3"], push[position:])
+        for line, env in git_calls:
+            with self.subTest(git=line):
+                self.assertEqual(os.devnull, env["GIT_CONFIG_GLOBAL"])
+                self.assertEqual("1", env["GIT_CONFIG_NOSYSTEM"])
+                self.assertEqual("0", env["GIT_TERMINAL_PROMPT"])
+                if line is not push:
+                    self.assertFalse(any("credential" in item for item in line))
+        self.assertTrue(any("tag" in line and "-a" in line for line, _env in git_calls))
+        order = [index for index, (line, _env) in enumerate(calls)
+                 if line is push or line[:3] == [executable, "release", "create"]]
+        self.assertEqual(2, len(order))
+        self.assertIs(push, calls[order[0]][0])
+        create = calls[order[1]][0]
+        self.assertEqual("github.com/jkinlay/awf-fixture", create[create.index("--repo") + 1])
+        # The credential route never reaches the published record, tag message or body.
+        published = json.dumps(result) + (self.base / "awf26-https-output/tag-message.txt").read_text(encoding="utf-8") \
+            + (self.base / "awf26-https-output/release-body.md").read_text(encoding="utf-8")
+        self.assertNotIn("credential", published)
+        self.assertNotIn(str(fake_bin), published)
+
+    def test_awf26_only_https_origins_get_a_credential_route(self):
+        fake_bin = self.base / "fake-bin-awf26-routes"; fake_bin.mkdir()
+        executable = str(self.make_fake_gh(fake_bin, self.base / "fake-release-awf26-routes",
+                                           self.base / "awf26-routes.jsonl"))
+        self.use_https_origin("git@github.com:jkinlay/awf-fixture.git")
+        self.assertEqual((), publisher.tag_push_credential_arguments(self.repository, executable))
+        self.use_https_origin(str(self.base / "remote.git"))
+        self.assertEqual((), publisher.tag_push_credential_arguments(self.repository, executable))
+        self.use_https_origin()
+        self.assertEqual("credential.helper=", publisher.tag_push_credential_arguments(self.repository, executable)[1])
+        with self.assertRaisesRegex(publisher.ReleaseError, "GitHub CLI executable not found"):
+            publisher.tag_push_credential_arguments(self.repository, str(self.base / "no-such-gh"))
+
+    @unittest.skipIf(os.name == "nt", "the fixture helper is a POSIX shell script")
+    def test_awf26_isolated_git_invokes_the_gh_credential_helper_by_absolute_path(self):
+        # Prove Git itself resolves credentials through the route, even from a
+        # path needing shell quoting, and that a repository-local helper is reset.
+        repository = self.base / "awf26-credential-repository"
+        command(["git", "init", "-q", str(repository)], self.base, self.git_env)
+        command(["git", "remote", "add", "origin", "https://github.com/jkinlay/awf-fixture.git"], repository)
+        command(["git", "config", "credential.helper", "!f() { echo password=repository-local; }; f"], repository)
+        fake_bin = self.base / "fake gh's bin"; fake_bin.mkdir()
+        log = self.base / "awf26-helper.log"
+        helper = fake_bin / "gh"
+        helper.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + str(log) + "'\n"
+                          "cat > /dev/null\nif [ \"$3\" = get ]; then printf 'username=x-access-token\\npassword=fixture-secret\\n'; fi\n",
+                          encoding="utf-8")
+        helper.chmod(0o755)
+        arguments = publisher.tag_push_credential_arguments(repository, str(helper))
+        result = subprocess.run(["git", *arguments, "credential", "fill"], cwd=repository,
+                                env=publisher.isolated_git_env(), input="protocol=https\nhost=github.com\n\n",
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("password=fixture-secret", result.stdout)
+        self.assertNotIn("repository-local", result.stdout)
+        self.assertEqual("auth git-credential get", log.read_text(encoding="utf-8").strip())
+
+    def test_awf26_failed_tag_push_is_clear_redacted_and_creates_no_release(self):
+        self.use_https_origin()
+        fake_bin = self.base / "fake-bin-awf26-fail"; fake_bin.mkdir()
+        executable = str(self.make_fake_gh(fake_bin, self.base / "fake-release-awf26-fail",
+                                           self.base / "awf26-fail.jsonl"))
+        calls, spy = self.spy_run(executable, push_error=(
+            "Command failed (128): git push origin refs/tags/v1.9.3\n"
+            "fatal: unable to access 'https://x-access-token:ghs_fixturesecret@github.com/jkinlay/awf-fixture.git/'"))
+        with spy, self.assertRaises(publisher.ReleaseError) as raised:
+            publisher.publish(self.repository, self.commit, self.base / "awf26-fail-output",
+                              self.windows_check, self.windows_pin,
+                              validation_runner=self.fake_validation, gh=executable)
+        message = str(raised.exception)
+        self.assertIn("Tag push to origin (github.com/jkinlay/awf-fixture) failed; no GitHub release was created", message)
+        self.assertIn("unable to access 'https://github.com/jkinlay/awf-fixture.git/'", message)
+        self.assertNotIn("ghs_fixturesecret", message)
+        self.assertNotIn("x-access-token", message)
+        self.assertFalse([line for line, _env in calls if line[0] == executable])
+
+    def test_awf26_missing_gh_for_https_push_fails_before_tagging(self):
+        self.use_https_origin()
+        with self.assertRaisesRegex(publisher.ReleaseError, "GitHub CLI executable not found"):
+            publisher.publish(self.repository, self.commit, self.base / "awf26-missing-gh-output",
+                              self.windows_check, self.windows_pin,
+                              validation_runner=self.fake_validation, gh=str(self.base / "no-such-gh"))
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.3"], self.repository))
+
+
 if __name__ == "__main__":
     unittest.main()
