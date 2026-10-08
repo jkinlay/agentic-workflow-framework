@@ -10,6 +10,7 @@ import fnmatch
 from dataclasses import dataclass
 
 from . import ValidationError
+from .review_policy import is_boundary
 
 TIER_1 = 1
 TIER_2 = 2
@@ -28,11 +29,16 @@ def _matches(path, patterns):
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
 
 
-def _evidence_for(path, flags, explicit):
+def _evidence_for(config, path, flags, explicit):
     lower = path.lower()
     evidence = []
     if any(word in lower for word in _TIER3_WORDS):
         evidence.append("path name indicates release, merge or gate logic")
+    protected = (config or {}).get("scope", {}).get("protected_paths", [])
+    if _matches(path, protected):
+        evidence.append("path matches reviewed scope.protected_paths")
+    if any(token in lower for token in ("authorization", "lifecycle", "review", "policy", "configuration", "workflow")):
+        evidence.append("path is in a reviewed governance domain")
     for flag in sorted(set(flags) & _TIER3_FLAGS):
         evidence.append("risk flag: " + flag)
     evidence.extend(str(item) for item in explicit if str(item).strip())
@@ -58,17 +64,23 @@ def classify(config, paths, *, risk_flags=(), evidence=(), complexity=None):
     tier1_ok = bool(paths) and all(_matches(path, eligible) and not _matches(path, excluded) for path in paths)
     if tier1_ok and not flags:
         matched[1] = ["all changed paths are explicitly Tier 1 eligible"]
-    matched[2] = ["code or non-Tier-1 change uses the Tier 2 default"]
+    if not tier1_ok or flags:
+        matched[2] = ["code or non-Tier-1 change uses the Tier 2 default"]
     tier3_evidence = []
     for path in paths:
-        tier3_evidence.extend(_evidence_for(path, flags, explicit))
+        tier3_evidence.extend(_evidence_for(config, path, flags, explicit))
     if tier3_evidence:
         matched[3] = list(dict.fromkeys(tier3_evidence))
     selected = max(tier for tier, reasons in matched.items() if reasons)
+    # Only flags that participate in tier selection belong in the durable
+    # classification.  Domain-only flags (for example ``security`` used to
+    # request a specialist) must not make an otherwise unchanged
+    # classification stale.
+    classification_flags = sorted(flags & _TIER3_FLAGS)
     return {"tier": selected, "matched_tiers": [tier for tier, reasons in matched.items() if reasons],
             "evidence": {str(tier): reasons for tier, reasons in matched.items() if reasons},
             "rule": f"highest matching tier wins; Tier {selected} permits up to {ROUND_CAPS[selected]} round(s)",
-            "risk_flags": sorted(flags)}
+            "risk_flags": classification_flags}
 
 
 def round_cap(tier, config=None):
@@ -114,7 +126,10 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
     findings = list(open_findings or ())
     p1 = [f for f in findings if f.get("severity") in P1 or f.get("priority") in P1]
     p2 = [f for f in findings if f.get("severity") in P2 or f.get("priority") in P2]
-    if any(f.get("boundary") or f.get("boundary_code") for f in findings):
+    # Findings use the canonical schema, where boundary_code is nested under
+    # basis.  Keep the legacy top-level spelling for old local callers, but
+    # always consult the shared predicate first.
+    if any(is_boundary(f) or f.get("boundary") or f.get("boundary_code") for f in findings):
         return {"status": "BLOCKED", "reason": "boundary finding blocks in every tier", "cap": cap}
     if tier == TIER_3 and not owner_review:
         return {"status": "OWNER_REVIEW_REQUIRED", "cap": cap}
@@ -132,7 +147,7 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
 
 def diff_effect(previous_diff_sha, current_diff_sha, *, base_only=False):
     """Classify a base update without confusing it with an effective diff change."""
-    if base_only and previous_diff_sha == current_diff_sha:
+    if previous_diff_sha == current_diff_sha:
         return {"changed": False, "invalidate": False, "reason": "base-only update left effective PR diff unchanged"}
     return {"changed": previous_diff_sha != current_diff_sha, "invalidate": True,
             "reason": "effective diff changed; earlier approvals are stale"}

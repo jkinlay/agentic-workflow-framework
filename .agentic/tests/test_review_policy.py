@@ -107,12 +107,20 @@ class Fixture(unittest.TestCase):
     def rebind(self):
         from agentic.gates import expected_binding
         from agentic.policy import policy_hash
+        from agentic.review_tiers import classify
         self.bundle["contract"]["policy_hash"] = policy_hash(self.config, definition())
+        paths = [item["path"] for item in self.bundle["pr"]["file_manifest"]]
+        classification = classify(self.config, paths,
+                                  risk_flags=[key for key, value in self.bundle["contract"].get("risk_flags", {}).items() if value])
+        self.bundle["contract"]["risk_classification"] = copy.deepcopy(classification)
+        self.bundle["tier_classification"] = copy.deepcopy(classification)
         binding = expected_binding(self.config, definition(), self.bundle)
         for key in ["dispatch", "worker", "critic", "ci", "pr"]:
             self.bundle[key]["binding"] = copy.deepcopy(binding)
         for run in self.bundle["runs"]:
             run["binding"] = copy.deepcopy(binding)
+        for verdict in self.bundle.get("review_verdicts", []):
+            verdict["binding"] = copy.deepcopy(binding)
         return binding
 
 
@@ -120,15 +128,15 @@ class TierTests(Fixture):
     def test_tier_computation_and_declaration(self):
         self.assertEqual((1, []), computed_tier(self.config, ["tests/test_a.py", "docs/notes.md"]))
         tier, reasons = computed_tier(self.config, ["tests/test_a.py", ".github/workflows/ci.yml"])
-        self.assertEqual(2, tier)
+        self.assertEqual(3, tier)
         self.assertIn(".github/workflows/ci.yml: matches scope.protected_paths", reasons)
         self.assertEqual((2, ["src/example.py: outside execution.risk_tiers.tier1_eligible_paths"]), computed_tier(self.config, ["src/example.py"]))
         contract = copy.deepcopy(self.bundle["contract"])
         contract.update(risk_tier=1, tier_justification="tests only")
         with self.assertRaisesRegex(ValidationError, r"\.github/workflows/ci\.yml"):
             check_tier_declaration(self.config, contract, ["tests/a.py", ".github/workflows/ci.yml"])
-        contract["risk_tier"] = 2
-        self.assertEqual(2, check_tier_declaration(self.config, contract, ["tests/a.py", ".github/workflows/ci.yml"]))
+        contract["risk_tier"] = 3
+        self.assertEqual(3, check_tier_declaration(self.config, contract, ["tests/a.py", ".github/workflows/ci.yml"]))
         contract.update(risk_tier=1)
         contract["risk_flags"]["security"] = True
         with self.assertRaisesRegex(ValidationError, "risk_flags.security"):
@@ -160,11 +168,11 @@ class TierTests(Fixture):
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(2, result.returncode)
             self.assertIn(".github/workflows/ci.yml", result.stderr)
-            contract["risk_tier"] = 2
+            contract["risk_tier"] = 3
             path.write_text(json.dumps(contract), encoding="utf-8")
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(2, json.loads(result.stdout)["risk_tier"])
+            self.assertEqual(3, json.loads(result.stdout)["risk_tier"])
 
 
 class BasisAndDispositionTests(Fixture):

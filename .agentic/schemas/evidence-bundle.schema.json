@@ -18,6 +18,8 @@
     "finding_dispositions",
     "cap_disposition",
     "publication_scan",
+    "tier_classification",
+    "review_verdicts",
     "evidence_registry",
     "provenance_mode"
   ],

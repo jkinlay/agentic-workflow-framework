@@ -137,6 +137,12 @@ def evaluate(config, workflow, bundle, contracts, now):
         raise ValidationError("Snapshot summary/labels match jira.owner_closure_keywords; the contract must set owner_closure_required")
     criteria = unique(contract["acceptance_criteria"], "id", "contract acceptance criterion")
     records = [bundle[k] for k in ["dispatch", "worker", "critic", "ci", "pr"]] + bundle["specialists"] + bundle["runs"]
+    # Verdict posting records are validated below against the current
+    # candidate and their required PR links.  They are provider observations
+    # of the review round, not evidence whose contract binding changes when
+    # unrelated contract metadata (such as specialist routing) is amended.
+    if bundle.get("owner_review") is not None:
+        records.append(bundle["owner_review"])
     records += bundle.get("finding_dispositions", []) + ([bundle["cap_disposition"]] if bundle.get("cap_disposition") else [])
     unique(records, "record_id", "record ID")
     for record in records:
@@ -218,8 +224,20 @@ def evaluate(config, workflow, bundle, contracts, now):
     if classification["tier"] != tier:
         raise ValidationError(f"Contract risk_tier {tier} does not match highest observed tier {classification['tier']}")
     declared_classification = contract.get("risk_classification")
-    if declared_classification is not None and declared_classification != classification:
+    if declared_classification is None:
+        raise ValidationError("Contract risk_classification is required for a current contract")
+    if declared_classification != classification:
         raise ValidationError("Contract risk_classification does not match observed paths and risk evidence")
+    if bundle.get("tier_classification") != classification:
+        raise ValidationError("Evidence bundle tier_classification is missing or stale")
+    verdicts = bundle.get("review_verdicts", [])
+    if not verdicts:
+        raise ValidationError("Every consumed review round needs a current posted verdict record")
+    for verdict in verdicts:
+        if verdict["head_sha"] != candidate["head_sha"]:
+            raise ValidationError("Review verdict is stale for the candidate head")
+        if not verdict["pr_comment_url"] or not verdict["pr_body_link"]:
+            raise ValidationError("Review verdict must carry PR comment and body-link evidence")
     if critic["coverage"]["file_manifest_sha256"] != fingerprint("file-manifest", pr["file_manifest"]):
         raise ValidationError("Critic file manifest does not match PR")
     required_domains = tier1_specialist_domains(config, tier, specialist_domains(config, contract, file_paths,
@@ -265,10 +283,20 @@ def evaluate(config, workflow, bundle, contracts, now):
     # REQUEST_CHANGES verdict passes once every serious finding is dispositioned.
     # An owner's verified MERGE_WITH_NOTES carries the listed findings as notes in either tier.
     lenient = tier == 1 or cap_disposition is not None
-    owner_review_ok = tier != 3 or (bundle.get("owner_review") is not None
-                                    and bundle["owner_review"].get("owner_review") is True
-                                    and bundle["owner_review"].get("verdict") == "PASS"
-                                    and bundle["owner_review"].get("head_sha") == candidate["head_sha"])
+    owner = bundle.get("owner_review")
+    owner_review_ok = tier != 3 or (owner is not None
+                                    and owner.get("owner_review") is True
+                                    and owner.get("verdict") == "PASS"
+                                    and owner.get("head_sha") == candidate["head_sha"]
+                                    and owner.get("provider_observed") is True
+                                    and owner.get("owner_id") in config["merge_gate"]["trusted_owner_ids"]
+                                    and owner.get("binding") == binding
+                                    and owner.get("candidate_binding") == {
+                                        "repository_id": candidate["repository_id"],
+                                        "pr_number": candidate["pr_number"],
+                                        "base_sha": candidate["target_base_sha"],
+                                        "head_sha": candidate["head_sha"]}
+                                    and owner in verdicts)
     critic_ok = (no_blockers and critic["verdict"] in ({"APPROVE", "REQUEST_CHANGES"} if lenient else {"APPROVE"})
                  and owner_review_ok)
     provenance_problems = [f"exclusive resource {name} held by overlapping COMPLETE runs {a} and {b}"
@@ -310,6 +338,8 @@ def evaluate(config, workflow, bundle, contracts, now):
     parity_ok, parity_problems = local_ci_parity(config, contract, worker, ci)
     outcomes = {
         "review_completion": True,
+        "verdict_posting": bool(verdicts) and all(v["head_sha"] == candidate["head_sha"]
+                                                   and v["pr_comment_url"] and v["pr_body_link"] for v in verdicts),
         "acceptance_criteria": ac_ok and commands_ok and worker["status"] == "COMPLETE" and worker["self_review_complete"] and not worker["blockers"],
         "scope": scope_ok,
         "critic_current_tuple": critic_ok,
@@ -332,6 +362,7 @@ def evaluate(config, workflow, bundle, contracts, now):
     # They prove derivation identity, not the truth of externally supplied data.
     inputs = {
         "review_completion": ["review_submission", "candidate", "contract", "critic", "specialists"],
+        "verdict_posting": ["review_verdicts", "pr", "candidate"],
         "acceptance_criteria": ["contract", "worker", "critic"], "scope": ["contract", "snapshot", "pr"],
         "critic_current_tuple": ["critic", "prior_findings"], "specialist_reviews": ["contract", "pr", "specialists"],
         "required_ci": ["ci"], "ci_candidate_binding": ["ci", "candidate"], "blocking_threads_zero": ["pr"],

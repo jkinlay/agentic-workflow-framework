@@ -176,10 +176,14 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
         diff = diff_effect(previous_diff_sha, current_diff_sha, base_only=base_only)
     else:
         diff = {"changed": False, "invalidate": False, "reason": "no diff comparison supplied"}
+    # Validate the requested round before any diff shortcut.  A changed diff
+    # cannot be used to bypass the tier cap (especially a refused fourth
+    # round); cap disposition is authenticated by the controller before this
+    # policy API is called.
+    validate_round(tier, round_number, owner_cap_disposition=owner_cap_disposition)
     if diff["invalidate"]:
         return {"status": "REVIEW_REQUIRED", "round": round_number, "history_preserved": True,
                 "invalidated": True, "diff": diff}
-    validate_round(tier, round_number, owner_cap_disposition=owner_cap_disposition)
     decision = review_decision(tier, round_number, latest_pass=verdict in {"PASS", "APPROVE"},
                                open_findings=open_findings, owner_review=owner_review,
                                owner_cap_disposition=owner_cap_disposition,

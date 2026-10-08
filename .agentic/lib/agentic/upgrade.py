@@ -577,12 +577,20 @@ def migrate_1_9_2_to_1_9_3(bundle, target):
     return migrate_step(bundle, "1.9.2", "1.9.3", target)
 
 
+def migrate_1_9_3_to_1_9_4(bundle, target):
+    """Apply the additive review-tier migration while retaining all history."""
+    migrated = migrate_step(bundle, "1.9.3", "1.9.4", target)
+    return MigrationBundle(review_tier_defaults(migrated.project_config),
+                            migrated.operating_config, migrated.receipt,
+                            migrated.provenance, migrated.state)
+
+
 def review_tier_defaults(config):
     """Return additive 1.9.4 review policy defaults without losing legacy data.
 
-    Upgraded 1.9.3 configurations may omit the new tier block.  Callers can
-    use this pure helper when constructing a current policy; it never rewrites
-    the owner's configuration or invents reviewer identities.
+    Upgraded 1.9.3 configurations may omit the new tier block.  The 1.9.3 to
+    1.9.4 migration calls this helper; it is additive and never rewrites
+    retained records or invents reviewer identities.
     """
     import copy
     value = copy.deepcopy(config)

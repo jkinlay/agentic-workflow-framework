@@ -2,6 +2,7 @@ AWF EX-1 | state MERGED | PR 7 | head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb |
 
 | Gate | Result |
 | review_completion | PASS |
+| verdict_posting | PASS |
 | acceptance_criteria | PASS |
 | scope | PASS |
 | critic_current_tuple | PASS |

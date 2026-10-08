@@ -106,6 +106,7 @@
       "additionalProperties": false,
       "required": [
         "review_completion",
+        "verdict_posting",
         "acceptance_criteria",
         "scope",
         "critic_current_tuple",
@@ -123,6 +124,33 @@
       ],
       "properties": {
         "review_completion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "verdict_posting": {
           "type": "object",
           "additionalProperties": false,
           "required": [
@@ -617,6 +645,13 @@
           "gates": {
             "properties": {
               "review_completion": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "verdict_posting": {
                 "properties": {
                   "result": {
                     "const": "PASS"
