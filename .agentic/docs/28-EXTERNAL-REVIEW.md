@@ -41,11 +41,15 @@ amendment. Findings, review completion and CI status never authorize a merge;
 the final gate and human authorization remain mandatory.
 
 For a new ticket, the first-draft bridge in
-`agentic.review_first_draft` runs before this enrolled loop. It preserves the
+`agentic.review_first_draft` runs before this enrolled loop. The trusted
+`review_loop.py first-draft` entry point wires the pinned worker, publisher and
+GitHub host adapter together; it does not rely on a guessed PR number. It preserves the
 same pinned worker route and exact allowed paths, requires a tested-tree
 receipt, performs the history-aware scan on the prospective PR body before the
-first push, and then enrolls the observed draft PR. The first-draft run is
-counted in `max_agent_runs` but does not consume an amendment cycle. A host
+first push, creates one draft PR, reads back its body/tier, persists the created
+PR number, and then enrolls the observed draft PR. The first-draft run is
+reserved and counted in `max_agent_runs` before worker execution but does not
+consume an amendment cycle. A host
 publisher may commit the worker's tested tree when Git metadata is unavailable
 inside the worker sandbox; any `HEAD^{tree}` mismatch is a scope violation and
 must return to the worker.

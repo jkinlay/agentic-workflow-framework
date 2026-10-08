@@ -24,7 +24,7 @@ class FirstDraftTests(unittest.TestCase):
 
     def test_receipt_rejects_scope_escape(self):
         receipt = {'outcome': 'CHANGED', 'changes': [{'path': 'src/a.py', 'action': 'modified'}],
-                   'tested_tree': 'a' * 40, 'summary': 'changed'}
+                   'tested_tree': 'a' * 40, 'ignored_untracked': [], 'summary': 'changed'}
         with self.assertRaises(ValidationError):
             validate_worker_receipt(receipt, allowed_paths={'src/other.py'})
 
@@ -65,7 +65,7 @@ class FirstDraftTests(unittest.TestCase):
             base = run('rev-parse', 'HEAD')
             (root / 'a.txt').write_text('changed\n')
             receipt = {'outcome': 'CHANGED', 'changes': [{'path': 'a.txt', 'action': 'modified'}],
-                       'tested_tree': 'a' * 40, 'summary': 'changed'}
+                       'tested_tree': 'a' * 40, 'ignored_untracked': [], 'summary': 'changed'}
             class NoPush:
                 def run(self, *args):
                     raise AssertionError('publisher must stop before Git mutation')
@@ -91,7 +91,7 @@ class FirstDraftTests(unittest.TestCase):
             config = {'key': '12:31', 'repository': 'fixture/project', 'config_hash': 'x',
                       'initial_findings': [], 'max_agent_runs': 10, 'allowed_paths': ['src/a.py']}
             receipt = {'outcome': 'CHANGED', 'changes': [{'path': 'src/a.py', 'action': 'added'}],
-                       'tested_tree': 'a' * 40, 'summary': 'changed'}
+                       'tested_tree': 'a' * 40, 'ignored_untracked': [], 'summary': 'changed'}
             calls = []
             snapshot = {'repository_id': 12, 'pr': 31, 'head': 'c' * 40, 'base': 'b' * 40,
                         'head_ref': 'codex/awf-30', 'base_ref': 'main'}

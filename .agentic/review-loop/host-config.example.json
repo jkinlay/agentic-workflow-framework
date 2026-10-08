@@ -36,7 +36,7 @@
   "approved_model_effort_pairs": {},
   "codex_config_overrides": {},
   "governed_source_paths": [],
-  "risk_tier": null,
+  "risk_tier": "Tier 3",
   "allowed_paths": [
     "src/CHANGE_ME.py"
   ],

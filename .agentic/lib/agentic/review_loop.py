@@ -130,6 +130,47 @@ def enroll(store, config, snapshot, *, first_draft_run=False):
     return state
 
 
+def reserve_first_draft(store, config):
+    """Persist the first-draft charge before invoking any worker or provider."""
+    require(config['max_agent_runs'] >= 1, 'First-draft run cannot be charged against a zero agent-run budget')
+    repository_id = config.get('repository_id', str(config['key']).split(':', 1)[0])
+    key = f"{repository_id}:0"
+    state = {'key': key, 'owner': config['repository'] + ':' + config.get('head_branch', 'first-draft'),
+        'config_hash': config['config_hash'], 'phase': 'FIRST_DRAFT', 'candidate': None,
+        'findings': deepcopy(config.get('initial_findings', [])), 'cycles': 0,
+        'cap_extensions': 0, 'evidence_only_amendments': 0, 'dispositions': [],
+        'agent_runs': 1, 'wait_ticks': 0, 'generation': 1,
+        'inflight': {'id': str(uuid.uuid4()), 'phase': 'FIRST_DRAFT', 'started_at': now_text()},
+        'last_review': None, 'reason': 'First-draft run reserved before worker execution', 'history': []}
+    with store.lock():
+        store.save(state, new=True)
+    return state
+
+
+def complete_first_draft(store, config, snapshot):
+    """Atomically bind the reserved pr=0 record to the observed created PR."""
+    old_key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(old_key)
+        require(state['phase'] == 'FIRST_DRAFT' and state['inflight'], 'First-draft reservation is not resumable')
+        state['key'] = config['key']
+        state['owner'] = config['repository'] + ':' + snapshot['head_ref']
+        state['config_hash'] = config['config_hash']
+        state.update(phase='REVIEW', candidate=snapshot, inflight=None,
+                     reason='Enrolled after first draft', generation=state['generation'] + 1)
+        body = json.dumps(state, sort_keys=True)
+        store.db.execute('BEGIN IMMEDIATE')
+        try:
+            store.db.execute('DELETE FROM prs WHERE key=?', (old_key,))
+            store.db.execute('INSERT INTO prs VALUES (?,?,?)', (state['key'], state['owner'], body))
+            store.db.execute('INSERT INTO events(key,at,state) VALUES (?,?,?)', (state['key'], now_text(), body))
+            store.db.execute('COMMIT')
+        except Exception:
+            store.db.execute('ROLLBACK')
+            raise
+        return state
+
+
 def pause(store, key, reason):
     with store.lock():
         state = store.get(key)

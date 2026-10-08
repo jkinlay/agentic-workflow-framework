@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import fnmatch
+import uuid
 
 from ..canonical import loads, sha256
 from ..child_process import child_env, isolated_git_env
@@ -60,7 +61,7 @@ def load_config(path, runtime_root):
         require(isinstance(config['governed_source_paths'], list) and len(config['governed_source_paths']) == len(set(config['governed_source_paths']))
                 and all(safe_path(x) for x in config['governed_source_paths']), 'governed_source_paths must list safe unique paths')
     if 'risk_tier' in config:
-        require(config['risk_tier'] is None or config['risk_tier'] in {3, 'Tier 3'}, 'Protected source-path enrollment requires Tier 3')
+        require(config['risk_tier'] is None or config['risk_tier'] in {1, 2, 3, 'Tier 1', 'Tier 2', 'Tier 3'}, 'Invalid reviewed risk tier')
     if 'reasoning_effort' in config:
         value = config['reasoning_effort']
         require(value is None or (isinstance(value, dict) and set(value) <= {'worker', 'critic'}
@@ -204,7 +205,30 @@ class HostDriver:
         require(isinstance(value, dict) and type(value.get('number')) is int and value['number'] > 0,
                 'GitHub did not return a draft PR identity')
         require(value.get('draft') is True, 'Created PR was not observed as a draft')
+        require(value.get('body') == body and value.get('head', {}).get('ref') == head
+                and value.get('base', {}).get('ref') == base,
+                'Created draft PR body or branch/target does not match the frozen publication')
         return value
+
+    def bind_created_pr(self, number):
+        """Persist the provider-assigned PR number before loop observation."""
+        require(type(number) is int and number > 0, 'Created PR number is invalid')
+        path = Path(self.c['_config_path'])
+        raw = json.loads(path.read_text(encoding='utf-8'))
+        require(raw.get('first_draft') is True and raw.get('pr') == 0,
+                'First-draft configuration was already bound or changed')
+        raw['pr'] = number
+        path.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + '\n', encoding='utf-8', newline='\n')
+        self.c['pr'] = number
+        self.c['key'] = f"{self.c['repository_id']}:{number}"
+        self.c['config_hash'] = sha256(path.read_bytes())
+
+    def observe_created_pr(self, value, *, body, risk_tier):
+        """Read back the created PR body/tier before it can become loop authority."""
+        require(isinstance(value, dict) and value.get('body') == body, 'Created PR body read-back mismatch')
+        require(f'- Risk tier: {risk_tier}' in body, 'Created PR body does not record the reviewed risk tier')
+        self.bind_created_pr(value.get('number'))
+        return self.snapshot()
 
     def snapshot(self):
         pr = self.api(f'pulls/{self.c["pr"]}')
@@ -289,6 +313,29 @@ class HostDriver:
         from jsonschema import Draft202012Validator
         Draft202012Validator(loads((self.root / f'.agentic/review-loop/{role}-result.schema.json').read_text())).validate(value)
         return value
+
+    def first_draft_worker(self):
+        """Run the pinned worker against the configured first-draft checkout."""
+        run_id = str(uuid.uuid4())
+        run = self.state / 'runs' / run_id
+        run.mkdir(parents=True, exist_ok=False)
+        contract = Path(self.c['contract_path']).read_text(encoding='utf-8')
+        prompt = ((self.root / '.agentic/review-loop/first-draft-worker-prompt.md').read_text(encoding='utf-8')
+                  + '\n\nFrozen contract:\n' + contract
+                  + '\n\nExact allowed paths:\n' + json.dumps(self.c['allowed_paths']))
+        output = run / 'result.json'
+        args = ['exec','--ephemeral','--ignore-user-config','--sandbox','workspace-write',
+            '-c','approval_policy="never"','-c','sandbox_workspace_write.network_access=false',
+            *sum((['-c', f'model_reasoning_effort={self.c["reasoning_effort"]["worker"]}']
+                  for _ in [0] if isinstance(self.c.get('reasoning_effort'), dict)
+                  and self.c['reasoning_effort'].get('worker')), []),
+            *sum((['-c', f'{key}="{value}"'] for key, value in (self.c.get('codex_config_overrides') or {}).items()), []),
+            '--model', self.c['models']['worker'], '--cd', str(self.worker),
+            '--output-schema', str(self.root / '.agentic/review-loop/first-draft-worker-result.schema.json'),
+            '--output-last-message', str(output), '--json', '-']
+        self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
+        require(output.is_file(), 'First-draft worker output missing')
+        return loads(output.read_text(encoding='utf-8'))
 
     def review(self, candidate, findings, run_id, files):
         git_config = self.git(self.critic,'config','--list','--includes','--null')

@@ -13,14 +13,15 @@ from hashlib import sha256
 from . import ValidationError
 from .gittree import candidate_tree, verify_publisher_tree
 from .publication import scan_repository
-from .review_loop import enroll, require
+from .review_loop import complete_first_draft, enroll, require, reserve_first_draft
 
 
 def render_first_draft_body(contract, *, risk_tier, worker_model, reasoning_effort,
                             branch, tested_tree):
     """Render the immutable contract facts recorded in the draft PR body."""
     require(isinstance(contract, str) and contract.strip(), "First-draft contract is empty")
-    require(risk_tier in {3, "Tier 3"}, "First-draft PR requires its reviewed risk tier")
+    require(risk_tier in {1, 2, 3, "Tier 1", "Tier 2", "Tier 3"},
+            "First-draft PR requires a reviewed Tier 1, Tier 2 or Tier 3 risk tier")
     require(isinstance(worker_model, str) and worker_model.strip(), "Worker model is missing")
     require(isinstance(reasoning_effort, str) and reasoning_effort.strip(), "Worker reasoning effort is missing")
     require(isinstance(branch, str) and branch.strip() and isinstance(tested_tree, str),
@@ -39,7 +40,7 @@ def render_first_draft_body(contract, *, risk_tier, worker_model, reasoning_effo
 def validate_worker_receipt(receipt, *, allowed_paths):
     """Validate the small, host-authenticated receipt returned by a worker."""
     require(isinstance(receipt, dict), "First-draft worker receipt must be an object")
-    require(set(receipt) == {"outcome", "changes", "tested_tree", "summary"},
+    require(set(receipt) == {"outcome", "changes", "tested_tree", "ignored_untracked", "summary"},
             "First-draft worker receipt has unsupported or missing fields")
     require(receipt["outcome"] == "CHANGED", "First-draft worker did not produce a changed tree")
     require(isinstance(receipt["summary"], str) and receipt["summary"].strip(),
@@ -58,6 +59,11 @@ def validate_worker_receipt(receipt, *, allowed_paths):
                 "First-draft change has an unsupported action")
         paths.append(change["path"])
     require(len(paths) == len(set(paths)), "First-draft changes contain duplicate paths")
+    ignored = receipt["ignored_untracked"]
+    require(isinstance(ignored, list) and len(ignored) == len(set(ignored)),
+            "First-draft receipt must retain the excluded ignored_untracked inventory")
+    require(all(isinstance(path, str) and path and path not in paths for path in ignored),
+            "ignored_untracked must contain distinct paths excluded from the published tree")
     return receipt
 
 
@@ -77,6 +83,8 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
     """
     receipt = validate_worker_receipt(receipt, allowed_paths=set(allowed_paths))
     expected = candidate_tree(root, base, receipt["changes"])
+    require(sorted(receipt["ignored_untracked"]) == list(expected.ignored_untracked),
+            "Worker ignored_untracked inventory does not match the candidate tree")
     require(expected.tested_tree == receipt["tested_tree"],
             "Worker tested_tree does not match the declared worktree changes")
     git.run("add", "--", *[x["path"] for x in receipt["changes"]])
@@ -92,7 +100,15 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
 
 def enroll_created_pr(store, config, snapshot, *, first_draft_run=True):
     """Enroll the observed draft PR and charge the first-draft run once."""
-    return enroll(store, config, snapshot, first_draft_run=first_draft_run)
+    if first_draft_run:
+        repository_id = config.get('repository_id', str(config['key']).split(':', 1)[0])
+        reserved = store.db.execute('SELECT 1 FROM prs WHERE key=?', (f'{repository_id}:0',)).fetchone()
+        if reserved:
+            return complete_first_draft(store, config, snapshot)
+        # Compatibility for an operator-adopted PR: there is no pre-existing
+        # reservation to rekey, so retain the historical enrollment behavior.
+        return enroll(store, config, snapshot, first_draft_run=True)
+    return enroll(store, config, snapshot, first_draft_run=False)
 
 
 def run_first_draft(store, config, *, worker, publisher, observe_pr):
@@ -103,6 +119,7 @@ def run_first_draft(store, config, *, worker, publisher, observe_pr):
     provider after creation. Keeping those operations separate prevents a
     guessed PR number or a publication result from becoming loop authority.
     """
+    reservation = reserve_first_draft(store, config)
     receipt = worker()
     validate_worker_receipt(receipt, allowed_paths=set(config['allowed_paths']))
     publication = publisher(receipt)

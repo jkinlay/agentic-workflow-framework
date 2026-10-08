@@ -2,7 +2,7 @@
 
 [SPECIFICATION](../SPECIFICATION.md) defines authority and acceptance. This reference adapter supports Codex CLI and GitHub.com same-repository PRs; `github_host` rejects other hosts. Installation does not enroll a PR or create a scheduler. Native-agent guidance is separate from this loop.
 
-These host/rules/qualification requirements apply to live loop enablement, not installation, configuration mapping or adoption PR preparation. Adopt first with missing/unobserved rules recorded as warnings. Before enrollment that permits amendments or scheduling, observe the actual default-branch rules and retain the existing host qualification. An APPLIED baseline with empty required checks does not establish CI/review provenance. Adoption accepts empty CI with `ci_gate: NOT_CONFIGURED`; live enrollment requires configured required CI and actual trusted merge owners. CONFIGURED/ACTIVE describe project adoption, never loop enrollment or qualification. The host/operator must enforce these prerequisites before using unchanged adapter entrypoints. Follow [adoption](20-NEW-PROJECT-SETUP.md) for owner application and any secret-repository publication restriction.
+These host/rules/qualification requirements apply to live loop enablement, not installation or adoption. Record missing rules as warnings; live enrollment still needs observed rules, configured CI and trusted merge owners. Follow [adoption](20-NEW-PROJECT-SETUP.md) for owner application and secret-repository restrictions.
 
 ## Prepare the host
 
@@ -15,6 +15,24 @@ The AWF source repository may opt into protected source paths only when the enro
 Qualify sandbox restrictions, credential separation, exclusive branch ownership, quotas and one canonical host database using a disposable PR. Record observed evidence before setting qualification booleans true; those flags prove nothing themselves. Keep state, configuration, contract and credentials inaccessible to workers.
 
 [HostDriver](../lib/agentic/review_host.py) requests ephemeral contexts, read-only critic/workspace-write worker, no approval escalation and no sandbox network. It strips API-key variables and agent GitHub-token variables. Saved credentials, project tools and process descendants still need demonstrated host isolation. Token/dollar/resource quotas require external enforcement. Protected paths, Git configuration checks and separate clones supplement that boundary.
+
+## Create the first draft, then enroll
+
+An explicitly configured `first_draft` host may start with `pr: 0`. The trusted
+runtime charges the run before invoking the pinned worker, validates its
+tested-tree receipt, scans before push, creates one draft PR, reads back its
+body/tier, persists the assigned number, and enrolls it. A failed or uncertain
+step retains the reservation for operator reconciliation; it is never silently
+retried.
+
+```text
+python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json first-draft --title "AWF: implement ticket"
+```
+
+The body records the target ticket's reviewed Tier 1, Tier 2 or Tier 3 risk
+classification; the run consumes one `max_agent_runs` unit and zero amendment
+cycles. The publisher retains `ignored_untracked`, checks `HEAD^{tree}`, scans,
+and pushes the exact worker tree when Git metadata is unavailable to it.
 
 ## Check, enroll and run
 

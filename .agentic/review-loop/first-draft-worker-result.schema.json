@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "outcome": {"enum": ["CHANGED", "NO_CHANGE", "BLOCKED"]},
+    "changes": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "action": {"enum": ["added", "modified", "deleted"]}}, "required": ["path", "action"], "additionalProperties": false}},
+    "tested_tree": {"type": "string"},
+    "ignored_untracked": {"type": "array", "items": {"type": "string"}},
+    "summary": {"type": "string"}
+  },
+  "required": ["outcome", "changes", "tested_tree", "ignored_untracked", "summary"],
+  "additionalProperties": false
+}
