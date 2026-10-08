@@ -13,6 +13,7 @@ import subprocess
 from . import VERSION
 from .canonical import load, now_text, timestamp
 from .child_process import child_env
+from .operating import read_operating
 
 SCHEMA = "awf-handoff-snapshot-1"
 BASES = ("verified", "configured", "user-asserted", "unavailable")
@@ -29,6 +30,12 @@ REQUIRED_FIELDS = (
 # continuity record.
 COMPARED = tuple(field for field in REQUIRED_FIELDS if field != "repository.path")
 _USERINFO = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@")
+_SHA40 = re.compile(r"[0-9a-f]{40}")
+_SHA64 = re.compile(r"[0-9a-f]{64}")
+_RESOURCE_NAME = re.compile(r"[a-z][a-z0-9_]*")
+_TICKET = re.compile(r"(?<![A-Z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Z0-9_])")
+_EPIC = re.compile(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*")
+_ROUTE_KEYS = ("model", "reasoning_effort", "pinned")
 
 
 def _field(value, basis, observed_at):
@@ -56,42 +63,85 @@ def safe_origin(url):
     return None if url is None else _USERINFO.sub(r"\1", url)
 
 
-def _operating_routes(root):
-    """Return only the route-bearing operating choices, never audit prose."""
+def _route(value, *, simple_worker=False):
+    """Project a validated route to the only fields a handoff can disclose."""
+    if not isinstance(value, dict):
+        return None
+    keys = _ROUTE_KEYS + (("enabled",) if simple_worker else ())
+    selected = {key: value[key] for key in keys if key in value}
+    return selected or None
+
+
+def _operating_routes(root, governance):
+    """Return a credential-free route projection and its validated hash.
+
+    ``read_operating`` observes the same immutable operating snapshot that
+    computes its hash.  The caller binds that hash to the earlier status
+    observation before marking either fact verified.
+    """
     try:
-        operating = load(Path(root) / "OPERATING_CONFIG.yaml")
+        operating = read_operating(root, governance)
     except (OSError, ValueError):
-        return None
-    if not isinstance(operating, dict):
-        return None
-    routes = {key: operating[key] for key in ("controller", "critic", "specialist", "simple_worker")
-              if key in operating}
-    streams = operating.get("streams")
+        return None, None
+    value = operating.config
+    routes = {}
+    for key in ("controller", "critic", "specialist"):
+        route = _route(value.get(key))
+        if route:
+            routes[key] = route
+    simple_worker = _route(value.get("simple_worker"), simple_worker=True)
+    if simple_worker:
+        routes["simple_worker"] = simple_worker
+    streams = value.get("streams")
     if isinstance(streams, dict):
-        selected = {key: {name: value[name] for name in ("worker", "reviewer") if name in value}
-                    for key, value in streams.items() if isinstance(value, dict)
-                    and any(name in value for name in ("worker", "reviewer"))}
+        selected = {}
+        for key, stream in streams.items():
+            if not isinstance(key, str) or key not in "ABCDEF" or not isinstance(stream, dict):
+                continue
+            entry = {name: route for name in ("worker", "reviewer")
+                     if (route := _route(stream.get(name)))}
+            if entry:
+                selected[key] = entry
         if selected:
             routes["streams"] = selected
-    overrides = operating.get("epic_overrides")
+    overrides = value.get("epic_overrides")
     if isinstance(overrides, dict):
         selected = {}
         for epic, value in overrides.items():
-            if not isinstance(value, dict):
+            if not isinstance(epic, str) or not _EPIC.fullmatch(epic) or not isinstance(value, dict):
                 continue
-            entry = {key: value[key] for key in ("controller", "critic", "specialist") if key in value}
+            entry = {key: route for key in ("controller", "critic", "specialist")
+                     if (route := _route(value.get(key)))}
             streams = value.get("streams")
             if isinstance(streams, dict):
-                scoped = {key: {name: route[name] for name in ("worker", "reviewer") if name in route}
-                          for key, route in streams.items() if isinstance(route, dict)
-                          and any(name in route for name in ("worker", "reviewer"))}
+                scoped = {}
+                for key, stream in streams.items():
+                    if not isinstance(key, str) or key not in "ABCDEF" or not isinstance(stream, dict):
+                        continue
+                    routes_for_stream = {name: route for name in ("worker", "reviewer")
+                                         if (route := _route(stream.get(name)))}
+                    if routes_for_stream:
+                        scoped[key] = routes_for_stream
                 if scoped:
                     entry["streams"] = scoped
             if entry:
                 selected[epic] = entry
         if selected:
             routes["epic_overrides"] = selected
-    return routes
+    return routes, operating.operating_hash
+
+
+def _completed_tickets(root):
+    """Read ticket references asserted in bounded local commit subjects.
+
+    AWF's status observation has no ticket-history field.  A commit subject is
+    not proof of Jira closure, so the resulting continuity fact is explicitly
+    ``user-asserted`` rather than verified.
+    """
+    subjects = _git(root, "log", "-n", "1000", "--format=%s")
+    if subjects is None:
+        return None
+    return sorted(set(_TICKET.findall(subjects)))
 
 
 def _field_at(snapshot, dotted):
@@ -117,7 +167,10 @@ def build_snapshot(root, *, status=None, now=None):
     jira = config.get("jira") or {}
     github = config.get("github") or {}
     execution = config.get("execution") or {}
-    resources = sorted(((execution.get("host_broker") or {}).get("resources") or {}).keys())
+    declared_resources = ((execution.get("host_broker") or {}).get("resources") or {})
+    resources = sorted(name for name, slots in declared_resources.items()
+                       if isinstance(name, str) and _RESOURCE_NAME.fullmatch(name)
+                       and type(slots) is int and slots > 0)
     operating = status.get("operating") or {}
     repository_id = status.get("repository_id")
     repository_basis = "verified"
@@ -127,8 +180,14 @@ def build_snapshot(root, *, status=None, now=None):
     trust_basis = status.get("release_trust_basis")
     if trust_basis is None and isinstance(status.get("release_trust"), dict):
         trust_basis = status["release_trust"].get("basis")
-    routes = _operating_routes(root)
-    routes_basis = "verified" if operating.get("status") == "ACCEPTED" else "configured"
+    operating_hash = operating.get("hash")
+    routes = None
+    if operating.get("status") == "ACCEPTED":
+        routes, observed_operating_hash = _operating_routes(root, config)
+        # ``project_status`` and this read are separate observations.  Do not
+        # label a new route set as verified against an older operating hash.
+        if observed_operating_hash != operating_hash:
+            operating_hash, routes = None, None
     branch = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
     blockers = [{"code": item.get("code"), "state": item.get("state"), "evidence": item.get("evidence")}
                 for item in status.get("checks", []) if item.get("state") not in ("PASS", "N_A", "SKIP")]
@@ -159,13 +218,13 @@ def build_snapshot(root, *, status=None, now=None):
             "merge": _field(status.get("adoption_merge_sha"), "verified", now),
         },
         "operating": {
-            "hash": _field(operating.get("hash"), "verified", now),
-            "routes": _field(routes, routes_basis, now),
+            "hash": _field(operating_hash, "verified", now),
+            "routes": _field(routes, "verified", now),
         },
         "jira": {key: _field(jira.get(key), "configured", now)
                  for key in ("cloud_id", "provider_project_id", "project_key", "controller_actor_id")},
         "external_resources": _field(resources, "configured", now),
-        "completed_tickets": _field(status.get("completed_tickets"), "verified", now),
+        "completed_tickets": _field(_completed_tickets(root), "user-asserted", now),
         "blockers": _field(blockers, "verified", now),
     }
 
@@ -173,6 +232,96 @@ def build_snapshot(root, *, status=None, now=None):
 def _lookup(snapshot, dotted):
     item = _field_at(snapshot, dotted)
     return item.get("value") if isinstance(item, dict) and "basis" in item else item
+
+
+def _text(value):
+    return isinstance(value, str) and bool(value)
+
+
+def _route_value(value, *, simple_worker=False):
+    allowed = set(_ROUTE_KEYS) | ({"enabled"} if simple_worker else set())
+    if not isinstance(value, dict) or not value or not set(value) <= allowed:
+        return False
+    if not {"model", "reasoning_effort"} <= set(value):
+        return False
+    if not _text(value["model"]):
+        return False
+    if not _text(value["reasoning_effort"]):
+        return False
+    if "pinned" in value and type(value["pinned"]) is not bool:
+        return False
+    return not simple_worker or ("enabled" in value and type(value["enabled"]) is bool)
+
+
+def _route_set(value):
+    if not isinstance(value, dict) or not value:
+        return False
+    allowed = {"controller", "critic", "specialist", "simple_worker", "streams", "epic_overrides"}
+    if not set(value) <= allowed:
+        return False
+    if not {"controller", "specialist", "simple_worker", "streams"} <= set(value):
+        return False
+    for name in ("controller", "critic", "specialist"):
+        if name in value and not _route_value(value[name]):
+            return False
+    if "simple_worker" in value and not _route_value(value["simple_worker"], simple_worker=True):
+        return False
+
+    def streams_valid(streams):
+        if not isinstance(streams, dict) or not streams:
+            return False
+        for name, routes in streams.items():
+            if name not in "ABCDEF" or not isinstance(routes, dict) or not routes or not set(routes) <= {"worker", "reviewer"}:
+                return False
+            if any(not _route_value(route) for route in routes.values()):
+                return False
+        return True
+
+    if "streams" in value and not streams_valid(value["streams"]):
+        return False
+    overrides = value.get("epic_overrides")
+    if overrides is not None:
+        if not isinstance(overrides, dict) or not overrides:
+            return False
+        for epic, routes in overrides.items():
+            if not isinstance(epic, str) or not _EPIC.fullmatch(epic) or not isinstance(routes, dict) or not routes:
+                return False
+            if not set(routes) <= {"controller", "critic", "specialist", "streams"}:
+                return False
+            if any(not _route_value(routes[name]) for name in ("controller", "critic", "specialist") if name in routes):
+                return False
+            if "streams" in routes and not streams_valid(routes["streams"]):
+                return False
+    return True
+
+
+def _value_valid(dotted, value):
+    validators = {
+        "repository.path": _text,
+        "repository.origin": _text,
+        "repository.id": lambda item: type(item) is int and item > 0,
+        "repository.branch": _text,
+        "repository.head": lambda item: isinstance(item, str) and _SHA40.fullmatch(item) is not None,
+        "awf.version": _text,
+        "awf.project_state": _text,
+        "awf.trust_basis": _text,
+        "adoption.pr": lambda item: type(item) is int and item > 0,
+        "adoption.merge": lambda item: isinstance(item, str) and _SHA40.fullmatch(item) is not None,
+        "operating.hash": lambda item: isinstance(item, str) and _SHA64.fullmatch(item) is not None,
+        "operating.routes": _route_set,
+        "jira.cloud_id": _text,
+        "jira.provider_project_id": _text,
+        "jira.project_key": _text,
+        "jira.controller_actor_id": _text,
+        "external_resources": lambda items: isinstance(items, list) and items == sorted(set(items)) and
+        all(isinstance(item, str) and _RESOURCE_NAME.fullmatch(item) is not None for item in items),
+        "completed_tickets": lambda items: isinstance(items, list) and items == sorted(set(items)) and
+        all(isinstance(item, str) and _TICKET.fullmatch(item) is not None for item in items),
+        "blockers": lambda items: isinstance(items, list) and all(
+            isinstance(item, dict) and set(item) == {"code", "state", "evidence"} and
+            all(_text(item[key]) for key in ("code", "state", "evidence")) for item in items),
+    }
+    return validators[dotted](value)
 
 
 def _snapshot_errors(snapshot):
@@ -199,6 +348,9 @@ def _snapshot_errors(snapshot):
             errors.append(dotted)
             continue
         if (item["value"] is None) != (item["basis"] == "unavailable"):
+            errors.append(dotted)
+            continue
+        if item["value"] is not None and not _value_valid(dotted, item["value"]):
             errors.append(dotted)
     return errors
 
