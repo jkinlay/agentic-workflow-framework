@@ -12,7 +12,7 @@ import re
 import subprocess
 
 from . import VERSION, ValidationError
-from .canonical import load, now_text
+from .canonical import load, now_text, timestamp
 from .child_process import child_env
 
 SCHEMA = "awf-handoff-snapshot-1"
@@ -155,24 +155,99 @@ def _lookup(snapshot, dotted):
     return _entry(snapshot, dotted)["value"]
 
 
+def _text(value):
+    return isinstance(value, str) and bool(value)
+
+
+def _positive_integer(value):
+    return type(value) is int and value > 0
+
+
+def _object_id(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) is not None
+
+
+def _timestamp(value):
+    try:
+        timestamp(value)
+    except ValidationError:
+        return False
+    return True
+
+
+def _routes(value):
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _resources(value):
+    return isinstance(value, dict) and all(isinstance(key, str) and _positive_integer(slots)
+                                           for key, slots in value.items())
+
+
+def _blockers(value):
+    return isinstance(value, list) and all(
+        isinstance(item, dict) and set(item) == {"code", "state", "evidence"}
+        and all(entry is None or isinstance(entry, str) for entry in item.values()) for item in value)
+
+
+# Value type of every K15 field when it is observed (a null value means unavailable).
+VALUE_CHECKS = {
+    "repository.path": _text, "repository.origin": _text, "repository.numeric_id": _positive_integer,
+    "repository.branch": _text, "repository.head": _object_id,
+    "awf.version": lambda value: isinstance(value, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value) is not None,
+    "awf.project_state": _text, "awf.integrity_valid": lambda value: type(value) is bool, "awf.trust_basis": _text,
+    "adoption.state": _text, "adoption.pr": _positive_integer, "adoption.merge_commit": _object_id,
+    "operating.hash": lambda value: isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None,
+    "operating.routes": _routes,
+    "jira.cloud_id": _text, "jira.provider_project_id": _text, "jira.project_key": _text,
+    "jira.controller_actor_id": _text, "external_resources": _resources, "blockers": _blockers,
+}
+_SECTIONS = {section: {key.split(".")[1] for key in FIELDS if key.startswith(section + ".")}
+             for section in dict.fromkeys(key.split(".")[0] for key in FIELDS if "." in key)}
+_TOP_LEVEL = {"schema", "generated_at", *_AUTHORITY, *_SECTIONS, *(key for key in FIELDS if "." not in key)}
+
+
+def _field_problem(item, check):
+    if not isinstance(item, dict) or set(item) != {"value", "basis", "observed_at"}:
+        return "malformed"
+    if item["basis"] not in BASES or (item["value"] is None) != (item["basis"] == "unavailable"):
+        return "malformed"
+    if not _timestamp(item["observed_at"]):
+        return "invalid observed_at"
+    if item["value"] is not None and not check(item["value"]):
+        return "invalid value"
+    return None
+
+
 def structural_problems(snapshot):
-    """List required K15 fields that are missing or not well-formed basis-tagged fields.
+    """List required K15 fields that are missing, malformed or unexpected.
 
     A missing field is not an explicit ``unavailable`` one: only a present
-    field with ``basis: unavailable`` and a null value records an unobservable fact.
+    field with ``basis: unavailable`` and a null value records an unobservable
+    fact.  Values must have the field's type and timestamps must be RFC 3339,
+    so a malformed value can never compare equal to a current one.
     """
     problems = []
-    if not isinstance(snapshot.get("generated_at"), str) or not snapshot["generated_at"]:
+    if "generated_at" not in snapshot:
         problems.append({"field": "generated_at", "problem": "missing"})
+    elif not _timestamp(snapshot["generated_at"]):
+        problems.append({"field": "generated_at", "problem": "invalid timestamp"})
+    problems.extend({"field": key, "problem": "unexpected"} for key in sorted(set(snapshot) - _TOP_LEVEL))
+    for section, names in sorted(_SECTIONS.items()):
+        if isinstance(snapshot.get(section), dict):
+            problems.extend({"field": section + "." + key, "problem": "unexpected"}
+                            for key in sorted(set(snapshot[section]) - names))
     for key in FIELDS:
         item = _entry(snapshot, key)
-        if item is _MISSING:
-            problems.append({"field": key, "problem": "missing"})
-        elif not (isinstance(item, dict) and set(item) == {"value", "basis", "observed_at"}
-                  and item["basis"] in BASES and isinstance(item["observed_at"], str) and item["observed_at"]
-                  and (item["value"] is None) == (item["basis"] == "unavailable")):
-            problems.append({"field": key, "problem": "malformed"})
+        problem = "missing" if item is _MISSING else _field_problem(item, VALUE_CHECKS[key])
+        if problem:
+            problems.append({"field": key, "problem": problem})
     return problems
+
+
+def _same(left, right):
+    # Exact JSON identity: 0 never equals False and 1.0 never equals 1.
+    return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
 
 
 def compare_snapshot(received, current):
@@ -186,7 +261,7 @@ def compare_snapshot(received, current):
         return {"status": "REJECTED", "reason": "Incomplete or malformed handoff snapshot; export it again with workflow.py handoff",
                 "problems": problems, "execution_authority": False}
     drift = [{"field": key, "received": _lookup(received, key), "current": _lookup(current, key)}
-             for key in COMPARED if _lookup(received, key) != _lookup(current, key)]
+             for key in COMPARED if not _same(_lookup(received, key), _lookup(current, key))]
     return {"status": "MATCH" if not drift else "DRIFT", "received_at": received.get("generated_at"),
             "observed_at": current["generated_at"], "drift": drift, "execution_authority": False}
 
@@ -198,11 +273,13 @@ def _cell(value):
 def render_markdown(snapshot):
     lines = [f"# AWF handoff snapshot ({snapshot['generated_at']})", "",
              "Observations only; grants no execution, merge or Jira authority.", "",
-             "| Field | Value | Basis |", "| --- | --- | --- |"]
-    for section in ("repository", "awf", "adoption", "operating", "jira"):
-        for key, item in snapshot[section].items():
-            lines.append(f"| {section}.{key} | {_cell(item['value'])} | {item['basis']} |")
-    lines.append(f"| external_resources | {_cell(snapshot['external_resources']['value'])} | {snapshot['external_resources']['basis']} |")
-    lines += ["", "## Blockers", ""]
+             "| Field | Value | Basis | Observed at |", "| --- | --- | --- | --- |"]
+    for key in FIELDS:
+        if key == "blockers":
+            continue
+        item = _entry(snapshot, key)
+        lines.append(f"| {key} | {_cell(item['value'])} | {item['basis']} | {item['observed_at']} |")
+    blockers = snapshot["blockers"]
+    lines += ["", f"## Blockers ({blockers['basis']}, observed at {blockers['observed_at']})", ""]
     lines += [f"- {b['code']} ({b['state']}): {b['evidence']}" for b in snapshot["blockers"]["value"]] or ["- none"]
     return "\n".join(lines) + "\n"

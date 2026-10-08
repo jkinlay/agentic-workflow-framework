@@ -192,6 +192,34 @@ class HandoffSnapshotTests(unittest.TestCase):
             damage(received)
             with self.subTest(malformed=label):
                 self.assertEqual(compare_snapshot(received, current)["status"], "REJECTED")
+        # Semantically malformed values and timestamps must not be accepted, and in
+        # particular must not compare equal to a current value of another type.
+        self.assertIs(current["awf"]["integrity_valid"]["value"], False)
+        invalid = {
+            ("awf.integrity_valid", "invalid value"): lambda s: s["awf"]["integrity_valid"].update(value=0),
+            ("repository.numeric_id", "invalid value"): lambda s: s["repository"]["numeric_id"].update(
+                value="4242", basis="configured"),
+            ("adoption.pr", "invalid value"): lambda s: s["adoption"]["pr"].update(value=True, basis="verified"),
+            ("repository.head", "invalid value"): lambda s: s["repository"]["head"].update(value="HEAD"),
+            ("operating.hash", "invalid value"): lambda s: s["operating"]["hash"].update(value="a" * 63, basis="verified"),
+            ("external_resources", "invalid value"): lambda s: s["external_resources"].update(
+                value={"readonly_data": True}, basis="configured"),
+            ("blockers", "invalid value"): lambda s: s["blockers"].update(value=[{"code": "X"}]),
+            ("jira.cloud_id", "invalid observed_at"): lambda s: s["jira"]["cloud_id"].update(observed_at="yesterday"),
+            ("awf.version", "invalid observed_at"): lambda s: s["awf"]["version"].update(
+                observed_at="2026-13-40T00:00:00Z"),
+            ("generated_at", "invalid timestamp"): lambda s: s.update(generated_at="soon"),
+            ("repository.extra", "unexpected"): lambda s: s["repository"].update(
+                extra={"value": None, "basis": "unavailable", "observed_at": "2026-10-07T00:00:00Z"}),
+            ("granted", "unexpected"): lambda s: s.update(granted=True),
+        }
+        for (field, problem), damage in invalid.items():
+            received = deepcopy(complete)
+            damage(received)
+            with self.subTest(invalid=field):
+                result = compare_snapshot(received, current)
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn({"field": field, "problem": problem}, result["problems"])
         legacy = deepcopy(complete)
         for section, key in (("repository", "numeric_id"), ("awf", "trust_basis"), ("operating", "routes")):
             del legacy[section][key]
@@ -201,6 +229,17 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.assertIn({"field": "adoption.pr", "problem": "missing"}, result["problems"])
         self.assertEqual(compare_snapshot({k: v for k, v in complete.items() if k != "generated_at"},
                                           current)["status"], "REJECTED")
+
+    def test_markdown_shows_every_fact_with_basis_and_observation_time(self):
+        status, _operating = self.active_status()
+        snapshot = self.snapshot(now="2026-10-07T01:02:03.456789Z", status=status)
+        rows = {line.split(" | ")[0][2:]: line for line in render_markdown(snapshot).splitlines()
+                if line.startswith("| ") and not line.startswith(("| Field", "| ---"))}
+        self.assertEqual(set(rows), set(FIELDS) - {"blockers"})
+        for key, line in rows.items():
+            with self.subTest(field=key):
+                self.assertTrue(line.endswith(" | 2026-10-07T01:02:03.456789Z |"), line)
+        self.assertIn("## Blockers (verified, observed at 2026-10-07T01:02:03.456789Z)", render_markdown(snapshot))
 
     def test_compared_fields_are_cross_host_identities(self):
         self.assertEqual(set(FIELDS) - set(COMPARED), {"repository.path", "blockers"})
