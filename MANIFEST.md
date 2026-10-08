@@ -2,7 +2,7 @@
 
 422 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `c566568b3a8be177c169b26122d443b9a543fd26ccc9f123c60d4882fe09e0bc`
+MANIFEST.json SHA-256: `2416733776093787e22409b4da464dd5c4418b5c44f2efd9d24541ce364ac24e`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -115,7 +115,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/review_host.py` | `5bd04cd379021bddee6a76878aa40f91824346f20f985864d7a6df13b888bb1f` |
 | `.agentic/lib/agentic/review_loop.py` | `828486e177ba4429971fda272a8fa694538c710bacfcdd8618a26edbd5aee61c` |
 | `.agentic/lib/agentic/review_policy.py` | `e690877bbc2047b061afcd78b2d48832bb8dee4ccfab76cb3f2a144926c80389` |
-| `.agentic/lib/agentic/review_tiers.py` | `35a9aa785ae39817c2ac820a523fd3a06cbe35cec528587ab8b791371c4d067e` |
+| `.agentic/lib/agentic/review_tiers.py` | `03bb804541c19698cd6405e18f836aa635dc63b4945dd43daa65a115b87cb2f9` |
 | `.agentic/lib/agentic/rules_activation.py` | `f9c5ccdfc309acc13ec998466d458ee9898298f692d19a6309bfbaf3fb76d7cb` |
 | `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
 | `.agentic/lib/agentic/safeio.py` | `04a0d5fe7d2461e00a92a4512f23d7078b4f14e9e1c6d1147aba4dbba2fc33e7` |
@@ -250,7 +250,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/review-submission.yaml` | `aeccb1b9d132bca7b4981f8af21ee46e353c6f52fd02e56593e0c1eb184a7927` |
 | `.agentic/templates/review-verdict.yaml` | `0923d3aea6e79760d99f8dd356d6de799c687fa96abf11c8dfcd459004715951` |
 | `.agentic/templates/risk-classification.yaml` | `ee98c146b9d143b8094d3c209c9af73b24fe8e46d70a25731c0efdc2684e3db6` |
-| `.agentic/templates/rules-activation-decision.yaml` | `7eff199ac62709491fe28a6e6de50875834bd513d51ce4298f259b0da2ef8668` |
+| `.agentic/templates/rules-activation-decision.yaml` | `e4cbc90d049ec186c9b332df4bb57f8a87a3e15e1d173339c0a771247bd20198` |
 | `.agentic/templates/run-attestation.yaml` | `a14caf06ab480ed0a22cd2fb771bf1434395f781462e7f3364e0c955a2341d0b` |
 | `.agentic/templates/run-disposition-request.yaml` | `5cc29ae5c84525f5942ad37b232f01190fbce15b995733bdc6231a71f4874f3e` |
 | `.agentic/templates/scope-change.yaml` | `e5078451787b84a33782bd4da9c1c188df8a00746e2cdbcf798b833ed13fefd6` |

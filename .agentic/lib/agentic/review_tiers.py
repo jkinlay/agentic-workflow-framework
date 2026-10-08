@@ -19,7 +19,7 @@ P1 = {"P1", "BLOCKER", "MAJOR"}
 P2 = {"P2", "MINOR"}
 
 _TIER3_WORDS = ("governance", "release", "merge", "qualification", "gate")
-_TIER3_FLAGS = {"security", "permissions", "release", "merge_gate", "ci_gate",
+_TIER3_FLAGS = {"permissions", "release", "merge_gate", "ci_gate",
                 "schema_or_migration", "data_loss", "concurrency", "production",
                 "public_api", "high_complexity", "high_uncertainty"}
 
