@@ -14,6 +14,8 @@ python -B scripts/publish_release.py --commit SHA --output-dir <new-external-out
 
 Dry-run builds and validates locally but creates no tag, push or hosted release. A real run creates an annotated `vX.Y.Z` tag, pushes that tag, then asks `gh release create --draft`; the owner reviews and publishes the draft.
 
+Validation runs in a temporary detached Git worktree of the same commit, checked byte for byte against the raw tree and removed afterwards, because self-test cases inspect Git.
+
 ## Reproducible assets
 
 Release materialization reads the tagged commit through an isolated Git environment with replacement objects disabled and enumerates its raw tree modes, object IDs and blob bytes. It does not use `git archive`, so committed `export-ignore` attributes cannot remove files. Before any destination path is created it rejects symlinks, gitlinks and other non-regular modes, nonportable or Windows-reserved names, trailing-dot/space aliases, and case-folding collisions at every path prefix. Creation is exclusive and handle-relative: prefixes are pinned without following links/reparse points, POSIX file bytes are completed in an unnamed inode before its exclusive link, and Windows directories/files remain exclusively handle-pinned through writes. A raced symlink, junction/reparse point or pre-existing hardlink therefore fails before release bytes can escape or another inode can be overwritten. The completed projection is checked back against the raw inventory, regular modes and bytes.
