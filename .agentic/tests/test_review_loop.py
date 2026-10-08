@@ -455,6 +455,47 @@ class HostTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'protected'):
             load_config(self.path, self.base/'runtime')
 
+    def test_source_allowlist_is_enforced_by_files_and_amend(self):
+        self.value.update(allowed_paths=['src/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
+        driver = HostDriver(self.config(), ROOT)
+        driver.c.update(allowed_paths=['.agentic/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
+        driver.prepare_critic = lambda candidate: None
+        def downstream_git(checkout, *args, **kwargs):
+            if args[:3] == ('diff', '--no-ext-diff', '--name-only'):
+                return '.agentic/a.py\0'
+            if args[:2] == ('rev-parse', 'HEAD'):
+                return CANDIDATE['head']
+            if args[:2] == ('symbolic-ref', '--short'):
+                return CANDIDATE['head_ref']
+            return ''
+        driver.git = downstream_git
+        with patch('agentic.providers.github_review_host.is_source_repository', return_value=True):
+            self.assertEqual(driver.files(CANDIDATE), ['.agentic/a.py'])
+
+    def test_downstream_source_markers_are_refused_by_files_and_amend(self):
+        self.value.update(allowed_paths=['src/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
+        driver = HostDriver(self.config(), ROOT)
+        driver.c.update(allowed_paths=['.agentic/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
+        driver.prepare_critic = lambda candidate: None
+        def downstream_git(checkout, *args, **kwargs):
+            if args[:3] == ('diff', '--no-ext-diff', '--name-only'):
+                return '.agentic/a.py\0'
+            if args[:2] == ('rev-parse', 'HEAD'):
+                return CANDIDATE['head']
+            if args[:2] == ('symbolic-ref', '--short'):
+                return CANDIDATE['head_ref']
+            return ''
+        driver.git = downstream_git
+        with patch('agentic.providers.github_review_host.is_source_repository', return_value=False):
+            with self.assertRaisesRegex(ValidationError, 'Protected governance'):
+                driver.files(CANDIDATE)
+
+            driver.preflight = lambda candidate: None
+            driver.snapshot = lambda: deepcopy(CANDIDATE)
+            driver.agent = lambda *args, **kwargs: {'candidate': CANDIDATE, 'outcome': 'CHANGED', 'summary': 'fixture'}
+            with self.assertRaisesRegex(ValidationError, 'Unsafe/protected amendment'):
+                driver.amend(CANDIDATE, [], 'fixture-amend')
+
     def test_strict_structured_output_schemas_require_all_declared_properties(self):
         def check(schema):
             if isinstance(schema, dict):
@@ -485,17 +526,23 @@ class HostTests(unittest.TestCase):
         policy = self.base/'worker/.agentic'; policy.mkdir()
         (policy/'PROJECT_CONFIG.yaml').write_text(json.dumps({'execution': {'model_routing': {'models': {'fixture-critic': {'reasoning_efforts': ['ultra']}}}}}))
         self.value['reasoning_effort'] = {'critic':'ultra'}
-        self.value['approved_model_effort_pairs'] = {'fixture-critic':['ultra']}
+        self.value['reasoning_effort'] = {'worker':'ultra','critic':'ultra'}
+        self.value['approved_model_effort_pairs'] = {'fixture-worker':['ultra'],'fixture-critic':['ultra']}
         self.value['codex_config_overrides'] = {'windows.sandbox':'elevated'}
         driver = HostDriver(self.config(),ROOT)
         captured = []
         def run(name,args,**kwargs):
             captured.append(args)
             output = Path(args[args.index('--output-last-message')+1])
-            output.write_text(json.dumps({'candidate':CANDIDATE,'verdict':'APPROVE','reviewed_files':['src/a.py'],'findings':[],'summary':'Fixture only'}))
+            if '--sandbox' in args and args[args.index('--sandbox') + 1] == 'read-only':
+                value = {'candidate':CANDIDATE,'verdict':'APPROVE','reviewed_files':['src/a.py'],'findings':[],'summary':'Fixture only'}
+            else:
+                value = {'candidate':CANDIDATE,'outcome':'CHANGED','summary':'Fixture only'}
+            output.write_text(json.dumps(value))
             return ''
         driver.run = run
         driver.agent('critic',CANDIDATE,[],'fixture-review',['src/a.py'])
+        driver.agent('worker',CANDIDATE,[],'fixture-worker',['src/a.py'])
         command = captured[0]
         self.assertEqual(command, ['exec','--ephemeral','--ignore-user-config','--sandbox','read-only',
             '-c','approval_policy="never"','-c','sandbox_workspace_write.network_access=false',
@@ -507,6 +554,12 @@ class HostTests(unittest.TestCase):
         self.assertEqual(effective['sandbox'], 'read-only')
         self.assertEqual(effective['cli_sandbox'], 'read-only')
         self.assertEqual(effective['codex_config_overrides']['windows.sandbox'], 'elevated')
+        worker_command = captured[1]
+        self.assertEqual(worker_command, ['exec','--ephemeral','--ignore-user-config','--sandbox','workspace-write',
+            '-c','approval_policy="never"','-c','sandbox_workspace_write.network_access=false',
+            '-c','model_reasoning_effort=ultra','-c','windows.sandbox="elevated"','--model','fixture-worker',
+            '--cd',str(self.base/'worker'),'--output-schema',str(ROOT/'.agentic/review-loop/worker-result.schema.json'),
+            '--output-last-message',str(self.base/'state/runs/fixture-worker/result.json'),'--json','-'])
 
     def test_reasoning_effort_must_be_an_approved_pair_and_unknown_override_is_refused(self):
         policy = self.base/'worker/.agentic'; policy.mkdir()
