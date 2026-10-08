@@ -55,7 +55,7 @@ class PublishReleaseTests(unittest.TestCase):
         cls.epoch = int(command(["git", "show", "-s", "--format=%ct", cls.commit], cls.repository, cls.git_env))
         cls.windows_check = cls.base / "windows-check.json"
         cls.windows_check.write_text(json.dumps({
-            "format": "awf-clean-windows-portable-check-1", "status": "PASS", "version": "1.9.3",
+            "format": "awf-clean-windows-portable-check-1", "status": "PASS", "version": "1.9.4",
             "source_commit": cls.commit,
             "checks": {"portable_build": "PASS", "host_skill_install": "PASS", "host_skill_verify": "PASS"},
         }, sort_keys=True), encoding="utf-8")
@@ -137,7 +137,7 @@ class PublishReleaseTests(unittest.TestCase):
             self.assertIn(digest, result["tag_message"])
             self.assertIn(digest, result["release_body"])
         self.assertFalse(result["remote_changes"])
-        self.assertEqual("", command(["git", "tag", "--list", "v1.9.3"], self.repository))
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"], self.repository))
 
     def worktree_paths(self):
         listing = command(["git", "worktree", "list", "--porcelain"], self.repository, self.git_env)
@@ -188,7 +188,7 @@ class PublishReleaseTests(unittest.TestCase):
         original = readme.read_bytes()
         untracked = self.repository / "synthetic-untracked.txt"
         try:
-            readme.write_text(readme.read_text(encoding="utf-8").replace("Release 1.9.3", "Release 9.9.9", 1), encoding="utf-8")
+            readme.write_text(readme.read_text(encoding="utf-8").replace("Release 1.9.4", "Release 9.9.9", 1), encoding="utf-8")
             untracked.write_text("fixture", encoding="utf-8")
             report = publisher.source_report(self.repository, self.commit)
             joined = "\n".join(report["problems"])
@@ -437,19 +437,19 @@ else: raise SystemExit(2)
                                        self.windows_check, self.windows_pin,
                                        validation_runner=self.fake_validation, gh=str(executable))
             self.assertEqual("DRAFT_CREATED", result["status"])
-            verified = publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-output",
+            verified = publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-output",
                                             gh=str(executable))
             self.assertEqual("PASS", verified["status"])
             extra = store / "unexpected-extra.zip"
             extra.write_bytes(b"unrecorded release asset")
             with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):
-                publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-extra-output",
+                publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-extra-output",
                                      gh=str(executable))
             extra.unlink()
             changed = next(store.glob("*.zip"))
             changed.write_bytes(changed.read_bytes() + b"changed")
             with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):
-                publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-fail-output",
+                publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-fail-output",
                                      gh=str(executable))
         finally:
             os.environ.clear(); os.environ.update(old)

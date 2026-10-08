@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "template_version": "1.9.3",
+  "template_version": "1.9.4",
   "live_side_effects_supported": false,
   "states": [
     "BACKLOG",

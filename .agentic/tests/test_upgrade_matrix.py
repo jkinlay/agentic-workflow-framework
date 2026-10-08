@@ -28,7 +28,7 @@ from upgrade_fixtures import (BLOB_ROOT, FIXTURE_ROOT, NEXT, advance_one_fixture
     file_tree, fixture_blob, fixture_index, fixture_manifest, fixture_storage_statistics,
     managed_tree_from_receipt, materialize, verify_materialized)
 
-VERSIONS = ("1.8.3", "1.8.9", "1.9.1", "1.9.2")
+VERSIONS = ("1.8.3", "1.8.9", "1.9.1", "1.9.2", "1.9.3")
 FIXED_UUID = uuid.UUID("22222222-2222-4222-8222-222222222222")
 
 
@@ -85,7 +85,7 @@ class UpgradeMatrixTests(unittest.TestCase):
         index = fixture_index()
         self.assertEqual(tuple(index["versions"]), VERSIONS)
         fixture_bytes = sum(path.stat().st_size for path in FIXTURE_ROOT.rglob("*") if path.is_file())
-        self.assertLess(fixture_bytes, 5_000_000)
+        self.assertLess(fixture_bytes, 9_000_000)
         self.assertEqual(index["storage"]["kind"], "plain-sha256-blobs")
         self.assertEqual(index["storage"]["blob_count"], len(list(BLOB_ROOT.iterdir())))
         self.assertEqual(index["storage"], fixture_storage_statistics())
@@ -174,8 +174,9 @@ class UpgradeMatrixTests(unittest.TestCase):
                                              before_value["execution"]["max_agent_runs_per_ticket"]))
                 self.assertEqual(after_value["execution"]["model_routing"]["budgets"]["max_runs_per_ticket"],
                                  expected_routing_cap)
-                expected_config = _insert_unbound_jira_identity(
-                    before["configuration"].replace(version.encode(), VERSION.encode(), 1))
+                expected_config = before["configuration"].replace(version.encode(), VERSION.encode(), 1)
+                if version != "1.9.3":
+                    expected_config = _insert_unbound_jira_identity(expected_config)
                 if version == "1.8.3":
                     expected_owner = json.loads(json.dumps(before_value))
                     expected_owner["template"]["expected_workflow_version"] = VERSION
@@ -218,7 +219,7 @@ class UpgradeMatrixTests(unittest.TestCase):
                                          "routing-ledger:model_runs-v1")
                     else:
                         self.assertEqual(actual_state, raw)
-                archive = destination / ".agentic-state/archive/upgrade-to-1.9.3/files/legacy-note.txt"
+                archive = destination / ".agentic-state/archive/upgrade-to-1.9.4/files/legacy-note.txt"
                 self.assertEqual(archive.read_bytes(), before["state"][".agentic-state/legacy-note.txt"])
                 self.assertEqual(archive.stat().st_mode & stat.S_IWRITE, 0)
                 ledger = destination / ".agentic-state/routing/ledger.sqlite"
@@ -266,7 +267,7 @@ class UpgradeMatrixTests(unittest.TestCase):
         self.assertEqual(actions[".agentic-state/reviews/critic-review.json"], "archived_read_only_copy")
         self.assertEqual(actions[".agentic-state/routing/ledger.sqlite"], "archived_read_only_copy")
         for relative in ("reviews/critic-review.json", "routing/ledger.sqlite"):
-            self.assertTrue((destination / ".agentic-state/archive/upgrade-to-1.9.3/files" / relative).is_file())
+            self.assertTrue((destination / ".agentic-state/archive/upgrade-to-1.9.4/files" / relative).is_file())
 
     def test_full_contract_validation_archives_exact_key_critic_counterexample(self):
         destination, _ = self.fixture("1.9.2")
@@ -287,7 +288,7 @@ class UpgradeMatrixTests(unittest.TestCase):
         self.assertEqual(action["validation_path"], action["path"])
         for field in ("binding", "closure", "evidence_checked", "record_id", "verdict"):
             self.assertIn(field, action["validation_reason"])
-        manifest = json.loads((destination / ".agentic-state/archive/upgrade-to-1.9.3/manifest.json").read_bytes())
+        manifest = json.loads((destination / ".agentic-state/archive/upgrade-to-1.9.4/manifest.json").read_bytes())
         archived = next(item for item in manifest["files"] if item["source"] == action["path"])
         self.assertEqual(archived["validation_path"], action["path"])
         self.assertEqual(archived["validation_reason"], action["validation_reason"])
@@ -314,7 +315,7 @@ class UpgradeMatrixTests(unittest.TestCase):
             with self.subTest(path=relative):
                 self.assertEqual(actions[relative]["action"], "archived_read_only_copy")
                 self.assertIn(field, actions[relative]["validation_reason"])
-                archived = (destination / ".agentic-state/archive/upgrade-to-1.9.3/files" /
+                archived = (destination / ".agentic-state/archive/upgrade-to-1.9.4/files" /
                             relative.removeprefix(".agentic-state/"))
                 self.assertEqual(archived.read_bytes(), originals[relative])
 
@@ -354,7 +355,7 @@ class UpgradeMatrixTests(unittest.TestCase):
                               if item["path"] == ".agentic-state/routing/ledger.sqlite")
                 self.assertEqual(action["action"], "archived_read_only_copy")
                 self.assertIn("target initializer", action["validation_reason"])
-                archived = destination / ".agentic-state/archive/upgrade-to-1.9.3/files/routing/ledger.sqlite"
+                archived = destination / ".agentic-state/archive/upgrade-to-1.9.4/files/routing/ledger.sqlite"
                 self.assertEqual(archived.read_bytes(), corrupt)
                 self.assertEqual(ledger.read_bytes(), corrupt)
 
@@ -379,10 +380,10 @@ class UpgradeMatrixTests(unittest.TestCase):
                     self.assertEqual(actions[relative]["action"], "retained_schema_compatible")
                     expected_schema = state_schema(relative, raw)
                     if (relative.endswith("reviews/critic-review.json") and
-                            step["from"] in {"1.9.1", "1.9.2"}):
+                            step["from"] in {"1.9.1", "1.9.2", "1.9.3"}):
                         expected_schema = "critic-review:3"
                     if (relative.endswith("lifecycle/controller-event.json") and
-                            step["from"] in {"1.9.1", "1.9.2"}):
+                            step["from"] in {"1.9.1", "1.9.2", "1.9.3"}):
                         expected_schema = "controller-event:3"
                     if (relative.endswith("routing/ledger.sqlite") and
                             step["from"] != "1.8.3"):

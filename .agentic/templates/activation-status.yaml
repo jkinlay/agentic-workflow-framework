@@ -3,7 +3,7 @@
   "status": "UNFILLED",
   "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
   "record": {
-    "version": "1.9.3",
+    "version": "1.9.4",
     "project_state": null,
     "checks": [],
     "capabilities": {

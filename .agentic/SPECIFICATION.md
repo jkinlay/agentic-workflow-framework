@@ -1,6 +1,6 @@
 # AWF specification
 
-Version 1.9.3. Host/provider controls apply. Agentic Workflow Framework maintainers; Apache-2.0; dependencies retain licences.
+Version 1.9.4. Host/provider controls apply. Agentic Workflow Framework maintainers; Apache-2.0; dependencies retain licences.
 
 ## Authority and modes
 

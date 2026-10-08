@@ -1,0 +1,336 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "status",
+    "configuration",
+    "binding",
+    "observed_rules_state",
+    "observed_rules",
+    "publication_consequence",
+    "proposed_ruleset",
+    "proposed_ruleset_sha256",
+    "owner_approval_action",
+    "post_action_observation",
+    "final_rules_state",
+    "operational_blocker",
+    "blocker_codes",
+    "provider_mutation_performed",
+    "execution_authority"
+  ],
+  "properties": {
+    "format": {
+      "const": "awf-rules-activation-decision-1"
+    },
+    "status": {
+      "enum": [
+        "BLOCKED",
+        "RULES_OBSERVED"
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "policy_sha256",
+        "merge_method"
+      ],
+      "properties": {
+        "status": {
+          "const": "ACCEPTED"
+        },
+        "policy_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "merge_method": {
+          "enum": [
+            "merge",
+            "squash",
+            "rebase"
+          ]
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "repository_id",
+        "default_branch"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "default_branch": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "observed_rules_state": {
+      "enum": [
+        "APPLIED",
+        "MISSING",
+        "UNOBSERVED"
+      ]
+    },
+    "observed_rules": {
+      "type": "object"
+    },
+    "publication_consequence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "PUBLICATION_GOVERNANCE_OBSERVED",
+            "PUBLICATION_GOVERNANCE_MISSING",
+            "PUBLICATION_GOVERNANCE_UNOBSERVED"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "proposed_ruleset": {
+      "type": "object"
+    },
+    "proposed_ruleset_sha256": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "owner_approval_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "state",
+        "actor",
+        "approval",
+        "provider_request"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "PENDING",
+            "DECLINED",
+            "APPLIED",
+            "NOT_REQUIRED",
+            "NOT_AVAILABLE"
+          ]
+        },
+        "actor": {
+          "const": "repository_owner_or_administrator"
+        },
+        "approval": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "endpoint",
+            "body_sha256",
+            "body"
+          ],
+          "properties": {
+            "method": {
+              "const": "POST"
+            },
+            "endpoint": {
+              "type": "string",
+              "minLength": 1
+            },
+            "body_sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "body": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "post_action_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "state",
+        "observation_sha256",
+        "observed_at",
+        "configuration_compatible"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "APPLIED",
+            "MISSING",
+            "UNOBSERVED",
+            "NOT_APPLICABLE"
+          ]
+        },
+        "observation_sha256": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "configuration_compatible": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "final_rules_state": {
+      "enum": [
+        "APPLIED",
+        "MISSING",
+        "UNOBSERVED"
+      ]
+    },
+    "operational_blocker": {
+      "type": "boolean"
+    },
+    "blocker_codes": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "RULES_UNOBSERVED",
+          "RULES_OBSERVATION_NOT_LIVE",
+          "RULES_OBSERVATION_INVALID",
+          "RULES_OBSERVATION_WRONG_REPOSITORY",
+          "RULES_OBSERVATION_WRONG_REPOSITORY_ID",
+          "RULES_OBSERVATION_WRONG_DEFAULT_BRANCH",
+          "RULES_OBSERVATION_STALE_OR_FUTURE",
+          "RULES_MISSING",
+          "OWNER_APPROVAL_PENDING",
+          "OWNER_DECLINED",
+          "POST_ACTION_OBSERVATION_MISSING",
+          "POST_ACTION_OBSERVATION_INVALID",
+          "POST_ACTION_OBSERVATION_NOT_LIVE",
+          "POST_ACTION_OBSERVATION_WRONG_REPOSITORY",
+          "POST_ACTION_OBSERVATION_WRONG_REPOSITORY_ID",
+          "POST_ACTION_OBSERVATION_WRONG_DEFAULT_BRANCH",
+          "POST_ACTION_OBSERVATION_STALE_OR_FUTURE",
+          "POST_ACTION_OBSERVATION_NOT_FRESH",
+          "RULES_MISSING_AFTER_ACTION"
+        ]
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "provider_mutation_performed": {
+      "const": false
+    },
+    "execution_authority": {
+      "const": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "RULES_OBSERVED"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operational_blocker": {
+            "const": false
+          },
+          "blocker_codes": {
+            "maxItems": 0
+          },
+          "final_rules_state": {
+            "const": "APPLIED"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "BLOCKED"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operational_blocker": {
+            "const": true
+          },
+          "blocker_codes": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:rules-activation-decision",
+  "title": "Agentic Workflow 1.2 \u2014 rules-activation-decision"
+}

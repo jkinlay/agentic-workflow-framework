@@ -2,7 +2,7 @@
 """AC42 end-to-end upgrade gate harness (AWF-11).
 
 Upgrades a recorded historical installation fixture (default 1.9.1, as AC42
-specifies) to this 1.9.3 source in a fresh Git repository, then records one
+specifies) to this 1.9.4 source in a fresh Git repository, then records one
 PASS / FAIL / NOT_COVERED row per AC42 clause in an evidence JSON file.
 
 The adoption-PR merge and the GitHub observations are a recorded synthetic
@@ -102,7 +102,7 @@ def provider_fixture(project, head, upgrade_commit, receipt, installed_files, fu
         base + "/pulls/7": {"number": 7, "node_id": "PR_ac42", "state": "closed", "merged": True,
                             "merged_at": "2026-10-07T12:00:00+00:00", "merge_commit_sha": None,
                             "base": {"ref": branch, "repo": dict(repository)},
-                            "head": {"ref": "awf/upgrade-1.9.3", "sha": "d" * 40, "repo": dict(repository)}},
+                            "head": {"ref": "awf/upgrade-1.9.4", "sha": "d" * 40, "repo": dict(repository)}},
         base + "/pulls/7/files?per_page=50&page=1": [
             {"filename": INSTALLED, "status": "modified", "sha": status.blob_sha(installed_files[INSTALLED])}],
         base + f"/commits/{upgrade_commit}/pulls?per_page=100": [
@@ -123,7 +123,7 @@ def provider_fixture(project, head, upgrade_commit, receipt, installed_files, fu
     graph_repo = {"id": "R_ac42", "databaseId": repository_id, "nameWithOwner": full_name}
     graphql = {"data": {"repository": dict(graph_repo,
         defaultBranchRef={"name": branch, "target": {"oid": head}},
-        pullRequest={"id": "PR_ac42", "number": 7, "baseRefName": branch, "headRefName": "awf/upgrade-1.9.3",
+        pullRequest={"id": "PR_ac42", "number": 7, "baseRefName": branch, "headRefName": "awf/upgrade-1.9.4",
                      "headRefOid": "d" * 40, "headRepository": graph_repo, "state": "MERGED", "merged": True,
                      "mergedAt": "2026-10-07T12:00:00Z", "mergeCommit": {"oid": head, "repository": graph_repo}})}}
     requests = []
@@ -143,7 +143,7 @@ def provider_fixture(project, head, upgrade_commit, receipt, installed_files, fu
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--from-version", default="1.9.1", choices=("1.8.3", "1.8.9", "1.9.1", "1.9.2"))
+    parser.add_argument("--from-version", default="1.9.1", choices=("1.8.3", "1.8.9", "1.9.1", "1.9.2", "1.9.3"))
     parser.add_argument("--work", type=Path, help="Empty scratch directory outside this repository (default: new temp dir)")
     parser.add_argument("--evidence", type=Path, required=True, help="Evidence JSON to create; never overwritten")
     parser.add_argument("--runtime-wheelhouse", type=Path,
@@ -195,7 +195,7 @@ def main(argv=None):
                     "owner_files": sorted(owner_before), "core.autocrlf": git(project, "config", "core.autocrlf"),
                     "codeowners_project_owned": ".github/CODEOWNERS" in owner_before})
 
-        git(project, "checkout", "-q", "-b", "awf/upgrade-1.9.3")
+        git(project, "checkout", "-q", "-b", "awf/upgrade-1.9.4")
         if args.runtime_wheelhouse:
             step = run([sys.executable, "-B", ROOT / "scripts/bootstrap_project.py", "--mode", "upgrade",
                         "--dest", project, "--expected-manifest-sha256", pin,
@@ -236,8 +236,8 @@ def main(argv=None):
             gate.record("self_test", step["exit_code"] == 0, step)
 
         git(project, "checkout", "-q", branch)
-        git(project, "merge", "-q", "--no-ff", "-m", f"Merge pull request #7 from {full_name.split('/')[0]}/awf/upgrade-1.9.3",
-            "awf/upgrade-1.9.3")
+        git(project, "merge", "-q", "--no-ff", "-m", f"Merge pull request #7 from {full_name.split('/')[0]}/awf/upgrade-1.9.4",
+            "awf/upgrade-1.9.4")
         head = git(project, "rev-parse", "HEAD")
         gate.record("adoption_merge", True, {"merge_commit": head, "pr": 7, "fixture": "local merge, recorded provider answers"})
 
