@@ -13,7 +13,7 @@ import fnmatch
 
 from ..canonical import loads, sha256
 from ..child_process import child_env, isolated_git_env
-from ..review_loop import require
+from ..review_loop import ValidationError, require
 
 
 PROTECTED = {'AGENTS.md','CODEOWNERS','.agentic','.codex','.github','.gitattributes','.gitmodules','.lfsconfig'}
@@ -25,46 +25,45 @@ def protected(path):
     return path.casefold() == 'scripts/bootstrap_project.py' or any(x.casefold() in {p.casefold() for p in PROTECTED} for x in parts)
 
 
-def is_source_repository(root, revision='HEAD'):
+def is_source_repository(root, revision='HEAD', git_runner=None):
     root = Path(root)
+    if git_runner is None:
+        return False
     try:
-        result = subprocess.run(
-            ['git', '--no-replace-objects', '-c', 'core.useReplaceRefs=false',
-             '-c', 'protocol.file.allow=never', '-C', str(root),
-             'ls-tree', '-r', '--name-only', revision],
-            capture_output=True, text=True, encoding='utf-8', errors='strict',
-            env=child_env(isolated_git_env(dict(os.environ))), check=False)
+        output = git_runner(root, 'ls-tree', '-r', '--name-only', revision)
+    except ValidationError as error:
+        if str(error).startswith('git failed with exit '):
+            return False
+        raise
     except (OSError, UnicodeError):
         return False
-    if result.returncode != 0:
-        return False
-    paths = set(result.stdout.splitlines())
+    paths = set(output.splitlines())
     return {'MANIFEST.json', '.agentic/SPECIFICATION.md'} <= paths and any(
         path.startswith('.agentic/lib/agentic/') for path in paths)
 
 
-def reviewed_model_effort_pairs(root, revision):
+def reviewed_model_effort_pairs(root, revision, git_runner=None):
     """Read routing policy from an accepted Git object, never the worktree."""
     require(isinstance(revision, str) and re.fullmatch(r'[0-9a-f]{40}', revision),
             'Reviewed model/effort policy requires the observed immutable base SHA')
+    if git_runner is None:
+        return {}
     try:
-        resolved = subprocess.run(
-            ['git', '--no-replace-objects', '-c', 'core.useReplaceRefs=false',
-             '-c', 'protocol.file.allow=never', '-C', str(Path(root)),
-             'rev-parse', '--verify', revision + '^{commit}'],
-            capture_output=True, text=True, encoding='utf-8', errors='strict',
-            env=child_env(isolated_git_env(dict(os.environ))), check=False)
-        if resolved.returncode != 0 or resolved.stdout.strip() != revision:
+        try:
+            resolved = git_runner(Path(root), 'rev-parse', '--verify', revision + '^{commit}')
+        except ValidationError as error:
+            if str(error).startswith('git failed with exit '):
+                return {}
+            raise
+        if resolved.strip() != revision:
             return {}
-        result = subprocess.run(
-            ['git', '--no-replace-objects', '-c', 'core.useReplaceRefs=false',
-             '-c', 'protocol.file.allow=never', '-C', str(Path(root)),
-             'show', f'{revision}:.agentic/PROJECT_CONFIG.yaml'],
-            capture_output=True, text=True, encoding='utf-8', errors='strict',
-            env=child_env(isolated_git_env(dict(os.environ))), check=False)
-        if result.returncode != 0:
-            return {}
-        value = loads(result.stdout)
+        try:
+            policy = git_runner(Path(root), 'show', f'{revision}:.agentic/PROJECT_CONFIG.yaml')
+        except ValidationError as error:
+            if str(error).startswith('git failed with exit '):
+                return {}
+            raise
+        value = loads(policy)
         models = value['execution']['model_routing']['models']
         return {model: details['reasoning_efforts'] for model, details in models.items()
                 if isinstance(details, dict) and isinstance(details.get('reasoning_efforts'), list)}
@@ -150,9 +149,6 @@ def load_config(path, runtime_root):
     require(set(config['models']) == {'worker','critic'} and all(isinstance(x,str) and x.strip() and 'CHANGE_ME' not in x for x in config['models'].values()), 'Configure approved worker and critic models')
     require(isinstance(config['allowed_paths'], list) and config['allowed_paths'] and len(config['allowed_paths']) == len(set(config['allowed_paths'])), 'Specify unique exact files in amendment scope')
     source_allowlist = config.get('governed_source_paths', [])
-    source_opt_in = is_source_repository(config['worker_checkout']) and bool(source_allowlist) and config.get('risk_tier') in {3, 'Tier 3'}
-    require(all(safe_path(x) and (not protected(x) or (source_opt_in and governed_path(x, source_allowlist))) for x in config['allowed_paths']),
-            'Amendment scope contains unsafe/protected paths; source governance requires an explicit Tier 3 allowlist')
     efforts = config.get('reasoning_effort') or {}
     # The candidate checkout is untrusted.  A host-config policy is an
     # external, digest-bound review input; otherwise read the PR base object,
@@ -177,6 +173,9 @@ def load_config(path, runtime_root):
     config['key'] = f"{config['repository_id']}:{config['pr']}"
     config['config_hash'] = sha256(raw)
     config['_config_path'] = str(path)
+    source_opt_in = is_source_repository(config['worker_checkout'], git_runner=HostDriver(config, runtime_root).git) and bool(source_allowlist) and config.get('risk_tier') in {3, 'Tier 3'}
+    require(all(safe_path(x) and (not protected(x) or (source_opt_in and governed_path(x, source_allowlist))) for x in config['allowed_paths']),
+            'Amendment scope contains unsafe/protected paths; source governance requires an explicit Tier 3 allowlist')
     return config
 
 
@@ -257,7 +256,7 @@ class HostDriver:
     def bind_reviewed_policy(self, candidate):
         if not self.c.get('_requires_reviewed_effort_policy'):
             return
-        pairs = reviewed_model_effort_pairs(self.worker, candidate['base'])
+        pairs = reviewed_model_effort_pairs(self.worker, candidate['base'], git_runner=self.git)
         require(pairs, 'Reviewed model/effort policy is missing or empty at the observed candidate base SHA')
         for role, effort in (self.c.get('reasoning_effort') or {}).items():
             model = self.c['models'][role]
@@ -293,7 +292,7 @@ class HostDriver:
         self.prepare_critic(candidate)
         raw = self.git(self.critic,'diff','--no-ext-diff','--name-only','-z',candidate['base']+'...'+candidate['head'])
         files = [x for x in raw.split('\0') if x]
-        source_opt_in = is_source_repository(self.critic, candidate['head']) and bool(self.c.get('governed_source_paths')) and self.c.get('risk_tier') in {3, 'Tier 3'}
+        source_opt_in = is_source_repository(self.critic, candidate['head'], git_runner=self.git) and bool(self.c.get('governed_source_paths')) and self.c.get('risk_tier') in {3, 'Tier 3'}
         require(files and all(safe_path(x) and (not protected(x) or (source_opt_in and governed_path(x, self.c['governed_source_paths']))) for x in files),
                 'Protected governance or unsafe/empty candidate; separate human review required')
         return files
@@ -358,7 +357,7 @@ class HostDriver:
         untracked = self.git(self.worker,'ls-files','--others','-z').split('\0')
         paths = sorted(set(x for x in changed + untracked if x))
         require(paths and set(paths) <= set(self.c['allowed_paths']), 'Worker changed files outside exact enrolled scope')
-        source_opt_in = is_source_repository(self.worker, candidate['head']) and bool(self.c.get('governed_source_paths')) and self.c.get('risk_tier') in {3, 'Tier 3'}
+        source_opt_in = is_source_repository(self.worker, candidate['head'], git_runner=self.git) and bool(self.c.get('governed_source_paths')) and self.c.get('risk_tier') in {3, 'Tier 3'}
         require(all(safe_path(x) and (not protected(x) or (source_opt_in and governed_path(x, self.c['governed_source_paths']))) for x in paths),
                 'Unsafe/protected amendment')
         self.last_amendment_paths = list(paths)
