@@ -2,7 +2,7 @@
 
 419 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `028fea17e69344c6ac702541bc7962a94293bd50f9e21dbcaa5f7c5bb563c8fb`
+MANIFEST.json SHA-256: `d7d2f8d36150e8bdcd8a74e43aa14048c7509c73c24a7e5d3c752c6178df1739`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -107,7 +107,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/providers/github_review_host.py` | `916f8378b60c7bc1a990b460702cc9999d5fb89f8a708da0b21f8bb6f5cb1569` |
 | `.agentic/lib/agentic/providers/github_reviewer_removal.py` | `6bdbe9065e3ffe29561113e5c267b4cb033b9e01855b4597e09ec8056f3cbf8e` |
 | `.agentic/lib/agentic/providers/github_status.py` | `69820fd9191039666142014b29c1e254218608ce33020a78cc6d133e99955776` |
-| `.agentic/lib/agentic/publication.py` | `645cee15b49c91bc7c47a0f02eef7b2575a098d5c0a0853aebae6d31bf1a4bec` |
+| `.agentic/lib/agentic/publication.py` | `21f0fa378a2624c85db2bbc8ad9679330501796e0a5a5fa839fdf82c1beffe3b` |
 | `.agentic/lib/agentic/publication_readiness.py` | `cbc0a38cb74bc646bd77b81d914c088b7d2088ded6944c7d4a4cd631ca1e466e` |
 | `.agentic/lib/agentic/release_trust.py` | `a8d468759d1c974b5a06ae3855b7bf17ea2e1a937edf4d0c1c76a7bef8988896` |
 | `.agentic/lib/agentic/repository_rules.py` | `6c04a815378ced7163dc763e3fb9a93889f8adde5461c4a58d5df13c20a27fcc` |
