@@ -2,7 +2,7 @@
 
 419 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `f0040a0d903bc9124518890a3006bcc12a2e6eeead8daad3fd03764733eebdb3`
+MANIFEST.json SHA-256: `31373269420eb2d5b825f19680ad3fa85f54558eac1c1aa4f8e2063743385387`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -325,7 +325,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `Claude outputs/run-awf192-critic.bat` | `84d507708205d17d6474852231f91ba1fc58469d073b4d76735389fbb9d41f4c` |
 | `LICENSE` | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
 | `MIGRATION-to-v1.9.3.md` | `2fc7fc09c18dade045b9bcadb9dd39b4b16c5a0553e8a252c90cc5f80d4adc64` |
-| `MIGRATION-to-v1.9.4.md` | `8f035319baedbb45d2337ff3f2eb14a88cbb3e2b7919f9179698f5f19c8543fe` |
+| `MIGRATION-to-v1.9.4.md` | `a98f37a16087e08172ea403d1b5a9840c333b712a60d9a27a9d97f9094e1cbab` |
 | `MIGRATION-v0.1.2-to-v1.9.1.md` | `5cb4ecd7423c64ef9b4239548564bf600ab4890b8fb2ce5a81b410e65a19ffe7` |
 | `MIGRATION-v1.5-to-v1.6.md` | `9de2b85adfb09b446a72aaf5b38c5c64cdd25da592ab673d2690fa6cfc9f6dd3` |
 | `MIGRATION-v1.6-to-v1.7.md` | `6ccd5a216a0c7db09887bd7696e8daaa093cd47ab79b52f6c9e097a2ac99d1d1` |
@@ -343,7 +343,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `MIGRATION-v1.9.0-to-v1.9.1.md` | `5c75234dcda9d8d1ddef7dccbbcdf77ae1d9f66ee47d05d2afcb08b4e12f6822` |
 | `MIGRATION-v1.9.1-to-v1.9.2.md` | `4a484db5892d1f5689c54b68d2833bea2a5e0d166fd29b1937437d3dabeaba66` |
 | `MIGRATION-v1.9.2-to-v1.9.3.md` | `70b47892e0db995c5a1ea7f619ffc14f75b0470313f7685581c3a036b0706ae8` |
-| `MIGRATION-v1.9.3-to-v1.9.4.md` | `7f10941a23fdb54f721d6886ab84133d64eea4b56b95a8f4f7f1ad897c5aed3d` |
+| `MIGRATION-v1.9.3-to-v1.9.4.md` | `2f37f470afb868cfbc089019d708013e5d89128890bcebd37300337b5a599448` |
 | `NOTICE` | `778aa28d13e57cd0626adeb12099588fe0cf5e3eaa40e059b2409e855931ac57` |
 | `OPERATING_CONFIG.yaml` | `f92108e68715147bb2e1b93f0bc3456f683a84ffde96d89db32870cb9893cd37` |
 | `PUBLISHER.json` | `721657a4273781e068d71a7365644a09ba152a00bd0b97ab1789843c3086f481` |

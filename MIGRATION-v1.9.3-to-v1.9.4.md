@@ -7,3 +7,6 @@ Run the normal locked, offline upgrade command from verified 1.9.4 source with t
 Tier policy defaults are Tier 1: one independent PASS; Tier 2: up to three rounds, with owner escalation for an open P1 at the cap; and Tier 3: the full loop plus Jonathan's review. Highest matching tier wins. Review-loop source-repository allowlisting, strict critic schema fields, role reasoning effort and explicit Codex overrides remain opt-in and validated by the reviewed host configuration. AWF-30 remains deferred to 1.9.5.
 
 Known issues: AWF-34 and AWF-35 (accepted for 1.9.4 installs, fix in 1.9.5).
+
+- AWF-34: Publication scan can never PASS on a repo with an existing tracked file over 32 MB: add a recorded allowance or baseline.
+- AWF-35: self_test fails on project-owned scripts not listed in install-pinned .agentic/launch-surfaces.json.
