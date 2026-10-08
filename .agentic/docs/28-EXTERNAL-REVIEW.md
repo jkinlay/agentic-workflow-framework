@@ -23,7 +23,7 @@ separate worker and critic checkouts in
 enrolled loop tick owns one branch at a time, so it cannot race a native
 writer. The host supplies the selected models, isolates credentials, enforces
 quotas and records observed outcomes; the release never claims those host
-properties from a configuration file alone. Each run records its effective model, optional reasoning effort, CLI sandbox mode and approved Codex overrides in `runs/RUN_ID/effective-config.json`. `--ignore-user-config` remains enabled; approved overrides are passed explicitly as `-c` flags and unknown override keys fail closed. Protected governance paths remain refused except for an AWF source checkout detected from its root manifest/source markers and explicitly enrolled with a reviewed Tier 3 `governed_source_paths` allowlist.
+properties from a configuration file alone. Each run records its effective model, optional policy-approved reasoning effort, CLI sandbox mode separately from any Windows sandbox override, and approved Codex overrides in `runs/RUN_ID/effective-config.json`. `--ignore-user-config` remains enabled; approved overrides are passed explicitly as `-c` flags and unknown override keys fail closed. Protected governance paths remain refused except for an AWF source checkout detected from its root manifest/source markers and explicitly enrolled with a reviewed Tier 3 `governed_source_paths` allowlist.
 
 ## Live qualification
 

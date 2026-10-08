@@ -18,7 +18,6 @@ from ..review_loop import require
 
 PROTECTED = {'AGENTS.md','CODEOWNERS','.agentic','.codex','.github','.gitattributes','.gitmodules','.lfsconfig'}
 OVERRIDE_KEYS = {'windows.sandbox'}
-EFFORTS = {'minimal', 'low', 'medium', 'high', 'xhigh'}
 
 
 def protected(path):
@@ -62,10 +61,12 @@ def load_config(path, runtime_root):
     if 'reasoning_effort' in config:
         value = config['reasoning_effort']
         require(value is None or (isinstance(value, dict) and set(value) <= {'worker', 'critic'}
-                and all(isinstance(v, str) and v in EFFORTS for v in value.values())), 'Invalid reasoning_effort')
+                and all(isinstance(v, str) and v.strip() for v in value.values())), 'Invalid reasoning_effort')
     if 'approved_model_effort_pairs' in config:
         pairs = config['approved_model_effort_pairs']
-        require(isinstance(pairs, dict) and all(isinstance(k, str) and isinstance(v, list) and v and set(v) <= EFFORTS for k, v in pairs.items()),
+        require(isinstance(pairs, dict) and all(isinstance(k, str) and k.strip() and isinstance(v, list) and v
+                                                and all(isinstance(e, str) and e.strip() for e in v)
+                                                and len(v) == len(set(v)) for k, v in pairs.items()),
                 'Invalid approved_model_effort_pairs')
     if 'codex_config_overrides' in config:
         overrides = config['codex_config_overrides']
@@ -107,7 +108,7 @@ def load_config(path, runtime_root):
     require(set(config['models']) == {'worker','critic'} and all(isinstance(x,str) and x.strip() and 'CHANGE_ME' not in x for x in config['models'].values()), 'Configure approved worker and critic models')
     require(isinstance(config['allowed_paths'], list) and config['allowed_paths'] and len(config['allowed_paths']) == len(set(config['allowed_paths'])), 'Specify unique exact files in amendment scope')
     source_allowlist = config.get('governed_source_paths', [])
-    source_opt_in = is_source_repository(runtime_root) and bool(source_allowlist) and config.get('risk_tier') in {3, 'Tier 3'}
+    source_opt_in = is_source_repository(config['worker_checkout']) and bool(source_allowlist) and config.get('risk_tier') in {3, 'Tier 3'}
     require(all(safe_path(x) and (not protected(x) or (source_opt_in and governed_path(x, source_allowlist))) for x in config['allowed_paths']),
             'Amendment scope contains unsafe/protected paths; source governance requires an explicit Tier 3 allowlist')
     efforts = config.get('reasoning_effort') or {}
@@ -227,7 +228,7 @@ class HostDriver:
         self.prepare_critic(candidate)
         raw = self.git(self.critic,'diff','--no-ext-diff','--name-only','-z',candidate['base']+'...'+candidate['head'])
         files = [x for x in raw.split('\0') if x]
-        source_opt_in = is_source_repository(self.root) and bool(self.c.get('governed_source_paths')) and self.c.get('risk_tier') in {3, 'Tier 3'}
+        source_opt_in = is_source_repository(self.worker) and bool(self.c.get('governed_source_paths')) and self.c.get('risk_tier') in {3, 'Tier 3'}
         require(files and all(safe_path(x) and (not protected(x) or (source_opt_in and governed_path(x, self.c['governed_source_paths']))) for x in files),
                 'Protected governance or unsafe/empty candidate; separate human review required')
         return files
@@ -252,8 +253,9 @@ class HostDriver:
             '--model',self.c['models'][role], '--cd',str(self.critic if role == 'critic' else self.worker),
             '--output-schema',str(self.root / f'.agentic/review-loop/{role}-result.schema.json'),
             '--output-last-message',str(output),'--json','-']
+        cli_sandbox = 'read-only' if role == 'critic' else 'workspace-write'
         (run / 'effective-config.json').write_text(json.dumps({'model': self.c['models'][role], 'reasoning_effort': effort,
-            'sandbox': overrides.get('windows.sandbox', 'read-only' if role == 'critic' else 'workspace-write'),
+            'sandbox': cli_sandbox, 'cli_sandbox': cli_sandbox,
             'codex_config_overrides': overrides}, sort_keys=True), encoding='utf-8')
         self.run('codex',args,stdin=prompt,timeout=self.c['agent_timeout_seconds'],log=run/'codex.jsonl')
         require(output.is_file() and output.stat().st_size <= 1024 * 1024, 'Agent output missing or too large')

@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from jsonschema import Draft202012Validator
 
 from agentic import ValidationError
 from agentic.canonical import sha256
@@ -421,6 +422,33 @@ class HostTests(unittest.TestCase):
         self.value = deepcopy(original); self.value['qualification']['sandbox_verified']=False
         with self.assertRaises(ValidationError): self.config()
 
+    def test_source_allowlist_is_bound_to_candidate_checkout(self):
+        candidate = self.base/'worker'
+        (candidate/'MANIFEST.json').write_text('{}')
+        (candidate/'.agentic/lib/agentic').mkdir(parents=True)
+        (candidate/'.agentic/SPECIFICATION.md').write_text('source marker')
+        self.value.update(allowed_paths=['.agentic/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
+        self.path.write_text(json.dumps(self.value))
+        self.assertEqual(load_config(self.path, self.base/'runtime')['allowed_paths'], ['.agentic/a.py'])
+        (candidate/'MANIFEST.json').unlink()
+        self.path.write_text(json.dumps(self.value))
+        with self.assertRaisesRegex(ValidationError, 'protected'):
+            load_config(self.path, self.base/'runtime')
+
+    def test_strict_structured_output_schemas_require_all_declared_properties(self):
+        def check(schema):
+            if isinstance(schema, dict):
+                if schema.get('type') == 'object':
+                    self.assertEqual(set(schema['properties']), set(schema['required']))
+                    self.assertFalse(schema['additionalProperties'])
+                for value in schema.values(): check(value)
+            elif isinstance(schema, list):
+                for value in schema: check(value)
+        for name in ('critic-result.schema.json', 'worker-result.schema.json'):
+            schema = json.loads((ROOT/'.agentic/review-loop'/name).read_text())
+            check(schema)
+            Draft202012Validator.check_schema(schema)
+
     def test_executable_and_contract_pin_tampering_rejected(self):
         self.value['executables']['codex']['sha256'] = '0'*64
         with self.assertRaises(ValidationError): self.config()
@@ -434,6 +462,9 @@ class HostTests(unittest.TestCase):
         with self.assertRaises(ValidationError): driver.run('git',['-c','raise SystemExit(3)'])
 
     def test_codex_invocation_uses_fresh_sandboxed_context_and_structured_output(self):
+        self.value['reasoning_effort'] = {'critic':'ultra'}
+        self.value['approved_model_effort_pairs'] = {'fixture-critic':['ultra']}
+        self.value['codex_config_overrides'] = {'windows.sandbox':'elevated'}
         driver = HostDriver(self.config(),ROOT)
         captured = []
         def run(name,args,**kwargs):
@@ -447,8 +478,43 @@ class HostTests(unittest.TestCase):
         self.assertIn('--ephemeral',command)
         self.assertIn('read-only',command)
         self.assertIn('approval_policy="never"',command)
+        self.assertIn('model_reasoning_effort=ultra',command)
+        self.assertIn('windows.sandbox="elevated"',command)
         self.assertNotIn('resume',command)
         self.assertFalse(any('bypass' in x for x in command))
+        effective = json.loads((self.base/'state/runs/fixture-review/effective-config.json').read_text())
+        self.assertEqual(effective['sandbox'], 'read-only')
+        self.assertEqual(effective['cli_sandbox'], 'read-only')
+        self.assertEqual(effective['codex_config_overrides']['windows.sandbox'], 'elevated')
+
+    def test_reasoning_effort_must_be_an_approved_pair_and_unknown_override_is_refused(self):
+        self.value['reasoning_effort'] = {'critic':'minimal'}
+        self.value['approved_model_effort_pairs'] = {'fixture-critic':['max', 'ultra']}
+        with self.assertRaisesRegex(ValidationError, 'approved model/effort pair'):
+            self.config()
+        self.value['reasoning_effort'] = {'critic':'ultra'}
+        self.value['codex_config_overrides'] = {'model.temperature':'0'}
+        with self.assertRaisesRegex(ValidationError, 'Unknown or invalid'):
+            self.config()
+
+    def test_absent_new_config_fields_preserve_legacy_invocation(self):
+        self.value.pop('reasoning_effort')
+        self.value.pop('approved_model_effort_pairs')
+        self.value.pop('codex_config_overrides')
+        driver = HostDriver(self.config(),ROOT)
+        captured = []
+        def run(name,args,**kwargs):
+            captured.append(args)
+            output = Path(args[args.index('--output-last-message')+1])
+            output.write_text(json.dumps({'candidate':CANDIDATE,'verdict':'APPROVE','reviewed_files':['src/a.py'],'findings':[],'summary':'Fixture only'}))
+            return ''
+        driver.run = run
+        driver.agent('critic',CANDIDATE,[],'fixture-legacy',['src/a.py'])
+        self.assertNotIn('model_reasoning_effort', ' '.join(captured[0]))
+        effective = json.loads((self.base/'state/runs/fixture-legacy/effective-config.json').read_text())
+        self.assertIsNone(effective['reasoning_effort'])
+        self.assertEqual(effective['sandbox'], 'read-only')
+        self.assertEqual(effective['codex_config_overrides'], {})
 
     def test_github_snapshot_rejects_fork_retarget_and_wrong_identity(self):
         driver = HostDriver(self.config(),ROOT)
