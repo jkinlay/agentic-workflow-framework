@@ -1,6 +1,6 @@
 # Release publication
 
-Version 1.9.3. Publication is an owner-controlled operation from the exact clean commit being tagged.
+Version 1.9.4. Publication is an owner-controlled operation from the exact clean commit being tagged.
 
 ## Preconditions
 

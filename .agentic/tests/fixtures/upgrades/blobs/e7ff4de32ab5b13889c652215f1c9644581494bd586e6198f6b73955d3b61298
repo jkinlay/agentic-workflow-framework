@@ -1,0 +1,778 @@
+"""Host preflight: name the Windows hazards before they bite. Never blocks INSTALLED.
+
+Each row is PASS, WARN, SKIP or N_A with a remedy line. Rows are observations
+of this host; they grant nothing and are recorded in the adoption PR.
+"""
+from __future__ import annotations
+import configparser
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import tempfile
+import threading
+import time
+import tomllib
+
+from .child_process import child_env
+
+PATH_WARN_LENGTH = 180
+MANAGED_PATHS = ("/.agentic/**", "/AGENTS.md", "/.github/PULL_REQUEST_TEMPLATE.md")
+ROUTE_OBSERVATION_DEFAULT_DAYS = 30
+MAX_DIAGNOSTIC_CHARS = 2048
+MAX_CAPTURE_BYTES = 4096
+HOST_COMMAND_TIMEOUT_SECONDS = 30
+EXECUTION_POLICY_PRECEDENCE = ("MachinePolicy", "UserPolicy", "Process", "CurrentUser", "LocalMachine")
+EXECUTION_POLICY_SCOPES = set(EXECUTION_POLICY_PRECEDENCE)
+EXECUTION_POLICIES = {"Undefined", "Restricted", "AllSigned", "RemoteSigned", "Unrestricted", "Bypass", "Default"}
+
+
+def row(check, status, detail, remedy=""):
+    return {"check": check, "status": status, "detail": detail, "remedy": remedy}
+
+
+def _bounded(value):
+    value = (value or "").strip()
+    return value[:MAX_DIAGNOSTIC_CHARS]
+
+
+def _nonzero_category(output):
+    lowered = output.casefold()
+    if "module could not be loaded" in lowered or "couldnotautoloadmatchingmodule" in lowered:
+        return "MODULE_LOAD_FAILURE"
+    if "access is denied" in lowered or "permission denied" in lowered:
+        return "ACCESS_DENIED"
+    return "NONZERO_EXIT"
+
+
+def _drain_bounded(stream, captured, state):
+    """Drain a child pipe without retaining more than MAX_CAPTURE_BYTES."""
+    try:
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                return
+            available = MAX_CAPTURE_BYTES - len(captured)
+            if available > 0:
+                captured.extend(chunk[:available])
+            if len(chunk) > available:
+                state["truncated"] = True
+    except (OSError, ValueError) as exc:
+        state["error"] = type(exc).__name__
+
+
+def _decode_captured(stdout, stderr, states):
+    invalid = []
+    decoded = []
+    for label, value in (("stdout", stdout), ("stderr", stderr)):
+        if not value:
+            continue
+        try:
+            text = bytes(value).decode("utf-8")
+        except UnicodeDecodeError:
+            invalid.append(label)
+            text = bytes(value).decode("utf-8", errors="replace")
+        decoded.append(text)
+    notes = []
+    truncated = [label for label in ("stdout", "stderr") if states[label]["truncated"]]
+    failures = [label + "=" + states[label]["error"] for label in ("stdout", "stderr")
+                if states[label]["error"]]
+    if invalid:
+        notes.append("invalid UTF-8 from child " + ", ".join(invalid))
+    if truncated:
+        notes.append("child " + ", ".join(truncated) + f" truncated at {MAX_CAPTURE_BYTES} bytes")
+    if failures:
+        notes.append("child output capture failed: " + ", ".join(failures))
+    observed = "\n".join(decoded)
+    output = _bounded("; ".join(notes) + (("\n" + observed) if notes and observed else observed))
+    return observed, output, bool(invalid), bool(truncated), bool(failures)
+
+
+class _PosixProcessTree:
+    def __init__(self, process):
+        self.process = process
+        self.process_group = process.pid
+
+    def terminate_and_wait(self, timeout):
+        errors = []
+        deadline = time.monotonic() + timeout
+        try:
+            os.killpg(self.process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            errors.append("tree_kill:" + type(exc).__name__)
+        try:
+            if self.process.poll() is None:
+                self.process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            errors.append("tree_wait:PROCESS_DID_NOT_EXIT")
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append("tree_wait:" + type(exc).__name__)
+        # Reaping the group leader before this probe avoids mistaking its zombie
+        # for a live descendant. killpg(..., 0) then proves the group is absent.
+        while True:
+            try:
+                os.killpg(self.process_group, 0)
+            except ProcessLookupError:
+                break
+            except OSError as exc:
+                errors.append("tree_wait:" + type(exc).__name__)
+                break
+            if time.monotonic() >= deadline:
+                errors.append("tree_wait:PROCESS_GROUP_DID_NOT_EXIT")
+                break
+            time.sleep(.01)
+        return errors
+
+
+class _WindowsJob:
+    """Kill-on-close Job Object assigned before a suspended child can spawn."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in
+                        ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                         "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BasicLimits),
+                        ("IoInfo", IoCounters),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        class Accounting(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_int64) for name in
+                        ("TotalUserTime", "TotalKernelTime", "ThisPeriodTotalUserTime",
+                         "ThisPeriodTotalKernelTime")] + [
+                        ("TotalPageFaultCount", wintypes.DWORD),
+                        ("TotalProcesses", wintypes.DWORD),
+                        ("ActiveProcesses", wintypes.DWORD),
+                        ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                      ctypes.c_void_p, wintypes.DWORD]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                        ctypes.c_void_p, wintypes.DWORD,
+                                                        ctypes.c_void_p]
+        kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        self._ctypes = ctypes
+        self._kernel32 = kernel32
+        self._Accounting = Accounting
+        self.handle = kernel32.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+        limits = ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            error = ctypes.get_last_error()
+            cleanup_errors = []
+            if not kernel32.CloseHandle(self.handle):
+                cleanup_errors.append("job_close:WinError" + str(ctypes.get_last_error()))
+            self.handle = None
+            failure = OSError(error, "SetInformationJobObject failed")
+            failure.cleanup_errors = cleanup_errors
+            raise failure
+
+    def assign_and_resume(self, process):
+        ctypes = self._ctypes
+        if not self._kernel32.AssignProcessToJobObject(self.handle, int(process._handle)):
+            raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject failed")
+        ntdll = ctypes.WinDLL("ntdll")
+        ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+        ntdll.NtResumeProcess.restype = ctypes.c_long
+        status = ntdll.NtResumeProcess(int(process._handle))
+        if status != 0:
+            raise OSError(status, "NtResumeProcess failed")
+
+    def terminate_and_wait(self, timeout):
+        errors = []
+        if self.handle is None:
+            return ["job_handle:UNAVAILABLE"]
+        try:
+            if not self._kernel32.TerminateJobObject(self.handle, 1):
+                errors.append("tree_kill:WinError" + str(self._ctypes.get_last_error()))
+            deadline = time.monotonic() + timeout
+            while True:
+                accounting = self._Accounting()
+                if not self._kernel32.QueryInformationJobObject(
+                        self.handle, 1, self._ctypes.byref(accounting),
+                        self._ctypes.sizeof(accounting), None):
+                    errors.append("tree_wait:WinError" + str(self._ctypes.get_last_error()))
+                    break
+                if accounting.ActiveProcesses == 0:
+                    break
+                if time.monotonic() >= deadline:
+                    errors.append("tree_wait:PROCESS_TREE_DID_NOT_EXIT")
+                    break
+                time.sleep(.01)
+        finally:
+            if not self._kernel32.CloseHandle(self.handle):
+                errors.append("job_close:WinError" + str(self._ctypes.get_last_error()))
+            self.handle = None
+        return errors
+
+
+class _SpawnSetupError(Exception):
+    def __init__(self, original, cleanup_errors):
+        super().__init__(str(original))
+        self.original = original
+        self.cleanup_errors = cleanup_errors
+
+
+def _spawn_tree(command, **kwargs):
+    environment = kwargs.pop("env", None)
+    if os.name == "nt":
+        job = None
+        process = None
+        try:
+            job = _WindowsJob()
+            flags = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200) |
+                     getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) | 0x00000004)
+            process = subprocess.Popen(
+                command, creationflags=flags, env=child_env(environment), **kwargs)
+            job.assign_and_resume(process)
+            return process, job
+        except BaseException as original:
+            cleanup_errors = list(getattr(original, "cleanup_errors", []))
+            if job is not None:
+                try:
+                    cleanup_errors.extend(job.terminate_and_wait(2))
+                except BaseException as exc:
+                    cleanup_errors.append("job_cleanup:" + type(exc).__name__)
+            if process is not None:
+                try:
+                    alive = process.poll() is None
+                except BaseException as exc:
+                    cleanup_errors.append("poll:" + type(exc).__name__)
+                    alive = True
+                if alive:
+                    try:
+                        process.kill()
+                    except BaseException as exc:
+                        cleanup_errors.append("kill:" + type(exc).__name__)
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    cleanup_errors.append("wait:PROCESS_DID_NOT_EXIT")
+                except BaseException as exc:
+                    cleanup_errors.append("wait:" + type(exc).__name__)
+                for label, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except BaseException as exc:
+                            cleanup_errors.append(label + "_close:" + type(exc).__name__)
+            raise _SpawnSetupError(original, cleanup_errors) from original
+    process = subprocess.Popen(
+        command, start_new_session=True, env=child_env(environment), **kwargs)
+    return process, _PosixProcessTree(process)
+
+
+def _cancel_reader_io(thread):
+    if os.name != "nt" or thread.native_id is None:
+        return None
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.CancelSynchronousIo.argtypes = [wintypes.HANDLE]
+    kernel32.CancelSynchronousIo.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenThread(0x0001, False, thread.native_id)  # THREAD_TERMINATE
+    if not handle:
+        return "reader_open:WinError" + str(ctypes.get_last_error())
+    try:
+        if not kernel32.CancelSynchronousIo(handle):
+            error = ctypes.get_last_error()
+            if error != 1168:  # ERROR_NOT_FOUND: the blocking operation already completed.
+                return "reader_cancel:WinError" + str(error)
+    finally:
+        if not kernel32.CloseHandle(handle):
+            return "reader_handle_close:WinError" + str(ctypes.get_last_error())
+    return None
+
+
+def run(args, cwd=None):
+    """Trusted-host executables only: never a file inside the checkout or a script wrapper."""
+    from . import ValidationError
+    from .providers.github_status import host_executable
+    executable = str(args[0])
+    try:
+        executable = host_executable(args[0], Path(cwd or os.getcwd()))
+        env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+        env.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+        process, process_tree = _spawn_tree(
+            [executable, *args[1:]], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=cwd, env=child_env(env), stdin=subprocess.DEVNULL, bufsize=0)
+    except _SpawnSetupError as exc:
+        original = exc.original
+        text = f"{type(original).__name__}: {original}"
+        category = ("MISSING_EXECUTABLE" if isinstance(original, FileNotFoundError) else
+                    "RESOURCE_CLEANUP_FAILURE" if exc.cleanup_errors else "EXECUTION_UNAVAILABLE")
+        return {"executable": executable, "exit_code": None, "output": _bounded(text),
+                "diagnostic_category": category, "cleanup_errors": exc.cleanup_errors,
+                "resource_cleanup_complete": not exc.cleanup_errors}
+    except FileNotFoundError as exc:
+        return {"executable": executable, "exit_code": None, "output": _bounded(str(exc)),
+                "diagnostic_category": "MISSING_EXECUTABLE", "cleanup_errors": [],
+                "resource_cleanup_complete": True}
+    except (OSError, subprocess.SubprocessError, ValidationError) as exc:
+        text = f"{type(exc).__name__}: {exc}"
+        category = "MISSING_EXECUTABLE" if "unavailable" in str(exc).casefold() else "EXECUTION_UNAVAILABLE"
+        return {"executable": executable, "exit_code": None, "output": _bounded(text),
+                "diagnostic_category": category, "cleanup_errors": [],
+                "resource_cleanup_complete": True}
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    states = {name: {"truncated": False, "error": None} for name in captured}
+    threads = []
+    for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+        thread = threading.Thread(target=_drain_bounded, args=(stream, captured[name], states[name]), daemon=True)
+        thread.start()
+        threads.append((thread, stream, name))
+    timed_out = False
+    cleanup_errors = []
+    try:
+        process.wait(timeout=HOST_COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            process.terminate()
+        except (OSError, subprocess.SubprocessError) as exc:
+            cleanup_errors.append("terminate:" + type(exc).__name__)
+    except (OSError, subprocess.SubprocessError) as exc:
+        cleanup_errors.append("wait:" + type(exc).__name__)
+    finally:
+        cleanup_errors.extend(process_tree.terminate_and_wait(2))
+        if process.poll() is None:
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                cleanup_errors.append("wait:PROCESS_DID_NOT_EXIT")
+                try:
+                    process.kill()
+                except (OSError, subprocess.SubprocessError) as exc:
+                    cleanup_errors.append("kill:" + type(exc).__name__)
+                try:
+                    process.wait(timeout=2)
+                except (OSError, subprocess.SubprocessError) as exc:
+                    cleanup_errors.append("wait_after_kill:" + type(exc).__name__)
+        for thread, stream, name in threads:
+            thread.join(timeout=2)
+            if thread.is_alive():
+                cancellation = _cancel_reader_io(thread)
+                if cancellation:
+                    cleanup_errors.append(name + "_" + cancellation)
+            try:
+                stream.close()
+            except (OSError, ValueError) as exc:
+                cleanup_errors.append(name + "_close:" + type(exc).__name__)
+            if thread.is_alive():
+                thread.join(timeout=2)
+            if thread.is_alive():
+                cleanup_errors.append(name + "_reader:READER_JOIN_DEADLINE")
+                # Never return while a daemon reader still owns pending pipe I/O.
+                # Tree termination plus synchronous-I/O cancellation makes this
+                # final join finite on supported hosts; an OS that violates that
+                # contract must stop the probe rather than leak repeated readers.
+                thread.join()
+            elif states[name]["error"]:
+                cleanup_errors.append(name + "_reader:" + states[name]["error"])
+    observed, output, invalid, truncated, capture_failed = _decode_captured(
+        captured["stdout"], captured["stderr"], states)
+    if cleanup_errors:
+        output = _bounded("child cleanup failed: " + ", ".join(cleanup_errors) +
+                          (("\n" + output) if output else ""))
+    if timed_out:
+        category = "TIMEOUT"
+        prefix = f"child exceeded {HOST_COMMAND_TIMEOUT_SECONDS}-second deadline"
+        output = _bounded(prefix + (("\n" + output) if output else ""))
+        exit_code = None
+    elif cleanup_errors:
+        category = "RESOURCE_CLEANUP_FAILURE"
+        exit_code = process.returncode
+    elif capture_failed:
+        category = "OUTPUT_CAPTURE_FAILURE"
+        exit_code = process.returncode
+    elif invalid:
+        category = "INVALID_ENCODING"
+        exit_code = process.returncode
+    elif process.returncode == 0 and truncated:
+        category = "OUTPUT_TRUNCATED"
+        exit_code = process.returncode
+    else:
+        category = "OK" if process.returncode == 0 else _nonzero_category(observed)
+        exit_code = process.returncode
+    return {"executable": executable, "exit_code": exit_code, "output": output,
+            "diagnostic_category": category, "cleanup_errors": cleanup_errors,
+            "resource_cleanup_complete": not cleanup_errors}
+
+
+def git_config(root, key):
+    probe = run(["git", "config", "--get", key], cwd=str(root))
+    return probe, probe["output"] if probe["exit_code"] == 0 and probe["diagnostic_category"] == "OK" else None
+
+
+def _observed(row_value, probe, *, category=None):
+    row_value.update(executable=probe["executable"], exit_code=probe["exit_code"],
+                     diagnostic_category=category or probe["diagnostic_category"])
+    return row_value
+
+
+def _execution_policy_rows(output):
+    rows = {}
+    for line in output.splitlines():
+        fields = line.strip().split("=")
+        if len(fields) != 2 or fields[0] not in EXECUTION_POLICY_SCOPES or fields[1] not in EXECUTION_POLICIES or fields[0] in rows:
+            return None
+        rows[fields[0]] = fields[1]
+    return rows if set(rows) == EXECUTION_POLICY_SCOPES else None
+
+
+def _effective_execution_policy(policies):
+    for scope in EXECUTION_POLICY_PRECEDENCE:
+        if policies[scope] != "Undefined":
+            return scope, policies[scope]
+    return None, "Undefined"
+
+
+def gitattributes_coverage(root):
+    path = Path(root) / ".gitattributes"
+    if not path.is_file():
+        return False, "no root .gitattributes"
+    body = path.read_text(encoding="utf-8", errors="replace")
+    patterns = [line.split()[0] for line in body.splitlines() if line.strip() and not line.startswith("#")]
+    def covers(managed):
+        return any(p == managed or p == managed.lstrip("/") or p == "*" or p == "**" for p in patterns)
+    missing = [m for m in MANAGED_PATHS if not covers(m)]
+    return not missing, ("covered" if not missing else "uncovered managed paths: " + ", ".join(missing))
+
+
+def symlink_privilege():
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "target.txt"
+            target.write_text("x", encoding="utf-8")
+            (Path(folder) / "link").symlink_to(target)
+        return "PASS", "symbolic links can be created", ""
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314 or "1314" in str(exc):
+            return "SKIP", "Windows symlink creation privilege unavailable (WinError 1314).", "Enable Developer Mode or grant SeCreateSymbolicLinkPrivilege; tests needing links are declared skips (PLATFORM_PRIVILEGE)."
+        return "WARN", f"symlink probe failed: {type(exc).__name__}", "Inspect filesystem permissions."
+
+
+def _excludes_agentic(value):
+    if isinstance(value, str):
+        values = [item.strip() for item in value.replace("\n", ",").split(",")]
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        values = value
+    else:
+        return False
+    for item in values:
+        normalized = item.strip().replace("\\", "/").removeprefix("./").rstrip("/")
+        if normalized == ".agentic" or normalized.startswith(".agentic/"):
+            return True
+    return False
+
+
+def project_lint_scope(root):
+    """Report whether project-owned lint configuration excludes managed files."""
+    root = Path(root)
+    configured = []
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            tool = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("tool", {})
+            ruff = tool.get("ruff") if isinstance(tool, dict) else None
+            if isinstance(ruff, dict):
+                excluded = _excludes_agentic(ruff.get("exclude")) or _excludes_agentic(ruff.get("extend-exclude"))
+                configured.append(("ruff", excluded, None))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            if "[tool.ruff" in pyproject.read_text(encoding="utf-8", errors="replace"):
+                configured.append(("ruff", False, f"unreadable configuration ({type(exc).__name__})"))
+    for name in ("setup.cfg", ".flake8"):
+        path = root / name
+        if not path.is_file():
+            continue
+        parser = configparser.ConfigParser(interpolation=None)
+        try:
+            parser.read(path, encoding="utf-8")
+            section = next((item for item in parser.sections() if item.lower() == "flake8"), None)
+            if section:
+                excluded = _excludes_agentic(parser.get(section, "exclude", fallback=None)) or _excludes_agentic(parser.get(section, "extend-exclude", fallback=None))
+                configured.append((f"flake8 ({name})", excluded, None))
+        except (OSError, UnicodeError, configparser.Error) as exc:
+            if "[flake8" in path.read_text(encoding="utf-8", errors="replace").lower():
+                configured.append((f"flake8 ({name})", False, f"unreadable configuration ({type(exc).__name__})"))
+    if not configured:
+        return row("project_lint_scope", "N_A", "no root Ruff or flake8 configuration found", "")
+    missing = [name for name, excluded, _ in configured if not excluded]
+    detail = "; ".join(f"{name}: {error or ('excludes .agentic' if excluded else 'does not exclude .agentic')}"
+                       for name, excluded, error in configured)
+    if missing:
+        remedy = ('Add `extend-exclude = [".agentic"]` under `[tool.ruff]` for Ruff, '
+                  'or `extend-exclude = .agentic` under `[flake8]` for flake8.')
+        return row("project_lint_scope", "WARN", detail, remedy)
+    return row("project_lint_scope", "PASS", detail, "")
+
+
+def _configured_routes(value):
+    routes = set()
+    def visit(item):
+        if isinstance(item, dict):
+            if isinstance(item.get("model"), str) and isinstance(item.get("reasoning_effort"), str):
+                routes.add((item["model"], item["reasoning_effort"]))
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+    visit(value)
+    return routes
+
+
+def _load_json_or_yaml(path):
+    from . import ValidationError
+    from .canonical import load_yaml, loads
+    raw = path.read_bytes()
+    if raw.lstrip().startswith((b"{", b"[")):
+        try:
+            return loads(raw.decode("utf-8-sig"))
+        except ValidationError:
+            # JSON-shaped YAML with owner comments, which upgrades preserve.
+            pass
+    return load_yaml(raw)
+
+
+def route_models_observed(root, *, config=None, capabilities=None, now=None):
+    """Return the warning-only route observation row for configured routes."""
+    from . import ValidationError
+    from .canonical import timestamp
+    root = Path(root).resolve()
+    try:
+        if config is None:
+            config_path = root / ".agentic/PROJECT_CONFIG.yaml"
+            if not config_path.is_file():
+                return row("route_models_observed", "N_A", "no project routing configuration found", "")
+            config = _load_json_or_yaml(config_path)
+        execution = config.get("execution", {})
+        routes = _configured_routes({"roles": execution.get("roles", {}),
+                                     "model_routing": execution.get("model_routing", {})})
+        operating = root / "OPERATING_CONFIG.yaml"
+        if operating.is_file():
+            routes |= _configured_routes(_load_json_or_yaml(operating))
+        settings = execution.get("route_capabilities", {})
+        max_age_days = settings.get("max_age_days", ROUTE_OBSERVATION_DEFAULT_DAYS)
+        if type(max_age_days) is not int or max_age_days < 1:
+            raise ValidationError("execution.route_capabilities.max_age_days must be an integer >= 1")
+        if capabilities is None:
+            relative = settings.get("observation_path", ".agentic/route-capabilities.json")
+            if not isinstance(relative, str) or not relative:
+                raise ValidationError("route capability observation_path must be a nonempty relative path")
+            path = (root / relative).resolve()
+            if not path.is_relative_to(root):
+                raise ValidationError("route capability observation_path escapes the project root")
+            if not path.is_file():
+                names = ", ".join(sorted(model + "/" + effort for model, effort in routes)) or "none"
+                return row("route_models_observed", "WARN", "observation record missing; configured routes: " + names,
+                           "Record successful probes/refusals with host provenance at " + relative + ".")
+            capabilities = _load_json_or_yaml(path)
+        if not isinstance(capabilities, dict) or not isinstance(capabilities.get("models"), dict):
+            raise ValidationError("route capability record requires a models object")
+        observed, refused, stale, unproven = set(), set(), set(), set()
+        reference_now = timestamp(now) if now else datetime.now(timezone.utc)
+        for model, value in capabilities["models"].items():
+            provenance = value if isinstance(value, dict) else capabilities
+            efforts = value.get("reasoning_efforts", []) if isinstance(value, dict) else value
+            status = value.get("status", "observed") if isinstance(value, dict) else "observed"
+            required = ("host_id", "host_software", "host_software_version", "method", "observed_at")
+            if not all(isinstance(provenance.get(field), str) and provenance[field].strip() for field in required):
+                unproven.add(model)
+                continue
+            if provenance["method"] not in {"successful_probe", "recorded_refusal"}:
+                unproven.add(model)
+                continue
+            observed_at = timestamp(provenance["observed_at"])
+            if (reference_now - observed_at).total_seconds() > max_age_days * 86400 or observed_at > reference_now:
+                stale.add(model)
+            if status == "refused" or provenance["method"] == "recorded_refusal":
+                refused.add(model)
+            elif status == "observed" and isinstance(efforts, list) and all(isinstance(e, str) for e in efforts):
+                observed.update((model, effort) for effort in efforts)
+            else:
+                unproven.add(model)
+        missing = sorted(route for route in routes if route not in observed and route[0] not in refused)
+        refused_routes = sorted(route for route in routes if route[0] in refused)
+        stale_routes = sorted(route for route in routes if route[0] in stale)
+        unproven_routes = sorted(route for route in routes if route[0] in unproven)
+        problems = []
+        for label, values in (("missing", missing), ("refused", refused_routes),
+                              ("stale", stale_routes), ("unproven", unproven_routes)):
+            if values:
+                problems.append(label + ": " + ", ".join(model + "/" + effort for model, effort in values))
+        if problems:
+            return row("route_models_observed", "WARN", "; ".join(problems),
+                       "Probe configured routes on the actual host and refresh the provenance record; listed capabilities are claims until observed.")
+        detail = f"{len(routes)} configured model/effort route(s) freshly observed (max age {max_age_days} days)"
+        return row("route_models_observed", "PASS", detail, "")
+    except (OSError, UnicodeError, ValueError, KeyError, ValidationError, json.JSONDecodeError) as exc:
+        return row("route_models_observed", "WARN", "observation record invalid: " + str(exc),
+                   "Replace it with a current host-provenance record; this warning never blocks installation.")
+
+
+def _provider_identity_rows(root, config, github_observation, jira_connections):
+    from .provider_identity import (ProviderIdentityError, github_identity_preflight,
+                                    jira_identity_preflight)
+    if config is None:
+        path = Path(root) / ".agentic/PROJECT_CONFIG.yaml"
+        if not path.is_file():
+            return [row("github_identity", "N_A", "project configuration unavailable", ""),
+                    row("jira_identity", "N_A", "project configuration unavailable", "")]
+        config = _load_json_or_yaml(path)
+    rows = []
+    for name, observation, check in (
+            ("github_identity", github_observation,
+             lambda: github_identity_preflight(config, github_observation)),
+            ("jira_identity", jira_connections,
+             lambda: jira_identity_preflight(config, jira_connections))):
+        if name == "jira_identity" and config.get("jira", {}).get("enabled", True) is False:
+            rows.append(row(name, "N_A", "Jira is disabled", ""))
+            continue
+        if observation is None:
+            rows.append(row(name, "WARN", "IDENTITY_UNOBSERVED: no trusted host observation supplied",
+                            "Observe and bind the intended immutable provider identity before repository or Jira changes."))
+            continue
+        try:
+            result = check()
+            observed = result["observed"]
+            if name == "github_identity":
+                detail = (f"actor_id={observed['actor_id']}; login={observed['actor_login']}; "
+                          f"repository_id={observed['repository_id']}; protocol={observed['protocol']}")
+            else:
+                detail = (f"cloud_id={observed['cloud_id']}; account_id={observed['account_id']}; "
+                          f"project_id={observed['project_id']}; browse=true")
+            rows.append(row(name, "PASS", detail, ""))
+        except ProviderIdentityError as exc:
+            rows.append(row(name, "WARN", exc.code + ": " + str(exc),
+                            "Select or bind the intended account/resource; AWF never switches accounts automatically."))
+    return rows
+
+
+def preflight(root, *, platform=None, config=None, github_observation=None, jira_connections=None):
+    root = Path(root)
+    windows = (platform or os.name) == "nt"
+    rows = []
+    depth = len(str(root.resolve()))
+    rows.append(row("checkout_path_length", "WARN" if depth > PATH_WARN_LENGTH else "PASS",
+                    f"{depth} characters", "Relocate the checkout below a shorter path; nested evidence copies exceeded 260 characters on PR #11." if depth > PATH_WARN_LENGTH else ""))
+    rows.append(project_lint_scope(root))
+    rows.append(route_models_observed(root))
+    rows.extend(_provider_identity_rows(root, config, github_observation, jira_connections))
+    if windows:
+        longpaths_probe, longpaths = git_config(root, "core.longpaths")
+        longpaths_ok = longpaths_probe["diagnostic_category"] == "OK" and longpaths == "true"
+        rows.append(_observed(row("core.longpaths", "PASS" if longpaths_ok else "WARN",
+                                  f"core.longpaths={longpaths or 'unobserved'}",
+                                  "" if longpaths_ok else "git config --system core.longpaths true (also add the CI step)."),
+                              longpaths_probe))
+        policy_probe = run(["powershell", "-NoProfile", "-Command", "Get-ExecutionPolicy -List | ForEach-Object { $_.Scope.ToString() + '=' + $_.ExecutionPolicy.ToString() }"])
+        output = policy_probe["output"]
+        if policy_probe["exit_code"] is None:
+            rows.append(_observed(row("powershell_execution_policy", "SKIP", output,
+                                      "PowerShell not available or timed out; fixture launchers using .ps1 may fail."), policy_probe))
+        elif policy_probe["exit_code"] != 0 or policy_probe["diagnostic_category"] != "OK":
+            rows.append(_observed(row("powershell_execution_policy", "WARN", output or "PowerShell returned a nonzero exit",
+                                      "Resolve the PowerShell host/module error, then rerun preflight."), policy_probe))
+        else:
+            policies = _execution_policy_rows(output)
+            if policies is None:
+                rows.append(_observed(row("powershell_execution_policy", "WARN", "PowerShell returned an unexpected execution-policy row shape",
+                                          "Run Get-ExecutionPolicy -List and resolve malformed or incomplete output."),
+                                      policy_probe, category="INVALID_OUTPUT"))
+            else:
+                effective_scope, effective_policy = _effective_execution_policy(policies)
+                restricted = effective_policy in {"Restricted", "AllSigned", "Default", "Undefined"}
+                if effective_scope in {"MachinePolicy", "UserPolicy"}:
+                    remedy = "Resolve the effective Group Policy execution policy with the administrator; lower scopes cannot override it."
+                else:
+                    remedy = "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned, or launch fixtures with -ExecutionPolicy Bypass."
+                detail = output.replace("\n", "; ") + "; effective=" + (effective_scope or "platform-default") + "=" + effective_policy
+                rows.append(_observed(row("powershell_execution_policy", "WARN" if restricted else "PASS", detail,
+                                          remedy if restricted else ""),
+                                      policy_probe))
+        status, detail, remedy = symlink_privilege()
+        rows.append(row("symlink_privilege", status, detail, remedy))
+        autocrlf_probe, autocrlf = git_config(root, "core.autocrlf")
+        covered, detail = gitattributes_coverage(root)
+        line_endings_ok = autocrlf_probe["diagnostic_category"] == "OK" and covered
+        rows.append(_observed(row("line_endings", "PASS" if line_endings_ok else "WARN",
+                                  f"core.autocrlf={autocrlf or 'unobserved'}; .gitattributes {detail}",
+                                  "" if line_endings_ok else "Observe core.autocrlf and merge .agentic/templates/installed.gitattributes into the root .gitattributes so manifest-bound bytes survive checkout."),
+                              autocrlf_probe))
+    else:
+        for name in ("core.longpaths", "powershell_execution_policy", "symlink_privilege", "line_endings"):
+            rows.append(row(name, "N_A", "not a Windows host", ""))
+    attributes = Path(root) / ".gitattributes"
+    if attributes.is_file() and "filter=lfs" in attributes.read_text(encoding="utf-8", errors="replace"):
+        lfs_probe = run(["git", "lfs", "version"])
+        lfs_ok = lfs_probe["diagnostic_category"] == "OK"
+        rows.append(_observed(row("git_lfs", "PASS" if lfs_ok else "WARN",
+                                  lfs_probe["output"] if lfs_ok else "git lfs observation failed",
+                                  "" if lfs_ok else "Install Git LFS; .gitattributes names an lfs filter."), lfs_probe))
+    else:
+        rows.append(row("git_lfs", "N_A", ".gitattributes names no lfs filter", ""))
+    warnings = [r for r in rows if r["status"] == "WARN"]
+    return {"format": "awf-host-preflight-1", "platform": "windows" if windows else "posix", "rows": rows,
+            "warnings": len(warnings), "blocks_installation": False,
+            "next_action": ("; ".join(f"{r['check']}: {r['remedy']}" for r in warnings) if warnings else None)}
+
+
+def render_markdown(report):
+    lines = ["## Host preflight", "", f"Platform: {report['platform']}. Rows never block INSTALLED; WARN rows are the next action.", "",
+             "| Check | Status | Observed | Remedy |", "| --- | --- | --- | --- |"]
+    for r in report["rows"]:
+        detail = _markdown_cell(r["detail"])
+        remedy = _markdown_cell(r["remedy"]) if r["remedy"] else "—"
+        lines.append(f"| {r['check']} | {r['status']} | {detail} | {remedy} |")
+    return "\n".join(lines) + "\n"
+
+
+def _markdown_cell(value):
+    """Render repository-controlled diagnostics as one inert table cell."""
+    normalized = str(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    # CommonMark recognizes ASCII punctuation for links, images, code spans,
+    # escapes, emphasis, raw HTML and extensions such as bare URLs. Emit every
+    # punctuation character as an atomic numeric character reference so the
+    # rendered text is unchanged but none of those delimiters can be parsed.
+    return "".join(character if character.isalnum() or character == " "
+                   else f"&#{ord(character)};" for character in normalized)

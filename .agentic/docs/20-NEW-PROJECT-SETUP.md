@@ -1,6 +1,6 @@
 # Adoption guide
 
-Version 1.9.3. Read [the specification](../SPECIFICATION.md) and project-owned instructions.
+Version 1.9.4. Read [the specification](../SPECIFICATION.md) and project-owned instructions.
 
 | Stage | Preconditions and outcome |
 | --- | --- |
@@ -18,7 +18,7 @@ python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 
 python -B scripts/bootstrap_project.py --dest TARGET --expected-manifest-sha256 TRUSTED_SHA256 --runtime-wheelhouse ABS_VERIFIED_WHEELHOUSE --codeowner '@handle' --on-conflict backup
 ```
 
-New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organization/team'` overrides new entries. Preserve existing CODEOWNERS/reviewers; verify access and eligible review. Optional `--rules-observation ABS_OBSERVATION.json --expected-rules-observation-sha256 OBSERVATION_PIN` supplies rules evidence; `--default-branch EXPECTED` avoids assuming `main`; observed conflicts reject. Fresh install needs no predecessor. Verified 1.8.3/1.8.9/1.9.1/1.9.2 use `--mode upgrade`; see direct migration (`MIGRATION-to-v1.9.3.md` in the release source). Preserve backups/journals; recover unfinished installation before use.
+New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organization/team'` overrides new entries. Preserve existing CODEOWNERS/reviewers; verify access and eligible review. Optional `--rules-observation ABS_OBSERVATION.json --expected-rules-observation-sha256 OBSERVATION_PIN` supplies rules evidence; `--default-branch EXPECTED` avoids assuming `main`; observed conflicts reject. Fresh install needs no predecessor. Verified 1.8.3/1.8.9/1.9.1/1.9.2 use `--mode upgrade`; see direct migration (`MIGRATION-to-v1.9.4.md` in the release source). Preserve backups/journals; recover unfinished installation before use.
 
 5. Bootstrap derives fresh configuration from observed target metadata; existing project values remain preserved, not silently replaced. Review its derivation and residue report:
 
@@ -31,7 +31,7 @@ New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organizat
 | Test command | Prefer an npm test script, then evident pytest markers; otherwise supply `--test-command COMMAND`. Run the selected project tests separately. |
 | Jira | Supply both `--jira-site URL` and `--jira-key KEY`. Neither sets `jira.enabled: false`, with null site/key, for a fresh project. Preserve existing Jira configuration. |
 
-Keep `template.expected_workflow_version: 1.9.3`, real paths, scope and protected limits. Bootstrap preserves root operating choices or seeds three worker streams and one shared independent critic within ceiling six (five slots including the controller). Disabled/unscoped Jira permits no ticket mutations; use provisional local records.
+Keep `template.expected_workflow_version: 1.9.4`, real paths, scope and protected limits. Bootstrap preserves root operating choices or seeds three worker streams and one shared independent critic within ceiling six (five slots including the controller). Disabled/unscoped Jira permits no ticket mutations; use provisional local records.
 
 Existing projects get `governance_proposal.adoption_pr_section` with exact current/proposed ceiling and reviewer allocation/count. Ordinary upgrades preserve both. Explicit `--propose-operating-capacity` stages ceiling six (higher preserved) and retains the current reviewer allocation for owner review/merge; `--dry-run` writes nothing. Other governance/operating choices remain unchanged.
 

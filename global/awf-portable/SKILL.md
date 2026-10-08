@@ -1,6 +1,6 @@
 ---
 name: awf
-description: Verify and adopt AWF releases; guide project work with bounded model routing, independent review and evidence accounting. Includes AWF 1.9.3.
+description: Verify and adopt AWF releases; guide project work with bounded model routing, independent review and evidence accounting. Includes AWF 1.9.4.
 metadata:
   publisher: Jonathan Kinlay
   license: Apache-2.0
@@ -18,10 +18,10 @@ Preserve configuration and derive only supported values; report exact unresolved
 
 Live external review, scheduled amendments and agent pushes to repositories holding secrets require observed rules and the selected mode's existing qualification; relevant execution needs configured CI and actual trusted merge owners. Where that applies, prepare local changes/body for owner publication or observe rules first. Otherwise continue through authorized PR tools. Never invent a PR or apply server rules through bootstrap.
 
-Verify and prepare [bundled source](assets/agentic-workflow-template-v1.9.3.zip) against [pins](assets/release.json):
+Verify and prepare [bundled source](assets/agentic-workflow-template-v1.9.4.zip) against [pins](assets/release.json):
 
 ```text
-python -B PATH_TO_SKILL/scripts/prepare_release.py --cache-dir ABSOLUTE_EXTERNAL_CACHE --version 1.9.3
+python -B PATH_TO_SKILL/scripts/prepare_release.py --cache-dir ABSOLUTE_EXTERNAL_CACHE --version 1.9.4
 ```
 
 Use Python 3.11+ and a separate cache with an existing parent. Preserve differing/incomplete caches. Use the catalog. Read verified AGENTS, specification and configuration, then the relevant runbook.

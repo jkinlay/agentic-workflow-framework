@@ -1,6 +1,6 @@
 # Publication readiness before dispatch
 
-Version 1.9.3. `agentic.publication_readiness.publication_readiness` checks the
+Version 1.9.4. `agentic.publication_readiness.publication_readiness` checks the
 completion path for one assigned ticket and feature branch. The six checks are
 authentication, remote reachability, branch eligibility, applicable rules, push
 permission, and draft-PR creation permission. Each result carries its precise

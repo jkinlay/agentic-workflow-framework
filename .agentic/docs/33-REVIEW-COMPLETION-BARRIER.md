@@ -1,6 +1,6 @@
 # Review completion barrier
 
-Version 1.9.3. Final review aggregation and provider submission use
+Version 1.9.4. Final review aggregation and provider submission use
 `ReviewCompletionStore` in protected controller state outside candidate and
 reviewer worktrees. This ledger records coordination evidence; it grants no
 merge, Jira, dispatch, or provider authority.

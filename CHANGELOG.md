@@ -1,22 +1,23 @@
 # Change history
 
+## 1.9.4 — 8 October 2026
+
+AWF-15 (#56) binds closeout records to the merge SHA. AWF-16 adds tier review caps, escalation and Tier 3 owner review. The 1.9.3 → 1.9.4 upgrade adds the `tier3_review` review-tier defaults through the 1.9.4 migration step; this AWF-16 behavior is provisional until PR #64 merges. AWF-29 fixes source protected-path refusal, critic-schema compatibility, and sandbox/effort pass-through. AWF-30 documents the ticket-to-first-draft-PR worker path.
+
+### Known issues (1.9.5)
+
+- AWF-24 (#52): AC42 Windows fixes moved to 1.9.5; the caveat still applies.
+- AWF-31: review-loop operator qualification flags.
+- AWF-32: missing continuous-controller adapter.
+- AWF-33: sessions can pick up an older global awf skill.
+- AWF-34: Publication scan can never PASS on a repo with an existing tracked file over 32 MB: add a recorded allowance or baseline.
+- AWF-35: self_test fails on project-owned scripts not listed in install-pinned .agentic/launch-surfaces.json.
+
+Known issues: AWF-34 and AWF-35 (accepted for 1.9.4 installs, fix in 1.9.5).
+
 ## 1.9.3 — 8 October 2026
 
-Adds Git-format-aware `tested_tree`; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match.
-
-Defaults: workers use `gpt-5.6-luna` / medium (simple work: low); the shared critic/adversarial handler, controller and specialist use `gpt-5.6-sol` / high, also the review/risk floor. Escalation: `gpt-5.6-terra` / high, then `gpt-5.6-sol` / high. Five slots cover three workers, critic and controller. Caps, adopted configurations and legacy models/routes, including `gpt-6-*`, remain accepted. New adoptions use a 16-run ticket ceiling; upgrades retain theirs. Release trust binds host receipts and verified archives; ACTIVE requires fresh default-branch status.
-
-Adds outcome templates; verdicts remain separate. Adds byte-verified install/upgrade; unsafe evidence fails closed.
-
-Scans messages, patches, files and PR text; findings block, and receipts bind base/head/body. An ignored mapping supplements built-in detectors.
-
-Adds one-commit unpublished-branch rewrite with tree preservation, replacement scanning and ref-reachability checks; published evidence is refused.
-
-Hardens activation with versioned merge identity, PR/base/head cross-checks, Git-object checkout comparison and strict ACTIVE exit.
-
-Adds K8-K11 Windows diagnostics, preflight, safe encoding and rollback-safe runtimes from pinned offline wheels.
-
-Adds environment exclusions, launch inventory, provider identity gates, Jira binding proposals, publication readiness and resumable owner-publication handoffs.
+Adds Git-format-aware `tested_tree`, bounded model routing, byte-verified install/upgrade, publication scanning and strict release trust. Unsafe evidence fails closed; publisher tree equality and the existing review, activation, Windows, provider, Jira and handoff safeguards remain in force.
 
 Upgrades tolerate a venv `lib64` → `lib` link (#54). `gh release` binds `--repo`; origin is validated before tagging (#55).
 
@@ -33,7 +34,7 @@ Upgrades tolerate a venv `lib64` → `lib` link (#54). `gh release` binds `--rep
 
 ## 1.9.2 — 23 September 2026
 
-Adds token-only budgets, higher new-project caps, publisher commits for sandboxes unable to write Git metadata, lint-scope preflight and portable skills. Child processes exclude provider API keys. Release builds reject temp residue and forbid `.tmp-tests` links. Budgets reflect expected ticket volume and prior AWF workloads; existing project configuration remains preserved, and review, merge, reconciliation and Jira boundaries stay unchanged. No model pilot.
+Adds token-only budgets, publisher commits for metadata-limited sandboxes, lint-scope preflight and portable skills. Existing configuration and review, merge, reconciliation and Jira boundaries remain preserved. No model pilot.
 
 ## 1.9.1 — 21 September 2026
 

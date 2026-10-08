@@ -1,6 +1,6 @@
 # Publication safety
 
-Version 1.9.3. Publication is blocked unless the exact candidate history and provider text pass a history-aware scan. `git diff --check` checks whitespace only and is never evidence that content is safe to publish.
+Version 1.9.4. Publication is blocked unless the exact candidate history and provider text pass a history-aware scan. `git diff --check` checks whitespace only and is never evidence that content is safe to publish.
 
 ## Operator-local deny mapping
 

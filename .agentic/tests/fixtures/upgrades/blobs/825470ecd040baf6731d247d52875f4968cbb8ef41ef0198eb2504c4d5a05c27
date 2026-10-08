@@ -1,0 +1,21 @@
+{
+  "template_for": "private-deny-baseline-authorization",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "format": "awf-private-deny-baseline-authorization-1",
+    "candidate": {
+      "repository_id": 1,
+      "pr_number": 1,
+      "base_sha": "0000000000000000000000000000000000000000",
+      "head_sha": "0000000000000000000000000000000000000000",
+      "tree_sha": "0000000000000000000000000000000000000000",
+      "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "provider_pr_body_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "provider_pr_body_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "mapping_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "authorized_by": "UNFILLED",
+    "authorization_ref": "UNFILLED"
+  }
+}

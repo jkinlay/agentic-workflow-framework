@@ -1,0 +1,53 @@
+{
+  "candidate": {
+    "base_sha": "0000000000000000000000000000000000000000",
+    "head_sha": "0000000000000000000000000000000000000000",
+    "repository_id": 1,
+    "tree_sha": "0000000000000000000000000000000000000000"
+  },
+  "engine": "python",
+  "determinism": {
+    "retry_limit": 0,
+    "seed": 0
+  },
+  "format": "awf-heavy-validation-plan-4",
+  "isolation": {
+    "filesystem": "WORKTREE",
+    "network": "HOST_POLICY",
+    "process_tree": "REQUIRED"
+  },
+  "target_environment": {
+    "strip_extra": [],
+    "values": {}
+  },
+  "partitions": [
+    {
+      "accepted_exit_codes": [
+        0
+      ],
+      "argv": [
+        "/replace/python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-p",
+        "test_partition_01.py"
+      ],
+      "executable": {
+        "path": "/replace/python",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "framework": "python-unittest",
+      "name": "partition-01",
+      "resources": {},
+      "timeout_seconds": 900
+    }
+  ],
+  "requested_parallelism": 2,
+  "required_resources": [],
+  "resource_class": "heavy",
+  "working_directory": "/replace/repository",
+  "workload_id": "reviewed-heavy-validation"
+}
