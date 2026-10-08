@@ -559,7 +559,8 @@
     "risk_tier": {
       "enum": [
         1,
-        2
+        2,
+        3
       ]
     },
     "tier_justification": {

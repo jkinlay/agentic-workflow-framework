@@ -1,0 +1,71 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict",
+    "tier",
+    "round",
+    "head_sha",
+    "reviewer_id",
+    "pr_comment_url",
+    "pr_body_link",
+    "evidence",
+    "owner_review"
+  ],
+  "properties": {
+    "verdict": {
+      "enum": [
+        "PASS",
+        "P1",
+        "P2",
+        "REQUEST_CHANGES"
+      ]
+    },
+    "tier": {
+      "enum": [
+        1,
+        2,
+        3
+      ]
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "head_sha": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "reviewer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pr_comment_url": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uri"
+    },
+    "pr_body_link": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uri"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "owner_review": {
+      "type": "boolean"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:review-verdict",
+  "title": "Agentic Workflow 1.2 \u2014 review-verdict"
+}

@@ -143,6 +143,15 @@ def catalog():
             "tuple_sha256": DIGEST, "reviewer_set_sha256": DIGEST,
             "completion_snapshot_sha256": DIGEST, "aggregate_sha256": DIGEST}),
         "execution_authority": FALSE})
+    schemas["risk-classification"] = obj({
+        "tier": enum(1, 2, 3), "matched_tiers": arr(enum(1, 2, 3), 1, uniqueItems=True),
+        "evidence": obj({}, minProperties=1), "rule": text(), "risk_flags": STRINGS})
+    schemas["review-verdict"] = obj({
+        "verdict": enum("PASS", "P1", "P2", "REQUEST_CHANGES"),
+        "tier": enum(1, 2, 3), "round": integer(1), "head_sha": SHA,
+        "reviewer_id": text(), "pr_comment_url": text(format="uri"),
+        "pr_body_link": text(format="uri"), "evidence": STRINGS,
+        "owner_review": BOOL})
     stream_status = obj({"stream": text(), "state": enum("WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"),
         "ticket": nullable(text()), "actor": text(), "reason": text(), "next_action": text(),
         "resume_trigger": text(), "exact_tuple": text(), "activity": text(), "verification_gate": text(),
@@ -182,9 +191,9 @@ def catalog():
                            "tests_not_applicable_reason": nullable(text()),
                            "required_resources": STRINGS,
                            "platform_distinction": nullable(obj({"reason": text(), "regression_test_id": text()}))}),
-        "risk_flags": obj({k: BOOL for k in ["security", "schema_or_migration", "public_api", "data_loss", "concurrency", "production"]}),
+        "risk_flags": obj({k: BOOL for k in ["security", "schema_or_migration", "public_api", "data_loss", "concurrency", "production", "permissions", "release", "merge_gate", "ci_gate", "high_complexity", "high_uncertainty"]}),
         "specialist_domains": STRINGS, "disposition": enum("DRAFT", "BLOCKED", "READY"),
-        "risk_tier": enum(1, 2), "tier_justification": text(),
+        "risk_tier": enum(1, 2, 3), "tier_justification": text(),
         "closure_standard": obj({"kind": enum("FULL", "DECLARED_LIMITATIONS"),
                                  "accepted_limitations": arr(obj({"id": text(), "text": text(), "attribution": text()})),
                                  "evidence_required": STRINGS}),
@@ -194,6 +203,12 @@ def catalog():
                 "then": {"properties": {"closure_standard": {"properties": {"accepted_limitations": {"minItems": 1}}}}}}])
     schemas["ticket-contract"]["properties"]["scope"]["properties"]["evidence_paths"] = STRINGS
     schemas["ticket-contract"]["properties"]["scope"]["required"].append("evidence_paths")
+    schemas["ticket-contract"]["properties"]["risk_flags"]["required"] = [
+        key for key in schemas["ticket-contract"]["properties"]["risk_flags"]["required"]
+        if key not in {"permissions", "release", "merge_gate", "ci_gate", "high_complexity", "high_uncertainty"}]
+    schemas["ticket-contract"]["properties"]["risk_classification"] = obj({
+        "tier": enum(1, 2, 3), "matched_tiers": arr(enum(1, 2, 3), 1, uniqueItems=True),
+        "evidence": obj({}, minProperties=1), "rule": text(), "risk_flags": STRINGS})
     schemas["work-dispatch"] = bound({"contract_id": UUID, "contract_version": integer(1),
         "role": enum("worker", "amendment"), "branch": text(), "worktree_id": UUID,
         "lease": obj({"required": BOOL, "lease_id": nullable(UUID), "fencing_token": nullable(integer(1)), "expires_at": nullable(TIME)},
@@ -334,7 +349,7 @@ def catalog():
     gate_pass["properties"]["gates"]["properties"]["specialist_reviews"] = {"properties": {"result": enum("PASS", "N_A")}}
     schemas["final-gate"] = bound({"candidate": ref("candidate"), "review_submission": ref("review-submission"), "gates": gate_results,
         "record_ids": STRINGS, "required_specialist_domains": STRINGS, "residual_risks": STRINGS,
-        "risk_tier": enum(1, 2), "tier_justification": text(), "closure_standard": enum("FULL", "DECLARED_LIMITATIONS"),
+        "risk_tier": enum(1, 2, 3), "tier_justification": text(), "closure_standard": enum("FULL", "DECLARED_LIMITATIONS"),
         "accepted_findings": STRINGS,
         "conclusion": enum("READY_FOR_OWNER_AUTHORIZATION", "NOT_READY"),
         "execution_authority": FALSE, "evaluation_mode": const("offline_reference"), "expires_at": TIME},
@@ -436,8 +451,12 @@ def catalog():
         "ci": ref("ci-evidence"), "pr": ref("pr-snapshot"), "runs": arr(ref("run-attestation"), 3),
         "prior_findings": arr(FINDING), "finding_dispositions": arr(ref("finding-disposition")),
         "cap_disposition": nullable(ref("review-cap-disposition")), "publication_scan": ref("publication-scan"),
+        "tier_classification": nullable(ref("risk-classification")), "review_verdicts": arr(ref("review-verdict")),
+        "owner_review": nullable(ref("review-verdict")),
         "evidence_registry": arr(obj({"uri": text(format="uri"), "sha256": DIGEST,
             "producer_id": text(), "retained_until": TIME}), 1), "provenance_mode": const("offline_fixture")})
+    schemas["evidence-bundle"]["required"] = [key for key in schemas["evidence-bundle"]["required"]
+                                                if key not in {"tier_classification", "review_verdicts", "owner_review"}]
     role_policy = obj({"model": text(), "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
         "fallback": const("deny"), "approved_model_ids": arr(text(), 1, uniqueItems=True),
         "permission_profile": text(), "network_allowlist": STRINGS})
@@ -466,7 +485,8 @@ def catalog():
            "risk_tiers": obj({"tier1_eligible_paths": STRINGS, "tier1_excluded_paths": STRINGS,
                "tier1_review": obj({"roles": arr(enum("critic", "specialist"), 1, uniqueItems=True),
                                     "specialist_when_touching": STRINGS, "findings": const("advisory")}),
-               "tier2_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking")})}),
+               "tier2_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking")}),
+               "tier3_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking"), "max_rounds": integer(1)})}),
            "transient_retry_limit": integer(0, maximum=5), "max_run_seconds": integer(1),
            "max_tool_calls_per_run": integer(1), "max_tokens_per_ticket": integer(1),
            "max_cost_microusd_per_ticket": nullable(integer(1)), "daily_project_cost_microusd": nullable(integer(1)),
@@ -507,6 +527,8 @@ def catalog():
                             (jira, ["lifecycle_writes", "owner_closure_keywords"]),
                             (schemas["project-config"]["properties"]["validation"]["properties"]["required_ci_checks"]["items"], ["verifies_history", "local_command"])):
         container["required"] = [key for key in container["required"] if key not in keys]
+    execution["properties"]["risk_tiers"]["required"] = [key for key in execution["properties"]["risk_tiers"]["required"]
+                                                            if key != "tier3_review"]
     # Null is an explicit installation residue, rejected by semantic acceptance.
     schemas["project-config"]["properties"]["github"]["properties"]["repository_id"] = {"anyOf": [integer(1), {"type": "null"}]}
     github = schemas["project-config"]["properties"]["github"]

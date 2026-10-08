@@ -47,7 +47,13 @@
       "public_api": false,
       "data_loss": false,
       "concurrency": false,
-      "production": false
+      "production": false,
+      "permissions": false,
+      "release": false,
+      "merge_gate": false,
+      "ci_gate": false,
+      "high_complexity": false,
+      "high_uncertainty": false
     },
     "specialist_domains": [],
     "disposition": "DRAFT",
@@ -59,6 +65,15 @@
       "evidence_required": []
     },
     "owner_closure_required": false,
-    "corrects": null
+    "corrects": null,
+    "risk_classification": {
+      "tier": 1,
+      "matched_tiers": [
+        1
+      ],
+      "evidence": {},
+      "rule": "UNFILLED",
+      "risk_flags": []
+    }
   }
 }

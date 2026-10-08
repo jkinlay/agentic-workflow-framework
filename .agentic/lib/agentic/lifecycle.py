@@ -1,6 +1,7 @@
 """Exhaustive reference transition rules; no external side effects."""
 from __future__ import annotations
 from . import ValidationError, VERSION
+from .review_tiers import diff_effect, review_decision, validate_round
 
 STATES = ["BACKLOG", "READY", "DISPATCHED", "IN_PROGRESS", "PR_DRAFT", "READY_FOR_CRITIC",
           "CHANGES_REQUESTED", "AMENDING", "SPECIALIST_REVIEW", "FINAL_REVIEW", "READY_FOR_OWNER_AUTHORIZATION",
@@ -165,3 +166,23 @@ def transition(state, event, facts=None, resume_state=None):
             require(*guards)
             return target
     raise ValidationError(f"Event {event} is not applicable in {state}")
+
+
+def review_round_transition(tier, round_number, *, verdict="PENDING", open_findings=(),
+                            owner_review=False, ticketed_p2_ids=(), owner_cap_disposition=False,
+                            previous_diff_sha=None, current_diff_sha=None, base_only=False):
+    """Lifecycle-facing review policy API; provider posting remains AWF-29."""
+    if previous_diff_sha is not None and current_diff_sha is not None:
+        diff = diff_effect(previous_diff_sha, current_diff_sha, base_only=base_only)
+    else:
+        diff = {"changed": False, "invalidate": False, "reason": "no diff comparison supplied"}
+    if diff["invalidate"]:
+        return {"status": "REVIEW_REQUIRED", "round": round_number, "history_preserved": True,
+                "invalidated": True, "diff": diff}
+    validate_round(tier, round_number, owner_cap_disposition=owner_cap_disposition)
+    decision = review_decision(tier, round_number, latest_pass=verdict in {"PASS", "APPROVE"},
+                               open_findings=open_findings, owner_review=owner_review,
+                               owner_cap_disposition=owner_cap_disposition,
+                               ticketed_p2_ids=ticketed_p2_ids)
+    return {**decision, "round": round_number, "history_preserved": True,
+            "invalidated": False, "diff": diff, "verdict": verdict}

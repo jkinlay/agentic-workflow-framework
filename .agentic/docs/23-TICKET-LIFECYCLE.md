@@ -2,6 +2,7 @@
 
 This renders [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/lifecycle.py) is authoritative. These are AWF states; Jira writes are mirrored below. The reference state machine has no external side effects.
 
+
 ## Routine work
 
 On COMPLETE, publish a draft PR. A Git-blocked worker leaves the tree uncommitted and reports only commit BLOCKED with `commit_route: PUBLISHER`, `tested_tree`, `changes`, and excluded `ignored_untracked`. The publisher commits without edits, compares `HEAD^{tree}`, and rejects differences. Absent `commit_route` means `WORKER`. Observe PR/head/base/target before PR-bound records. Mark-ready precedes critic review; changes require re-review. Owner-ready requires critic, specialists and final gate. Neither authorizes merge.

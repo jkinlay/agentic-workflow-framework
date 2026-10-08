@@ -577,6 +577,22 @@ def migrate_1_9_2_to_1_9_3(bundle, target):
     return migrate_step(bundle, "1.9.2", "1.9.3", target)
 
 
+def review_tier_defaults(config):
+    """Return additive 1.9.4 review policy defaults without losing legacy data.
+
+    Upgraded 1.9.3 configurations may omit the new tier block.  Callers can
+    use this pure helper when constructing a current policy; it never rewrites
+    the owner's configuration or invents reviewer identities.
+    """
+    import copy
+    value = copy.deepcopy(config)
+    execution = value.setdefault("execution", {})
+    tiers = execution.setdefault("risk_tiers", {})
+    tiers.setdefault("tier3_review", {"roles": ["critic", "specialist"],
+                                       "findings": "blocking", "max_rounds": 3})
+    return value
+
+
 def config_diff(before, after, previous, current):
     return "".join(difflib.unified_diff(before.decode("utf-8").splitlines(keepends=True),
         after.decode("utf-8").splitlines(keepends=True), fromfile=previous, tofile=current))

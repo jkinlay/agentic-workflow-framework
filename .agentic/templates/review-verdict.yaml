@@ -1,0 +1,16 @@
+{
+  "template_for": "review-verdict",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "verdict": "PASS",
+    "tier": 1,
+    "round": 1,
+    "head_sha": "0000000000000000000000000000000000000000",
+    "reviewer_id": "UNFILLED",
+    "pr_comment_url": "urn:awf:UNFILLED",
+    "pr_body_link": "urn:awf:UNFILLED",
+    "evidence": [],
+    "owner_review": false
+  }
+}

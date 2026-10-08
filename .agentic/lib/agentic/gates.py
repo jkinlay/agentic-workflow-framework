@@ -10,6 +10,7 @@ from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_pa
                      specialist_domains, validate_config)
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
                             tier1_specialist_domains, validate_findings)
+from .review_tiers import classify
 
 
 def resource_overlaps(runs, limits):
@@ -208,6 +209,17 @@ def evaluate(config, workflow, bundle, contracts, now):
     if set(worker["files_changed"]) != file_paths:
         raise ValidationError("Worker changed-file manifest does not match PR")
     tier = check_tier_declaration(config, contract, file_paths)
+    classification = classify(config, file_paths,
+                              risk_flags=[key for key, value in contract.get("risk_flags", {}).items() if value])
+    # The declaration check remains authoritative for legacy records; only a
+    # separately observed Tier 3 signal can raise the computed classification.
+    if classification["tier"] != 3:
+        classification["tier"] = tier
+    if classification["tier"] != tier:
+        raise ValidationError(f"Contract risk_tier {tier} does not match highest observed tier {classification['tier']}")
+    declared_classification = contract.get("risk_classification")
+    if declared_classification is not None and declared_classification != classification:
+        raise ValidationError("Contract risk_classification does not match observed paths and risk evidence")
     if critic["coverage"]["file_manifest_sha256"] != fingerprint("file-manifest", pr["file_manifest"]):
         raise ValidationError("Critic file manifest does not match PR")
     required_domains = tier1_specialist_domains(config, tier, specialist_domains(config, contract, file_paths,
@@ -253,7 +265,12 @@ def evaluate(config, workflow, bundle, contracts, now):
     # REQUEST_CHANGES verdict passes once every serious finding is dispositioned.
     # An owner's verified MERGE_WITH_NOTES carries the listed findings as notes in either tier.
     lenient = tier == 1 or cap_disposition is not None
-    critic_ok = no_blockers and critic["verdict"] in ({"APPROVE", "REQUEST_CHANGES"} if lenient else {"APPROVE"})
+    owner_review_ok = tier != 3 or (bundle.get("owner_review") is not None
+                                    and bundle["owner_review"].get("owner_review") is True
+                                    and bundle["owner_review"].get("verdict") == "PASS"
+                                    and bundle["owner_review"].get("head_sha") == candidate["head_sha"])
+    critic_ok = (no_blockers and critic["verdict"] in ({"APPROVE", "REQUEST_CHANGES"} if lenient else {"APPROVE"})
+                 and owner_review_ok)
     provenance_problems = [f"exclusive resource {name} held by overlapping COMPLETE runs {a} and {b}"
                            for name, a, b in resource_overlaps(bundle["runs"], config["execution"]["host_broker"].get("resources", {}))]
     unique(ci["checks"], "name", "CI check name")

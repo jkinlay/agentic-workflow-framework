@@ -1,0 +1,14 @@
+{
+  "template_for": "risk-classification",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "tier": 1,
+    "matched_tiers": [
+      1
+    ],
+    "evidence": {},
+    "rule": "UNFILLED",
+    "risk_flags": []
+  }
+}

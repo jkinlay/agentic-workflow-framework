@@ -1,0 +1,55 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tier",
+    "matched_tiers",
+    "evidence",
+    "rule",
+    "risk_flags"
+  ],
+  "properties": {
+    "tier": {
+      "enum": [
+        1,
+        2,
+        3
+      ]
+    },
+    "matched_tiers": {
+      "type": "array",
+      "items": {
+        "enum": [
+          1,
+          2,
+          3
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {},
+      "minProperties": 1
+    },
+    "rule": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk_flags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:risk-classification",
+  "title": "Agentic Workflow 1.2 \u2014 risk-classification"
+}

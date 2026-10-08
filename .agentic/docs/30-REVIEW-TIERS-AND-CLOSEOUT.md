@@ -1,10 +1,10 @@
 # Review tiers, cap dispositions and closeout
 
-Version 1.9.3. The code (`review_policy.py`, `jira_lifecycle.py`, `closeout.py`, `digest.py`, `host_preflight.py`) and the [lifecycle](23-TICKET-LIFECYCLE.md) are the authority; nothing here grants execution authority.
+Version 1.9.3. The code (`review_tiers.py`, `review_policy.py`, `gates.py`, `jira_lifecycle.py`, `closeout.py`, `digest.py`, `host_preflight.py`) and the [lifecycle](23-TICKET-LIFECYCLE.md) are the authority; nothing here grants execution authority.
 
 ## Risk tiers
 
-Every `ticket-contract` declares `risk_tier` (1 or 2) with a `tier_justification`; uncertain is Tier 2. Tier 1 needs `execution.risk_tiers` configured (absent: no Tier 1), every changed path inside `tier1_eligible_paths`, none under `scope.protected_paths` or `tier1_excluded_paths`, and no true `risk_flags`. `validate-record ticket-contract` and the gate recompute the tier from the paths and refuse a more permissive declaration by path; Tier 2 is always accepted. Only an owner-signed `tier-reassignment` changes a declared tier; the owner re-issues the contract and every record rebinds.
+Every `ticket-contract` declares `risk_tier` (1, 2 or 3) with a `tier_justification`; uncertain is Tier 2. Tier 1 needs `execution.risk_tiers`, eligible paths, no protected paths and no true `risk_flags`. The gate recomputes the tier from paths; the highest match wins. Only an owner-signed `tier-reassignment` changes a declared tier; the owner re-issues the contract and every record rebinds. Round policy is in `review_tiers.py`; AWF-29 owns provider posting.
 
 Tier 1 consults one critic plus the specialist domains in `tier1_review.specialist_when_touching` (default `security`); its findings advise the owner. Tier 2 keeps the full regime. In both, a boundary-basis finding blocks at any severity and cannot be accepted or dismissed.
 
