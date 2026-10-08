@@ -472,6 +472,20 @@ class HostTests(unittest.TestCase):
         with patch('agentic.providers.github_review_host.is_source_repository', return_value=True):
             self.assertEqual(driver.files(CANDIDATE), ['.agentic/a.py'])
 
+    def test_source_allowlist_allows_protected_amendment_for_source_repository(self):
+        driver, candidate, command = self.local_git_driver()
+        driver.c.update(allowed_paths=['.agentic/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
+        driver.agent = lambda *args, **kwargs: (
+            (driver.worker / '.agentic').mkdir(exist_ok=True),
+            (driver.worker / '.agentic/a.py').write_text('value = 3\n'),
+            {'candidate': candidate, 'outcome': 'CHANGED', 'summary': 'Synthetic source amendment'}
+        )[-1]
+        with patch('agentic.providers.github_review_host.is_source_repository', return_value=True):
+            amended = driver.amend(candidate, [FINDING], 'fixture-source-amend')
+        self.assertNotEqual(amended['head'], candidate['head'])
+        self.assertEqual(driver.last_amendment_paths, ['.agentic/a.py'])
+        self.assertEqual(command('-C', str(driver.worker), 'rev-parse', 'HEAD^'), candidate['head'])
+
     def test_downstream_source_markers_are_refused_by_files_and_amend(self):
         self.value.update(allowed_paths=['src/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
         driver = HostDriver(self.config(), ROOT)
