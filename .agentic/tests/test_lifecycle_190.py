@@ -9,11 +9,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import uuid
 
 from agentic import ValidationError
 from agentic.canonical import load
-from agentic.closeout import integration_tree, render_markdown, validate_closeout
+from agentic.closeout import MergeProbe, integration_tree, render_markdown, validate_closeout
 from agentic.contracts import Contracts
 from agentic.host_preflight import preflight, render_markdown as render_preflight, route_models_observed
 from agentic.interaction import decide_action, jira_write_classification
@@ -399,6 +400,21 @@ class CloseoutTests(unittest.TestCase):
         self.assertEqual("squash", report["merge_relationship"])
         self.assertFalse(marker.exists())
         self.assertNotEqual(base, advanced)
+
+    def test_probe_alternates_pointer_is_written_with_lf_line_endings(self):
+        # A CRLF alternates file (Python's default text mode on Windows) hides the borrowed store from Git.
+        real_write_text, calls = Path.write_text, []
+
+        def spy(path, *args, **kwargs):
+            calls.append((path.name, kwargs.get("newline")))
+            return real_write_text(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "write_text", autospec=True, side_effect=spy), MergeProbe(self.repo) as probe:
+            raw = (probe.probe / "objects/info/alternates").read_bytes()
+            self.assertEqual(self.git("rev-parse", self.head + "^{tree}"), probe.merge_tree(self.base, self.head))
+        self.assertIn(("alternates", "\n"), calls)
+        self.assertTrue(raw.endswith(b"\n"))
+        self.assertNotIn(b"\r", raw)
 
     def test_fast_forward_is_the_reviewed_head_itself(self):
         report = validate_closeout(self.bound(self.head), self.repo, self.contracts)

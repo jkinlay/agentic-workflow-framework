@@ -99,7 +99,7 @@ class MergeProbe:
         git(root, "init", "--bare", "--quiet", "--template=", "probe.git")
         self.probe = root / "probe.git"
         (self.probe / "objects/info").mkdir(parents=True, exist_ok=True)
-        (self.probe / "objects/info/alternates").write_text(objects + "\n", encoding="utf-8")
+        (self.probe / "objects/info/alternates").write_text(objects + "\n", encoding="utf-8", newline="\n")
         return self
 
     def __exit__(self, *exc):
