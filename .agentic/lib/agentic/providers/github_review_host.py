@@ -23,6 +23,11 @@ def protected(path):
     return path.casefold() == 'scripts/bootstrap_project.py' or any(x.casefold() in {p.casefold() for p in PROTECTED} for x in parts)
 
 
+def _windows_host():
+    """Host-platform seam: Windows checkout conversion applies only on Windows."""
+    return os.name == 'nt'
+
+
 def safe_path(value):
     return isinstance(value, str) and bool(value) and all(ord(c) >= 32 for c in value) and not value.startswith(('/', '-', '\\')) and '\\' not in value and ':' not in value and all(p not in {'','.','..'} for p in value.split('/'))
 
@@ -135,14 +140,30 @@ class HostDriver:
         require(len(result.stdout) <= 8 * 1024 * 1024, 'Command output exceeds record limit')
         return result.stdout
 
+    def _git_isolation(self):
+        return ['--no-replace-objects', '-c','core.useReplaceRefs=false',
+            '-c','core.hooksPath=' + str(self.state / 'empty-hooks'),
+            '-c','protocol.file.allow=never', '-c','core.fsmonitor=false']
+
+    def _checkout_conversion(self, checkout):
+        """Return the Windows-only core.autocrlf default for one checkout.
+
+        The isolated Git environment intentionally ignores host configuration,
+        so on Windows a clean worktree checked out with the user's global
+        core.autocrlf would otherwise read as dirty.  Supply that default only
+        when the checkout's own configuration (repository, worktree or their
+        includes; global and system stay hidden) does not set core.autocrlf:
+        a command-line value would override a deliberate repository policy.
+        """
+        if not _windows_host():
+            return []
+        listing = self.run('git', [*self._git_isolation(), '-C',str(checkout),
+            'config','--list','--includes','--null'], binary=True)
+        keys = {entry.split(b'\n', 1)[0].lower() for entry in listing.split(b'\0') if entry}
+        return [] if b'core.autocrlf' in keys else ['-c', 'core.autocrlf=true']
+
     def git(self, checkout, *args, strip=True, binary=False):
-        # The isolated Git environment intentionally ignores host configuration.
-        # Pin Windows' checkout conversion so a clean CRLF worktree does not
-        # become falsely dirty when the user's global core.autocrlf is removed.
-        conversion = ['-c', 'core.autocrlf=true'] if os.name == 'nt' else []
-        value = self.run('git', ['--no-replace-objects', '-c','core.useReplaceRefs=false',
-            *conversion, '-c','core.hooksPath=' + str(self.state / 'empty-hooks'),
-            '-c','protocol.file.allow=never', '-c','core.fsmonitor=false',
+        value = self.run('git', [*self._git_isolation(), *self._checkout_conversion(checkout),
             '-C',str(checkout),*args], binary=binary)
         return value.strip() if strip else value
 

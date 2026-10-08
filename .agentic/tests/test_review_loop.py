@@ -14,6 +14,7 @@ from unittest.mock import patch
 from agentic import ValidationError
 from agentic.canonical import sha256
 from agentic.review_loop import LoopStore, enroll, pause, resume, tick, validate_review
+from agentic.providers import github_review_host
 from agentic.providers.github_review_host import HostDriver, load_config, protected, safe_path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -484,6 +485,95 @@ class HostTests(unittest.TestCase):
         self.assertEqual(driver.ci(CANDIDATE),'FAIL')
         driver.run=lambda *args,**kwargs: b'changed\n'
         with self.assertRaises(ValidationError): driver.ci(CANDIDATE)
+
+    # AWF-18: the Windows core.autocrlf default must not override a checkout's own policy.
+
+    def isolated_fixture_driver(self):
+        git = shutil.which('git')
+        if not git:
+            self.skipTest('Git executable unavailable for line-ending regression')
+        # Fixture commands must not pick up the developer's own line-ending policy either.
+        env = {**os.environ, 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
+        def command(*args):
+            return subprocess.run([git,*map(str,args)],env=env,capture_output=True,check=True).stdout
+        worker = self.base/'worker'
+        command('init','--initial-branch=main',worker)
+        command('-C',worker,'config','user.name','AWF fixture')
+        command('-C',worker,'config','user.email','fixture@example.invalid')
+        command('-C',worker,'config','commit.gpgsign','false')
+        self.value['executables']['git'] = {'path':git,'sha256':sha256(Path(git).read_bytes())}
+        return HostDriver(self.config(),ROOT), command, worker
+
+    def force_content_check(self, path, when):
+        # A changed mtime makes Git rehash the file through its conversion settings.
+        os.utime(path, (when, when))
+
+    def test_awf18_windows_respects_repository_local_autocrlf_false(self):
+        driver, command, worker = self.isolated_fixture_driver()
+        command('-C',worker,'config','core.autocrlf','false')
+        (worker/'crlf.txt').write_bytes(b'one\r\ntwo\r\n')
+        command('-C',worker,'add','crlf.txt'); command('-C',worker,'commit','-m','track CRLF text')
+        with patch.object(github_review_host, '_windows_host', return_value=True):
+            self.force_content_check(worker/'crlf.txt', 1_000_000_000)
+            self.assertEqual(driver.git(worker,'status','--porcelain','--untracked-files=all'), '')
+            (worker/'new.txt').write_bytes(b'added\r\n')
+            driver.git(worker,'add','--','new.txt')
+            # A forced core.autocrlf=true would have normalised the staged blob to LF.
+            self.assertEqual(driver.git(worker,'cat-file','blob',':new.txt',strip=False,binary=True), b'added\r\n')
+            self.assertEqual(driver.git(worker,'diff','--cached','--name-only'), 'new.txt')
+
+    def test_awf18_windows_default_keeps_converted_checkout_clean_without_repository_setting(self):
+        driver, command, worker = self.isolated_fixture_driver()
+        (worker/'lf.txt').write_bytes(b'one\ntwo\n')
+        command('-C',worker,'add','lf.txt'); command('-C',worker,'commit','-m','track LF text')
+        # Reproduce a Windows checkout made under the user's global core.autocrlf=true.
+        (worker/'lf.txt').unlink()
+        command('-C',worker,'-c','core.autocrlf=true','checkout','--','lf.txt')
+        self.assertEqual((worker/'lf.txt').read_bytes(), b'one\r\ntwo\r\n')
+        # Host configuration stays hidden: an ambient global value must not suppress the default.
+        ambient = self.base/'ambient.gitconfig'
+        ambient.write_text('[core]\n\tautocrlf = false\n', encoding='utf-8')
+        with patch.dict(os.environ, {'GIT_CONFIG_GLOBAL': str(ambient)}):
+            with patch.object(github_review_host, '_windows_host', return_value=True):
+                self.force_content_check(worker/'lf.txt', 1_000_000_000)
+                self.assertEqual(driver.git(worker,'status','--porcelain','--untracked-files=all'), '')
+            # Non-Windows hosts are unchanged: no conversion is supplied.
+            with patch.object(github_review_host, '_windows_host', return_value=False):
+                self.force_content_check(worker/'lf.txt', 1_100_000_000)
+                self.assertEqual(driver.git(worker,'status','--porcelain','--untracked-files=all'), 'M lf.txt')
+
+    def test_awf18_conversion_default_only_when_checkout_config_is_silent(self):
+        driver, command, worker = self.isolated_fixture_driver()
+        calls = []
+        real_run = driver.run
+        def spy(name, args, **kwargs):
+            calls.append(list(args))
+            return real_run(name, args, **kwargs)
+        driver.run = spy
+        with patch.object(github_review_host, '_windows_host', return_value=False):
+            driver.git(worker,'rev-parse','--git-dir')
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn('core.autocrlf=true', calls[0])
+        policy = worker/'.git'/'line-endings.gitconfig'
+        policy.write_text('[core]\n\tautocrlf = input\n', encoding='utf-8')
+        cases = [('unset', None, ['-c','core.autocrlf=true']),
+                 ('repository false', ('core.autocrlf','false'), []),
+                 ('repository input', ('core.autocrlf','input'), []),
+                 ('included policy', ('include.path','line-endings.gitconfig'), [])]
+        for label, setting, expected in cases:
+            with self.subTest(label=label):
+                for key in ('core.autocrlf','include.path'):
+                    subprocess.run([shutil.which('git'),'-C',str(worker),'config','--unset-all',key],
+                                   env={**os.environ,'GIT_CONFIG_GLOBAL':os.devnull,'GIT_CONFIG_NOSYSTEM':'1'},
+                                   capture_output=True)
+                if setting:
+                    command('-C',worker,'config',*setting)
+                with patch.object(github_review_host, '_windows_host', return_value=True):
+                    self.assertEqual(driver._checkout_conversion(worker), expected)
+                    calls.clear()
+                    driver.git(worker,'rev-parse','--git-dir')
+                self.assertEqual(len(calls), 2)
+                self.assertEqual('core.autocrlf=true' in calls[1], bool(expected))
 
     def test_protected_paths_and_unsafe_names(self):
         for value in ['AGENTS.md','src/AGENTS.md','.agentic/a','x/.codex/a','.github/workflows/ci.yml','scripts/bootstrap_project.py']:
