@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from urllib.parse import urlsplit, urlunsplit
 
 from . import VERSION
 from .canonical import load, now_text, timestamp
@@ -29,11 +30,13 @@ REQUIRED_FIELDS = (
 # host. The remaining K15 facts are compared as the deterministic handoff
 # continuity record.
 COMPARED = tuple(field for field in REQUIRED_FIELDS if field != "repository.path")
-_USERINFO = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@")
 _SHA40 = re.compile(r"[0-9a-f]{40}")
 _SHA64 = re.compile(r"[0-9a-f]{64}")
 _RESOURCE_NAME = re.compile(r"[a-z][a-z0-9_]*")
 _TICKET = re.compile(r"(?<![A-Z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Z0-9_])")
+_COMPLETED_TICKET = re.compile(
+    r"(?im)^\s*(?:complete(?:d)?|close(?:d)?)\s*:?\s*([A-Z][A-Z0-9_]*-[1-9][0-9]*)\s*$"
+)
 _EPIC = re.compile(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*")
 _ROUTE_KEYS = ("model", "reasoning_effort", "pinned")
 
@@ -59,8 +62,20 @@ def _git(root, *arguments):
 
 
 def safe_origin(url):
-    """Drop any user-info (tokens, passwords) from a remote URL."""
-    return None if url is None else _USERINFO.sub(r"\1", url)
+    """Drop credential-bearing URL components from a remote URL."""
+    if not isinstance(url, str):
+        return None
+    # SCP-like remotes have no URL authority, but still must not export a
+    # query or fragment.  URL remotes can safely retain only their scheme,
+    # host/port and path after removing user-info.
+    stripped = re.split(r"[?#]", url, maxsplit=1)[0]
+    if "://" not in stripped:
+        return stripped
+    try:
+        parsed = urlsplit(stripped)
+    except ValueError:
+        return re.sub(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@", r"\1", stripped)
+    return urlunsplit((parsed.scheme, parsed.netloc.rsplit("@", 1)[-1], parsed.path, "", ""))
 
 
 def _route(value, *, simple_worker=False):
@@ -132,16 +147,18 @@ def _operating_routes(root, governance):
 
 
 def _completed_tickets(root):
-    """Read ticket references asserted in bounded local commit subjects.
+    """Read explicit ticket-closure assertions in bounded local subjects.
 
-    AWF's status observation has no ticket-history field.  A commit subject is
-    not proof of Jira closure, so the resulting continuity fact is explicitly
-    ``user-asserted`` rather than verified.
+    AWF's status observation has no ticket-history field.  Even an explicit
+    closure subject is not proof of Jira closure, so the resulting continuity
+    fact is explicitly ``user-asserted`` rather than verified.  Ordinary
+    implementation subjects that merely mention a ticket must not claim it is
+    complete.
     """
     subjects = _git(root, "log", "-n", "1000", "--format=%s")
     if subjects is None:
         return None
-    return sorted(set(_TICKET.findall(subjects)))
+    return sorted(set(_COMPLETED_TICKET.findall(subjects)))
 
 
 def _field_at(snapshot, dotted):
@@ -163,14 +180,20 @@ def build_snapshot(root, *, status=None, now=None):
     try:
         config = load(config_path)
     except (OSError, ValueError):
-        config = {}
-    jira = config.get("jira") or {}
-    github = config.get("github") or {}
-    execution = config.get("execution") or {}
-    declared_resources = ((execution.get("host_broker") or {}).get("resources") or {})
-    resources = sorted(name for name, slots in declared_resources.items()
-                       if isinstance(name, str) and _RESOURCE_NAME.fullmatch(name)
-                       and type(slots) is int and slots > 0)
+        config = None
+    if not isinstance(config, dict):
+        config = None
+    jira = config.get("jira") if config else {}
+    github = config.get("github") if config else {}
+    execution = config.get("execution") if config else None
+    jira = jira if isinstance(jira, dict) else {}
+    github = github if isinstance(github, dict) else {}
+    broker = execution.get("host_broker") if isinstance(execution, dict) else None
+    declared_resources = broker.get("resources") if isinstance(broker, dict) else None
+    resources = (sorted(name for name, slots in declared_resources.items()
+                        if isinstance(name, str) and _RESOURCE_NAME.fullmatch(name)
+                        and type(slots) is int and slots > 0)
+                 if isinstance(declared_resources, dict) else None)
     operating = status.get("operating") or {}
     repository_id = status.get("repository_id")
     repository_basis = "verified"
@@ -182,7 +205,7 @@ def build_snapshot(root, *, status=None, now=None):
         trust_basis = status["release_trust"].get("basis")
     operating_hash = operating.get("hash")
     routes = None
-    if operating.get("status") == "ACCEPTED":
+    if config is not None and operating.get("status") == "ACCEPTED":
         routes, observed_operating_hash = _operating_routes(root, config)
         # ``project_status`` and this read are separate observations.  Do not
         # label a new route set as verified against an older operating hash.
@@ -229,9 +252,9 @@ def build_snapshot(root, *, status=None, now=None):
     }
 
 
-def _lookup(snapshot, dotted):
+def _comparison_fact(snapshot, dotted):
     item = _field_at(snapshot, dotted)
-    return item.get("value") if isinstance(item, dict) and "basis" in item else item
+    return (item["value"], item["basis"])
 
 
 def _text(value):
@@ -365,8 +388,11 @@ def compare_snapshot(received, current):
     if errors:
         return {"status": "REJECTED", "reason": "Incomplete or malformed handoff snapshot",
                 "invalid_fields": errors, "execution_authority": False}
-    drift = [{"field": key, "received": _lookup(received, key), "current": _lookup(current, key)}
-             for key in COMPARED if _lookup(received, key) != _lookup(current, key)]
+    drift = [{"field": key, "received": received_fact[0], "received_basis": received_fact[1],
+              "current": current_fact[0], "current_basis": current_fact[1]}
+             for key in COMPARED
+             if (received_fact := _comparison_fact(received, key)) !=
+             (current_fact := _comparison_fact(current, key))]
     return {"status": "MATCH" if not drift else "DRIFT", "received_at": received.get("generated_at"),
             "observed_at": current["generated_at"], "drift": drift, "execution_authority": False}
 

@@ -2,7 +2,7 @@
 
 416 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `dd64c626b796a403da0b4fca1628e22dbf8c151b3f36ed109df83a0c8a3368e2`
+MANIFEST.json SHA-256: `b6fe31de63f35b120ffa45d222b6bbb6a0956e804367a4e463b04190dd9420ee`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -84,7 +84,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/gates.py` | `0e08c9f6ee291167c4470bf3413d12d3f4c938397595a80c65f37a39aa88fcab` |
 | `.agentic/lib/agentic/git_isolation.py` | `43b3258f19a9942a399a85ff21f78a26b45306b415a532ca9df3ec926cf91d26` |
 | `.agentic/lib/agentic/gittree.py` | `f1df153bf9f3e87cd95552aaf102fd0c6b0cd6f3a49bf51b6ef29c923340ff67` |
-| `.agentic/lib/agentic/handoff.py` | `c405ff58a35579ce6b5b1ad6388c7c0d48900ba765b7be06e9f22c6490ab27f8` |
+| `.agentic/lib/agentic/handoff.py` | `57447a0f14e82fb094acafe6589126a0991e8093c8d9e4104376a5420dd022c8` |
 | `.agentic/lib/agentic/heavy_validation.py` | `33017127a89164eadb7e45b73d1de4796edbc9d27b8aa5530f8365b1f75613a5` |
 | `.agentic/lib/agentic/heavy_validation_child.py` | `1098a432539cd38f290f4491f3bd5b9196ee4c54d1be0871bd0550d4477a3d69` |
 | `.agentic/lib/agentic/heavy_validation_controller.py` | `01f6c10fd93f97aee3d0cb1641af1a36dfa6d11a42d16fe9cc1e9caa49c792e2` |
@@ -267,7 +267,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_continuous_controller.py` | `884fe9c9619a20354f8916d9eebe2aaef17cd6750cd0a65d168a5b6d7fed3735` |
 | `.agentic/tests/test_five_slot_acceleration.py` | `7c6c73d78a72b42366968aba0aeb888c9c4742a5f88f33d9b640402ae55932d7` |
 | `.agentic/tests/test_gittree.py` | `e0d5b302d0d7d1f5701557b094126b8fc9002916781bce8e0d94b4cf1740da0e` |
-| `.agentic/tests/test_handoff.py` | `87a12fa5f0fa5e97375a444d091acf43d96326346d9e3d8634683525044a2dac` |
+| `.agentic/tests/test_handoff.py` | `a52e3c6bc9ba4c9cf9f8c5b47f9ef047948a8f88e73a7853894dd8e0c90725eb` |
 | `.agentic/tests/test_heavy_validation.py` | `6c7c45f02594e71153da59d4c042b1c3c19288f2445c5a79e30678d34d4fe193` |
 | `.agentic/tests/test_host_process.py` | `e51ef1f41d87493eeb3e3dbf38d815e5cec3d0d90e2f06f83fdc23436d131083` |
 | `.agentic/tests/test_interaction.py` | `7b0ac687daa56b3e49e9d849b578e4c2d2bd640c89c96b2f4b543b071ae5a996` |

@@ -11,9 +11,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agentic.child_process import child_env
+from agentic.canonical import load
+from agentic.configuration import inspect_config
 from agentic.contracts import Contracts
 from agentic.handoff import (BASES, REQUIRED_FIELDS, build_snapshot, compare_snapshot,
                              render_markdown, safe_origin)
+from agentic.lifecycle import definition
 from agentic.operating import read_operating
 
 STATUS = {"project_state": "ACTIVE", "integrity_valid": True, "adoption": "MERGED",
@@ -37,12 +40,15 @@ class HandoffSnapshotTests(unittest.TestCase):
         git(self.root, "init", "-q", "-b", "main")
         git(self.root, "remote", "add", "origin", "https://user:ghp_SECRETTOKEN@example.invalid/o/r.git")
         (self.root / ".agentic").mkdir()
-        self.config = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
-        self.config["github"]["repository_id"] = 101
+        self.config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
         self.config["jira"].update(enabled=True, cloud_id="cloud-1", site="https://jira.example.invalid",
                                    provider_project_id="project-1", project_key="SYN", controller_actor_id="actor-1")
-        self.config["execution"]["host_broker"]["resources"] = {"readonly_data": 1}
-        Contracts(ROOT / ".agentic/schemas").validate("project-config", self.config)
+        self.config["execution"]["host_broker"].update(enabled=True, broker_id="fixture-broker",
+                                                          resources={"readonly_data": 1})
+        contracts = Contracts(ROOT / ".agentic/schemas")
+        contracts.validate("project-config", self.config)
+        self.config_report = inspect_config(self.config, definition(), contracts)
+        self.assertEqual(self.config_report["status"], "ACCEPTED", self.config_report)
         (self.root / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(self.config), encoding="utf-8")
         self.operating_config = json.loads((ROOT / "OPERATING_CONFIG.yaml").read_text(encoding="utf-8"))
         (self.root / "OPERATING_CONFIG.yaml").write_text(json.dumps(self.operating_config), encoding="utf-8")
@@ -60,6 +66,7 @@ class HandoffSnapshotTests(unittest.TestCase):
 
     def test_snapshot_records_observations_without_credentials_or_authority(self):
         snapshot = self.snapshot()
+        self.assertEqual(self.config_report["status"], "ACCEPTED")
         text = json.dumps(snapshot) + render_markdown(snapshot)
         self.assertNotIn("SECRETTOKEN", text)
         self.assertNotIn("user:", text)
@@ -97,6 +104,30 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.assertEqual(result["status"], "DRIFT")
         self.assertEqual([item["field"] for item in result["drift"]], ["repository.head"])
         self.assertIs(result["execution_authority"], False)
+
+    def test_provenance_basis_changes_are_drift(self):
+        for received_basis, current_basis in (("configured", "verified"),
+                                              ("verified", "user-asserted")):
+            with self.subTest(received_basis=received_basis, current_basis=current_basis):
+                received = self.snapshot()
+                current = self.snapshot("2026-10-08T00:00:00Z")
+                received["jira"]["cloud_id"]["basis"] = received_basis
+                current["jira"]["cloud_id"]["basis"] = current_basis
+                result = compare_snapshot(received, current)
+                self.assertEqual(result["status"], "DRIFT")
+                drift = next(item for item in result["drift"] if item["field"] == "jira.cloud_id")
+                self.assertEqual((drift["received_basis"], drift["current_basis"]),
+                                 (received_basis, current_basis))
+
+    def test_completed_tickets_exclude_open_ticket_mentions(self):
+        git(self.root, "commit", "-q", "--allow-empty", "-m", "AWF-21 handoff implementation")
+        self.assertEqual(self.snapshot()["completed_tickets"]["value"], ["SYN-7"])
+
+    def test_unreadable_configuration_marks_resources_unavailable(self):
+        with patch("agentic.handoff.load", side_effect=ValueError("malformed config")):
+            snapshot = self.snapshot()
+        self.assertEqual(snapshot["external_resources"], {"value": None, "basis": "unavailable",
+                                                           "observed_at": "2026-10-07T00:00:00Z"})
 
     def test_snapshot_claiming_authority_or_unknown_schema_is_rejected(self):
         forged = self.snapshot()
@@ -152,9 +183,13 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["operating"]["hash"]["basis"], "unavailable")
         self.assertEqual(snapshot["operating"]["routes"]["basis"], "unavailable")
 
-    def test_safe_origin_strips_userinfo_only(self):
+    def test_safe_origin_strips_credential_bearing_url_components(self):
         self.assertEqual(safe_origin("ssh://git@example.invalid/o/r.git"), "ssh://example.invalid/o/r.git")
+        self.assertEqual(safe_origin("https://user:token@example.invalid/o/r.git?access_token=token#fragment"),
+                         "https://example.invalid/o/r.git")
         self.assertEqual(safe_origin("git@example.invalid:o/r.git"), "git@example.invalid:o/r.git")
+        self.assertEqual(safe_origin("git@example.invalid:o/r.git?token=secret#fragment"),
+                         "git@example.invalid:o/r.git")
         self.assertIsNone(safe_origin(None))
 
 
