@@ -2,7 +2,7 @@
 
 419 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `6285f7a9ddd62b14fda904bbeb05dcab9d523764899e98e0b7d931f0a6fe3a1e`
+MANIFEST.json SHA-256: `ff43acc642b4f20541b4a9e3320427a065b8bec9b7a8b548fc008d143caee409`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -378,7 +378,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf-portable/scripts/prepare_release.py` | `23fb697c6ce2ac9acfb06b751a693b02fbae5081c834ea1b315c7792280ab4be` |
 | `global/awf-portable/tests/test_awf.py` | `33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077` |
 | `global/awf-portable/tests/test_discovery_codeowners.py` | `42a2245cef352322327c9d72f80d9ce0cbdf831efbce1ec4f52c5c5fef460c16` |
-| `global/awf-portable/tests/test_documentation.py` | `835bb737490a932d1654cadb7a7202467a97c86eb71707979f60c55344eff397` |
+| `global/awf-portable/tests/test_documentation.py` | `4674bd35eb7af664f914fc33ab4ac7932bc78d0e88cbd773d49b8e1fc291b07b` |
 | `global/awf-portable/tests/test_install_skill.py` | `cc9064f5c514580096e1f207b906a205e49eb2eaee9f20df821c96f9ffb287d5` |
 | `global/awf-portable/tests/test_prepare_release.py` | `af65552e1674775e5a66c16be7ec2603b9fc2cf1759faf8d37518aa1daf3a1ef` |
 | `global/awf-portable/tests/test_updates.py` | `f185a236ec1ff32184bb27590dfc4aa42e3c65249f4178585d9ccd570ea66686` |
