@@ -6,7 +6,7 @@ Version 1.9.3. The installed runtime remains 1.9.3; this document records the AW
 
 Every `ticket-contract` declares `risk_tier` (1, 2 or 3) with a `tier_justification`; uncertain is Tier 2. Tier 1 needs `execution.risk_tiers`, eligible paths, no protected paths and no true `risk_flags`. The gate recomputes the tier from paths; the highest match wins. Only an owner-signed `tier-reassignment` changes a declared tier; the owner re-issues the contract and every record rebinds. Round policy is in `review_tiers.py`; AWF-29 owns provider posting.
 
-Tier 1 uses one critic; findings advise the owner. Tier 2 uses three rounds; at its cap, ticket MINOR/P2 findings and route P1 findings to the owner. Tier 3 covers protected governance, release, merge/qualification and CI gates, uses three rounds and requires trusted-owner review. Highest tier wins; escalation preserves history. Boundaries always block.
+Tier 1 uses one critic; findings advise. Tier 2 uses three rounds; at cap, ticket P2s and route P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, uses three rounds and requires a recorded owner-review assertion. It is not provider-verified in AWF 1.9.4; provider verification is the AWF-41 successor scope. Highest tier wins; escalation preserves history. Boundaries always block.
 
 Each round records its exact head, comment URL and body link. An unchanged diff preserves evidence; a changed diff invalidates it. Beyond a cap requires an authenticated owner disposition.
 

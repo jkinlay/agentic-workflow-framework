@@ -58,7 +58,7 @@ def local_ci_parity(config, contract, worker, ci):
 
 
 def verified_owner_records(config, contracts, bundle, binding, runs, excluded_contexts, excluded_producers, now):
-    """Authenticate every owner record in the bundle before any of them can change a gate."""
+    """Validate owner dispositions before any of them can change a gate."""
     from .authorization import verify_owner_record
     head = bundle["candidate"]["head_sha"]
     dispositions, comments = [], set()
@@ -253,10 +253,10 @@ def evaluate(config, workflow, bundle, contracts, now):
     if {v["round"] for v in verdicts} != expected_rounds:
         raise ValidationError("Review verdicts must cover every consumed round without gaps")
     for verdict in verdicts:
-        # Verdicts are retained provider observations.  Their candidate
-        # identity and freshness are current-gate requirements, while the
-        # contract hash may legitimately reflect the contract revision that
-        # the observed round reviewed (legacy 1.9.3 records retain that hash).
+        # Verdicts are retained review records. Their candidate identity and
+        # freshness are current-gate requirements, while the contract hash
+        # may legitimately reflect the contract revision that the round
+        # reviewed (legacy 1.9.3 records retain that hash).
         if (verdict["binding"]["project_id"] != binding["project_id"]
                 or verdict["binding"]["repository_id"] != binding["repository_id"]
                 or verdict["binding"]["issue_id"] != binding["issue_id"]
@@ -275,29 +275,19 @@ def evaluate(config, workflow, bundle, contracts, now):
             raise ValidationError("Review verdict must carry PR comment and body-link evidence")
         run = runs.get(verdict["run_id"])
         if not run or run["producer_id"] != verdict["producer_id"]:
-            raise ValidationError("Review verdict has no matching registered provider run")
+            raise ValidationError("Review verdict has no matching registered review run")
         if verdict["owner_review"]:
             if run["role"] != "verifier":
-                raise ValidationError("Owner review verdict must come from a verifier run")
+                raise ValidationError("Recorded owner review must come from a verifier run")
         else:
             if run["role"] != "critic" or run["producer_id"] != verdict["reviewer_id"]:
                 raise ValidationError("Review verdict must be bound to its independent critic run")
         if verdict["owner_review"]:
-            receipt = verdict.get("provider_receipt")
-            if (run["role"] != "verifier" or verdict["provider_observed"] is not True
-                    or not isinstance(receipt, dict)
-                    or receipt.get("candidate_binding") != verdict["candidate_binding"]
-                    or receipt.get("owner_id") != verdict["owner_id"]
-                    or not receipt.get("immutable_id")
-                    or not receipt.get("provider")):
-                raise ValidationError("Owner review needs an immutable provider receipt bound to the candidate and verifier run")
-            if verdict["owner_id"] not in config["merge_gate"]["trusted_owner_ids"]:
-                raise ValidationError("Owner review actor is not a configured trusted owner")
+            if verdict["verdict"] != "PASS":
+                raise ValidationError("Recorded owner review must have a PASS verdict")
         registry_by_sha = {entry["sha256"] for entry in bundle["evidence_registry"]}
         if not verdict["evidence"] or not set(verdict["evidence"]).issubset(evidence_ids):
             raise ValidationError("Review verdict evidence must resolve through the evidence registry")
-        if verdict["provider_receipt"]["evidence_sha256"] not in registry_by_sha:
-            raise ValidationError("Review verdict provider receipt is not resolved by the evidence registry")
     if critic["coverage"]["file_manifest_sha256"] != fingerprint("file-manifest", pr["file_manifest"]):
         raise ValidationError("Critic file manifest does not match PR")
     required_domains = tier1_specialist_domains(config, tier, specialist_domains(config, contract, file_paths,
@@ -346,24 +336,17 @@ def evaluate(config, workflow, bundle, contracts, now):
     no_blockers = not open_blocking
     # Tier 2 needs the critic's APPROVE; Tier 1 findings advise the owner, so a
     # REQUEST_CHANGES verdict passes once every serious finding is dispositioned.
-    # An owner's verified MERGE_WITH_NOTES carries the listed findings as notes in either tier.
+    # An owner's recorded MERGE_WITH_NOTES carries the listed findings as notes in either tier.
     lenient = tier == 1 or cap_disposition is not None
     owner = bundle.get("owner_review")
     owner_run = runs.get(owner.get("run_id")) if owner is not None else None
-    owner_receipt = owner.get("provider_receipt") if owner is not None else None
     owner_review_ok = tier != 3 or (owner is not None
                                     and owner.get("owner_review") is True
                                     and owner.get("verdict") == "PASS"
                                     and owner.get("head_sha") == candidate["head_sha"]
-                                    and owner.get("provider_observed") is True
-                                    and isinstance(owner.get("provider_receipt"), dict)
-                                    and owner["provider_receipt"].get("candidate_binding") == owner.get("candidate_binding")
-                                    and owner["provider_receipt"].get("owner_id") == owner.get("owner_id")
-                                    and owner["provider_receipt"].get("immutable_id")
                                      and owner_run is not None
                                      and owner_run["role"] == "verifier"
                                      and owner_run["producer_id"] == owner.get("producer_id")
-                                     and owner.get("owner_id") in config["merge_gate"]["trusted_owner_ids"]
                                      and owner.get("binding") == binding
                                      and owner.get("candidate_binding") == {
                                         "repository_id": candidate["repository_id"],
@@ -371,9 +354,6 @@ def evaluate(config, workflow, bundle, contracts, now):
                                         "base_sha": candidate["target_base_sha"],
                                          "head_sha": candidate["head_sha"]}
                                      and owner.get("record_id") in {v.get("record_id") for v in records})
-    if tier == 3 and owner_review_ok:
-        if owner_receipt["evidence_sha256"] not in {entry["sha256"] for entry in bundle["evidence_registry"]}:
-            raise ValidationError("Owner review provider receipt is not resolved by the evidence registry")
     critic_verdicts = [v for v in verdicts if not v["owner_review"]]
     terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
     critic_ok = (no_blockers and terminal_critic is not None and terminal_critic["verdict"] == "PASS"

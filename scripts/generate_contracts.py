@@ -155,15 +155,11 @@ def catalog():
         "tier": enum(1, 2, 3), "round": integer(1), "head_sha": SHA,
         "reviewer_id": text(), "pr_comment_url": text(format="uri"),
          "pr_body_link": text(format="uri"), "evidence": STRINGS,
-        "owner_review": BOOL, "provider_observed": BOOL,
+        "owner_review": BOOL,
         "owner_id": integer(1),
         "candidate_binding": obj({"repository_id": integer(1), "pr_number": integer(1),
                                    "base_sha": SHA, "head_sha": SHA}),
-        "provider_receipt": obj({"immutable_id": text(), "provider": text(),
-                                  "evidence_sha256": DIGEST,
-                                  "candidate_binding": obj({"repository_id": integer(1), "pr_number": integer(1),
-                                                             "base_sha": SHA, "head_sha": SHA}),
-                                  "owner_id": integer(1)})})
+        })
     stream_status = obj({"stream": text(), "state": enum("WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"),
         "ticket": nullable(text()), "actor": text(), "reason": text(), "next_action": text(),
         "resume_trigger": text(), "exact_tuple": text(), "activity": text(), "verification_gate": text(),

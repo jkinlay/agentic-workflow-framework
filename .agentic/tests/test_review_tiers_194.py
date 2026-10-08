@@ -61,19 +61,38 @@ class ReviewTiers194Tests(unittest.TestCase):
 
     def test_tier3_requires_owner_review(self):
         self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(3, 3, latest_pass=True)["status"])
-        owner = {"owner_review": True, "provider_observed": True,
+        owner = {"owner_review": True,
                  "record_id": "owner-record", "run_id": "verify-run",
                  "producer_id": "verifier", "owner_id": 1001,
+                 "verdict": "PASS",
                  "candidate_binding": {"repository_id": 1, "pr_number": 1,
                                         "base_sha": "a" * 40, "head_sha": "b" * 40},
-                 "provider_receipt": {"immutable_id": "receipt", "provider": "github",
-                                      "candidate_binding": {"repository_id": 1, "pr_number": 1,
-                                                             "base_sha": "a" * 40, "head_sha": "b" * 40},
-                                      "owner_id": 1001}}
+                 }
         self.assertEqual("QUALIFIED", review_decision(3, 3, latest_pass=True,
                          owner_review=owner)["status"])
         self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(
             3, 3, latest_pass=True, owner_review=True)["status"])
+
+    def test_upgrade_adds_only_tier3_lines_and_is_idempotent(self):
+        from agentic.upgrade import review_tier_defaults
+        before = (b"# retained full-line comment\n"
+                  b"template:\n  expected_workflow_version: '1.9.3'\n"
+                  b"execution: # retained execution comment\n"
+                  b"  z_key: \"keep\" # retained inline comment\n"
+                  b"  risk_tiers: # retained tier comment\n"
+                  b"    tier1_review: {max_rounds: 1} # retained tier inline\n"
+                  b"    # retained nested comment\n"
+                  b"    tier2_review:\n      max_rounds: 3\n"
+                  b"  a_key: 'after'\n")
+        added = (b"    tier3_review:\n"
+                 b"      roles: [critic, specialist]\n"
+                 b"      findings: blocking\n"
+                 b"      max_rounds: 3\n")
+        expected = before.replace(b"  a_key: 'after'\n", added + b"  a_key: 'after'\n")
+        after = review_tier_defaults(before)
+        self.assertEqual(expected, after)
+        self.assertEqual(after, review_tier_defaults(after))
+        self.assertEqual(added, after[len(before) - len(b"  a_key: 'after'\n"):len(before) - len(b"  a_key: 'after'\n") + len(added)])
 
     def test_highest_precedence_and_escalation_evidence(self):
         result = classify(self.config, [".agentic/PROJECT_CONFIG.yaml"], risk_flags=["release"])
@@ -126,6 +145,8 @@ class ReviewTiers194Tests(unittest.TestCase):
         self.assertIn(b"# retained comment", migrated.project_config)
         self.assertIn(b"# retained inline", migrated.project_config)
         self.assertIn(b"tier3_review", migrated.project_config)
+        self.assertEqual(1, migrated.project_config.count(b"tier3_review:"))
+        self.assertIn("tier3_review", migrated.project_config.decode("utf-8"))
 
 
 if __name__ == "__main__":

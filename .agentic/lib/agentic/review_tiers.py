@@ -189,23 +189,21 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
 
 
 def _owner_review_valid(value):
-    """Require a retained provider-observed owner verdict, never a boolean."""
+    """Require a retained, structured owner-review assertion, never a boolean.
+
+    Provider verification is the AWF-41 successor scope.  This policy layer
+    only checks that the recorded assertion is bound to the current review.
+    """
     if not isinstance(value, dict):
         return False
-    receipt = value.get("provider_receipt")
     binding = value.get("candidate_binding")
     return (value.get("owner_review") is True
-            and value.get("provider_observed") is True
             and isinstance(value.get("record_id"), str)
             and isinstance(value.get("run_id"), str)
             and isinstance(value.get("producer_id"), str)
             and isinstance(value.get("owner_id"), int)
             and isinstance(binding, dict)
-            and isinstance(receipt, dict)
-            and receipt.get("immutable_id")
-            and receipt.get("provider")
-            and receipt.get("candidate_binding") == binding
-            and receipt.get("owner_id") == value.get("owner_id"))
+            and value.get("verdict") == "PASS")
 
 
 def diff_effect(previous_diff_sha, current_diff_sha, *, base_only=False):

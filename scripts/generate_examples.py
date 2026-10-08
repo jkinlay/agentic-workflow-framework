@@ -189,14 +189,10 @@ def example_bundle(cfg):
     verdict = record("review-verdict-1", "critic", verdict="PASS", tier=classification["tier"], round=1,
         head_sha=candidate["head_sha"], reviewer_id="fixture-critic", pr_comment_url="https://github.com/fixture/example/pull/7#issuecomment-1",
         pr_body_link="https://github.com/fixture/example/pull/7#review-verdict-1", evidence=evidence,
-        owner_review=False, provider_observed=False, owner_id=1001,
+        owner_review=False, owner_id=1001,
         candidate_binding={"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
                            "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
-        provider_receipt={"immutable_id": "fixture-verdict-receipt-1", "provider": "fixture-provider",
-                          "evidence_sha256": "9701f32841a7f0e2a6c9496384a68061f61e01478768582917df9c7612f53e21",
-                          "candidate_binding": {"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
-                                                 "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
-                          "owner_id": 1001})
+        )
     verdict.pop("schema_version", None)
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,
             "specialists": [], "review_submission": review_submission, "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,

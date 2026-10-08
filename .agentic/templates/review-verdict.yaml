@@ -25,25 +25,12 @@
     "pr_body_link": "urn:awf:UNFILLED",
     "evidence": [],
     "owner_review": false,
-    "provider_observed": false,
     "owner_id": 1,
     "candidate_binding": {
       "repository_id": 1,
       "pr_number": 1,
       "base_sha": "0000000000000000000000000000000000000000",
       "head_sha": "0000000000000000000000000000000000000000"
-    },
-    "provider_receipt": {
-      "immutable_id": "UNFILLED",
-      "provider": "UNFILLED",
-      "evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "candidate_binding": {
-        "repository_id": 1,
-        "pr_number": 1,
-        "base_sha": "0000000000000000000000000000000000000000",
-        "head_sha": "0000000000000000000000000000000000000000"
-      },
-      "owner_id": 1
     }
   }
 }
