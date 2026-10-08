@@ -15,7 +15,7 @@ from jsonschema import Draft202012Validator
 from agentic import ValidationError
 from agentic.canonical import sha256
 from agentic.review_loop import LoopStore, enroll, pause, resume, tick, validate_review
-from agentic.providers.github_review_host import HostDriver, is_source_repository, load_config, protected, safe_path
+from agentic.providers.github_review_host import HostDriver, is_source_repository, load_config, protected, reviewed_model_effort_pairs, safe_path
 
 ROOT = Path(__file__).resolve().parents[2]
 CANDIDATE = {'repository_id':12,'pr':7,'head':'a'*40,'base':'b'*40,'head_ref':'codex/test','base_ref':'main'}
@@ -431,6 +431,7 @@ class HostTests(unittest.TestCase):
         git = shutil.which('git')
         if not git:
             self.skipTest('Git executable unavailable for source identity regression')
+        self.value['executables']['git'] = {'path': git, 'sha256': sha256(Path(git).read_bytes())}
         def command(*args):
             return subprocess.run([git, *args], text=True, encoding='utf-8', capture_output=True, check=True).stdout.strip()
         command('init', '--initial-branch=main', str(candidate))
@@ -441,7 +442,7 @@ class HostTests(unittest.TestCase):
         self.value.update(allowed_paths=['.agentic/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
         self.path.write_text(json.dumps(self.value))
         self.assertEqual(load_config(self.path, self.base/'runtime')['allowed_paths'], ['.agentic/a.py'])
-        self.assertTrue(is_source_repository(candidate))
+        self.assertTrue(is_source_repository(candidate, git_runner=HostDriver(load_config(self.path, self.base/'runtime'), ROOT).git))
         (candidate/'MANIFEST.json').unlink()
         command('-C', str(candidate), 'add', '.')
         command('-C', str(candidate), 'commit', '-m', 'remove source marker')
@@ -648,3 +649,24 @@ class HostTests(unittest.TestCase):
             self.assertTrue(protected(value))
         for value in ['../a','/a','-a','C:' + '/a','a\\b','a\nsecret']:
             self.assertFalse(safe_path(value))
+
+    def test_source_and_reviewed_policy_reads_ignore_path_git_substitute(self):
+        driver, candidate, command = self.local_git_driver()
+        (driver.worker/'.agentic/lib/agentic').mkdir(parents=True)
+        (driver.worker/'.agentic').mkdir(exist_ok=True)
+        (driver.worker/'.agentic/lib/agentic/__init__.py').write_text('')
+        (driver.worker/'MANIFEST.json').write_text('{}')
+        (driver.worker/'.agentic/SPECIFICATION.md').write_text('source marker')
+        (driver.worker/'.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(
+            {'execution': {'model_routing': {'models': {
+                'fixture-critic': {'reasoning_efforts': ['ultra']}}}}}))
+        driver.git(driver.worker, 'add', '.')
+        driver.git(driver.worker, 'commit', '-m', 'source markers and routing policy')
+        revision = driver.git(driver.worker, 'rev-parse', 'HEAD')
+        decoy = self.base/'decoy-git'; decoy.mkdir()
+        shutil.copy2(sys.executable, decoy/'git.exe')
+        path = os.environ.get('PATH', '')
+        with patch.dict(os.environ, {'PATH': str(decoy) + os.pathsep + path}):
+            self.assertTrue(is_source_repository(driver.worker, revision, git_runner=driver.git))
+            self.assertEqual(reviewed_model_effort_pairs(driver.worker, revision, git_runner=driver.git),
+                             {'fixture-critic': ['ultra']})
