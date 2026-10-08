@@ -8,7 +8,7 @@ These host/rules/qualification requirements apply to live loop enablement, not i
 
 Use an approved release and locked Python environment outside candidate checkouts. Prepare four physically separate directories: trusted runtime, protected state, clean worker clone and independent critic clone. Both clones need exact origin `https://github.com/OWNER/REPO.git`; the worker must already match the owned PR branch/head. Transfer existing writer ownership before enrollment.
 
-Copy [host-config.example.json](../review-loop/host-config.example.json) into the state directory. Complete its placeholders: repository/PR/branches, executable SHA-256 pins for native Git/gh/Codex, runtime manifest pin, frozen contract path/hash, worker/critic models, exact allowed files, initial finding ledger, CI App/workflow pins, limits and qualification record. Changed requirements, binaries or configuration require reviewed replacement enrollment; never silently update pins. `reasoning_effort` is optional, but each selected role must be present in `approved_model_effort_pairs`; `codex_config_overrides` is an explicit key allowlist (currently `windows.sandbox`).
+Copy [host-config.example.json](../review-loop/host-config.example.json) into the state directory. Complete its placeholders: repository/PR/branches, executable SHA-256 pins for native Git/gh/Codex, runtime manifest pin, frozen contract path/hash, worker/critic models, exact allowed files, initial finding ledger, CI App/workflow pins, limits and qualification record. Changed requirements, binaries or configuration require reviewed replacement enrollment; never silently update pins. `reasoning_effort` is optional. When `approved_model_effort_pairs` is empty or absent, reasoning-effort validation falls back to the reviewed policy read from the candidate's immutable base commit's `.agentic/PROJECT_CONFIG.yaml`; otherwise, each role's effort is checked against that role model's entry in `approved_model_effort_pairs`. `codex_config_overrides` is an explicit key allowlist (currently `windows.sandbox`).
 
 The AWF source repository may opt into protected source paths only when the enrolled candidate checkout contains the root `MANIFEST.json` plus the named AWF source markers, and the reviewed config declares both `risk_tier: "Tier 3"` and an exact `governed_source_paths` allowlist (for example `[".agentic/**"]`). The trusted runtime is not evidence that a candidate is the AWF source repository; downstream repositories retain protected-path refusal.
 
@@ -30,9 +30,9 @@ python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json stat
 For the operator live check against a disposable AWF PR on the 4090, run these exact commands from the trusted runtime after preparing separate pinned runtime/state/worker/critic directories (the writer does not perform this live check):
 
 ```text
-ABSOLUTE_RUNTIME/python.exe -B ABSOLUTE_RUNTIME/.agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json check
-ABSOLUTE_RUNTIME/python.exe -B ABSOLUTE_RUNTIME/.agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json enroll
-ABSOLUTE_RUNTIME/python.exe -B ABSOLUTE_RUNTIME/.agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json tick
+ABSOLUTE_RUNTIME/.agentic/.venv/Scripts/python.exe -B ABSOLUTE_RUNTIME/.agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json check
+ABSOLUTE_RUNTIME/.agentic/.venv/Scripts/python.exe -B ABSOLUTE_RUNTIME/.agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json enroll
+ABSOLUTE_RUNTIME/.agentic/.venv/Scripts/python.exe -B ABSOLUTE_RUNTIME/.agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json tick
 ```
 
 Example config fragment:
