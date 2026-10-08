@@ -25,9 +25,35 @@ def protected(path):
     return path.casefold() == 'scripts/bootstrap_project.py' or any(x.casefold() in {p.casefold() for p in PROTECTED} for x in parts)
 
 
-def is_source_repository(root):
+def is_source_repository(root, revision='HEAD'):
     root = Path(root)
-    return (root / 'MANIFEST.json').is_file() and (root / '.agentic' / 'SPECIFICATION.md').is_file() and (root / '.agentic' / 'lib' / 'agentic').is_dir()
+    try:
+        result = subprocess.run(
+            ['git', '--no-replace-objects', '-c', 'core.useReplaceRefs=false',
+             '-c', 'protocol.file.allow=never', '-C', str(root),
+             'ls-tree', '-r', '--name-only', revision],
+            capture_output=True, text=True, encoding='utf-8', errors='strict',
+            env=isolated_git_env(dict(os.environ)), check=False)
+    except (OSError, UnicodeError):
+        return False
+    if result.returncode != 0:
+        return False
+    paths = set(result.stdout.splitlines())
+    return {'MANIFEST.json', '.agentic/SPECIFICATION.md'} <= paths and any(
+        path.startswith('.agentic/lib/agentic/') for path in paths)
+
+
+def reviewed_model_effort_pairs(root):
+    policy = Path(root) / '.agentic' / 'PROJECT_CONFIG.yaml'
+    if not policy.is_file():
+        return {}
+    try:
+        value = loads(policy.read_text(encoding='utf-8'))
+        models = value['execution']['model_routing']['models']
+        return {model: details['reasoning_efforts'] for model, details in models.items()
+                if isinstance(details, dict) and isinstance(details.get('reasoning_efforts'), list)}
+    except (OSError, UnicodeError, KeyError, TypeError, ValueError):
+        return {}
 
 
 def governed_path(path, patterns):
@@ -112,10 +138,15 @@ def load_config(path, runtime_root):
     require(all(safe_path(x) and (not protected(x) or (source_opt_in and governed_path(x, source_allowlist))) for x in config['allowed_paths']),
             'Amendment scope contains unsafe/protected paths; source governance requires an explicit Tier 3 allowlist')
     efforts = config.get('reasoning_effort') or {}
-    pairs = config.get('approved_model_effort_pairs') or {}
+    pairs = reviewed_model_effort_pairs(config['worker_checkout'])
+    host_pairs = config.get('approved_model_effort_pairs') or {}
     for role, effort in efforts.items():
-        require(config['models'][role] in pairs and effort in pairs[config['models'][role]],
-                f'{role} reasoning_effort is not an approved model/effort pair')
+        model = config['models'][role]
+        require(model in pairs and effort in pairs[model],
+                f'{role} reasoning_effort is not an approved model/effort pair in the reviewed project policy')
+        if host_pairs:
+            require(model in host_pairs and effort in host_pairs[model],
+                    f'{role} reasoning_effort is not an approved host model/effort pair')
     require(isinstance(config['required_checks'], list) and config['required_checks'], 'At least one pinned CI check is required')
     names = set()
     for check in config['required_checks']:
@@ -228,7 +259,7 @@ class HostDriver:
         self.prepare_critic(candidate)
         raw = self.git(self.critic,'diff','--no-ext-diff','--name-only','-z',candidate['base']+'...'+candidate['head'])
         files = [x for x in raw.split('\0') if x]
-        source_opt_in = is_source_repository(self.worker) and bool(self.c.get('governed_source_paths')) and self.c.get('risk_tier') in {3, 'Tier 3'}
+        source_opt_in = is_source_repository(self.critic, candidate['head']) and bool(self.c.get('governed_source_paths')) and self.c.get('risk_tier') in {3, 'Tier 3'}
         require(files and all(safe_path(x) and (not protected(x) or (source_opt_in and governed_path(x, self.c['governed_source_paths']))) for x in files),
                 'Protected governance or unsafe/empty candidate; separate human review required')
         return files
@@ -293,7 +324,7 @@ class HostDriver:
         untracked = self.git(self.worker,'ls-files','--others','-z').split('\0')
         paths = sorted(set(x for x in changed + untracked if x))
         require(paths and set(paths) <= set(self.c['allowed_paths']), 'Worker changed files outside exact enrolled scope')
-        source_opt_in = is_source_repository(self.root) and bool(self.c.get('governed_source_paths')) and self.c.get('risk_tier') in {3, 'Tier 3'}
+        source_opt_in = is_source_repository(self.worker, candidate['head']) and bool(self.c.get('governed_source_paths')) and self.c.get('risk_tier') in {3, 'Tier 3'}
         require(all(safe_path(x) and (not protected(x) or (source_opt_in and governed_path(x, self.c['governed_source_paths']))) for x in paths),
                 'Unsafe/protected amendment')
         self.last_amendment_paths = list(paths)
