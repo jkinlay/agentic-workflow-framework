@@ -2,7 +2,7 @@
 
 416 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `66ef8dff099d088da8b8f4265ca12b0705d7389bf42b75797f98c91ec66755a2`
+MANIFEST.json SHA-256: `b80455239cbafa160dcd0bb62f45302f1eec8547fc83e82676ef1b3f4ae515b8`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -30,11 +30,11 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/benchmarks/native/routine-rubric.json` | `c9b2bf9d1953b8b1c777964c1d20e813e76f002937e22ab9b0945aa5c247c653` |
 | `.agentic/benchmarks/native/rubric.json` | `61e719369395e2721f8a7aa9a819ca8203947547dd6793ed9f6994df4442628f` |
 | `.agentic/docs/20-NEW-PROJECT-SETUP.md` | `098be369dfaa316e5cbe9c91a140a18b28c22f1c1e8919caf00b88360ed48c4f` |
-| `.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md` | `05da6bcf88c887f911d9fef8e17e4c025c8ecf334f0028ac156d820a0d63b52e` |
+| `.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md` | `6702e9f50e37a59fa8c4bf5e7dcf4d05de6c24dc0efc1cd411545fb32b100e9a` |
 | `.agentic/docs/23-TICKET-LIFECYCLE.md` | `61d193f874899b383a68d7709094b4d4ade50c57c1de85f00bc44b59fda68cba` |
 | `.agentic/docs/24-STREAM-STARTUP.md` | `6c45da377c5f030f94126ee55bd3d3e073178ca17ab257083f80ba0827cdb7ac` |
 | `.agentic/docs/27-MODEL-ROUTING.md` | `45317fe79cfef562544285d7235be954488ff5b4e8dffc72dd9053fa29ff1b44` |
-| `.agentic/docs/28-EXTERNAL-REVIEW.md` | `c53cf16430cb0b8b44915104f02bcc8ab09cf47608aeb1865eb491d25c7d31a2` |
+| `.agentic/docs/28-EXTERNAL-REVIEW.md` | `c648f9ac4adac11f609dfb65243fb8503b8c71a1823caf8df862a318fb300dc4` |
 | `.agentic/docs/29-OPERATING-CONFIGURATION.md` | `e3925429f5457a98180ddfad0b7eb2fef6cd6f6a19e702bd4d248b3e77ff717b` |
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `be2ba691bd38a10a9256d99f25c5400aa4337f068e4fd1b3e42ca5b91e8a6d84` |
 | `.agentic/docs/31-PUBLICATION-SAFETY.md` | `03614f4d9a8b057537c0c89df7c2474027a529fc7f9c1da97f90e568f5983ad8` |
@@ -104,7 +104,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/provider_identity.py` | `d95ae1def1279357ca53b0c51151f4fe483a16ac5e8f8b843800afeb1176289c` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
 | `.agentic/lib/agentic/providers/github.py` | `0228ed2d7c57617052ef97209c6ae357b893d3151dd97df267ab2a86d4e2f12d` |
-| `.agentic/lib/agentic/providers/github_review_host.py` | `916f8378b60c7bc1a990b460702cc9999d5fb89f8a708da0b21f8bb6f5cb1569` |
+| `.agentic/lib/agentic/providers/github_review_host.py` | `908df68c107e83001485f2056becb35a5efbb518e826783c9e1db204e947d50f` |
 | `.agentic/lib/agentic/providers/github_reviewer_removal.py` | `6bdbe9065e3ffe29561113e5c267b4cb033b9e01855b4597e09ec8056f3cbf8e` |
 | `.agentic/lib/agentic/providers/github_status.py` | `69820fd9191039666142014b29c1e254218608ce33020a78cc6d133e99955776` |
 | `.agentic/lib/agentic/publication.py` | `645cee15b49c91bc7c47a0f02eef7b2575a098d5c0a0853aebae6d31bf1a4bec` |
@@ -113,7 +113,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/repository_rules.py` | `6c04a815378ced7163dc763e3fb9a93889f8adde5461c4a58d5df13c20a27fcc` |
 | `.agentic/lib/agentic/review_completion.py` | `f6189002c270f9fe6e75bc9c38731c84da4e72fa4e9292f7421a569070b9ee3f` |
 | `.agentic/lib/agentic/review_host.py` | `5bd04cd379021bddee6a76878aa40f91824346f20f985864d7a6df13b888bb1f` |
-| `.agentic/lib/agentic/review_loop.py` | `828486e177ba4429971fda272a8fa694538c710bacfcdd8618a26edbd5aee61c` |
+| `.agentic/lib/agentic/review_loop.py` | `66746bc9996ca9d4c76836ff1df85d4685445f535bc36546de92af01545e015b` |
 | `.agentic/lib/agentic/review_policy.py` | `89b69c97341dfcdcec193caad804a4c3f67e7b87bc73b7268d1545461954e6b2` |
 | `.agentic/lib/agentic/rules_activation.py` | `f9c5ccdfc309acc13ec998466d458ee9898298f692d19a6309bfbaf3fb76d7cb` |
 | `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
@@ -128,8 +128,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/prompts/worker.md` | `72bd7340dafbd047736f4fb8d37a5c9118f99dfd2fb51c7b5defbe52c8fba498` |
 | `.agentic/requirements.lock` | `bd1285b6ec6e41c2e07a6054033c9c62304c6af9c280eb624c6ec931db68087b` |
 | `.agentic/review-loop/critic-prompt.md` | `29f7168d4a9b53e66ffd5b1949920a4a45a8c415f43e5e68d9a87c30385abef4` |
-| `.agentic/review-loop/critic-result.schema.json` | `d7c6ad1ee417f6a29232bfa4d8c5b8534573e217dc215a87b5b2dd8bad2f9e3d` |
-| `.agentic/review-loop/host-config.example.json` | `217da8f12149fd0b0d380308788d9af7d82d0a54f5b8f2cc5774023fccbb01c6` |
+| `.agentic/review-loop/critic-result.schema.json` | `3ff075eac56689f17cbce26a7c3e3d0b6ca19cfe86ceffaac9fc956bec61baea` |
+| `.agentic/review-loop/host-config.example.json` | `de9a77354f000206249cbc3d50b20252c27b8ac187a76d4f8d9c45400733dfa4` |
 | `.agentic/review-loop/worker-prompt.md` | `41fdc2f23c7ba34063afe7482146618d75aa9e277f1e0f803e4214d4992241e7` |
 | `.agentic/review-loop/worker-result.schema.json` | `cb6f0e3c2a57810b62a627492216a3d5a0739f0d159cb389b36007f8fcaffe9a` |
 | `.agentic/schemas/activation-status.schema.json` | `92451291e4a2d0db62a78d4f9c79a9af18a1b162897a00172b005693694e06fe` |
@@ -395,7 +395,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/generate_examples.py` | `83a1eb4c5a323f40116161222132db9fdc77707798973eb921916938828b18d2` |
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
-| `scripts/generate_review_loop.py` | `7043b0c1db9d1d8eef9ae82a845781dadf12643d47577df3c2edb6d11453b999` |
+| `scripts/generate_review_loop.py` | `8191a9d2b51cd8e5c4588278c3e89b2daa861168ee2dbd4d9f9811e3a22f5cfe` |
 | `scripts/generate_rules_activation.py` | `e9f72016edcb898ac1ddc480c4d12181fb889118de776b8e536d090757edcaaa` |
 | `scripts/prompt_templates/amendment.md` | `99fdf23206b59af9dc6cfcc4386afba5f2576263836878281f9aa4b7918fbec3` |
 | `scripts/prompt_templates/controller.md` | `9658efb7c66d5b9c45ad5cce46bfc9eea4ecdff6b5c7d1d2ea255325eff8c67a` |

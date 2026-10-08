@@ -81,11 +81,17 @@
             "type": "string"
           },
           "basis": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "pattern": "^(criterion:.+|boundary:(PROTECTED_PATH|SCOPE_ESCAPE|CREDENTIAL_EXPOSURE|UNSAFE_PATH|UNREGISTERED_PRODUCER|CI_BINDING|INDEPENDENCE))$"
           },
           "supersedes": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -94,7 +100,9 @@
           "status",
           "file",
           "message",
-          "evidence"
+          "evidence",
+          "basis",
+          "supersedes"
         ],
         "additionalProperties": false
       }
