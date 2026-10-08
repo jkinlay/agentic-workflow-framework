@@ -65,7 +65,7 @@ Immediately before its amendment push, the host scans every patch and message in
 
 Defaults allow three amendment attempts (plus at most `max_cap_extensions` owner extensions, default two), ten agent runs and 24 CI waits. Attempts remain consumed after failure/resume; amendments touching only `evidence_paths` consume none. At the cap the loop pauses with `REVIEW_CAP_REACHED` and resumes only with `--disposition` (an owner's MERGE_WITH_NOTES, PARK, RESCOPE or EXTEND_ONE_CYCLE). Critics retain finding identities and bases and review every changed file. CI requires current head, pinned App identity, Actions workflow path/content and successful conclusion; null App identity or unsupported provenance pauses.
 
-`READY_FOR_FINAL_GATE` hands complete evidence/specialist reconciliation to the [ticket lifecycle](23-TICKET-LIFECYCLE.md); it is not READY_FOR_OWNER_AUTHORIZATION until the final gate passes. The loop operates an existing PR, never creates the initial draft, merges or writes Jira. Native COMPLETE first creates the draft; current validation/requirements and mark-ready precede critic dispatch on the observed PR head. Jira lifecycle writes belong to the controller (one mapped write per event with readback, no Epic writes, no mismatch/unknown retry); the loop never writes Jira.
+`READY_FOR_FINAL_GATE` hands complete evidence/specialist reconciliation to the [ticket lifecycle](23-TICKET-LIFECYCLE.md); it is not READY_FOR_OWNER_AUTHORIZATION until the final gate passes. Ordinary enrolled ticks operate an existing PR; they never create the initial draft, merge or write Jira. The supported `first-draft` entry point creates the initial draft from a native ticket, then enrollment, current validation/requirements and mark-ready precede critic dispatch on the observed PR head. Jira lifecycle writes belong to the controller (one mapped write per event with readback, no Epic writes, no mismatch/unknown retry); the loop never writes Jira.
 
 ### First draft from a native ticket
 
@@ -75,7 +75,7 @@ configuration and returns a `review_first_draft` receipt containing only its
 declared paths, actions and `tested_tree`. A worker that cannot write Git
 metadata leaves that receipt and worktree to the publisher. The publisher
 computes the same tree, verifies `HEAD^{tree}` equals `tested_tree`, renders a
-body containing the reviewed Tier 3 classification, and runs the history-aware
+body containing the reviewed Tier 1, Tier 2 or Tier 3 classification, and runs the history-aware
 publication scan over the exact base/head/body before a normal push. A failed
 scan blocks the push. After the draft PR is created, the host observes its
 number/head/body, calls `enroll_created_pr`, and records one run against

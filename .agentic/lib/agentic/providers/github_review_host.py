@@ -264,19 +264,32 @@ class HostDriver:
         """Read back the created PR body/tier before it can become loop authority."""
         require(isinstance(value, dict) and value.get('body') == body, 'Created PR body read-back mismatch')
         require(f'- Risk tier: {risk_tier}' in body, 'Created PR body does not record the reviewed risk tier')
-        self.bind_created_pr(value.get('number'))
-        return self.snapshot()
+        number = value.get('number')
+        # Complete provider read-back before mutating the pr=0 configuration;
+        # this keeps an uncertain creation addressable for reconciliation.
+        snapshot = self.snapshot(number=number)
+        self.bind_created_pr(number)
+        return snapshot
 
-    def snapshot(self):
-        pr = self.api(f'pulls/{self.c["pr"]}')
-        require(pr['number'] == self.c['pr'] and pr['base']['repo']['id'] == self.c['repository_id'], 'GitHub PR/repository identity mismatch')
+    def provider_base(self):
+        value = self.api(f'branches/{self.c["base_branch"]}')
+        require(isinstance(value, dict) and value.get('name') == self.c['base_branch'], 'GitHub base branch observation mismatch')
+        sha = value.get('commit', {}).get('sha')
+        require(isinstance(sha, str) and re.fullmatch('[0-9a-f]{40}', sha), 'GitHub base commit observation is malformed')
+        return sha
+
+    def snapshot(self, number=None):
+        number = self.c['pr'] if number is None else number
+        require(type(number) is int and number > 0, 'GitHub PR number must be positive for observation')
+        pr = self.api(f'pulls/{number}')
+        require(pr['number'] == number and pr['base']['repo']['id'] == self.c['repository_id'], 'GitHub PR/repository identity mismatch')
         if pr['state'] != 'open':
             return None
         require(pr['head']['repo'] is not None and pr['head']['repo']['id'] == self.c['repository_id'], 'Fork/third-party branch is not enrolled')
         require(pr['head']['ref'] == self.c['head_branch'] and pr['base']['ref'] == self.c['base_branch'], 'PR branch/target changed')
         for side in ['head','base']:
             require(re.fullmatch('[0-9a-f]{40}',pr[side]['sha']), 'Malformed Git commit')
-        return {'repository_id':self.c['repository_id'], 'pr':self.c['pr'], 'head':pr['head']['sha'],
+        return {'repository_id':self.c['repository_id'], 'pr':number, 'head':pr['head']['sha'],
             'base':pr['base']['sha'], 'head_ref':pr['head']['ref'], 'base_ref':pr['base']['ref']}
 
     def preflight(self, candidate):
@@ -351,9 +364,9 @@ class HostDriver:
         Draft202012Validator(loads((self.root / f'.agentic/review-loop/{role}-result.schema.json').read_text())).validate(value)
         return value
 
-    def first_draft_worker(self):
+    def first_draft_worker(self, *, run_id=None):
         """Run the pinned worker against the configured first-draft checkout."""
-        run_id = str(uuid.uuid4())
+        run_id = run_id or str(uuid.uuid4())
         run = self.state / 'runs' / run_id
         run.mkdir(parents=True, exist_ok=False)
         contract = Path(self.c['contract_path']).read_text(encoding='utf-8')

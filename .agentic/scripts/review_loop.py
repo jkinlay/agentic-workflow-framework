@@ -59,8 +59,11 @@ def main(argv=None):
             tier = config.get('risk_tier')
             require(tier in {1, 2, 3, 'Tier 1', 'Tier 2', 'Tier 3'}, 'A reviewed first-draft risk tier is required')
             contract = Path(config['contract_path']).read_text(encoding='utf-8')
-            def worker():
-                return driver.first_draft_worker()
+            provider_base = driver.provider_base()
+            local_base = driver.git(driver.worker, 'rev-parse', config['base_branch'])
+            require(local_base == provider_base, 'Worker checkout base does not match the provider base snapshot')
+            def worker(run_id=None):
+                return driver.first_draft_worker(run_id=run_id)
             def publisher(receipt):
                 body = render_first_draft_body(contract, risk_tier=tier,
                     worker_model=config['models']['worker'],
@@ -69,7 +72,9 @@ def main(argv=None):
                 class GitAdapter:
                     def run(self, *git_args):
                         return driver.git(driver.worker, *git_args)
-                return publish_tested_tree(driver.worker, driver.git(driver.worker, 'rev-parse', config['base_branch']),
+                current_provider_base = driver.provider_base()
+                require(current_provider_base == provider_base, 'Provider base branch moved during first-draft execution')
+                return publish_tested_tree(driver.worker, provider_base,
                     config['head_branch'], receipt, body=body, commit_message=args.title,
                     git=GitAdapter(), allowed_paths=config['allowed_paths'],
                     mapping_path=Path(config['state_dir']) / 'publication-deny.json') | {'body': body}

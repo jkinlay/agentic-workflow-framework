@@ -13,7 +13,7 @@ from hashlib import sha256
 from . import ValidationError
 from .gittree import candidate_tree, verify_publisher_tree
 from .publication import scan_repository
-from .review_loop import complete_first_draft, enroll, require, reserve_first_draft
+from .review_loop import complete_first_draft, enroll, first_draft_failure, require, reserve_first_draft
 
 
 def render_first_draft_body(contract, *, risk_tier, worker_model, reasoning_effort,
@@ -120,12 +120,16 @@ def run_first_draft(store, config, *, worker, publisher, observe_pr):
     guessed PR number or a publication result from becoming loop authority.
     """
     reservation = reserve_first_draft(store, config)
-    receipt = worker()
-    validate_worker_receipt(receipt, allowed_paths=set(config['allowed_paths']))
-    publication = publisher(receipt)
-    require(isinstance(publication, dict) and publication.get('head'),
-            'First-draft publisher returned no observed head')
-    snapshot = observe_pr(publication)
-    require(isinstance(snapshot, dict) and snapshot.get('head') == publication['head'],
-            'Created PR observation does not match the published head')
-    return enroll_created_pr(store, config, snapshot, first_draft_run=True)
+    try:
+        receipt = worker(reservation['inflight']['id'])
+        validate_worker_receipt(receipt, allowed_paths=set(config['allowed_paths']))
+        publication = publisher(receipt)
+        require(isinstance(publication, dict) and publication.get('head'),
+                'First-draft publisher returned no observed head')
+        snapshot = observe_pr(publication)
+        require(isinstance(snapshot, dict) and snapshot.get('head') == publication['head'],
+                'Created PR observation does not match the published head')
+        return enroll_created_pr(store, config, snapshot, first_draft_run=True)
+    except Exception as exc:
+        first_draft_failure(store, config, f'First-draft attempt requires reconciliation: {type(exc).__name__}: {exc}')
+        raise

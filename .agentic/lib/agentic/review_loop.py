@@ -171,6 +171,21 @@ def complete_first_draft(store, config, snapshot):
         return state
 
 
+def first_draft_failure(store, config, reason):
+    """Retain a failed first-draft reservation for explicit reconciliation."""
+    repository_id = config.get('repository_id', str(config['key']).split(':', 1)[0])
+    key = f"{repository_id}:0"
+    with store.lock():
+        try:
+            state = store.get(key)
+        except ValidationError:
+            return None
+        if state['phase'] == 'FIRST_DRAFT':
+            state.update(phase='PAUSED', reason=reason, generation=state['generation'] + 1)
+            store.save(state)
+        return state
+
+
 def pause(store, key, reason):
     with store.lock():
         state = store.get(key)
@@ -182,7 +197,26 @@ def pause(store, key, reason):
 def resume(store, config, snapshot, reconciled_run, disposition=None):
     """Resume a paused enrollment. A cap pause resumes only through an owner disposition record."""
     with store.lock():
-        state = store.get(config['key'])
+        try:
+            state = store.get(config['key'])
+        except ValidationError:
+            first_key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+            state = store.get(first_key)
+            require(config.get('pr', 0) > 0 and state['phase'] == 'PAUSED',
+                    'First-draft reservation is not available for reconciliation')
+            state['key'] = config['key']
+            state['owner'] = config['repository'] + ':' + config['head_branch']
+            state['config_hash'] = config['config_hash']
+            store.db.execute('BEGIN IMMEDIATE')
+            try:
+                body = json.dumps(state, sort_keys=True)
+                store.db.execute('DELETE FROM prs WHERE key=?', (first_key,))
+                store.db.execute('INSERT INTO prs VALUES (?,?,?)', (state['key'], state['owner'], body))
+                store.db.execute('INSERT INTO events(key,at,state) VALUES (?,?,?)', (state['key'], now_text(), body))
+                store.db.execute('COMMIT')
+            except Exception:
+                store.db.execute('ROLLBACK')
+                raise
         require(state['phase'] == 'PAUSED', 'Only paused enrollments can resume')
         require(state['config_hash'] == config['config_hash'], 'Configuration changed; retire and enroll a new reviewed configuration')
         expected = state['inflight']['id'] if state['inflight'] else 'none'
