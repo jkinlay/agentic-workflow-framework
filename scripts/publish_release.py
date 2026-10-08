@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -106,6 +107,24 @@ def git_run(root, *args, text=True, input_data=None):
     """Run Git with replacement objects disabled for release identity and bytes."""
     return run(["git", *RAW_GIT_ARGUMENTS, *args], cwd=root, env=isolated_git_env(), text=text,
                input_data=input_data)
+
+
+def push_release_tag(repository, tag, *, gh):
+    """Push one release tag with the GitHub CLI credential helper only.
+
+    Release Git commands normally cannot see a user's Git configuration.  Keep
+    that isolation for the push too, but explicitly provide the same ``gh``
+    credential route used by the draft-release command.  The empty helper
+    first clears any repository-configured helper, so the only helper Git can
+    invoke for this operation is the requested GitHub CLI executable.
+    """
+    helper = f"!{shlex.quote(str(gh))} auth git-credential"
+    try:
+        git_run(repository, "-c", "credential.helper=", "-c", f"credential.helper={helper}",
+                "push", "origin", f"refs/tags/{tag}")
+    except ReleaseError as exc:
+        raise ReleaseError(
+            f"Release tag push failed for {tag}; the draft GitHub release was not created") from exc
 
 
 def _tree_entries(repository, commit):
@@ -460,7 +479,7 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
         body_file.write_text(body, encoding="utf-8", newline="\n")
         git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
                 "-F", str(tag_file))
-        git_run(repository, "push", "origin", f"refs/tags/{tag}")
+        push_release_tag(repository, tag, gh=gh)
         run([gh, "release", "create", tag, *map(str, assets), "--repo", release_repo, "--draft", "--verify-tag",
              "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)
         return result

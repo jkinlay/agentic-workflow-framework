@@ -139,6 +139,42 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertFalse(result["remote_changes"])
         self.assertEqual("", command(["git", "tag", "--list", "v1.9.3"], self.repository))
 
+    def test_tag_push_uses_only_the_explicit_gh_credential_helper(self):
+        isolated = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        gh = "/tools/with spaces/gh"
+        with patch.object(publisher, "isolated_git_env", return_value=isolated) as isolated_git_env, \
+                patch.object(publisher, "run", return_value=SimpleNamespace(stdout="")) as run:
+            publisher.push_release_tag(self.repository, "v1.9.3", gh=gh)
+
+        isolated_git_env.assert_called_once_with()
+        run.assert_called_once_with(
+            ["git", *publisher.RAW_GIT_ARGUMENTS,
+             "-c", "credential.helper=",
+             "-c", f"credential.helper=!{publisher.shlex.quote(gh)} auth git-credential",
+             "push", "origin", "refs/tags/v1.9.3"],
+            cwd=self.repository, env=isolated, text=True, input_data=None)
+
+    def test_non_push_git_commands_remain_isolated(self):
+        isolated = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        with patch.object(publisher, "isolated_git_env", return_value=isolated), \
+                patch.object(publisher, "run", return_value=SimpleNamespace(stdout="")) as run:
+            publisher.git_run(self.repository, "status", "--porcelain=v1")
+            publisher.push_release_tag(self.repository, "v1.9.3", gh="gh")
+
+        status_call, push_call = run.call_args_list
+        self.assertEqual(isolated, status_call.kwargs["env"])
+        self.assertEqual(isolated, push_call.kwargs["env"])
+        self.assertNotIn("credential.helper=", status_call.args[0])
+        self.assertEqual(
+            ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"],
+            push_call.args[0][4:8])
+
+    def test_tag_push_failure_explains_that_release_creation_does_not_follow(self):
+        with patch.object(publisher, "git_run", side_effect=publisher.ReleaseError("push failed")):
+            with self.assertRaisesRegex(publisher.ReleaseError,
+                                        "draft GitHub release was not created"):
+                publisher.push_release_tag(self.repository, "v1.9.3", gh="gh")
+
     def worktree_paths(self):
         listing = command(["git", "worktree", "list", "--porcelain"], self.repository, self.git_env)
         return [line[len("worktree "):] for line in listing.splitlines() if line.startswith("worktree ")]
