@@ -31,6 +31,11 @@
     "worker": "CHANGE_ME",
     "critic": "CHANGE_ME"
   },
+  "reasoning_effort": null,
+  "approved_model_effort_pairs": {},
+  "codex_config_overrides": {},
+  "governed_source_paths": [],
+  "risk_tier": null,
   "allowed_paths": [
     "src/CHANGE_ME.py"
   ],
