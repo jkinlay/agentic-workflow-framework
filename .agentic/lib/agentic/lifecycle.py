@@ -169,7 +169,7 @@ def transition(state, event, facts=None, resume_state=None):
 
 
 def review_round_transition(tier, round_number, *, verdict="PENDING", open_findings=(),
-                            owner_review=False, ticketed_p2_ids=(), owner_cap_disposition=False,
+                            owner_review=False, ticketed_p2_records=(), owner_cap_disposition=None,
                             previous_diff_sha=None, current_diff_sha=None, base_only=False):
     """Lifecycle-facing review policy API; provider posting remains AWF-29."""
     if previous_diff_sha is not None and current_diff_sha is not None:
@@ -187,6 +187,6 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
     decision = review_decision(tier, round_number, latest_pass=verdict in {"PASS", "APPROVE"},
                                open_findings=open_findings, owner_review=owner_review,
                                owner_cap_disposition=owner_cap_disposition,
-                               ticketed_p2_ids=ticketed_p2_ids)
+                               ticketed_p2_records=ticketed_p2_records)
     return {**decision, "round": round_number, "history_preserved": True,
             "invalidated": False, "diff": diff, "verdict": verdict}

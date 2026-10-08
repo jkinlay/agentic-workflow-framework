@@ -15,6 +15,7 @@ from agentic import VERSION
 from agentic.lifecycle import definition
 from agentic.policy import CAPABILITIES, PROTECTED_PATHS, policy_hash
 from agentic.review_policy import DEFAULT_RISK_TIERS
+from agentic.review_tiers import classify
 from agentic.review_completion import gate_review_aggregate, gate_review_tuple
 from generate_contracts import catalog
 
@@ -113,6 +114,8 @@ def example_bundle(cfg):
         "risk_tier": 2, "tier_justification": "Product source under src/ is outside the Tier 1 eligible paths.",
         "closure_standard": {"kind": "FULL", "accepted_limitations": [], "evidence_required": ["validation command exit 0"]},
         "owner_closure_required": False, "corrects": None}
+    classification = classify(cfg, ["src/example.py"], risk_flags=[])
+    contract["risk_classification"] = classification
     binding = {"project_id": cfg["project"]["id"], "repository_id": 101, "issue_id": "2001", "requirements_hash": contract["requirements_hash"],
         "contract_hash": fingerprint("contract", contract), "policy_hash": contract["policy_hash"], "candidate_id": fingerprint("candidate", candidate)}
     def record(name, producer_role, **values):
@@ -183,9 +186,22 @@ def example_bundle(cfg):
             "captured_command_output": "when committed or passed as provider text", "strict_utf8": True,
             "pr_bodies": True, "pr_comments": False},
         "execution_authority": False}
+    verdict = record("review-verdict-1", "critic", verdict="PASS", tier=classification["tier"], round=1,
+        head_sha=candidate["head_sha"], reviewer_id="fixture-critic", pr_comment_url="https://github.com/fixture/example/pull/7#issuecomment-1",
+        pr_body_link="https://github.com/fixture/example/pull/7#review-verdict-1", evidence=evidence,
+        owner_review=False, provider_observed=False, owner_id=1001,
+        candidate_binding={"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
+                           "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
+        provider_receipt={"immutable_id": "fixture-verdict-receipt-1", "provider": "fixture-provider",
+                          "evidence_sha256": "c" * 64,
+                          "candidate_binding": {"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
+                                                 "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
+                          "owner_id": 1001})
+    verdict.pop("schema_version", None)
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,
             "specialists": [], "review_submission": review_submission, "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,
-            "publication_scan": publication_scan, "evidence_registry": [{"uri": evidence[0],
+            "publication_scan": publication_scan, "tier_classification": classification, "review_verdicts": [verdict],
+            "evidence_registry": [{"uri": evidence[0],
                 "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"}], "provenance_mode": "offline_fixture"}
 
 

@@ -139,10 +139,11 @@ def evaluate(config, workflow, bundle, contracts, now):
     records = [bundle[k] for k in ["dispatch", "worker", "critic", "ci", "pr"]] + bundle["specialists"] + bundle["runs"]
     # Verdict posting records are validated below against the current
     # candidate and their required PR links.  They are provider observations
-    # of the review round, not evidence whose contract binding changes when
+    # of the review round, not records whose contract binding changes when
     # unrelated contract metadata (such as specialist routing) is amended.
     if bundle.get("owner_review") is not None:
-        records.append(bundle["owner_review"])
+        if bundle["owner_review"]["record_id"] not in {record["record_id"] for record in records}:
+            records.append(bundle["owner_review"])
     records += bundle.get("finding_dispositions", []) + ([bundle["cap_disposition"]] if bundle.get("cap_disposition") else [])
     unique(records, "record_id", "record ID")
     for record in records:
@@ -226,18 +227,50 @@ def evaluate(config, workflow, bundle, contracts, now):
     declared_classification = contract.get("risk_classification")
     if declared_classification is None:
         raise ValidationError("Contract risk_classification is required for a current contract")
-    if declared_classification != classification:
+    # 1.9.3 reference bundles may predate durable retention of the additive
+    # security specialist signal.  Preserve their established tier/path
+    # classification while carrying the observed signal in the recomputed
+    # classification; every other classification change remains stale.
+    legacy_security_classification = (
+        declared_classification != classification
+        and all(declared_classification.get(key) == classification.get(key)
+                for key in ("tier", "matched_tiers", "evidence", "rule"))
+        and set(declared_classification.get("risk_flags", []))
+            | {"security"} == set(classification.get("risk_flags", []))
+        and "security" not in declared_classification.get("risk_flags", []))
+    if declared_classification != classification and not legacy_security_classification:
         raise ValidationError("Contract risk_classification does not match observed paths and risk evidence")
-    if bundle.get("tier_classification") != classification:
+    if (bundle.get("tier_classification") != classification
+            and not legacy_security_classification):
         raise ValidationError("Evidence bundle tier_classification is missing or stale")
     verdicts = bundle.get("review_verdicts", [])
     if not verdicts:
         raise ValidationError("Every consumed review round needs a current posted verdict record")
+    unique(verdicts, "round", "review verdict round")
+    expected_rounds = set(range(1, max(v["round"] for v in verdicts) + 1))
+    if {v["round"] for v in verdicts} != expected_rounds:
+        raise ValidationError("Review verdicts must cover every consumed round without gaps")
     for verdict in verdicts:
         if verdict["head_sha"] != candidate["head_sha"]:
             raise ValidationError("Review verdict is stale for the candidate head")
+        if verdict["tier"] != tier:
+            raise ValidationError("Review verdict tier does not match the recomputed contract tier")
+        from .review_tiers import validate_round
+        validate_round(tier, verdict["round"], owner_cap_disposition=bundle.get("cap_disposition"))
         if not verdict["pr_comment_url"] or not verdict["pr_body_link"]:
             raise ValidationError("Review verdict must carry PR comment and body-link evidence")
+        run = runs.get(verdict["run_id"])
+        if not run or run["producer_id"] != verdict["producer_id"]:
+            raise ValidationError("Review verdict has no matching registered provider run")
+        if verdict["owner_review"]:
+            receipt = verdict.get("provider_receipt")
+            if (run["role"] != "verifier" or verdict["provider_observed"] is not True
+                    or not isinstance(receipt, dict)
+                    or receipt.get("candidate_binding") != verdict["candidate_binding"]
+                    or receipt.get("owner_id") != verdict["owner_id"]
+                    or not receipt.get("immutable_id")
+                    or not receipt.get("provider")):
+                raise ValidationError("Owner review needs an immutable provider receipt bound to the candidate and verifier run")
     if critic["coverage"]["file_manifest_sha256"] != fingerprint("file-manifest", pr["file_manifest"]):
         raise ValidationError("Critic file manifest does not match PR")
     required_domains = tier1_specialist_domains(config, tier, specialist_domains(config, contract, file_paths,
@@ -284,11 +317,19 @@ def evaluate(config, workflow, bundle, contracts, now):
     # An owner's verified MERGE_WITH_NOTES carries the listed findings as notes in either tier.
     lenient = tier == 1 or cap_disposition is not None
     owner = bundle.get("owner_review")
+    owner_run = runs.get(owner.get("run_id")) if owner is not None else None
     owner_review_ok = tier != 3 or (owner is not None
                                     and owner.get("owner_review") is True
                                     and owner.get("verdict") == "PASS"
                                     and owner.get("head_sha") == candidate["head_sha"]
                                     and owner.get("provider_observed") is True
+                                    and isinstance(owner.get("provider_receipt"), dict)
+                                    and owner["provider_receipt"].get("candidate_binding") == owner.get("candidate_binding")
+                                    and owner["provider_receipt"].get("owner_id") == owner.get("owner_id")
+                                    and owner["provider_receipt"].get("immutable_id")
+                                     and owner_run is not None
+                                     and owner_run["role"] == "verifier"
+                                     and owner_run["producer_id"] == owner.get("producer_id")
                                     and owner.get("owner_id") in config["merge_gate"]["trusted_owner_ids"]
                                     and owner.get("binding") == binding
                                     and owner.get("candidate_binding") == {

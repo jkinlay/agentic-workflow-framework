@@ -121,6 +121,7 @@ class Fixture(unittest.TestCase):
             run["binding"] = copy.deepcopy(binding)
         for verdict in self.bundle.get("review_verdicts", []):
             verdict["binding"] = copy.deepcopy(binding)
+            verdict["tier"] = classification["tier"]
         return binding
 
 

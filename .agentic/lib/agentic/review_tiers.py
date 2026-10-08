@@ -23,6 +23,7 @@ _TIER3_WORDS = ("governance", "release", "merge", "qualification", "gate")
 _TIER3_FLAGS = {"permissions", "release", "merge_gate", "ci_gate",
                 "schema_or_migration", "data_loss", "concurrency", "production",
                 "public_api", "high_complexity", "high_uncertainty"}
+_OBSERVED_FLAGS = _TIER3_FLAGS | {"security"}
 
 
 def _matches(path, patterns):
@@ -76,7 +77,7 @@ def classify(config, paths, *, risk_flags=(), evidence=(), complexity=None):
     # classification.  Domain-only flags (for example ``security`` used to
     # request a specialist) must not make an otherwise unchanged
     # classification stale.
-    classification_flags = sorted(flags & _TIER3_FLAGS)
+    classification_flags = sorted(flags & _OBSERVED_FLAGS)
     return {"tier": selected, "matched_tiers": [tier for tier, reasons in matched.items() if reasons],
             "evidence": {str(tier): reasons for tier, reasons in matched.items() if reasons},
             "rule": f"highest matching tier wins; Tier {selected} permits up to {ROUND_CAPS[selected]} round(s)",
@@ -94,11 +95,33 @@ def round_cap(tier, config=None):
     return cap
 
 
-def validate_round(tier, round_number, *, owner_cap_disposition=False, config=None):
+def _cap_disposition_valid(value):
+    return (isinstance(value, dict)
+            and value.get("decision") == "EXTEND_ONE_CYCLE"
+            and isinstance(value.get("record_id"), str)
+            and bool(value.get("authenticated"))
+            and bool(value.get("bounded")))
+
+
+def _ticketed_finding_ids(records):
+    """Return findings backed by retained ticket records, never echoed IDs."""
+    result = set()
+    for record in records or ():
+        if not isinstance(record, dict):
+            continue
+        finding_id = record.get("finding_id")
+        ticket_key = record.get("ticket_key")
+        if (isinstance(finding_id, str) and finding_id
+                and isinstance(ticket_key, str) and ticket_key):
+            result.add(finding_id)
+    return result
+
+
+def validate_round(tier, round_number, *, owner_cap_disposition=None, config=None):
     cap = round_cap(tier, config)
     if type(round_number) is not int or round_number < 1:
         raise ValidationError("review round must be a positive integer")
-    if round_number > cap and not owner_cap_disposition:
+    if round_number > cap and not _cap_disposition_valid(owner_cap_disposition):
         raise ValidationError(f"Tier {tier} review cap is {cap}; an additional round needs an explicit owner cap disposition")
     return True
 
@@ -118,10 +141,10 @@ def verdict_record(*, pr_comment_url, pr_body_link, verdict, tier, round_number,
 
 
 def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_review=False,
-                    owner_cap_disposition=False, ticketed_p2_ids=()):
+                    owner_cap_disposition=None, ticketed_p2_records=(), ticketed_p2_ids=None):
     """Derive qualification/escalation at the tier-specific round boundary."""
     cap = round_cap(tier)
-    if rounds > cap and not owner_cap_disposition:
+    if rounds > cap and not _cap_disposition_valid(owner_cap_disposition):
         raise ValidationError(f"Tier {tier} refuses review round {rounds}; owner cap disposition required")
     findings = list(open_findings or ())
     p1 = [f for f in findings if f.get("severity") in P1 or f.get("priority") in P1]
@@ -137,10 +160,11 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
         return {"status": "ROUTE_TO_OWNER", "reason": "P1 remains open at Tier 2 cap", "cap": cap}
     if tier == TIER_2 and rounds >= cap and p2:
         ids = {f.get("id") for f in p2}
-        if not ids.issubset(set(ticketed_p2_ids)):
+        mapped = _ticketed_finding_ids(ticketed_p2_records)
+        if not ids.issubset(mapped):
             return {"status": "TICKET_P2", "ticket_required": sorted(ids), "cap": cap}
         p2 = []
-    if latest_pass and not p1 and not p2 and (tier != TIER_3 or owner_review):
+    if latest_pass and not p1 and (tier != TIER_3 or owner_review):
         return {"status": "QUALIFIED", "cap": cap}
     return {"status": "CONTINUE", "cap": cap}
 

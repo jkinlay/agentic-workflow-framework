@@ -118,9 +118,13 @@
     "corrects": null,
     "risk_classification": {
       "tier": 2,
-      "matched_tiers": [2],
+      "matched_tiers": [
+        2
+      ],
       "evidence": {
-        "2": ["code or non-Tier-1 change uses the Tier 2 default"]
+        "2": [
+          "code or non-Tier-1 change uses the Tier 2 default"
+        ]
       },
       "rule": "highest matching tier wins; Tier 2 permits up to 3 round(s)",
       "risk_flags": []
@@ -561,49 +565,6 @@
   "prior_findings": [],
   "finding_dispositions": [],
   "cap_disposition": null,
-  "tier_classification": {
-    "tier": 2,
-    "matched_tiers": [2],
-    "evidence": {
-      "2": ["code or non-Tier-1 change uses the Tier 2 default"]
-    },
-    "rule": "highest matching tier wins; Tier 2 permits up to 3 round(s)",
-    "risk_flags": []
-  },
-  "review_verdicts": [
-    {
-      "record_id": "2f0a1e8b-5b5d-5a83-a2a4-79c0a2cf6d18",
-      "created_at": "2026-09-09T12:00:00Z",
-      "producer_id": "fixture-critic",
-      "run_id": "7d8465fe-d08b-53de-9c80-c839f0dad8fe",
-      "binding": {
-        "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
-        "repository_id": 101,
-        "issue_id": "2001",
-        "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "ad9486dda48e163c4ce3d63363ba8a79feca4d9e8346b2e01c819b6698148dab",
-        "policy_hash": "ad9808acdb0a50d3a6c19e9024934217a528b5c23154e60b240753fec00949ed",
-        "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
-      },
-      "verdict": "PASS",
-      "tier": 2,
-      "round": 1,
-      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "reviewer_id": "fixture-critic",
-      "pr_comment_url": "https://example.test/comment/1",
-      "pr_body_link": "https://example.test/pr#verdict-1",
-      "evidence": ["urn:awf:fixture:example-evidence"],
-      "owner_review": false,
-      "provider_observed": false,
-      "owner_id": 1,
-      "candidate_binding": {
-        "repository_id": 101,
-        "pr_number": 7,
-        "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
-        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      }
-    }
-  ],
   "publication_scan": {
     "schema_version": 3,
     "status": "PASS",
@@ -637,6 +598,67 @@
     },
     "execution_authority": false
   },
+  "tier_classification": {
+    "tier": 2,
+    "matched_tiers": [
+      2
+    ],
+    "evidence": {
+      "2": [
+        "code or non-Tier-1 change uses the Tier 2 default"
+      ]
+    },
+    "rule": "highest matching tier wins; Tier 2 permits up to 3 round(s)",
+    "risk_flags": []
+  },
+  "review_verdicts": [
+    {
+      "record_id": "53838cd2-48b6-5273-908a-db2c70facf0c",
+      "created_at": "2026-09-09T12:00:00Z",
+      "producer_id": "fixture-critic",
+      "run_id": "7d8465fe-d08b-53de-9c80-c839f0dad8fe",
+      "binding": {
+        "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+        "repository_id": 101,
+        "issue_id": "2001",
+        "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+        "contract_hash": "ad9486dda48e163c4ce3d63363ba8a79feca4d9e8346b2e01c819b6698148dab",
+        "policy_hash": "ad9808acdb0a50d3a6c19e9024934217a528b5c23154e60b240753fec00949ed",
+        "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+      },
+      "verdict": "PASS",
+      "tier": 2,
+      "round": 1,
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "reviewer_id": "fixture-critic",
+      "pr_comment_url": "https://github.com/fixture/example/pull/7#issuecomment-1",
+      "pr_body_link": "https://github.com/fixture/example/pull/7#review-verdict-1",
+      "evidence": [
+        "urn:awf:fixture:example-evidence"
+      ],
+      "owner_review": false,
+      "provider_observed": false,
+      "owner_id": 1001,
+      "candidate_binding": {
+        "repository_id": 101,
+        "pr_number": 7,
+        "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "provider_receipt": {
+        "immutable_id": "fixture-verdict-receipt-1",
+        "provider": "fixture-provider",
+        "evidence_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "candidate_binding": {
+          "repository_id": 101,
+          "pr_number": 7,
+          "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "owner_id": 1001
+      }
+    }
+  ],
   "evidence_registry": [
     {
       "uri": "urn:awf:fixture:example-evidence",

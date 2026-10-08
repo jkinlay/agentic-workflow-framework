@@ -18,7 +18,8 @@
     "owner_review",
     "provider_observed",
     "owner_id",
-    "candidate_binding"
+    "candidate_binding",
+    "provider_receipt"
   ],
   "properties": {
     "record_id": {
@@ -177,6 +178,69 @@
           "type": "string",
           "minLength": 1,
           "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "provider_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "immutable_id",
+        "provider",
+        "evidence_sha256",
+        "candidate_binding",
+        "owner_id"
+      ],
+      "properties": {
+        "immutable_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "candidate_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository_id",
+            "pr_number",
+            "base_sha",
+            "head_sha"
+          ],
+          "properties": {
+            "repository_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "pr_number": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "base_sha": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "head_sha": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          }
+        },
+        "owner_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         }
       }
     }

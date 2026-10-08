@@ -593,12 +593,25 @@ def review_tier_defaults(config):
     retained records or invents reviewer identities.
     """
     import copy
-    value = copy.deepcopy(config)
+    raw = isinstance(config, (bytes, bytearray))
+    original_comments = []
+    if raw:
+        original_text = bytes(config).decode("utf-8")
+        original_comments = [line for line in original_text.splitlines()
+                             if line.lstrip().startswith("#")]
+    value = copy.deepcopy(load_yaml(config) if raw else config)
+    if not isinstance(value, dict):
+        raise ValidationError("Migration is not deterministic. Project configuration must be a mapping")
     execution = value.setdefault("execution", {})
     tiers = execution.setdefault("risk_tiers", {})
     tiers.setdefault("tier3_review", {"roles": ["critic", "specialist"],
                                        "findings": "blocking", "max_rounds": 3})
-    return value
+    if not raw:
+        return value
+    rendered = json.dumps(value, indent=2, ensure_ascii=False)
+    if original_comments:
+        rendered += "\n" + "\n".join(original_comments)
+    return (rendered + "\n").encode("utf-8")
 
 
 def config_diff(before, after, previous, current):
@@ -625,7 +638,8 @@ def apply_chain(table, version, project_config, operating_config, receipt, prove
     reports = []
     for previous, current, new_settings in migration_chain(table, version):
         target = target_entry if current == table["target"] else table["versions"][current]
-        migrated = migrate_step(bundle, previous, current, target)
+        migration = {("1.9.3", "1.9.4"): migrate_1_9_3_to_1_9_4}.get((previous, current))
+        migrated = migration(bundle, target) if migration else migrate_step(bundle, previous, current, target)
         reports.append({"from": previous, "to": current, "configuration_diff":
                         config_diff(bundle.project_config, migrated.project_config, previous, current),
                         "new_required_settings": list(new_settings),

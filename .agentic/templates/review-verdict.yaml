@@ -3,6 +3,19 @@
   "status": "UNFILLED",
   "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
   "record": {
+    "record_id": "00000000-0000-0000-0000-000000000000",
+    "created_at": "1970-01-01T00:00:00Z",
+    "producer_id": "UNFILLED",
+    "run_id": "00000000-0000-0000-0000-000000000000",
+    "binding": {
+      "project_id": "00000000-0000-0000-0000-000000000000",
+      "repository_id": 1,
+      "issue_id": "UNFILLED",
+      "requirements_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "candidate_id": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
     "verdict": "PASS",
     "tier": 1,
     "round": 1,
@@ -11,6 +24,26 @@
     "pr_comment_url": "urn:awf:UNFILLED",
     "pr_body_link": "urn:awf:UNFILLED",
     "evidence": [],
-    "owner_review": false
+    "owner_review": false,
+    "provider_observed": false,
+    "owner_id": 1,
+    "candidate_binding": {
+      "repository_id": 1,
+      "pr_number": 1,
+      "base_sha": "0000000000000000000000000000000000000000",
+      "head_sha": "0000000000000000000000000000000000000000"
+    },
+    "provider_receipt": {
+      "immutable_id": "UNFILLED",
+      "provider": "UNFILLED",
+      "evidence_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "candidate_binding": {
+        "repository_id": 1,
+        "pr_number": 1,
+        "base_sha": "0000000000000000000000000000000000000000",
+        "head_sha": "0000000000000000000000000000000000000000"
+      },
+      "owner_id": 1
+    }
   }
 }

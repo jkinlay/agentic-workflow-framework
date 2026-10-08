@@ -91,6 +91,12 @@
           "urn:awf:UNFILLED"
         ]
       },
+      "verdict_posting": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
       "acceptance_criteria": {
         "result": "FAIL",
         "evidence": [

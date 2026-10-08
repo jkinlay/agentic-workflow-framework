@@ -32,8 +32,20 @@ class ReviewTiers194Tests(unittest.TestCase):
         finding = {"id": "F2", "severity": "MINOR"}
         result = review_decision(2, 3, latest_pass=True, open_findings=[finding])
         self.assertEqual("TICKET_P2", result["status"])
-        result = review_decision(2, 3, latest_pass=True, open_findings=[finding], ticketed_p2_ids=["F2"])
+        result = review_decision(2, 3, latest_pass=True, open_findings=[finding],
+                                 ticketed_p2_records=[{"finding_id": "F2", "ticket_key": "AWF-100"}])
         self.assertEqual("QUALIFIED", result["status"])
+
+    def test_tier1_pass_qualifies_with_advisory_minor(self):
+        self.assertEqual("QUALIFIED", review_decision(
+            1, 1, latest_pass=True, open_findings=[{"id": "M", "severity": "MINOR"}])["status"])
+
+    def test_cap_requires_authenticated_bounded_record(self):
+        with self.assertRaises(ValidationError):
+            review_decision(2, 4, owner_cap_disposition=True)
+        self.assertEqual("CONTINUE", review_decision(2, 4, owner_cap_disposition={
+            "decision": "EXTEND_ONE_CYCLE", "record_id": "owner-record",
+            "authenticated": True, "bounded": True})["status"])
 
     def test_tier2_cap_p1_routes_owner(self):
         self.assertEqual("ROUTE_TO_OWNER", review_decision(
@@ -48,6 +60,8 @@ class ReviewTiers194Tests(unittest.TestCase):
         self.assertEqual(3, result["tier"])
         self.assertEqual([2, 3], result["matched_tiers"])
         self.assertTrue(result["evidence"]["3"])
+        classified = classify(self.config, ["src/app.py"], risk_flags=["security"])
+        self.assertEqual(["security"], classified["risk_flags"])
 
     def test_base_only_keeps_history_but_diff_change_invalidates(self):
         self.assertFalse(diff_effect("a", "a", base_only=True)["invalidate"])
