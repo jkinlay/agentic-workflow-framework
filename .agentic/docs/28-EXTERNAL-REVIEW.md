@@ -39,3 +39,13 @@ from a trusted runtime and protected state directory. Critics inspect the
 current observed PR head, retain stable finding IDs and re-review after every
 amendment. Findings, review completion and CI status never authorize a merge;
 the final gate and human authorization remain mandatory.
+
+For a new ticket, the first-draft bridge in
+`agentic.review_first_draft` runs before this enrolled loop. It preserves the
+same pinned worker route and exact allowed paths, requires a tested-tree
+receipt, performs the history-aware scan on the prospective PR body before the
+first push, and then enrolls the observed draft PR. The first-draft run is
+counted in `max_agent_runs` but does not consume an amendment cycle. A host
+publisher may commit the worker's tested tree when Git metadata is unavailable
+inside the worker sandbox; any `HEAD^{tree}` mismatch is a scope violation and
+must return to the worker.

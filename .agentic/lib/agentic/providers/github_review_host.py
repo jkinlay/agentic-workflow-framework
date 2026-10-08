@@ -47,7 +47,10 @@ def load_config(path, runtime_root):
         'executables','models','allowed_paths','required_checks','max_amendment_cycles','max_ci_wait_ticks',
         'max_agent_runs','command_timeout_seconds','agent_timeout_seconds','qualification','initial_findings','max_review_age_seconds'}
     optional = {'github_host', 'evidence_paths', 'max_cap_extensions', 'governed_source_paths', 'risk_tier',
+                'first_draft',
                 'reasoning_effort', 'approved_model_effort_pairs', 'codex_config_overrides'}
+    if 'first_draft' in config:
+        require(config['first_draft'] is True, 'first_draft must be true when present')
     require(isinstance(config, dict) and required <= set(config) and set(config) <= required | optional, 'Missing or unexpected host configuration field')
     if 'evidence_paths' in config:
         require(isinstance(config['evidence_paths'], list) and all(isinstance(x, str) and x.strip() for x in config['evidence_paths']), 'evidence_paths must list glob patterns')
@@ -79,8 +82,10 @@ def load_config(path, runtime_root):
     validate_review({'candidate':{},'verdict':'BLOCKED','reviewed_files':[], 'findings':config['initial_findings'],
         'summary':'Initial ledger validation'}, {}, [], [])
     require(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', config['repository']) is not None, 'Invalid repository')
-    for key in ['repository_id','pr','max_amendment_cycles','max_ci_wait_ticks','max_agent_runs','command_timeout_seconds','agent_timeout_seconds','max_review_age_seconds']:
+    for key in ['repository_id','max_amendment_cycles','max_ci_wait_ticks','max_agent_runs','command_timeout_seconds','agent_timeout_seconds','max_review_age_seconds']:
         require(type(config[key]) is int and config[key] > 0, f'Invalid positive integer: {key}')
+    require(type(config['pr']) is int and (config['pr'] > 0 or config.get('first_draft') is True),
+            'pr must be positive unless this is an explicitly marked first-draft host')
     require(config['max_amendment_cycles'] <= 10 and config['max_agent_runs'] <= 50 and config['max_ci_wait_ticks'] <= 288, 'Unbounded cycle/run/wait policy')
     require(config['command_timeout_seconds'] <= 120 and config['agent_timeout_seconds'] <= 3600, 'Unbounded process timeout')
     require(config['max_review_age_seconds'] <= 86400, 'Review freshness limit exceeds one day')
@@ -187,6 +192,19 @@ class HostDriver:
 
     def api(self, suffix):
         return loads(self.run('gh', ['api','--hostname','github.com','--method','GET',f'repos/{self.c["repository"]}/{suffix}']))
+
+    def create_draft_pr(self, *, title, body, head, base):
+        """Create exactly one normal draft PR; caller observes it before enrollment."""
+        require(self.c.get('first_draft') is True, 'Host is not configured for first-draft creation')
+        require(all(isinstance(x, str) and x.strip() for x in (title, body, head, base)),
+                'Draft PR identity and body are required')
+        value = loads(self.run('gh', ['api', '--hostname', 'github.com', '--method', 'POST',
+            f'repos/{self.c["repository"]}/pulls', '-f', f'title={title}', '-f', f'body={body}',
+            '-f', f'head={head}', '-f', f'base={base}', '-F', 'draft=true']))
+        require(isinstance(value, dict) and type(value.get('number')) is int and value['number'] > 0,
+                'GitHub did not return a draft PR identity')
+        require(value.get('draft') is True, 'Created PR was not observed as a draft')
+        return value
 
     def snapshot(self):
         pr = self.api(f'pulls/{self.c["pr"]}')

@@ -26,7 +26,7 @@ def main():
     worker = obj({'candidate':candidate,'outcome':{'type':'string','enum':['CHANGED','NO_CHANGE','BLOCKED']},'summary':string})
     write('critic-result.schema.json',critic)
     write('worker-result.schema.json',worker)
-    write('host-config.example.json',{'version':1,'automation_default':True,'github_host':'github.com','repository':'CHANGE_ME/CHANGE_ME',
+    write('host-config.example.json',{'version':1,'automation_default':True,'first_draft':True,'github_host':'github.com','repository':'CHANGE_ME/CHANGE_ME',
         'repository_id':0,'pr':0,'head_branch':'codex/CHANGE_ME','base_branch':'main',
         'state_dir':'C:/awf-state','worker_checkout':'C:/awf-worker','critic_checkout':'C:/awf-critic',
         'contract_path':'C:/awf-state/contract.md','contract_sha256':'CHANGE_ME','runtime_manifest_sha256':'CHANGE_ME',

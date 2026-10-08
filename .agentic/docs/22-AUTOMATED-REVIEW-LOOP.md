@@ -49,6 +49,20 @@ Defaults allow three amendment attempts (plus at most `max_cap_extensions` owner
 
 `READY_FOR_FINAL_GATE` hands complete evidence/specialist reconciliation to the [ticket lifecycle](23-TICKET-LIFECYCLE.md); it is not READY_FOR_OWNER_AUTHORIZATION until the final gate passes. The loop operates an existing PR, never creates the initial draft, merges or writes Jira. Native COMPLETE first creates the draft; current validation/requirements and mark-ready precede critic dispatch on the observed PR head. Jira lifecycle writes belong to the controller (one mapped write per event with readback, no Epic writes, no mismatch/unknown retry); the loop never writes Jira.
 
+### First draft from a native ticket
+
+The native worker is the only initial writer. It receives the pinned ticket
+contract, model/effort, sandbox and allowlisted Codex overrides from the host
+configuration and returns a `review_first_draft` receipt containing only its
+declared paths, actions and `tested_tree`. A worker that cannot write Git
+metadata leaves that receipt and worktree to the publisher. The publisher
+computes the same tree, verifies `HEAD^{tree}` equals `tested_tree`, renders a
+body containing the reviewed Tier 3 classification, and runs the history-aware
+publication scan over the exact base/head/body before a normal push. A failed
+scan blocks the push. After the draft PR is created, the host observes its
+number/head/body, calls `enroll_created_pr`, and records one run against
+`max_agent_runs`; amendment cycles remain zero. No merge or Jira action occurs.
+
 ## Schedule and recover
 
 Preview Windows registration, then repeat with `-Create` within existing host authority:

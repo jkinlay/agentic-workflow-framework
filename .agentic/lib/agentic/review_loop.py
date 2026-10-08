@@ -113,15 +113,18 @@ class LoopStore:
             tree.write(relative, (f'Recorded at: {state["reported_at"]}\n\n'+render_markdown(state)).encode('utf-8'))
 
 
-def enroll(store, config, snapshot):
+def enroll(store, config, snapshot, *, first_draft_run=False):
     initial = deepcopy(config.get('initial_findings', []))
     validate_review({'candidate':snapshot,'verdict':'BLOCKED','reviewed_files':[],
         'findings':initial,'summary':'Operator-adopted initial finding ledger'}, snapshot, [], [])
+    require(not first_draft_run or config['max_agent_runs'] >= 1,
+            'First-draft run cannot be charged against a zero agent-run budget')
     state = {'key': config['key'], 'owner': config['repository'] + ':' + snapshot['head_ref'],
         'config_hash': config['config_hash'], 'phase': 'REVIEW', 'candidate': snapshot,
         'findings': initial, 'cycles': 0, 'cap_extensions': 0, 'evidence_only_amendments': 0, 'dispositions': [],
-        'agent_runs': 0, 'wait_ticks': 0, 'generation': 1,
-        'inflight': None, 'last_review': None, 'reason': 'Enrolled', 'history': []}
+        'agent_runs': 1 if first_draft_run else 0, 'wait_ticks': 0, 'generation': 1,
+        'inflight': None, 'last_review': None,
+        'reason': 'Enrolled after first draft' if first_draft_run else 'Enrolled', 'history': []}
     with store.lock():
         store.save(state, new=True)
     return state

@@ -1,6 +1,7 @@
 {
   "version": 1,
   "automation_default": true,
+  "first_draft": true,
   "github_host": "github.com",
   "repository": "CHANGE_ME/CHANGE_ME",
   "repository_id": 0,
