@@ -300,7 +300,7 @@
     ".agentic/validation/reference-tests.json": "a47a1b470324b265f69f96299594b83ea7374e7a767039443c7b5b78bb0c7ada",
     ".agentic/workflow-version.yaml": "bf134ab0e4196340a23fc87c5cbf1ea177b9da6d0a4cff543319c6e1f854b0c2",
     ".agentic/workflow.yaml": "dd28e841ed4d2a09e912c3ecd02b6bbb02aae86011a873fae87cdedc348cfe4e",
-    ".gitattributes": "bc1553b97cf129935e90d30d4d2854566a1882e8f83844f24568d4b25ae58402",
+    ".gitattributes": "94c0646012f362c5ef9d09273f994d4de0513066e6cf2b8966308238b897d43b",
     ".github/CODEOWNERS": "84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a",
     ".github/PULL_REQUEST_TEMPLATE.md": "412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72",
     ".github/workflows/ci.yml": "469da3251767c5755683f4e956dbaf113edc06412f520aa47491f2f11b5c1257",
