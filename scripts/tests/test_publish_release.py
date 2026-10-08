@@ -139,6 +139,50 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertFalse(result["remote_changes"])
         self.assertEqual("", command(["git", "tag", "--list", "v1.9.3"], self.repository))
 
+    def worktree_paths(self):
+        listing = command(["git", "worktree", "list", "--porcelain"], self.repository, self.git_env)
+        return [line[len("worktree "):] for line in listing.splitlines() if line.startswith("worktree ")]
+
+    def test_validation_runs_real_git_dependent_tests_in_a_removed_checkout_of_the_commit(self):
+        # Regression: validation ran in the Git-less projection, so self-test
+        # cases needing HEAD, attributes or ls-tree failed with "not a git
+        # repository".  Run real cases of that kind through publish's own path.
+        before = self.worktree_paths()
+        seen = {}
+
+        def real_git_validation(source, output, env):
+            seen["source"] = Path(source)
+            seen["head"] = command(["git", "rev-parse", "HEAD"], source)
+            seen["status"] = command(["git", "status", "--porcelain", "--untracked-files=all"], source)
+            result = subprocess.run(
+                [sys.executable, "-B", "-m", "unittest",
+                 "test_upgrade_matrix.UpgradeMatrixTests.test_fixture_blobs_are_stored_byte_exactly_by_git",
+                 "test_publication.PublicationScanTests.test_alias_renderer_and_shipped_ignore_rule"],
+                cwd=Path(source) / ".agentic/tests", env=env, capture_output=True, text=True, timeout=600)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertIn("Ran 2 tests", result.stderr)
+            return self.fake_validation(source, output, env)
+
+        result = publisher.publish(self.repository, self.commit, self.base / "git-validation-output",
+                                   self.windows_check, self.windows_pin, dry_run=True,
+                                   validation_runner=real_git_validation)
+        self.assertEqual("DRY_RUN", result["status"])
+        self.assertEqual(self.commit, seen["head"])
+        self.assertEqual("", seen["status"])
+        self.assertFalse(seen["source"].exists())
+        self.assertEqual(before, self.worktree_paths())
+
+        def failing_validation(source, output, env):
+            seen["failed_source"] = Path(source)
+            raise publisher.ReleaseError("synthetic validation failure")
+
+        with self.assertRaisesRegex(publisher.ReleaseError, "synthetic validation failure"):
+            publisher.publish(self.repository, self.commit, self.base / "git-validation-failure-output",
+                              self.windows_check, self.windows_pin, dry_run=True,
+                              validation_runner=failing_validation)
+        self.assertFalse(seen["failed_source"].exists())
+        self.assertEqual(before, self.worktree_paths())
+
     def test_k6_reports_untracked_tracked_and_version_disagreement_together(self):
         readme = self.repository / "README.md"
         original = readme.read_bytes()

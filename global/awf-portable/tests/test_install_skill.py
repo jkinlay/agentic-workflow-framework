@@ -233,8 +233,10 @@ class InstallerTests(unittest.TestCase):
         self.run_install(preserve_relative=["owner.json"])
         self.assertEqual((self.dest / "owner.json").read_text(encoding="utf-8"), "{}")
         receipt = installer.read_json(self.dest / installer.RECEIPT)
+        # The default owner settings from old_skill() are preserved alongside the custom file.
         self.assertEqual(receipt["preserved_local_inventory"], {
-            "owner.json": installer.digest(self.dest / "owner.json")})
+            name: installer.digest(self.dest / name)
+            for name in ("catalog-location.json", "owner.json", "update-channel.json")})
         with self.assertRaisesRegex(installer.InstallError, "override"):
             self.run_install(preserve_relative=["scripts/awf.py"])
 
