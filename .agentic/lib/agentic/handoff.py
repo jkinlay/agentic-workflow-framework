@@ -15,6 +15,9 @@ from urllib.parse import urlsplit, urlunsplit
 from . import VERSION
 from .canonical import fingerprint, load, loads, now_text, timestamp
 from .child_process import child_env
+from .configuration import inspect_config
+from .contracts import Contracts
+from .lifecycle import definition
 from .operating import read_operating
 
 SCHEMA = "awf-handoff-snapshot-1"
@@ -43,6 +46,9 @@ _SCP_REMOTE = re.compile(
     r"(?P<host>(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])):"
     r"(?P<path>[^\s\\]+)"
 )
+_STATUS_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+_BLOCKER_EVIDENCE = "Diagnostic details omitted; inspect current status locally."
+_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
 
 
 def _field(value, basis, observed_at):
@@ -170,6 +176,37 @@ def _operating_routes(root, governance):
     return routes, operating.operating_hash
 
 
+def _accepted_config(root):
+    """Return the current configuration only when runtime validation accepts it."""
+    try:
+        config = load(root / ".agentic/PROJECT_CONFIG.yaml")
+        instructions = root / "PROJECT_INSTRUCTIONS.md"
+        report = inspect_config(
+            config, definition(), Contracts(_SCHEMA_DIR),
+            project_instructions=(instructions.read_text(encoding="utf-8")
+                                  if instructions.is_file() else None),
+        )
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        return None
+    return config if report.get("status") == "ACCEPTED" else None
+
+
+def _blockers(checks):
+    """Project status checks without exporting their potentially secret diagnostics."""
+    projected = []
+    for item in checks if isinstance(checks, list) else ():
+        if not isinstance(item, dict) or item.get("state") in ("PASS", "N_A", "SKIP"):
+            continue
+        code = item.get("code")
+        state = item.get("state")
+        projected.append({
+            "code": code if isinstance(code, str) and _STATUS_NAME.fullmatch(code) else "STATUS_CHECK",
+            "state": state if isinstance(state, str) and _STATUS_NAME.fullmatch(state) else "UNKNOWN",
+            "evidence": _BLOCKER_EVIDENCE,
+        })
+    return projected
+
+
 def _completed_tickets(state_path, project_id, root):
     """Read DONE tickets from a project-bound, hash-chained coordinator store.
 
@@ -257,13 +294,7 @@ def build_snapshot(root, *, status=None, now=None, state_path=None):
     if status is None:
         from .providers.github_status import project_status
         status = project_status(root)
-    config_path = root / ".agentic/PROJECT_CONFIG.yaml"
-    try:
-        config = load(config_path)
-    except (OSError, ValueError):
-        config = None
-    if not isinstance(config, dict):
-        config = None
+    config = _accepted_config(root)
     jira = config.get("jira") if config else {}
     github = config.get("github") if config else {}
     execution = config.get("execution") if config else None
@@ -295,8 +326,7 @@ def build_snapshot(root, *, status=None, now=None, state_path=None):
         if observed_operating_hash != operating_hash:
             operating_hash, routes = None, None
     branch = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
-    blockers = [{"code": item.get("code"), "state": item.get("state"), "evidence": item.get("evidence")}
-                for item in status.get("checks", []) if item.get("state") not in ("PASS", "N_A", "SKIP")]
+    blockers = _blockers(status.get("checks"))
     return {
         "schema": SCHEMA,
         "generated_at": now,
@@ -401,6 +431,12 @@ def _route_set(value):
     return True
 
 
+def _sorted_unique_strings(items, pattern):
+    return (isinstance(items, list) and
+            all(isinstance(item, str) and pattern.fullmatch(item) is not None for item in items) and
+            items == sorted(set(items)))
+
+
 def _value_valid(dotted, value):
     validators = {
         "repository.path": _text,
@@ -419,10 +455,8 @@ def _value_valid(dotted, value):
         "jira.provider_project_id": _text,
         "jira.project_key": _text,
         "jira.controller_actor_id": _text,
-        "external_resources": lambda items: isinstance(items, list) and items == sorted(set(items)) and
-        all(isinstance(item, str) and _RESOURCE_NAME.fullmatch(item) is not None for item in items),
-        "completed_tickets": lambda items: isinstance(items, list) and items == sorted(set(items)) and
-        all(isinstance(item, str) and _TICKET.fullmatch(item) is not None for item in items),
+        "external_resources": lambda items: _sorted_unique_strings(items, _RESOURCE_NAME),
+        "completed_tickets": lambda items: _sorted_unique_strings(items, _TICKET),
         "blockers": lambda items: isinstance(items, list) and all(
             isinstance(item, dict) and set(item) == {"code", "state", "evidence"} and
             all(_text(item[key]) for key in ("code", "state", "evidence")) for item in items),

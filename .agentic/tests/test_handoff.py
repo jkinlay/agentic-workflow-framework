@@ -176,6 +176,29 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["external_resources"], {"value": None, "basis": "unavailable",
                                                            "observed_at": "2026-10-07T00:00:00Z"})
 
+    def test_schema_invalid_configuration_marks_resources_unavailable(self):
+        self.config["execution"]["host_broker"]["resources"] = {"bad-name": 1}
+        (self.root / ".agentic/PROJECT_CONFIG.yaml").write_text(
+            json.dumps(self.config), encoding="utf-8")
+        snapshot = self.snapshot()
+        self.assertEqual(snapshot["external_resources"],
+                         {"value": None, "basis": "unavailable",
+                          "observed_at": "2026-10-07T00:00:00Z"})
+
+    def test_blocker_diagnostics_are_not_exported(self):
+        secret = "ghp_EXAMPLE_SECRET"
+        status = json.loads(json.dumps(STATUS))
+        status["operating"] = {"hash": self.operating_hash, "status": "ACCEPTED"}
+        status["checks"] = [{"code": "OPERATING_INVALID", "state": "INVALID",
+                             "evidence": "Rejected operating source: " + secret}]
+        snapshot = build_snapshot(self.root, status=status, now="2026-10-07T00:00:00Z")
+        rendered = json.dumps(snapshot) + render_markdown(snapshot)
+        self.assertNotIn(secret, rendered)
+        self.assertEqual(snapshot["blockers"]["value"], [{
+            "code": "OPERATING_INVALID", "state": "INVALID",
+            "evidence": "Diagnostic details omitted; inspect current status locally.",
+        }])
+
     def test_snapshot_claiming_authority_or_unknown_schema_is_rejected(self):
         forged = self.snapshot()
         forged["merge_authority"] = True
@@ -203,6 +226,15 @@ class HandoffSnapshotTests(unittest.TestCase):
         result = compare_snapshot(malformed, self.snapshot())
         self.assertEqual(result["status"], "REJECTED")
         self.assertIn("external_resources", result["invalid_fields"])
+
+        for field in ("external_resources", "completed_tickets"):
+            with self.subTest(field=field):
+                malformed = self.snapshot()
+                malformed[field] = {"value": [{}], "basis": "verified",
+                                    "observed_at": "2026-10-07T00:00:00Z"}
+                result = compare_snapshot(malformed, self.snapshot())
+                self.assertEqual(result["status"], "REJECTED")
+                self.assertIn(field, result["invalid_fields"])
 
         malformed = self.snapshot()
         malformed["operating"]["routes"]["value"]["controller"]["token"] = "rejected"
