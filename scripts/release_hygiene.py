@@ -1,5 +1,6 @@
 """Check real release documentation budgets, operational versions and prompts."""
 from pathlib import Path
+import os
 import re
 import sys
 
@@ -8,6 +9,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agentic import VERSION, ValidationError
+from agentic.installer import install_owned_path
 from generate_prompts import render_prompts
 
 HISTORY = {'CHANGELOG.md', 'MANIFEST.md', 'MANIFEST.json',
@@ -115,14 +117,34 @@ def stale_versions(body, current):
     return sorted(found)
 
 
+def hygiene_files(root):
+    """List checked files while pruning repository and installer-owned trees."""
+    root = Path(root)
+    files = []
+    for directory, names, filenames in os.walk(root):
+        relative_directory = Path(directory).relative_to(root)
+        kept = []
+        for name in sorted(names):
+            relative = (relative_directory / name).as_posix()
+            if name in {'.git', '.tmp-tests'} or install_owned_path(relative + '/'):
+                continue
+            kept.append(name)
+        names[:] = kept
+        for name in sorted(filenames):
+            path = Path(directory) / name
+            relative = path.relative_to(root).as_posix()
+            if not install_owned_path(relative):
+                files.append(path)
+    return sorted(files)
+
+
 def check_release(root=ROOT, version=None):
     root = Path(root)
     current = version or VERSION
     version_tuple(current)
     problems, budgets = [], []
     total_words = manifest_words = 0
-    files = sorted(p for p in root.rglob('*') if p.is_file() and
-                   not ({'.git', '.tmp-tests'} & set(p.relative_to(root).parts)))
+    files = hygiene_files(root)
     for path in files:
         rel = path.relative_to(root)
         if path.suffix.lower() == '.md':
