@@ -2,7 +2,7 @@
 
 428 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `367d429e9241ab74bc4cb1b14c68a4170c8d00d0c2e3deb3e32ed02cf8e506da`
+MANIFEST.json SHA-256: `d43e179e1e3da3edb625781bee72341fbfa7ec4c7deaa39a70fa0f013985a0e2`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -260,7 +260,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/worker-result.yaml` | `d770c07863bcd51bbb3dd1d913251e07e13099fd41580b2c8597c1f799bda569` |
 | `.agentic/tests/fixtures/fake_host_process.py` | `01c5f76eecd2a7453ca8cadee05914f588d3d27610b6a96aa306303dfedb5e12` |
 | `.agentic/tests/review_admission_fixture.py` | `4ece32c0f91c1f1c7b4a6ec6f5789c046121ae59dc720075477925acea22389f` |
-| `.agentic/tests/source_only.py` | `a9a93a0dc32738ebd403881fa928992430ef2c0c66c3dea6e4fae01fe10ed5b2` |
+| `.agentic/tests/source_only.py` | `d152c442111ed0ba54c1a5e2e3218dfa5426ae04c8e7446f8d7f36f585d099b5` |
 | `.agentic/tests/test_adoption_status.py` | `0365d1d303b06b0810ae0fa71c87e38c3af2cff3df0437f0de0afd6c38d76a6c` |
 | `.agentic/tests/test_adoption_validation.py` | `40ec9ae752eaa17a42aac78b10e83ccc89f1adb1ccedcca97a8f29855279f4cb` |
 | `.agentic/tests/test_bootstrap_configuration.py` | `2a96e3b578b044417ff20deb164db75203ca9e7ccd54721974ac89ab1fcdebe2` |
@@ -302,7 +302,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_routing_cli.py` | `3961ba8354548fb84917514011b3b788e333f2b6165b7eb63bd0e3c13715ab4f` |
 | `.agentic/tests/test_routing_integration.py` | `fa76c13c504ada646c428a0462715691d3da205aa699ee79c83f1b5c939a3696` |
 | `.agentic/tests/test_rules_activation.py` | `a80728328f2f8ec76369c1431e31270ecaf7c82055288496d65d8da0e03aeb85` |
-| `.agentic/tests/test_source_only.py` | `b360fcd8fb9aeb087e44119bde5e9925ab9f1b5ca129b9064697023bda489038` |
+| `.agentic/tests/test_source_only.py` | `c7d3d835fcdbdc5c144fec2faeebe9944ffa7385d44d3a1d433288cf0bb82b5f` |
 | `.agentic/tests/test_store_regressions.py` | `2cf43379f37928ead367f3fc60e4e282a7814a84194765b6cdd759a99dc42859` |
 | `.agentic/tests/test_streams.py` | `48f359adfefd62954d36373f4791819b3e61291ba41326979dac463c8411c122` |
 | `.agentic/tests/test_upgrade_194.py` | `9a830eb7bb65ef835c9de24c205d656db78d3edcf902c4463c31c73a2216ef53` |

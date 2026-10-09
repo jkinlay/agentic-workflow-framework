@@ -41,23 +41,47 @@ def skip_unless_source_repo(reason: str = SOURCE_ONLY_REASON, *paths: str):
 
 
 def committed_git_tuple(root: Path):
-    """Return the committed HEAD/tree tuple, or ``None`` for a commitless tree.
+    """Return the committed HEAD/tree tuple, or ``None`` for a verified unborn HEAD.
 
     Test modules use this during import, so an installed project's initialized
     but commitless repository must be an ordinary unavailable fixture rather
-    than a module-load error.
+    than a module-load error. Every other Git failure is an error: source
+    checkouts must not silently skip suites because Git is unavailable, unsafe,
+    misconfigured, permission-denied, or corrupt.
     """
-    values = []
-    for revision in ("HEAD", "HEAD^{tree}"):
+    def run(*arguments):
         try:
-            completed = subprocess.run(
-                ["git", "-C", str(root), "rev-parse", "--verify", revision],
+            return subprocess.run(
+                ["git", "-C", str(root), *arguments],
                 capture_output=True, text=True, check=False)
-        except OSError:
+        except OSError as exc:
+            raise RuntimeError(
+                "Git execution failed while resolving the committed test tuple"
+            ) from exc
+
+    head = run("rev-parse", "--verify", "HEAD")
+    if head.returncode != 0:
+        inside = run("rev-parse", "--is-inside-work-tree")
+        symbolic = run("symbolic-ref", "-q", "HEAD")
+        branch = symbolic.stdout.strip()
+        branch_ref = run("show-ref", "--verify", "--quiet", branch)
+        status = run("status", "--porcelain=v1", "--untracked-files=no")
+        if (inside.returncode == 0 and inside.stdout.strip() == "true"
+                and symbolic.returncode == 0 and branch.startswith("refs/heads/")
+                and branch_ref.returncode == 1
+                and status.returncode == 0):
             return None
+        raise RuntimeError(
+            "Git could not resolve HEAD and the repository does not have a verified unborn HEAD"
+        )
+
+    values = []
+    for revision, completed in (
+            ("HEAD", head),
+            ("HEAD^{tree}", run("rev-parse", "--verify", "HEAD^{tree}"))):
         value = completed.stdout.strip()
         if completed.returncode != 0 or len(value) not in (40, 64) or any(
                 character not in "0123456789abcdefABCDEF" for character in value):
-            return None
+            raise RuntimeError(f"Git returned an invalid committed {revision} object ID")
         values.append(value.lower())
     return tuple(values)
