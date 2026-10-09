@@ -10,10 +10,12 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
 
 from agentic.installer import install  # noqa: E402
+from source_only import skip_unless_source_repo  # noqa: E402
 from upgrade_fixtures import materialize, verify_materialized  # noqa: E402
 
 
 class Upgrade194Tests(unittest.TestCase):
+    @skip_unless_source_repo()
     def test_193_dry_run_reaches_plan_without_conflicts(self):
         destination = Path(tempfile.gettempdir()) / ("awf-upgrade-194-" + uuid.uuid4().hex)
         destination.mkdir()
