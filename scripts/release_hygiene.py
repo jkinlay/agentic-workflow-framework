@@ -36,6 +36,7 @@ MOJIBAKE_SIGNATURES = {
 LONG_FORM = {'SPECIFICATION.md', '.agentic/docs/20-NEW-PROJECT-SETUP.md',
              '.agentic/docs/21-EXISTING-PROJECT-ADOPTION.md',
              '.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md',
+             '.agentic/docs/34-CONTINUOUS-CONTROLLER.md',
              '.agentic/docs/25-GIT-LINE-ENDINGS-AND-PROJECT-MIGRATION.md',
              '.agentic/docs/26-LOCAL-DISCOVERY-AND-ADOPTION.md',
              '.agentic/docs/27-MODEL-ROUTING.md'}

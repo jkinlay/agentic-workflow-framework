@@ -37,3 +37,51 @@ Jira disabled means no read or write. Otherwise lifecycle production binds cloud
 After a validated merge, reconcile the merged ticket first. Only then page through the complete configured scope. Every page must share the scope digest, snapshot ID and observation time, and that observation must be at or after reconciliation. Counts use stable ticket IDs and terminal categories, exclude Epics unless requested, and enforce page, item, byte, time and cursor bounds. Any missing, stale, duplicate, partial or mismatched evidence reports both counts as `UNOBSERVED`.
 
 Final review submission separately requires the [review completion barrier](33-REVIEW-COMPLETION-BARRIER.md).
+
+## Reference adapter (AWF-32)
+
+The shipped `.agentic/adapters/reference_controller_adapter.py` is a bounded
+Codex/GitHub/Jira reference adapter. It returns cycle, Jira lifecycle and
+merge-observation operations; owner-publication operations are intentionally
+omitted until a separately qualified host supplies the required owner policy,
+publication scan, push and PR readback evidence. The loader therefore fails
+closed for `owner-publication-*` commands.
+
+Copy `.agentic/examples/reference-controller-adapter.json` to operator state
+and replace every `CHANGE_ME` value and angle-bracket placeholder. The shipped
+file is an inert template and does not satisfy the adapter's absolute-path
+validation until those placeholders are replaced with real absolute paths.
+In the commands below, `<STATE_DIR>` is an operator-controlled absolute state
+directory outside every worktree, `<WORKTREE_ROOT>` is the absolute declared
+worktree root, and `<REPOSITORY_ROOT>` is the absolute repository root. Keep
+the adapter configuration, protected controller database, run records and
+outbox outside all worktrees. Compute
+executable pins with `Get-FileHash -Algorithm SHA256 ABSOLUTE\codex.exe` and
+the equivalent command for `gh.exe`; compute the adapter pin with
+`(Get-FileHash -Algorithm SHA256 .agentic/adapters/reference_controller_adapter.py).Hash.ToLower()`.
+Pin the exact output bytes immediately before running the controller. The
+Jira token is read only from the configured environment-variable name; no
+literal credential belongs in JSON. Codex and GitHub child environments strip
+`GH_TOKEN`, `GITHUB_TOKEN` and Jira credential variables.
+
+After AWF-36 ships and the owner enables dispatch, prepare an inventory binding
+whose `project_id`, numeric `repository_id` and `scope_sha256` match the
+adapter config, then run (PowerShell line continuations shown):
+
+```powershell
+python -B .agentic/scripts/workflow.py controller --state <STATE_DIR>\controller.sqlite3 --stream A --stream B --stream C --worktree-root <WORKTREE_ROOT> --project-config .agentic\PROJECT_CONFIG.yaml --adapter-module (Resolve-Path .agentic\adapters\reference_controller_adapter.py) --adapter-sha256 PIN --adapter-config <STATE_DIR>\reference-controller-adapter.json cycle --inventory-binding <STATE_DIR>\inventory-binding.json --repository-root <REPOSITORY_ROOT> --repository-head-sha FULL_HEAD --repository-tree-sha FULL_TREE --now 2026-10-09T08:00:00Z --host-capacity 3
+python -B .agentic/scripts/workflow.py controller --state <STATE_DIR>\controller.sqlite3 --stream A --stream B --stream C --worktree-root <WORKTREE_ROOT> --project-config .agentic\PROJECT_CONFIG.yaml --adapter-module (Resolve-Path .agentic\adapters\reference_controller_adapter.py) --adapter-sha256 PIN --adapter-config <STATE_DIR>\reference-controller-adapter.json jira-lifecycle --contract CONTRACT.json --event WORKER_STARTED --facts FACTS.json --binding BINDING.json --producer-id CONTROLLER_ACTOR --run-id RUN_UUID --now 2026-10-09T08:00:00Z --transition-id TRANSITION_ID
+python -B .agentic/scripts/workflow.py controller --state <STATE_DIR>\controller.sqlite3 --stream A --stream B --stream C --worktree-root <WORKTREE_ROOT> --project-config .agentic\PROJECT_CONFIG.yaml --adapter-module (Resolve-Path .agentic\adapters\reference_controller_adapter.py) --adapter-sha256 PIN --adapter-config <STATE_DIR>\reference-controller-adapter.json merge-observed --lifecycle-state MERGING --lifecycle-facts MERGE_FACTS.json --jira-progress JIRA_PROGRESS.json
+```
+
+Cycle output is JSON with `schema_version`, `observed_at`, `streams`, exact
+`dispatch_receipts`, `status_delivery`, `publication_readiness`, `errors`,
+and `execution_authority: false`. Jira output includes the exact current
+observation and a readback-bound transition record; merge output includes
+`state` and `jira_progress` with `jira_state: COUNTED` only after complete
+pagination. Stop by recording the owner stop or stream-specific blocker and
+allowing the current command to finish; do not kill and replay an uncertain
+dispatch. Until both AWF-32 and AWF-36 ship, no project may run the continuous
+controller with its own adapter. Codex can still authenticate through
+`~/.codex/auth.json` even when token environment variables are stripped; this
+is a known credential-isolation caveat and requires owner review.

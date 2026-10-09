@@ -21,6 +21,37 @@ from generate_contracts import catalog
 NOW = "2026-09-09T12:00:00Z"
 
 
+def controller_adapter_config():
+    """Inert, operator-pinned reference-adapter form for AWF-32."""
+    return {
+        "codex": {
+            "executable": {"path": "<CODEX_EXECUTABLE>", "sha256": "0" * 64},
+            "roles": {
+                "writer": {"model": "CHANGE_ME_APPROVED_WRITER_MODEL", "reasoning_effort": "high", "sandbox": "workspace-write"},
+                "critic": {"model": "CHANGE_ME_APPROVED_CRITIC_MODEL", "reasoning_effort": "high", "sandbox": "read-only"},
+            },
+            "worktree_root": "<WORKTREE_ROOT>",
+            "run_record_directory": "<STATE_DIR>/controller-runs",
+            "timeout_seconds": 900,
+        },
+        "github": {
+            "host": "https://github.com", "repository": "CHANGE_ME/CHANGE_ME", "repository_id": 0,
+            "project_id": "CHANGE_ME_PROJECT", "scope_sha256": "0" * 64, "base_branch": "main",
+            "branch_pattern": "codex/{ticket}-{slug}",
+            "executable": {"path": "<GH_EXECUTABLE>", "sha256": "0" * 64},
+            "inventory_endpoint": "repos/CHANGE_ME/CHANGE_ME/issues?state=open",
+            "page_size": 100,
+        },
+        "jira": {
+            "enabled": True, "cloud_id": "CHANGE_ME_CLOUD", "site": "https://CHANGE_ME.atlassian.net",
+            "provider_project_id": "CHANGE_ME_PROJECT", "project_key": "CHANGE_ME",
+            "controller_actor_id": "CHANGE_ME_ACCOUNT", "token_env": "AWF_JIRA_TOKEN",
+            "merged_status_id": "CHANGE_ME_DONE_STATUS", "page_size": 100, "timeout_seconds": 30,
+        },
+        "outbox": {"directory": "<STATE_DIR>/controller-outbox"},
+    }
+
+
 def uid(name):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "https://example.invalid/awf/" + name))
 
@@ -225,6 +256,7 @@ def sample(schema, schemas):
 
 def main():
     schemas = catalog()
+    write(ROOT / ".agentic/examples/reference-controller-adapter.json", controller_adapter_config())
     from agentic.operating import default_operating
     write(ROOT / "OPERATING_CONFIG.yaml", default_operating())
     write(ROOT / ".agentic/examples/OPERATING_CONFIG.yaml", default_operating())
