@@ -142,56 +142,100 @@ class PublishReleaseTests(unittest.TestCase):
     def test_tag_push_uses_only_the_explicit_gh_credential_helper(self):
         isolated = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
         gh = "/tools/with spaces/gh"
+        origin_url = "https://embedded-secret@github.com/jkinlay/awf-fixture.git"
         with patch.object(publisher, "isolated_git_env", return_value=isolated) as isolated_git_env, \
                 patch.object(publisher, "run", return_value=SimpleNamespace(stdout="")) as run:
-            publisher.push_release_tag(self.repository, "v1.9.4", gh=gh)
+            publisher.push_release_tag(self.repository, "v1.9.4", gh=gh, origin_url=origin_url)
 
         isolated_git_env.assert_called_once_with()
         run.assert_called_once_with(
             ["git", *publisher.RAW_GIT_ARGUMENTS,
              "-c", "credential.helper=",
-             "-c", f"credential.helper=!{publisher.shlex.quote(gh)} auth git-credential",
+             "-c", "remote.origin.pushurl=",
+             "-c", "remote.origin.pushurl=https://github.com/jkinlay/awf-fixture.git",
+             "-c", "credential.https://github.com/jkinlay/awf-fixture.git.helper=",
+             "-c", ("credential.https://github.com/jkinlay/awf-fixture.git.helper="
+                    f"!{publisher.shlex.quote(gh)} auth git-credential"),
              "push", "origin", "refs/tags/v1.9.4"],
             cwd=self.repository, env=isolated, text=True, input_data=None)
+        self.assertNotIn("embedded-secret", repr(run.call_args))
 
     def test_non_push_git_commands_remain_isolated(self):
         isolated = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
         with patch.object(publisher, "isolated_git_env", return_value=isolated), \
                 patch.object(publisher, "run", return_value=SimpleNamespace(stdout="")) as run:
             publisher.git_run(self.repository, "status", "--porcelain=v1")
-            publisher.push_release_tag(self.repository, "v1.9.4", gh="gh")
+            publisher.push_release_tag(
+                self.repository, "v1.9.4", gh="gh",
+                origin_url="https://github.com/jkinlay/awf-fixture.git")
 
         status_call, push_call = run.call_args_list
         self.assertEqual(isolated, status_call.kwargs["env"])
         self.assertEqual(isolated, push_call.kwargs["env"])
         self.assertNotIn("credential.helper=", status_call.args[0])
         self.assertEqual(
-            ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential"],
-            push_call.args[0][4:8])
+            ["-c", "credential.helper=",
+             "-c", "remote.origin.pushurl=",
+             "-c", "remote.origin.pushurl=https://github.com/jkinlay/awf-fixture.git",
+             "-c", "credential.https://github.com/jkinlay/awf-fixture.git.helper=",
+             "-c", ("credential.https://github.com/jkinlay/awf-fixture.git.helper="
+                    "!gh auth git-credential")],
+            push_call.args[0][4:14])
 
     def test_tag_push_failure_explains_that_release_creation_does_not_follow(self):
         secret = "ghs_must_not_reach_release_output"
         with patch.object(publisher, "git_run",
                           side_effect=publisher.ReleaseError("push failed: " + secret)):
             with self.assertRaises(publisher.ReleaseError) as raised:
-                publisher.push_release_tag(self.repository, "v1.9.4", gh="gh")
+                publisher.push_release_tag(
+                    self.repository, "v1.9.4", gh="gh",
+                    origin_url="https://github.com/jkinlay/awf-fixture.git")
         message = str(raised.exception)
         self.assertEqual(
             "Release tag push failed for refs/tags/v1.9.4. The local annotated tag remains at "
             "refs/tags/v1.9.4; the remote tag status is unknown and no GitHub release was created. "
             "Run `gh auth status`; after fixing authentication, retry exactly:\n"
-            "git -c credential.helper= -c 'credential.helper=!gh auth git-credential' "
+            "git -c remote.origin.pushurl= "
+            "-c remote.origin.pushurl=https://github.com/jkinlay/awf-fixture.git "
+            "-c credential.helper= "
+            "-c credential.https://github.com/jkinlay/awf-fixture.git.helper= "
+            "-c 'credential.https://github.com/jkinlay/awf-fixture.git.helper="
+            "!gh auth git-credential' "
             "push origin refs/tags/v1.9.4",
             message)
         self.assertNotIn(secret, message)
 
+    def test_tag_push_timeout_uses_the_same_redacted_recovery_error(self):
+        secret = "ghs_timeout_capture_must_not_reach_release_output"
+        timeout = subprocess.TimeoutExpired(
+            ["git", "push"], 3600, output="transport " + secret, stderr="credential " + secret)
+        with patch.object(publisher, "git_run", side_effect=timeout):
+            with self.assertRaises(publisher.ReleaseError) as raised:
+                publisher.push_release_tag(
+                    self.repository, "v1.9.4", gh="gh",
+                    origin_url="https://github.com/jkinlay/awf-fixture.git")
+        message = str(raised.exception)
+        self.assertIn("local annotated tag remains at refs/tags/v1.9.4", message)
+        self.assertIn("remote tag status is unknown", message)
+        self.assertIn("no GitHub release was created", message)
+        self.assertIn("credential.https://github.com/jkinlay/awf-fixture.git.helper=", message)
+        self.assertNotIn(secret, message)
+
     def test_awf26_failed_publish_scopes_helper_preserves_config_and_skips_release(self):
-        remote = "https://github.com/jkinlay/awf-fixture.git"
+        remote = "https://embedded-secret@github.com/jkinlay/awf-fixture.git"
+        safe_remote = "https://github.com/jkinlay/awf-fixture.git"
         subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repository,
                        capture_output=True)
         command(["git", "remote", "add", "origin", remote], self.repository, self.git_env)
-        command(["git", "config", "credential.helper", "repository-fixture"],
-                self.repository, self.git_env)
+        repository_helper_log = self.base / "awf26-repository-helper-called.txt"
+        repository_helper = self.make_fake_repository_helper(
+            self.base / "awf26-repository-helper", repository_helper_log)
+        scoped_keys = [f"credential.{remote}.helper", f"credential.{safe_remote}.helper"]
+        for scoped_key in scoped_keys:
+            command(["git", "config", scoped_key,
+                     f"!{publisher.shlex.quote(str(repository_helper))}"], self.repository, self.git_env)
+            self.addCleanup(subprocess.run, ["git", "config", "--unset-all", scoped_key],
+                            cwd=self.repository, capture_output=True)
         self.addCleanup(subprocess.run, ["git", "remote", "remove", "origin"],
                         cwd=self.repository, capture_output=True)
         self.addCleanup(subprocess.run, ["git", "tag", "-d", "v1.9.4"],
@@ -201,8 +245,14 @@ class PublishReleaseTests(unittest.TestCase):
         ambient_config = self.base / "awf26-ambient-global.gitconfig"
         ambient_config.write_text("[credential]\n\thelper = ambient-fixture\n", encoding="utf-8")
         ambient_config_before = ambient_config.read_bytes()
-        fake_gh = str(self.base / "fake gh" / "gh")
-        secret = "ghs_fake_push_secret"
+        fake_bin = self.base / "awf26-fake-gh"
+        fake_bin.mkdir()
+        fake_gh_store = self.base / "awf26-fake-gh-store"
+        fake_gh_store.mkdir()
+        fake_gh_log = self.base / "awf26-fake-gh.jsonl"
+        fake_gh = str(self.make_fake_gh(fake_bin, fake_gh_store, fake_gh_log))
+        helper_secret = "ghs_fake_helper_secret"
+        transport_secret = "ghs_fake_push_secret"
         calls = []
         real_run = publisher.run
 
@@ -210,15 +260,31 @@ class PublishReleaseTests(unittest.TestCase):
             command_line = [str(item) for item in command_line]
             calls.append((command_line, dict(env) if env is not None else None))
             if command_line[0] == "git" and "push" in command_line:
+                push_index = command_line.index("push")
+                effective_remote = real_run(
+                    command_line[:push_index] + ["remote", "get-url", "--push", "--all", "origin"],
+                    cwd=cwd, env=env, text=True)
+                self.assertEqual(safe_remote, effective_remote.stdout.strip())
+                credential_lookup = command_line[:push_index] + ["credential", "fill"]
+                lookup = real_run(
+                    credential_lookup, cwd=cwd, env=env, text=True,
+                    input_data="protocol=https\nhost=github.com\npath=jkinlay/awf-fixture.git\n\n")
+                self.assertIn("username=awf-fake-gh", lookup.stdout)
+                self.assertIn("password=" + helper_secret, lookup.stdout)
                 raise publisher.ReleaseError(
                     "fatal: unable to access "
-                    f"'https://x-access-token:{secret}@github.com/jkinlay/awf-fixture.git/'")
+                    f"'https://x-access-token:{transport_secret}@github.com/jkinlay/awf-fixture.git/'")
             if command_line[0] == fake_gh:
                 self.fail("gh release create must not run after a failed tag push")
             return real_run(command_line, cwd=cwd, env=env, text=text, input_data=input_data)
 
         with patch.object(publisher, "run", side_effect=fake_git_and_gh), \
-                patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(ambient_config)}), \
+                patch.dict(os.environ, {
+                    "GIT_CONFIG_GLOBAL": str(ambient_config),
+                    "AWF_FAKE_GH_LOG": str(fake_gh_log),
+                    "AWF_FAKE_GH_STORE": str(fake_gh_store),
+                    "AWF_FAKE_GH_PASSWORD": helper_secret,
+                }), \
                 self.assertRaises(publisher.ReleaseError) as raised:
             publisher.publish(self.repository, self.commit, self.base / "awf26-failed-publish",
                               self.windows_check, self.windows_pin,
@@ -228,10 +294,14 @@ class PublishReleaseTests(unittest.TestCase):
         push_calls = [(line, env) for line, env in git_calls if "push" in line]
         self.assertEqual(1, len(push_calls))
         push, push_env = push_calls[0]
-        helper = f"credential.helper=!{publisher.shlex.quote(fake_gh)} auth git-credential"
+        helper_key = "credential.https://github.com/jkinlay/awf-fixture.git.helper"
+        helper = f"{helper_key}=!{publisher.shlex.quote(fake_gh)} auth git-credential"
         push_index = push.index("push")
-        self.assertEqual(["-c", "credential.helper=", "-c", helper],
-                         push[push_index - 4:push_index])
+        self.assertEqual(
+            ["-c", "credential.helper=", "-c", "remote.origin.pushurl=",
+             "-c", f"remote.origin.pushurl={safe_remote}",
+             "-c", f"{helper_key}=", "-c", helper],
+            push[push_index - 10:push_index])
         self.assertEqual(["push", "origin", "refs/tags/v1.9.4"], push[push_index:])
         for line, env in git_calls:
             with self.subTest(command=line):
@@ -247,10 +317,20 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertIn("local annotated tag remains at refs/tags/v1.9.4", message)
         self.assertIn("no GitHub release was created", message)
         self.assertIn(
-            "git -c credential.helper= -c 'credential.helper=!gh auth git-credential' "
+            "git -c remote.origin.pushurl= "
+            "-c remote.origin.pushurl=https://github.com/jkinlay/awf-fixture.git "
+            "-c credential.helper= "
+            "-c credential.https://github.com/jkinlay/awf-fixture.git.helper= "
+            "-c 'credential.https://github.com/jkinlay/awf-fixture.git.helper="
+            "!gh auth git-credential' "
             "push origin refs/tags/v1.9.4", message)
-        self.assertNotIn(secret, message)
+        self.assertNotIn(helper_secret, message)
+        self.assertNotIn(transport_secret, message)
+        self.assertNotIn("embedded-secret", message)
         self.assertNotIn("x-access-token", message)
+        self.assertFalse(repository_helper_log.exists())
+        credential_calls = [json.loads(line) for line in fake_gh_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([["auth", "git-credential", "get"]], credential_calls)
         self.assertFalse([line for line, _env in calls if line[0] == fake_gh])
 
     def worktree_paths(self):
@@ -516,6 +596,10 @@ if args[:2] == ['release','create']:
 elif args[:2] == ['release','download']:
     target=pathlib.Path(args[args.index('--dir')+1]); target.mkdir(exist_ok=True)
     for path in store.glob('*.zip'): shutil.copyfile(path, target/path.name)
+elif args[:2] == ['auth','git-credential'] and args[2:] == ['get']:
+    sys.stdin.read()
+    print('username=awf-fake-gh')
+    print('password='+os.environ['AWF_FAKE_GH_PASSWORD'])
 else: raise SystemExit(2)
 """, encoding="utf-8")
         if os.name == "nt":
@@ -527,6 +611,29 @@ else: raise SystemExit(2)
             executable.chmod(0o755)
         return executable
 
+    def make_fake_repository_helper(self, directory, log):
+        directory.mkdir()
+        script = directory / "repository_helper.py"
+        script.write_text("""import pathlib, sys
+pathlib.Path(sys.argv[1]).write_text('repository helper was invoked\\n', encoding='utf-8')
+sys.stdin.read()
+print('username=repository-helper')
+print('password=repository-secret')
+""", encoding="utf-8")
+        if os.name == "nt":
+            executable = directory / "repository-helper.cmd"
+            executable.write_text(
+                '@"' + sys.executable + '" "%~dp0repository_helper.py" "' + str(log) + '" %*\n',
+                encoding="utf-8")
+        else:
+            executable = directory / "repository-helper"
+            executable.write_text(
+                "#!/bin/sh\nexec " + publisher.shlex.quote(sys.executable) + " "
+                + publisher.shlex.quote(str(script)) + " " + publisher.shlex.quote(str(log)) + " \"$@\"\n",
+                encoding="utf-8")
+            executable.chmod(0o755)
+        return executable
+
     def test_local_bare_remote_fake_gh_and_verify_changed_byte(self):
         bare = self.base / "remote.git"
         command(["git", "init", "--bare", str(bare)], self.base)
@@ -535,7 +642,12 @@ else: raise SystemExit(2)
         # A local bare origin has no HOST/OWNER/REPO; stand in for the resolver so
         # the fake gh can assert the value is always passed (resolver tested below).
         resolver = patch.object(publisher, "origin_repository", return_value="github.com/jkinlay/awf-fixture")
+        push_url = patch.object(publisher, "origin_push_url", return_value=str(bare))
+        parser = patch.object(
+            publisher, "_parse_repository_url", return_value="github.com/jkinlay/awf-fixture")
         resolver.start(); self.addCleanup(resolver.stop)
+        push_url.start(); self.addCleanup(push_url.stop)
+        parser.start(); self.addCleanup(parser.stop)
         fake_bin = self.base / "fake-bin"; fake_bin.mkdir()
         store = self.base / "fake-release"; store.mkdir()
         log = self.base / "fake-gh.jsonl"
