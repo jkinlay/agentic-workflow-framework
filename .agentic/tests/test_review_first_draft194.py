@@ -23,12 +23,14 @@ from agentic.review_loop import (LoopStore, record_first_draft_publication,
                                   record_first_draft_publication_plan,
                                   resume_first_draft)
 from agentic.providers.github_review_host import HostDriver, load_config
+from source_only import skip_unless_source_repo
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class FirstDraftTests(unittest.TestCase):
+    @skip_unless_source_repo()
     def test_generator_reproduces_first_draft_worker_schema(self):
         spec = importlib.util.spec_from_file_location('awf_generate_review_loop',
                                                        ROOT / 'scripts/generate_review_loop.py')
@@ -346,6 +348,7 @@ class RecordedGitHubDriver(HostDriver):
         super().__init__(config, runtime_root)
         self.command = command
         self.provider_base_sha = base_sha
+        self.provider_repository_id = config['repository_id']
         self.pr = None
         self.calls = []
         self.fail_codex_once = False
@@ -405,6 +408,9 @@ class RecordedGitHubDriver(HostDriver):
         if name != 'gh':
             raise AssertionError(f'unexpected executable: {name}')
         endpoint = next(value for value in args if value.startswith('repos/'))
+        if endpoint == f'repos/{self.c["repository"]}':
+            self.calls.append((args[args.index('--method') + 1], 'repository'))
+            return json.dumps({'id': self.provider_repository_id})
         suffix = endpoint.split('/', 3)[3]
         method = args[args.index('--method') + 1]
         self.calls.append((method, suffix))
@@ -552,6 +558,28 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         self.assertIn(('GET', 'branches/main'), self.driver.calls)
         self.assertIn(('POST', 'pulls'), self.driver.calls)
         self.assertIn(('GET', 'pulls/41'), self.driver.calls)
+
+    def test_repository_id_mismatch_blocks_publish_and_draft_creation(self):
+        self.driver.provider_repository_id = 13
+        spec = importlib.util.spec_from_file_location('awf_review_loop_cli',
+                                                       ROOT / '.agentic/scripts/review_loop.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        stdout, stderr = StringIO(), StringIO()
+        with patch.object(module, 'verify_installed', return_value='f' * 64), \
+                patch.object(module, 'load_config', return_value=self.config), \
+                patch.object(module, 'HostDriver', return_value=self.driver), \
+                patch.object(module, 'publish_tested_tree',
+                             wraps=module.publish_tested_tree) as publish, \
+                patch.object(self.driver, 'create_draft_pr',
+                             wraps=self.driver.create_draft_pr) as create, \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            code = module.main(['--config', str(self.config_path), 'first-draft',
+                                '--title', 'AWF-30 first draft'])
+        self.assertEqual(code, 2)
+        self.assertIn('repository identity mismatch', stderr.getvalue())
+        publish.assert_not_called()
+        create.assert_not_called()
 
     def test_created_pr_base_race_pauses_without_enrollment_or_refund(self):
         self.driver.race_base_on_create = True

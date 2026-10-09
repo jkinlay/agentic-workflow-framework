@@ -245,13 +245,25 @@ class HostDriver:
         return value.strip() if strip else value
 
     def api(self, suffix):
-        return loads(self.run('gh', ['api','--hostname','github.com','--method','GET',f'repos/{self.c["repository"]}/{suffix}']))
+        endpoint = f'repos/{self.c["repository"]}'
+        if suffix:
+            endpoint += '/' + suffix
+        return loads(self.run('gh', ['api','--hostname','github.com','--method','GET',endpoint]))
+
+    def require_repository_identity(self):
+        """Bind the configured slug to its reviewed numeric repository before writes."""
+        value = self.api('')
+        require(isinstance(value, dict)
+                and type(value.get('id')) is int
+                and value['id'] == self.c['repository_id'],
+                'GitHub repository identity mismatch')
 
     def create_draft_pr(self, *, title, body, head, base):
         """Create exactly one normal draft PR; caller observes it before enrollment."""
         require(self.c.get('first_draft') is True, 'Host is not configured for first-draft creation')
         require(all(isinstance(x, str) and x.strip() for x in (title, body, head, base)),
                 'Draft PR identity and body are required')
+        self.require_repository_identity()
         value = loads(self.run('gh', ['api', '--hostname', 'github.com', '--method', 'POST',
             f'repos/{self.c["repository"]}/pulls', '-f', f'title={title}', '-f', f'body={body}',
             '-f', f'head={head}', '-f', f'base={base}', '-F', 'draft=true']))
@@ -363,6 +375,7 @@ class HostDriver:
         return 'PUSHED'
 
     def provider_base(self):
+        self.require_repository_identity()
         value = self.api(f'branches/{self.c["base_branch"]}')
         require(isinstance(value, dict) and value.get('name') == self.c['base_branch'], 'GitHub base branch observation mismatch')
         sha = value.get('commit', {}).get('sha')
