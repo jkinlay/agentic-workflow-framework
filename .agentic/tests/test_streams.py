@@ -13,12 +13,26 @@ from unittest.mock import patch
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, loads, sha256
 from agentic.safeio import Tree
-from agentic.streams import DEFAULT_NATIVE_EXECUTION, JOURNAL, MARKDOWN, PLAN, plan_inventory, render_markdown, write_project_plan
+from agentic.streams import DEFAULT_NATIVE_EXECUTION, JOURNAL, MARKDOWN, PLAN, plan_inventory, recommendation_groups, render_markdown, write_project_plan
 from test_operating_integration import configuration as operating_configuration, governance as operating_governance
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-11T10:00:00Z"
 FIXTURE = ROOT / ".agentic/examples/stream-input.json"
+
+
+def synthetic_home_path(*parts):
+    return "/" + "/".join(("Users", "example", *parts))
+
+
+def synthetic_drive_path(*parts):
+    separator = chr(92)
+    return "C:" + separator + separator.join(parts)
+
+
+def synthetic_unc_path(*parts):
+    separator = chr(92)
+    return separator * 2 + separator.join(parts)
 
 
 def unresolved(ticket_id):
@@ -41,9 +55,10 @@ class PlannerTests(unittest.TestCase):
     def setUp(self):
         self.value = loads(FIXTURE.read_text(encoding="utf-8"))
 
-    def plan(self, value=None, previous=None):
+    def plan(self, value=None, previous=None, *, redact_ownership_worktrees=False):
         raw = canonical(value or self.value)
-        return plan_inventory(raw, sha256(raw), NOW, allow_synthetic=True, previous=previous)
+        return plan_inventory(raw, sha256(raw), NOW, allow_synthetic=True, previous=previous,
+                              redact_ownership_worktrees=redact_ownership_worktrees)
 
     def test_three_coherent_streams_with_ready_first_work_and_all_ticket_details(self):
         plan = self.plan()
@@ -115,6 +130,57 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(packet["existing_agent_id"], "synthetic-agent-A")
         self.assertEqual(packet["stream"], "A")
         self.assertEqual(plan["tickets"]["DEMO-11"]["history"], self.value["tickets"][0]["history"])
+
+    def test_absolute_posix_and_windows_worktrees_require_and_use_approved_redaction(self):
+        for worktree in [synthetic_home_path(".codex", "worktrees", "project"),
+                         synthetic_drive_path("Users", "example", ".codex", "worktrees", "project"),
+                         synthetic_unc_path("server", "share", "project")]:
+            with self.subTest(worktree=worktree):
+                value = deepcopy(self.value)
+                value["tickets"][0].update(status="in_progress", ownership=owner(), history=[history("Started")])
+                value["tickets"][0]["ownership"]["worktree"] = worktree
+                with self.assertRaisesRegex(ValidationError, "--redact-ownership-worktrees"):
+                    self.plan(value)
+                plan = self.plan(value, redact_ownership_worktrees=True)
+                serialized = json.dumps(plan) + render_markdown(plan).decode()
+                self.assertNotIn(worktree, serialized)
+                self.assertRegex(plan["tickets"]["DEMO-11"]["ownership"]["worktree"],
+                                 r"^<redacted-worktree:sha256:[0-9a-f]{64}>$")
+                self.assertEqual(plan["path_redaction"]["applied_ticket_ids"], ["DEMO-11"])
+                self.assertEqual(plan["path_redaction"]["inventory_pin"], "original-verified-bytes")
+
+    def test_recommendation_groups_redacts_absolute_retained_owner_worktree(self):
+        absolute = synthetic_home_path(".codex", "worktrees", "project")
+        self.value["tickets"][0].update(status="in_progress", ownership=owner(), history=[history("Started")])
+        self.value["tickets"][0]["ownership"]["worktree"] = absolute
+        raw = canonical(self.value)
+        recommendation = recommendation_groups(raw, sha256(raw), NOW, allow_synthetic=True)
+        self.assertEqual(recommendation["inventory_sha256"], sha256(raw))
+        self.assertNotIn(absolute, json.dumps(recommendation))
+        self.assertTrue(any("DEMO-11" in group["ticket_ids"] for group in recommendation["groups"]))
+
+    def test_redacted_worktree_identity_still_rejects_tampering(self):
+        self.value["tickets"][0].update(status="in_progress", ownership=owner(), history=[history("Started")])
+        self.value["tickets"][0]["ownership"]["worktree"] = synthetic_home_path("worktree-one")
+        previous = self.plan(redact_ownership_worktrees=True)
+        self.value["tickets"][0]["ownership"]["worktree"] = synthetic_home_path("worktree-two")
+        with self.assertRaisesRegex(ValidationError, "cannot be silently reassigned"):
+            self.plan(previous=previous, redact_ownership_worktrees=True)
+        self.value["tickets"][0]["ownership"]["worktree"] = previous["tickets"]["DEMO-11"]["ownership"]["worktree"]
+        with self.assertRaisesRegex(ValidationError, "planner-reserved"):
+            self.plan(previous=previous, redact_ownership_worktrees=True)
+
+    def test_legacy_absolute_worktree_plan_replans_without_reassignment(self):
+        absolute = synthetic_home_path(".codex", "worktrees", "project")
+        self.value["tickets"][0].update(status="in_progress", ownership=owner(), history=[history("Started")])
+        self.value["tickets"][0]["ownership"]["worktree"] = absolute
+        previous = self.plan(redact_ownership_worktrees=True)
+        previous["tickets"]["DEMO-11"]["ownership"]["worktree"] = absolute
+        previous.pop("path_redaction")
+        refreshed = self.plan(previous=previous, redact_ownership_worktrees=True)
+        self.assertEqual(refreshed["tickets"]["DEMO-11"]["stream"], previous["tickets"]["DEMO-11"]["stream"])
+        self.assertEqual(refreshed["tickets"]["DEMO-11"]["ownership"]["agent_id"], "synthetic-agent-A")
+        self.assertNotIn(absolute, json.dumps(refreshed) + render_markdown(refreshed).decode())
 
     def test_paused_owner_is_retained_and_never_replaced_with_new_agent(self):
         self.value["tickets"][0].update(status="in_progress", ownership=owner(state="paused"), history=[history("Paused existing work")])
@@ -732,6 +798,12 @@ class NativeCapacityTests(unittest.TestCase):
             with self.subTest(host=host, depth=depth):
                 with self.assertRaises(ValidationError):
                     self.plan(host=host, depth=depth)
+        for config_path in [synthetic_home_path("project", "config.json"),
+                            synthetic_drive_path("Users", "example", "project", "config.json"),
+                            "../config.json"]:
+            provenance = {"source": "test_configuration", "config_path": config_path, "config_sha256": "a" * 64}
+            with self.subTest(config_path=config_path), self.assertRaisesRegex(ValidationError, "configuration provenance|relative path"):
+                self.plan(provenance=provenance)
 
     def test_false_reference_and_broker_switches_are_not_native_gates(self):
         self.execution.update(dispatch_enabled=False, auto_dispatch=False, auto_request_critic=False,
@@ -777,8 +849,10 @@ class PlanPublicationTests(unittest.TestCase):
         (self.runtime / "MANIFEST.json").write_text("{}")
         self.raw = FIXTURE.read_bytes()
 
-    def publish(self, expected=None):
-        return write_project_plan(self.project, self.raw, sha256(self.raw), NOW, self.runtime, expected, True)
+    def publish(self, expected=None, *, raw=None, redact_ownership_worktrees=False):
+        raw = self.raw if raw is None else raw
+        return write_project_plan(self.project, raw, sha256(raw), NOW, self.runtime, expected, True,
+                                  redact_ownership_worktrees=redact_ownership_worktrees)
 
     def test_project_plan_is_complete_bound_and_rerunnable_with_explicit_cas(self):
         result = self.publish()
@@ -789,6 +863,45 @@ class PlanPublicationTests(unittest.TestCase):
         self.assertFalse((self.project / JOURNAL).exists())
         again = self.publish(result["plan_sha256"])
         self.assertEqual(result["plan_sha256"], again["plan_sha256"])
+
+    def test_redaction_preserves_inventory_pin_and_plan_cas_rejects_changed_worktree(self):
+        value = loads(FIXTURE.read_text())
+        value["tickets"][0].update(status="in_progress", ownership=owner(), history=[history("Started")])
+        first_worktree = synthetic_home_path("worktree-one")
+        value["tickets"][0]["ownership"]["worktree"] = first_worktree
+        raw = canonical(value)
+        result = self.publish(raw=raw, redact_ownership_worktrees=True)
+        before = {name: (self.project / name).read_bytes() for name in [PLAN, MARKDOWN]}
+        plan = loads(before[PLAN].decode())
+        self.assertEqual(plan["inventory_sha256"], sha256(raw))
+        self.assertNotIn(first_worktree.encode(), before[PLAN] + before[MARKDOWN])
+        value["tickets"][0]["ownership"]["worktree"] = synthetic_home_path("worktree-two")
+        tampered = canonical(value)
+        with self.assertRaisesRegex(ValidationError, "cannot be silently reassigned"):
+            self.publish(result["plan_sha256"], raw=tampered, redact_ownership_worktrees=True)
+        self.assertEqual(before, {name: (self.project / name).read_bytes() for name in before})
+
+    def test_existing_pinned_legacy_plan_migrates_to_redacted_form(self):
+        absolute = synthetic_home_path(".codex", "worktrees", "project")
+        value = loads(FIXTURE.read_text())
+        value["tickets"][0].update(status="in_progress", ownership=owner(), history=[history("Started")])
+        value["tickets"][0]["ownership"]["worktree"] = absolute
+        raw = canonical(value)
+        legacy = plan_inventory(raw, sha256(raw), NOW, True, redact_ownership_worktrees=True)
+        legacy["tickets"]["DEMO-11"]["ownership"]["worktree"] = absolute
+        lane = next(stream for stream in legacy["streams"] if "DEMO-11" in stream["ticket_ids"])
+        lane["existing_writer"]["worktree"] = absolute
+        legacy.pop("path_redaction")
+        markdown = render_markdown(legacy)
+        legacy["markdown_sha256"] = sha256(markdown)
+        legacy_bytes = (json.dumps(legacy, indent=2, ensure_ascii=False) + "\n").encode()
+        (self.project / PLAN).write_bytes(legacy_bytes)
+        (self.project / MARKDOWN).write_bytes(markdown)
+        migrated = self.publish(sha256(legacy_bytes), raw=raw, redact_ownership_worktrees=True)
+        combined = (self.project / PLAN).read_bytes() + (self.project / MARKDOWN).read_bytes()
+        self.assertNotIn(absolute.encode(), combined)
+        self.assertEqual(loads((self.project / PLAN).read_text())["inventory_sha256"], sha256(raw))
+        self.assertEqual(migrated["status"], "PLANNED")
 
     def test_unacknowledged_existing_plan_and_stale_cas_preserve_bytes(self):
         result = self.publish()
@@ -950,6 +1063,8 @@ class PlannerCliTests(unittest.TestCase):
             self.assertEqual(len(report["dispatch_packets"]), 2)
             self.assertEqual(len(report["deferred_dispatch_packets"]), 0)
             self.assertEqual(report["capacity"]["execution_provenance"]["config_sha256"], sha256(config_bytes))
+            self.assertEqual(report["capacity"]["execution_provenance"]["config_path"], "<external-project-configuration>")
+            self.assertNotIn(str(config_path), (project / PLAN).read_text() + (project / MARKDOWN).read_text())
             self.assertFalse(report["prompt_user"])
 
     def test_external_runtime_defaults_to_actual_target_configuration(self):
@@ -972,7 +1087,39 @@ class PlannerCliTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(len(report["dispatch_packets"]), expected)
                 self.assertEqual(report["capacity"]["execution_provenance"]["source"], "installed_target_project_configuration")
-                self.assertEqual(Path(report["capacity"]["execution_provenance"]["config_path"]), config)
+                self.assertEqual(report["capacity"]["execution_provenance"]["config_path"], ".agentic/PROJECT_CONFIG.yaml")
+
+    def test_cli_redaction_option_sanitizes_absolute_ownership_worktree(self):
+        with tempfile.TemporaryDirectory(prefix="awf-redact-") as temporary:
+            root = Path(temporary)
+            project = root / "project"
+            project.mkdir()
+            (project / ".agentic").mkdir()
+            governing = operating_governance()
+            config_bytes = canonical(governing)
+            (project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(config_bytes)
+            (project / "OPERATING_CONFIG.yaml").write_bytes(canonical(operating_configuration(3)))
+            value = loads(FIXTURE.read_text())
+            absolute = synthetic_drive_path("Users", "example", ".codex", "worktrees", "project")
+            value["tickets"][0].update(status="in_progress", ownership=owner(), history=[history("Started")])
+            value["tickets"][0]["ownership"]["worktree"] = absolute
+            raw = canonical(value)
+            inventory_path = root / "inventory.json"
+            inventory_path.write_bytes(raw)
+            args = ["--input", str(inventory_path), "--expected-input-sha256", sha256(raw),
+                    "--project-root", str(project), "--host-writer-capacity", "5",
+                    "--allow-synthetic", "--now", NOW]
+            rejected = io.StringIO()
+            with patch.object(self.cli, "verify_installed", return_value="a" * 64), patch("sys.stderr", rejected):
+                self.assertEqual(self.cli.main(args), 2)
+            self.assertIn("--redact-ownership-worktrees", json.loads(rejected.getvalue())["reason"])
+            output = io.StringIO()
+            with patch.object(self.cli, "verify_installed", return_value="a" * 64), patch("sys.stdout", output):
+                self.assertEqual(self.cli.main(args + ["--redact-ownership-worktrees"]), 0)
+            plan_bytes = (project / PLAN).read_bytes()
+            markdown_bytes = (project / MARKDOWN).read_bytes()
+            self.assertNotIn(absolute.encode(), plan_bytes + markdown_bytes)
+            self.assertEqual(loads(plan_bytes.decode())["path_redaction"]["applied_ticket_ids"], ["DEMO-11"])
 
     def test_live_shaped_inventory_cannot_inherit_missing_or_other_project_configuration(self):
         with tempfile.TemporaryDirectory(prefix="awf-identity-") as temporary:
