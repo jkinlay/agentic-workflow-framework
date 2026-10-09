@@ -233,6 +233,75 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertEqual(["push", "origin", "refs/tags/v1.9.4"], recovery_arguments[-3:])
         self.assertEqual("", matching_header(recovery_arguments[:-3]))
 
+    def test_included_local_path_header_is_inventoried_and_cannot_reach_push(self):
+        scope = "https://github.com/o/r.git"
+        request_url = scope + "/info/refs"
+        header_key = f"http.{request_url}.extraHeader"
+        included_config = self.base / "included-local-headers.gitconfig"
+        included_config.write_text(
+            f"[http \"{request_url}\"]\n\textraHeader = Authorization: Bearer INCLUDED_SECRET\n",
+            encoding="utf-8")
+        command(["git", "config", "--local", "include.path", str(included_config)],
+                self.repository, self.git_env)
+        self.addCleanup(
+            subprocess.run, ["git", "config", "--local", "--unset-all", "include.path"],
+            cwd=self.repository, env=self.git_env, capture_output=True)
+
+        local_header_keys = publisher._repository_http_extra_header_keys(self.repository)
+        self.assertIn(header_key.casefold(), {key.casefold() for key in local_header_keys})
+        real_run = publisher.run
+        inspected_push = []
+
+        def inspect_push(command_line, *, cwd, env=None, text=True, input_data=None,
+                         failure_message=None):
+            if command_line[0] == "git" and "push" in command_line:
+                push_index = command_line.index("push")
+                lookup = real_run(
+                    command_line[:push_index]
+                    + ["config", "--get-urlmatch", "http.extraHeader", request_url],
+                    cwd=cwd, env=env, text=True)
+                self.assertEqual("", lookup.stdout.strip())
+                self.assertNotIn("INCLUDED_SECRET", lookup.stdout + lookup.stderr)
+                inspected_push.append(command_line)
+                return SimpleNamespace(stdout="")
+            return real_run(command_line, cwd=cwd, env=env, text=text,
+                            input_data=input_data, failure_message=failure_message)
+
+        with patch.object(publisher, "run", side_effect=inspect_push):
+            publisher.push_release_tag(
+                self.repository, "v1.9.4", gh="gh", origin_url=scope)
+        self.assertEqual(1, len(inspected_push))
+
+    def test_rejected_local_header_is_checked_before_local_tag_creation(self):
+        remote = "https://github.com/o/r.git"
+        rejected_key = "http.https://user@github.com/o/r.git.extraHeader"
+        subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repository,
+                       env=self.git_env, capture_output=True)
+        subprocess.run(["git", "tag", "-d", "v1.9.4"], cwd=self.repository,
+                       env=self.git_env, capture_output=True)
+        command(["git", "remote", "add", "origin", remote], self.repository, self.git_env)
+        command(["git", "config", "--local", rejected_key,
+                 "Authorization: Bearer REJECTED_SECRET"], self.repository, self.git_env)
+        self.addCleanup(subprocess.run, ["git", "config", "--local", "--unset-all", rejected_key],
+                        cwd=self.repository, env=self.git_env, capture_output=True)
+        self.addCleanup(subprocess.run, ["git", "remote", "remove", "origin"],
+                        cwd=self.repository, env=self.git_env, capture_output=True)
+        self.addCleanup(subprocess.run, ["git", "tag", "-d", "v1.9.4"],
+                        cwd=self.repository, env=self.git_env, capture_output=True)
+
+        with self.assertRaises(publisher.ReleaseError) as raised:
+            publisher.publish(
+                self.repository, self.commit, self.base / "rejected-header-preflight",
+                self.windows_check, self.windows_pin,
+                validation_runner=self.fake_validation, gh="gh")
+
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"],
+                                     self.repository, self.git_env))
+        message = str(raised.exception)
+        self.assertIn("remove every repository-local `http.*.extraHeader` entry", message)
+        self.assertIn("retry the release", message)
+        self.assertNotIn("REJECTED_SECRET", message)
+
     def test_tag_push_failure_explains_that_release_creation_does_not_follow(self):
         secret = "ghs_must_not_reach_release_output"
         with patch.object(publisher, "_repository_http_extra_header_keys", return_value=[]), \
