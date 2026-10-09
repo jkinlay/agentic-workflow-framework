@@ -50,6 +50,40 @@ def require(condition, message):
         raise ValidationError(message)
 
 
+def first_draft_config_policy_hash(config):
+    """Bind every reviewed host-policy field except the assigned PR number."""
+    policy = {key: value for key, value in config.items()
+              if key not in {'key', 'config_hash', 'pr'} and not key.startswith('_')}
+    encoded = json.dumps(policy, ensure_ascii=False, sort_keys=True,
+                         separators=(',', ':')).encode('utf-8')
+    return sha256(encoded)
+
+
+def require_first_draft_config_binding(state, config, *, allow_bound_pr=False):
+    """Accept only the reserved config or its sole pr=0 -> assigned transform."""
+    binding = state.get('first_draft_config_binding')
+    require(isinstance(binding, dict)
+            and set(binding) == {'config_hash', 'policy_hash', 'pr'},
+            'First-draft reservation has no durable configuration binding')
+    require(binding['config_hash'] == state.get('config_hash'),
+            'First-draft reservation configuration identity is inconsistent')
+    require(binding['policy_hash'] == first_draft_config_policy_hash(config),
+            'First-draft host policy changed after reservation')
+    current_pr = config.get('pr')
+    if current_pr == binding['pr']:
+        require(config.get('config_hash') == binding['config_hash'],
+                'First-draft host configuration bytes changed after reservation')
+        return
+    require(allow_bound_pr and binding['pr'] == 0
+            and type(current_pr) is int and current_pr > 0,
+            'First-draft configuration changed beyond provider PR assignment')
+    public_config = {key: value for key, value in config.items()
+                     if key not in {'key', 'config_hash'} and not key.startswith('_')}
+    bound_bytes = (json.dumps(public_config, indent=2, ensure_ascii=False) + '\n').encode('utf-8')
+    require(config.get('config_hash') == sha256(bound_bytes),
+            'Bound first-draft configuration is not the exact provider PR assignment')
+
+
 class LoopStore:
     """One canonical host database; transaction lock spans each bounded tick.
 
@@ -113,18 +147,281 @@ class LoopStore:
             tree.write(relative, (f'Recorded at: {state["reported_at"]}\n\n'+render_markdown(state)).encode('utf-8'))
 
 
-def enroll(store, config, snapshot):
+def enroll(store, config, snapshot, *, first_draft_run=False):
     initial = deepcopy(config.get('initial_findings', []))
     validate_review({'candidate':snapshot,'verdict':'BLOCKED','reviewed_files':[],
         'findings':initial,'summary':'Operator-adopted initial finding ledger'}, snapshot, [], [])
+    require(not first_draft_run or config['max_agent_runs'] >= 1,
+            'First-draft run cannot be charged against a zero agent-run budget')
     state = {'key': config['key'], 'owner': config['repository'] + ':' + snapshot['head_ref'],
         'config_hash': config['config_hash'], 'phase': 'REVIEW', 'candidate': snapshot,
         'findings': initial, 'cycles': 0, 'cap_extensions': 0, 'evidence_only_amendments': 0, 'dispositions': [],
-        'agent_runs': 0, 'wait_ticks': 0, 'generation': 1,
-        'inflight': None, 'last_review': None, 'reason': 'Enrolled', 'history': []}
+        'agent_runs': 1 if first_draft_run else 0, 'wait_ticks': 0, 'generation': 1,
+        'inflight': None, 'last_review': None,
+        'reason': 'Enrolled after first draft' if first_draft_run else 'Enrolled', 'history': []}
     with store.lock():
         store.save(state, new=True)
     return state
+
+
+def reserve_first_draft(store, config, *, git_controls=None):
+    """Persist each worker charge and the original Git-control baseline.
+
+    Recovery retains one reservation UUID, but every invocation that can call
+    the worker consumes another ``max_agent_runs`` unit before that call.  A
+    retained worker output or a prepared publication resumes without replaying
+    or charging the worker.
+    """
+    require(config['max_agent_runs'] >= 1, 'First-draft run cannot be charged against a zero agent-run budget')
+    repository_id = config.get('repository_id', str(config['key']).split(':', 1)[0])
+    key = f"{repository_id}:0"
+    state = {'key': key, 'owner': config['repository'] + ':' + config.get('head_branch', 'first-draft'),
+        'config_hash': config['config_hash'], 'phase': 'FIRST_DRAFT', 'candidate': None,
+        'findings': deepcopy(config.get('initial_findings', [])), 'cycles': 0,
+        'cap_extensions': 0, 'evidence_only_amendments': 0, 'dispositions': [],
+        'agent_runs': 1, 'wait_ticks': 0, 'generation': 1,
+        'inflight': {'id': str(uuid.uuid4()), 'phase': 'FIRST_DRAFT',
+                     'started_at': now_text(), 'attempt': 1},
+        'last_review': None, 'first_draft_publication': None,
+        'first_draft_worker_receipt': None,
+        'first_draft_publication_plan': None,
+        'first_draft_config_binding': {
+            'config_hash': config['config_hash'],
+            'policy_hash': first_draft_config_policy_hash(config),
+            'pr': config.get('pr'),
+        },
+        'first_draft_git_controls': deepcopy(git_controls),
+        'first_draft_publication_status': None, 'resume_ready': False,
+        'reason': 'First-draft run reserved before worker execution', 'history': []}
+    with store.lock():
+        row = store.db.execute('SELECT state FROM prs WHERE key=?', (key,)).fetchone()
+        if row is None:
+            store.save(state, new=True)
+            return state
+        state = store.get(key)
+        require(state['phase'] == 'FIRST_DRAFT' and state.get('resume_ready') is True,
+                'First-draft reservation already exists; reconcile it with resume before retrying')
+        require_first_draft_config_binding(state, config)
+        require(1 <= state['agent_runs'] <= config['max_agent_runs']
+                and state['cycles'] == 0 and state.get('inflight'),
+                'First-draft reservation accounting is invalid')
+        require(state.get('first_draft_git_controls') == git_controls,
+                'First-draft Git-control baseline is missing or changed during recovery')
+        worker_replay = (state.get('first_draft_publication') is None
+                         and state.get('first_draft_worker_receipt') is None)
+        if worker_replay:
+            require(state['agent_runs'] < config['max_agent_runs'],
+                    'First-draft worker retry exceeds max_agent_runs')
+            state['agent_runs'] += 1
+            state['inflight']['attempt'] = state['agent_runs']
+        state.update(resume_ready=False,
+                     reason=('Reusing the reservation UUID with a newly charged worker attempt'
+                             if worker_replay else
+                             'Resuming the prepared publication without replaying the worker'),
+                     generation=state['generation'] + 1)
+        store.save(state)
+    return state
+
+
+def record_first_draft_worker_receipt(store, config, receipt):
+    """Retain a validated worker result before any publisher Git mutation."""
+    required = {'outcome', 'changes', 'tested_tree', 'ignored_untracked', 'summary'}
+    require(isinstance(receipt, dict) and set(receipt) == required,
+            'First-draft worker receipt is incomplete')
+    key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(key)
+        require(state['phase'] == 'FIRST_DRAFT' and state.get('inflight'),
+                'First-draft worker receipt has no active reservation')
+        frozen = deepcopy(receipt)
+        existing = state.get('first_draft_worker_receipt')
+        require(existing is None or existing == frozen,
+                'First-draft worker receipt changed during retry')
+        state.update(first_draft_worker_receipt=frozen,
+                     reason='Validated first-draft worker receipt retained before publication',
+                     generation=state['generation'] + 1)
+        store.save(state)
+        return state
+
+
+def record_first_draft_publication(store, config, publication):
+    """Persist exact publication intent before the first remote push is attempted."""
+    required = {'base', 'head', 'head_tree', 'branch', 'body', 'body_sha256', 'title',
+                'ignored_untracked'}
+    require(isinstance(publication, dict) and required <= set(publication),
+            'First-draft publication identity is incomplete')
+    string_fields = required - {'ignored_untracked'}
+    require(all(isinstance(publication[name], str) and publication[name]
+                for name in string_fields), 'First-draft publication identity is malformed')
+    require(isinstance(publication['ignored_untracked'], list)
+            and len(publication['ignored_untracked']) == len(set(publication['ignored_untracked']))
+            and all(isinstance(path, str) and path for path in publication['ignored_untracked']),
+            'First-draft ignored_untracked inventory is malformed')
+    require(sha256(publication['body'].encode('utf-8')) == publication['body_sha256'],
+            'First-draft publication body digest mismatch')
+    key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(key)
+        require(state['phase'] == 'FIRST_DRAFT' and state.get('inflight'),
+                'First-draft publication has no active reservation')
+        existing = state.get('first_draft_publication')
+        frozen = {name: publication[name] for name in sorted(required)}
+        require(existing is None or existing == frozen,
+                'First-draft publication identity changed during retry')
+        state.update(first_draft_publication=frozen,
+                     first_draft_publication_status=(state.get('first_draft_publication_status')
+                                                     or 'PREPARED'),
+                     reason='First-draft publication prepared durably before remote push',
+                     generation=state['generation'] + 1)
+        store.save(state)
+        return state
+
+
+def record_first_draft_publication_plan(store, config, plan):
+    """Freeze the publisher operation before staging or committing."""
+    required = {'base', 'head_tree', 'branch', 'body_sha256', 'title',
+                'commit_message', 'ignored_untracked'}
+    require(isinstance(plan, dict) and set(plan) == required,
+            'First-draft publication plan is incomplete')
+    require(all(isinstance(plan[name], str) and plan[name]
+                for name in required - {'ignored_untracked'}),
+            'First-draft publication plan is malformed')
+    require(isinstance(plan['ignored_untracked'], list)
+            and len(plan['ignored_untracked']) == len(set(plan['ignored_untracked']))
+            and all(isinstance(path, str) and path for path in plan['ignored_untracked']),
+            'First-draft publication-plan ignored inventory is malformed')
+    key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(key)
+        require(state['phase'] == 'FIRST_DRAFT' and state.get('inflight'),
+                'First-draft publication plan has no active reservation')
+        frozen = deepcopy(plan)
+        existing = state.get('first_draft_publication_plan')
+        require(existing is None or existing == frozen,
+                'First-draft publication plan changed during retry')
+        state.update(first_draft_publication_plan=frozen,
+                     reason='First-draft publisher operation frozen before Git mutation',
+                     generation=state['generation'] + 1)
+        store.save(state)
+        return state
+
+
+def confirm_first_draft_publication(store, config, publication, *, reconciled=False):
+    """Record a successful push or an exact provider-ref reconciliation."""
+    key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(key)
+        require(state['phase'] in {'FIRST_DRAFT', 'PAUSED'} and state.get('inflight'),
+                'First-draft publication has no active reservation')
+        require(state.get('first_draft_publication') == {
+            name: publication[name] for name in sorted(state['first_draft_publication'])},
+            'First-draft publication identity changed before push confirmation')
+        require(state.get('first_draft_publication_status') in {'PREPARED', 'RETRY_PUSH', 'PUSHED'},
+                'First-draft publication is not awaiting push confirmation')
+        state.update(first_draft_publication_status='PUSHED',
+                     reason=('Provider ref reconciled to the exact first-draft publication'
+                             if reconciled else
+                             'First-draft publication pushed; draft-PR creation pending'),
+                     generation=state['generation'] + 1)
+        store.save(state)
+        return state
+
+
+def complete_first_draft(store, config, snapshot, reconciled_run=None):
+    """Atomically bind the reserved pr=0 record to the observed created PR."""
+    old_key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(old_key)
+        require(state['phase'] in {'FIRST_DRAFT', 'PAUSED'} and state['inflight'],
+                'First-draft reservation is not resumable')
+        if state['phase'] == 'PAUSED':
+            require(reconciled_run == state['inflight']['id'],
+                    'Inspect and reconcile the retained first-draft run before enrollment')
+        publication = state.get('first_draft_publication')
+        require(isinstance(publication, dict),
+                'First-draft publication was not durably recorded before enrollment')
+        require(state.get('first_draft_publication_status') == 'PUSHED',
+                'First-draft publication was not reconciled as pushed before enrollment')
+        require(snapshot.get('head') == publication['head'],
+                'Created PR observation does not match the published head')
+        require(snapshot.get('base') == publication['base'],
+                'Created PR base does not match the publication base; enrollment remains paused')
+        require(snapshot.get('head_ref') == publication['branch'],
+                'Created PR head branch does not match the published branch')
+        require(snapshot.get('repository_id') == config.get('repository_id'),
+                'Created PR repository does not match the reserved repository')
+        require(snapshot.get('pr') == config.get('pr') and config.get('pr', 0) > 0,
+                'Created PR number is not bound to the host configuration')
+        require_first_draft_config_binding(state, config, allow_bound_pr=True)
+        state['key'] = config['key']
+        state['owner'] = config['repository'] + ':' + snapshot['head_ref']
+        state['config_hash'] = config['config_hash']
+        state.update(phase='REVIEW', candidate=snapshot, inflight=None,
+                     resume_ready=False,
+                     reason='Enrolled after first draft', generation=state['generation'] + 1)
+        body = json.dumps(state, sort_keys=True)
+        store.db.execute('BEGIN IMMEDIATE')
+        try:
+            store.db.execute('DELETE FROM prs WHERE key=?', (old_key,))
+            store.db.execute('INSERT INTO prs VALUES (?,?,?)', (state['key'], state['owner'], body))
+            store.db.execute('INSERT INTO events(key,at,state) VALUES (?,?,?)', (state['key'], now_text(), body))
+            store.db.execute('COMMIT')
+        except Exception:
+            store.db.execute('ROLLBACK')
+            raise
+        return state
+
+
+def first_draft_failure(store, config, reason):
+    """Retain a failed first-draft reservation for explicit reconciliation."""
+    repository_id = config.get('repository_id', str(config['key']).split(':', 1)[0])
+    key = f"{repository_id}:0"
+    with store.lock():
+        try:
+            state = store.get(key)
+        except ValidationError:
+            return None
+        if state['phase'] == 'FIRST_DRAFT':
+            state.update(phase='PAUSED', resume_ready=False, reason=reason,
+                         generation=state['generation'] + 1)
+            store.save(state)
+        return state
+
+
+def resume_first_draft(store, config, reconciled_run, *, publication_status=None):
+    """Permit one retry after the operator reconciles local and remote effects.
+
+    The retained reservation UUID is reused. A later ``first-draft`` call
+    either resumes from the durably recorded worker receipt/publication
+    without a worker charge, or durably charges another agent run before
+    replaying a worker that produced no retained receipt.
+    """
+    key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(key)
+        require(state['phase'] in {'PAUSED', 'FIRST_DRAFT'},
+                'First-draft reservation is not awaiting reconciliation')
+        require(config.get('pr') == 0,
+                'A provider-bound first draft must be completed from its observed PR')
+        require_first_draft_config_binding(state, config)
+        require(state.get('inflight') and reconciled_run == state['inflight']['id'],
+                'Inspect and reconcile the retained first-draft run before resuming')
+        require(1 <= state['agent_runs'] <= config['max_agent_runs']
+                and state['cycles'] == 0,
+                'First-draft retry accounting is invalid')
+        publication = state.get('first_draft_publication')
+        if publication is None:
+            require(publication_status is None,
+                    'Pre-publication recovery cannot assert a remote publication state')
+        else:
+            require(publication_status in {'PUSHED', 'RETRY_PUSH'},
+                    'Prepared first-draft publication requires exact remote-ref reconciliation')
+        state.update(phase='FIRST_DRAFT', resume_ready=True,
+                     first_draft_publication_status=publication_status,
+                     reason='Operator reconciled first-draft local and provider state; one retry is ready',
+                     generation=state['generation'] + 1)
+        store.save(state)
+        return state
 
 
 def pause(store, key, reason):
