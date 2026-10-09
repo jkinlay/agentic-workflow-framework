@@ -68,7 +68,40 @@ def verify_virtual_release(tree, manifest_raw):
             raise ValidationError(f'Virtual release digest mismatch: {path}')
 
 
-def manifest():
+def render_manifests(files, version=VERSION):
+    """Render stable manifests whose only content-dependent lines are per-file entries."""
+    files = dict(sorted(files.items()))
+    value = {'format': 'awf-manifest-1', 'template_version': version, 'files': files}
+    machine = (json.dumps(value, indent=2, sort_keys=True) + '\n').encode('utf-8')
+    lines = [f'# Release manifest — {version}', '',
+        'Each content file is SHA-256 listed on its own line in MANIFEST.json and below. The ZIP additionally contains MANIFEST.json and this advisory inventory.', '',
+        'The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.', '',
+        '| File | SHA-256 |', '| --- | --- |']
+    lines.extend(f'| `{path}` | `{digest}` |' for path, digest in files.items())
+    advisory = ('\n'.join(lines) + '\n').encode('utf-8')
+    return machine, advisory
+
+
+def write_manifest_files(root, machine, advisory):
+    """Replace both generated files only after their complete bytes are known."""
+    root = Path(root)
+    (root / 'MANIFEST.json').write_bytes(machine)
+    (root / 'MANIFEST.md').write_bytes(advisory)
+
+
+def check_manifest_files(root, machine, advisory):
+    """Fail closed on missing or hand-edited generated files without rewriting them."""
+    root = Path(root)
+    expected = {'MANIFEST.json': machine, 'MANIFEST.md': advisory}
+    missing = [name for name in expected if not (root / name).is_file()]
+    if missing:
+        raise ValidationError('Release manifest files are missing: ' + ', '.join(missing))
+    stale = [name for name, data in expected.items() if (root / name).read_bytes() != data]
+    if stale:
+        raise ValidationError('Release manifest files are stale or hand-edited: ' + ', '.join(stale))
+
+
+def manifest(check=False):
     check_release(ROOT)
     with Tree(ROOT) as tree:
         all_paths = release_paths(tree)
@@ -89,16 +122,11 @@ def manifest():
                 raise ValidationError(f'Release text must use LF without a BOM: {path}; restore approved bytes before building')
             if path in paths:
                 files[path] = sha256(data)
-    value = {'format':'awf-manifest-1','template_version':VERSION,'files':files}
-    raw = (json.dumps(value, indent=2, sort_keys=True) + '\n').encode('utf-8')
-    (ROOT / 'MANIFEST.json').write_bytes(raw)
-    lines = [f'# Release manifest — {VERSION}', '',
-        f'{len(files)} content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.', '',
-        f'MANIFEST.json SHA-256: `{sha256(raw)}`', '',
-        'The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.', '',
-        '| File | SHA-256 |', '| --- | --- |']
-    lines.extend(f'| `{p}` | `{h}` |' for p,h in files.items())
-    (ROOT / 'MANIFEST.md').write_text('\n'.join(lines)+'\n', encoding='utf-8', newline='\n')
+    raw, advisory = render_manifests(files)
+    if check:
+        check_manifest_files(ROOT, raw, advisory)
+    else:
+        write_manifest_files(ROOT, raw, advisory)
     with Tree(ROOT) as tree:
         verify_virtual_release(tree, raw)
     return sha256(raw)
@@ -107,16 +135,21 @@ def manifest():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--manifest-only', action='store_true')
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument('--manifest-only', action='store_true')
+    action.add_argument('--check-manifest', action='store_true',
+                        help='verify committed manifest bytes without rewriting them')
     parser.add_argument('--git-mode-manifest', type=Path,
                         help='raw tagged-tree mode map (required for a materialized source without .git)')
     args = parser.parse_args()
-    if not args.manifest_only and not args.output:
-        parser.error('--output ZIP is required unless --manifest-only is used')
+    if not (args.manifest_only or args.check_manifest) and not args.output:
+        parser.error('--output ZIP is required unless a manifest action is used')
+    if args.check_manifest and args.output:
+        parser.error('--check-manifest cannot be combined with --output')
     if args.output and args.output.absolute().is_relative_to(ROOT):
         parser.error('ZIP output must be outside the release source tree')
-    digest = manifest()
-    if args.manifest_only:
+    digest = manifest(check=args.check_manifest)
+    if args.manifest_only or args.check_manifest:
         print(json.dumps({'manifest_sha256':digest}))
         return 0
     output = args.output.absolute()

@@ -4,3 +4,8 @@
 * text eol=lf
 .agentic/tests/fixtures/upgrades/blobs/** -text
 .agentic/tests/fixtures/upgrades/blobs/** -text whitespace=cr-at-eol
+# AWF tooling may configure merge.awf-manifest.driver to invoke
+# scripts/manifest_merge_driver.py with %O %A %B %P. Hosted merges without
+# that local driver retain ordinary line-level merging of the per-file layout.
+MANIFEST.json merge=awf-manifest
+MANIFEST.md merge=awf-manifest
