@@ -46,13 +46,6 @@
     "critic": {
       "$ref": "urn:awf:1.2:critic-review"
     },
-    "critic_reviews": {
-      "type": "array",
-      "items": {
-        "$ref": "urn:awf:1.2:critic-review"
-      },
-      "minItems": 0
-    },
     "specialists": {
       "type": "array",
       "items": {
@@ -314,8 +307,7 @@
           },
           "ticket_key": {
             "type": "string",
-            "minLength": 1,
-            "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+            "minLength": 1
           }
         }
       },
