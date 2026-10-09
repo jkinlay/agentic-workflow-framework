@@ -6,6 +6,7 @@ authority, budget, independence, capacity, and readback checks.
 """
 from __future__ import annotations
 
+import inspect
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -845,7 +846,8 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
 def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                                 repository_root, repository_head_sha, repository_tree_sha,
                                 observe_inventory, dispatch_ticket, observe_dispatch, deliver_status,
-                                publication_config=None, observe_publication=None):
+                                publication_config=None, observe_publication=None,
+                                dispatch_role="writer"):
     """Run one real host-controller cycle through explicit reviewed adapters.
 
     Inventory is observed before scheduling.  Dispatch intent is durable before
@@ -859,12 +861,26 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                  (observe_inventory, dispatch_ticket, observe_dispatch, deliver_status)),
              "Production controller adapters must be callable")
     timestamp(now)
+    _require(dispatch_role in {"writer", "critic"},
+             "Production dispatch role must be writer or critic")
     store.recover_dispatches(now)
     _require(isinstance(inventory_binding, dict) and set(inventory_binding) == {
         "project_id", "repository_id", "scope_sha256"} and
         all(isinstance(value, str) and value for value in inventory_binding.values()),
         "Production inventory needs immutable project, repository, and scope bindings")
-    observation = observe_inventory()
+    # The reviewed reference adapter accepts this boundary value and stamps
+    # the provider observation with it.  Keeping the timestamp controller-owned
+    # prevents a wall-clock race between inventory collection and validation.
+    # Retain compatibility with older test/adapter doubles that already
+    # returned the controller timestamp, while the shipped reference adapter
+    # receives the authoritative value explicitly.
+    parameters = inspect.signature(observe_inventory).parameters
+    accepts_time = ("now" in parameters or "controller_now" in parameters or
+                    any(parameter.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                                           inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                        and parameter.default is inspect.Parameter.empty
+                        for parameter in parameters.values()))
+    observation = observe_inventory(now) if accepts_time else observe_inventory()
     _require(isinstance(observation, dict) and set(observation) == {
         "source", "observed_at", "binding", "complete", "inventory_sha256", "tickets"} and
         observation["source"] == "host_observation" and observation["complete"] is True,
@@ -916,11 +932,11 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
         try:
             if operation["status"] == "PENDING":
                 payload = store.begin_dispatch(dispatch_id, now)
-                receipt = dispatch_ticket(payload)
+                receipt = dispatch_ticket({**payload, "role": dispatch_role})
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now))
             else:
                 payload = store.begin_dispatch_reconciliation(dispatch_id, now)
-                receipt = observe_dispatch(payload)
+                receipt = observe_dispatch({**payload, "role": dispatch_role})
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now, reconcile=True))
         except Exception as exc:
             if operation["status"] == "PENDING":
