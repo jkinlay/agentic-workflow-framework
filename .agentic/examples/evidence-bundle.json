@@ -643,6 +643,14 @@
         "pr_number": 7,
         "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
         "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "posting_observation": {
+        "source": "host_observation",
+        "observed_at": "2026-09-09T12:00:00Z",
+        "comment_url": "https://github.com/fixture/example/pull/7#issuecomment-1",
+        "body_link": "https://github.com/fixture/example/pull/7#review-verdict-1",
+        "comment_sha256": "9701f32841a7f0e2a6c9496384a68061f61e01478768582917df9c7612f53e21",
+        "body_sha256": "1d5e587dac06f7f47ccd3a5f96972d5f55fcbe7db44f39f7abe54071fb24f75b"
       }
     }
   ],

@@ -192,6 +192,11 @@ def example_bundle(cfg):
         owner_review=False, owner_id=1001,
         candidate_binding={"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
                            "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
+        posting_observation={"source": "host_observation", "observed_at": NOW,
+                             "comment_url": "https://github.com/fixture/example/pull/7#issuecomment-1",
+                             "body_link": "https://github.com/fixture/example/pull/7#review-verdict-1",
+                             "comment_sha256": sha256(b"Illustrative evidence; no external test was executed.\n"),
+                             "body_sha256": pr["body_sha256"]},
         )
     verdict.pop("schema_version", None)
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,

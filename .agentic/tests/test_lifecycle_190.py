@@ -12,6 +12,9 @@ import unittest
 from unittest import mock
 import uuid
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+
 from agentic import ValidationError
 from agentic.canonical import load
 from agentic.closeout import MergeProbe, integration_tree, render_markdown, validate_closeout
@@ -24,7 +27,6 @@ from agentic.review_loop import LoopStore, enroll, resume, tick, validate_review
 from agentic.store import Store
 from review_admission_fixture import bind_review_admission
 
-ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-09T12:00:00Z"
 EVIDENCE = ["urn:awf:fixture:example-evidence"]
 

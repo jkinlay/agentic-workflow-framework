@@ -188,6 +188,19 @@
     "risk_tier": 1,
     "tier_justification": "UNFILLED",
     "closure_standard": "FULL",
+    "risk_classification": {
+      "tier": 1,
+      "matched_tiers": [
+        1
+      ],
+      "evidence": {
+        "1": [],
+        "2": [],
+        "3": []
+      },
+      "rule": "UNFILLED",
+      "risk_flags": []
+    },
     "accepted_findings": [],
     "conclusion": "NOT_READY",
     "execution_authority": false,

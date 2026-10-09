@@ -15,6 +15,7 @@
     "pr_comment_url",
     "pr_body_link",
     "evidence",
+    "posting_observation",
     "owner_review",
     "owner_id",
     "candidate_binding"
@@ -135,6 +136,48 @@
       },
       "minItems": 0,
       "uniqueItems": true
+    },
+    "posting_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "observed_at",
+        "comment_url",
+        "body_link",
+        "comment_sha256",
+        "body_sha256"
+      ],
+      "properties": {
+        "source": {
+          "const": "host_observation"
+        },
+        "observed_at": {
+          "type": "string",
+          "minLength": 1,
+          "format": "date-time"
+        },
+        "comment_url": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
+        },
+        "body_link": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
+        },
+        "comment_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "body_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
     },
     "owner_review": {
       "type": "boolean"

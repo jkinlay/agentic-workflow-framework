@@ -17,6 +17,7 @@
     "risk_tier",
     "tier_justification",
     "closure_standard",
+    "risk_classification",
     "accepted_findings",
     "conclusion",
     "execution_authority",
@@ -600,6 +601,9 @@
         "FULL",
         "DECLARED_LIMITATIONS"
       ]
+    },
+    "risk_classification": {
+      "$ref": "urn:awf:1.2:risk-classification"
     },
     "accepted_findings": {
       "type": "array",

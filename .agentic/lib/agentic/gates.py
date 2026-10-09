@@ -239,17 +239,17 @@ def evaluate(config, workflow, bundle, contracts, now):
     # signal.  Normalize that one historical omission for comparison, while
     # still requiring the bundle to carry an exact durable classification.
     durable_classification = classification
+    contract_classification = declared_classification
+    bundle_classification = bundle.get("tier_classification")
     if legacy_security_classification:
-        # Normalize the one additive 1.9.3 omission in-place so an accepted
-        # legacy bundle retains the observed security signal durably.  No
-        # other classification drift gets compatibility treatment.
-        contract["risk_classification"] = durable_classification
-        bundle["tier_classification"] = durable_classification
-    if declared_classification != durable_classification and not legacy_security_classification:
+        # Narrowly normalize retained 1.9.3 records for this evaluation. Keep
+        # the caller's bytes untouched; the evaluated classification remains
+        # the observed durable value including security.
+        contract_classification = durable_classification
+        bundle_classification = durable_classification
+    if contract_classification != durable_classification:
         raise ValidationError("Contract risk_classification does not match observed paths and risk evidence")
-    if (bundle.get("tier_classification") != durable_classification
-            and not (legacy_security_classification
-                     and bundle.get("tier_classification") == declared_classification)):
+    if bundle_classification != durable_classification:
         raise ValidationError("Evidence bundle tier_classification is missing or stale")
     if not verdicts:
         raise ValidationError("Every consumed review round needs a current posted verdict record")
@@ -259,6 +259,7 @@ def evaluate(config, workflow, bundle, contracts, now):
         raise ValidationError("Review verdicts must cover every consumed round without gaps")
     terminal_round = max(v["round"] for v in verdicts)
     critic_run_ids = set()
+    posting_evidence_ok = True
     for verdict in verdicts:
         # Verdicts are retained review records. Their candidate identity and
         # freshness are current-gate requirements, while the contract hash
@@ -271,15 +272,27 @@ def evaluate(config, workflow, bundle, contracts, now):
                 or verdict["binding"]["policy_hash"] != binding["policy_hash"]
                 or (verdict["round"] == terminal_round and verdict["binding"]["candidate_id"] != binding["candidate_id"])):
             raise ValidationError("Review verdict binding is stale for the evaluated candidate")
-        fresh(verdict["created_at"], now, config["validation"]["max_evidence_age_seconds"])
+        if verdict["round"] == terminal_round:
+            fresh(verdict["created_at"], now, config["validation"]["max_evidence_age_seconds"])
         if verdict["round"] == terminal_round and verdict["head_sha"] != candidate["head_sha"]:
             raise ValidationError("Review verdict is stale for the candidate head")
         if verdict["tier"] != tier:
             raise ValidationError("Review verdict tier does not match the recomputed contract tier")
         from .review_tiers import validate_round
-        validate_round(tier, verdict["round"], owner_cap_disposition=bundle.get("cap_disposition"))
+        validate_round(tier, verdict["round"], owner_cap_disposition=bundle.get("cap_disposition"), config=config)
         if not verdict["pr_comment_url"] or not verdict["pr_body_link"]:
             raise ValidationError("Review verdict must carry PR comment and body-link evidence")
+        observation = verdict.get("posting_observation")
+        if not isinstance(observation, dict) or observation.get("source") != "host_observation":
+            posting_evidence_ok = False
+        if verdict["round"] == terminal_round:
+            if isinstance(observation, dict):
+                fresh(observation["observed_at"], now, config["validation"]["max_evidence_age_seconds"])
+                posting_evidence_ok = posting_evidence_ok and (
+                    observation.get("comment_url") == verdict["pr_comment_url"]
+                    and observation.get("body_link") == verdict["pr_body_link"]
+                    and observation.get("body_sha256") == pr["body_sha256"]
+                    and observation.get("comment_sha256") in {entry["sha256"] for entry in bundle["evidence_registry"]})
         run = runs.get(verdict["run_id"])
         if not run or run["producer_id"] != verdict["producer_id"]:
             raise ValidationError("Review verdict has no matching registered review run")
@@ -287,6 +300,8 @@ def evaluate(config, workflow, bundle, contracts, now):
             raise ValidationError("Owner/verifier assertions do not consume numbered critic review rounds")
         if run["role"] != "critic" or run["producer_id"] != verdict["reviewer_id"]:
             raise ValidationError("Review verdict must be bound to its independent critic run")
+        if run["context_id"] == worker_run["context_id"] or run["producer_id"] == worker_run["producer_id"]:
+            raise ValidationError("Review verdict critic run is not independent of the worker")
         if verdict["run_id"] in critic_run_ids:
             raise ValidationError("Each consumed review round needs a distinct independent critic run")
         critic_run_ids.add(verdict["run_id"])
@@ -362,7 +377,11 @@ def evaluate(config, workflow, bundle, contracts, now):
                                      and owner.get("record_id") in {v.get("record_id") for v in records})
     critic_verdicts = [v for v in verdicts if not v["owner_review"]]
     terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
-    critic_ok = (no_blockers and terminal_critic is not None and terminal_critic["verdict"] == "PASS"
+    terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
+    critic_ok = (no_blockers and terminal_critic is not None
+                 and terminal_verdict is terminal_critic
+                 and terminal_verdict["verdict"] == "PASS"
+                 and terminal_critic["verdict"] == "PASS"
                  and critic["verdict"] in ({"APPROVE", "REQUEST_CHANGES"} if lenient else {"APPROVE"})
                  and owner_review_ok)
     provenance_problems = [f"exclusive resource {name} held by overlapping COMPLETE runs {a} and {b}"
@@ -404,7 +423,7 @@ def evaluate(config, workflow, bundle, contracts, now):
     parity_ok, parity_problems = local_ci_parity(config, contract, worker, ci)
     outcomes = {
         "review_completion": True,
-        "verdict_posting": bool(verdicts) and all(
+        "verdict_posting": posting_evidence_ok and bool(verdicts) and all(
             v["pr_comment_url"].startswith(f"{candidate['host']}/{candidate['repository']}/pull/{candidate['pr_number']}#")
             and v["pr_body_link"].startswith(f"{candidate['host']}/{candidate['repository']}/pull/{candidate['pr_number']}#")
             for v in verdicts if v["round"] == terminal_round),
@@ -448,6 +467,7 @@ def evaluate(config, workflow, bundle, contracts, now):
         "candidate": candidate, "gates": {key: {"result": "PASS" if ok else "FAIL", "evidence": refs[key]} for key, ok in outcomes.items()},
         "record_ids": [r["record_id"] for r in records], "required_specialist_domains": sorted(required_domains),
         "risk_tier": tier, "tier_justification": contract["tier_justification"],
+        "risk_classification": durable_classification,
         "closure_standard": contract["closure_standard"]["kind"],
         "residual_risks": ["Offline records have not been independently fetched from live services; this output grants no execution authority."]
             + [f"Accepted by owner disposition ({item['decision']}): {item['finding_id']} — {item['summary']}; {item['rationale']}" for item in accepted]

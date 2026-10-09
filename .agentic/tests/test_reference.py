@@ -13,6 +13,12 @@ from concurrent.futures import ThreadPoolExecutor
 import unittest
 import uuid
 
+# Keep this test module bound to the checkout under test when a parent
+# validation harness has another AWF checkout on PYTHONPATH.
+ROOT = Path(__file__).resolve().parents[2]
+import sys
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+
 from agentic import CapabilityUnavailable, ValidationError
 from agentic.authorization import make_request, parse_text, render_request, verify_record, verify_webhook
 from agentic.canonical import canonical, fingerprint, load, loads, sha256, timestamp
@@ -26,7 +32,6 @@ from agentic.safeio import Tree
 from agentic.store import Store
 from review_admission_fixture import bind_review_admission
 
-ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-09T12:00:00Z"
 
 

@@ -9,6 +9,11 @@ import tempfile
 import unittest
 import uuid
 
+# Keep this test module bound to the checkout under test when a parent
+# validation harness has another AWF checkout on PYTHONPATH.
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+
 from agentic import ValidationError
 from agentic.canonical import load
 from agentic.contracts import Contracts
@@ -19,7 +24,6 @@ from agentic.review_policy import (BOUNDARY_SENTENCE, cap_disposition_plan, cap_
                                    computed_tier, evidence_only, project_instructions_errors, validate_findings)
 from review_admission_fixture import bind_review_admission
 
-ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-09T12:00:00Z"
 EVIDENCE = ["urn:awf:fixture:example-evidence"]
 
@@ -440,6 +444,26 @@ class CapTests(Fixture):
         verdict["pr_body_link"] = "https://example.invalid/unrelated/body"
         self.assertEqual("FAIL", self.gate()["gates"]["verdict_posting"]["result"])
 
+    def test_gate_rejects_fabricated_candidate_prefixed_posting(self):
+        verdict = self.bundle["review_verdicts"][0]
+        verdict["pr_comment_url"] = "https://github.com/fixture/example/pull/7#fabricated-comment"
+        verdict["posting_observation"]["comment_url"] = verdict["pr_comment_url"]
+        verdict["posting_observation"]["comment_sha256"] = "f" * 64
+        self.assertEqual("FAIL", self.gate()["gates"]["verdict_posting"]["result"])
+
+    def test_gate_rejects_terminal_critic_sharing_worker_context(self):
+        verdict = self.bundle["review_verdicts"][0]
+        critic_run = next(run for run in self.bundle["runs"] if run["run_id"] == verdict["run_id"])
+        worker_run = next(run for run in self.bundle["runs"] if run["run_id"] == self.bundle["worker"]["run_id"])
+        critic_run["context_id"] = worker_run["context_id"]
+        with self.assertRaisesRegex(ValidationError, "not independent"):
+            self.gate()
+
+    def test_configured_tier_three_cap_is_used_by_round_validation(self):
+        from agentic.review_tiers import validate_round
+        with self.assertRaisesRegex(ValidationError, "cap is 1"):
+            validate_round(3, 2, config={"execution": {"risk_tiers": {"tier3_review": {"max_rounds": 1}}}})
+
     def test_gate_preserves_old_head_round_and_requires_distinct_critic_runs(self):
         first = self.bundle["review_verdicts"][0]
         first["head_sha"] = "a" * 40
@@ -455,6 +479,8 @@ class CapTests(Fixture):
         second["reviewer_id"] = second_run["producer_id"]
         second["pr_comment_url"] = "https://github.com/fixture/example/pull/7#issuecomment-2"
         second["pr_body_link"] = "https://github.com/fixture/example/pull/7#review-verdict-2"
+        second["posting_observation"] = copy.deepcopy(first["posting_observation"])
+        second["posting_observation"].update(comment_url=second["pr_comment_url"], body_link=second["pr_body_link"])
         self.bundle["review_verdicts"].append(second)
         self.assertEqual("PASS", self.gate()["gates"]["verdict_posting"]["result"])
         self.bundle["review_verdicts"][1]["run_id"] = first["run_id"]

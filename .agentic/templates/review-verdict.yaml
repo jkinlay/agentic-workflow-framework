@@ -24,6 +24,14 @@
     "pr_comment_url": "urn:awf:UNFILLED",
     "pr_body_link": "urn:awf:UNFILLED",
     "evidence": [],
+    "posting_observation": {
+      "source": "host_observation",
+      "observed_at": "1970-01-01T00:00:00Z",
+      "comment_url": "urn:awf:UNFILLED",
+      "body_link": "urn:awf:UNFILLED",
+      "comment_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "body_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
     "owner_review": false,
     "owner_id": 1,
     "candidate_binding": {
