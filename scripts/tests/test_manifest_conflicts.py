@@ -68,8 +68,8 @@ class ManifestConflictTests(unittest.TestCase):
         self.git(root, "commit", "-m", message)
         return self.git(root, "rev-parse", "HEAD").stdout.decode().strip()
 
-    def make_repository(self, *, driver=False):
-        root = self.base / ("driver" if driver else "server")
+    def make_repository(self, name):
+        root = self.base / name
         root.mkdir()
         files = {
             "alpha.txt": b"alpha base\n",
@@ -79,24 +79,19 @@ class ManifestConflictTests(unittest.TestCase):
         for name, data in files.items():
             (root / name).write_bytes(data)
         shutil.copy2(ROOT / ".gitattributes", root / ".gitattributes")
-        if driver:
-            attributes = (root / ".gitattributes").read_text(encoding="utf-8")
-            (root / ".gitattributes").write_text(
-                attributes.replace("merge=union", "merge=awf-manifest"),
-                encoding="utf-8",
-                newline="\n",
-            )
-            shutil.copy2(ROOT / "scripts/manifest_merge_driver.py", root / "manifest_merge_driver.py")
+        shutil.copy2(
+            ROOT / "scripts/manifest_merge_driver.py",
+            root / "manifest_merge_driver.py",
+        )
         self.write_manifests(root, files)
         self.git(root, "init", "-b", "main")
         self.git(root, "config", "user.name", "Manifest Fixture")
         self.git(root, "config", "user.email", "manifest@example.invalid")
-        if driver:
-            command = (
-                f'"{sys.executable}" -B "{root / "manifest_merge_driver.py"}" '
-                "%O %A %B %P"
-            )
-            self.git(root, "config", "merge.awf-manifest.driver", command)
+        command = (
+            f'"{sys.executable}" -B "{root / "manifest_merge_driver.py"}" '
+            "%O %A %B %P"
+        )
+        self.git(root, "config", "merge.awf-manifest.driver", command)
         base = self.commit(root, "base")
         return root, files, base
 
@@ -108,6 +103,14 @@ class ManifestConflictTests(unittest.TestCase):
         self.write_manifests(root, files)
         return self.commit(root, branch)
 
+    def branch_delete(self, root, base, branch, files, name):
+        self.git(root, "checkout", "-b", branch, base)
+        files = dict(files)
+        del files[name]
+        (root / name).unlink()
+        self.write_manifests(root, files)
+        return self.commit(root, branch)
+
     def assert_current(self, root):
         files = {
             path.name: path.read_bytes()
@@ -116,22 +119,45 @@ class ManifestConflictTests(unittest.TestCase):
         machine, advisory = self.manifests(files)
         build_release.check_manifest_files(root, machine, advisory)
 
-    def test_disjoint_prs_merge_without_manifest_conflict_in_either_order(self):
-        root, files, base = self.make_repository()
+    def assert_merges_in_either_order(self, root, left, right):
+        for branch, first, second in (
+            ("a-then-b", left, right),
+            ("b-then-a", right, left),
+        ):
+            with self.subTest(branch=branch):
+                self.git(root, "checkout", "-b", branch, first)
+                self.git(root, "merge", "--no-edit", second)
+                unresolved = self.git(
+                    root, "diff", "--name-only", "--diff-filter=U"
+                ).stdout.decode().splitlines()
+                self.assertEqual([], unresolved)
+                self.assert_current(root)
+
+    def test_adjacent_disjoint_additions_merge_in_either_order(self):
+        root, files, base = self.make_repository("additions")
         left = self.branch_change(
             root, base, "pr-a", files, "aardvark-a.txt", b"added by A\n"
         )
         right = self.branch_change(
             root, base, "pr-b", files, "aardvark-b.txt", b"added by B\n"
         )
+        self.assert_merges_in_either_order(root, left, right)
 
-        self.git(root, "checkout", "-b", "a-then-b", left)
-        self.git(root, "merge", "--no-edit", right)
-        self.assert_current(root)
+    def test_adjacent_disjoint_modifications_merge_in_either_order(self):
+        root, files, base = self.make_repository("modifications")
+        left = self.branch_change(
+            root, base, "pr-a", files, "alpha.txt", b"alpha from A\n"
+        )
+        right = self.branch_change(
+            root, base, "pr-b", files, "middle.txt", b"middle from B\n"
+        )
+        self.assert_merges_in_either_order(root, left, right)
 
-        self.git(root, "checkout", "-b", "b-then-a", right)
-        self.git(root, "merge", "--no-edit", left)
-        self.assert_current(root)
+    def test_adjacent_disjoint_deletions_merge_in_either_order(self):
+        root, files, base = self.make_repository("deletions")
+        left = self.branch_delete(root, base, "pr-a", files, "alpha.txt")
+        right = self.branch_delete(root, base, "pr-b", files, "middle.txt")
+        self.assert_merges_in_either_order(root, left, right)
 
     def test_workflow_scopes_matrix_concurrency_to_manifest_job(self):
         workflow = (ROOT / ".github/workflows/manifest-check.yml").read_text(
@@ -147,7 +173,7 @@ class ManifestConflictTests(unittest.TestCase):
         )
 
     def test_local_driver_keeps_same_file_conflict_out_of_manifests(self):
-        root, files, base = self.make_repository(driver=True)
+        root, files, base = self.make_repository("same-file")
         left = self.branch_change(root, base, "same-a", files, "alpha.txt", b"alpha from A\n")
         right = self.branch_change(root, base, "same-b", files, "alpha.txt", b"alpha from B\n")
 
@@ -156,6 +182,9 @@ class ManifestConflictTests(unittest.TestCase):
         self.assertNotEqual(0, merged.returncode)
         unresolved = self.git(root, "diff", "--name-only", "--diff-filter=U").stdout.decode().splitlines()
         self.assertEqual(["alpha.txt"], unresolved)
+        self.git(root, "checkout", "--ours", "alpha.txt")
+        self.git(root, "add", "alpha.txt")
+        self.assert_current(root)
 
     def test_check_rejects_missing_stale_and_hand_edited_manifests(self):
         root = self.base / "check"
