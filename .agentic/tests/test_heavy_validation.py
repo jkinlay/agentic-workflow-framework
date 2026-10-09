@@ -2229,6 +2229,42 @@ class HeavyValidationTests(unittest.TestCase):
             finally:
                 GitCheckoutSnapshotter._thaw(snapshot)
 
+    def test_windows_snapshot_root_preserves_lexical_path_for_reparse_check(self):
+        native_path = type(Path.cwd())
+        checkout = native_path("/synthetic/reviewed-checkout")
+        junction = native_path("/synthetic/windows-junction/snapshot")
+        junction_target = native_path("/synthetic/junction-target/snapshot")
+        snapshotter = object.__new__(GitCheckoutSnapshotter)
+        snapshotter.root = checkout
+        snapshotter.run_tree_inventory = lambda _tree: {}
+        snapshotter.run_archive = lambda _tree: b""
+
+        @contextmanager
+        def temporary_directory(**_kwargs):
+            yield str(junction)
+
+        def reject_lexical_alias(path, label, *, directory):
+            self.assertTrue(directory)
+            if label == "execution checkout":
+                return checkout
+            self.assertEqual("checkout snapshot root", label)
+            if path == junction:
+                raise ValidationError(
+                    f"{label} uses a symlink or reparse alias: {junction}")
+            self.fail("Windows snapshot root bypassed lexical reparse validation")
+
+        with mock.patch.object(heavy_controller, "Path", native_path), \
+                mock.patch.object(heavy_controller.os, "name", "nt"), \
+                mock.patch.object(heavy_controller.os.path, "realpath",
+                                  return_value=str(junction_target)), \
+                mock.patch.object(heavy_controller.tempfile, "TemporaryDirectory",
+                                  temporary_directory), \
+                mock.patch.object(heavy_controller, "resolve_without_alias",
+                                  side_effect=reject_lexical_alias):
+            with self.assertRaisesRegex(ValidationError, "reparse alias"):
+                with snapshotter({"tree_sha": "a" * 40}, str(checkout)):
+                    self.fail("Windows reparse alias was accepted")
+
     def test_windows_launcher_bytes_are_reviewed_and_mutation_fenced(self):
         value = json.loads(plan([partition("launcher")], parallelism=1))
         chain = heavy._windows_launch_chain(value)
