@@ -39,8 +39,13 @@ class AC42HarnessSmokeTests(unittest.TestCase):
             self.assertEqual(results.pop("read_only_external_resource_admission"), "NOT_COVERED")
             self.assertEqual(set(results.values()), {"PASS"}, report["rows"])
             self.assertEqual(report["rows"]["active_single_status_run"]["evidence"]["project_state"], "ACTIVE")
+            active_command = report["rows"]["active_single_status_run"]["evidence"]["command"]
+            self.assertEqual(Path(active_command[2]), Path(raw) / "work/project/.agentic/scripts/workflow.py")
+            self.assertEqual(active_command[5], "status")
             self.assertEqual(report["result"], "FAIL")  # never a gate pass without the self-test
             self.assertFalse(report["gate_eligible"])
+            self.assertIn({"check": "read_only_external_resource_admission", "result": "NOT_COVERED"},
+                          report["required_check_failures"])
             self.assertTrue(report["rows"]["project_values_preserved"]["evidence"]["gitignore_prefix_preserved"])
             self.assertEqual(done.returncode, 1)
 
@@ -51,6 +56,25 @@ def _load_harness():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class GateOutcomeTests(unittest.TestCase):
+    def setUp(self):
+        self.harness = _load_harness()
+        self.rows = {name: {"result": "PASS"} for name in self.harness.REQUIRED}
+
+    def test_not_covered_required_admission_fails_closed(self):
+        self.rows["read_only_external_resource_admission"] = {"result": "NOT_COVERED"}
+        outcome = self.harness.gate_outcome(self.rows, execution_eligible=True)
+        self.assertEqual(outcome["result"], "FAIL")
+        self.assertFalse(outcome["gate_eligible"])
+        self.assertEqual(outcome["required_check_failures"], [
+            {"check": "read_only_external_resource_admission", "result": "NOT_COVERED"}])
+
+    def test_all_required_pass_preserves_pass_and_gate_eligibility(self):
+        outcome = self.harness.gate_outcome(self.rows, execution_eligible=True)
+        self.assertEqual(outcome, {"result": "PASS", "gate_eligible": True,
+                                  "required_check_failures": []})
 
 
 class OwnerBlobTests(unittest.TestCase):
