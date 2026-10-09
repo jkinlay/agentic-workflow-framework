@@ -58,3 +58,28 @@ jobs:
       - name: Unit tests (scripts/tests)
         run: |
           "$PY" -B -m unittest discover -s scripts/tests -t scripts/tests
+      - name: Unit tests (portable core)
+        run: |
+          "$PY" -B -m unittest discover -s global/awf/tests
+      - name: Unit tests (portable host)
+        run: |
+          "$PY" -B -m unittest discover -s global/awf-portable/tests
+
+  installed-runtime-self-test:
+    name: Windows installed-runtime self-test
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/'))
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install hash-locked dependencies
+        run: |
+          python -m pip install --require-hashes "--only-binary=:all:" -r requirements.txt
+      - name: Exercise self-test from a fresh installed runtime
+        run: |
+          python -B scripts/tests/test_installed_self_test.py

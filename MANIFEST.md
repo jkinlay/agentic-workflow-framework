@@ -1,8 +1,8 @@
 # Release manifest — 1.9.4
 
-429 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
+430 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `22ad74e448645c16a6acc5d6b8044d61273e4c1a850790627e239302a483f5af`
+MANIFEST.json SHA-256: `bc7e0d6a72e4bb253a5d89e45e87b67374c1e21cfc3994199bd6ee5e2ed5f19c`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -319,7 +319,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.gitattributes` | `94c0646012f362c5ef9d09273f994d4de0513066e6cf2b8966308238b897d43b` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
-| `.github/workflows/ci.yml` | `469da3251767c5755683f4e956dbaf113edc06412f520aa47491f2f11b5c1257` |
+| `.github/workflows/ci.yml` | `57619918f6ab16098d2b19345e805447cc661b7e814e6b7d66a4023e5293584b` |
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `AGENTS.md` | `dc2a7603f45f01fdfc9505a51af7747527582434b3daaa964d26464fd6293a75` |
 | `ARCHITECTURE.md` | `761781e0581d5d2a75013bf5f131ff06f18180805f485c1e50dfbc0a9680042c` |
@@ -423,6 +423,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_ac42_e2e.py` | `2b0d8b25cad09f78e5c5160a9a37b81bea751c89113c3aa317065fc376e15999` |
 | `scripts/tests/test_adoptable_source.py` | `4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `378f4e8844ef552be777e92503be4c20ed44678747353798636c643bf4f1b9be` |
+| `scripts/tests/test_ci_suite_coverage.py` | `5655a8ccc4aafc40d32b394a57c4eb3bfc9ebd543f9c075af5855b64abfe62a9` |
 | `scripts/tests/test_cli_failure_paths.py` | `0a0cef4139b488d1f8a048401ff6e7ef1582171a245c6d320113acf0e4c30dd1` |
 | `scripts/tests/test_fresh_bootstrap.py` | `18cb82bb6399defac5969f8e7af82a00e8657516461a386374730b0c714d9a7a` |
 | `scripts/tests/test_installed_self_test.py` | `63937908a219b3681cb0bbee3a61714755b3bb25d276df317cb302dba68738e9` |
