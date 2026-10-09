@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / ".agentic/tests"))
 
 from agentic import adoption_config as adoption  # noqa: E402
 from agentic.installer import install  # noqa: E402
+from source_only import skip_unless_source_repo  # noqa: E402
 from test_bootstrap_configuration import installed_wheel, wheel_lock  # noqa: E402
 from upgrade_fixtures import materialize, verify_materialized  # noqa: E402
 
@@ -107,6 +108,9 @@ def verify_previous_runtime(project):
     return result
 
 
+@skip_unless_source_repo(
+    "historical upgrade fixtures are intentionally excluded from portable releases",
+    ".agentic/tests/fixtures/upgrades/versions.json")
 class UpgradePycacheTests(unittest.TestCase):
     def test_only_pinned_sibling_cpython_caches_are_tolerated(self):
         with tempfile.TemporaryDirectory(prefix="awf-upgrade-pycache-surface-") as folder:
