@@ -2,7 +2,7 @@
 """AC42 end-to-end upgrade gate harness (AWF-11).
 
 Upgrades a recorded historical installation fixture (default 1.9.1, as AC42
-specifies) to this 1.9.3 source in a fresh Git repository, then records one
+specifies) to this 1.9.4 source in a fresh Git repository, then records one
 PASS / FAIL / NOT_COVERED row per AC42 clause in an evidence JSON file.
 
 The adoption-PR merge and the GitHub observations are a recorded synthetic
@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
 
 from agentic import VERSION  # noqa: E402
-from agentic.child_process import child_env  # noqa: E402
+from agentic.child_process import child_env, isolated_git_env  # noqa: E402
 
 REQUIRED = ("fixture", "upgrade", "verify_installation", "validate_config", "self_test",
             "adoption_merge", "active_single_status_run", "handoff_snapshot",
@@ -61,6 +61,38 @@ def run(command, cwd, timeout=1800, extra=None):
     return {"command": [str(part) for part in command], "exit_code": done.returncode,
             "seconds": round(time.monotonic() - started, 1),
             "stdout_tail": done.stdout[-2000:], "stderr_tail": done.stderr[-2000:],}
+
+
+OWNER_BLOB_MAX_BYTES = 8 * 1024 * 1024
+
+
+def owner_blob(project, commit, name, max_bytes=OWNER_BLOB_MAX_BYTES):
+    """Committed bytes of one owner file, or None when the path is absent.
+
+    Git runs isolated (no ambient config, replace refs disabled). Any other
+    failure or an oversized blob raises, so the check fails closed.
+    """
+    def call(*args):
+        return subprocess.run(["git", "--no-replace-objects", "-c", "core.useReplaceRefs=false",
+                               "-C", str(project), *args], capture_output=True, timeout=60,
+                              env=child_env(isolated_git_env(dict(os.environ))))
+    listed = call("ls-tree", "-z", "--full-tree", commit, "--", name)
+    if listed.returncode != 0:
+        raise RuntimeError(f"git ls-tree {commit}:{name} failed")
+    entries = [item for item in listed.stdout.split(b"\0") if item]
+    if not entries:
+        return None
+    meta, _, path = entries[0].partition(b"\t")
+    mode, kind, oid = meta.split()
+    if len(entries) != 1 or kind != b"blob" or path.decode("utf-8") != name:
+        raise RuntimeError(f"{name} at {commit} is not a single blob")
+    size = call("cat-file", "-s", oid.decode())
+    if size.returncode != 0 or int(size.stdout) > max_bytes:
+        raise RuntimeError(f"{name} at {commit} is unreadable or exceeds {max_bytes} bytes")
+    done = call("cat-file", "blob", oid.decode())
+    if done.returncode != 0 or len(done.stdout) != int(size.stdout):
+        raise RuntimeError(f"{name} at {commit} could not be read completely")
+    return done.stdout
 
 
 class Gate:
@@ -102,7 +134,7 @@ def provider_fixture(project, head, upgrade_commit, receipt, installed_files, fu
         base + "/pulls/7": {"number": 7, "node_id": "PR_ac42", "state": "closed", "merged": True,
                             "merged_at": "2026-10-07T12:00:00+00:00", "merge_commit_sha": None,
                             "base": {"ref": branch, "repo": dict(repository)},
-                            "head": {"ref": "awf/upgrade-1.9.3", "sha": "d" * 40, "repo": dict(repository)}},
+                            "head": {"ref": "awf/upgrade-1.9.4", "sha": "d" * 40, "repo": dict(repository)}},
         base + "/pulls/7/files?per_page=50&page=1": [
             {"filename": INSTALLED, "status": "modified", "sha": status.blob_sha(installed_files[INSTALLED])}],
         base + f"/commits/{upgrade_commit}/pulls?per_page=100": [
@@ -123,7 +155,7 @@ def provider_fixture(project, head, upgrade_commit, receipt, installed_files, fu
     graph_repo = {"id": "R_ac42", "databaseId": repository_id, "nameWithOwner": full_name}
     graphql = {"data": {"repository": dict(graph_repo,
         defaultBranchRef={"name": branch, "target": {"oid": head}},
-        pullRequest={"id": "PR_ac42", "number": 7, "baseRefName": branch, "headRefName": "awf/upgrade-1.9.3",
+        pullRequest={"id": "PR_ac42", "number": 7, "baseRefName": branch, "headRefName": "awf/upgrade-1.9.4",
                      "headRefOid": "d" * 40, "headRepository": graph_repo, "state": "MERGED", "merged": True,
                      "mergedAt": "2026-10-07T12:00:00Z", "mergeCommit": {"oid": head, "repository": graph_repo}})}}
     requests = []
@@ -143,7 +175,7 @@ def provider_fixture(project, head, upgrade_commit, receipt, installed_files, fu
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--from-version", default="1.9.1", choices=("1.8.3", "1.8.9", "1.9.1", "1.9.2"))
+    parser.add_argument("--from-version", default="1.9.1", choices=("1.8.3", "1.8.9", "1.9.1", "1.9.2", "1.9.3"))
     parser.add_argument("--work", type=Path, help="Empty scratch directory outside this repository (default: new temp dir)")
     parser.add_argument("--evidence", type=Path, required=True, help="Evidence JSON to create; never overwritten")
     parser.add_argument("--runtime-wheelhouse", type=Path,
@@ -195,7 +227,7 @@ def main(argv=None):
                     "owner_files": sorted(owner_before), "core.autocrlf": git(project, "config", "core.autocrlf"),
                     "codeowners_project_owned": ".github/CODEOWNERS" in owner_before})
 
-        git(project, "checkout", "-q", "-b", "awf/upgrade-1.9.3")
+        git(project, "checkout", "-q", "-b", "awf/upgrade-1.9.4")
         if args.runtime_wheelhouse:
             step = run([sys.executable, "-B", ROOT / "scripts/bootstrap_project.py", "--mode", "upgrade",
                         "--dest", project, "--expected-manifest-sha256", pin,
@@ -236,8 +268,8 @@ def main(argv=None):
             gate.record("self_test", step["exit_code"] == 0, step)
 
         git(project, "checkout", "-q", branch)
-        git(project, "merge", "-q", "--no-ff", "-m", f"Merge pull request #7 from {full_name.split('/')[0]}/awf/upgrade-1.9.3",
-            "awf/upgrade-1.9.3")
+        git(project, "merge", "-q", "--no-ff", "-m", f"Merge pull request #7 from {full_name.split('/')[0]}/awf/upgrade-1.9.4",
+            "awf/upgrade-1.9.4")
         head = git(project, "rev-parse", "HEAD")
         gate.record("adoption_merge", True, {"merge_commit": head, "pr": 7, "fixture": "local merge, recorded provider answers"})
 
@@ -265,16 +297,24 @@ def main(argv=None):
         gate.record("handoff_snapshot", snapshot["awf"]["project_state"]["value"] == observed["project_state"]
                     and snapshot["repository"]["head"]["value"] == head, snapshot)
 
+        # Compare committed blobs: core.autocrlf=true rewrites working-tree line
+        # endings on checkout/merge, which is not an upgrader byte change.
+        def blob(commit, name):
+            return owner_blob(project, commit, name)
+        owner_before = {name: blob(base_commit, name) for name in owner_before}
+        if any(raw is None for raw in owner_before.values()):
+            raise RuntimeError("owner file absent from the base commit")
         changed = {}
         for name, raw in owner_before.items():
-            after = (project / name).read_bytes() if (project / name).is_file() else None
+            after = blob("HEAD", name)
             if after != raw:
-                changed[name] = list(difflib.unified_diff(raw.decode("utf-8", "replace").splitlines(),
+                changed[name] = list(difflib.unified_diff((raw or b"").decode("utf-8", "replace").splitlines(),
                     (after or b"").decode("utf-8", "replace").splitlines(), lineterm="", n=0))[2:40]
         # AWF-managed records and the documented append-only .gitignore block.
         allowed = {CONFIG, INSTALLED, ".agentic/workflow-version.yaml", ".gitignore"}
-        ignore_after = (project / ".gitignore").read_bytes() if (project / ".gitignore").is_file() else b""
-        ignore_ok = ".gitignore" not in owner_before or ignore_after.startswith(owner_before[".gitignore"])
+        ignore_after = blob("HEAD", ".gitignore") if ".gitignore" in owner_before else None
+        ignore_ok = ".gitignore" not in owner_before or (
+            ignore_after is not None and ignore_after.startswith(owner_before[".gitignore"]))
         config_lines = [line for line in changed.get(CONFIG, []) if line[:1] in "+-"]
         config_ok = all("expected_workflow_version" in line or line.strip("+- ").startswith(
             ('"cloud_id"', '"provider_project_id"', '"controller_actor_id"')) for line in config_lines)

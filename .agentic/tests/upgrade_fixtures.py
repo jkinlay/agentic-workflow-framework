@@ -16,7 +16,7 @@ CONFIG = ".agentic/PROJECT_CONFIG.yaml"
 INSTALLED = ".agentic/installed-manifest.json"
 PROVENANCE = ".agentic/workflow-version.yaml"
 OPERATING = "OPERATING_CONFIG.yaml"
-NEXT = {"1.8.3": "1.8.9", "1.8.9": "1.9.1", "1.9.1": "1.9.2", "1.9.2": "1.9.3"}
+NEXT = {"1.8.3": "1.8.9", "1.8.9": "1.9.1", "1.9.1": "1.9.2", "1.9.2": "1.9.3", "1.9.3": "1.9.4"}
 
 
 def sha256(raw):
@@ -117,7 +117,7 @@ def materialize(version, destination):
     target_paths = json.loads((ROOT / "MANIFEST.json").read_bytes())["files"]
     _shim_directories(destination, [relative for section in sections for relative in section]
                       + list(target_paths) + [".agentic-state/operating/changes/placeholder",
-                                              ".agentic-state/archive/upgrade-to-1.9.3/files/placeholder"])
+                                              ".agentic-state/archive/upgrade-to-1.9.4/files/placeholder"])
     for relative, entry in sorted(manifest["managed_files"].items()):
         _write(destination, relative, fixture_blob(entry["sha256"]), entry["mode"])
     for relative, entry in sorted(manifest["owner_files"].items()):
@@ -168,8 +168,8 @@ def advance_one_fixture_step(destination, version):
     """Apply one registered pure migration and install the next real fixture tree."""
     current = fixture_manifest(version)
     next_version = NEXT[version]
-    if next_version == "1.9.3":
-        raise AssertionError("The final step must use the real 1.9.3 installer")
+    if next_version == "1.9.4":
+        raise AssertionError("The final step must use the real 1.9.4 installer")
     following = fixture_manifest(next_version)
     _shim_directories(_outside_repository(destination), following["managed_files"])
     verify_materialized(version, destination, verify_state=False)

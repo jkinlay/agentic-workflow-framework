@@ -74,8 +74,13 @@ def config(*, enabled=True, heavy=2, gpu=1, resources=None, extras=None):
         "native_streams": {"enabled": True, "dispatch_policy": "ready_independent"}}}
 
 
+# Partitions run with -I -S, so the base interpreter suffices; a venv interpreter
+# can live inside an installed project's checkout, where it is refused.
+TEST_PYTHON = str(Path(getattr(sys, "_base_executable", None) or sys.executable).resolve())
+
+
 def partition(name, code="print('ok')", *, timeout=5, exits=None):
-    executable = str(Path(sys.executable).resolve())
+    executable = TEST_PYTHON
     return {"name": name, "framework": "command", "resources": {},
             "argv": [executable, "-c", code],
             "executable": {"path": executable, "sha256": file_digest(executable)},
@@ -430,7 +435,7 @@ class HeavyValidationTests(unittest.TestCase):
 
     def test_windows_launcher_payload_is_ascii_exact_and_bounded(self):
         environment = {"SAFE": "caf\u00e9", "PYTHONNOUSERSITE": "1"}
-        argv = [str(Path(sys.executable).resolve()), "space value", "snowman \u2603"]
+        argv = [TEST_PYTHON, "space value", "snowman \u2603"]
         payload = heavy._windows_launcher_payload(argv, environment)
         self.assertEqual(payload, payload.decode("ascii").encode("ascii"))
         self.assertEqual({"argv": argv, "environment": environment},
@@ -697,6 +702,29 @@ class HeavyValidationTests(unittest.TestCase):
             value["partitions"][0]["argv"] = [str(program), *tail]
             encoded = canonical(value)
             heavy._validate_plan(encoded, sha256(encoded))
+
+    def test_snapshot_executables_refuse_untracked_checkout_interpreter(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            source_root, snapshot_root = Path(folder) / "checkout", Path(folder) / "snapshot"
+            venv = source_root / ".agentic/.venv"
+            venv_python = venv / "Scripts/python.exe"
+            tracked = source_root / "tools/run.py"
+            for path in (venv_python, tracked, snapshot_root / "tools/run.py"):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"x")
+            # A tampered live venv must never be reachable from the snapshot run.
+            (venv / "pyvenv.cfg").write_text("home = elsewhere\n", encoding="utf-8")
+            site = venv / "Lib/site-packages"
+            site.mkdir(parents=True)
+            (site / "sitecustomize.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "not in the reviewed snapshot"):
+                heavy._snapshot_executables(
+                    [{"resolved_path": str(venv_python), "sha256": "0" * 64}], source_root, snapshot_root)
+            result = heavy._snapshot_executables(
+                [{"resolved_path": str(tracked), "sha256": "0" * 64}], source_root, snapshot_root)
+        self.assertEqual(os.path.normcase(str((snapshot_root / "tools/run.py").resolve())),
+                         os.path.normcase(result[0]["launch_source_path"]))
 
     def test_windows_containment_failure_never_resumes_suspended_child(self):
         class FakeProcess:
@@ -2172,6 +2200,103 @@ class HeavyValidationTests(unittest.TestCase):
             receipt.write_bytes(canonical(receipt_value))
             with self.assertRaisesRegex(ValidationError, "authentication failed"):
                 read_result_log(log, receipt, key)
+
+
+class ControllerBaseInterpreterTests(unittest.TestCase):
+    """#52: the Windows launcher runs only a base interpreter outside the checkout."""
+
+    def test_launch_chain_prefers_base_interpreter_over_venv(self):
+        from agentic import heavy_validation as hv
+        with tempfile.TemporaryDirectory() as raw:
+            raw = os.path.realpath(raw)  # the reviewed working directory must be alias-free
+            base = Path(raw) / "base"; base.mkdir()
+            base_python = base / "python.exe"; base_python.write_bytes(b"base")
+            checkout = Path(raw) / "checkout"
+            venv = checkout / ".agentic" / ".venv"; (venv / "Scripts").mkdir(parents=True)
+            (venv / "pyvenv.cfg").write_text("home = " + str(base) + "\n", encoding="utf-8")
+            venv_python = venv / "Scripts" / "python.exe"; venv_python.write_bytes(b"venv")
+            with mock.patch.object(hv.sys, "executable", str(venv_python)), \
+                    mock.patch.object(hv.sys, "_base_executable", str(base_python), create=True):
+                self.assertEqual(base_python.resolve(), hv._controller_base_interpreter(checkout))
+            for attribute in ("_base_executable", "executable"):
+                with self.subTest(source=attribute), \
+                        mock.patch.object(hv.sys, "executable", str(venv_python)), \
+                        mock.patch.object(hv.sys, "_base_executable", str(venv_python), create=True):
+                    with self.assertRaisesRegex(ValidationError, "virtual environment"):
+                        hv._controller_base_interpreter(checkout)
+
+    def test_base_interpreter_inside_checkout_is_rejected(self):
+        """Round-4 #52: a portable/base Python inside the checkout is mutable."""
+        from agentic import heavy_validation as hv
+        with tempfile.TemporaryDirectory() as raw:
+            raw = os.path.realpath(raw)  # the reviewed working directory must be alias-free
+            checkout = Path(raw) / "checkout"
+            outside = Path(raw) / "outside"; outside.mkdir()
+            outside_python = outside / "python.exe"; outside_python.write_bytes(b"base")
+            layouts = {
+                # Windows portable layout: python.exe beside python3XX.dll and Lib/.
+                "windows-portable-root": checkout / "tools" / "python",
+                # POSIX layout: <prefix>/bin/python3.
+                "posix-prefix-bin": checkout / "runtime" / "bin",
+                # The checkout root itself.
+                "checkout-root": checkout,
+            }
+            for name, folder in layouts.items():
+                folder.mkdir(parents=True, exist_ok=True)
+                portable = folder / ("python-" + name + ".exe")
+                portable.write_bytes(b"portable")
+                # No pyvenv.cfg anywhere: the venv heuristic alone accepts this.
+                self.assertFalse(os.path.lexists(folder / "pyvenv.cfg"))
+                self.assertFalse(os.path.lexists(folder.parent / "pyvenv.cfg"))
+                with self.subTest(layout=name), \
+                        mock.patch.object(hv.sys, "executable", str(portable)), \
+                        mock.patch.object(hv.sys, "_base_executable", str(portable), create=True), \
+                        mock.patch.object(hv.sys, "base_prefix", str(outside)), \
+                        mock.patch.object(hv.sys, "base_exec_prefix", str(outside)):
+                    with self.assertRaisesRegex(ValidationError, "executable is inside the reviewed checkout"):
+                        hv._controller_base_interpreter(checkout)
+            # Case-variant spelling of the checkout must not evade the check where
+            # the filesystem is case-insensitive (Windows, default macOS).
+            portable = layouts["windows-portable-root"] / "python-windows-portable-root.exe"
+            variant = Path(str(checkout.parent), checkout.name.upper())
+            if os.path.isdir(variant):
+                with mock.patch.object(hv.sys, "executable", str(portable)), \
+                        mock.patch.object(hv.sys, "_base_executable", str(portable), create=True), \
+                        mock.patch.object(hv.sys, "base_prefix", str(outside)), \
+                        mock.patch.object(hv.sys, "base_exec_prefix", str(outside)):
+                    with self.assertRaisesRegex(ValidationError, "inside the reviewed checkout"):
+                        hv._controller_base_interpreter(variant)
+            # Installation prefixes (stdlib/DLL roots) inside the checkout are refused
+            # even when the executable itself sits outside it.
+            for attribute in ("base_prefix", "base_exec_prefix"):
+                with self.subTest(prefix=attribute), \
+                        mock.patch.object(hv.sys, "executable", str(outside_python)), \
+                        mock.patch.object(hv.sys, "_base_executable", str(outside_python), create=True), \
+                        mock.patch.object(hv.sys, "base_prefix", str(outside)), \
+                        mock.patch.object(hv.sys, "base_exec_prefix", str(outside)), \
+                        mock.patch.object(hv.sys, attribute, str(checkout / "tools" / "python")):
+                    with self.assertRaisesRegex(ValidationError, attribute + " is inside the reviewed checkout"):
+                        hv._controller_base_interpreter(checkout)
+            # The same interpreter outside the checkout is accepted, including when
+            # the checkout is a sibling whose name shares a prefix with its folder.
+            sibling = Path(raw) / "out"; sibling.mkdir()
+            with mock.patch.object(hv.sys, "executable", str(outside_python)), \
+                    mock.patch.object(hv.sys, "_base_executable", str(outside_python), create=True), \
+                    mock.patch.object(hv.sys, "base_prefix", str(outside)), \
+                    mock.patch.object(hv.sys, "base_exec_prefix", str(outside)):
+                self.assertEqual(outside_python.resolve(), hv._controller_base_interpreter(checkout))
+                self.assertEqual(outside_python.resolve(), hv._controller_base_interpreter(sibling))
+
+    def test_launch_chain_rejects_interpreter_inside_plan_working_directory(self):
+        from agentic import heavy_validation as hv
+        with tempfile.TemporaryDirectory() as raw:
+            raw = os.path.realpath(raw)  # the reviewed working directory must be alias-free
+            checkout = Path(raw) / "checkout"; (checkout / "python").mkdir(parents=True)
+            portable = checkout / "python" / "python.exe"; portable.write_bytes(b"portable")
+            with mock.patch.object(hv.sys, "executable", str(portable)), \
+                    mock.patch.object(hv.sys, "_base_executable", str(portable), create=True):
+                with self.assertRaisesRegex(ValidationError, "inside the reviewed checkout"):
+                    hv._windows_launch_chain({"working_directory": str(checkout)})
 
 
 if __name__ == "__main__":

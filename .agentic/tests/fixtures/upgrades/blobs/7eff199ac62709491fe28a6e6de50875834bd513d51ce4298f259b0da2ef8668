@@ -1,0 +1,170 @@
+{
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "binding": {
+      "default_branch": "main",
+      "repository": "fixture/example",
+      "repository_id": 101
+    },
+    "blocker_codes": [
+      "RULES_MISSING",
+      "OWNER_APPROVAL_PENDING"
+    ],
+    "configuration": {
+      "merge_method": "squash",
+      "policy_sha256": "33cbe443ca6e1d3c58782ebd125de71b734b44feee2e6f558ce6acb9c407b9e1",
+      "status": "ACCEPTED"
+    },
+    "execution_authority": false,
+    "final_rules_state": "MISSING",
+    "format": "awf-rules-activation-decision-1",
+    "observed_rules": {
+      "additional_live_qualification_required": true,
+      "adoption_allowed": true,
+      "baseline_ruleset_ids": [],
+      "configuration_compatible": false,
+      "configured_merge_method": "squash",
+      "decision_codes": [
+        "prepare_adoption_pr",
+        "report_missing_ruleset"
+      ],
+      "default_branch": "main",
+      "enablement_preflight": "BLOCKED",
+      "execution_authority": false,
+      "expected_review_app_id": null,
+      "incompatibility": null,
+      "limitations": [
+        "The record and its source/time are trusted-host assertions, not authenticated by this helper.",
+        "This checks the rules prerequisite only; it neither enables nor mechanically changes the existing adapter/reference gate.",
+        "Additional project CI and existing live qualification remain required; remote rejection/mergeability was not probed."
+      ],
+      "next_step": "Proceed with the adoption PR and report rule gaps. Apply/configure the offered ruleset separately, then observe it before live enablement.",
+      "observation_sha256": "465dcd407340cf458f9984ba47ea9f0447e5709a593274c002c5cd97034320cd",
+      "observation_source": "synthetic_fixture",
+      "observed_at": "2026-10-02T10:00:00Z",
+      "repository": "fixture/example",
+      "repository_id": 101,
+      "repository_rules": "MISSING",
+      "rules_enablement_ready": false,
+      "ruleset_template": ".agentic/templates/awf-main-ruleset.json",
+      "warnings": [
+        "Live rules readiness needs a fresh API observation of the baseline plus awf/review bound to the expected GitHub App; an empty check list has no effective up-to-date check"
+      ]
+    },
+    "observed_rules_state": "MISSING",
+    "operational_blocker": true,
+    "owner_approval_action": {
+      "actor": "repository_owner_or_administrator",
+      "approval": "Approve and apply exactly the SHA-256-bound proposed ruleset through an authenticated provider owner/admin session; then supply a fresh read-only observation.",
+      "provider_request": {
+        "body": {
+          "bypass_actors": [],
+          "conditions": {
+            "ref_name": {
+              "exclude": [],
+              "include": [
+                "~DEFAULT_BRANCH"
+              ]
+            }
+          },
+          "enforcement": "active",
+          "name": "AWF main",
+          "rules": [
+            {
+              "type": "deletion"
+            },
+            {
+              "type": "non_fast_forward"
+            },
+            {
+              "parameters": {
+                "allowed_merge_methods": [
+                  "squash"
+                ],
+                "dismiss_stale_reviews_on_push": true,
+                "require_code_owner_review": false,
+                "require_last_push_approval": false,
+                "required_approving_review_count": 0,
+                "required_review_thread_resolution": true
+              },
+              "type": "pull_request"
+            },
+            {
+              "parameters": {
+                "do_not_enforce_on_create": false,
+                "required_status_checks": [],
+                "strict_required_status_checks_policy": true
+              },
+              "type": "required_status_checks"
+            }
+          ],
+          "target": "branch"
+        },
+        "body_sha256": "488a1393fc4c5b7ed4f0b19ca1591173a03055cbea8fd1a38666afb4ac85e5f0",
+        "endpoint": "repos/fixture/example/rulesets",
+        "method": "POST"
+      },
+      "required": true,
+      "state": "PENDING"
+    },
+    "post_action_observation": {
+      "configuration_compatible": null,
+      "observation_sha256": null,
+      "observed_at": null,
+      "required": true,
+      "state": "UNOBSERVED"
+    },
+    "proposed_ruleset": {
+      "bypass_actors": [],
+      "conditions": {
+        "ref_name": {
+          "exclude": [],
+          "include": [
+            "~DEFAULT_BRANCH"
+          ]
+        }
+      },
+      "enforcement": "active",
+      "name": "AWF main",
+      "rules": [
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
+        {
+          "parameters": {
+            "allowed_merge_methods": [
+              "squash"
+            ],
+            "dismiss_stale_reviews_on_push": true,
+            "require_code_owner_review": false,
+            "require_last_push_approval": false,
+            "required_approving_review_count": 0,
+            "required_review_thread_resolution": true
+          },
+          "type": "pull_request"
+        },
+        {
+          "parameters": {
+            "do_not_enforce_on_create": false,
+            "required_status_checks": [],
+            "strict_required_status_checks_policy": true
+          },
+          "type": "required_status_checks"
+        }
+      ],
+      "target": "branch"
+    },
+    "proposed_ruleset_sha256": "488a1393fc4c5b7ed4f0b19ca1591173a03055cbea8fd1a38666afb4ac85e5f0",
+    "provider_mutation_performed": false,
+    "publication_consequence": {
+      "code": "PUBLICATION_GOVERNANCE_MISSING",
+      "message": "Default-branch publication lacks the configuration-compatible AWF baseline and remains operationally blocked."
+    },
+    "status": "BLOCKED"
+  },
+  "status": "UNFILLED",
+  "template_for": "rules-activation-decision"
+}

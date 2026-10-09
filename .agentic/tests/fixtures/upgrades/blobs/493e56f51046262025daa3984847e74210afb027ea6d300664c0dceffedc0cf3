@@ -1,0 +1,77 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "request_id",
+    "project_id",
+    "ticket_id",
+    "run_id",
+    "runs_used",
+    "run_cap",
+    "open_findings",
+    "recommended_action",
+    "recorded_at",
+    "owner_delivery_required"
+  ],
+  "properties": {
+    "format": {
+      "const": "awf-run-disposition-request-1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ticket_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "runs_used": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "run_cap": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "open_findings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "recommended_action": {
+      "enum": [
+        "continue",
+        "rescope",
+        "park"
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "owner_delivery_required": {
+      "const": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:run-disposition-request",
+  "title": "Agentic Workflow 1.2 \u2014 run-disposition-request"
+}

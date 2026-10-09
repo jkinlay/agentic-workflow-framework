@@ -1,6 +1,6 @@
 {
   "format": "awf-adversarial-regression-inventory-1",
-  "inventory_id": "awf-1.9.3-five-slot-permanent",
+  "inventory_id": "awf-1.9.4-five-slot-permanent",
   "regressions": [
     {
       "category": "race",

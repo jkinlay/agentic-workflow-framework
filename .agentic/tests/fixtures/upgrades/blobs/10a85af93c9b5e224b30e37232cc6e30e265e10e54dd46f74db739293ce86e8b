@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "python_allowlist": [],
+  "scripts": [
+    {
+      "path": ".agentic/scripts/register_review_loop.ps1",
+      "mechanism": "sanitized_process_start",
+      "entry_point": ".agentic/scripts/review_loop.py"
+    }
+  ]
+}

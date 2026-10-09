@@ -55,7 +55,7 @@ class PublishReleaseTests(unittest.TestCase):
         cls.epoch = int(command(["git", "show", "-s", "--format=%ct", cls.commit], cls.repository, cls.git_env))
         cls.windows_check = cls.base / "windows-check.json"
         cls.windows_check.write_text(json.dumps({
-            "format": "awf-clean-windows-portable-check-1", "status": "PASS", "version": "1.9.3",
+            "format": "awf-clean-windows-portable-check-1", "status": "PASS", "version": "1.9.4",
             "source_commit": cls.commit,
             "checks": {"portable_build": "PASS", "host_skill_install": "PASS", "host_skill_verify": "PASS"},
         }, sort_keys=True), encoding="utf-8")
@@ -137,21 +137,21 @@ class PublishReleaseTests(unittest.TestCase):
             self.assertIn(digest, result["tag_message"])
             self.assertIn(digest, result["release_body"])
         self.assertFalse(result["remote_changes"])
-        self.assertEqual("", command(["git", "tag", "--list", "v1.9.3"], self.repository))
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"], self.repository))
 
     def test_tag_push_uses_only_the_explicit_gh_credential_helper(self):
         isolated = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
         gh = "/tools/with spaces/gh"
         with patch.object(publisher, "isolated_git_env", return_value=isolated) as isolated_git_env, \
                 patch.object(publisher, "run", return_value=SimpleNamespace(stdout="")) as run:
-            publisher.push_release_tag(self.repository, "v1.9.3", gh=gh)
+            publisher.push_release_tag(self.repository, "v1.9.4", gh=gh)
 
         isolated_git_env.assert_called_once_with()
         run.assert_called_once_with(
             ["git", *publisher.RAW_GIT_ARGUMENTS,
              "-c", "credential.helper=",
              "-c", f"credential.helper=!{publisher.shlex.quote(gh)} auth git-credential",
-             "push", "origin", "refs/tags/v1.9.3"],
+             "push", "origin", "refs/tags/v1.9.4"],
             cwd=self.repository, env=isolated, text=True, input_data=None)
 
     def test_non_push_git_commands_remain_isolated(self):
@@ -159,7 +159,7 @@ class PublishReleaseTests(unittest.TestCase):
         with patch.object(publisher, "isolated_git_env", return_value=isolated), \
                 patch.object(publisher, "run", return_value=SimpleNamespace(stdout="")) as run:
             publisher.git_run(self.repository, "status", "--porcelain=v1")
-            publisher.push_release_tag(self.repository, "v1.9.3", gh="gh")
+            publisher.push_release_tag(self.repository, "v1.9.4", gh="gh")
 
         status_call, push_call = run.call_args_list
         self.assertEqual(isolated, status_call.kwargs["env"])
@@ -173,7 +173,7 @@ class PublishReleaseTests(unittest.TestCase):
         with patch.object(publisher, "git_run", side_effect=publisher.ReleaseError("push failed")):
             with self.assertRaisesRegex(publisher.ReleaseError,
                                         "draft GitHub release was not created"):
-                publisher.push_release_tag(self.repository, "v1.9.3", gh="gh")
+                publisher.push_release_tag(self.repository, "v1.9.4", gh="gh")
 
     def worktree_paths(self):
         listing = command(["git", "worktree", "list", "--porcelain"], self.repository, self.git_env)
@@ -224,7 +224,7 @@ class PublishReleaseTests(unittest.TestCase):
         original = readme.read_bytes()
         untracked = self.repository / "synthetic-untracked.txt"
         try:
-            readme.write_text(readme.read_text(encoding="utf-8").replace("Release 1.9.3", "Release 9.9.9", 1), encoding="utf-8")
+            readme.write_text(readme.read_text(encoding="utf-8").replace("Release 1.9.4", "Release 9.9.9", 1), encoding="utf-8")
             untracked.write_text("fixture", encoding="utf-8")
             report = publisher.source_report(self.repository, self.commit)
             joined = "\n".join(report["problems"])
@@ -473,19 +473,19 @@ else: raise SystemExit(2)
                                        self.windows_check, self.windows_pin,
                                        validation_runner=self.fake_validation, gh=str(executable))
             self.assertEqual("DRAFT_CREATED", result["status"])
-            verified = publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-output",
+            verified = publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-output",
                                             gh=str(executable))
             self.assertEqual("PASS", verified["status"])
             extra = store / "unexpected-extra.zip"
             extra.write_bytes(b"unrecorded release asset")
             with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):
-                publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-extra-output",
+                publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-extra-output",
                                      gh=str(executable))
             extra.unlink()
             changed = next(store.glob("*.zip"))
             changed.write_bytes(changed.read_bytes() + b"changed")
             with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):
-                publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-fail-output",
+                publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-fail-output",
                                      gh=str(executable))
         finally:
             os.environ.clear(); os.environ.update(old)

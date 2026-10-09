@@ -18,7 +18,7 @@ CONFIG = ".agentic/PROJECT_CONFIG.yaml"
 INSTALLED = ".agentic/installed-manifest.json"
 PROVENANCE = ".agentic/workflow-version.yaml"
 OPERATING = "OPERATING_CONFIG.yaml"
-ARCHIVE_ROOT = ".agentic-state/archive/upgrade-to-1.9.3"
+ARCHIVE_ROOT = ".agentic-state/archive/upgrade-to-1.9.4"
 CURRENT_RECEIPT_SCHEMA = "awf-installed-receipt-embedded-manifest-1"
 
 
@@ -626,7 +626,7 @@ def state_archive_plan(state):
         files.append({"source": path, "archive": archive, "sha256": sha256(raw),
                       "source_retained": True, "validation_path": path,
                       "validation_reason": reason})
-    manifest = {"format": "awf-state-archive-1", "target_version": "1.9.3", "files": files}
+    manifest = {"format": "awf-state-archive-1", "target_version": "1.9.4", "files": files}
     additions[f"{ARCHIVE_ROOT}/manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
     return additions, [{"path": item["source"], "action": "archived_read_only_copy",
                         "archive": item["archive"],
