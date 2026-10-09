@@ -318,11 +318,11 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/validation/reference-tests.json` | `a47a1b470324b265f69f96299594b83ea7374e7a767039443c7b5b78bb0c7ada` |
 | `.agentic/workflow-version.yaml` | `bf134ab0e4196340a23fc87c5cbf1ea177b9da6d0a4cff543319c6e1f854b0c2` |
 | `.agentic/workflow.yaml` | `dd28e841ed4d2a09e912c3ecd02b6bbb02aae86011a873fae87cdedc348cfe4e` |
-| `.gitattributes` | `74eae8a9a2d878f02eb57326d5e6f57f89895b6c25357ad9edf98a433fecc722` |
+| `.gitattributes` | `5a45448a586256e5077651875440301bb528bd81b74a49ad2ee567827b1cde43` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
 | `.github/workflows/ci.yml` | `57619918f6ab16098d2b19345e805447cc661b7e814e6b7d66a4023e5293584b` |
-| `.github/workflows/manifest-check.yml` | `e2a691948aaaa96bf9e55686cb37241be11a1f959389519bcd98692ee4f177d3` |
+| `.github/workflows/manifest-check.yml` | `2a8bcfa499b111459aade6eb8d9dd5d87700f0ccae0f972f1ca53eb4b0fff464` |
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `AGENTS.md` | `dc2a7603f45f01fdfc9505a51af7747527582434b3daaa964d26464fd6293a75` |
 | `ARCHITECTURE.md` | `761781e0581d5d2a75013bf5f131ff06f18180805f485c1e50dfbc0a9680042c` |
@@ -402,7 +402,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `requirements.txt` | `42f89dd8f1c14da4d2cf3ef52ac3513592bc0b21efa709eead6cf138ba4bd92d` |
 | `scripts/ac42_e2e.py` | `bba8ba834f083b25d5caee8fc8c4907f7ab6d5a691eea46992a05cdff25d37da` |
 | `scripts/bootstrap_project.py` | `34a6480ce63d44fe4966a151e5dc90d30cd18947b023f0893a00c631480f5eb9` |
-| `scripts/build_release.py` | `a3bc23a1f1dcee10f58f84f364036c368941d7fcd6566ee4ec0c67868a92fea8` |
+| `scripts/build_release.py` | `7ed7b62eba23223bfd1d3673bf1d581813c5324bf59920c4398ed6a1ed37a5cc` |
 | `scripts/build_skill_distribution.py` | `744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8` |
 | `scripts/generate_contracts.py` | `0c4f5cf363bde0bf5978224637bfa06eaa4724df7de9f481d3f0a6f18193a0a3` |
 | `scripts/generate_examples.py` | `8c0f9e58e94ab94be1e3863309f68d7102e6de979994e0e6c9998274204d8aea` |
@@ -431,7 +431,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_cli_failure_paths.py` | `0a0cef4139b488d1f8a048401ff6e7ef1582171a245c6d320113acf0e4c30dd1` |
 | `scripts/tests/test_fresh_bootstrap.py` | `18cb82bb6399defac5969f8e7af82a00e8657516461a386374730b0c714d9a7a` |
 | `scripts/tests/test_installed_self_test.py` | `63937908a219b3681cb0bbee3a61714755b3bb25d276df317cb302dba68738e9` |
-| `scripts/tests/test_manifest_conflicts.py` | `c22b2d5ccb2ba5119ef32dc84749310005342e172597af652461c340e7140fb6` |
+| `scripts/tests/test_manifest_conflicts.py` | `3fd41ae63ccb30f7143e5aa13782fa6f3211ee596269895c01dea6ee839bc792` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
 | `scripts/tests/test_publish_release.py` | `3e1d4d17f481756f66c2386307b85f3105108493b79dbc99342b8b394afa80c6` |

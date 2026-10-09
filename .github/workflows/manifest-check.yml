@@ -8,12 +8,11 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: manifest-check-${{ github.ref }}-${{ matrix.os }}-${{ matrix.python-version }}
-  cancel-in-progress: true
-
 jobs:
   manifest:
+    concurrency:
+      group: manifest-check-${{ github.ref }}-${{ matrix.os }}-${{ matrix.python-version }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:

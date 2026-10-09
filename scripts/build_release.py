@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import zipfile
 sys.dont_write_bytecode = True
@@ -26,6 +27,8 @@ SOURCE_CONFIGS = {
     PROVENANCE: SOURCE_CONFIG_PREFIX + "workflow-version.yaml",
     "OPERATING_CONFIG.yaml": SOURCE_CONFIG_PREFIX + "OPERATING_CONFIG.yaml",
 }
+
+ADVISORY_ROW = re.compile(r'^\| `(?P<path>.+)` \| `(?P<digest>[0-9a-f]{64})` \|$')
 
 
 def archive_time():
@@ -89,14 +92,70 @@ def write_manifest_files(root, machine, advisory):
     (root / 'MANIFEST.md').write_bytes(advisory)
 
 
+def load_machine_manifest(data):
+    """Load a manifest without silently accepting duplicate object keys."""
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f'duplicate manifest key: {key}')
+            value[key] = item
+        return value
+
+    try:
+        return json.loads(data, object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValidationError(f'Invalid MANIFEST.json: {exc}') from exc
+
+
+def load_advisory_manifest(data):
+    """Return immutable prose and order-independent rows from MANIFEST.md."""
+    try:
+        text = data.decode('utf-8')
+    except UnicodeDecodeError as exc:
+        raise ValidationError('Invalid MANIFEST.md: not UTF-8') from exc
+    if '\r' in text or not text.endswith('\n'):
+        raise ValidationError('Invalid MANIFEST.md: expected LF-terminated text')
+    lines = text.splitlines()
+    if len(lines) < 8:
+        raise ValidationError('Invalid MANIFEST.md: advisory header is incomplete')
+    header = tuple(lines[:8])
+    files = {}
+    for line in lines[8:]:
+        match = ADVISORY_ROW.fullmatch(line)
+        if match is None:
+            raise ValidationError('Invalid MANIFEST.md: malformed inventory row')
+        path = match.group('path')
+        if path in files:
+            raise ValidationError(f'Invalid MANIFEST.md: duplicate path: {path}')
+        files[path] = match.group('digest')
+    return header, files
+
+
 def check_manifest_files(root, machine, advisory):
-    """Fail closed on missing or hand-edited generated files without rewriting them."""
+    """Accept order-only union merges; reject missing, stale, or edited content."""
     root = Path(root)
     expected = {'MANIFEST.json': machine, 'MANIFEST.md': advisory}
     missing = [name for name in expected if not (root / name).is_file()]
     if missing:
         raise ValidationError('Release manifest files are missing: ' + ', '.join(missing))
-    stale = [name for name, data in expected.items() if (root / name).read_bytes() != data]
+    stale = []
+    for name, data in expected.items():
+        actual = (root / name).read_bytes()
+        if actual == data:
+            continue
+        try:
+            if name == 'MANIFEST.json':
+                current = load_machine_manifest(actual)
+                canonical = load_machine_manifest(data)
+            else:
+                current = load_advisory_manifest(actual)
+                canonical = load_advisory_manifest(data)
+        except ValidationError:
+            stale.append(name)
+            continue
+        if current != canonical:
+            stale.append(name)
     if stale:
         raise ValidationError('Release manifest files are stale or hand-edited: ' + ', '.join(stale))
 

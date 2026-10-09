@@ -4,8 +4,9 @@
 * text eol=lf
 .agentic/tests/fixtures/upgrades/blobs/** -text
 .agentic/tests/fixtures/upgrades/blobs/** -text whitespace=cr-at-eol
-# AWF tooling may configure merge.awf-manifest.driver to invoke
-# scripts/manifest_merge_driver.py with %O %A %B %P. Hosted merges without
-# that local driver retain ordinary line-level merging of the per-file layout.
-MANIFEST.json merge=awf-manifest
-MANIFEST.md merge=awf-manifest
+# The built-in union driver needs no host-local Git configuration. Each
+# manifest entry occupies one complete line; CI rejects duplicate/stale rows.
+# AWF tooling can still invoke scripts/manifest_merge_driver.py directly when
+# it needs a canonical three-way merge of the derived inventories.
+MANIFEST.json merge=union
+MANIFEST.md merge=union
