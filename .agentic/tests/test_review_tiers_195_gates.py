@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.canonical import fingerprint
+from agentic.gates import critic_artifact_receipt_sha256
 from agentic.review_tiers import review_decision
 from test_review_policy import Fixture, NOW
 
@@ -99,6 +100,15 @@ class ReviewTiers195GateTests(Fixture):
                 "verdict": artifact["verdict"],
                 "findings_sha256": fingerprint("critic-findings", artifact["findings"]),
             }
+            artifact_uri = f"urn:awf:critic-review:{artifact['record_id']}"
+            artifact["evidence_checked"].append(artifact_uri)
+            verdict["evidence"].append(artifact_uri)
+            self.bundle["evidence_registry"].append({
+                "uri": artifact_uri,
+                "sha256": critic_artifact_receipt_sha256(verdict),
+                "producer_id": verdict["producer_id"],
+                "retained_until": "2030-01-01T00:00:00Z",
+            })
             self.bundle["evidence_registry"].append({
                 "uri": f"urn:awf:fixture:example-evidence/posting-{round_number}",
                 "sha256": observation["observation_sha256"],
@@ -110,7 +120,6 @@ class ReviewTiers195GateTests(Fixture):
             artifacts.append(artifact)
 
         self.bundle["runs"].extend(runs)
-        self.bundle["critic_reviews"] = artifacts[:-1]
         self.bundle["critic"] = artifacts[-1]
         self.bundle["review_verdicts"] = verdicts
 
@@ -121,6 +130,11 @@ class ReviewTiers195GateTests(Fixture):
         terminal["critic_review"]["findings_sha256"] = fingerprint(
             "critic-findings", self.bundle["critic"]["findings"]
         )
+        artifact_uri = f"urn:awf:critic-review:{terminal['critic_review']['record_id']}"
+        artifact_entries = [entry for entry in self.bundle["evidence_registry"]
+                            if entry["uri"] == artifact_uri]
+        if artifact_entries:
+            artifact_entries[0]["sha256"] = critic_artifact_receipt_sha256(terminal)
         return finding
 
     def _tier_three_candidate(self):
@@ -147,6 +161,24 @@ class ReviewTiers195GateTests(Fixture):
         self._review_history(1)
         verdict = self.bundle["review_verdicts"][-1]
         verdict["critic_review"]["findings_sha256"] = "f" * 64
+        self.assertEqual("NOT_READY", self.gate()["conclusion"])
+
+    def test_awf16_r2c_002_awf16_195_r1c_001_legacy_terminal_hash_must_match(self):
+        """The optional compatibility shape must still hash the substantive review."""
+        self._review_history(1)
+        self.bundle["critic"]["findings"] = [self.finding("SUBSTANTIVE-NIT", "NIT", None)]
+        terminal = self.bundle["review_verdicts"][-1]
+        artifact_uri = f"urn:awf:critic-review:{terminal['critic_review']['record_id']}"
+        terminal["evidence"].remove(artifact_uri)
+        terminal["critic_review"]["record_id"] = next(
+            run["record_id"] for run in self.bundle["runs"]
+            if run["run_id"] == terminal["run_id"]
+        )
+        terminal["critic_review"]["findings_sha256"] = fingerprint("critic-findings", [])
+        self.assertEqual("NOT_READY", self.gate()["conclusion"])
+        terminal["critic_review"]["findings_sha256"] = fingerprint(
+            "critic-findings", self.bundle["critic"]["findings"]
+        )
         self.assertEqual("NOT_READY", self.gate()["conclusion"])
 
     def test_awf16_r3_001_historical_run_keeps_original_candidate_binding(self):
@@ -180,8 +212,7 @@ class ReviewTiers195GateTests(Fixture):
         self.bundle["ticketed_p2_records"] = [
             {"finding_id": "OPEN-P2", "ticket_key": "not-a-ticket"}
         ]
-        with self.assertRaises(ValidationError):
-            self.gate()
+        self.assertEqual("NOT_READY", self.gate()["conclusion"])
         self.bundle["ticketed_p2_records"] = [
             {"finding_id": "OPEN-P2", "ticket_key": "AWF-999"}
         ]
