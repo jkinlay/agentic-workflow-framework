@@ -643,7 +643,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         text = text.replace('  "execution": {', '  # owner budget policy\n  "execution": {')
         before = (text + "\n").replace("\n", "\r\n").encode("utf-8")
         config_path.write_bytes(before)
-        # MIGRATION-to-v1.9.3.md: "The migration inserts null immutable Jira
+        # MIGRATION-to-v1.9.4.md: "The migration inserts null immutable Jira
         # bindings where absent, preserving owner values." Every other owner
         # byte, including comments and CRLF endings, must be unchanged.
         jira_anchor = b'  "jira": {\r\n    "enabled": true,\r\n'
@@ -651,7 +651,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         null_bindings = (b'    "cloud_id": null,\r\n    "provider_project_id": null,\r\n'
                          b'    "controller_actor_id": null,\r\n')
         expected = before.replace(b'"expected_workflow_version": "1.9.2"',
-                                  b'"expected_workflow_version": "1.9.3"'
+                                  b'"expected_workflow_version": "1.9.4"'
                                   ).replace(jira_anchor, jira_anchor + null_bindings)
 
         second = self.perform(mode="upgrade")

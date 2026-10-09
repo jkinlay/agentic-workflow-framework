@@ -270,7 +270,7 @@ class RuntimeCommandTests(unittest.TestCase):
                     elif item["purpose"] == "validation":
                         self.assertEqual("ACCEPTED", json.loads(completed.stdout)["status"])
                     elif item["purpose"] == "status":
-                        self.assertTrue(completed.stdout.splitlines()[0].startswith("AWF 1.9.3: "))
+                        self.assertTrue(completed.stdout.splitlines()[0].startswith("AWF 1.9.4: "))
                     elif item["purpose"] == "operating":
                         self.assertIn("operating configuration", completed.stdout)
                         self.assertIn("Options: keep", completed.stdout)

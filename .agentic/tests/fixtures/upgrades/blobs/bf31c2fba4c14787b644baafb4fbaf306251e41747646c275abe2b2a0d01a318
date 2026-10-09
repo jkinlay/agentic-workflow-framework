@@ -1,0 +1,65 @@
+{
+  "template_for": "activation-status",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "version": "1.9.3",
+    "project_state": null,
+    "checks": [],
+    "capabilities": {
+      "local_work": {
+        "state": "AVAILABLE",
+        "evidence": "UNFILLED",
+        "observed_at": "1970-01-01T00:00:00Z",
+        "completed_by": "UNFILLED"
+      },
+      "external_data_read": {
+        "state": "AVAILABLE",
+        "evidence": "UNFILLED",
+        "observed_at": "1970-01-01T00:00:00Z",
+        "completed_by": "UNFILLED"
+      },
+      "branch_publication": {
+        "state": "AVAILABLE",
+        "evidence": "UNFILLED",
+        "observed_at": "1970-01-01T00:00:00Z",
+        "completed_by": "UNFILLED"
+      },
+      "pr_creation": {
+        "state": "AVAILABLE",
+        "evidence": "UNFILLED",
+        "observed_at": "1970-01-01T00:00:00Z",
+        "completed_by": "UNFILLED"
+      },
+      "independent_review": {
+        "state": "AVAILABLE",
+        "evidence": "UNFILLED",
+        "observed_at": "1970-01-01T00:00:00Z",
+        "completed_by": "UNFILLED"
+      },
+      "jira_read": {
+        "state": "AVAILABLE",
+        "evidence": "UNFILLED",
+        "observed_at": "1970-01-01T00:00:00Z",
+        "completed_by": "UNFILLED"
+      },
+      "jira_write": {
+        "state": "AVAILABLE",
+        "evidence": "UNFILLED",
+        "observed_at": "1970-01-01T00:00:00Z",
+        "completed_by": "UNFILLED"
+      },
+      "merge_execution": {
+        "state": "AVAILABLE",
+        "evidence": "UNFILLED",
+        "observed_at": "1970-01-01T00:00:00Z",
+        "completed_by": "UNFILLED"
+      }
+    },
+    "activation": {
+      "blockers": [],
+      "next_command": "UNFILLED"
+    },
+    "execution_authority": false
+  }
+}

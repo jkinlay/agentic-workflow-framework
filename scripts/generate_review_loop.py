@@ -18,8 +18,9 @@ def main():
     finding = obj({'id':string,'severity':{'type':'string','enum':['BLOCKER','MAJOR','MINOR']},
         'status':{'type':'string','enum':['OPEN','DISPUTED','RESOLVED']},'file':string,'message':string,'evidence':string})
     # basis: 'criterion:<id>' or 'boundary:<CODE>'; required for BLOCKER/MAJOR by validate_review.
-    finding['properties']['basis'] = {'type':'string','pattern':'^(criterion:.+|boundary:(PROTECTED_PATH|SCOPE_ESCAPE|CREDENTIAL_EXPOSURE|UNSAFE_PATH|UNREGISTERED_PRODUCER|CI_BINDING|INDEPENDENCE))$'}
-    finding['properties']['supersedes'] = string
+    finding['properties']['basis'] = {'type':['string','null'],'pattern':'^(criterion:.+|boundary:(PROTECTED_PATH|SCOPE_ESCAPE|CREDENTIAL_EXPOSURE|UNSAFE_PATH|UNREGISTERED_PRODUCER|CI_BINDING|INDEPENDENCE))$'}
+    finding['properties']['supersedes'] = {'type':['string','null']}
+    finding['required'] += ['basis','supersedes']
     critic = obj({'candidate':candidate,'verdict':{'type':'string','enum':['APPROVE','CHANGES_REQUESTED','BLOCKED']},
         'reviewed_files':{'type':'array','items':string},'findings':{'type':'array','items':finding},'summary':string})
     worker = obj({'candidate':candidate,'outcome':{'type':'string','enum':['CHANGED','NO_CHANGE','BLOCKED']},'summary':string})
@@ -30,7 +31,8 @@ def main():
         'state_dir':'C:/awf-state','worker_checkout':'C:/awf-worker','critic_checkout':'C:/awf-critic',
         'contract_path':'C:/awf-state/contract.md','contract_sha256':'CHANGE_ME','runtime_manifest_sha256':'CHANGE_ME',
         'executables':{k:{'path':'CHANGE_ME','sha256':'CHANGE_ME'} for k in ['git','gh','codex']},
-        'models':{'worker':'CHANGE_ME','critic':'CHANGE_ME'},'allowed_paths':['src/CHANGE_ME.py'],'initial_findings':[],
+        'models':{'worker':'CHANGE_ME','critic':'CHANGE_ME'},'reasoning_effort':None,'approved_model_effort_pairs':{},'codex_config_overrides':{},
+        'governed_source_paths':[],'risk_tier':None,'allowed_paths':['src/CHANGE_ME.py'],'initial_findings':[],
         'required_checks':[{'name':'CHANGE_ME','app_id':0,'workflow_path':'.github/workflows/ci.yml','workflow_sha256':'CHANGE_ME'}],
         'max_amendment_cycles':3,'max_cap_extensions':2,'evidence_paths':[],'max_ci_wait_ticks':24,'max_agent_runs':10,'command_timeout_seconds':120,'agent_timeout_seconds':1800,'max_review_age_seconds':3600,
         'qualification':{'operator':'CHANGE_ME','evidence':'CHANGE_ME','sandbox_verified':False,'credentials_isolated':False,'branch_owned':False,'single_host_database':False}})

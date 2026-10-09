@@ -1,0 +1,63 @@
+{
+  "template_for": "doctor-output",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "format": "awf-doctor-1",
+    "template_version": "1.9.3",
+    "root": "UNFILLED",
+    "runtime": {
+      "interpreter": "UNFILLED",
+      "entry_point": "UNFILLED",
+      "interpreter_exists": false,
+      "entry_point_exists": false
+    },
+    "shell": "powershell",
+    "commands": [
+      {
+        "purpose": "adoption",
+        "command": "UNFILLED",
+        "expected_exit_codes": [
+          0
+        ]
+      },
+      {
+        "purpose": "verification",
+        "command": "UNFILLED",
+        "expected_exit_codes": [
+          0
+        ]
+      },
+      {
+        "purpose": "validation",
+        "command": "UNFILLED",
+        "expected_exit_codes": [
+          0
+        ]
+      },
+      {
+        "purpose": "status",
+        "command": "UNFILLED",
+        "expected_exit_codes": [
+          0
+        ]
+      },
+      {
+        "purpose": "operating",
+        "command": "UNFILLED",
+        "expected_exit_codes": [
+          0
+        ]
+      }
+    ],
+    "long_argument_transport": {
+      "method": "literal_argv",
+      "detail": "Every supported value, including long hashes and paths, is passed as one literal argv element with PowerShell single-quote escaping. No generic JSON carrier or response-file transport is implemented."
+    },
+    "activation_summary": {
+      "status": "EXTENSION_POINT",
+      "detail": "UNFILLED"
+    },
+    "execution_authority": false
+  }
+}

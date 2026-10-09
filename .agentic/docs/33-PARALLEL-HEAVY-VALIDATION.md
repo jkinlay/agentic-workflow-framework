@@ -1,6 +1,6 @@
 # Bounded parallel heavy validation
 
-AWF 1.9.3 executes partitioned validation only from an exact reviewed candidate. It cannot mutate providers.
+AWF 1.9.4 executes partitioned validation only from an exact reviewed candidate. It cannot mutate providers.
 
 ## Frozen execution identity
 

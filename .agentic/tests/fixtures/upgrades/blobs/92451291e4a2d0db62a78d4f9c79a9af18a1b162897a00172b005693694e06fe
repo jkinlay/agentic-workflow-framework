@@ -1,0 +1,423 @@
+{
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "version",
+    "project_state",
+    "checks",
+    "capabilities",
+    "activation",
+    "execution_authority"
+  ],
+  "properties": {
+    "version": {
+      "const": "1.9.3"
+    },
+    "project_state": {
+      "oneOf": [
+        {
+          "enum": [
+            "INSTALLED",
+            "CONFIGURED",
+            "ACTIVE"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "stage",
+          "state",
+          "evidence",
+          "remedy",
+          "observed_at"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "stage": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "enum": [
+              "PASS",
+              "INVALID",
+              "MISMATCH",
+              "UNAVAILABLE",
+              "UNOBSERVED",
+              "NOT_APPLICABLE"
+            ]
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1
+          },
+          "remedy": {
+            "type": "string",
+            "minLength": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "minLength": 1,
+            "format": "date-time"
+          }
+        }
+      },
+      "minItems": 0
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_work",
+        "external_data_read",
+        "branch_publication",
+        "pr_creation",
+        "independent_review",
+        "jira_read",
+        "jira_write",
+        "merge_execution"
+      ],
+      "properties": {
+        "local_work": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "evidence",
+            "observed_at"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "AVAILABLE",
+                "UNAVAILABLE",
+                "UNOBSERVED",
+                "NOT_APPLICABLE"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observed_at": {
+              "type": "string",
+              "minLength": 1,
+              "format": "date-time"
+            },
+            "completed_by": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "external_data_read": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "evidence",
+            "observed_at"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "AVAILABLE",
+                "UNAVAILABLE",
+                "UNOBSERVED",
+                "NOT_APPLICABLE"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observed_at": {
+              "type": "string",
+              "minLength": 1,
+              "format": "date-time"
+            },
+            "completed_by": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "branch_publication": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "evidence",
+            "observed_at"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "AVAILABLE",
+                "UNAVAILABLE",
+                "UNOBSERVED",
+                "NOT_APPLICABLE"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observed_at": {
+              "type": "string",
+              "minLength": 1,
+              "format": "date-time"
+            },
+            "completed_by": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "pr_creation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "evidence",
+            "observed_at"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "AVAILABLE",
+                "UNAVAILABLE",
+                "UNOBSERVED",
+                "NOT_APPLICABLE"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observed_at": {
+              "type": "string",
+              "minLength": 1,
+              "format": "date-time"
+            },
+            "completed_by": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "independent_review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "evidence",
+            "observed_at"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "AVAILABLE",
+                "UNAVAILABLE",
+                "UNOBSERVED",
+                "NOT_APPLICABLE"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observed_at": {
+              "type": "string",
+              "minLength": 1,
+              "format": "date-time"
+            },
+            "completed_by": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "jira_read": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "evidence",
+            "observed_at"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "AVAILABLE",
+                "UNAVAILABLE",
+                "UNOBSERVED",
+                "NOT_APPLICABLE"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observed_at": {
+              "type": "string",
+              "minLength": 1,
+              "format": "date-time"
+            },
+            "completed_by": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "jira_write": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "evidence",
+            "observed_at"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "AVAILABLE",
+                "UNAVAILABLE",
+                "UNOBSERVED",
+                "NOT_APPLICABLE"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observed_at": {
+              "type": "string",
+              "minLength": 1,
+              "format": "date-time"
+            },
+            "completed_by": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "merge_execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "evidence",
+            "observed_at"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "AVAILABLE",
+                "UNAVAILABLE",
+                "UNOBSERVED",
+                "NOT_APPLICABLE"
+              ]
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            },
+            "observed_at": {
+              "type": "string",
+              "minLength": 1,
+              "format": "date-time"
+            },
+            "completed_by": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blockers",
+        "next_command"
+      ],
+      "properties": {
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "stage",
+              "state",
+              "evidence",
+              "remedy",
+              "observed_at"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Z][A-Z0-9_]*$"
+              },
+              "stage": {
+                "type": "string",
+                "minLength": 1
+              },
+              "state": {
+                "enum": [
+                  "PASS",
+                  "INVALID",
+                  "MISMATCH",
+                  "UNAVAILABLE",
+                  "UNOBSERVED",
+                  "NOT_APPLICABLE"
+                ]
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "remedy": {
+                "type": "string",
+                "minLength": 1
+              },
+              "observed_at": {
+                "type": "string",
+                "minLength": 1,
+                "format": "date-time"
+              }
+            }
+          },
+          "minItems": 0
+        },
+        "next_command": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "execution_authority": {
+      "const": false
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:activation-status",
+  "title": "Agentic Workflow 1.2 \u2014 activation-status"
+}
