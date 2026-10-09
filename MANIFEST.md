@@ -2,7 +2,7 @@
 
 423 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `ea6aff7402cdead1d6fed29638c58d5310f2f626f5b37017dbf07a8c982860d8`
+MANIFEST.json SHA-256: `1a3c52089866499742aaef782710d29dfaccca5a36318cef2f72b0a4304939e2`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -300,7 +300,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_rules_activation.py` | `a80728328f2f8ec76369c1431e31270ecaf7c82055288496d65d8da0e03aeb85` |
 | `.agentic/tests/test_source_only.py` | `c6ad2128317edc629bc5a229e42e7ceb8f5027795c156f69e743e454d82a1882` |
 | `.agentic/tests/test_store_regressions.py` | `2cf43379f37928ead367f3fc60e4e282a7814a84194765b6cdd759a99dc42859` |
-| `.agentic/tests/test_streams.py` | `35382985514e495436e96b79d5a37d7902c356bf41c01671938d3a4fef6d1af6` |
+| `.agentic/tests/test_streams.py` | `27aead02783430dfa1f4baa88b39c31a9a1c585a22ccd19abe2d1fea9e1133f5` |
 | `.agentic/tests/test_upgrade_194.py` | `9a830eb7bb65ef835c9de24c205d656db78d3edcf902c4463c31c73a2216ef53` |
 | `.agentic/tests/test_upgrade_matrix.py` | `ae4397837a1b4c4e8b888d379a1ea1f61e403f414724ecfaf91945c00fec6675` |
 | `.agentic/tests/test_windows_diagnostics.py` | `b858878638ffd9d53d3b4b03060ae45a798331a7f9ae0509fc41a2553a3e3317` |
