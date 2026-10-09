@@ -80,7 +80,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:AWF_ARTIFACT_DIR | Out-Null
           New-Item -ItemType Directory -Force -Path $env:AWF_WORK_DIR | Out-Null
           "Installer did not start." | Set-Content -Encoding utf8 "$env:AWF_ARTIFACT_DIR\installer.log"
-          '{"status":"NOT_RUN","reason":"Installed self-test did not produce a report."}' | Set-Content -Encoding utf8 "$env:AWF_ARTIFACT_DIR\self-test.json"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -152,9 +151,16 @@ jobs:
           Push-Location $env:AWF_INSTALLED_PROJECT
           try {
             & $installedPython -B $selfTest --checks-only --report $reportPath
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $selfTestExit = $LASTEXITCODE
           } finally {
             Pop-Location
+          }
+          if ($selfTestExit -ne 0) {
+            if (-not (Test-Path -LiteralPath $reportPath)) {
+              @{ status = "FAILED"; reason = "Installed self-test exited $selfTestExit without producing a report." } |
+                ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $reportPath
+            }
+            exit $selfTestExit
           }
           $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
           if ($report.status -ne "PASS") { throw "Installed self-test status is $($report.status)" }
@@ -165,6 +171,15 @@ jobs:
             if (-not $skip.test -or -not $skip.reason) { throw "Installed self-test reported a skip without a test and reason" }
           }
           $report.tests.skipped | ConvertTo-Json -Depth 4
+      - name: Preserve self-test evidence after an earlier failure
+        if: always()
+        shell: pwsh
+        run: |
+          $reportPath = "$env:AWF_ARTIFACT_DIR\self-test.json"
+          if (-not (Test-Path -LiteralPath $reportPath)) {
+            @{ status = "NOT_RUN"; reason = "Installed self-test did not run because an earlier job step failed." } |
+              ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $reportPath
+          }
       - name: Upload installed-runtime evidence
         if: always()
         uses: actions/upload-artifact@v4
