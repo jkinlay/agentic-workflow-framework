@@ -43,6 +43,14 @@ def discovered_suites(job):
     return suites
 
 
+def steps_with(job, fragment):
+    return [
+        step
+        for step in job.get("steps", [])
+        if fragment in step.get("run", "").replace("\\", "/")
+    ]
+
+
 class CiSuiteCoverageTests(unittest.TestCase):
     def test_pull_request_matrix_covers_every_publish_release_portable_suite(self):
         document = workflow()
@@ -70,16 +78,18 @@ class CiSuiteCoverageTests(unittest.TestCase):
         harness_jobs = [
             (job_id, job)
             for job_id, job in jobs.items()
-            if any(
-                "scripts/tests/test_installed_self_test.py" in step.get("run", "")
-                for step in job.get("steps", [])
-            )
+            if steps_with(job, ".agentic/scripts/self_test.py")
         ]
         self.assertEqual(1, len(harness_jobs))
         job_id, job = harness_jobs[0]
         self.assertEqual("installed-runtime-self-test", job_id)
         self.assertEqual("Windows installed-runtime self-test", job["name"])
         self.assertEqual("windows-latest", job["runs-on"])
+        self.assertEqual("3.13.3", str(next(
+            step["with"]["python-version"]
+            for step in job["steps"]
+            if step.get("uses") == "actions/setup-python@v5"
+        )))
         self.assertEqual(
             "github.event_name == 'push' || "
             "(github.event_name == 'pull_request' && github.base_ref == 'main' && "
@@ -90,12 +100,33 @@ class CiSuiteCoverageTests(unittest.TestCase):
         actions = [step.get("uses") for step in job["steps"] if "uses" in step]
         self.assertIn("actions/checkout@v4", actions)
         self.assertIn("actions/setup-python@v5", actions)
-        harness_step = next(
-            step for step in job["steps"]
-            if "scripts/tests/test_installed_self_test.py" in step.get("run", "")
+        self.assertEqual("Initialize installed-runtime evidence paths", job["steps"][0]["name"])
+        self.assertIn("self-test.json", job["steps"][0]["run"])
+        self.assertIn("installer.log", job["steps"][0]["run"])
+        self.assertEqual(1, len(steps_with(job, "scripts/build_release.py --output")))
+        self.assertEqual(1, len(steps_with(job, "git -C $project init -q -b main")))
+        self.assertEqual(1, len(steps_with(job, "git -C $project rev-parse --verify --quiet HEAD")))
+        self.assertEqual(1, len(steps_with(job, "scripts/bootstrap_project.py")))
+        self.assertEqual(1, len(steps_with(job, ".agentic/scripts/self_test.py")))
+        self.assertIn(
+            "& $installedPython -B $selfTest --checks-only --report $reportPath",
+            steps_with(job, ".agentic/scripts/self_test.py")[0]["run"],
         )
-        self.assertIn("python -B scripts/tests/test_installed_self_test.py", harness_step["run"])
-        self.assertFalse(harness_step.get("continue-on-error", False))
+
+        uploads = [step for step in job["steps"] if step.get("uses") == "actions/upload-artifact@v4"]
+        self.assertEqual(1, len(uploads))
+        self.assertEqual("always()", uploads[0].get("if"))
+        artifact_paths = uploads[0]["with"]["path"]
+        self.assertIn("self-test.json", artifact_paths)
+        self.assertIn("installer.log", artifact_paths)
+
+    def test_windows_installed_runtime_trigger_excludes_feature_pull_requests(self):
+        job = workflow()["jobs"]["installed-runtime-self-test"]
+        condition = job["if"]
+        self.assertIn("github.event_name == 'push'", condition)
+        self.assertIn("github.base_ref == 'main'", condition)
+        self.assertIn("startsWith(github.head_ref, 'release/')", condition)
+        self.assertNotIn("github.event_name == 'pull_request' ||", condition)
 
 
 if __name__ == "__main__":
