@@ -22,6 +22,10 @@ sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION
 
 HEARTBEAT_SECONDS = 15.0
+# An adopter may own a root MANIFEST.json; only the AWF source tree has the
+# release builder, and only installed projects carry the installation receipt.
+SOURCE_REPOSITORY = ((ROOT / 'MANIFEST.json').is_file() and (ROOT / 'scripts/build_release.py').is_file()
+                     and not (ROOT / '.agentic/installed-manifest.json').exists())
 PHASES = ('discovery', 'syntax', 'documentation', 'release_hygiene', 'test_suite')
 NONDETERMINISTIC_REPORT_FIELDS = ('created_at', 'elapsed_seconds', 'phase_timings_seconds')
 
@@ -276,7 +280,7 @@ def main(argv=None):
         if args.checks_only and has_review_arguments:
             raise ValueError('Do not combine --checks-only with current-review arguments')
         release_mode = args.release or has_review_arguments
-        if (ROOT / 'MANIFEST.json').exists():
+        if SOURCE_REPOSITORY:
             sys.path.insert(0, str(ROOT / 'scripts'))
             if release_mode:
                 from release_review import review_source
@@ -336,17 +340,17 @@ def main(argv=None):
             raise ValueError('Incomplete form catalog')
         report['checks']['complete_unfilled_forms'] = len(forms)
         suite = unittest.defaultTestLoader.discover(str(ROOT / '.agentic/tests'))
-        if (ROOT / 'MANIFEST.json').exists() and (ROOT / 'global/awf/tests').is_dir():
+        if SOURCE_REPOSITORY and (ROOT / 'global/awf/tests').is_dir():
             suite.addTests(unittest.TestLoader().discover(str(ROOT / 'global/awf/tests')))
             report['tested_components'].append('local_release_discovery')
-        if (ROOT / 'MANIFEST.json').exists() and (ROOT / 'scripts/tests').is_dir():
+        if SOURCE_REPOSITORY and (ROOT / 'scripts/tests').is_dir():
             suite.addTests(unittest.TestLoader().discover(str(ROOT / 'scripts/tests')))
             report['tested_components'].append('local_catalog_publication')
         progress.complete_phase('discovery')
 
         progress.begin_phase('syntax')
         roots = [ROOT / '.agentic']
-        if (ROOT / 'MANIFEST.json').exists():
+        if SOURCE_REPOSITORY:
             roots.append(ROOT / 'scripts')
             roots.append(ROOT / 'global')
         code = sorted(p for root in roots for p in root.rglob('*.py'))
@@ -360,7 +364,7 @@ def main(argv=None):
 
         progress.begin_phase('documentation')
         markdown = list((ROOT / '.agentic').rglob('*.md')) + [ROOT / 'AGENTS.md', ROOT / '.github/PULL_REQUEST_TEMPLATE.md']
-        if (ROOT / 'MANIFEST.json').exists():
+        if SOURCE_REPOSITORY:
             markdown += list(ROOT.glob('*.md')) + list((ROOT / 'global').rglob('*.md'))
         links = 0
         for path in set(markdown):
@@ -383,7 +387,7 @@ def main(argv=None):
         progress.complete_phase('documentation')
 
         progress.begin_phase('release_hygiene')
-        if (ROOT / 'MANIFEST.json').exists():
+        if SOURCE_REPOSITORY:
             sys.path.insert(0, str(ROOT / 'scripts'))
             from release_hygiene import check_release
             report['checks']['source_release_hygiene'] = check_release(ROOT)
