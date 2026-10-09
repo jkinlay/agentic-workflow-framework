@@ -16,10 +16,15 @@
   scripts/ac42_e2e.py, which upgrades the fixture through
   scripts/bootstrap_project.py with that wheelhouse, then runs
   verify-installation, validate-config and the self-test; merges the upgrade
-  PR fixture; requires ACTIVE in one status run; emits a handoff snapshot;
+  PR fixture; requires ACTIVE from the installed project's
+  .agentic\scripts\workflow.py status command; emits a handoff snapshot;
   checks owner values and external data are unchanged and that a fresh
   core.autocrlf=true clone still verifies; and checks that a value added
   and then removed in branch history blocks publication (AC43).
+
+  Every required row must PASS before the result or gate_eligible can pass.
+  Until AWF-8 implements the AC48-AC51 read-only external-resource admission
+  exercise, that row is NOT_COVERED and this release gate fails closed.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\Invoke-AC42.ps1
