@@ -170,10 +170,88 @@ class PublishReleaseTests(unittest.TestCase):
             push_call.args[0][4:8])
 
     def test_tag_push_failure_explains_that_release_creation_does_not_follow(self):
-        with patch.object(publisher, "git_run", side_effect=publisher.ReleaseError("push failed")):
-            with self.assertRaisesRegex(publisher.ReleaseError,
-                                        "draft GitHub release was not created"):
+        secret = "ghs_must_not_reach_release_output"
+        with patch.object(publisher, "git_run",
+                          side_effect=publisher.ReleaseError("push failed: " + secret)):
+            with self.assertRaises(publisher.ReleaseError) as raised:
                 publisher.push_release_tag(self.repository, "v1.9.4", gh="gh")
+        message = str(raised.exception)
+        self.assertEqual(
+            "Release tag push failed for refs/tags/v1.9.4. The local annotated tag remains at "
+            "refs/tags/v1.9.4; the remote tag status is unknown and no GitHub release was created. "
+            "Run `gh auth status`; after fixing authentication, retry exactly:\n"
+            "git -c credential.helper= -c 'credential.helper=!gh auth git-credential' "
+            "push origin refs/tags/v1.9.4",
+            message)
+        self.assertNotIn(secret, message)
+
+    def test_awf26_failed_publish_scopes_helper_preserves_config_and_skips_release(self):
+        remote = "https://github.com/jkinlay/awf-fixture.git"
+        subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repository,
+                       capture_output=True)
+        command(["git", "remote", "add", "origin", remote], self.repository, self.git_env)
+        command(["git", "config", "credential.helper", "repository-fixture"],
+                self.repository, self.git_env)
+        self.addCleanup(subprocess.run, ["git", "remote", "remove", "origin"],
+                        cwd=self.repository, capture_output=True)
+        self.addCleanup(subprocess.run, ["git", "tag", "-d", "v1.9.4"],
+                        cwd=self.repository, capture_output=True)
+        repository_config = self.repository / ".git/config"
+        repository_config_before = repository_config.read_bytes()
+        ambient_config = self.base / "awf26-ambient-global.gitconfig"
+        ambient_config.write_text("[credential]\n\thelper = ambient-fixture\n", encoding="utf-8")
+        ambient_config_before = ambient_config.read_bytes()
+        fake_gh = str(self.base / "fake gh" / "gh")
+        secret = "ghs_fake_push_secret"
+        calls = []
+        real_run = publisher.run
+
+        def fake_git_and_gh(command_line, *, cwd, env=None, text=True, input_data=None):
+            command_line = [str(item) for item in command_line]
+            calls.append((command_line, dict(env) if env is not None else None))
+            if command_line[0] == "git" and "push" in command_line:
+                raise publisher.ReleaseError(
+                    "fatal: unable to access "
+                    f"'https://x-access-token:{secret}@github.com/jkinlay/awf-fixture.git/'")
+            if command_line[0] == fake_gh:
+                self.fail("gh release create must not run after a failed tag push")
+            return real_run(command_line, cwd=cwd, env=env, text=text, input_data=input_data)
+
+        with patch.object(publisher, "run", side_effect=fake_git_and_gh), \
+                patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(ambient_config)}), \
+                self.assertRaises(publisher.ReleaseError) as raised:
+            publisher.publish(self.repository, self.commit, self.base / "awf26-failed-publish",
+                              self.windows_check, self.windows_pin,
+                              validation_runner=self.fake_validation, gh=fake_gh)
+
+        git_calls = [(line, env) for line, env in calls if line[0] == "git"]
+        push_calls = [(line, env) for line, env in git_calls if "push" in line]
+        self.assertEqual(1, len(push_calls))
+        push, push_env = push_calls[0]
+        helper = f"credential.helper=!{publisher.shlex.quote(fake_gh)} auth git-credential"
+        push_index = push.index("push")
+        self.assertEqual(["-c", "credential.helper=", "-c", helper],
+                         push[push_index - 4:push_index])
+        self.assertEqual(["push", "origin", "refs/tags/v1.9.4"], push[push_index:])
+        for line, env in git_calls:
+            with self.subTest(command=line):
+                self.assertEqual(os.devnull, env["GIT_CONFIG_GLOBAL"])
+                self.assertEqual("1", env["GIT_CONFIG_NOSYSTEM"])
+                self.assertEqual("0", env["GIT_TERMINAL_PROMPT"])
+                if line is not push:
+                    self.assertFalse(any("credential.helper" in argument for argument in line))
+        self.assertEqual(repository_config_before, repository_config.read_bytes())
+        self.assertEqual(ambient_config_before, ambient_config.read_bytes())
+        self.assertEqual("v1.9.4", command(["git", "tag", "--list", "v1.9.4"], self.repository))
+        message = str(raised.exception)
+        self.assertIn("local annotated tag remains at refs/tags/v1.9.4", message)
+        self.assertIn("no GitHub release was created", message)
+        self.assertIn(
+            "git -c credential.helper= -c 'credential.helper=!gh auth git-credential' "
+            "push origin refs/tags/v1.9.4", message)
+        self.assertNotIn(secret, message)
+        self.assertNotIn("x-access-token", message)
+        self.assertFalse([line for line, _env in calls if line[0] == fake_gh])
 
     def worktree_paths(self):
         listing = command(["git", "worktree", "list", "--porcelain"], self.repository, self.git_env)

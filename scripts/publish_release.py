@@ -122,9 +122,15 @@ def push_release_tag(repository, tag, *, gh):
     try:
         git_run(repository, "-c", "credential.helper=", "-c", f"credential.helper={helper}",
                 "push", "origin", f"refs/tags/{tag}")
-    except ReleaseError as exc:
+    except ReleaseError:
+        recovery = ("git -c credential.helper= "
+                    "-c 'credential.helper=!gh auth git-credential' "
+                    f"push origin refs/tags/{tag}")
         raise ReleaseError(
-            f"Release tag push failed for {tag}; the draft GitHub release was not created") from exc
+            f"Release tag push failed for refs/tags/{tag}. The local annotated tag remains at "
+            f"refs/tags/{tag}; the remote tag status is unknown and no GitHub release was created. "
+            "Run `gh auth status`; after fixing authentication, retry exactly:\n"
+            f"{recovery}") from None
 
 
 def _tree_entries(repository, commit):

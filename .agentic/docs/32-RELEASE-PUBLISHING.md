@@ -12,7 +12,13 @@ Supply an independently pinned `awf-clean-windows-portable-check-1` record for t
 python -B scripts/publish_release.py --commit SHA --output-dir <new-external-output> --clean-windows-check <record.json> --expected-clean-windows-check-sha256 SHA256 --dry-run
 ```
 
-Dry-run builds and validates locally but creates no tag, push or hosted release. A real run creates an annotated `vX.Y.Z` tag, pushes that tag, then asks `gh release create --draft`; the owner reviews and publishes the draft.
+Dry-run builds and validates locally but creates no tag, push or hosted release. A real run creates an annotated `vX.Y.Z` tag, pushes that tag, then asks `gh release create --draft`; the owner reviews and publishes the draft. All Git reads, builds and verification retain the isolated Git environment. Only the tag-push command receives a command-scoped, reset credential helper that invokes `gh auth git-credential`; it does not read or write global/user Git configuration, persist a credential, or put one in release output.
+
+If the push fails, the local annotated tag remains, the remote tag status is unknown, and no GitHub release is created. The error suppresses raw Git output so a credential-bearing URL cannot be disclosed, instructs the operator to check `gh auth status`, and gives this exact retry (substitute the reported tag):
+
+```text
+git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin refs/tags/vX.Y.Z
+```
 
 Validation runs in a temporary detached Git worktree of the same commit, checked byte for byte against the raw tree and removed afterwards, because self-test cases inspect Git.
 
