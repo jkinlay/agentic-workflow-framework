@@ -8,11 +8,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 from urllib.parse import urlsplit, urlunsplit
 
 from . import VERSION
-from .canonical import load, now_text, timestamp
+from .canonical import fingerprint, load, loads, now_text, timestamp
 from .child_process import child_env
 from .operating import read_operating
 
@@ -34,11 +35,14 @@ _SHA40 = re.compile(r"[0-9a-f]{40}")
 _SHA64 = re.compile(r"[0-9a-f]{64}")
 _RESOURCE_NAME = re.compile(r"[a-z][a-z0-9_]*")
 _TICKET = re.compile(r"(?<![A-Z0-9_])([A-Z][A-Z0-9_]*-[1-9][0-9]*)(?![A-Z0-9_])")
-_COMPLETED_TICKET = re.compile(
-    r"(?im)^\s*(?:complete(?:d)?|close(?:d)?)\s*:?\s*([A-Z][A-Z0-9_]*-[1-9][0-9]*)\s*$"
-)
 _EPIC = re.compile(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*")
 _ROUTE_KEYS = ("model", "reasoning_effort", "pinned")
+_URL_SCHEMES = {"git", "git+ssh", "http", "https", "ssh"}
+_SCP_REMOTE = re.compile(
+    r"(?:(?P<userinfo>[^@/\\\s]+)@)?"
+    r"(?P<host>(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])):"
+    r"(?P<path>[^\s\\]+)"
+)
 
 
 def _field(value, basis, observed_at):
@@ -62,20 +66,40 @@ def _git(root, *arguments):
 
 
 def safe_origin(url):
-    """Drop credential-bearing URL components from a remote URL."""
-    if not isinstance(url, str):
+    """Return a parsed network remote without credentials, or ``None``.
+
+    URL remotes lose user-info, query and fragment components. SCP-style
+    remotes retain only a conventional bare ``git@`` user; all other user-info
+    is dropped. Local paths and values that cannot be classified fail closed.
+    """
+    if (not isinstance(url, str) or not url or url != url.strip() or
+            any(ord(character) < 32 for character in url)):
         return None
-    # SCP-like remotes have no URL authority, but still must not export a
-    # query or fragment.  URL remotes can safely retain only their scheme,
-    # host/port and path after removing user-info.
     stripped = re.split(r"[?#]", url, maxsplit=1)[0]
-    if "://" not in stripped:
-        return stripped
-    try:
-        parsed = urlsplit(stripped)
-    except ValueError:
-        return re.sub(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@", r"\1", stripped)
-    return urlunsplit((parsed.scheme, parsed.netloc.rsplit("@", 1)[-1], parsed.path, "", ""))
+    if "://" in stripped:
+        try:
+            parsed = urlsplit(stripped)
+            if (parsed.scheme.lower() not in _URL_SCHEMES or not parsed.hostname or not parsed.path or
+                    "\\" in parsed.path or any(character.isspace() for character in parsed.path)):
+                return None
+            port = parsed.port
+        except ValueError:
+            return None
+        hostname = parsed.hostname
+        authority = f"[{hostname}]" if ":" in hostname else hostname
+        if port is not None:
+            authority += f":{port}"
+        return urlunsplit((parsed.scheme, authority, parsed.path, "", ""))
+
+    # Drive-relative and drive-absolute Windows paths otherwise resemble an
+    # SCP remote (``C:path``). Other local path forms do not match the grammar.
+    if re.match(r"^[A-Za-z]:[/\\]?", stripped):
+        return None
+    match = _SCP_REMOTE.fullmatch(stripped)
+    if not match or match["path"].startswith(("/", "./", "../")):
+        return None
+    user = "git@" if match["userinfo"] == "git" else ""
+    return f"{user}{match['host']}:{match['path']}"
 
 
 def _route(value, *, simple_worker=False):
@@ -146,19 +170,70 @@ def _operating_routes(root, governance):
     return routes, operating.operating_hash
 
 
-def _completed_tickets(root):
-    """Read explicit ticket-closure assertions in bounded local subjects.
+def _completed_tickets(state_path, project_id, root):
+    """Read DONE tickets from a project-bound, hash-chained coordinator store.
 
-    AWF's status observation has no ticket-history field.  Even an explicit
-    closure subject is not proof of Jira closure, so the resulting continuity
-    fact is explicitly ``user-asserted`` rather than verified.  Ordinary
-    implementation subjects that merely mention a ticket must not claim it is
-    complete.
+    The AWF coordinator SQLite database is the authoritative local ticket
+    lifecycle source. The caller must explicitly supply its protected path;
+    absent, unreadable, unbound or internally inconsistent state is
+    unavailable. Git history and commit subjects are never closure evidence.
     """
-    subjects = _git(root, "log", "-n", "1000", "--format=%s")
-    if subjects is None:
+    if state_path is None or not isinstance(project_id, str):
         return None
-    return sorted(set(_COMPLETED_TICKET.findall(subjects)))
+    path = Path(state_path).absolute()
+    try:
+        if (not path.is_file() or path.resolve().is_relative_to(Path(root).resolve()) or
+                path.stat().st_nlink > 1 or any(
+                    parent.is_symlink() or (hasattr(parent, "is_junction") and parent.is_junction())
+                    for parent in (path, *path.parents) if parent.exists())):
+            return None
+        database = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)
+        database.row_factory = sqlite3.Row
+        try:
+            database.execute("PRAGMA query_only=ON")
+            database.execute("BEGIN")
+            integrity = database.execute("PRAGMA quick_check").fetchone()
+            if integrity is None or integrity[0] != "ok":
+                return None
+            metadata = {row["key"]: row["value"]
+                        for row in database.execute("SELECT key,value FROM meta")}
+            if metadata.get("schema") != "3" or metadata.get("project") != project_id:
+                return None
+
+            previous, sequence = "0" * 64, 0
+            observed_tickets = {}
+            for row in database.execute("SELECT * FROM events ORDER BY sequence"):
+                sequence += 1
+                payload = loads(row["payload"])
+                envelope = {
+                    "sequence": row["sequence"], "event_id": row["event_id"],
+                    "project_id": project_id, "event_type": row["event_type"],
+                    "timestamp": row["timestamp"], "external_id": row["external_id"],
+                    "payload": payload, "previous_hash": row["previous_hash"],
+                }
+                if (row["sequence"] != sequence or row["previous_hash"] != previous or
+                        fingerprint("event", envelope) != row["event_hash"]):
+                    return None
+                previous = row["event_hash"]
+                if isinstance(payload, dict) and {"issue_id", "state", "revision"} <= set(payload):
+                    observed_tickets[payload["issue_id"]] = (
+                        payload["state"], payload["revision"], row["event_type"])
+
+            completed = []
+            for row in database.execute("SELECT issue_id,state,revision FROM tickets ORDER BY issue_id"):
+                observed = observed_tickets.get(row["issue_id"])
+                if observed is None or observed[:2] != (row["state"], row["revision"]):
+                    return None
+                if row["state"] == "DONE":
+                    if (observed[2] != "JIRA_RECONCILED" or not isinstance(row["issue_id"], str) or
+                            not _TICKET.fullmatch(row["issue_id"])):
+                        return None
+                    completed.append(row["issue_id"])
+            return completed
+        finally:
+            database.close()
+    except (OSError, sqlite3.Error, TypeError, ValueError, UnicodeError):
+        return None
 
 
 def _field_at(snapshot, dotted):
@@ -170,7 +245,13 @@ def _field_at(snapshot, dotted):
     return item
 
 
-def build_snapshot(root, *, status=None, now=None):
+def build_snapshot(root, *, status=None, now=None, state_path=None):
+    """Build K15 observations, optionally reading protected coordinator state.
+
+    ``completed_tickets`` is verified only from ``state_path`` after its AWF
+    project binding and event hash chain validate. Without that authoritative
+    source the field is unavailable, regardless of commit messages.
+    """
     root = Path(root).absolute()
     now = now or now_text()
     if status is None:
@@ -186,9 +267,11 @@ def build_snapshot(root, *, status=None, now=None):
     jira = config.get("jira") if config else {}
     github = config.get("github") if config else {}
     execution = config.get("execution") if config else None
+    project = config.get("project") if config else None
     jira = jira if isinstance(jira, dict) else {}
     github = github if isinstance(github, dict) else {}
     broker = execution.get("host_broker") if isinstance(execution, dict) else None
+    project_id = project.get("id") if isinstance(project, dict) else None
     declared_resources = broker.get("resources") if isinstance(broker, dict) else None
     resources = (sorted(name for name, slots in declared_resources.items()
                         if isinstance(name, str) and _RESOURCE_NAME.fullmatch(name)
@@ -247,7 +330,7 @@ def build_snapshot(root, *, status=None, now=None):
         "jira": {key: _field(jira.get(key), "configured", now)
                  for key in ("cloud_id", "provider_project_id", "project_key", "controller_actor_id")},
         "external_resources": _field(resources, "configured", now),
-        "completed_tickets": _field(_completed_tickets(root), "user-asserted", now),
+        "completed_tickets": _field(_completed_tickets(state_path, project_id, root), "verified", now),
         "blockers": _field(blockers, "verified", now),
     }
 
@@ -404,6 +487,7 @@ def render_markdown(snapshot):
     for dotted in REQUIRED_FIELDS:
         item = _field_at(snapshot, dotted)
         lines.append(f"| {dotted} | {item['value']} | {item['basis']} | {item['observed_at']} |")
-    lines += ["", "## Blockers", ""]
+    lines += ["", "Completed tickets are verified only from project-bound, hash-chained AWF coordinator state; "
+              "without that source they are unavailable.", "", "## Blockers", ""]
     lines += [f"- {b['code']} ({b['state']}): {b['evidence']}" for b in snapshot["blockers"]["value"]] or ["- none"]
     return "\n".join(lines) + "\n"

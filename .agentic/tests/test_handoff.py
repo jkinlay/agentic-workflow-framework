@@ -18,6 +18,7 @@ from agentic.handoff import (BASES, REQUIRED_FIELDS, build_snapshot, compare_sna
                              render_markdown, safe_origin)
 from agentic.lifecycle import definition
 from agentic.operating import read_operating
+from agentic.store import Store
 
 STATUS = {"project_state": "ACTIVE", "integrity_valid": True, "adoption": "MERGED",
           "release_trust_basis": "trusted-release-fixture",
@@ -36,6 +37,7 @@ def git(root, *arguments):
 class HandoffSnapshotTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.state_temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         git(self.root, "init", "-q", "-b", "main")
         git(self.root, "remote", "add", "origin", "https://user:ghp_SECRETTOKEN@example.invalid/o/r.git")
@@ -58,11 +60,24 @@ class HandoffSnapshotTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+        self.state_temp.cleanup()
 
-    def snapshot(self, now="2026-10-07T00:00:00Z"):
+    def snapshot(self, now="2026-10-07T00:00:00Z", *, state_path=None):
         status = json.loads(json.dumps(STATUS))
         status["operating"] = {"hash": self.operating_hash, "status": "ACCEPTED"}
-        return build_snapshot(self.root, status=status, now=now)
+        return build_snapshot(self.root, status=status, now=now, state_path=state_path)
+
+    def coordinator_state(self, tickets):
+        path = Path(self.state_temp.name) / "coordinator.sqlite3"
+        store = Store(path, self.config["project"]["id"], worktree_roots=[self.root])
+        with store.transaction() as database:
+            for revision, ticket in enumerate(tickets, start=1):
+                database.execute("INSERT INTO tickets VALUES(?,?,?)", (ticket, "DONE", revision))
+                store._event(database, "JIRA_RECONCILED",
+                             {"issue_id": ticket, "previous_state": "MERGED", "state": "DONE",
+                              "revision": revision, "facts": {"closeout_valid": True},
+                              "resume_state": None})
+        return path
 
     def test_snapshot_records_observations_without_credentials_or_authority(self):
         snapshot = self.snapshot()
@@ -83,8 +98,9 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["adoption"]["pr"]["value"], 48)
         self.assertEqual(snapshot["adoption"]["merge"]["value"], "b" * 40)
         self.assertEqual(snapshot["operating"]["routes"]["value"]["streams"]["A"]["worker"]["model"], "gpt-5.6-luna")
-        self.assertEqual(snapshot["completed_tickets"]["value"], ["SYN-7"])
-        self.assertEqual(snapshot["completed_tickets"]["basis"], "user-asserted")
+        self.assertEqual(snapshot["completed_tickets"],
+                         {"value": None, "basis": "unavailable",
+                          "observed_at": "2026-10-07T00:00:00Z"})
         self.assertEqual([b["code"] for b in snapshot["blockers"]["value"]], ["RELEASE_TRUST"])
         for key in ("execution_authority", "merge_authority", "jira_authority"):
             self.assertIs(snapshot[key], False)
@@ -95,6 +111,21 @@ class HandoffSnapshotTests(unittest.TestCase):
             self.assertEqual(set(item), {"value", "basis", "observed_at"})
             self.assertIn(item["basis"], BASES)
             self.assertEqual(item["observed_at"], "2026-10-07T00:00:00Z")
+
+    def test_snapshot_sanitizes_scp_credentials_and_rejects_unparseable_origin(self):
+        for remote, secret in (("ghp_TOKEN@example.invalid:o/r.git", "ghp_TOKEN"),
+                               ("user:password@example.invalid:o/r.git", "password")):
+            with self.subTest(remote=remote):
+                git(self.root, "remote", "set-url", "origin", remote)
+                snapshot = self.snapshot()
+                rendered = json.dumps(snapshot) + render_markdown(snapshot)
+                self.assertEqual(snapshot["repository"]["origin"]["value"], "example.invalid:o/r.git")
+                self.assertNotIn(secret, rendered)
+
+        git(self.root, "remote", "set-url", "origin", "not a remote")
+        self.assertEqual(self.snapshot()["repository"]["origin"],
+                         {"value": None, "basis": "unavailable",
+                          "observed_at": "2026-10-07T00:00:00Z"})
 
     def test_receiving_host_reports_match_and_drift(self):
         received = self.snapshot()
@@ -119,9 +150,25 @@ class HandoffSnapshotTests(unittest.TestCase):
                 self.assertEqual((drift["received_basis"], drift["current_basis"]),
                                  (received_basis, current_basis))
 
-    def test_completed_tickets_exclude_open_ticket_mentions(self):
+    def test_completed_tickets_are_unavailable_without_authoritative_state(self):
         git(self.root, "commit", "-q", "--allow-empty", "-m", "AWF-21 handoff implementation")
-        self.assertEqual(self.snapshot()["completed_tickets"]["value"], ["SYN-7"])
+        self.assertEqual(self.snapshot()["completed_tickets"],
+                         {"value": None, "basis": "unavailable",
+                          "observed_at": "2026-10-07T00:00:00Z"})
+
+    def test_completed_tickets_use_verified_coordinator_state(self):
+        state_path = self.coordinator_state(["SYN-9", "SYN-7"])
+        snapshot = self.snapshot(state_path=state_path)
+        self.assertEqual(snapshot["completed_tickets"],
+                         {"value": ["SYN-7", "SYN-9"], "basis": "verified",
+                          "observed_at": "2026-10-07T00:00:00Z"})
+        self.assertIn("project-bound, hash-chained AWF coordinator state", render_markdown(snapshot))
+
+    def test_verified_coordinator_state_can_authoritatively_list_no_completed_tickets(self):
+        state_path = self.coordinator_state([])
+        self.assertEqual(self.snapshot(state_path=state_path)["completed_tickets"],
+                         {"value": [], "basis": "verified",
+                          "observed_at": "2026-10-07T00:00:00Z"})
 
     def test_unreadable_configuration_marks_resources_unavailable(self):
         with patch("agentic.handoff.load", side_effect=ValueError("malformed config")):
@@ -188,8 +235,11 @@ class HandoffSnapshotTests(unittest.TestCase):
         self.assertEqual(safe_origin("https://user:token@example.invalid/o/r.git?access_token=token#fragment"),
                          "https://example.invalid/o/r.git")
         self.assertEqual(safe_origin("git@example.invalid:o/r.git"), "git@example.invalid:o/r.git")
-        self.assertEqual(safe_origin("git@example.invalid:o/r.git?token=secret#fragment"),
-                         "git@example.invalid:o/r.git")
+        self.assertEqual(safe_origin("ghp_TOKEN@example.invalid:o/r.git"), "example.invalid:o/r.git")
+        self.assertEqual(safe_origin("user:password@example.invalid:o/r.git"), "example.invalid:o/r.git")
+        self.assertEqual(safe_origin("git@example.invalid:o/r.git?token=secret#fragment"), "git@example.invalid:o/r.git")
+        self.assertIsNone(safe_origin(chr(92).join(("C:", "repositories", "private"))))
+        self.assertIsNone(safe_origin("not a remote"))
         self.assertIsNone(safe_origin(None))
 
 
