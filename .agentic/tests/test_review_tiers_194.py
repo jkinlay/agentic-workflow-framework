@@ -29,7 +29,12 @@ class ReviewTiers194Tests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             review_decision(2, 4)
 
-    def test_tier2_cap_ticket_p2_and_qualifies_after_ticket(self):
+    def test_configured_cap_cannot_raise_mandatory_three_round_ceiling(self):
+        with self.assertRaisesRegex(ValidationError, "mandatory"):
+            round_cap(3, {"execution": {"risk_tiers": {"tier3_review": {"max_rounds": 4}}}})
+
+    def test_awf16_195_r3_001_tier2_cap_ticket_p2_and_qualifies_after_ticket(self):
+        """AWF16-195-R3-001: a Tier 2 cap needs retained ticket keys."""
         finding = {"id": "F2", "severity": "MINOR"}
         result = review_decision(2, 3, latest_pass=True, open_findings=[finding])
         self.assertEqual("TICKET_P2", result["status"])
@@ -55,7 +60,8 @@ class ReviewTiers194Tests(unittest.TestCase):
         self.assertEqual("CONTINUE", review_decision(2, 4,
                          owner_cap_disposition=disposition)["status"])
 
-    def test_lifecycle_refuses_unverified_or_unbounded_cap_rounds(self):
+    def test_awf16_r1_006_lifecycle_refuses_unverified_or_unbounded_cap_rounds(self):
+        """AWF16-R1-006: an extension cannot authorize rounds 5, 6, or 100."""
         from agentic.lifecycle import review_round_transition
         disposition = {"decision": "EXTEND_ONE_CYCLE", "record_id": "owner-record",
                         "created_at": "2026-09-09T12:00:00Z", "producer_id": "verifier",
@@ -69,6 +75,10 @@ class ReviewTiers194Tests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             review_round_transition(2, 5, owner_cap_disposition=disposition,
                                     owner_cap_verified=True)
+        with self.assertRaises(ValidationError):
+            review_decision(2, 5, owner_cap_disposition=disposition)
+        with self.assertRaises(ValidationError):
+            review_decision(3, 4, owner_cap_disposition=disposition)
 
     def test_tier2_cap_p1_routes_owner(self):
         self.assertEqual("ROUTE_TO_OWNER", review_decision(
@@ -205,6 +215,16 @@ class ReviewTiers194Tests(unittest.TestCase):
         parsed = json.loads(migrated.project_config)
         self.assertEqual(3, parsed["execution"]["risk_tiers"]["tier3_review"]["max_rounds"])
         self.assertEqual(migrated.project_config, review_tier_defaults(migrated.project_config))
+
+    def test_awf16_195_r3_002_inline_yaml_execution_mapping_gets_one_tier3_mapping(self):
+        """AWF16-195-R3-002: inline YAML gets one valid additive mapping."""
+        from agentic.upgrade import review_tier_defaults
+        import agentic.canonical as canonical
+        before = b"template:\n  expected_workflow_version: 1.9.4\nexecution: {risk_tiers: {tier1_review: {max_rounds: 1}}} # keep\n"
+        after = review_tier_defaults(before)
+        parsed = canonical.load_yaml(after)
+        self.assertEqual(3, parsed["execution"]["risk_tiers"]["tier3_review"]["max_rounds"])
+        self.assertEqual(1, after.count(b"tier3_review"))
 
 
 if __name__ == "__main__":

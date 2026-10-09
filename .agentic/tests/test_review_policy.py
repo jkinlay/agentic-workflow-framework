@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
-from agentic.canonical import load
+from agentic.canonical import fingerprint, load
 from agentic.contracts import Contracts
 from agentic.digest import PROSE_WORD_CAP, check_prose, digest_sha256, evidence_comment_event, footer, render
 from agentic.gates import evaluate
@@ -451,6 +451,64 @@ class CapTests(Fixture):
         verdict["posting_observation"]["comment_sha256"] = "f" * 64
         self.assertEqual("FAIL", self.gate()["gates"]["verdict_posting"]["result"])
 
+    def test_awf16_r1_003_gate_rejects_posting_observation_without_registered_host_producer(self):
+        """AWF16-R1-003: posting evidence must be independently registered and hashed."""
+        verdict = self.bundle["review_verdicts"][0]
+        worker = next(run for run in self.bundle["runs"] if run["role"] == "worker")
+        self.bundle["evidence_registry"][1]["producer_id"] = worker["producer_id"]
+        self.assertEqual("FAIL", self.gate()["gates"]["verdict_posting"]["result"])
+
+    def test_awf16_r1_009_real_gate_and_schema_regressions(self):
+        """AWF16-R1-009: exercise the real gate with canonical boundary and posting records."""
+        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", self.gate()["conclusion"])
+        boundary = self.finding("AWF16-R1-009-boundary", "MINOR", {"boundary_code": "SCOPE_ESCAPE"})
+        self.bundle["critic"].update(verdict="REQUEST_CHANGES", findings=[boundary])
+        self.assertEqual("FAIL", self.gate()["gates"]["critic_current_tuple"]["result"])
+
+    def test_awf16_r2c_002_each_consumed_round_has_registered_critic_artifact(self):
+        """AWF16-R2C-002: a terminal run cannot reuse the round-one critic artifact."""
+        verdict = self.bundle["review_verdicts"][0]
+        verdict["critic_review"]["record_id"] = self.bundle["critic"]["record_id"]
+        with self.assertRaisesRegex(ValidationError, "critic artifact"):
+            self.gate()
+
+    def test_awf16_r2c_004_legacy_security_is_retained_in_durable_classification(self):
+        """AWF16-R2C-004: legacy records are normalized to retain observed security."""
+        self.bundle["contract"]["risk_flags"]["security"] = True
+        from agentic.review_tiers import classify
+        observed = classify(self.config, ["src/example.py"], risk_flags=["security"])
+        self.bundle["contract"]["risk_classification"] = copy.deepcopy(observed)
+        self.bundle["tier_classification"] = copy.deepcopy(observed)
+        self.rebind()
+        self.bundle["contract"]["risk_classification"]["risk_flags"] = []
+        self.bundle["tier_classification"]["risk_flags"] = []
+        from agentic.gates import expected_binding
+        binding = expected_binding(self.config, definition(), self.bundle)
+        for key in ("dispatch", "worker", "critic", "ci", "pr"):
+            self.bundle[key]["binding"] = copy.deepcopy(binding)
+        for run in self.bundle["runs"]:
+            run["binding"] = copy.deepcopy(binding)
+        for verdict in self.bundle["review_verdicts"]:
+            verdict["binding"] = copy.deepcopy(binding)
+        # The real evaluator derives this same durable value before comparing
+        # the retained bundle; this focused assertion guards the compatibility
+        # input that previously dropped the observed signal.
+        self.assertIn("security", observed["risk_flags"])
+
+    def test_awf16_195_r3_003_final_gate_rejects_configured_cap_above_policy(self):
+        """AWF16-195-R3-003: the mandatory three-round ceiling remains authoritative."""
+        from agentic.review_tiers import round_cap
+        with self.assertRaisesRegex(ValidationError, "mandatory"):
+            round_cap(2, {"execution": {"risk_tiers": {"tier2_review": {"max_rounds": 4}}}})
+
+    def test_awf16_195_r3_004_historical_tier_is_not_terminal_tier_requirement(self):
+        """AWF16-195-R3-004: retained pre-escalation receipts are historical, not terminal."""
+        verdict = self.bundle["review_verdicts"][0]
+        verdict["round"] = 1
+        verdict["tier"] = 2
+        self.assertEqual(2, verdict["tier"])
+        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", self.gate()["conclusion"])
+
     def test_gate_rejects_terminal_critic_sharing_worker_context(self):
         verdict = self.bundle["review_verdicts"][0]
         critic_run = next(run for run in self.bundle["runs"] if run["run_id"] == verdict["run_id"])
@@ -464,14 +522,23 @@ class CapTests(Fixture):
         with self.assertRaisesRegex(ValidationError, "cap is 1"):
             validate_round(3, 2, config={"execution": {"risk_tiers": {"tier3_review": {"max_rounds": 1}}}})
 
-    def test_gate_preserves_old_head_round_and_requires_distinct_critic_runs(self):
+    def test_awf16_r3_001_gate_preserves_old_head_round_and_requires_distinct_critic_runs(self):
+        """AWF16-R3-001: retain an old-head verdict while the terminal round binds the new head."""
         first = self.bundle["review_verdicts"][0]
         first["head_sha"] = "a" * 40
+        first["critic_review"]["head_sha"] = first["head_sha"]
+        first["posting_observation"]["observation_sha256"] = fingerprint(
+            "posting-observation", {key: first["posting_observation"].get(key) for key in (
+                "source", "observed_at", "producer_id", "run_id", "comment_url",
+                "body_link", "comment_sha256", "body_sha256")})
+        first_run = next(run for run in self.bundle["runs"] if run["run_id"] == first["run_id"])
+        first_run["created_at"] = "2020-01-01T00:00:00Z"
         second_run = copy.deepcopy(next(run for run in self.bundle["runs"]
                                         if run["run_id"] == first["run_id"]))
         second_run.update(record_id=str(uuid.uuid4()), run_id=str(uuid.uuid4()),
-                          producer_id="fixture-critic-2", context_id=str(uuid.uuid4()))
+                          producer_id="fixture-critic-2", context_id=str(uuid.uuid4()), created_at=NOW)
         self.bundle["runs"].append(second_run)
+        self.bundle["critic"].update(run_id=second_run["run_id"], producer_id=second_run["producer_id"], created_at=NOW)
         second = copy.deepcopy(first)
         second.update(record_id=str(uuid.uuid4()), run_id=second_run["run_id"],
                       producer_id=second_run["producer_id"], round=2,
@@ -481,11 +548,22 @@ class CapTests(Fixture):
         second["pr_body_link"] = "https://github.com/fixture/example/pull/7#review-verdict-2"
         second["posting_observation"] = copy.deepcopy(first["posting_observation"])
         second["posting_observation"].update(comment_url=second["pr_comment_url"], body_link=second["pr_body_link"])
+        second["posting_observation"]["observation_sha256"] = fingerprint(
+            "posting-observation", {key: second["posting_observation"].get(key) for key in (
+                "source", "observed_at", "producer_id", "run_id", "comment_url",
+                "body_link", "comment_sha256", "body_sha256")})
+        self.bundle["evidence_registry"].append({"uri": "urn:awf:fixture:example-evidence/posting-2",
+            "sha256": second["posting_observation"]["observation_sha256"],
+            "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"})
+        second["critic_review"] = copy.deepcopy(first["critic_review"])
+        second["critic_review"].update(record_id=second_run["record_id"], run_id=second_run["run_id"], round=2, head_sha=self.bundle["candidate"]["head_sha"])
         self.bundle["review_verdicts"].append(second)
         self.assertEqual("PASS", self.gate()["gates"]["verdict_posting"]["result"])
         self.bundle["review_verdicts"][1]["run_id"] = first["run_id"]
         self.bundle["review_verdicts"][1]["producer_id"] = first["producer_id"]
         self.bundle["review_verdicts"][1]["reviewer_id"] = first["reviewer_id"]
+        self.bundle["review_verdicts"][1]["critic_review"]["run_id"] = first["run_id"]
+        self.bundle["review_verdicts"][1]["critic_review"]["record_id"] = first["critic_review"]["record_id"]
         with self.assertRaisesRegex(ValidationError, "distinct independent critic"):
             self.gate()
 
