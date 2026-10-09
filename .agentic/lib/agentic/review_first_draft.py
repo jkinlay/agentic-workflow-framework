@@ -16,6 +16,7 @@ from .publication import scan_repository
 from .review_loop import (complete_first_draft, confirm_first_draft_publication,
                           enroll, first_draft_failure,
                           record_first_draft_publication, require,
+                          record_first_draft_worker_receipt,
                           reserve_first_draft)
 
 
@@ -92,7 +93,8 @@ def excluded_worktree_inventory(git, changes):
 
 def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
                         git, allowed_paths, mapping_path=None, title=None,
-                        prepare_publication=None, git_guard=None):
+                        prepare_publication=None, prepare_plan=None,
+                        publication_plan=None, git_guard=None):
     """Commit/push exactly a worker-tested tree, then return a publication receipt.
 
     ``git`` is a narrow host adapter with ``run(*args)``.  It is intentionally
@@ -103,28 +105,47 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
         git_guard()
     require(git.run("symbolic-ref", "--short", "HEAD") == branch,
             "First-draft worker changed the publication branch")
-    require(git.run("rev-parse", "HEAD") == base,
-            "First-draft worker changed HEAD from the provider base")
+    starting_head = git.run("rev-parse", "HEAD")
     expected = candidate_tree(root, base, receipt["changes"])
     require(expected.tested_tree == receipt["tested_tree"],
             "Worker tested_tree does not match the declared worktree changes")
     excluded = excluded_worktree_inventory(git, receipt["changes"])
     require(sorted(receipt["ignored_untracked"]) == excluded,
             "Worker ignored_untracked inventory does not match the candidate tree")
+    plan = {"base": base, "head_tree": receipt["tested_tree"], "branch": branch,
+            "body_sha256": sha256(body.encode()).hexdigest(),
+            "title": title or commit_message, "commit_message": commit_message,
+            "ignored_untracked": excluded}
+    require(publication_plan is None or publication_plan == plan,
+            "First-draft publication plan changed during recovery")
     if git_guard:
         git_guard()
-    require(git.run("symbolic-ref", "--short", "HEAD") == branch
-            and git.run("rev-parse", "HEAD") == base,
-            "First-draft HEAD or branch changed before publisher staging")
-    git.run("add", "--", *[x["path"] for x in receipt["changes"]])
-    if git_guard:
-        git_guard()
-    require(git.run("symbolic-ref", "--short", "HEAD") == branch
-            and git.run("rev-parse", "HEAD") == base,
-            "First-draft HEAD or branch changed before publisher commit")
-    git.run("commit", "-m", commit_message)
-    if git_guard:
-        git_guard()
+    if starting_head == base:
+        if prepare_plan:
+            prepare_plan(plan)
+        require(git.run("symbolic-ref", "--short", "HEAD") == branch
+                and git.run("rev-parse", "HEAD") == base,
+                "First-draft HEAD or branch changed before publisher staging")
+        git.run("add", "--", *[x["path"] for x in receipt["changes"]])
+        if git_guard:
+            git_guard()
+        require(git.run("symbolic-ref", "--short", "HEAD") == branch
+                and git.run("rev-parse", "HEAD") == base,
+                "First-draft HEAD or branch changed before publisher commit")
+        git.run("commit", "-m", commit_message)
+        if git_guard:
+            git_guard()
+    else:
+        # A failed durable-publication write can leave the exact unpublished
+        # publisher commit locally.  Reconstruct only that one-child identity;
+        # never replay the worker or create another commit around unknown HEAD.
+        require(publication_plan == plan,
+                "First-draft worker changed HEAD from the provider base")
+        parents = git.run("rev-list", "--parents", "-n", "1", starting_head).split()
+        require(parents == [starting_head, base],
+                "First-draft worker changed HEAD from the provider base")
+        require(git.run("show", "-s", "--format=%B", starting_head) == commit_message,
+                "Retained first-draft publisher commit title changed during recovery")
     actual = verify_publisher_tree(root, receipt["tested_tree"])
     head = git.run("rev-parse", "HEAD")
     parents = git.run("rev-list", "--parents", "-n", "1", head).split()
@@ -132,15 +153,15 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
             "First-draft publisher commit is not a single child of the provider base")
     require(git.run("symbolic-ref", "--short", "HEAD") == branch,
             "First-draft publication branch changed during publisher commit")
-    scan = publication_scan(root, base, head, body, mapping_path=mapping_path)
     publication = {"base": base, "head": head, "head_tree": actual,
                    "branch": branch, "body": body,
                    "body_sha256": sha256(body.encode()).hexdigest(),
                    "title": title or commit_message,
-                   "ignored_untracked": excluded,
-                   "publication_scan": scan}
+                   "ignored_untracked": excluded}
     if prepare_publication:
         prepare_publication(publication)
+    scan = publication_scan(root, base, head, body, mapping_path=mapping_path)
+    publication["publication_scan"] = scan
     if git_guard:
         git_guard()
     git.run("push", "origin", f"{head}:refs/heads/{branch}")
@@ -195,8 +216,13 @@ def run_first_draft(store, config, *, worker, publisher, observe_pr, republisher
     try:
         publication = reservation.get('first_draft_publication')
         if publication is None:
-            receipt = worker(reservation['inflight']['id'])
-            validate_worker_receipt(receipt, allowed_paths=set(config['allowed_paths']))
+            receipt = reservation.get('first_draft_worker_receipt')
+            if receipt is None:
+                receipt = worker(reservation['inflight']['id'])
+                validate_worker_receipt(receipt, allowed_paths=set(config['allowed_paths']))
+                record_first_draft_worker_receipt(store, config, receipt)
+            else:
+                validate_worker_receipt(receipt, allowed_paths=set(config['allowed_paths']))
             publication = publisher(receipt)
             require(isinstance(publication, dict) and publication.get('head'),
                     'First-draft publisher returned no observed head')

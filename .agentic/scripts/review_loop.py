@@ -13,7 +13,8 @@ import json
 from agentic.installer import verify_installed
 from agentic.review_loop import (LoopStore, complete_first_draft,
     confirm_first_draft_publication, enroll, pause, record_first_draft_publication,
-    require_first_draft_config_binding, resume, resume_first_draft, tick, require)
+    record_first_draft_publication_plan, require_first_draft_config_binding,
+    resume, resume_first_draft, tick, require)
 from agentic.review_first_draft import (publish_tested_tree, render_first_draft_body,
     republish_prepared_tree, run_first_draft)
 from agentic.providers.github_review_host import HostDriver, load_config
@@ -75,14 +76,19 @@ def main(argv=None):
                         'Reserved first draft has no durable Git-control baseline')
                 driver.require_first_draft_git_controls(git_controls)
                 prior = reserved_state.get('first_draft_publication')
+                prior_receipt = reserved_state.get('first_draft_worker_receipt')
+                prior_plan = reserved_state.get('first_draft_publication_plan')
             else:
                 git_controls = driver.first_draft_git_controls()
+                prior_receipt = None
+                prior_plan = None
             provider_base = driver.provider_base()
             require(prior is None or prior.get('base') == provider_base,
                     'Provider base moved after the recorded first-draft publication')
             local_base = driver.git(driver.worker, 'rev-parse', config['base_branch'])
             require(local_base == provider_base, 'Worker checkout base does not match the provider base snapshot')
-            if prior is None:
+            if prior is None and prior_receipt is None:
+                driver.require_clean_first_draft_checkout()
                 require(driver.git(driver.worker, 'symbolic-ref', '--short', 'HEAD')
                         == config['head_branch'],
                         'First-draft worker checkout is not on the configured head branch')
@@ -110,6 +116,9 @@ def main(argv=None):
                     git=GitAdapter(), allowed_paths=config['allowed_paths'],
                     mapping_path=Path(config['state_dir']) / 'publication-deny.json',
                     title=args.title, git_guard=git_guard,
+                    publication_plan=prior_plan,
+                    prepare_plan=lambda plan:
+                        record_first_draft_publication_plan(store, config, plan),
                     prepare_publication=lambda publication:
                         record_first_draft_publication(store, config, publication))
             def republisher(publication):

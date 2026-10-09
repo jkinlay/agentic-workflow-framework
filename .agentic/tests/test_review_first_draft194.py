@@ -19,7 +19,9 @@ from agentic.review_first_draft import (enroll_created_pr, publication_scan,
                                          run_first_draft,
                                          validate_worker_receipt)
 from agentic.gittree import candidate_tree
-from agentic.review_loop import LoopStore
+from agentic.review_loop import (LoopStore, record_first_draft_publication,
+                                  record_first_draft_publication_plan,
+                                  resume_first_draft)
 from agentic.providers.github_review_host import HostDriver, load_config
 
 
@@ -160,6 +162,87 @@ class FirstDraftTests(unittest.TestCase):
                                             commit_message='first draft', git=Adapter(), allowed_paths={'a.txt'})
             self.assertEqual(published['head_tree'], tree.tested_tree)
             self.assertEqual(command(root, 'rev-parse', 'HEAD^{tree}'), tree.tested_tree)
+
+    def test_publication_record_failure_recovers_exact_local_child_without_worker_replay(self):
+        git = shutil.which('git')
+        if not git:
+            self.skipTest('Git unavailable')
+        with tempfile.TemporaryDirectory() as name:
+            base_dir = Path(name)
+            root, remote, state_dir = (base_dir / 'repo', base_dir / 'remote.git',
+                                       base_dir / 'state')
+            state_dir.mkdir()
+            def command(cwd, *args, check=True):
+                return subprocess.run([git, '-C', str(cwd), *args], check=check,
+                                      capture_output=True, text=True).stdout.strip()
+            subprocess.run([git, 'init', '-b', 'main', str(root)], check=True,
+                           capture_output=True)
+            subprocess.run([git, 'init', '--bare', str(remote)], check=True,
+                           capture_output=True)
+            command(root, 'config', 'user.name', 'fixture')
+            command(root, 'config', 'user.email', 'fixture@example.invalid')
+            command(root, 'config', 'core.autocrlf', 'false')
+            command(root, 'remote', 'add', 'origin', str(remote))
+            (root / 'a.txt').write_text('safe\n', encoding='utf-8')
+            command(root, 'add', 'a.txt'); command(root, 'commit', '-m', 'base')
+            base = command(root, 'rev-parse', 'HEAD')
+            command(root, 'checkout', '-b', 'codex/awf-30')
+            (root / 'a.txt').write_text('changed\n', encoding='utf-8')
+            changes = [{'path': 'a.txt', 'action': 'modified'}]
+            tree = candidate_tree(root, base, changes)
+            receipt = {'outcome': 'CHANGED', 'changes': changes,
+                       'tested_tree': tree.tested_tree,
+                       'ignored_untracked': list(tree.ignored_untracked),
+                       'summary': 'changed'}
+            config = {'key': '12:0', 'repository_id': 12, 'pr': 0,
+                      'repository': 'fixture/project', 'config_hash': 'x',
+                      'initial_findings': [], 'max_agent_runs': 3,
+                      'allowed_paths': ['a.txt']}
+            store = LoopStore(state_dir)
+            workers, record_attempts = [], []
+            class Adapter:
+                def run(self, *args):
+                    if args[0] == 'push':
+                        return command(root, '-c', 'protocol.file.allow=always', *args)
+                    return command(root, *args)
+            def publisher(value):
+                saved = store.get('12:0')
+                def prepare(publication):
+                    record_attempts.append(publication['head'])
+                    if len(record_attempts) == 1:
+                        raise OSError('record unavailable')
+                    record_first_draft_publication(store, config, publication)
+                return publish_tested_tree(
+                    root, base, 'codex/awf-30', value, body='body',
+                    commit_message='first draft', git=Adapter(), allowed_paths={'a.txt'},
+                    publication_plan=saved.get('first_draft_publication_plan'),
+                    prepare_plan=lambda plan:
+                        record_first_draft_publication_plan(store, config, plan),
+                    prepare_publication=prepare)
+            def worker(run_id):
+                workers.append(run_id)
+                return receipt
+            with self.assertRaisesRegex(OSError, 'record unavailable'):
+                run_first_draft(store, config, worker=worker, publisher=publisher,
+                                observe_pr=lambda publication: None)
+            paused = store.get('12:0')
+            retained_head = command(root, 'rev-parse', 'HEAD')
+            self.assertEqual(paused['first_draft_publication'], None)
+            self.assertEqual(paused['first_draft_worker_receipt'], receipt)
+            self.assertIsNotNone(paused['first_draft_publication_plan'])
+            resume_first_draft(store, config, paused['inflight']['id'])
+            with self.assertRaisesRegex(RuntimeError, 'stop after push'):
+                run_first_draft(store, config, worker=worker, publisher=publisher,
+                                observe_pr=lambda publication:
+                                    (_ for _ in ()).throw(RuntimeError('stop after push')))
+            recovered = store.get('12:0')
+            self.assertEqual((workers, recovered['agent_runs']),
+                             ([paused['inflight']['id']], 1))
+            self.assertEqual(recovered['first_draft_publication']['head'], retained_head)
+            self.assertEqual(recovered['first_draft_publication_status'], 'PUSHED')
+            self.assertEqual(command(remote, 'rev-parse', 'refs/heads/codex/awf-30'),
+                             retained_head)
+            store.close()
 
     def test_publisher_requires_and_retains_git_ignored_residue(self):
         git = shutil.which('git')
@@ -592,6 +675,63 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         self.assertEqual(error, '')
         self.assertEqual(sum(1 for call in self.driver.calls if call[0] == 'codex'), 1)
         self.assertEqual(self.driver.calls.count(('POST', 'pulls')), 1)
+
+    def test_scan_denial_resumes_frozen_publication_without_worker_replay(self):
+        mapping = self.base / 'state' / 'publication-deny.json'
+        mapping.write_text(json.dumps({
+            'version': 1, 'deny_literals': ['changed by recorded worker']
+        }), encoding='utf-8')
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        self.assertIn('Publication scan blocked first push', error)
+        paused = self.state('12:0')
+        self.assertEqual(paused['first_draft_publication_status'], 'PREPARED')
+        self.assertIsNotNone(paused['first_draft_worker_receipt'])
+        self.assertIsNotNone(paused['first_draft_publication_plan'])
+        result = subprocess.run([self.git, '--git-dir', str(self.remote), 'rev-parse',
+                                 '--verify', 'refs/heads/codex/awf-30'],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        mapping.write_text(json.dumps({'version': 1}), encoding='utf-8')
+        code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
+        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(self.state('12:0')['first_draft_publication_status'],
+                         'RETRY_PUSH')
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(sum(1 for call in self.driver.calls if call[0] == 'codex'), 1)
+        self.assertEqual(self.state('12:41')['agent_runs'], 1)
+
+    def test_dirty_checkout_inventory_blocks_before_reservation_and_worker(self):
+        worker = self.driver.worker
+        cases = []
+        def tracked():
+            (worker / 'a.txt').write_text('pre-existing tracked edit\n', encoding='utf-8')
+        def staged():
+            (worker / 'a.txt').write_text('pre-existing staged edit\n', encoding='utf-8')
+            self.command('-C', str(worker), 'add', 'a.txt')
+        def untracked():
+            (worker / 'untracked.txt').write_text('pre-existing\n', encoding='utf-8')
+        def ignored():
+            exclude = worker / '.git' / 'info' / 'exclude'
+            exclude.write_text('*.cache\n', encoding='utf-8')
+            (worker / 'local.cache').write_text('pre-existing\n', encoding='utf-8')
+        cases.extend([('tracked', tracked), ('staged', staged),
+                      ('untracked', untracked), ('ignored', ignored)])
+        for label, create_residue in cases:
+            with self.subTest(label=label):
+                create_residue()
+                code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+                self.assertEqual(code, 2)
+                self.assertIn('First-draft checkout must start clean', error)
+                self.assertFalse(any(call[0] == 'codex' for call in self.driver.calls))
+                with self.assertRaises(ValidationError):
+                    self.state('12:0')
+                self.command('-C', str(worker), 'reset', '--quiet', 'HEAD', '--', 'a.txt')
+                self.command('-C', str(worker), 'checkout', '--', 'a.txt')
+                for path in (worker / 'untracked.txt', worker / 'local.cache'):
+                    if path.exists():
+                        path.unlink()
 
     def test_precreation_worker_retry_reuses_uuid_and_adds_durable_charge(self):
         charged_before_worker = []

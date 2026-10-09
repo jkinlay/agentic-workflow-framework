@@ -169,7 +169,8 @@ def reserve_first_draft(store, config, *, git_controls=None):
 
     Recovery retains one reservation UUID, but every invocation that can call
     the worker consumes another ``max_agent_runs`` unit before that call.  A
-    prepared publication resumes without replaying or charging the worker.
+    retained worker output or a prepared publication resumes without replaying
+    or charging the worker.
     """
     require(config['max_agent_runs'] >= 1, 'First-draft run cannot be charged against a zero agent-run budget')
     repository_id = config.get('repository_id', str(config['key']).split(':', 1)[0])
@@ -182,6 +183,8 @@ def reserve_first_draft(store, config, *, git_controls=None):
         'inflight': {'id': str(uuid.uuid4()), 'phase': 'FIRST_DRAFT',
                      'started_at': now_text(), 'attempt': 1},
         'last_review': None, 'first_draft_publication': None,
+        'first_draft_worker_receipt': None,
+        'first_draft_publication_plan': None,
         'first_draft_config_binding': {
             'config_hash': config['config_hash'],
             'policy_hash': first_draft_config_policy_hash(config),
@@ -204,7 +207,8 @@ def reserve_first_draft(store, config, *, git_controls=None):
                 'First-draft reservation accounting is invalid')
         require(state.get('first_draft_git_controls') == git_controls,
                 'First-draft Git-control baseline is missing or changed during recovery')
-        worker_replay = state.get('first_draft_publication') is None
+        worker_replay = (state.get('first_draft_publication') is None
+                         and state.get('first_draft_worker_receipt') is None)
         if worker_replay:
             require(state['agent_runs'] < config['max_agent_runs'],
                     'First-draft worker retry exceeds max_agent_runs')
@@ -217,6 +221,27 @@ def reserve_first_draft(store, config, *, git_controls=None):
                      generation=state['generation'] + 1)
         store.save(state)
     return state
+
+
+def record_first_draft_worker_receipt(store, config, receipt):
+    """Retain a validated worker result before any publisher Git mutation."""
+    required = {'outcome', 'changes', 'tested_tree', 'ignored_untracked', 'summary'}
+    require(isinstance(receipt, dict) and set(receipt) == required,
+            'First-draft worker receipt is incomplete')
+    key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(key)
+        require(state['phase'] == 'FIRST_DRAFT' and state.get('inflight'),
+                'First-draft worker receipt has no active reservation')
+        frozen = deepcopy(receipt)
+        existing = state.get('first_draft_worker_receipt')
+        require(existing is None or existing == frozen,
+                'First-draft worker receipt changed during retry')
+        state.update(first_draft_worker_receipt=frozen,
+                     reason='Validated first-draft worker receipt retained before publication',
+                     generation=state['generation'] + 1)
+        store.save(state)
+        return state
 
 
 def record_first_draft_publication(store, config, publication):
@@ -247,6 +272,35 @@ def record_first_draft_publication(store, config, publication):
                      first_draft_publication_status=(state.get('first_draft_publication_status')
                                                      or 'PREPARED'),
                      reason='First-draft publication prepared durably before remote push',
+                     generation=state['generation'] + 1)
+        store.save(state)
+        return state
+
+
+def record_first_draft_publication_plan(store, config, plan):
+    """Freeze the publisher operation before staging or committing."""
+    required = {'base', 'head_tree', 'branch', 'body_sha256', 'title',
+                'commit_message', 'ignored_untracked'}
+    require(isinstance(plan, dict) and set(plan) == required,
+            'First-draft publication plan is incomplete')
+    require(all(isinstance(plan[name], str) and plan[name]
+                for name in required - {'ignored_untracked'}),
+            'First-draft publication plan is malformed')
+    require(isinstance(plan['ignored_untracked'], list)
+            and len(plan['ignored_untracked']) == len(set(plan['ignored_untracked']))
+            and all(isinstance(path, str) and path for path in plan['ignored_untracked']),
+            'First-draft publication-plan ignored inventory is malformed')
+    key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(key)
+        require(state['phase'] == 'FIRST_DRAFT' and state.get('inflight'),
+                'First-draft publication plan has no active reservation')
+        frozen = deepcopy(plan)
+        existing = state.get('first_draft_publication_plan')
+        require(existing is None or existing == frozen,
+                'First-draft publication plan changed during retry')
+        state.update(first_draft_publication_plan=frozen,
+                     reason='First-draft publisher operation frozen before Git mutation',
                      generation=state['generation'] + 1)
         store.save(state)
         return state
@@ -338,9 +392,9 @@ def resume_first_draft(store, config, reconciled_run, *, publication_status=None
     """Permit one retry after the operator reconciles local and remote effects.
 
     The retained reservation UUID is reused. A later ``first-draft`` call
-    either resumes from the durably recorded publication without a worker
-    charge, or durably charges another agent run before replaying the
-    pre-publication worker step.
+    either resumes from the durably recorded worker receipt/publication
+    without a worker charge, or durably charges another agent run before
+    replaying a worker that produced no retained receipt.
     """
     key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
     with store.lock():

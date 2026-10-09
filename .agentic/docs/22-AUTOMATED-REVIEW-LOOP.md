@@ -18,14 +18,15 @@ Qualify sandbox restrictions, credential separation, exclusive branch ownership,
 
 ## Create the first draft, then enroll
 
-An explicitly configured `first_draft` host may start with `pr: 0`. Before each
-pinned-worker launch, the trusted runtime charges it and binds effort fallback
-to the observed base. It stores the original local Git configuration, origin
-routes and hooks with the reservation; later mismatch blocks credential use,
-commits and pushes. The worker starts and finishes on the configured head
-branch at that base; the publisher makes one child commit, validates the tested
-tree and `ignored_untracked`, scans, freezes base/head/body, pushes, creates one
-draft PR and enrolls only an observation with matching head and base SHAs.
+An explicitly configured `first_draft` host may start with `pr: 0`. Before
+launch, the trusted runtime requires empty tracked, staged, untracked and
+ignored inventories, charges the worker and binds effort fallback to the
+observed base. It reserves the original local Git configuration, origin routes
+and hooks; later mismatch blocks credentials, commits and pushes. The worker
+stays on the configured head branch at that base. The publisher makes one
+child commit, validates the tested tree and `ignored_untracked`, durably
+records the receipt, publisher plan and base/head/body before scanning, pushes,
+creates one draft PR and enrolls only a matching head/base observation.
 
 ```text
 python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json first-draft --title "AWF: implement ticket"
@@ -34,13 +35,14 @@ python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.jso
 The body records reviewed Tier 1, 2 or 3. Every worker launch consumes one
 `max_agent_runs` unit and zero amendment cycles; prepared-publication recovery
 neither replays nor charges it. The provider PR number is persisted before its
-snapshot. Failure retains the UUID and charge. After inspecting local/remote
-effects, run `resume --reconciled-run UUID`; a replay keeps that UUID but adds a
-charge. With `pr: 0`, recovery looks up the exact head across all PR states
-without calling PR snapshot. A closed match blocks replacement. With no PR it
-reconciles the exact remote ref: a match avoids another push; proven absence
-retries only the frozen head. Re-run `first-draft` with the original title. No
-second PR is created blindly.
+snapshot. Failure retains the UUID and charge. Inspect local/remote effects,
+then run `resume --reconciled-run UUID`; replay keeps that UUID and adds a charge
+only if no validated receipt survived. Scan denial or record failure resumes
+the exact local child without worker replay. With `pr: 0`, recovery looks up
+the exact head across all PR states without calling PR snapshot. A closed match
+blocks replacement. With no PR it reconciles the exact remote ref: a match
+avoids another push; proven absence retries only the frozen head and scan.
+Re-run `first-draft` with the original title. No second PR is created blindly.
 
 ## Check, enroll and run
 

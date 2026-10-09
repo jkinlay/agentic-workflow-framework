@@ -515,7 +515,17 @@ class HostDriver:
                       for record in controls['local_config'].split('\0') if record]
         require(not any(key.startswith('credential.') for key in local_keys),
                 'First-draft checkout contains repository-local credential configuration')
+        self.require_clean_first_draft_checkout()
         return controls
+
+    def require_clean_first_draft_checkout(self):
+        """Refuse attribution when any pre-worker checkout residue exists."""
+        require(not self.git(self.worker, 'status', '--porcelain=v1', '-z',
+                             '--untracked-files=all'),
+                'First-draft checkout must start clean; found tracked, staged or untracked changes')
+        require(not self.git(self.worker, 'ls-files', '--others', '--ignored',
+                             '--exclude-standard', '-z'),
+                'First-draft checkout must start clean; found ignored residue')
 
     def require_first_draft_git_controls(self, expected):
         require(self.repository_git_controls(self.worker) == expected,
@@ -554,6 +564,7 @@ class HostDriver:
             '--output-last-message', str(output), '--json', '-']
         git_controls = expected_git_controls or self.first_draft_git_controls()
         self.require_first_draft_git_controls(git_controls)
+        self.require_clean_first_draft_checkout()
         self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
         self.require_first_draft_git_controls(git_controls)
         require(output.is_file(), 'First-draft worker output missing')
