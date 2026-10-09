@@ -53,10 +53,12 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def run(command, *, cwd, env=None, text=True, input_data=None):
+def run(command, *, cwd, env=None, text=True, input_data=None, failure_message=None):
     result = subprocess.run(command, cwd=cwd, env=child_env(env), input=input_data, capture_output=True,
                             text=text, timeout=3600, check=False)
     if result.returncode:
+        if failure_message is not None:
+            raise ReleaseError(failure_message)
         stdout = result.stdout if text else result.stdout.decode(errors="replace")
         stderr = result.stderr if text else result.stderr.decode(errors="replace")
         raise ReleaseError(f"Command failed ({result.returncode}): {' '.join(map(str, command))}\n{stdout}{stderr}")
@@ -113,10 +115,12 @@ def git(root, *args, text=True):
     return git_run(root, *args, text=text).stdout
 
 
-def git_run(root, *args, text=True, input_data=None):
+def git_run(root, *args, text=True, input_data=None, failure_message=None):
     """Run Git with replacement objects disabled for release identity and bytes."""
-    return run(["git", *RAW_GIT_ARGUMENTS, *args], cwd=root, env=isolated_git_env(), text=text,
-               input_data=input_data)
+    options = {"cwd": root, "env": isolated_git_env(), "text": text, "input_data": input_data}
+    if failure_message is not None:
+        options["failure_message"] = failure_message
+    return run(["git", *RAW_GIT_ARGUMENTS, *args], **options)
 
 
 def _https_credential_scope(origin_url):
@@ -130,7 +134,35 @@ def _https_credential_scope(origin_url):
     return "https://" + authority_and_path
 
 
-def _push_credential_arguments(origin_url, gh):
+def _repository_http_extra_header_keys(repository):
+    """Return repository-local HTTP extra-header keys without reading their values."""
+    names = git_run(
+        repository, "config", "--local", "--null", "--name-only", "--list",
+        failure_message=("Unable to inspect repository-local HTTP extraHeader key names; "
+                         "fix `git config --local --name-only --list` and retry."),
+    ).stdout
+    keys = []
+    for name in names.split("\0"):
+        folded = name.casefold()
+        if not name or not (folded == "http.extraheader"
+                            or folded.startswith("http.") and folded.endswith(".extraheader")):
+            continue
+        # These names are repeated in the redacted recovery command. Refuse a
+        # name that could carry user information or make that command ambiguous;
+        # never inspect or report the corresponding value.
+        if not re.fullmatch(r"http(?:\.https://[A-Za-z0-9.-]+(?::[0-9]+)?/"
+                            r"[A-Za-z0-9._~!$&'()*+,;=:%/-]+)?\.extraheader",
+                            name, re.I):
+            raise ReleaseError(
+                "A repository-local HTTP extraHeader key cannot be safely isolated. "
+                "Inspect `git config --local --name-only --list`, remove every repository-local "
+                "`http.*.extraHeader` entry, and retry the release.")
+        if name not in keys:
+            keys.append(name)
+    return keys
+
+
+def _push_credential_arguments(origin_url, gh, *, local_header_keys=()):
     helper = f"!{shlex.quote(str(gh))} auth git-credential"
     arguments = ["-c", "credential.helper="]
     scope = _https_credential_scope(origin_url)
@@ -139,9 +171,16 @@ def _push_credential_arguments(origin_url, gh):
     else:
         header_key = f"http.{scope}.extraHeader"
         key = f"credential.{scope}.helper"
-        arguments.extend(("-c", "remote.origin.pushurl=", "-c", f"remote.origin.pushurl={scope}",
-                          "-c", f"{header_key}=",
-                          "-c", f"{key}=", "-c", f"{key}={helper}"))
+        arguments.extend(("-c", "remote.origin.pushurl=", "-c", f"remote.origin.pushurl={scope}"))
+        reset_keys = ["http.extraHeader", header_key]
+        reset_key_names = {item.casefold() for item in reset_keys}
+        for item in local_header_keys:
+            if item.casefold() not in reset_key_names:
+                reset_keys.append(item)
+                reset_key_names.add(item.casefold())
+        for reset_key in reset_keys:
+            arguments.extend(("-c", f"{reset_key}="))
+        arguments.extend(("-c", f"{key}=", "-c", f"{key}={helper}"))
     return arguments, scope
 
 
@@ -153,25 +192,20 @@ def push_release_tag(repository, tag, *, gh, origin_url):
     credential route used by the draft-release command.  For HTTPS, the empty
     helper and requested helper are also bound to the exact, user-free origin
     URL, and the command resets origin's push URL to that validated endpoint.
-    An empty exact-URL HTTP extra-header value clears lower-priority authorization
-    headers.  That most-specific effective scope also excludes matching
-    repository-configured URL helpers (including username-specific variants) as
-    well as generic helpers.
+    Generic, exact-URL and every repository-local HTTP extra-header key are
+    emptied on the command line, including request-path-specific keys.  The
+    exact helper scope also excludes matching repository-configured URL helpers
+    (including username-specific variants) as well as generic helpers.
     """
-    credential_arguments, scope = _push_credential_arguments(origin_url, gh)
+    local_header_keys = _repository_http_extra_header_keys(repository)
+    credential_arguments, scope = _push_credential_arguments(
+        origin_url, gh, local_header_keys=local_header_keys)
     try:
         git_run(repository, *credential_arguments, "push", "origin", f"refs/tags/{tag}")
     except (ReleaseError, subprocess.SubprocessError, OSError):
-        if scope is None:
-            recovery_options = ("-c credential.helper= "
-                                "-c 'credential.helper=!gh auth git-credential'")
-        else:
-            header_key = f"http.{scope}.extraHeader"
-            key = f"credential.{scope}.helper"
-            recovery_options = (f"-c remote.origin.pushurl= -c remote.origin.pushurl={scope} "
-                                f"-c {header_key}= -c credential.helper= -c {key}= "
-                                f"-c '{key}=!gh auth git-credential'")
-        recovery = f"git {recovery_options} push origin refs/tags/{tag}"
+        recovery_arguments, _ = _push_credential_arguments(
+            scope or origin_url, "gh", local_header_keys=local_header_keys)
+        recovery = shlex.join(["git", *recovery_arguments, "push", "origin", f"refs/tags/{tag}"])
         raise ReleaseError(
             f"Release tag push failed for refs/tags/{tag}. The local annotated tag remains at "
             f"refs/tags/{tag}; the remote tag status is unknown and no GitHub release was created. "
