@@ -18,32 +18,29 @@ Qualify sandbox restrictions, credential separation, exclusive branch ownership,
 
 ## Create the first draft, then enroll
 
-An explicitly configured `first_draft` host may start with `pr: 0`. The trusted
-runtime charges the run before invoking the pinned worker, validates its
-tested-tree receipt, scans before push, creates one draft PR and enrolls the
-provider observation. Reviewed effort fallback is bound to the observed base
-before the worker. Before the worker it snapshots repository-local Git
-configuration, origin fetch/push routes and hooks; any later difference blocks
-all commits, pushes and credential use. The publisher retains
-`ignored_untracked` including Git-ignored residue, requires `HEAD^{tree}` to
-equal the receipt, and durably
-records the exact base/head/body before the first push. Enrollment requires the
-created PR's head and base SHAs to equal that publication.
+An explicitly configured `first_draft` host may start with `pr: 0`. Before each
+pinned-worker launch, the trusted runtime charges it and binds effort fallback
+to the observed base. It stores the original local Git configuration, origin
+routes and hooks with the reservation; later mismatch blocks credential use,
+commits and pushes. The worker starts and finishes on the configured head
+branch at that base; the publisher makes one child commit, validates the tested
+tree and `ignored_untracked`, scans, freezes base/head/body, pushes, creates one
+draft PR and enrolls only an observation with matching head and base SHAs.
 
 ```text
 python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json first-draft --title "AWF: implement ticket"
 ```
 
-The body records the reviewed Tier 1, Tier 2 or Tier 3 classification. The run
-consumes one `max_agent_runs` unit and zero amendment cycles. The provider PR
-number is persisted immediately after creation, before snapshot. A failure
-retains the UUID and charge. Inspect local/remote effects, then run `resume
---reconciled-run UUID`: a zero-PR configuration performs an exact provider head
-lookup across all PR states without calling PR snapshot. A closed matching PR
-blocks replacement. With no PR, the exact remote ref is reconciled: a matching
-ref proceeds without another push; proven absence retries only the frozen head.
-Re-run `first-draft` with the original title. Worker execution is never replayed
-for a prepared publication, and no second PR is created blindly.
+The body records reviewed Tier 1, 2 or 3. Every worker launch consumes one
+`max_agent_runs` unit and zero amendment cycles; prepared-publication recovery
+neither replays nor charges it. The provider PR number is persisted before its
+snapshot. Failure retains the UUID and charge. After inspecting local/remote
+effects, run `resume --reconciled-run UUID`; a replay keeps that UUID but adds a
+charge. With `pr: 0`, recovery looks up the exact head across all PR states
+without calling PR snapshot. A closed match blocks replacement. With no PR it
+reconciles the exact remote ref: a match avoids another push; proven absence
+retries only the frozen head. Re-run `first-draft` with the original title. No
+second PR is created blindly.
 
 ## Check, enroll and run
 

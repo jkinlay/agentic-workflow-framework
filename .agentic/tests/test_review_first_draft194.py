@@ -88,11 +88,14 @@ class FirstDraftTests(unittest.TestCase):
             run('config', 'user.name', 'fixture'); run('config', 'user.email', 'fixture@example.invalid')
             (root / 'a.txt').write_text('safe\n'); run('add', 'a.txt'); run('commit', '-m', 'base')
             base = run('rev-parse', 'HEAD')
+            run('checkout', '-b', 'codex/awf-30')
             (root / 'a.txt').write_text('changed\n')
             receipt = {'outcome': 'CHANGED', 'changes': [{'path': 'a.txt', 'action': 'modified'}],
                        'tested_tree': 'a' * 40, 'ignored_untracked': [], 'summary': 'changed'}
             class NoPush:
                 def run(self, *args):
+                    if args[0] in {'symbolic-ref', 'rev-parse'}:
+                        return run(*args)
                     raise AssertionError('publisher must stop before Git mutation')
             with self.assertRaises(ValidationError):
                 publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
@@ -111,6 +114,7 @@ class FirstDraftTests(unittest.TestCase):
             run('config', 'user.name', 'fixture'); run('config', 'user.email', 'fixture@example.invalid')
             (root / 'a.txt').write_text('safe\n'); run('add', 'a.txt'); run('commit', '-m', 'base')
             base = run('rev-parse', 'HEAD')
+            run('checkout', '-b', 'codex/awf-30')
             (root / 'a.txt').write_text('/'.join(('', 'home', 'fixture', 'secret')) + '\n')
             tree = candidate_tree(root, base, [{'path': 'a.txt', 'action': 'modified'}])
             receipt = {'outcome': 'CHANGED', 'changes': [{'path': 'a.txt', 'action': 'modified'}],
@@ -143,6 +147,7 @@ class FirstDraftTests(unittest.TestCase):
             command(root, 'remote', 'add', 'origin', str(remote))
             (root / 'a.txt').write_text('safe\n'); command(root, 'add', 'a.txt'); command(root, 'commit', '-m', 'base')
             base = command(root, 'rev-parse', 'HEAD')
+            command(root, 'checkout', '-b', 'codex/awf-30')
             (root / 'a.txt').write_text('changed\n')
             changes = [{'path': 'a.txt', 'action': 'modified'}]
             tree = candidate_tree(root, base, changes)
@@ -179,6 +184,7 @@ class FirstDraftTests(unittest.TestCase):
             command(root, 'add', '.gitignore', 'a.txt')
             command(root, 'commit', '-m', 'base')
             base = command(root, 'rev-parse', 'HEAD')
+            command(root, 'checkout', '-b', 'codex/awf-30')
             (root / 'a.txt').write_text('changed\n', encoding='utf-8')
             (root / 'local.secret').write_text('excluded\n', encoding='utf-8')
             changes = [{'path': 'a.txt', 'action': 'modified'}]
@@ -264,6 +270,9 @@ class RecordedGitHubDriver(HostDriver):
         self.lose_create_response_once = False
         self.race_base_on_create = False
         self.mutate_git_controls = False
+        self.poison_fsmonitor_on_failure = None
+        self.mutate_head_history = False
+        self.switch_branch = False
 
     @staticmethod
     def _field(args, name):
@@ -278,7 +287,20 @@ class RecordedGitHubDriver(HostDriver):
             self.calls.append(('codex', tuple(args)))
             if self.fail_codex_once:
                 self.fail_codex_once = False
+                if self.poison_fsmonitor_on_failure:
+                    self.command('-C', str(self.worker), 'config', 'core.fsmonitor',
+                                 self.poison_fsmonitor_on_failure)
                 raise ValidationError('recorded worker failure')
+            if self.switch_branch:
+                self.command('-C', str(self.worker), 'checkout', '-b', 'worker-controlled')
+            if self.mutate_head_history:
+                extra = self.worker / 'out-of-scope.txt'
+                extra.write_text('undeclared history\n', encoding='utf-8')
+                self.command('-C', str(self.worker), 'add', 'out-of-scope.txt')
+                self.command('-C', str(self.worker), 'commit', '-m', 'undeclared change')
+                extra.unlink()
+                self.command('-C', str(self.worker), 'add', 'out-of-scope.txt')
+                self.command('-C', str(self.worker), 'commit', '-m', 'revert undeclared change')
             (self.worker / 'a.txt').write_text('changed by recorded worker\n', encoding='utf-8')
             changes = [{'path': 'a.txt', 'action': 'modified'}]
             tree = candidate_tree(self.worker, self.provider_base_sha, changes)
@@ -518,12 +540,15 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         self.assertEqual(paused['first_draft_publication_status'], 'PREPARED')
         self.assertEqual(self.pr_head(), paused['first_draft_publication']['head'])
         code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
-        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(error, '')
         self.assertEqual(self.state('12:0')['first_draft_publication_status'], 'PUSHED')
         code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
-        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(error, '')
         self.assertEqual(sum(1 for call in self.driver.calls if call[0] == 'codex'), 1)
         self.assertEqual(self.driver.calls.count(('POST', 'pulls')), 1)
+        self.assertEqual(self.state('12:41')['agent_runs'], 1)
 
     def test_proven_absent_prepared_push_retries_exact_head_without_worker_replay(self):
         real_git = self.driver.git
@@ -538,14 +563,22 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         self.assertEqual(code, 2)
         paused = self.state('12:0')
         code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
-        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(error, '')
         self.assertEqual(self.state('12:0')['first_draft_publication_status'], 'RETRY_PUSH')
         code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
-        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(error, '')
         self.assertEqual(sum(1 for call in self.driver.calls if call[0] == 'codex'), 1)
         self.assertEqual(self.driver.calls.count(('POST', 'pulls')), 1)
 
-    def test_precreation_failure_reuses_reservation_uuid_and_charge(self):
+    def test_precreation_worker_retry_reuses_uuid_and_adds_durable_charge(self):
+        charged_before_worker = []
+        real_worker = self.driver.first_draft_worker
+        def observe_charge(**kwargs):
+            charged_before_worker.append(self.state('12:0')['agent_runs'])
+            return real_worker(**kwargs)
+        self.driver.first_draft_worker = observe_charge
         self.driver.fail_codex_once = True
         code, _, _ = self.cli('first-draft', '--title', 'AWF-30 first draft')
         self.assertEqual(code, 2)
@@ -559,9 +592,26 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
         self.assertEqual((code, error), (0, ''))
         state = self.state('12:41')
-        self.assertEqual((state['agent_runs'], state['cycles']), (1, 0))
+        self.assertEqual((state['agent_runs'], state['cycles']), (2, 0))
+        self.assertEqual(state['inflight'], None)
+        self.assertEqual(charged_before_worker, [1, 2])
         self.assertTrue((self.base / 'state' / 'runs' / run_id / 'attempt-2').is_dir())
         self.assertEqual(self.driver.calls.count(('POST', 'pulls')), 1)
+
+    def test_precreation_worker_retry_is_refused_at_agent_run_cap(self):
+        self.driver.c['max_agent_runs'] = 1
+        self.driver.fail_codex_once = True
+        code, _, _ = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        paused = self.state('12:0')
+        code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
+        self.assertEqual((code, error), (0, ''))
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        self.assertIn('exceeds max_agent_runs', error)
+        state = self.state('12:0')
+        self.assertEqual((state['agent_runs'], state['cycles']), (1, 0))
+        self.assertEqual(sum(1 for call in self.driver.calls if call[0] == 'codex'), 1)
 
     def test_worker_git_pushurl_and_credential_helper_block_publication(self):
         self.driver.mutate_git_controls = True
@@ -586,10 +636,26 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         self.command('-C', str(self.driver.worker), 'config', 'credential.helper',
                      '!recorded-credential-helper')
         code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
-        self.assertEqual((code, error), (0, ''))
-        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
         self.assertEqual(code, 2)
-        self.assertIn('fetch/push origin is not the enrolled repository', error)
+        self.assertIn('changed Git configuration, remote routing or hooks', error)
+        self.assertEqual(sum(1 for call in self.driver.calls if call[0] == 'codex'), 1)
+        self.assertNotIn(('POST', 'pulls'), self.driver.calls)
+
+    def test_failed_worker_fsmonitor_poison_is_rejected_before_git_status(self):
+        marker = self.base / 'fsmonitor-ran.txt'
+        hook = self.base / 'fsmonitor.py'
+        hook.write_text('from pathlib import Path\nPath(' + repr(str(marker))
+                        + ').write_text("ran", encoding="utf-8")\nprint("0")\n',
+                        encoding='utf-8')
+        self.driver.poison_fsmonitor_on_failure = f'"{sys.executable}" "{hook}"'
+        self.driver.fail_codex_once = True
+        code, _, _ = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        paused = self.state('12:0')
+        code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
+        self.assertEqual(code, 2)
+        self.assertIn('changed Git configuration, remote routing or hooks', error)
+        self.assertFalse(marker.exists())
         self.assertEqual(sum(1 for call in self.driver.calls if call[0] == 'codex'), 1)
         self.assertNotIn(('POST', 'pulls'), self.driver.calls)
 
@@ -617,6 +683,24 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         self.assertIn('changed Git configuration, remote routing or hooks', error)
         self.assertEqual(self.command('-C', str(self.driver.worker), 'rev-parse', 'HEAD'),
                          self.base_sha)
+        self.assertNotIn(('POST', 'pulls'), self.driver.calls)
+
+    def test_worker_undeclared_commit_history_is_rejected_before_publisher_commit(self):
+        self.driver.mutate_head_history = True
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        self.assertIn('changed HEAD from the provider base', error)
+        self.assertNotIn(('POST', 'pulls'), self.driver.calls)
+        result = subprocess.run([self.git, '--git-dir', str(self.remote), 'rev-parse',
+                                 '--verify', 'refs/heads/codex/awf-30'],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_worker_branch_switch_is_rejected_before_publisher_commit(self):
+        self.driver.switch_branch = True
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        self.assertIn('changed the publication branch', error)
         self.assertNotIn(('POST', 'pulls'), self.driver.calls)
 
     def test_first_draft_binds_reviewed_effort_policy_before_worker(self):

@@ -130,8 +130,13 @@ def enroll(store, config, snapshot, *, first_draft_run=False):
     return state
 
 
-def reserve_first_draft(store, config):
-    """Persist the first-draft charge before invoking any worker or provider."""
+def reserve_first_draft(store, config, *, git_controls=None):
+    """Persist each worker charge and the original Git-control baseline.
+
+    Recovery retains one reservation UUID, but every invocation that can call
+    the worker consumes another ``max_agent_runs`` unit before that call.  A
+    prepared publication resumes without replaying or charging the worker.
+    """
     require(config['max_agent_runs'] >= 1, 'First-draft run cannot be charged against a zero agent-run budget')
     repository_id = config.get('repository_id', str(config['key']).split(':', 1)[0])
     key = f"{repository_id}:0"
@@ -140,8 +145,10 @@ def reserve_first_draft(store, config):
         'findings': deepcopy(config.get('initial_findings', [])), 'cycles': 0,
         'cap_extensions': 0, 'evidence_only_amendments': 0, 'dispositions': [],
         'agent_runs': 1, 'wait_ticks': 0, 'generation': 1,
-        'inflight': {'id': str(uuid.uuid4()), 'phase': 'FIRST_DRAFT', 'started_at': now_text()},
+        'inflight': {'id': str(uuid.uuid4()), 'phase': 'FIRST_DRAFT',
+                     'started_at': now_text(), 'attempt': 1},
         'last_review': None, 'first_draft_publication': None,
+        'first_draft_git_controls': deepcopy(git_controls),
         'first_draft_publication_status': None, 'resume_ready': False,
         'reason': 'First-draft run reserved before worker execution', 'history': []}
     with store.lock():
@@ -154,10 +161,21 @@ def reserve_first_draft(store, config):
                 'First-draft reservation already exists; reconcile it with resume before retrying')
         require(state['config_hash'] == config['config_hash'],
                 'Configuration changed; retire and reconcile the reserved first draft')
-        require(state['agent_runs'] == 1 and state['cycles'] == 0 and state.get('inflight'),
+        require(1 <= state['agent_runs'] <= config['max_agent_runs']
+                and state['cycles'] == 0 and state.get('inflight'),
                 'First-draft reservation accounting is invalid')
+        require(state.get('first_draft_git_controls') == git_controls,
+                'First-draft Git-control baseline is missing or changed during recovery')
+        worker_replay = state.get('first_draft_publication') is None
+        if worker_replay:
+            require(state['agent_runs'] < config['max_agent_runs'],
+                    'First-draft worker retry exceeds max_agent_runs')
+            state['agent_runs'] += 1
+            state['inflight']['attempt'] = state['agent_runs']
         state.update(resume_ready=False,
-                     reason='Reusing reconciled first-draft reservation without a new charge',
+                     reason=('Reusing the reservation UUID with a newly charged worker attempt'
+                             if worker_replay else
+                             'Resuming the prepared publication without replaying the worker'),
                      generation=state['generation'] + 1)
         store.save(state)
     return state
@@ -280,9 +298,10 @@ def first_draft_failure(store, config, reason):
 def resume_first_draft(store, config, reconciled_run, *, publication_status=None):
     """Permit one retry after the operator reconciles local and remote effects.
 
-    The retained reservation UUID and its one agent-run charge are reused.  A
-    later ``first-draft`` call either resumes from the durably recorded pushed
-    publication or reruns the pre-publication worker step.
+    The retained reservation UUID is reused. A later ``first-draft`` call
+    either resumes from the durably recorded publication without a worker
+    charge, or durably charges another agent run before replaying the
+    pre-publication worker step.
     """
     key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
     with store.lock():
@@ -295,8 +314,9 @@ def resume_first_draft(store, config, reconciled_run, *, publication_status=None
                 'Configuration changed; retire and reconcile the reserved first draft')
         require(state.get('inflight') and reconciled_run == state['inflight']['id'],
                 'Inspect and reconcile the retained first-draft run before resuming')
-        require(state['agent_runs'] == 1 and state['cycles'] == 0,
-                'First-draft retry cannot change run or amendment accounting')
+        require(1 <= state['agent_runs'] <= config['max_agent_runs']
+                and state['cycles'] == 0,
+                'First-draft retry accounting is invalid')
         publication = state.get('first_draft_publication')
         if publication is None:
             require(publication_status is None,

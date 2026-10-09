@@ -63,17 +63,30 @@ def main(argv=None):
             tier = config.get('risk_tier')
             require(tier in {1, 2, 3, 'Tier 1', 'Tier 2', 'Tier 3'}, 'A reviewed first-draft risk tier is required')
             contract = Path(config['contract_path']).read_text(encoding='utf-8')
-            provider_base = driver.provider_base()
-            local_base = driver.git(driver.worker, 'rev-parse', config['base_branch'])
-            require(local_base == provider_base, 'Worker checkout base does not match the provider base snapshot')
-            driver.bind_reviewed_policy({'base': provider_base})
-            git_controls = driver.first_draft_git_controls()
             reserved = store.db.execute('SELECT 1 FROM prs WHERE key=?',
                                         (f"{config['repository_id']}:0",)).fetchone()
+            prior = None
             if reserved:
-                prior = store.get(f"{config['repository_id']}:0").get('first_draft_publication')
-                require(prior is None or prior.get('base') == provider_base,
-                        'Provider base moved after the recorded first-draft publication')
+                reserved_state = store.get(f"{config['repository_id']}:0")
+                git_controls = reserved_state.get('first_draft_git_controls')
+                require(isinstance(git_controls, dict),
+                        'Reserved first draft has no durable Git-control baseline')
+                driver.require_first_draft_git_controls(git_controls)
+                prior = reserved_state.get('first_draft_publication')
+            else:
+                git_controls = driver.first_draft_git_controls()
+            provider_base = driver.provider_base()
+            require(prior is None or prior.get('base') == provider_base,
+                    'Provider base moved after the recorded first-draft publication')
+            local_base = driver.git(driver.worker, 'rev-parse', config['base_branch'])
+            require(local_base == provider_base, 'Worker checkout base does not match the provider base snapshot')
+            if prior is None:
+                require(driver.git(driver.worker, 'symbolic-ref', '--short', 'HEAD')
+                        == config['head_branch'],
+                        'First-draft worker checkout is not on the configured head branch')
+                require(driver.git(driver.worker, 'rev-parse', 'HEAD') == provider_base,
+                        'First-draft worker HEAD does not equal the provider base')
+            driver.bind_reviewed_policy({'base': provider_base})
             def worker(run_id=None):
                 return driver.first_draft_worker(run_id=run_id,
                                                  expected_git_controls=git_controls)
@@ -87,6 +100,7 @@ def main(argv=None):
                     worker_model=config['models']['worker'],
                     reasoning_effort=(config.get('reasoning_effort') or {}).get('worker', 'default'),
                     branch=config['head_branch'], tested_tree=receipt['tested_tree'])
+                git_guard()
                 current_provider_base = driver.provider_base()
                 require(current_provider_base == provider_base, 'Provider base branch moved during first-draft execution')
                 return publish_tested_tree(driver.worker, provider_base,
@@ -109,7 +123,8 @@ def main(argv=None):
                     head=config['head_branch'], base=config['base_branch'])
                 return driver.observe_created_pr(created, body=publication['body'], risk_tier=tier)
             value = run_first_draft(store, config, worker=worker, publisher=publisher,
-                                    republisher=republisher, observe_pr=observe)
+                                    republisher=republisher, observe_pr=observe,
+                                    git_controls=git_controls)
         elif args.command == 'pause':
             value = pause(store,config['key'],args.reason)
         else:
@@ -119,6 +134,10 @@ def main(argv=None):
                 require(args.disposition is None,
                         'A first-draft reservation cannot consume an amendment-cap disposition')
                 first_state = store.get(first_key)
+                git_controls = first_state.get('first_draft_git_controls')
+                require(isinstance(git_controls, dict),
+                        'Reserved first draft has no durable Git-control baseline')
+                driver.require_first_draft_git_controls(git_controls)
                 publication = first_state.get('first_draft_publication')
                 expected_body = publication.get('body_sha256') if isinstance(publication, dict) else None
                 reconciled = driver.reconcile_created_pr(

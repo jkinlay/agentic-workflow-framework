@@ -99,6 +99,12 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
     injected so tests can prove scan denial and tree mismatch without a remote.
     """
     receipt = validate_worker_receipt(receipt, allowed_paths=set(allowed_paths))
+    if git_guard:
+        git_guard()
+    require(git.run("symbolic-ref", "--short", "HEAD") == branch,
+            "First-draft worker changed the publication branch")
+    require(git.run("rev-parse", "HEAD") == base,
+            "First-draft worker changed HEAD from the provider base")
     expected = candidate_tree(root, base, receipt["changes"])
     require(expected.tested_tree == receipt["tested_tree"],
             "Worker tested_tree does not match the declared worktree changes")
@@ -107,12 +113,25 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
             "Worker ignored_untracked inventory does not match the candidate tree")
     if git_guard:
         git_guard()
+    require(git.run("symbolic-ref", "--short", "HEAD") == branch
+            and git.run("rev-parse", "HEAD") == base,
+            "First-draft HEAD or branch changed before publisher staging")
     git.run("add", "--", *[x["path"] for x in receipt["changes"]])
     if git_guard:
         git_guard()
+    require(git.run("symbolic-ref", "--short", "HEAD") == branch
+            and git.run("rev-parse", "HEAD") == base,
+            "First-draft HEAD or branch changed before publisher commit")
     git.run("commit", "-m", commit_message)
+    if git_guard:
+        git_guard()
     actual = verify_publisher_tree(root, receipt["tested_tree"])
     head = git.run("rev-parse", "HEAD")
+    parents = git.run("rev-list", "--parents", "-n", "1", head).split()
+    require(len(parents) == 2 and parents == [head, base],
+            "First-draft publisher commit is not a single child of the provider base")
+    require(git.run("symbolic-ref", "--short", "HEAD") == branch,
+            "First-draft publication branch changed during publisher commit")
     scan = publication_scan(root, base, head, body, mapping_path=mapping_path)
     publication = {"base": base, "head": head, "head_tree": actual,
                    "branch": branch, "body": body,
@@ -131,8 +150,12 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
 def republish_prepared_tree(root, publication, *, git, mapping_path=None, git_guard=None):
     """Retry only the exact frozen push after provider observation proved its absence."""
     require(isinstance(publication, dict), 'Prepared first-draft publication is missing')
+    if git_guard:
+        git_guard()
     require(git.run('rev-parse', 'HEAD') == publication.get('head'),
             'Local HEAD does not match the prepared first-draft publication')
+    require(git.run('symbolic-ref', '--short', 'HEAD') == publication.get('branch'),
+            'Local branch does not match the prepared first-draft publication')
     require(verify_publisher_tree(root, publication.get('head_tree')) == publication.get('head_tree'),
             'Local tree does not match the prepared first-draft publication')
     require(sha256(publication.get('body', '').encode()).hexdigest()
@@ -159,7 +182,8 @@ def enroll_created_pr(store, config, snapshot, *, first_draft_run=True):
     return enroll(store, config, snapshot, first_draft_run=False)
 
 
-def run_first_draft(store, config, *, worker, publisher, observe_pr, republisher=None):
+def run_first_draft(store, config, *, worker, publisher, observe_pr, republisher=None,
+                    git_controls=None):
     """Run the native handoff and enroll only the PR identity observed afterward.
 
     The callbacks are host adapters: ``worker`` returns a receipt, ``publisher``
@@ -167,7 +191,7 @@ def run_first_draft(store, config, *, worker, publisher, observe_pr, republisher
     provider after creation. Keeping those operations separate prevents a
     guessed PR number or a publication result from becoming loop authority.
     """
-    reservation = reserve_first_draft(store, config)
+    reservation = reserve_first_draft(store, config, git_controls=git_controls)
     try:
         publication = reservation.get('first_draft_publication')
         if publication is None:
