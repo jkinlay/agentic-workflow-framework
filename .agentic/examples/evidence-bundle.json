@@ -51,7 +51,7 @@
     "issue_id": "2001",
     "ticket": "EX-1",
     "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-    "policy_hash": "131b8ba6e4fe3ac95de7eddc00a9e39d29fe5352a4df30546c82b161bd43e15c",
+    "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
     "objective": "Validate one label",
     "acceptance_criteria": [
       {
@@ -115,7 +115,20 @@
       ]
     },
     "owner_closure_required": false,
-    "corrects": null
+    "corrects": null,
+    "risk_classification": {
+      "tier": 2,
+      "matched_tiers": [
+        2
+      ],
+      "evidence": {
+        "2": [
+          "code or non-Tier-1 change uses the Tier 2 default"
+        ]
+      },
+      "rule": "highest matching tier wins; Tier 2 permits up to 3 round(s)",
+      "risk_flags": []
+    }
   },
   "dispatch": {
     "schema_version": 3,
@@ -128,8 +141,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "5152b37096e50099f4bf8f7778ccceacb0bedc8638504945334598c08e39433e",
-      "policy_hash": "131b8ba6e4fe3ac95de7eddc00a9e39d29fe5352a4df30546c82b161bd43e15c",
+      "contract_hash": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+      "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "contract_id": "9cd18fb5-8aee-5e37-bbda-348cfc9a7cff",
@@ -163,8 +176,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "5152b37096e50099f4bf8f7778ccceacb0bedc8638504945334598c08e39433e",
-      "policy_hash": "131b8ba6e4fe3ac95de7eddc00a9e39d29fe5352a4df30546c82b161bd43e15c",
+      "contract_hash": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+      "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "status": "COMPLETE",
@@ -235,8 +248,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "5152b37096e50099f4bf8f7778ccceacb0bedc8638504945334598c08e39433e",
-      "policy_hash": "131b8ba6e4fe3ac95de7eddc00a9e39d29fe5352a4df30546c82b161bd43e15c",
+      "contract_hash": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+      "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "verdict": "APPROVE",
@@ -287,10 +300,10 @@
         "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
         "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "head_tree_sha": "dddddddddddddddddddddddddddddddddddddddd",
-        "contract_sha256": "5152b37096e50099f4bf8f7778ccceacb0bedc8638504945334598c08e39433e",
-        "review_input_sha256": "1a4c3bef9e3695d2eb004186afddcbb1f072dcfc8694c872adc7bb02f6f49c33"
+        "contract_sha256": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+        "review_input_sha256": "1deec6df8632d349490fbfa559c2a37021ae55ce57695a9ce25f3dd064f14181"
       },
-      "tuple_sha256": "19feb98190147c188d9eb872f49ce43aa0cab63153888acb6e4e62b2a11c63fd",
+      "tuple_sha256": "f04be442baa7df55e410cc09d98d3e86740492cb9a536b5ffb87431a427ecb65",
       "required_reviewers": [
         "fixture-critic"
       ],
@@ -312,18 +325,18 @@
         }
       ]
     },
-    "completion_snapshot_sha256": "9d671e72da0b3d3ed01fad6b28819ade1551f246a2f274ab8949e3e82562d895",
+    "completion_snapshot_sha256": "082af5da7b469de16c9da4b3d4f7107a1586a5139817f43a17673f85378af472",
     "aggregate": {
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a",
       "critic_record_id": "6748e420-45e5-5339-b6a7-12c92e46f20a",
-      "critic_sha256": "90b46a073e5f753771f0cc25d4135e9c897cde6c6b74a8eb1a13aae5e2c581af",
+      "critic_sha256": "63a687903de32b9a47db7b50f4bc7c2b03c2bb646debe5a88877000e1dbabfea",
       "specialist_record_ids": [],
       "specialist_sha256": [],
       "required_reviewers": [
         "fixture-critic"
       ]
     },
-    "aggregate_sha256": "7a0fbbf525c108294027d3a92e6480392f24848d4b44c3b9ccb60b0567809074",
+    "aggregate_sha256": "8414d5ffc66de90290a09bb72eed20cdc2d07aaf41fc41f53b8be1d780d48eaa",
     "provider_preconditions": {
       "operation_id": "0e6143bf-d2af-5b18-8d8d-72f129b9bb7f",
       "prepared_at": "2026-09-09T12:00:00Z",
@@ -331,10 +344,10 @@
       "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
       "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "head_tree_sha": "dddddddddddddddddddddddddddddddddddddddd",
-      "tuple_sha256": "19feb98190147c188d9eb872f49ce43aa0cab63153888acb6e4e62b2a11c63fd",
+      "tuple_sha256": "f04be442baa7df55e410cc09d98d3e86740492cb9a536b5ffb87431a427ecb65",
       "reviewer_set_sha256": "5a10c872428ed78e5f630b6d8c9dd880fc76eb032305b0346d71e6cc158e2582",
-      "completion_snapshot_sha256": "9d671e72da0b3d3ed01fad6b28819ade1551f246a2f274ab8949e3e82562d895",
-      "aggregate_sha256": "7a0fbbf525c108294027d3a92e6480392f24848d4b44c3b9ccb60b0567809074"
+      "completion_snapshot_sha256": "082af5da7b469de16c9da4b3d4f7107a1586a5139817f43a17673f85378af472",
+      "aggregate_sha256": "8414d5ffc66de90290a09bb72eed20cdc2d07aaf41fc41f53b8be1d780d48eaa"
     },
     "execution_authority": false
   },
@@ -349,8 +362,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "5152b37096e50099f4bf8f7778ccceacb0bedc8638504945334598c08e39433e",
-      "policy_hash": "131b8ba6e4fe3ac95de7eddc00a9e39d29fe5352a4df30546c82b161bd43e15c",
+      "contract_hash": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+      "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "retrieval_complete": true,
@@ -388,8 +401,8 @@
       "repository_id": 101,
       "issue_id": "2001",
       "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-      "contract_hash": "5152b37096e50099f4bf8f7778ccceacb0bedc8638504945334598c08e39433e",
-      "policy_hash": "131b8ba6e4fe3ac95de7eddc00a9e39d29fe5352a4df30546c82b161bd43e15c",
+      "contract_hash": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+      "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
       "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
     },
     "state": "OPEN",
@@ -426,8 +439,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "5152b37096e50099f4bf8f7778ccceacb0bedc8638504945334598c08e39433e",
-        "policy_hash": "131b8ba6e4fe3ac95de7eddc00a9e39d29fe5352a4df30546c82b161bd43e15c",
+        "contract_hash": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+        "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "controller",
@@ -460,8 +473,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "5152b37096e50099f4bf8f7778ccceacb0bedc8638504945334598c08e39433e",
-        "policy_hash": "131b8ba6e4fe3ac95de7eddc00a9e39d29fe5352a4df30546c82b161bd43e15c",
+        "contract_hash": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+        "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "worker",
@@ -494,8 +507,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "5152b37096e50099f4bf8f7778ccceacb0bedc8638504945334598c08e39433e",
-        "policy_hash": "131b8ba6e4fe3ac95de7eddc00a9e39d29fe5352a4df30546c82b161bd43e15c",
+        "contract_hash": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+        "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "critic",
@@ -527,8 +540,8 @@
         "repository_id": 101,
         "issue_id": "2001",
         "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
-        "contract_hash": "5152b37096e50099f4bf8f7778ccceacb0bedc8638504945334598c08e39433e",
-        "policy_hash": "131b8ba6e4fe3ac95de7eddc00a9e39d29fe5352a4df30546c82b161bd43e15c",
+        "contract_hash": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+        "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
         "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
       },
       "role": "collector",
@@ -585,6 +598,54 @@
     },
     "execution_authority": false
   },
+  "tier_classification": {
+    "tier": 2,
+    "matched_tiers": [
+      2
+    ],
+    "evidence": {
+      "2": [
+        "code or non-Tier-1 change uses the Tier 2 default"
+      ]
+    },
+    "rule": "highest matching tier wins; Tier 2 permits up to 3 round(s)",
+    "risk_flags": []
+  },
+  "review_verdicts": [
+    {
+      "record_id": "53838cd2-48b6-5273-908a-db2c70facf0c",
+      "created_at": "2026-09-09T12:00:00Z",
+      "producer_id": "fixture-critic",
+      "run_id": "7d8465fe-d08b-53de-9c80-c839f0dad8fe",
+      "binding": {
+        "project_id": "94fdd7f1-0a6d-5cad-9573-462539ffcd4d",
+        "repository_id": 101,
+        "issue_id": "2001",
+        "requirements_hash": "c9679867b80730d633fb796eae29fe3be0f3e0317fe45cb19b6e4314384aff17",
+        "contract_hash": "fe238885bd9d9a14382708542de3dd102eb3c374444683b8eb88a06b6c1100c6",
+        "policy_hash": "9bf8568518a405960dea5bb330371653ce70f88eea762a7108b8318fb2511df5",
+        "candidate_id": "0d6deebf351952be5d6897b85f861fe9881519ab0b22088249939cf4faabc05a"
+      },
+      "verdict": "PASS",
+      "tier": 2,
+      "round": 1,
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "reviewer_id": "fixture-critic",
+      "pr_comment_url": "https://github.com/fixture/example/pull/7#issuecomment-1",
+      "pr_body_link": "https://github.com/fixture/example/pull/7#review-verdict-1",
+      "evidence": [
+        "urn:awf:fixture:example-evidence"
+      ],
+      "owner_review": false,
+      "owner_id": 1001,
+      "candidate_binding": {
+        "repository_id": 101,
+        "pr_number": 7,
+        "base_sha": "cccccccccccccccccccccccccccccccccccccccc",
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    }
+  ],
   "evidence_registry": [
     {
       "uri": "urn:awf:fixture:example-evidence",

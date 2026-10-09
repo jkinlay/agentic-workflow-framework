@@ -598,6 +598,36 @@
                   "const": "blocking"
                 }
               }
+            },
+            "tier3_review": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "roles",
+                "findings",
+                "max_rounds"
+              ],
+              "properties": {
+                "roles": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "critic",
+                      "specialist"
+                    ]
+                  },
+                  "minItems": 2,
+                  "uniqueItems": true
+                },
+                "findings": {
+                  "const": "blocking"
+                },
+                "max_rounds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              }
             }
           }
         },

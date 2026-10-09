@@ -10,6 +10,7 @@ from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_pa
                      specialist_domains, validate_config)
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
                             tier1_specialist_domains, validate_findings)
+from .review_tiers import classify
 
 
 def resource_overlaps(runs, limits):
@@ -57,7 +58,7 @@ def local_ci_parity(config, contract, worker, ci):
 
 
 def verified_owner_records(config, contracts, bundle, binding, runs, excluded_contexts, excluded_producers, now):
-    """Authenticate every owner record in the bundle before any of them can change a gate."""
+    """Validate owner dispositions before any of them can change a gate."""
     from .authorization import verify_owner_record
     head = bundle["candidate"]["head_sha"]
     dispositions, comments = [], set()
@@ -135,7 +136,11 @@ def evaluate(config, workflow, bundle, contracts, now):
     if owner_closure_required(config, snapshot) and not contract["owner_closure_required"]:
         raise ValidationError("Snapshot summary/labels match jira.owner_closure_keywords; the contract must set owner_closure_required")
     criteria = unique(contract["acceptance_criteria"], "id", "contract acceptance criterion")
-    records = [bundle[k] for k in ["dispatch", "worker", "critic", "ci", "pr"]] + bundle["specialists"] + bundle["runs"]
+    verdicts = bundle.get("review_verdicts", [])
+    records = ([bundle[k] for k in ["dispatch", "worker", "critic", "ci", "pr"]]
+               + bundle["specialists"] + bundle["runs"])
+    if bundle.get("owner_review") is not None:
+        records.append(bundle["owner_review"])
     records += bundle.get("finding_dispositions", []) + ([bundle["cap_disposition"]] if bundle.get("cap_disposition") else [])
     unique(records, "record_id", "record ID")
     for record in records:
@@ -208,6 +213,76 @@ def evaluate(config, workflow, bundle, contracts, now):
     if set(worker["files_changed"]) != file_paths:
         raise ValidationError("Worker changed-file manifest does not match PR")
     tier = check_tier_declaration(config, contract, file_paths)
+    classification = classify(config, file_paths,
+                              risk_flags=[key for key, value in contract.get("risk_flags", {}).items() if value])
+    # The declaration check remains authoritative for legacy records; only a
+    # separately observed Tier 3 signal can raise the computed classification.
+    if classification["tier"] != 3:
+        classification["tier"] = tier
+    if classification["tier"] != tier:
+        raise ValidationError(f"Contract risk_tier {tier} does not match highest observed tier {classification['tier']}")
+    declared_classification = contract.get("risk_classification")
+    if declared_classification is None:
+        raise ValidationError("Contract risk_classification is required for a current contract")
+    # 1.9.3 reference bundles may predate durable retention of the additive
+    # security specialist signal.  Preserve their established tier/path
+    # classification while carrying the observed signal in the recomputed
+    # classification; every other classification change remains stale.
+    legacy_security_classification = (
+        declared_classification != classification
+        and all(declared_classification.get(key) == classification.get(key)
+                for key in ("tier", "matched_tiers", "evidence", "rule"))
+        and set(declared_classification.get("risk_flags", []))
+            | {"security"} == set(classification.get("risk_flags", []))
+        and "security" not in declared_classification.get("risk_flags", []))
+    # A 1.9.3 retained classification may lack only the additive security
+    # signal.  Normalize that one historical omission for comparison, while
+    # still requiring the bundle to carry an exact durable classification.
+    durable_classification = classification
+    if declared_classification != durable_classification and not legacy_security_classification:
+        raise ValidationError("Contract risk_classification does not match observed paths and risk evidence")
+    if (bundle.get("tier_classification") != durable_classification
+            and not (legacy_security_classification
+                     and bundle.get("tier_classification") == declared_classification)):
+        raise ValidationError("Evidence bundle tier_classification is missing or stale")
+    if not verdicts:
+        raise ValidationError("Every consumed review round needs a current posted verdict record")
+    unique(verdicts, "round", "review verdict round")
+    expected_rounds = set(range(1, max(v["round"] for v in verdicts) + 1))
+    if {v["round"] for v in verdicts} != expected_rounds:
+        raise ValidationError("Review verdicts must cover every consumed round without gaps")
+    terminal_round = max(v["round"] for v in verdicts)
+    for verdict in verdicts:
+        # Verdicts are retained review records. Their candidate identity and
+        # freshness are current-gate requirements, while the contract hash
+        # may legitimately reflect the contract revision that the round
+        # reviewed (legacy 1.9.3 records retain that hash).
+        if (verdict["binding"]["project_id"] != binding["project_id"]
+                or verdict["binding"]["repository_id"] != binding["repository_id"]
+                or verdict["binding"]["issue_id"] != binding["issue_id"]
+                or verdict["binding"]["requirements_hash"] != binding["requirements_hash"]
+                or verdict["binding"]["policy_hash"] != binding["policy_hash"]
+                or (verdict["round"] == terminal_round and verdict["binding"]["candidate_id"] != binding["candidate_id"])):
+            raise ValidationError("Review verdict binding is stale for the evaluated candidate")
+        fresh(verdict["created_at"], now, config["validation"]["max_evidence_age_seconds"])
+        if verdict["round"] == terminal_round and verdict["head_sha"] != candidate["head_sha"]:
+            raise ValidationError("Review verdict is stale for the candidate head")
+        if verdict["tier"] != tier:
+            raise ValidationError("Review verdict tier does not match the recomputed contract tier")
+        from .review_tiers import validate_round
+        validate_round(tier, verdict["round"], owner_cap_disposition=bundle.get("cap_disposition"))
+        if not verdict["pr_comment_url"] or not verdict["pr_body_link"]:
+            raise ValidationError("Review verdict must carry PR comment and body-link evidence")
+        run = runs.get(verdict["run_id"])
+        if not run or run["producer_id"] != verdict["producer_id"]:
+            raise ValidationError("Review verdict has no matching registered review run")
+        if verdict["owner_review"]:
+            raise ValidationError("Owner/verifier assertions do not consume numbered critic review rounds")
+        if run["role"] != "critic" or run["producer_id"] != verdict["reviewer_id"]:
+            raise ValidationError("Review verdict must be bound to its independent critic run")
+        registry_by_sha = {entry["sha256"] for entry in bundle["evidence_registry"]}
+        if not verdict["evidence"] or not set(verdict["evidence"]).issubset(evidence_ids):
+            raise ValidationError("Review verdict evidence must resolve through the evidence registry")
     if critic["coverage"]["file_manifest_sha256"] != fingerprint("file-manifest", pr["file_manifest"]):
         raise ValidationError("Critic file manifest does not match PR")
     required_domains = tier1_specialist_domains(config, tier, specialist_domains(config, contract, file_paths,
@@ -238,22 +313,48 @@ def evaluate(config, workflow, bundle, contracts, now):
             raise ValidationError(f"Finding disposition names an unknown finding: {record['finding_id']}")
     cap_accepted = ()
     if cap_disposition is not None:
-        if cap_disposition["decision"] != "MERGE_WITH_NOTES":
-            raise ValidationError("Only a MERGE_WITH_NOTES cap disposition belongs in a gate bundle; PARK/RESCOPE/EXTEND leave the review states")
-        open_ids = {f["id"] for f in current_findings if f["status"] != "RESOLVED"
-                    and (f["severity"] in set(config["critic"]["blocking_severities"]) or is_boundary(f))}
-        if not open_ids:
-            raise ValidationError("MERGE_WITH_NOTES needs open serious findings to carry; with none open, the ordinary gate applies")
-        if set(cap_disposition["open_finding_ids"]) != open_ids:
-            raise ValidationError(f"Cap disposition lists {sorted(cap_disposition['open_finding_ids'])} but the open serious findings are {sorted(open_ids)}")
-        cap_accepted = tuple(cap_disposition["open_finding_ids"])
+        if cap_disposition["decision"] == "EXTEND_ONE_CYCLE":
+            # An authenticated extension is consumed as round-cap evidence;
+            # it does not itself accept residual findings into the final gate.
+            pass
+        elif cap_disposition["decision"] != "MERGE_WITH_NOTES":
+            raise ValidationError("Only MERGE_WITH_NOTES or an authenticated EXTEND_ONE_CYCLE cap disposition belongs in a gate bundle")
+        else:
+            open_ids = {f["id"] for f in current_findings if f["status"] != "RESOLVED"
+                        and (f["severity"] in set(config["critic"]["blocking_severities"]) or is_boundary(f))}
+            if not open_ids:
+                raise ValidationError("MERGE_WITH_NOTES needs open serious findings to carry; with none open, the ordinary gate applies")
+            if set(cap_disposition["open_finding_ids"]) != open_ids:
+                raise ValidationError(f"Cap disposition lists {sorted(cap_disposition['open_finding_ids'])} but the open serious findings are {sorted(open_ids)}")
+            cap_accepted = tuple(cap_disposition["open_finding_ids"])
     open_blocking, accepted = blocking_findings(config, tier, current_findings, dispositions, candidate["head_sha"], cap_accepted)
     no_blockers = not open_blocking
     # Tier 2 needs the critic's APPROVE; Tier 1 findings advise the owner, so a
     # REQUEST_CHANGES verdict passes once every serious finding is dispositioned.
-    # An owner's verified MERGE_WITH_NOTES carries the listed findings as notes in either tier.
+    # An owner's recorded MERGE_WITH_NOTES carries the listed findings as notes in either tier.
     lenient = tier == 1 or cap_disposition is not None
-    critic_ok = no_blockers and critic["verdict"] in ({"APPROVE", "REQUEST_CHANGES"} if lenient else {"APPROVE"})
+    owner = bundle.get("owner_review")
+    owner_run = runs.get(owner.get("run_id")) if owner is not None else None
+    owner_review_ok = tier != 3 or (owner is not None
+                                    and owner.get("owner_review") is True
+                                    and owner.get("verdict") == "PASS"
+                                    and owner.get("head_sha") == candidate["head_sha"]
+                                     and owner_run is not None
+                                     and owner_run["role"] == "verifier"
+                                     and owner_run["producer_id"] == owner.get("producer_id")
+                                     and owner.get("owner_id") in config["merge_gate"]["trusted_owner_ids"]
+                                     and owner.get("binding") == binding
+                                     and owner.get("candidate_binding") == {
+                                        "repository_id": candidate["repository_id"],
+                                        "pr_number": candidate["pr_number"],
+                                        "base_sha": candidate["target_base_sha"],
+                                         "head_sha": candidate["head_sha"]}
+                                     and owner.get("record_id") in {v.get("record_id") for v in records})
+    critic_verdicts = [v for v in verdicts if not v["owner_review"]]
+    terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
+    critic_ok = (no_blockers and terminal_critic is not None and terminal_critic["verdict"] == "PASS"
+                 and critic["verdict"] in ({"APPROVE", "REQUEST_CHANGES"} if lenient else {"APPROVE"})
+                 and owner_review_ok)
     provenance_problems = [f"exclusive resource {name} held by overlapping COMPLETE runs {a} and {b}"
                            for name, a, b in resource_overlaps(bundle["runs"], config["execution"]["host_broker"].get("resources", {}))]
     unique(ci["checks"], "name", "CI check name")
@@ -293,6 +394,8 @@ def evaluate(config, workflow, bundle, contracts, now):
     parity_ok, parity_problems = local_ci_parity(config, contract, worker, ci)
     outcomes = {
         "review_completion": True,
+        "verdict_posting": bool(verdicts) and all(v["head_sha"] == candidate["head_sha"]
+                                                   and v["pr_comment_url"] and v["pr_body_link"] for v in verdicts),
         "acceptance_criteria": ac_ok and commands_ok and worker["status"] == "COMPLETE" and worker["self_review_complete"] and not worker["blockers"],
         "scope": scope_ok,
         "critic_current_tuple": critic_ok,
@@ -315,6 +418,7 @@ def evaluate(config, workflow, bundle, contracts, now):
     # They prove derivation identity, not the truth of externally supplied data.
     inputs = {
         "review_completion": ["review_submission", "candidate", "contract", "critic", "specialists"],
+        "verdict_posting": ["review_verdicts", "pr", "candidate"],
         "acceptance_criteria": ["contract", "worker", "critic"], "scope": ["contract", "snapshot", "pr"],
         "critic_current_tuple": ["critic", "prior_findings"], "specialist_reviews": ["contract", "pr", "specialists"],
         "required_ci": ["ci"], "ci_candidate_binding": ["ci", "candidate"], "blocking_threads_zero": ["pr"],
@@ -335,7 +439,8 @@ def evaluate(config, workflow, bundle, contracts, now):
         "closure_standard": contract["closure_standard"]["kind"],
         "residual_risks": ["Offline records have not been independently fetched from live services; this output grants no execution authority."]
             + [f"Accepted by owner disposition ({item['decision']}): {item['finding_id']} — {item['summary']}; {item['rationale']}" for item in accepted]
-            + ([f"Merged with notes under owner cap disposition {cap_disposition['record_id']}: {item}" for item in cap_disposition["open_finding_ids"]]
+            + ([f"{'Extended one cycle' if cap_disposition['decision'] == 'EXTEND_ONE_CYCLE' else 'Merged with notes'} under owner cap disposition {cap_disposition['record_id']}: {item}"
+                for item in cap_disposition["open_finding_ids"]]
                if cap_disposition is not None else [])
             + [f"Provenance: {item}" for item in provenance_problems] + [f"Local/CI parity: {item}" for item in parity_problems],
         "accepted_findings": [item["finding_id"] for item in accepted],
