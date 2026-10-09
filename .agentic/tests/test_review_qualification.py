@@ -167,6 +167,51 @@ class QualificationTests(unittest.TestCase):
             collect_qualification(self.config, FakeQualificationDriver(self.config),
                                   self.store, confirm_disposable_pr=False)
 
+    def test_protected_evidence_paths_and_hardlink_alias_fail_before_probes(self):
+        state = self.base / 'state'
+        host_config = state / 'host.json'
+        contract = state / 'contract.md'
+        host_config.write_bytes(b'host configuration sentinel')
+        contract.write_bytes(b'pinned contract sentinel')
+        self.config['_config_path'] = str(host_config)
+        self.config['contract_path'] = str(contract)
+        protected = [
+            host_config,
+            contract,
+            state / 'review-loop.sqlite3',
+            state / 'writer-lock.sqlite3',
+            state / 'publication-deny.json',
+        ]
+        for path in protected:
+            with self.subTest(path=path.name):
+                before = path.read_bytes() if path.is_file() else None
+                self.config['qualification']['evidence_path'] = str(path)
+                driver = FakeQualificationDriver(self.config)
+                with self.assertRaisesRegex(ValidationError,
+                                            'aliases protected host state'):
+                    collect_qualification(
+                        self.config, driver, self.store,
+                        confirm_disposable_pr=True,
+                        record_id='00000000-0000-0000-0000-000000000123')
+                self.assertEqual(driver.calls, [])
+                if before is not None:
+                    self.assertEqual(path.read_bytes(), before)
+
+        alias = state / 'qualification-alias.json'
+        try:
+            alias.hardlink_to(host_config)
+        except OSError as exc:
+            self.skipTest(f'hardlink alias unavailable: {exc}')
+        self.config['qualification']['evidence_path'] = str(alias)
+        driver = FakeQualificationDriver(self.config)
+        with self.assertRaisesRegex(ValidationError,
+                                    'aliases protected host state'):
+            collect_qualification(
+                self.config, driver, self.store, confirm_disposable_pr=True,
+                record_id='00000000-0000-0000-0000-000000000123')
+        self.assertEqual(driver.calls, [])
+        self.assertEqual(host_config.read_bytes(), b'host configuration sentinel')
+
     def test_generator_reproduces_qualification_schema_and_config(self):
         spec = importlib.util.spec_from_file_location(
             'awf_generate_review_loop_qualification',

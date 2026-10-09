@@ -146,7 +146,8 @@ def load_config(path, runtime_root, *, require_qualification=True):
     contract = Path(config['contract_path']).resolve(strict=True)
     require(contract.is_relative_to(roots[1]) and sha256(contract.read_bytes()) == config['contract_sha256'], 'Contract must be pinned in external state')
     validate_config_qualification(config, roots[1],
-                                  require_record=require_qualification)
+                                  require_record=require_qualification,
+                                  config_path=path)
     require(set(config['executables']) == {'git','gh','codex'}, 'Pin git, gh and codex executables')
     for item in config['executables'].values():
         require(isinstance(item, dict) and set(item) == {'path','sha256'}, 'Invalid executable pin')

@@ -43,7 +43,9 @@ or unevaluable `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`) is an explicit
 blocking finding, not isolation. After inspecting `PASS`, the named operator
 pins the record SHA-256 and sets the four flags. Loading requires that exact
 record, matching operator/host controls, and age no greater than the configured
-limit (maximum seven days). Bare legacy booleans/free-text evidence are refused;
+limit (maximum seven days). Evidence paths that alias configuration, contract,
+database, lock or other protected host state are refused before probes. Bare
+legacy booleans/free-text evidence are refused;
 migrate to the pinned record fields and rerun live qualification. Offline fakes
 exercise the procedure but never qualify a host.
 

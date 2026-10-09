@@ -32,6 +32,13 @@ ARTIFACT_KEYS = {
     "input_sha256", "effective_config_sha256", "codex_log_sha256",
     "result_sha256",
 }
+PROTECTED_STATE_NAMES = {
+    "review-loop.sqlite3", "review-loop.sqlite3-journal",
+    "review-loop.sqlite3-shm", "review-loop.sqlite3-wal",
+    "writer-lock.sqlite3", "writer-lock.sqlite3-journal",
+    "writer-lock.sqlite3-shm", "writer-lock.sqlite3-wal",
+    "publication-deny.json",
+}
 
 
 def host_binding_sha256(config):
@@ -257,16 +264,40 @@ def validate_qualification_record(record, config, *, now=None):
     return record
 
 
+def _evidence_path(config, state_root, *, config_path=None):
+    """Return a direct state evidence path that cannot alias protected state."""
+    state_root = Path(state_root).resolve(strict=True)
+    evidence = Path(config["qualification"]["evidence_path"])
+    require(evidence.parent.resolve(strict=True) == state_root
+            and evidence.name not in {"", ".", ".."},
+            "Qualification evidence must be a direct file in state_dir")
+    protected = [state_root / name for name in PROTECTED_STATE_NAMES]
+    configured_path = config_path or config.get("_config_path")
+    if configured_path:
+        protected.append(Path(configured_path))
+    contract_path = config.get("contract_path")
+    if contract_path:
+        protected.append(Path(contract_path))
+    evidence_resolved = evidence.resolve(strict=False)
+    for candidate in protected:
+        candidate_resolved = candidate.resolve(strict=False)
+        aliases = evidence_resolved == candidate_resolved
+        if not aliases and evidence.exists() and candidate.exists():
+            try:
+                aliases = evidence.samefile(candidate)
+            except OSError:
+                aliases = False
+        require(not aliases,
+                "Qualification evidence path aliases protected host state")
+    return evidence
+
+
 def validate_config_qualification(config, state_root, *, require_record=True,
-                                  now=None):
+                                  now=None, config_path=None):
     qualification = _qualification_shape(config, require_record=require_record)
     state_root = Path(state_root).resolve(strict=True)
-    evidence = Path(qualification["evidence_path"])
+    evidence = _evidence_path(config, state_root, config_path=config_path)
     if not require_record:
-        resolved_parent = evidence.parent.resolve(strict=True)
-        require(resolved_parent == state_root
-                and evidence.name not in {"", ".", ".."},
-                "Qualification evidence must be a direct file in state_dir")
         return None
     resolved = evidence.resolve(strict=True)
     require(resolved.parent == state_root,
@@ -462,7 +493,8 @@ def collect_qualification(config, driver, store, *, confirm_disposable_pr,
     """Run live probes and atomically write their record inside state_dir."""
     require(confirm_disposable_pr is True,
             "qualify requires explicit confirmation that this is a disposable PR")
-    _qualification_shape(config, require_record=False)
+    validate_config_qualification(config, config["state_dir"],
+                                  require_record=False)
     record_id = record_id or str(uuid.uuid4())
     try:
         require(str(uuid.UUID(record_id)) == record_id,
@@ -524,10 +556,8 @@ def collect_qualification(config, driver, store, *, confirm_disposable_pr,
     timestamp(record["observed_at"])
     encoded = (json.dumps(record, indent=2, ensure_ascii=False, sort_keys=True)
                + "\n").encode("utf-8")
-    evidence = Path(config["qualification"]["evidence_path"])
+    evidence = _evidence_path(config, config["state_dir"])
     state = Path(config["state_dir"]).resolve(strict=True)
-    require(evidence.parent.resolve(strict=True) == state,
-            "Qualification evidence must be a direct file in state_dir")
     with Tree(state) as tree:
         tree.write(evidence.name, encoded)
     return {
