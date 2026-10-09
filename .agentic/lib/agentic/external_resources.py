@@ -35,6 +35,7 @@ READ_ACCESS = {"read", "read_only"}
 SENSITIVITIES = {"public", "internal", "restricted", "confidential"}
 MAPPING_KINDS = {"local", "mapped_drive", "unc"}
 ALIAS_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 POWERSHELL_EXIT_STATES = {
     40: ("MAPPING_MISSING", "POWERSHELL_MAPPING"),
     41: ("PATH_NOT_FOUND", "FILESYSTEM_PATH"),
@@ -164,12 +165,14 @@ param([string]$root,[string]$sample,[int]$limit,[string]$mappingKind,[string]$ca
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=(New-Object System.Text.UTF8Encoding($false))
 try {
-  $observed=$canonical
+  $observed=$null
   if ($mappingKind -eq 'mapped_drive') {
     $name=[System.IO.Path]::GetPathRoot($root).TrimEnd('\').TrimEnd(':')
     $drive=Get-PSDrive -Name $name -ErrorAction Stop
     if ($null -ne $drive.DisplayRoot -and $drive.DisplayRoot.Length -gt 0) { $observed=$drive.DisplayRoot }
+    else { $observed=$drive.Root }
   }
+  else { $observed=$canonical }
   $entries=@(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop | Select-Object -First $limit)
   $target=Join-Path -Path $root -ChildPath $sample
   $item=Get-Item -LiteralPath $target -ErrorAction Stop
@@ -182,7 +185,9 @@ try {
   if ($kindName -match 'UnauthorizedAccess|SecurityException') { $code=42 }
   elseif ($kindName -match 'DriveNotFound' -or $fid -match 'DriveNotFound|Get-PsDrive') { $code=40 }
   elseif ($kindName -match 'DirectoryNotFound|FileNotFound' -or $fid -match 'PathNotFound|ItemNotFound') { $code=41 }
-  [Console]::Error.Write('{"error_code":'+$code+'}')
+  $failure=@{error_code=$code}
+  if ($null -ne $observed) { $failure.observed_locator=$observed }
+  $failure | ConvertTo-Json -Compress
   exit $code
 }
 """.strip()
@@ -215,19 +220,24 @@ def classify_probe_result(result):
         return "SANDBOX_BLOCKED", "SANDBOX", None
     if exit_code is None:
         return "PROCESS_START_FAILED", "PROCESS_START", None
-    if exit_code in POWERSHELL_EXIT_STATES:
-        state, layer = POWERSHELL_EXIT_STATES[exit_code]
-        return state, layer, None
-    if exit_code != 0:
-        if diagnostic == "ACCESS_DENIED":
-            return "ACCESS_DENIED", "WINDOWS_ACCESS", None
-        return "COMMAND_NONZERO", "COMMAND_EXIT", None
     observation = result.get("probe")
     if observation is None:
         try:
             observation = json.loads(result.get("output", ""))
         except (json.JSONDecodeError, TypeError):
-            return "INVALID_OUTPUT", "COMMAND_OUTPUT", None
+            observation = None
+    mapping_observation = None
+    if (isinstance(observation, dict) and
+            isinstance(observation.get("observed_locator"), str) and
+            observation["observed_locator"]):
+        mapping_observation = {"observed_locator": observation["observed_locator"]}
+    if exit_code in POWERSHELL_EXIT_STATES:
+        state, layer = POWERSHELL_EXIT_STATES[exit_code]
+        return state, layer, mapping_observation
+    if exit_code != 0:
+        if diagnostic == "ACCESS_DENIED":
+            return "ACCESS_DENIED", "WINDOWS_ACCESS", mapping_observation
+        return "COMMAND_NONZERO", "COMMAND_EXIT", mapping_observation
     required = {"observed_locator", "listing_count", "sample_size", "sample_mtime", "bytes_read"}
     if not isinstance(observation, dict) or not required.issubset(observation):
         return "INVALID_OUTPUT", "COMMAND_OUTPUT", None
@@ -319,11 +329,15 @@ def admit_resource(registry, mappings, resource_alias, *, task_id, principal, se
             permission = _permission(decision.get("scope", "one_command"),
                                      decision.get("expires_at"), "narrow_approval")
     final = attempts[-1]
+    read_verified = final["state"] == "READ_VERIFIED"
     expected_mapping = _mapping_identity(mapping["canonical_locator"])
-    if final["state"] == "READ_VERIFIED":
+    actual_mapping = None
+    if observation is not None and isinstance(observation.get("observed_locator"), str):
         actual_mapping = _mapping_identity(observation["observed_locator"])
         if actual_mapping != expected_mapping:
             final = dict(final, state="MAPPING_CHANGED", error_layer="MAPPING_IDENTITY")
+            attempts[-1] = final
+    if read_verified:
         evidence = {
             "listing_limit": declaration["probe"]["listing_limit"],
             "listing_count": observation["listing_count"],
@@ -333,7 +347,6 @@ def admit_resource(registry, mappings, resource_alias, *, task_id, principal, se
             "data_validity": "UNCONFIRMED",
         }
     else:
-        actual_mapping = None
         evidence = {
             "listing_limit": declaration["probe"]["listing_limit"],
             "listing_count": None,
@@ -353,17 +366,17 @@ def admit_resource(registry, mappings, resource_alias, *, task_id, principal, se
         "error_layer": final["error_layer"],
         "command_sha256": digest,
     }
-    receipt_id = sha256(json.dumps(receipt_core, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-    return {
+    receipt = {
         "format": RECEIPT_FORMAT,
         "visibility": "operator_local",
-        "receipt_id": receipt_id,
         **receipt_core,
         "attempts": attempts,
         "evidence": evidence,
         "private_mapping_fingerprint": actual_mapping or expected_mapping,
         "execution_authority": False,
     }
+    receipt["receipt_id"] = _receipt_identity(receipt)
+    return receipt
 
 
 def public_evidence(receipt):
@@ -378,13 +391,96 @@ def public_evidence(receipt):
     }
 
 
+def _receipt_identity(receipt):
+    bound = {key: value for key, value in receipt.items() if key != "receipt_id"}
+    return sha256(json.dumps(bound, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
 def _validate_receipt_shape(receipt):
     if not isinstance(receipt, dict) or receipt.get("format") != RECEIPT_FORMAT:
         raise ValidationError("external-resource receipt has an unsupported format")
+    required = {
+        "format", "visibility", "receipt_id", "resource_alias", "task_id", "principal",
+        "session_id", "observed_at", "permission", "state", "error_layer",
+        "command_sha256", "attempts", "evidence", "private_mapping_fingerprint",
+        "execution_authority",
+    }
+    if set(receipt) != required:
+        raise ValidationError("external-resource receipt is incomplete or has unknown fields")
+    if receipt["visibility"] != "operator_local" or receipt["execution_authority"] is not False:
+        raise ValidationError("external-resource receipt has an invalid trust boundary")
+    alias = receipt["resource_alias"]
+    if not isinstance(alias, str) or ALIAS_RE.fullmatch(alias) is None:
+        raise ValidationError("external-resource receipt has an invalid resource alias")
+    for field in ("task_id", "principal", "session_id", "error_layer"):
+        _text(receipt[field], "receipt." + field)
+    _utc(receipt["observed_at"])
     if receipt.get("state") not in RESOURCE_STATES:
         raise ValidationError("external-resource receipt has an unsupported state")
-    if not isinstance(receipt.get("permission"), dict) or receipt["permission"].get("scope") not in PERMISSION_SCOPES:
+    for field in ("receipt_id", "command_sha256", "private_mapping_fingerprint"):
+        if not isinstance(receipt[field], str) or SHA256_RE.fullmatch(receipt[field]) is None:
+            raise ValidationError("external-resource receipt has an invalid " + field)
+    permission = receipt.get("permission")
+    if (not isinstance(permission, dict) or
+            set(permission) != {"access", "scope", "expires_at", "source"} or
+            permission.get("access") != "read_only" or
+            permission.get("scope") not in PERMISSION_SCOPES or
+            permission.get("source") not in {"existing_grant", "narrow_approval"}):
         raise ValidationError("external-resource receipt has no valid permission scope")
+    if permission["expires_at"] is not None:
+        _utc(permission["expires_at"])
+    attempts = receipt.get("attempts")
+    if not isinstance(attempts, list) or not 1 <= len(attempts) <= 2:
+        raise ValidationError("external-resource receipt must contain one or two attempts")
+    for attempt in attempts:
+        if (not isinstance(attempt, dict) or
+                set(attempt) != {"attempted_at", "command_sha256", "state", "error_layer", "exit_code"}):
+            raise ValidationError("external-resource receipt has a malformed attempt")
+        _utc(attempt["attempted_at"])
+        _text(attempt["error_layer"], "receipt.attempt.error_layer")
+        if (attempt["command_sha256"] != receipt["command_sha256"] or
+                attempt["state"] not in RESOURCE_STATES or
+                (attempt["exit_code"] is not None and type(attempt["exit_code"]) is not int)):
+            raise ValidationError("external-resource receipt attempt is not bound to the probe")
+    if len(attempts) == 2 and (
+            attempts[0]["state"] != "SANDBOX_BLOCKED" or
+            permission["source"] != "narrow_approval"):
+        raise ValidationError("external-resource receipt retry is not bound to a narrow approval")
+    if permission["source"] == "narrow_approval" and len(attempts) != 2:
+        raise ValidationError("external-resource narrow approval has no exact-command retry")
+    final = attempts[-1]
+    if (receipt["observed_at"] != final["attempted_at"] or
+            receipt["state"] != final["state"] or
+            receipt["error_layer"] != final["error_layer"]):
+        raise ValidationError("external-resource receipt does not match its final attempt")
+    evidence = receipt.get("evidence")
+    evidence_fields = {"listing_limit", "listing_count", "sample_metadata_observed",
+                       "bytes_read", "accessibility", "data_validity"}
+    if not isinstance(evidence, dict) or set(evidence) != evidence_fields:
+        raise ValidationError("external-resource receipt has malformed probe evidence")
+    _integer(evidence["listing_limit"], "receipt.evidence.listing_limit", 1, 1000)
+    if (evidence["listing_count"] is not None and
+            (type(evidence["listing_count"]) is not int or evidence["listing_count"] < 0)):
+        raise ValidationError("external-resource receipt has invalid listing evidence")
+    if (type(evidence["sample_metadata_observed"]) is not bool or
+            type(evidence["bytes_read"]) is not int or evidence["bytes_read"] not in {0, 1} or
+            evidence["accessibility"] not in {"CONFIRMED", "UNCONFIRMED"} or
+            evidence["data_validity"] != "UNCONFIRMED"):
+        raise ValidationError("external-resource receipt has inconsistent probe evidence")
+    expected_accessibility = "CONFIRMED" if evidence["bytes_read"] == 1 else "UNCONFIRMED"
+    if evidence["accessibility"] != expected_accessibility:
+        raise ValidationError("external-resource receipt accessibility exceeds its read evidence")
+    successful_read = final["exit_code"] == 0 and receipt["state"] in {
+        "READ_VERIFIED", "MAPPING_CHANGED"}
+    if successful_read:
+        if evidence["listing_count"] is None or evidence["sample_metadata_observed"] is not True:
+            raise ValidationError("external-resource successful read lacks bounded probe evidence")
+    elif (evidence["listing_count"] is not None or
+          evidence["sample_metadata_observed"] is not False or
+          evidence["bytes_read"] != 0):
+        raise ValidationError("external-resource failed read claims probe evidence it did not collect")
+    if receipt["receipt_id"] != _receipt_identity(receipt):
+        raise ValidationError("external-resource receipt identity does not match its complete contents")
     return receipt
 
 

@@ -1,6 +1,9 @@
 """K14 split-root host preflight reports independent host capabilities."""
 from pathlib import Path
+import ctypes
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -74,6 +77,49 @@ class SplitRootPreflightTests(unittest.TestCase):
         self.assertNotIn("synthetic", rendered)
         self.assertNotIn(raw_local_path, rendered)
         self.assertNotIn(json.dumps(raw_local_path)[1:-1], rendered)
+
+    @unittest.skipUnless(os.name == "nt", "real mapped-root preflight is Windows-specific")
+    def test_ac40_real_windows_mapped_read_only_root_uses_production_probe(self):
+        with tempfile.TemporaryDirectory(prefix="awf-split-root-real-") as temporary:
+            base = Path(temporary)
+            project = base / "project"
+            estate = base / "estate"
+            project.mkdir()
+            estate.mkdir()
+            (project / ".gitattributes").write_text(
+                "/.agentic/** text eol=lf\n/AGENTS.md text eol=lf\n"
+                "/.github/PULL_REQUEST_TEMPLATE.md text eol=lf\n", encoding="utf-8")
+            sample = estate / "sample.bin"
+            sample.write_bytes(b"x")
+            before = (sample.read_bytes(), sample.stat().st_mtime_ns, sorted(p.name for p in estate.iterdir()))
+            logical_drives = ctypes.windll.kernel32.GetLogicalDrives()
+            drive = next((f"{letter}:" for letter in reversed("RSTUVWXYZ")
+                          if not logical_drives & (1 << (ord(letter) - ord("A")))), None)
+            self.assertIsNotNone(drive, "a free drive letter is required for the AC40 mapped-root fixture")
+            mapped_root = drive + "\\"
+            created = subprocess.run(["subst", drive, str(estate)], capture_output=True,
+                                     text=True, encoding="utf-8", timeout=10)
+            self.assertEqual(created.returncode, 0, created.stdout + created.stderr)
+            try:
+                report = preflight(
+                    project, platform="nt", external_registry=self.registry(),
+                    external_mappings={
+                        "format": "awf-external-resource-mapping-1", "resources": {
+                            "raw_estate": {"local_path": mapped_root,
+                                           "canonical_locator": mapped_root,
+                                           "mapping_kind": "mapped_drive"}}})
+            finally:
+                removed = subprocess.run(["subst", drive, "/D"], capture_output=True,
+                                         text=True, encoding="utf-8", timeout=10)
+                self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+            rows = {item["check"]: item for item in report["rows"]}
+            self.assertEqual(rows["process_launch"]["status"], "PASS")
+            self.assertEqual(rows["repository_writable"]["status"], "PASS")
+            self.assertEqual(rows["external_workspace_roots"]["status"], "PASS")
+            self.assertEqual(rows["external_resource:{raw_estate}"]["status"], "PASS")
+            after = (sample.read_bytes(), sample.stat().st_mtime_ns,
+                     sorted(p.name for p in estate.iterdir()))
+            self.assertEqual(after, before)
 
     def test_unsupported_split_writable_roots_get_one_precise_remedy(self):
         with tempfile.TemporaryDirectory(prefix="awf-split-write-") as temporary:

@@ -144,6 +144,31 @@ class ExternalResourceTests(unittest.TestCase):
             principal="worker-A", session_id="session-1", now=NOW)
         self.assertEqual(admitted["status"], "ADMITTED")
 
+    def test_ac50_malformed_receipt_never_admits_work(self):
+        malformed = {
+            "format": "awf-external-resource-receipt-1", "resource_alias": "raw_estate",
+            "task_id": "AWF-8", "principal": "worker-A", "session_id": "session-1",
+            "state": "READ_VERIFIED", "permission": {"scope": "task"},
+        }
+        with self.assertRaisesRegex(ValidationError, "incomplete"):
+            admission_decision(
+                malformed, resource_alias="raw_estate", task_id="AWF-8",
+                principal="worker-A", session_id="session-1", now=NOW)
+
+    def test_ac50_tampered_receipt_identity_never_admits_work(self):
+        for mutation in (
+                lambda value: value.update(principal="worker-B"),
+                lambda value: value["evidence"].update(
+                    bytes_read=0, accessibility="UNCONFIRMED"),
+                lambda value: value["attempts"][-1].update(error_layer="FORGED")):
+            with self.subTest(mutation=mutation):
+                receipt = self.admit()
+                mutation(receipt)
+                with self.assertRaisesRegex(ValidationError, "identity|final attempt"):
+                    admission_decision(
+                        receipt, resource_alias="raw_estate", task_id="AWF-8",
+                        principal="worker-A", session_id="session-1", now=NOW)
+
     def test_ac51_new_task_and_expired_lifetime_are_stale(self):
         receipt = self.admit(permission_scope="task", permission_expires_at="2026-10-09T12:05:00Z")
         self.assertEqual(receipt["permission"]["scope"], "task")
@@ -165,6 +190,16 @@ class ExternalResourceTests(unittest.TestCase):
         self.assertNotIn("host-a", serialized)
         self.assertNotIn("host-b", serialized)
         self.assertNotIn("private_mapping_fingerprint", tracked)
+
+    def test_ac52_remap_precedes_a_subsequent_path_failure(self):
+        receipt = self.admit(execute=lambda command, cwd=None: {
+            "diagnostic_category": "NONZERO_EXIT", "exit_code": 41,
+            "probe": {"observed_locator": "\\\\host-b\\other"},
+        })
+        self.assertEqual(receipt["state"], "MAPPING_CHANGED")
+        self.assertEqual(receipt["error_layer"], "MAPPING_IDENTITY")
+        self.assertEqual(receipt["attempts"][-1]["state"], "MAPPING_CHANGED")
+        self.assertEqual(receipt["evidence"]["accessibility"], "UNCONFIRMED")
 
     def test_ac54_read_only_root_keeps_repository_as_only_writable_root(self):
         policy = split_root_policy(self.registry)
