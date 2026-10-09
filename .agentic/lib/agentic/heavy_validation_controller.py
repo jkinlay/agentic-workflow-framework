@@ -34,6 +34,9 @@ _LABEL = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _MAX_PROVIDER_BYTES = 1024 * 1024
 _MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 LEASE_VALIDATION_TRANSPORT_MARGIN_SECONDS = 5
+POSIX_SNAPSHOT_SKIP_REASON = (
+    "POSIX heavy validation skipped: same-owner snapshot mutation exclusion "
+    "is unavailable for the complete child execution interval")
 
 
 def _require(condition, message):
@@ -346,30 +349,7 @@ class GitCheckoutSnapshotter:
     @staticmethod
     def _lock_snapshot(destination: Path):
         if os.name != "nt":
-            paths = [destination, *sorted(destination.rglob("*"), key=lambda item: str(item))]
-            directories = []
-            effective_uid = getattr(os, "geteuid", lambda: None)()
-            for path in paths:
-                try:
-                    metadata = os.lstat(path)
-                except OSError as exc:
-                    raise ValidationError(
-                        "POSIX snapshot mutation guard could not inspect the frozen tree") from exc
-                if stat.S_ISLNK(metadata.st_mode):
-                    raise ValidationError("POSIX snapshot mutation guard found an alias")
-                if effective_uid is not None and metadata.st_uid != effective_uid:
-                    raise ValidationError("POSIX snapshot mutation guard found foreign ownership")
-                if stat.S_IMODE(metadata.st_mode) & 0o222:
-                    raise ValidationError("POSIX snapshot mutation guard found a writable object")
-                if stat.S_ISDIR(metadata.st_mode):
-                    directories.append(path)
-                elif not stat.S_ISREG(metadata.st_mode):
-                    raise ValidationError(
-                        "POSIX snapshot mutation guard found an unsupported object")
-            if stat.S_IMODE(os.lstat(destination).st_mode) & 0o077:
-                raise ValidationError("POSIX snapshot root must be owner-only")
-            return ("posix-owner-only-frozen-tree-with-pre-exec-verification",
-                    None, None, paths, directories)
+            raise ValidationError(POSIX_SNAPSHOT_SKIP_REASON)
         import ctypes
         from ctypes import wintypes
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -475,9 +455,13 @@ class GitCheckoutSnapshotter:
             _require(extracted_tree_inventory == reviewed_tree_inventory,
                      "Git checkout archive is not bound to the reviewed tree inventory")
             self._freeze(snapshot_root)
-            mutation_guard, kernel, advapi, handles, original_security = self._lock_snapshot(
-                snapshot_root)
+            mutation_guard = None
+            kernel = advapi = None
+            handles = []
+            original_security = []
             try:
+                mutation_guard, kernel, advapi, handles, original_security = self._lock_snapshot(
+                    snapshot_root)
                 observed_inventory = self._inventory(snapshot_root)
                 expected_content_inventory = {
                     "files": [{"path": item["path"], "sha256": item["sha256"]}

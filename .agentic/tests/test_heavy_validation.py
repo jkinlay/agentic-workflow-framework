@@ -561,6 +561,75 @@ class HeavyValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "escapes"):
                 heavy.resolve_pinned_executable(first, "partition escape executable")
 
+            trusted_prefix = outer / "trusted-prefix"
+            trusted_binary = trusted_prefix / "bin"
+            trusted_binary.mkdir(parents=True)
+            trusted_target = trusted_binary / "python-real"
+            trusted_target.write_bytes(b"trusted base interpreter fixture")
+            outside_hop = outer / "outside-hop"
+            outside_hop.symlink_to(trusted_target)
+            leave_and_return = binary / "python-return"
+            leave_and_return.symlink_to(outside_hop)
+            with mock.patch.object(
+                    heavy, "_trusted_interpreter_prefixes",
+                    return_value=(trusted_prefix,)):
+                with self.assertRaisesRegex(ValidationError, "chain escapes"):
+                    heavy.resolve_pinned_executable(
+                        leave_and_return, "partition leave-and-return executable")
+
+    def test_simulated_posix_venv_chain_rejects_outside_hop_returning_to_prefix(self):
+        with tempfile.TemporaryDirectory() as folder:
+            outer = Path(folder).resolve()
+            environment = outer / "venv"
+            binary = environment / "bin"
+            trusted_prefix = outer / "trusted-prefix"
+            trusted_binary = trusted_prefix / "bin"
+            binary.mkdir(parents=True)
+            trusted_binary.mkdir(parents=True)
+            (environment / "pyvenv.cfg").write_text(
+                "home = governed-fixture\n", encoding="utf-8", newline="\n")
+            trusted_target = trusted_binary / "python-real"
+            trusted_target.write_bytes(b"trusted base interpreter fixture")
+            direct = binary / "python-direct"
+            outside_hop = outer / "outside-hop"
+            leave_and_return = binary / "python-return"
+            links = {
+                direct: trusted_target,
+                leave_and_return: outside_hop,
+                outside_hop: trusted_target,
+            }
+            real_lstat = os.lstat
+            real_readlink = os.readlink
+
+            def fixture_lstat(path):
+                observed = Path(path)
+                if observed in links:
+                    inode = tuple(links).index(observed) + 100
+                    return mock.Mock(st_mode=stat.S_IFLNK | 0o777,
+                                     st_ino=inode, st_dev=1,
+                                     st_file_attributes=0)
+                return real_lstat(path)
+
+            def fixture_readlink(path):
+                observed = Path(path)
+                if observed not in links:
+                    return real_readlink(path)
+                return str(links[observed])
+
+            with mock.patch.object(
+                    heavy, "_venv_root_for_interpreter", return_value=environment), \
+                    mock.patch.object(
+                        heavy, "_trusted_interpreter_prefixes",
+                        return_value=(trusted_prefix,)), \
+                    mock.patch.object(heavy.os, "lstat", side_effect=fixture_lstat), \
+                    mock.patch.object(heavy.os, "readlink", side_effect=fixture_readlink):
+                self.assertEqual(
+                    trusted_target,
+                    heavy.resolve_pinned_executable(direct, "direct POSIX venv executable"))
+                with self.assertRaisesRegex(ValidationError, "chain escapes"):
+                    heavy.resolve_pinned_executable(
+                        leave_and_return, "leave-and-return POSIX venv executable")
+
     def test_all_partition_barrier_failure_and_deterministic_order(self):
         raw = plan([partition("z", "print('z')"),
                     partition("a", "raise SystemExit(7)")], parallelism=2)
@@ -1892,12 +1961,19 @@ class HeavyValidationTests(unittest.TestCase):
             self.assertEqual(replacement_tree, ambient_tree)
             self.assertEqual("reviewed\n", tracked.read_text(encoding="utf-8"))
             with mock.patch.dict(os.environ, hostile):
-                with GitCheckoutSnapshotter(root)(candidate, str(root)) as evidence:
-                    snapshot = Path(evidence["snapshot_working_directory"])
-                    self.assertEqual("reviewed\n",
-                                     (snapshot / "tracked.txt").read_text(encoding="utf-8"))
-                    self.assertEqual(reviewed_tree, evidence["archive_source_object"])
-                    self.assertRegex(evidence["reviewed_tree_inventory_sha256"], r"^[0-9a-f]{64}$")
+                if os.name == "nt":
+                    with GitCheckoutSnapshotter(root)(candidate, str(root)) as evidence:
+                        snapshot = Path(evidence["snapshot_working_directory"])
+                        self.assertEqual("reviewed\n",
+                                         (snapshot / "tracked.txt").read_text(encoding="utf-8"))
+                        self.assertEqual(reviewed_tree, evidence["archive_source_object"])
+                        self.assertRegex(
+                            evidence["reviewed_tree_inventory_sha256"], r"^[0-9a-f]{64}$")
+                else:
+                    with self.assertRaisesRegex(
+                            ValidationError, "same-owner snapshot mutation exclusion"):
+                        with GitCheckoutSnapshotter(root)(candidate, str(root)):
+                            self.fail("POSIX snapshot skip was silently accepted")
                 chain_plan = json.loads(plan(
                     [partition("reviewed-launcher")], parallelism=1,
                     candidate=candidate, cwd=root))
@@ -1959,41 +2035,35 @@ class HeavyValidationTests(unittest.TestCase):
                                   check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
             candidate = {**CANDIDATE, "head_sha": head, "tree_sha": tree}
             snapshotter = GitCheckoutSnapshotter(root)
+            if os.name != "nt":
+                with self.assertRaisesRegex(
+                        ValidationError, "same-owner snapshot mutation exclusion"):
+                    with snapshotter(candidate, str(root)):
+                        self.fail("POSIX snapshot skip was silently accepted")
+                return
             with snapshotter(candidate, str(root)) as evidence:
                 snapshot_file = Path(evidence["snapshot_working_directory"]) / "tracked.txt"
                 self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
                 tracked.write_text("raced\n", encoding="utf-8", newline="\n")
                 self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
-                if os.name == "nt":
-                    try:
-                        snapshot_file.chmod(0o600)
-                    except OSError:
-                        pass
-                    with self.assertRaises(OSError):
-                        snapshot_file.write_text("bad\n", encoding="utf-8", newline="\n")
-                    self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
-                    injected = Path(evidence["snapshot_working_directory"]) / "unreviewed.py"
-                    with self.assertRaises(OSError):
-                        injected.write_text("INJECTED = True\n", encoding="utf-8", newline="\n")
-                    self.assertFalse(injected.exists())
-                else:
-                    self.assertEqual(
-                        "posix-owner-only-frozen-tree-with-pre-exec-verification",
-                        evidence["mutation_guard"])
-                    heavy._verify_posix_snapshot(
-                        Path(evidence["snapshot_working_directory"]),
-                        evidence["content_inventory_sha256"])
+                try:
+                    snapshot_file.chmod(0o600)
+                except OSError:
+                    pass
+                with self.assertRaises(OSError):
+                    snapshot_file.write_text("bad\n", encoding="utf-8", newline="\n")
+                self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
+                injected = Path(evidence["snapshot_working_directory"]) / "unreviewed.py"
+                with self.assertRaises(OSError):
+                    injected.write_text("INJECTED = True\n", encoding="utf-8", newline="\n")
+                self.assertFalse(injected.exists())
                 self.assertEqual(tree, evidence["tree_sha"])
                 self.assertEqual("IMMUTABLE", evidence["status"])
             real_lock = snapshotter._lock_snapshot
 
             def inject_before_seal(destination):
-                if os.name != "nt":
-                    snapshotter._thaw(destination)
                 (destination / "unreviewed.py").write_text(
                     "INJECTED = True\n", encoding="utf-8", newline="\n")
-                if os.name != "nt":
-                    snapshotter._freeze(destination)
                 return real_lock(destination)
 
             with mock.patch.object(snapshotter, "_lock_snapshot",
@@ -2003,7 +2073,9 @@ class HeavyValidationTests(unittest.TestCase):
                     with snapshotter(candidate, str(root)):
                         self.fail("snapshot with an injected sibling was dispatched")
 
-    @unittest.skipUnless(os.name == "nt", "Windows DACL namespace-exclusion behavior")
+    @unittest.skipUnless(
+        os.name == "nt",
+        heavy_controller.POSIX_SNAPSHOT_SKIP_REASON)
     def test_production_snapshot_blocks_injection_during_execution(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -2141,27 +2213,21 @@ class HeavyValidationTests(unittest.TestCase):
                     self.assertEqual(0, launched.returncode, launched.stderr)
                     self.assertEqual("fallback-ok", launched.stdout.strip())
 
-    @unittest.skipUnless(os.name != "nt", "POSIX snapshot-exclusion fixture")
-    def test_simulated_macos_snapshot_is_owner_only_and_reverified(self):
+    def test_simulated_macos_snapshot_exclusion_is_governed_skip(self):
         with tempfile.TemporaryDirectory() as folder:
             snapshot = Path(folder).resolve() / "snapshot"
             snapshot.mkdir(mode=0o700)
             (snapshot / "reviewed.py").write_text(
                 "VALUE = 'reviewed'\n", encoding="utf-8", newline="\n")
             GitCheckoutSnapshotter._freeze(snapshot)
-            lock = GitCheckoutSnapshotter._lock_snapshot(snapshot)
-            self.assertEqual(
-                "posix-owner-only-frozen-tree-with-pre-exec-verification", lock[0])
-            inventory_sha = fingerprint(
-                "heavy-validation-snapshot-inventory", heavy._snapshot_inventory(snapshot))
-            heavy._verify_posix_snapshot(snapshot, inventory_sha)
-            GitCheckoutSnapshotter._thaw(snapshot)
-            (snapshot / "reviewed.py").write_text(
-                "VALUE = 'mutated'\n", encoding="utf-8", newline="\n")
-            GitCheckoutSnapshotter._freeze(snapshot)
-            with self.assertRaisesRegex(ValidationError, "changed before child creation"):
-                heavy._verify_posix_snapshot(snapshot, inventory_sha)
-            GitCheckoutSnapshotter._thaw(snapshot)
+            try:
+                with mock.patch.object(heavy_controller.os, "name", "posix"):
+                    with self.assertRaisesRegex(
+                            ValidationError,
+                            "same-owner snapshot mutation exclusion is unavailable"):
+                        GitCheckoutSnapshotter._lock_snapshot(snapshot)
+            finally:
+                GitCheckoutSnapshotter._thaw(snapshot)
 
     def test_windows_launcher_bytes_are_reviewed_and_mutation_fenced(self):
         value = json.loads(plan([partition("launcher")], parallelism=1))

@@ -6,9 +6,9 @@ AWF 1.9.4 executes partitioned validation only from an exact reviewed candidate.
 
 A version 4 plan binds the candidate, cwd, executable identities, commands, bounds, resources, determinism, isolation, environment, and credential stripping.
 
-Before launch, a trusted attestor proves the reviewed HEAD/tree clean. Isolated Git reads ignore ambient configuration, attributes, and replacements. Execution archives the exact tree; independent path, mode, blob-ID, and content inventories must match. Windows retains its handle/DACL seal. POSIX uses an owner-only frozen snapshot rehashed inside the serialized gate immediately before every child; unavailable guards fail closed. Targets and isolation flags are reviewed and fenced; `shell=False` remains mandatory.
+Before launch, a trusted attestor proves the reviewed HEAD/tree clean. Isolated Git reads ignore ambient configuration, attributes, and replacements. Execution archives the exact tree; independent path, mode, blob-ID, and content inventories must match. Windows retains its handle/DACL seal through the complete child execution interval. POSIX permissions and pre-exec hashes cannot exclude mutation by the owning UID, so heavy validation is governed-skipped there with the explicit reason `same-owner snapshot mutation exclusion is unavailable for the complete child execution interval`; it never reports that tree immutable or silently passes. Targets and isolation flags are reviewed and fenced; `shell=False` remains mandatory.
 
-Only a POSIX venv's final interpreter symlink may resolve: its regular target must be pinned inside that venv or a controller base-interpreter prefix. Parent aliases, escaping chains, arbitrary links, and Windows reparse aliases remain refused.
+Only a POSIX venv's final interpreter symlink may resolve: every link hop and its regular pinned target must stay inside that venv or a controller base-interpreter prefix. Leave-and-return chains, parent aliases, arbitrary links, and Windows reparse aliases remain refused.
 
 Version 6 binds plan and provider review to repository, PR, reviewer, approved commit, and authorization digest. AWF reauthenticates before dispatch and under each launch lock. Clock or authority failure rejects and cancels later launches. Local `APPROVE` authorizes nothing.
 
@@ -68,7 +68,7 @@ Run the synthetic regression with:
 python -B -m unittest discover -s .agentic/tests -p test_heavy_validation.py -v
 ```
 
-Regression includes real POSIX venv links, escape refusal, simulated macOS descriptor and snapshot paths, races, leases, authority, containment, tampering, cancellation, adapters, credentials, caps, and bounds. `self_test.py` records named platform skips and reasons; none silently pass. No proprietary engine, GPU, or license server is required.
+Regression includes real POSIX venv links, leave-and-return escape refusal, the simulated macOS descriptor path, the governed POSIX snapshot skip, races, leases, authority, containment, tampering, cancellation, adapters, credentials, caps, and bounds. `self_test.py` records the named POSIX snapshot skip and reason; it is never a silent pass. No proprietary engine, GPU, or license server is required.
 
 Durable lease quarantine, recovery, and launch artifact receipt semantics are
 specified in [five-slot acceleration](36-FIVE-SLOT-ACCELERATION.md).

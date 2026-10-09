@@ -209,6 +209,71 @@ def _trusted_interpreter_prefixes() -> tuple[Path, ...]:
     return tuple(prefixes)
 
 
+def _lexically_within(path: Path, roots: tuple[Path, ...]) -> bool:
+    """Check a normalized path without resolving a link at that path."""
+    path_text = os.path.normcase(str(path))
+    for root in roots:
+        root_text = os.path.normcase(str(root))
+        try:
+            if os.path.commonpath([path_text, root_text]) == root_text:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _lexically_on_trusted_route(path: Path, roots: tuple[Path, ...]) -> bool:
+    """Allow an absolute-path ancestor only while walking toward a trusted root."""
+    if _lexically_within(path, roots):
+        return True
+    return any(_lexically_within(root, (path,)) for root in roots)
+
+
+def _resolve_trusted_interpreter_chain(path: Path, roots: tuple[Path, ...],
+                                       label: str) -> Path:
+    """Resolve a POSIX link chain while keeping every hop inside ``roots``."""
+    pending = list(path.parts[1:])
+    current = Path(path.anchor)
+    followed: set[tuple[int, int]] = set()
+    hops = 0
+    while pending:
+        current /= pending.pop(0)
+        if not _lexically_on_trusted_route(current, roots):
+            raise ValidationError(
+                f"{label} symlink chain escapes the virtual environment and "
+                "base-interpreter prefixes")
+        try:
+            metadata = os.lstat(current)
+        except OSError as exc:
+            raise ValidationError(f"{label} symlink target does not exist: {current}") from exc
+        is_reparse = bool(
+            getattr(metadata, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+        if is_reparse and not stat.S_ISLNK(metadata.st_mode):
+            raise ValidationError(f"{label} uses a reparse alias: {current}")
+        if not stat.S_ISLNK(metadata.st_mode):
+            continue
+        identity = (metadata.st_dev, metadata.st_ino)
+        if identity in followed or hops >= 40:
+            raise ValidationError(f"{label} symlink chain is cyclic or too deep")
+        followed.add(identity)
+        hops += 1
+        try:
+            target = Path(os.readlink(current))
+        except OSError as exc:
+            raise ValidationError(f"{label} symlink target is unreadable: {current}") from exc
+        if not target.is_absolute():
+            target = current.parent / target
+        target = Path(os.path.abspath(os.fspath(target)))
+        if not _lexically_within(target, roots):
+            raise ValidationError(
+                f"{label} symlink chain escapes the virtual environment and "
+                "base-interpreter prefixes")
+        pending = [*target.parts[1:], *pending]
+        current = Path(target.anchor)
+    return current
+
+
 def resolve_pinned_executable(path_value: str | os.PathLike[str], label: str) -> Path:
     """Resolve only a POSIX venv interpreter link into a trusted prefix.
 
@@ -240,11 +305,8 @@ def resolve_pinned_executable(path_value: str | os.PathLike[str], label: str) ->
     if not stat.S_ISLNK(metadata.st_mode):
         return resolve_without_alias(lexical, label, directory=False)
 
-    resolved = Path(os.path.realpath(lexical))
     allowed_roots = (Path(os.path.realpath(root)), *_trusted_interpreter_prefixes())
-    if not any(_path_within(resolved, allowed) for allowed in allowed_roots):
-        raise ValidationError(
-            f"{label} symlink target escapes the virtual environment and base-interpreter prefixes")
+    resolved = _resolve_trusted_interpreter_chain(lexical, allowed_roots, label)
     try:
         resolved_metadata = os.stat(resolved, follow_symlinks=False)
     except FileNotFoundError as exc:
@@ -780,51 +842,6 @@ def _dispatch_freshness(review: dict, capacity: dict | None, now: str,
         "heavy-validation-dispatch-freshness", record)}
 
 
-def _snapshot_inventory(root: Path) -> dict:
-    files = []
-    directories = []
-    for path in sorted(root.rglob("*"), key=lambda item: str(item)):
-        relative = path.relative_to(root).as_posix()
-        try:
-            metadata = os.lstat(path)
-        except OSError as exc:
-            raise ValidationError("POSIX checkout snapshot could not be inspected") from exc
-        if stat.S_ISLNK(metadata.st_mode):
-            raise ValidationError("POSIX checkout snapshot contains an alias")
-        if stat.S_ISDIR(metadata.st_mode):
-            directories.append(relative)
-        elif stat.S_ISREG(metadata.st_mode):
-            files.append({"path": relative, "sha256": _file_sha256(path)})
-        else:
-            raise ValidationError("POSIX checkout snapshot contains an unreviewed object")
-    return {"files": files, "directories": directories}
-
-
-def _verify_posix_snapshot(root: Path, expected_sha256: str):
-    """Re-hash the owner-only frozen tree immediately before child creation."""
-    expected = _expected_digest(expected_sha256, "POSIX snapshot content inventory SHA-256")
-    try:
-        root_metadata = os.lstat(root)
-    except OSError as exc:
-        raise ValidationError("POSIX checkout snapshot root could not be inspected") from exc
-    if (not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode)
-            or stat.S_IMODE(root_metadata.st_mode) & 0o077):
-        raise ValidationError("POSIX checkout snapshot root is not owner-only")
-    effective_uid = getattr(os, "geteuid", lambda: None)()
-    for path in (root, *sorted(root.rglob("*"), key=lambda item: str(item))):
-        try:
-            metadata = os.lstat(path)
-        except OSError as exc:
-            raise ValidationError("POSIX checkout snapshot could not be inspected") from exc
-        if effective_uid is not None and metadata.st_uid != effective_uid:
-            raise ValidationError("POSIX checkout snapshot ownership changed before child creation")
-        if stat.S_IMODE(metadata.st_mode) & 0o222:
-            raise ValidationError("POSIX checkout snapshot became writable before child creation")
-    observed = fingerprint("heavy-validation-snapshot-inventory", _snapshot_inventory(root))
-    if observed != expected:
-        raise ValidationError("POSIX checkout snapshot changed before child creation")
-
-
 class _ChildLaunchAuthorization:
     """Serialize the last authority check with each actual child creation.
 
@@ -1042,7 +1059,6 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
             _nonnegative_int(value["file_count"], "checkout snapshot file_count")
             supported_guards = {
                 "windows-file-handles-and-sealed-directories",
-                "posix-owner-only-frozen-tree-with-pre-exec-verification",
             }
             if value["mutation_guard"] not in supported_guards:
                 raise ValidationError("Checkout snapshot mutation guard is unsupported")
@@ -1062,9 +1078,6 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
                                                   "checkout snapshot root", directory=True)
             if os.path.normcase(str(snapshot_root)) == os.path.normcase(str(root)):
                 raise ValidationError("Checkout snapshot must be separate from the mutable checkout")
-            if value["mutation_guard"] == (
-                    "posix-owner-only-frozen-tree-with-pre-exec-verification"):
-                _verify_posix_snapshot(snapshot_root, value["content_inventory_sha256"])
             yield snapshot_root, deepcopy(value)
     except ValidationError:
         raise
@@ -2015,13 +2028,7 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
                         capacity_required=broker["enabled"], lease=lease,
                         lease_guard=guard, clock=dispatch_clock, cancel_event=event,
                         lease_quarantiner=lambda cleanup: _quarantine_lease(
-                            broker_client, lease, cleanup),
-                        snapshot_verifier=(
-                            (lambda: _verify_posix_snapshot(
-                                snapshot_root, checkout_snapshot["content_inventory_sha256"]))
-                            if checkout_snapshot["mutation_guard"] ==
-                            "posix-owner-only-frozen-tree-with-pre-exec-verification"
-                            else None))
+                            broker_client, lease, cleanup))
                     with ThreadPoolExecutor(max_workers=effective,
                                             thread_name_prefix="awf-heavy") as executor:
                         futures = {
