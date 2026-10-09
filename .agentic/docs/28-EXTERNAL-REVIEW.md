@@ -46,15 +46,19 @@ For a new ticket, the first-draft bridge in
 GitHub host adapter together; it does not rely on a guessed PR number. It preserves the
 same pinned worker route and exact allowed paths, requires a tested-tree
 receipt, performs the history-aware scan on the prospective PR body before the
-first push, freezes the publication base/head/body, creates one draft PR,
+first push, durably freezes the publication base/head/body before that push,
+creates one draft PR,
 persists its number before snapshot, and enrolls only when the observed head
 and base match. The host snapshots repository Git configuration, remotes and
-hooks around the credential-free worker; changes block publication. The
+hooks from a validated baseline through every commit/push operation; changes
+or repository-local credential configuration block publication. The
 first-draft run is
 reserved and counted in `max_agent_runs` before worker execution but does not
 consume an amendment cycle. A host
 publisher may commit the worker's tested tree when Git metadata is unavailable
 inside the worker sandbox; any `HEAD^{tree}` mismatch is a scope violation and
 must return to the worker. Recovery retains the reservation UUID and charge,
-looks up an uncertain PR by the exact head before retry, and never calls PR
-snapshot with `pr: 0` or blindly creates a second PR.
+looks up an uncertain PR in all states by the exact head, then reconciles the
+remote ref before any exact-head push retry. It never calls PR snapshot with
+`pr: 0`, reruns the worker for a prepared publication, or blindly creates a
+second PR.

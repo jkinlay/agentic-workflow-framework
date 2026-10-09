@@ -290,40 +290,65 @@ class HostDriver:
         self.bind_created_pr(number)
         return self.snapshot(number=number, expected_body_sha256=sha256(body.encode('utf-8')))
 
-    def reconcile_created_pr(self, *, expected_body_sha256=None):
+    def reconcile_created_pr(self, *, expected_body_sha256=None, publication=None):
         """Observe a prior uncertain creation by bound number or exact head.
 
         A zero-PR configuration is never passed to ``snapshot``.  The bounded
-        head lookup must prove zero or one same-repository open PR before a
-        reserved first draft may retry any provider mutation.
+        head lookup must prove zero or one same-repository PR in every state.
+        If no PR exists, the exact remote ref is observed before a prepared
+        push can be retried or draft creation can continue.
         """
         if self.c['pr'] > 0:
             require(isinstance(expected_body_sha256, str),
                     'Bound first-draft recovery requires its frozen body digest')
-            return self.snapshot(expected_body_sha256=expected_body_sha256)
+            candidate = self.snapshot(expected_body_sha256=expected_body_sha256)
+            require(candidate is not None,
+                    'The provider-bound first-draft PR is closed; a second PR is forbidden')
+            return candidate
         owner = self.c['repository'].split('/', 1)[0]
         head = quote(owner + ':' + self.c['head_branch'], safe='')
-        base = quote(self.c['base_branch'], safe='')
-        value = self.api(f'pulls?state=open&head={head}&base={base}&per_page=2')
+        value = self.api(f'pulls?state=all&head={head}&per_page=2')
         require(isinstance(value, list) and len(value) <= 1,
                 'First-draft head lookup is malformed or ambiguous')
-        if not value:
+        if value:
+            pr = value[0]
+            require(isinstance(expected_body_sha256, str),
+                    'An observed first-draft PR has no frozen publication body')
+            require(isinstance(pr, dict) and type(pr.get('number')) is int and pr['number'] > 0,
+                    'First-draft head lookup returned no valid PR identity')
+            require(pr.get('draft') is True
+                    and pr.get('head', {}).get('ref') == self.c['head_branch']
+                    and pr.get('base', {}).get('ref') == self.c['base_branch']
+                    and pr.get('head', {}).get('repo', {}).get('id') == self.c['repository_id']
+                    and pr.get('base', {}).get('repo', {}).get('id') == self.c['repository_id'],
+                    'First-draft head lookup returned a non-draft or mismatched PR')
+            require(isinstance(publication, dict)
+                    and pr.get('head', {}).get('sha') == publication.get('head')
+                    and pr.get('base', {}).get('sha') == publication.get('base'),
+                    'First-draft head lookup returned a PR outside the frozen publication')
+            require(sha256((pr.get('body') or '').encode('utf-8')) == expected_body_sha256,
+                    'First-draft head lookup body does not match the frozen publication')
+            self.bind_created_pr(pr['number'])
+            require(pr.get('state') == 'open',
+                    'The reconciled first-draft PR is closed; a second PR is forbidden')
+            return self.snapshot(expected_body_sha256=expected_body_sha256)
+        if publication is None:
             return None
-        pr = value[0]
-        require(isinstance(expected_body_sha256, str),
-                'An observed first-draft PR has no frozen publication body')
-        require(isinstance(pr, dict) and type(pr.get('number')) is int and pr['number'] > 0,
-                'First-draft head lookup returned no valid PR identity')
-        require(pr.get('state') == 'open' and pr.get('draft') is True
-                and pr.get('head', {}).get('ref') == self.c['head_branch']
-                and pr.get('base', {}).get('ref') == self.c['base_branch']
-                and pr.get('head', {}).get('repo', {}).get('id') == self.c['repository_id']
-                and pr.get('base', {}).get('repo', {}).get('id') == self.c['repository_id'],
-                'First-draft head lookup returned a non-draft or mismatched PR')
-        require(sha256((pr.get('body') or '').encode('utf-8')) == expected_body_sha256,
-                'First-draft head lookup body does not match the frozen publication')
-        self.bind_created_pr(pr['number'])
-        return self.snapshot(expected_body_sha256=expected_body_sha256)
+        require(isinstance(publication.get('head'), str),
+                'Prepared first-draft publication has no frozen head')
+        prefix = quote('heads/' + self.c['head_branch'], safe='/')
+        refs = self.api(f'git/matching-refs/{prefix}')
+        require(isinstance(refs, list) and len(refs) <= 1,
+                'First-draft remote-ref lookup is malformed or ambiguous')
+        if not refs:
+            return 'RETRY_PUSH'
+        ref = refs[0]
+        require(isinstance(ref, dict)
+                and ref.get('ref') == 'refs/heads/' + self.c['head_branch']
+                and ref.get('object', {}).get('type') == 'commit'
+                and ref.get('object', {}).get('sha') == publication['head'],
+                'First-draft remote ref differs from the frozen publication')
+        return 'PUSHED'
 
     def provider_base(self):
         value = self.api(f'branches/{self.c["base_branch"]}')
@@ -465,7 +490,26 @@ class HostDriver:
             'hooks': self._hooks_snapshot(checkout),
         }
 
-    def first_draft_worker(self, *, run_id=None):
+    def first_draft_git_controls(self):
+        """Validate and freeze repository-local controls before first-draft work."""
+        controls = self.repository_git_controls(self.worker)
+        require(self.git(self.worker, 'rev-parse', '--show-toplevel').replace('\\', '/').casefold()
+                == str(self.worker.resolve()).replace('\\', '/').casefold(),
+                'First-draft checkout must be its repository root')
+        require(controls['origin_fetch'].rstrip('/') == self.url
+                and controls['origin_push'].rstrip('/') == self.url,
+                'First-draft checkout fetch/push origin is not the enrolled repository')
+        local_keys = [record.partition('\n')[0].casefold()
+                      for record in controls['local_config'].split('\0') if record]
+        require(not any(key.startswith('credential.') for key in local_keys),
+                'First-draft checkout contains repository-local credential configuration')
+        return controls
+
+    def require_first_draft_git_controls(self, expected):
+        require(self.repository_git_controls(self.worker) == expected,
+                'Worker changed Git configuration, remote routing or hooks; reconcile before publication')
+
+    def first_draft_worker(self, *, run_id=None, expected_git_controls=None):
         """Run the pinned worker against the configured first-draft checkout."""
         run_id = run_id or str(uuid.uuid4())
         run = self.state / 'runs' / run_id
@@ -496,10 +540,10 @@ class HostDriver:
             '--model', self.c['models']['worker'], '--cd', str(self.worker),
             '--output-schema', str(self.root / '.agentic/review-loop/first-draft-worker-result.schema.json'),
             '--output-last-message', str(output), '--json', '-']
-        git_controls = self.repository_git_controls(self.worker)
+        git_controls = expected_git_controls or self.first_draft_git_controls()
+        self.require_first_draft_git_controls(git_controls)
         self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
-        require(self.repository_git_controls(self.worker) == git_controls,
-                'Worker changed Git configuration, remote routing or hooks; reconcile before publication')
+        self.require_first_draft_git_controls(git_controls)
         require(output.is_file(), 'First-draft worker output missing')
         return loads(output.read_text(encoding='utf-8'))
 

@@ -141,7 +141,8 @@ def reserve_first_draft(store, config):
         'cap_extensions': 0, 'evidence_only_amendments': 0, 'dispositions': [],
         'agent_runs': 1, 'wait_ticks': 0, 'generation': 1,
         'inflight': {'id': str(uuid.uuid4()), 'phase': 'FIRST_DRAFT', 'started_at': now_text()},
-        'last_review': None, 'first_draft_publication': None, 'resume_ready': False,
+        'last_review': None, 'first_draft_publication': None,
+        'first_draft_publication_status': None, 'resume_ready': False,
         'reason': 'First-draft run reserved before worker execution', 'history': []}
     with store.lock():
         row = store.db.execute('SELECT state FROM prs WHERE key=?', (key,)).fetchone()
@@ -163,12 +164,18 @@ def reserve_first_draft(store, config):
 
 
 def record_first_draft_publication(store, config, publication):
-    """Persist the exact pushed candidate before a draft-PR mutation is attempted."""
-    required = {'base', 'head', 'head_tree', 'branch', 'body', 'body_sha256', 'title'}
+    """Persist exact publication intent before the first remote push is attempted."""
+    required = {'base', 'head', 'head_tree', 'branch', 'body', 'body_sha256', 'title',
+                'ignored_untracked'}
     require(isinstance(publication, dict) and required <= set(publication),
             'First-draft publication identity is incomplete')
+    string_fields = required - {'ignored_untracked'}
     require(all(isinstance(publication[name], str) and publication[name]
-                for name in required), 'First-draft publication identity is malformed')
+                for name in string_fields), 'First-draft publication identity is malformed')
+    require(isinstance(publication['ignored_untracked'], list)
+            and len(publication['ignored_untracked']) == len(set(publication['ignored_untracked']))
+            and all(isinstance(path, str) and path for path in publication['ignored_untracked']),
+            'First-draft ignored_untracked inventory is malformed')
     require(sha256(publication['body'].encode('utf-8')) == publication['body_sha256'],
             'First-draft publication body digest mismatch')
     key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
@@ -181,7 +188,30 @@ def record_first_draft_publication(store, config, publication):
         require(existing is None or existing == frozen,
                 'First-draft publication identity changed during retry')
         state.update(first_draft_publication=frozen,
-                     reason='First-draft publication pushed; draft-PR creation pending',
+                     first_draft_publication_status=(state.get('first_draft_publication_status')
+                                                     or 'PREPARED'),
+                     reason='First-draft publication prepared durably before remote push',
+                     generation=state['generation'] + 1)
+        store.save(state)
+        return state
+
+
+def confirm_first_draft_publication(store, config, publication, *, reconciled=False):
+    """Record a successful push or an exact provider-ref reconciliation."""
+    key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(key)
+        require(state['phase'] in {'FIRST_DRAFT', 'PAUSED'} and state.get('inflight'),
+                'First-draft publication has no active reservation')
+        require(state.get('first_draft_publication') == {
+            name: publication[name] for name in sorted(state['first_draft_publication'])},
+            'First-draft publication identity changed before push confirmation')
+        require(state.get('first_draft_publication_status') in {'PREPARED', 'RETRY_PUSH', 'PUSHED'},
+                'First-draft publication is not awaiting push confirmation')
+        state.update(first_draft_publication_status='PUSHED',
+                     reason=('Provider ref reconciled to the exact first-draft publication'
+                             if reconciled else
+                             'First-draft publication pushed; draft-PR creation pending'),
                      generation=state['generation'] + 1)
         store.save(state)
         return state
@@ -200,6 +230,8 @@ def complete_first_draft(store, config, snapshot, reconciled_run=None):
         publication = state.get('first_draft_publication')
         require(isinstance(publication, dict),
                 'First-draft publication was not durably recorded before enrollment')
+        require(state.get('first_draft_publication_status') == 'PUSHED',
+                'First-draft publication was not reconciled as pushed before enrollment')
         require(snapshot.get('head') == publication['head'],
                 'Created PR observation does not match the published head')
         require(snapshot.get('base') == publication['base'],
@@ -245,7 +277,7 @@ def first_draft_failure(store, config, reason):
         return state
 
 
-def resume_first_draft(store, config, reconciled_run):
+def resume_first_draft(store, config, reconciled_run, *, publication_status=None):
     """Permit one retry after the operator reconciles local and remote effects.
 
     The retained reservation UUID and its one agent-run charge are reused.  A
@@ -265,7 +297,15 @@ def resume_first_draft(store, config, reconciled_run):
                 'Inspect and reconcile the retained first-draft run before resuming')
         require(state['agent_runs'] == 1 and state['cycles'] == 0,
                 'First-draft retry cannot change run or amendment accounting')
+        publication = state.get('first_draft_publication')
+        if publication is None:
+            require(publication_status is None,
+                    'Pre-publication recovery cannot assert a remote publication state')
+        else:
+            require(publication_status in {'PUSHED', 'RETRY_PUSH'},
+                    'Prepared first-draft publication requires exact remote-ref reconciliation')
         state.update(phase='FIRST_DRAFT', resume_ready=True,
+                     first_draft_publication_status=publication_status,
                      reason='Operator reconciled first-draft local and provider state; one retry is ready',
                      generation=state['generation'] + 1)
         store.save(state)

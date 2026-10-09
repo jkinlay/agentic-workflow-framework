@@ -21,11 +21,13 @@ Qualify sandbox restrictions, credential separation, exclusive branch ownership,
 An explicitly configured `first_draft` host may start with `pr: 0`. The trusted
 runtime charges the run before invoking the pinned worker, validates its
 tested-tree receipt, scans before push, creates one draft PR and enrolls the
-provider observation. Before the worker it snapshots repository-local Git
+provider observation. Reviewed effort fallback is bound to the observed base
+before the worker. Before the worker it snapshots repository-local Git
 configuration, origin fetch/push routes and hooks; any later difference blocks
 all commits, pushes and credential use. The publisher retains
-`ignored_untracked`, requires `HEAD^{tree}` to equal the receipt, and durably
-records the exact base/head/body before PR creation. Enrollment requires the
+`ignored_untracked` including Git-ignored residue, requires `HEAD^{tree}` to
+equal the receipt, and durably
+records the exact base/head/body before the first push. Enrollment requires the
 created PR's head and base SHAs to equal that publication.
 
 ```text
@@ -37,10 +39,11 @@ consumes one `max_agent_runs` unit and zero amendment cycles. The provider PR
 number is persisted immediately after creation, before snapshot. A failure
 retains the UUID and charge. Inspect local/remote effects, then run `resume
 --reconciled-run UUID`: a zero-PR configuration performs an exact provider head
-lookup without calling PR snapshot; an existing PR is bound and enrolled, while
-a proven absence enables one retry under the same UUID. Re-run `first-draft`
-with the original title. A recorded pushed publication skips worker/publisher
-replay, so no second push or PR is created blindly.
+lookup across all PR states without calling PR snapshot. A closed matching PR
+blocks replacement. With no PR, the exact remote ref is reconciled: a matching
+ref proceeds without another push; proven absence retries only the frozen head.
+Re-run `first-draft` with the original title. Worker execution is never replayed
+for a prepared publication, and no second PR is created blindly.
 
 ## Check, enroll and run
 

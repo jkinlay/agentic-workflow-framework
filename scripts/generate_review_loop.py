@@ -24,8 +24,17 @@ def main():
     critic = obj({'candidate':candidate,'verdict':{'type':'string','enum':['APPROVE','CHANGES_REQUESTED','BLOCKED']},
         'reviewed_files':{'type':'array','items':string},'findings':{'type':'array','items':finding},'summary':string})
     worker = obj({'candidate':candidate,'outcome':{'type':'string','enum':['CHANGED','NO_CHANGE','BLOCKED']},'summary':string})
+    first_draft_worker = obj({
+        'outcome': {'enum': ['CHANGED', 'NO_CHANGE', 'BLOCKED']},
+        'changes': {'type': 'array', 'items': obj({
+            'path': string, 'action': {'enum': ['added', 'modified', 'deleted']}})},
+        'tested_tree': string,
+        'ignored_untracked': {'type': 'array', 'items': string},
+        'summary': string,
+    })
     write('critic-result.schema.json',critic)
     write('worker-result.schema.json',worker)
+    write('first-draft-worker-result.schema.json', first_draft_worker)
     write('host-config.example.json',{'version':1,'automation_default':True,'first_draft':True,'github_host':'github.com','repository':'CHANGE_ME/CHANGE_ME',
         'repository_id':0,'pr':0,'head_branch':'codex/CHANGE_ME','base_branch':'main',
         'state_dir':'C:/awf-state','worker_checkout':'C:/awf-worker','critic_checkout':'C:/awf-critic',

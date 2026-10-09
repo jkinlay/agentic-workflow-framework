@@ -11,10 +11,11 @@ scrub_process_env()
 import argparse
 import json
 from agentic.installer import verify_installed
-from agentic.review_loop import (LoopStore, complete_first_draft, enroll, pause,
+from agentic.review_loop import (LoopStore, complete_first_draft,
+    confirm_first_draft_publication, enroll, pause, record_first_draft_publication,
     resume, resume_first_draft, tick, require)
 from agentic.review_first_draft import (publish_tested_tree, render_first_draft_body,
-    run_first_draft)
+    republish_prepared_tree, run_first_draft)
 from agentic.providers.github_review_host import HostDriver, load_config
 from agentic.interaction import loop_next_step, next_step, render_markdown, rejected_next_step
 
@@ -65,6 +66,8 @@ def main(argv=None):
             provider_base = driver.provider_base()
             local_base = driver.git(driver.worker, 'rev-parse', config['base_branch'])
             require(local_base == provider_base, 'Worker checkout base does not match the provider base snapshot')
+            driver.bind_reviewed_policy({'base': provider_base})
+            git_controls = driver.first_draft_git_controls()
             reserved = store.db.execute('SELECT 1 FROM prs WHERE key=?',
                                         (f"{config['repository_id']}:0",)).fetchone()
             if reserved:
@@ -72,29 +75,41 @@ def main(argv=None):
                 require(prior is None or prior.get('base') == provider_base,
                         'Provider base moved after the recorded first-draft publication')
             def worker(run_id=None):
-                return driver.first_draft_worker(run_id=run_id)
+                return driver.first_draft_worker(run_id=run_id,
+                                                 expected_git_controls=git_controls)
+            def git_guard():
+                driver.require_first_draft_git_controls(git_controls)
+            class GitAdapter:
+                def run(self, *git_args):
+                    return driver.git(driver.worker, *git_args)
             def publisher(receipt):
                 body = render_first_draft_body(contract, risk_tier=tier,
                     worker_model=config['models']['worker'],
                     reasoning_effort=(config.get('reasoning_effort') or {}).get('worker', 'default'),
                     branch=config['head_branch'], tested_tree=receipt['tested_tree'])
-                class GitAdapter:
-                    def run(self, *git_args):
-                        return driver.git(driver.worker, *git_args)
                 current_provider_base = driver.provider_base()
                 require(current_provider_base == provider_base, 'Provider base branch moved during first-draft execution')
                 return publish_tested_tree(driver.worker, provider_base,
                     config['head_branch'], receipt, body=body, commit_message=args.title,
                     git=GitAdapter(), allowed_paths=config['allowed_paths'],
-                    mapping_path=Path(config['state_dir']) / 'publication-deny.json') | {
-                        'body': body, 'title': args.title}
+                    mapping_path=Path(config['state_dir']) / 'publication-deny.json',
+                    title=args.title, git_guard=git_guard,
+                    prepare_publication=lambda publication:
+                        record_first_draft_publication(store, config, publication))
+            def republisher(publication):
+                return republish_prepared_tree(driver.worker, publication,
+                    git=GitAdapter(),
+                    mapping_path=Path(config['state_dir']) / 'publication-deny.json',
+                    git_guard=git_guard)
             def observe(publication):
                 require(publication['title'] == args.title,
                         'Retry title does not match the durably recorded first-draft publication')
+                git_guard()
                 created = driver.create_draft_pr(title=publication['title'], body=publication['body'],
                     head=config['head_branch'], base=config['base_branch'])
                 return driver.observe_created_pr(created, body=publication['body'], risk_tier=tier)
-            value = run_first_draft(store, config, worker=worker, publisher=publisher, observe_pr=observe)
+            value = run_first_draft(store, config, worker=worker, publisher=publisher,
+                                    republisher=republisher, observe_pr=observe)
         elif args.command == 'pause':
             value = pause(store,config['key'],args.reason)
         else:
@@ -106,11 +121,18 @@ def main(argv=None):
                 first_state = store.get(first_key)
                 publication = first_state.get('first_draft_publication')
                 expected_body = publication.get('body_sha256') if isinstance(publication, dict) else None
-                candidate = driver.reconcile_created_pr(expected_body_sha256=expected_body)
-                if candidate is None:
+                reconciled = driver.reconcile_created_pr(
+                    expected_body_sha256=expected_body, publication=publication)
+                if reconciled is None:
                     value = resume_first_draft(store, config, args.reconciled_run)
+                elif isinstance(reconciled, str):
+                    if reconciled == 'PUSHED':
+                        confirm_first_draft_publication(store, config, publication,
+                                                        reconciled=True)
+                    value = resume_first_draft(store, config, args.reconciled_run,
+                                               publication_status=reconciled)
                 else:
-                    value = complete_first_draft(store, config, candidate,
+                    value = complete_first_draft(store, config, reconciled,
                                                  reconciled_run=args.reconciled_run)
             else:
                 candidate = driver.snapshot()

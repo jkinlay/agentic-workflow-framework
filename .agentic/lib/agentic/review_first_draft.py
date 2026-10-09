@@ -13,7 +13,8 @@ from hashlib import sha256
 from . import ValidationError
 from .gittree import candidate_tree, verify_publisher_tree
 from .publication import scan_repository
-from .review_loop import (complete_first_draft, enroll, first_draft_failure,
+from .review_loop import (complete_first_draft, confirm_first_draft_publication,
+                          enroll, first_draft_failure,
                           record_first_draft_publication, require,
                           reserve_first_draft)
 
@@ -76,8 +77,22 @@ def publication_scan(root, base, head, body, *, mapping_path=None):
     return result
 
 
+def _split_git_paths(value):
+    return {path for path in value.split("\0") if path}
+
+
+def excluded_worktree_inventory(git, changes):
+    """Return every untracked or Git-ignored path excluded from the tested tree."""
+    ordinary = _split_git_paths(git.run("ls-files", "--others", "--exclude-standard", "-z"))
+    ignored = _split_git_paths(git.run("ls-files", "--others", "--ignored",
+                                       "--exclude-standard", "-z"))
+    declared_additions = {change["path"] for change in changes if change["action"] == "added"}
+    return sorted((ordinary | ignored) - declared_additions)
+
+
 def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
-                        git, allowed_paths, mapping_path=None):
+                        git, allowed_paths, mapping_path=None, title=None,
+                        prepare_publication=None, git_guard=None):
     """Commit/push exactly a worker-tested tree, then return a publication receipt.
 
     ``git`` is a narrow host adapter with ``run(*args)``.  It is intentionally
@@ -85,19 +100,50 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
     """
     receipt = validate_worker_receipt(receipt, allowed_paths=set(allowed_paths))
     expected = candidate_tree(root, base, receipt["changes"])
-    require(sorted(receipt["ignored_untracked"]) == list(expected.ignored_untracked),
-            "Worker ignored_untracked inventory does not match the candidate tree")
     require(expected.tested_tree == receipt["tested_tree"],
             "Worker tested_tree does not match the declared worktree changes")
+    excluded = excluded_worktree_inventory(git, receipt["changes"])
+    require(sorted(receipt["ignored_untracked"]) == excluded,
+            "Worker ignored_untracked inventory does not match the candidate tree")
+    if git_guard:
+        git_guard()
     git.run("add", "--", *[x["path"] for x in receipt["changes"]])
+    if git_guard:
+        git_guard()
     git.run("commit", "-m", commit_message)
     actual = verify_publisher_tree(root, receipt["tested_tree"])
     head = git.run("rev-parse", "HEAD")
     scan = publication_scan(root, base, head, body, mapping_path=mapping_path)
+    publication = {"base": base, "head": head, "head_tree": actual,
+                   "branch": branch, "body": body,
+                   "body_sha256": sha256(body.encode()).hexdigest(),
+                   "title": title or commit_message,
+                   "ignored_untracked": excluded,
+                   "publication_scan": scan}
+    if prepare_publication:
+        prepare_publication(publication)
+    if git_guard:
+        git_guard()
     git.run("push", "origin", f"{head}:refs/heads/{branch}")
-    return {"base": base, "head": head, "head_tree": actual,
-            "branch": branch, "body_sha256": sha256(body.encode()).hexdigest(),
-            "publication_scan": scan}
+    return publication
+
+
+def republish_prepared_tree(root, publication, *, git, mapping_path=None, git_guard=None):
+    """Retry only the exact frozen push after provider observation proved its absence."""
+    require(isinstance(publication, dict), 'Prepared first-draft publication is missing')
+    require(git.run('rev-parse', 'HEAD') == publication.get('head'),
+            'Local HEAD does not match the prepared first-draft publication')
+    require(verify_publisher_tree(root, publication.get('head_tree')) == publication.get('head_tree'),
+            'Local tree does not match the prepared first-draft publication')
+    require(sha256(publication.get('body', '').encode()).hexdigest()
+            == publication.get('body_sha256'),
+            'Prepared first-draft body digest mismatch')
+    publication_scan(root, publication['base'], publication['head'], publication['body'],
+                     mapping_path=mapping_path)
+    if git_guard:
+        git_guard()
+    git.run('push', 'origin', f"{publication['head']}:refs/heads/{publication['branch']}")
+    return publication
 
 
 def enroll_created_pr(store, config, snapshot, *, first_draft_run=True):
@@ -113,7 +159,7 @@ def enroll_created_pr(store, config, snapshot, *, first_draft_run=True):
     return enroll(store, config, snapshot, first_draft_run=False)
 
 
-def run_first_draft(store, config, *, worker, publisher, observe_pr):
+def run_first_draft(store, config, *, worker, publisher, observe_pr, republisher=None):
     """Run the native handoff and enroll only the PR identity observed afterward.
 
     The callbacks are host adapters: ``worker`` returns a receipt, ``publisher``
@@ -131,6 +177,15 @@ def run_first_draft(store, config, *, worker, publisher, observe_pr):
             require(isinstance(publication, dict) and publication.get('head'),
                     'First-draft publisher returned no observed head')
             record_first_draft_publication(store, config, publication)
+            confirm_first_draft_publication(store, config, publication)
+        elif reservation.get('first_draft_publication_status') == 'RETRY_PUSH':
+            require(republisher is not None,
+                    'Prepared first-draft push retry has no exact-tree publisher')
+            publication = republisher(publication)
+            confirm_first_draft_publication(store, config, publication)
+        else:
+            require(reservation.get('first_draft_publication_status') == 'PUSHED',
+                    'Prepared first-draft publication must be reconciled before retry')
         snapshot = observe_pr(publication)
         require(isinstance(snapshot, dict) and snapshot.get('head') == publication['head'],
                 'Created PR observation does not match the published head')

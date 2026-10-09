@@ -27,6 +27,18 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class FirstDraftTests(unittest.TestCase):
+    def test_generator_reproduces_first_draft_worker_schema(self):
+        spec = importlib.util.spec_from_file_location('awf_generate_review_loop',
+                                                       ROOT / 'scripts/generate_review_loop.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as name:
+            module.ROOT = Path(name)
+            module.main()
+            generated = module.ROOT / 'first-draft-worker-result.schema.json'
+            checked_in = ROOT / '.agentic/review-loop/first-draft-worker-result.schema.json'
+            self.assertEqual(generated.read_bytes(), checked_in.read_bytes())
+
     def test_body_records_tier_and_worker_pins(self):
         body = render_first_draft_body('Ticket contract', risk_tier='Tier 3',
                                        worker_model='gpt-5.6-luna', reasoning_effort='medium',
@@ -144,6 +156,49 @@ class FirstDraftTests(unittest.TestCase):
             self.assertEqual(published['head_tree'], tree.tested_tree)
             self.assertEqual(command(root, 'rev-parse', 'HEAD^{tree}'), tree.tested_tree)
 
+    def test_publisher_requires_and_retains_git_ignored_residue(self):
+        git = shutil.which('git')
+        if not git:
+            self.skipTest('Git unavailable')
+        with tempfile.TemporaryDirectory() as name:
+            base_dir = Path(name)
+            root, remote = base_dir / 'repo', base_dir / 'remote.git'
+            def command(cwd, *args):
+                return subprocess.run([git, '-C', str(cwd), *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            subprocess.run([git, 'init', '-b', 'main', str(root)], check=True,
+                           capture_output=True)
+            subprocess.run([git, 'init', '--bare', str(remote)], check=True,
+                           capture_output=True)
+            command(root, 'config', 'user.name', 'fixture')
+            command(root, 'config', 'user.email', 'fixture@example.invalid')
+            command(root, 'config', 'core.autocrlf', 'false')
+            command(root, 'remote', 'add', 'origin', str(remote))
+            (root / '.gitignore').write_text('*.secret\n', encoding='utf-8')
+            (root / 'a.txt').write_text('safe\n', encoding='utf-8')
+            command(root, 'add', '.gitignore', 'a.txt')
+            command(root, 'commit', '-m', 'base')
+            base = command(root, 'rev-parse', 'HEAD')
+            (root / 'a.txt').write_text('changed\n', encoding='utf-8')
+            (root / 'local.secret').write_text('excluded\n', encoding='utf-8')
+            changes = [{'path': 'a.txt', 'action': 'modified'}]
+            tree = candidate_tree(root, base, changes)
+            class Adapter:
+                def run(self, *args):
+                    return command(root, *args)
+            receipt = {'outcome': 'CHANGED', 'changes': changes,
+                       'tested_tree': tree.tested_tree, 'ignored_untracked': [],
+                       'summary': 'changed'}
+            with self.assertRaisesRegex(ValidationError, 'ignored_untracked inventory'):
+                publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
+                    commit_message='first draft', git=Adapter(), allowed_paths={'a.txt'})
+            receipt['ignored_untracked'] = ['local.secret']
+            published = publish_tested_tree(root, base, 'codex/awf-30', receipt,
+                body='body', commit_message='first draft', git=Adapter(),
+                allowed_paths={'a.txt'})
+            self.assertEqual(published['ignored_untracked'], ['local.secret'])
+            self.assertTrue((root / 'local.secret').is_file())
+
     def test_enrollment_charges_first_draft_but_not_amendment_cycles(self):
         with tempfile.TemporaryDirectory() as name:
             store = LoopStore(Path(name))
@@ -171,7 +226,7 @@ class FirstDraftTests(unittest.TestCase):
             publication = {'base': snapshot['base'], 'head': snapshot['head'],
                            'head_tree': 'd' * 40, 'branch': snapshot['head_ref'],
                            'body': body, 'body_sha256': sha256(body.encode()),
-                           'title': 'first draft'}
+                           'title': 'first draft', 'ignored_untracked': []}
             state = run_first_draft(store, config, worker=lambda run_id: receipt,
                                     publisher=lambda value: calls.append('publish') or publication,
                                     observe_pr=lambda value: calls.append('observe') or snapshot)
@@ -253,6 +308,12 @@ class RecordedGitHubDriver(HostDriver):
                                'commit': {'sha': self.provider_base_sha}})
         if method == 'GET' and suffix.startswith('pulls?'):
             return json.dumps([] if self.pr is None else [self.pr])
+        if method == 'GET' and suffix.startswith('git/matching-refs/heads/'):
+            ref = f'refs/heads/{self.c["head_branch"]}'
+            value = self.command('--git-dir', str(self.remote), 'show-ref', ref,
+                                 check=False)
+            return json.dumps([] if not value else [{
+                'ref': ref, 'object': {'type': 'commit', 'sha': value.split()[0]}}])
         if method == 'POST' and suffix == 'pulls':
             if self.pr is not None:
                 raise AssertionError('a second draft PR must never be created')
@@ -426,8 +487,63 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         self.assertEqual((state['phase'], state['agent_runs'], state['cycles']),
                          ('REVIEW', 1, 0))
         self.assertEqual(self.driver.calls.count(('POST', 'pulls')), 1)
-        self.assertTrue(any(call[0] == 'GET' and call[1].startswith('pulls?state=open&head=')
+        self.assertTrue(any(call[0] == 'GET' and call[1].startswith('pulls?state=all&head=')
                             for call in self.driver.calls))
+
+    def test_uncertain_create_closed_before_reconciliation_never_creates_second_pr(self):
+        self.driver.lose_create_response_once = True
+        code, _, _ = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        paused = self.state('12:0')
+        self.driver.pr['state'] = 'closed'
+        code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
+        self.assertEqual(code, 2)
+        self.assertIn('closed; a second PR is forbidden', error)
+        self.assertEqual(json.loads(self.config_path.read_text())['pr'], 41)
+        self.assertEqual(self.driver.calls.count(('POST', 'pulls')), 1)
+
+    def test_process_loss_after_push_reconciles_remote_ref_without_worker_replay(self):
+        real_git = self.driver.git
+        failed = [False]
+        def lose_push_response(checkout, *args, **kwargs):
+            value = real_git(checkout, *args, **kwargs)
+            if args and args[0] == 'push' and not failed[0]:
+                failed[0] = True
+                raise ValidationError('recorded lost push response')
+            return value
+        self.driver.git = lose_push_response
+        code, _, _ = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        paused = self.state('12:0')
+        self.assertEqual(paused['first_draft_publication_status'], 'PREPARED')
+        self.assertEqual(self.pr_head(), paused['first_draft_publication']['head'])
+        code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
+        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(self.state('12:0')['first_draft_publication_status'], 'PUSHED')
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(sum(1 for call in self.driver.calls if call[0] == 'codex'), 1)
+        self.assertEqual(self.driver.calls.count(('POST', 'pulls')), 1)
+
+    def test_proven_absent_prepared_push_retries_exact_head_without_worker_replay(self):
+        real_git = self.driver.git
+        failed = [False]
+        def fail_before_push(checkout, *args, **kwargs):
+            if args and args[0] == 'push' and not failed[0]:
+                failed[0] = True
+                raise ValidationError('recorded push refusal')
+            return real_git(checkout, *args, **kwargs)
+        self.driver.git = fail_before_push
+        code, _, _ = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        paused = self.state('12:0')
+        code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
+        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(self.state('12:0')['first_draft_publication_status'], 'RETRY_PUSH')
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual((code, error), (0, ''))
+        self.assertEqual(sum(1 for call in self.driver.calls if call[0] == 'codex'), 1)
+        self.assertEqual(self.driver.calls.count(('POST', 'pulls')), 1)
 
     def test_precreation_failure_reuses_reservation_uuid_and_charge(self):
         self.driver.fail_codex_once = True
@@ -459,6 +575,70 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         self.assertNotIn(('POST', 'pulls'), self.driver.calls)
         state = self.state('12:0')
         self.assertEqual((state['phase'], state['agent_runs']), ('PAUSED', 1))
+
+    def test_poisoned_git_controls_from_failed_attempt_are_not_new_baseline(self):
+        self.driver.fail_codex_once = True
+        code, _, _ = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        paused = self.state('12:0')
+        self.command('-C', str(self.driver.worker), 'config', 'remote.origin.pushurl',
+                     'https://example.invalid/captured.git')
+        self.command('-C', str(self.driver.worker), 'config', 'credential.helper',
+                     '!recorded-credential-helper')
+        code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
+        self.assertEqual((code, error), (0, ''))
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        self.assertIn('fetch/push origin is not the enrolled repository', error)
+        self.assertEqual(sum(1 for call in self.driver.calls if call[0] == 'codex'), 1)
+        self.assertNotIn(('POST', 'pulls'), self.driver.calls)
+
+    def test_preexisting_local_credential_helper_blocks_cli_before_worker(self):
+        self.command('-C', str(self.driver.worker), 'config', 'credential.helper',
+                     '!recorded-credential-helper')
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        self.assertIn('repository-local credential configuration', error)
+        self.assertFalse(any(call[0] == 'codex' for call in self.driver.calls))
+        self.assertNotIn(('POST', 'pulls'), self.driver.calls)
+
+    def test_delayed_git_control_mutation_is_rechecked_before_commit(self):
+        worker = self.driver.first_draft_worker
+        def mutate_after_worker(**kwargs):
+            receipt = worker(**kwargs)
+            self.command('-C', str(self.driver.worker), 'config', 'remote.origin.pushurl',
+                         'https://example.invalid/captured.git')
+            self.command('-C', str(self.driver.worker), 'config', 'credential.helper',
+                         '!recorded-credential-helper')
+            return receipt
+        self.driver.first_draft_worker = mutate_after_worker
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        self.assertIn('changed Git configuration, remote routing or hooks', error)
+        self.assertEqual(self.command('-C', str(self.driver.worker), 'rev-parse', 'HEAD'),
+                         self.base_sha)
+        self.assertNotIn(('POST', 'pulls'), self.driver.calls)
+
+    def test_first_draft_binds_reviewed_effort_policy_before_worker(self):
+        self.command('-C', str(self.driver.worker), 'checkout', 'main')
+        policy = self.driver.worker / '.agentic'
+        policy.mkdir()
+        (policy / 'PROJECT_CONFIG.yaml').write_text(json.dumps({
+            'execution': {'model_routing': {'models': {
+                'fixture-worker': {'reasoning_efforts': ['high']}}}}}), encoding='utf-8')
+        self.command('-C', str(self.driver.worker), 'add', '.agentic/PROJECT_CONFIG.yaml')
+        self.command('-C', str(self.driver.worker), 'commit', '-m', 'reviewed routing policy')
+        reviewed_base = self.command('-C', str(self.driver.worker), 'rev-parse', 'HEAD')
+        self.command('-C', str(self.driver.worker), 'branch', '-f', 'codex/awf-30', reviewed_base)
+        self.command('-C', str(self.driver.worker), 'checkout', 'codex/awf-30')
+        self.driver.provider_base_sha = reviewed_base
+        self.driver.c['reasoning_effort'] = {'worker': 'ultra'}
+        self.driver.c['_requires_reviewed_effort_policy'] = True
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        self.assertIn('not an approved model/effort pair', error)
+        self.assertFalse(any(call[0] == 'codex' for call in self.driver.calls))
+        self.assertNotIn(('POST', 'pulls'), self.driver.calls)
 
     def pr_head(self):
         return self.command('--git-dir', str(self.remote), 'rev-parse',
