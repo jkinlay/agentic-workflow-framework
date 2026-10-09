@@ -359,23 +359,20 @@ class HonestPreflightTests(unittest.TestCase):
     def test_every_nonzero_child_observation_is_never_pass(self):
         def fake_run(arguments, cwd=None):
             return probe(str(arguments[0]), 7, policy_output() if arguments[0] == "powershell" else "true")
-        original_read_text = Path.read_text
-        def read_text(path, *args, **kwargs):
-            if Path(path).resolve() == (ROOT / ".gitattributes").resolve():
-                return "* text=auto filter=lfs\n"
-            return original_read_text(path, *args, **kwargs)
-        original_is_file = Path.is_file
-        def is_file(path, *args, **kwargs):
-            # Installed projects may have no root .gitattributes; the fixture supplies one.
-            if Path(path).resolve() == (ROOT / ".gitattributes").resolve():
-                return True
-            return original_is_file(path, *args, **kwargs)
-        with patch("agentic.host_preflight.run", side_effect=fake_run), patch.object(Path, "read_text", read_text), \
-             patch.object(Path, "is_file", is_file):
-            rows = {item["check"]: item for item in preflight(ROOT, platform="nt")["rows"]}
-        for name in ("core.longpaths", "powershell_execution_policy", "line_endings", "git_lfs"):
+        with tempfile.TemporaryDirectory(prefix="awf-no-gitattributes-") as raw, \
+             patch("agentic.host_preflight.run", side_effect=fake_run):
+            project = Path(raw) / "commitless-project"
+            project.mkdir()
+            subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
+            self.assertFalse((project / ".gitattributes").exists())
+            rows = {item["check"]: item for item in preflight(project, platform="nt")["rows"]}
+        for name in ("core.longpaths", "powershell_execution_policy", "line_endings"):
             self.assertNotEqual("PASS", rows[name]["status"], rows[name])
             self.assertEqual(7, rows[name]["exit_code"])
+        self.assertEqual("N_A", rows["git_lfs"]["status"], rows["git_lfs"])
+        self.assertNotIn(
+            "exit_code", rows["git_lfs"],
+            "git_lfs has no child observation when root .gitattributes is absent")
 
     def test_nonzero_category_observes_stderr_even_when_stdout_is_present(self):
         code = ("import os,sys; os.write(1,b'partial rows'); "
