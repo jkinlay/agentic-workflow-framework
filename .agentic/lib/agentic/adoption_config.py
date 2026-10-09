@@ -43,6 +43,8 @@ _read_command = github_provider._read_discovery_command
 
 _LOCK_REQUIREMENT = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)==([A-Za-z0-9][A-Za-z0-9._+!-]*)$")
 _LOCK_HASH = re.compile(r"^--hash=sha256:([0-9a-f]{64})$")
+_CPYTHON_CACHE = re.compile(
+    r"^(?P<module>[A-Za-z_][A-Za-z0-9_]*)\.cpython-[0-9]+[a-z]*(?:\.opt-[0-9]+)?\.pyc$")
 _DISTRIBUTION_NAME = re.compile(r"[-_.]+")
 _MAX_DEPENDENCY_FILE_BYTES = 128 * 1024 * 1024
 _MAX_DEPENDENCY_BYTES = 512 * 1024 * 1024
@@ -910,12 +912,26 @@ def post_install_checks(destination, installation):
             "adoption_pr_host_preflight_section": render_markdown(host), "next_action": next_action}
 
 
+def _pinned_cpython_cache(path, expected):
+    """Return whether *path* is a standard cache for a pinned source module."""
+    cache = PurePosixPath(path)
+    if len(cache.parts) < 2 or cache.parts[-2] != "__pycache__":
+        return False
+    match = _CPYTHON_CACHE.fullmatch(cache.name)
+    if match is None:
+        return False
+    source = PurePosixPath(*cache.parts[:-2], match.group("module") + ".py").as_posix()
+    return source in expected
+
+
 def _verify_import_surface(root, expected_digest):
     """Use trusted release code to reject target import shadows before execution.
 
     Isolated Python excludes the target script/current directory and PYTHONPATH;
     the workflow intentionally inserts .agentic/lib, whose complete inventory is
-    therefore pinned here. Unexpected caches/packages/extensions are not deleted.
+    therefore pinned here. Standard CPython caches are tolerated only when their
+    sibling source module is pinned; every other unexpected file is rejected and
+    preserved.
     """
     from .installer import INSTALLED, verify_installed
     if verify_installed(root) != expected_digest:
@@ -929,7 +945,10 @@ def _verify_import_surface(root, expected_digest):
         for prefix in (".agentic/lib/", ".agentic/scripts/"):
             expected = {path.removeprefix(prefix): digest for path, digest in manifest["files"].items() if path.startswith(prefix)}
             with Tree(Path(root) / prefix) as runtime:
-                if set(runtime.file_list()) != set(expected):
+                actual = set(runtime.file_list())
+                caches = {path for path in actual - set(expected)
+                          if _pinned_cpython_cache(path, expected)}
+                if actual - caches != set(expected):
                     raise ValidationError("Unexpected installed runtime import files")
                 for path, digest in expected.items():
                     if sha256(runtime.read(path)) != digest:
