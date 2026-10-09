@@ -2,7 +2,7 @@
 
 430 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `960eb67709060b9b0ecd8805f57570e8cf2324b6d6babf11e4deafeb40754210`
+MANIFEST.json SHA-256: `e4cfe9ab2898bc4679041b884bb4296fa47188bea6f8230dc9484b49f7648518`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -39,7 +39,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md` | `e0c69f77c46e3262a5efee20eb2933d8762819f01faed722d46111e5fbd7524d` |
 | `.agentic/docs/31-PUBLICATION-SAFETY.md` | `1effbba541ec6c11bdedd9793f563b41fd51e19f0e967e851bd67065b32037d0` |
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `540dedcab8e58d188e7afad3ba0ffc254f18d5bc1e5e202a9ee61369679b161f` |
-| `.agentic/docs/32-RELEASE-PUBLISHING.md` | `e4bcbc795941acb0b15831dc3134580d536da6684d004d622d3ad11cb3412999` |
+| `.agentic/docs/32-RELEASE-PUBLISHING.md` | `a305f085188a52e0a10df4df048a205ea04416fc8c56c734836664f5c6ea33b7` |
 | `.agentic/docs/32-WINDOWS-DIAGNOSTICS.md` | `2e7049857d2b88645f1a6ec92601d2e8ba0e10ac607653da03ea1b118b8a2925` |
 | `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `6efd5b17d388a7bb4f0de5d0320c15b3a7e72abef1d8a8b1f53daea02cd66d16` |
 | `.agentic/docs/33-REVIEW-COMPLETION-BARRIER.md` | `d8fed51697f646564bae3f31b9f626b3f08d59685aba46ecd61e1529bd0d3ee7` |
@@ -413,7 +413,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/prompt_templates/specialist-reviewer.md` | `6d0993a94d4272b711fa8beec9d8fcccf2d2f739856f94f5f530801a2329ac92` |
 | `scripts/prompt_templates/worker.md` | `1ec1ce7a14b3e2de59c0649c75485ccd3fc202142065570803800288bc316225` |
 | `scripts/publish_catalog.py` | `edcade1a8b59ff546527e11925997555aa9e646def09e2e82ef97b2934879dcc` |
-| `scripts/publish_release.py` | `8972f2e6edf859bda631ea1a608b48fdd2fabcc03f46a3d149f676442c5090d3` |
+| `scripts/publish_release.py` | `da1ed71b34d22ae76a478c8c630f101330a9dab24619549d0279591f5055b4ca` |
 | `scripts/release_hygiene.py` | `c5c3e3649e3d6ba7b3f13f3d4c1bd7b54279cadb2a9f4c6b65cb9b8347fada98` |
 | `scripts/release_modes.py` | `826010f26b85c40e4e63668b872263e829daf63357ac6a2538ad2628b2921c50` |
 | `scripts/release_review.py` | `58db97d3cd910658678f3dde6f534f77cee8d8e7884803222d7b077ceadf53f7` |
@@ -429,7 +429,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_installed_self_test.py` | `63937908a219b3681cb0bbee3a61714755b3bb25d276df317cb302dba68738e9` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
-| `scripts/tests/test_publish_release.py` | `5f9d3a17a96f4a934c6652c4eb0b2e86dc040e6cd04208f45cbe37f8c9330080` |
+| `scripts/tests/test_publish_release.py` | `5e3cd892d842329fa1d8af4cca6e2a373d8120a726ef3c0ad12c1d324912dc9f` |
 | `scripts/tests/test_release_hygiene.py` | `6d287514cd24c90ad7ba5da7fd96e3286092658e79896ea4fd95ad72cc60f894` |
 | `scripts/tests/test_release_review.py` | `d8a06f43b87b6654e6542927ccadd21380b2430432de1888b76456389987701a` |
 | `scripts/tests/test_self_test_review.py` | `51d5b33199d2f93c1af51ef32cea3146f1fca72567db8c58efb80cd886bd97cf` |

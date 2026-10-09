@@ -49,6 +49,11 @@ class TreeEntry(NamedTuple):
     oid: str
 
 
+class ReleaseTagPushPlan(NamedTuple):
+    arguments: tuple[str, ...]
+    recovery: str
+
+
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -137,9 +142,9 @@ def _https_credential_scope(origin_url):
 def _repository_http_extra_header_keys(repository):
     """Return repository-local HTTP extra-header keys without reading their values."""
     names = git_run(
-        repository, "config", "--local", "--null", "--name-only", "--list",
+        repository, "config", "--local", "--includes", "--null", "--name-only", "--list",
         failure_message=("Unable to inspect repository-local HTTP extraHeader key names; "
-                         "fix `git config --local --name-only --list` and retry."),
+                         "fix `git config --local --includes --name-only --list` and retry."),
     ).stdout
     keys = []
     for name in names.split("\0"):
@@ -155,7 +160,7 @@ def _repository_http_extra_header_keys(repository):
                             name, re.I):
             raise ReleaseError(
                 "A repository-local HTTP extraHeader key cannot be safely isolated. "
-                "Inspect `git config --local --name-only --list`, remove every repository-local "
+                "Inspect `git config --local --includes --name-only --list`, remove every repository-local "
                 "`http.*.extraHeader` entry, and retry the release.")
         if name not in keys:
             keys.append(name)
@@ -184,7 +189,18 @@ def _push_credential_arguments(origin_url, gh, *, local_header_keys=()):
     return arguments, scope
 
 
-def push_release_tag(repository, tag, *, gh, origin_url):
+def _release_tag_push_plan(repository, tag, *, gh, origin_url):
+    """Validate and freeze the credential-isolated push before tag creation."""
+    local_header_keys = _repository_http_extra_header_keys(repository)
+    credential_arguments, scope = _push_credential_arguments(
+        origin_url, gh, local_header_keys=local_header_keys)
+    recovery_arguments, _ = _push_credential_arguments(
+        scope or origin_url, "gh", local_header_keys=local_header_keys)
+    recovery = shlex.join(["git", *recovery_arguments, "push", "origin", f"refs/tags/{tag}"])
+    return ReleaseTagPushPlan(tuple(credential_arguments), recovery)
+
+
+def push_release_tag(repository, tag, *, gh, origin_url, plan=None):
     """Push one release tag with the GitHub CLI credential helper only.
 
     Release Git commands normally cannot see a user's Git configuration.  Keep
@@ -197,20 +213,16 @@ def push_release_tag(repository, tag, *, gh, origin_url):
     exact helper scope also excludes matching repository-configured URL helpers
     (including username-specific variants) as well as generic helpers.
     """
-    local_header_keys = _repository_http_extra_header_keys(repository)
-    credential_arguments, scope = _push_credential_arguments(
-        origin_url, gh, local_header_keys=local_header_keys)
+    if plan is None:
+        plan = _release_tag_push_plan(repository, tag, gh=gh, origin_url=origin_url)
     try:
-        git_run(repository, *credential_arguments, "push", "origin", f"refs/tags/{tag}")
+        git_run(repository, *plan.arguments, "push", "origin", f"refs/tags/{tag}")
     except (ReleaseError, subprocess.SubprocessError, OSError):
-        recovery_arguments, _ = _push_credential_arguments(
-            scope or origin_url, "gh", local_header_keys=local_header_keys)
-        recovery = shlex.join(["git", *recovery_arguments, "push", "origin", f"refs/tags/{tag}"])
         raise ReleaseError(
             f"Release tag push failed for refs/tags/{tag}. The local annotated tag remains at "
             f"refs/tags/{tag}; the remote tag status is unknown and no GitHub release was created. "
             "Run `gh auth status`; after fixing authentication, retry exactly:\n"
-            f"{recovery}") from None
+            f"{plan.recovery}") from None
 
 
 def _tree_entries(repository, commit):
@@ -562,13 +574,14 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
         push_url = origin_push_url(repository)
         if _parse_repository_url(push_url) != release_repo:
             raise ReleaseError("origin push URL changed while resolving the release target; refusing to publish")
+        push_plan = _release_tag_push_plan(repository, tag, gh=gh, origin_url=push_url)
         tag_file = output / "tag-message.txt"
         body_file = output / "release-body.md"
         tag_file.write_text(tag_message, encoding="utf-8", newline="\n")
         body_file.write_text(body, encoding="utf-8", newline="\n")
         git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
                 "-F", str(tag_file))
-        push_release_tag(repository, tag, gh=gh, origin_url=push_url)
+        push_release_tag(repository, tag, gh=gh, origin_url=push_url, plan=push_plan)
         run([gh, "release", "create", tag, *map(str, assets), "--repo", release_repo, "--draft", "--verify-tag",
              "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)
         return result
