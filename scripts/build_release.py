@@ -155,6 +155,9 @@ def main():
     output = args.output.absolute()
     output.parent.mkdir(parents=True, exist_ok=True)
     modes = load_modes(ROOT, args.git_mode_manifest)
+    # Every archive member must have an authoritative raw-Git mode.  Never
+    # silently manufacture a mode for a missing manifest entry: that can hide
+    # an incomplete source projection or strip an approved executable bit.
     prefix = 'agentic-workflow-template-v' + VERSION.removesuffix('.0') + '/'
     expected = {}
     with Tree(ROOT) as tree, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_STORED) as archive:

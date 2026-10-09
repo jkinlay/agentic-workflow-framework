@@ -34,6 +34,9 @@ _LABEL = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _MAX_PROVIDER_BYTES = 1024 * 1024
 _MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 LEASE_VALIDATION_TRANSPORT_MARGIN_SECONDS = 5
+POSIX_SNAPSHOT_SKIP_REASON = (
+    "POSIX heavy validation skipped: same-owner snapshot mutation exclusion "
+    "is unavailable for the complete child execution interval")
 
 
 def _require(condition, message):
@@ -346,8 +349,7 @@ class GitCheckoutSnapshotter:
     @staticmethod
     def _lock_snapshot(destination: Path):
         if os.name != "nt":
-            raise ValidationError(
-                "Immutable snapshot mutation exclusion is unavailable on this host")
+            raise ValidationError(POSIX_SNAPSHOT_SKIP_REASON)
         import ctypes
         from ctypes import wintypes
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -425,7 +427,8 @@ class GitCheckoutSnapshotter:
             for handle in reversed(handles):
                 kernel.CloseHandle(handle)
             raise
-        return kernel, advapi, handles, original_security
+        return ("windows-file-handles-and-sealed-directories",
+                kernel, advapi, handles, original_security)
 
     @contextmanager
     def __call__(self, candidate: dict, working_directory: str):
@@ -437,7 +440,13 @@ class GitCheckoutSnapshotter:
         raw = self.run_archive(candidate["tree_sha"])
         archive_sha = sha256(raw)
         with tempfile.TemporaryDirectory(prefix="awf-heavy-snapshot-") as folder:
-            snapshot_root = resolve_without_alias(Path(folder).absolute(),
+            # macOS commonly exposes its temporary root through /var ->
+            # /private/var.  Resolve this controller-created path before the
+            # ordinary alias-free validation.  Windows paths stay lexical so
+            # junction/reparse components remain visible to that validation.
+            snapshot_path = (Path(folder) if os.name == "nt"
+                             else Path(os.path.realpath(folder)))
+            snapshot_root = resolve_without_alias(snapshot_path,
                                                   "checkout snapshot root", directory=True)
             file_count, extracted_inventory = self._extract(raw, snapshot_root)
             extracted_tree_inventory = {
@@ -449,8 +458,13 @@ class GitCheckoutSnapshotter:
             _require(extracted_tree_inventory == reviewed_tree_inventory,
                      "Git checkout archive is not bound to the reviewed tree inventory")
             self._freeze(snapshot_root)
-            kernel, advapi, handles, original_security = self._lock_snapshot(snapshot_root)
+            mutation_guard = None
+            kernel = advapi = None
+            handles = []
+            original_security = []
             try:
+                mutation_guard, kernel, advapi, handles, original_security = self._lock_snapshot(
+                    snapshot_root)
                 observed_inventory = self._inventory(snapshot_root)
                 expected_content_inventory = {
                     "files": [{"path": item["path"], "sha256": item["sha256"]}
@@ -471,7 +485,7 @@ class GitCheckoutSnapshotter:
                               "heavy-validation-reviewed-tree-inventory",
                               reviewed_tree_inventory),
                           "content_inventory_sha256": inventory_sha,
-                          "mutation_guard": "windows-file-handles-and-sealed-directories",
+                          "mutation_guard": mutation_guard,
                           "guarded_paths": len(handles),
                           "sealed_directories": len(original_security)}
                 yield {"status": "IMMUTABLE", **record,
@@ -479,12 +493,13 @@ class GitCheckoutSnapshotter:
                            "heavy-validation-checkout-snapshot", record)}
             finally:
                 restored = True
-                for handle, original in reversed(original_security):
-                    if not advapi.SetKernelObjectSecurity(
-                            handle, 0x00000004, original):
-                        restored = False
-                for handle in reversed(handles):
-                    kernel.CloseHandle(handle)
+                if mutation_guard == "windows-file-handles-and-sealed-directories":
+                    for handle, original in reversed(original_security):
+                        if not advapi.SetKernelObjectSecurity(
+                                handle, 0x00000004, original):
+                            restored = False
+                    for handle in reversed(handles):
+                        kernel.CloseHandle(handle)
                 self._thaw(snapshot_root)
                 if not restored:
                     raise ValidationError("Snapshot namespace security restoration failed")
