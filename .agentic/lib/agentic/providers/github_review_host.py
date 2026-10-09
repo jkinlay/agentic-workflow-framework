@@ -10,10 +10,13 @@ from pathlib import Path
 import re
 import subprocess
 import fnmatch
+import uuid
+from urllib.parse import quote
 
 from ..canonical import loads, sha256
 from ..child_process import child_env, isolated_git_env
 from ..review_loop import ValidationError, require
+from ..safeio import Tree
 
 
 PROTECTED = {'AGENTS.md','CODEOWNERS','.agentic','.codex','.github','.gitattributes','.gitmodules','.lfsconfig'}
@@ -88,7 +91,10 @@ def load_config(path, runtime_root):
         'executables','models','allowed_paths','required_checks','max_amendment_cycles','max_ci_wait_ticks',
         'max_agent_runs','command_timeout_seconds','agent_timeout_seconds','qualification','initial_findings','max_review_age_seconds'}
     optional = {'github_host', 'evidence_paths', 'max_cap_extensions', 'governed_source_paths', 'risk_tier',
+                'first_draft',
                 'reasoning_effort', 'approved_model_effort_pairs', 'codex_config_overrides'}
+    if 'first_draft' in config:
+        require(config['first_draft'] is True, 'first_draft must be true when present')
     require(isinstance(config, dict) and required <= set(config) and set(config) <= required | optional, 'Missing or unexpected host configuration field')
     if 'evidence_paths' in config:
         require(isinstance(config['evidence_paths'], list) and all(isinstance(x, str) and x.strip() for x in config['evidence_paths']), 'evidence_paths must list glob patterns')
@@ -98,7 +104,7 @@ def load_config(path, runtime_root):
         require(isinstance(config['governed_source_paths'], list) and len(config['governed_source_paths']) == len(set(config['governed_source_paths']))
                 and all(safe_path(x) for x in config['governed_source_paths']), 'governed_source_paths must list safe unique paths')
     if 'risk_tier' in config:
-        require(config['risk_tier'] is None or config['risk_tier'] in {3, 'Tier 3'}, 'Protected source-path enrollment requires Tier 3')
+        require(config['risk_tier'] is None or config['risk_tier'] in {1, 2, 3, 'Tier 1', 'Tier 2', 'Tier 3'}, 'Invalid reviewed risk tier')
     if 'reasoning_effort' in config:
         value = config['reasoning_effort']
         require(value is None or (isinstance(value, dict) and set(value) <= {'worker', 'critic'}
@@ -120,8 +126,10 @@ def load_config(path, runtime_root):
     validate_review({'candidate':{},'verdict':'BLOCKED','reviewed_files':[], 'findings':config['initial_findings'],
         'summary':'Initial ledger validation'}, {}, [], [])
     require(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', config['repository']) is not None, 'Invalid repository')
-    for key in ['repository_id','pr','max_amendment_cycles','max_ci_wait_ticks','max_agent_runs','command_timeout_seconds','agent_timeout_seconds','max_review_age_seconds']:
+    for key in ['repository_id','max_amendment_cycles','max_ci_wait_ticks','max_agent_runs','command_timeout_seconds','agent_timeout_seconds','max_review_age_seconds']:
         require(type(config[key]) is int and config[key] > 0, f'Invalid positive integer: {key}')
+    require(type(config['pr']) is int and (config['pr'] > 0 or config.get('first_draft') is True),
+            'pr must be positive unless this is an explicitly marked first-draft host')
     require(config['max_amendment_cycles'] <= 10 and config['max_agent_runs'] <= 50 and config['max_ci_wait_ticks'] <= 288, 'Unbounded cycle/run/wait policy')
     require(config['command_timeout_seconds'] <= 120 and config['agent_timeout_seconds'] <= 3600, 'Unbounded process timeout')
     require(config['max_review_age_seconds'] <= 86400, 'Review freshness limit exceeds one day')
@@ -237,18 +245,159 @@ class HostDriver:
         return value.strip() if strip else value
 
     def api(self, suffix):
-        return loads(self.run('gh', ['api','--hostname','github.com','--method','GET',f'repos/{self.c["repository"]}/{suffix}']))
+        endpoint = f'repos/{self.c["repository"]}'
+        if suffix:
+            endpoint += '/' + suffix
+        return loads(self.run('gh', ['api','--hostname','github.com','--method','GET',endpoint]))
 
-    def snapshot(self):
-        pr = self.api(f'pulls/{self.c["pr"]}')
-        require(pr['number'] == self.c['pr'] and pr['base']['repo']['id'] == self.c['repository_id'], 'GitHub PR/repository identity mismatch')
+    def require_repository_identity(self):
+        """Bind the configured slug to its reviewed numeric repository before writes."""
+        value = self.api('')
+        require(isinstance(value, dict)
+                and type(value.get('id')) is int
+                and value['id'] == self.c['repository_id'],
+                'GitHub repository identity mismatch')
+
+    def create_draft_pr(self, *, title, body, head, base):
+        """Create exactly one normal draft PR; caller observes it before enrollment."""
+        require(self.c.get('first_draft') is True, 'Host is not configured for first-draft creation')
+        require(all(isinstance(x, str) and x.strip() for x in (title, body, head, base)),
+                'Draft PR identity and body are required')
+        self.require_repository_identity()
+        value = loads(self.run('gh', ['api', '--hostname', 'github.com', '--method', 'POST',
+            f'repos/{self.c["repository"]}/pulls', '-f', f'title={title}', '-f', f'body={body}',
+            '-f', f'head={head}', '-f', f'base={base}', '-F', 'draft=true']))
+        require(isinstance(value, dict) and type(value.get('number')) is int and value['number'] > 0,
+                'GitHub did not return a draft PR identity')
+        require(value.get('draft') is True, 'Created PR was not observed as a draft')
+        require(value.get('body') == body and value.get('head', {}).get('ref') == head
+                and value.get('base', {}).get('ref') == base,
+                'Created draft PR body or branch/target does not match the frozen publication')
+        return value
+
+    def bind_created_pr(self, number):
+        """Persist the provider-assigned PR number before loop observation."""
+        require(type(number) is int and number > 0, 'Created PR number is invalid')
+        path = Path(self.c['_config_path'])
+        relative = path.relative_to(self.state).as_posix()
+        with Tree(self.state) as tree:
+            source = tree.read(relative)
+            require(sha256(source) == self.c['config_hash'],
+                    'Host policy changed before provider PR assignment')
+            raw = json.loads(source.decode('utf-8'))
+            require(raw.get('first_draft') is True and raw.get('pr') in {0, number},
+                    'First-draft configuration was already bound or changed')
+            if raw.get('pr') == 0:
+                raw['pr'] = number
+                encoded = (json.dumps(raw, indent=2, ensure_ascii=False) + '\n').encode('utf-8')
+                tree.write(relative, encoded)
+        self.c['pr'] = number
+        self.c['key'] = f"{self.c['repository_id']}:{number}"
+        self.c['config_hash'] = sha256(path.read_bytes())
+
+    def verified_contract_text(self):
+        """Return one identity-stable read of the frozen UTF-8 contract."""
+        raw = Path(self.c['contract_path']).read_bytes()
+        require(sha256(raw) == self.c['contract_sha256'], 'Frozen contract changed')
+        try:
+            return raw.decode('utf-8')
+        except UnicodeDecodeError as exc:
+            raise ValidationError('Frozen contract is not valid UTF-8') from exc
+
+    def observe_created_pr(self, value, *, body, risk_tier):
+        """Read back the created PR body/tier before it can become loop authority."""
+        require(isinstance(value, dict) and value.get('body') == body, 'Created PR body read-back mismatch')
+        require(f'- Risk tier: {risk_tier}' in body, 'Created PR body does not record the reviewed risk tier')
+        number = value.get('number')
+        # Persist the provider identity before any dependent read. A lost or
+        # malformed snapshot is then recoverable without creating another PR.
+        self.bind_created_pr(number)
+        return self.snapshot(number=number, expected_body_sha256=sha256(body.encode('utf-8')))
+
+    def reconcile_created_pr(self, *, expected_body_sha256=None, publication=None):
+        """Observe a prior uncertain creation by bound number or exact head.
+
+        A zero-PR configuration is never passed to ``snapshot``.  The bounded
+        head lookup must prove zero or one same-repository PR in every state.
+        If no PR exists, the exact remote ref is observed before a prepared
+        push can be retried or draft creation can continue.
+        """
+        if self.c['pr'] > 0:
+            require(isinstance(expected_body_sha256, str),
+                    'Bound first-draft recovery requires its frozen body digest')
+            candidate = self.snapshot(expected_body_sha256=expected_body_sha256)
+            require(candidate is not None,
+                    'The provider-bound first-draft PR is closed; a second PR is forbidden')
+            return candidate
+        owner = self.c['repository'].split('/', 1)[0]
+        head = quote(owner + ':' + self.c['head_branch'], safe='')
+        value = self.api(f'pulls?state=all&head={head}&per_page=2')
+        require(isinstance(value, list) and len(value) <= 1,
+                'First-draft head lookup is malformed or ambiguous')
+        if value:
+            pr = value[0]
+            require(isinstance(expected_body_sha256, str),
+                    'An observed first-draft PR has no frozen publication body')
+            require(isinstance(pr, dict) and type(pr.get('number')) is int and pr['number'] > 0,
+                    'First-draft head lookup returned no valid PR identity')
+            require(pr.get('draft') is True
+                    and pr.get('head', {}).get('ref') == self.c['head_branch']
+                    and pr.get('base', {}).get('ref') == self.c['base_branch']
+                    and pr.get('head', {}).get('repo', {}).get('id') == self.c['repository_id']
+                    and pr.get('base', {}).get('repo', {}).get('id') == self.c['repository_id'],
+                    'First-draft head lookup returned a non-draft or mismatched PR')
+            require(isinstance(publication, dict)
+                    and pr.get('head', {}).get('sha') == publication.get('head')
+                    and pr.get('base', {}).get('sha') == publication.get('base'),
+                    'First-draft head lookup returned a PR outside the frozen publication')
+            require(sha256((pr.get('body') or '').encode('utf-8')) == expected_body_sha256,
+                    'First-draft head lookup body does not match the frozen publication')
+            self.bind_created_pr(pr['number'])
+            require(pr.get('state') == 'open',
+                    'The reconciled first-draft PR is closed; a second PR is forbidden')
+            return self.snapshot(expected_body_sha256=expected_body_sha256)
+        if publication is None:
+            return None
+        require(isinstance(publication.get('head'), str),
+                'Prepared first-draft publication has no frozen head')
+        prefix = quote('heads/' + self.c['head_branch'], safe='/')
+        refs = self.api(f'git/matching-refs/{prefix}')
+        require(isinstance(refs, list) and len(refs) <= 1,
+                'First-draft remote-ref lookup is malformed or ambiguous')
+        if not refs:
+            return 'RETRY_PUSH'
+        ref = refs[0]
+        require(isinstance(ref, dict)
+                and ref.get('ref') == 'refs/heads/' + self.c['head_branch']
+                and ref.get('object', {}).get('type') == 'commit'
+                and ref.get('object', {}).get('sha') == publication['head'],
+                'First-draft remote ref differs from the frozen publication')
+        return 'PUSHED'
+
+    def provider_base(self):
+        self.require_repository_identity()
+        value = self.api(f'branches/{self.c["base_branch"]}')
+        require(isinstance(value, dict) and value.get('name') == self.c['base_branch'], 'GitHub base branch observation mismatch')
+        sha = value.get('commit', {}).get('sha')
+        require(isinstance(sha, str) and re.fullmatch('[0-9a-f]{40}', sha), 'GitHub base commit observation is malformed')
+        return sha
+
+    def snapshot(self, number=None, expected_body_sha256=None):
+        number = self.c['pr'] if number is None else number
+        require(type(number) is int and number > 0, 'GitHub PR number must be positive for observation')
+        pr = self.api(f'pulls/{number}')
+        require(pr['number'] == number and pr['base']['repo']['id'] == self.c['repository_id'], 'GitHub PR/repository identity mismatch')
+        if expected_body_sha256 is not None:
+            require(isinstance(expected_body_sha256, str)
+                    and sha256((pr.get('body') or '').encode('utf-8')) == expected_body_sha256,
+                    'Created PR body does not match the frozen publication')
         if pr['state'] != 'open':
             return None
         require(pr['head']['repo'] is not None and pr['head']['repo']['id'] == self.c['repository_id'], 'Fork/third-party branch is not enrolled')
         require(pr['head']['ref'] == self.c['head_branch'] and pr['base']['ref'] == self.c['base_branch'], 'PR branch/target changed')
         for side in ['head','base']:
             require(re.fullmatch('[0-9a-f]{40}',pr[side]['sha']), 'Malformed Git commit')
-        candidate = {'repository_id':self.c['repository_id'], 'pr':self.c['pr'], 'head':pr['head']['sha'],
+        candidate = {'repository_id':self.c['repository_id'], 'pr':number, 'head':pr['head']['sha'],
             'base':pr['base']['sha'], 'head_ref':pr['head']['ref'], 'base_ref':pr['base']['ref']}
         self.bind_reviewed_policy(candidate)
         return candidate
@@ -336,6 +485,104 @@ class HostDriver:
         Draft202012Validator(loads((self.root / f'.agentic/review-loop/{role}-result.schema.json').read_text())).validate(value)
         return value
 
+    def _hooks_snapshot(self, checkout):
+        """Bounded snapshot of repository-local hooks, even though they are disabled."""
+        git_dir = Path(self.git(checkout, 'rev-parse', '--absolute-git-dir'))
+        hooks = git_dir / 'hooks'
+        if not hooks.exists():
+            return []
+        require(hooks.is_dir() and not hooks.is_symlink(), 'Repository hooks path is unsafe')
+        values = []
+        for index, path in enumerate(sorted(hooks.rglob('*'), key=lambda item: item.as_posix())):
+            require(index < 1024, 'Repository hooks inventory exceeds bound')
+            require(not path.is_symlink(), 'Repository hooks contain a symbolic link')
+            relative = path.relative_to(hooks).as_posix()
+            mode = path.stat().st_mode & 0o777
+            if path.is_dir():
+                values.append(['directory', relative, mode])
+            else:
+                require(path.is_file() and path.stat().st_size <= 1024 * 1024,
+                        'Repository hook is not a bounded regular file')
+                values.append(['file', relative, mode, sha256(path.read_bytes())])
+        return values
+
+    def repository_git_controls(self, checkout):
+        """Capture repository-local config, remote routes and disabled hooks."""
+        return {
+            'local_config': self.git(checkout, 'config', '--local', '--list', '--includes', '--null'),
+            'origin_fetch': self.git(checkout, 'remote', 'get-url', '--all', 'origin'),
+            'origin_push': self.git(checkout, 'remote', 'get-url', '--push', '--all', 'origin'),
+            'hooks': self._hooks_snapshot(checkout),
+        }
+
+    def first_draft_git_controls(self):
+        """Validate and freeze repository-local controls before first-draft work."""
+        controls = self.repository_git_controls(self.worker)
+        require(self.git(self.worker, 'rev-parse', '--show-toplevel').replace('\\', '/').casefold()
+                == str(self.worker.resolve()).replace('\\', '/').casefold(),
+                'First-draft checkout must be its repository root')
+        require(controls['origin_fetch'].rstrip('/') == self.url
+                and controls['origin_push'].rstrip('/') == self.url,
+                'First-draft checkout fetch/push origin is not the enrolled repository')
+        local_keys = [record.partition('\n')[0].casefold()
+                      for record in controls['local_config'].split('\0') if record]
+        require(not any(key.startswith('credential.') for key in local_keys),
+                'First-draft checkout contains repository-local credential configuration')
+        self.require_clean_first_draft_checkout()
+        return controls
+
+    def require_clean_first_draft_checkout(self):
+        """Refuse attribution when any pre-worker checkout residue exists."""
+        require(not self.git(self.worker, 'status', '--porcelain=v1', '-z',
+                             '--untracked-files=all'),
+                'First-draft checkout must start clean; found tracked, staged or untracked changes')
+        require(not self.git(self.worker, 'ls-files', '--others', '--ignored',
+                             '--exclude-standard', '-z'),
+                'First-draft checkout must start clean; found ignored residue')
+
+    def require_first_draft_git_controls(self, expected):
+        require(self.repository_git_controls(self.worker) == expected,
+                'Worker changed Git configuration, remote routing or hooks; reconcile before publication')
+
+    def first_draft_worker(self, *, run_id=None, expected_git_controls=None):
+        """Run the pinned worker against the configured first-draft checkout."""
+        run_id = run_id or str(uuid.uuid4())
+        run = self.state / 'runs' / run_id
+        if run.exists():
+            for attempt in range(2, 1000):
+                candidate = run / f'attempt-{attempt}'
+                try:
+                    candidate.mkdir()
+                    run = candidate
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                raise ValidationError('First-draft worker retry inventory exceeds bound')
+        else:
+            run.mkdir(parents=True)
+        contract = self.verified_contract_text()
+        prompt = ((self.root / '.agentic/review-loop/first-draft-worker-prompt.md').read_text(encoding='utf-8')
+                  + '\n\nFrozen contract:\n' + contract
+                  + '\n\nExact allowed paths:\n' + json.dumps(self.c['allowed_paths']))
+        output = run / 'result.json'
+        args = ['exec','--ephemeral','--ignore-user-config','--sandbox','workspace-write',
+            '-c','approval_policy="never"','-c','sandbox_workspace_write.network_access=false',
+            *sum((['-c', f'model_reasoning_effort={self.c["reasoning_effort"]["worker"]}']
+                  for _ in [0] if isinstance(self.c.get('reasoning_effort'), dict)
+                  and self.c['reasoning_effort'].get('worker')), []),
+            *sum((['-c', f'{key}="{value}"'] for key, value in (self.c.get('codex_config_overrides') or {}).items()), []),
+            '--model', self.c['models']['worker'], '--cd', str(self.worker),
+            '--output-schema', str(self.root / '.agentic/review-loop/first-draft-worker-result.schema.json'),
+            '--output-last-message', str(output), '--json', '-']
+        git_controls = expected_git_controls or self.first_draft_git_controls()
+        self.require_first_draft_git_controls(git_controls)
+        self.require_clean_first_draft_checkout()
+        self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
+        self.require_first_draft_git_controls(git_controls)
+        require(output.is_file(), 'First-draft worker output missing')
+        return loads(output.read_text(encoding='utf-8'))
+
     def review(self, candidate, findings, run_id, files):
         git_config = self.git(self.critic,'config','--list','--includes','--null')
         report = self.agent('critic',candidate,findings,run_id,files)
@@ -346,9 +593,10 @@ class HostDriver:
     def amend(self, candidate, findings, run_id):
         self.preflight(candidate)
         require(self.snapshot() == candidate, 'PR moved before amendment')
-        git_config = self.git(self.worker,'config','--list','--includes','--null')
+        git_controls = self.repository_git_controls(self.worker)
         report = self.agent('worker',candidate,findings,run_id)
-        require(self.git(self.worker,'config','--list','--includes','--null') == git_config, 'Worker changed Git configuration; reconcile')
+        require(self.repository_git_controls(self.worker) == git_controls,
+                'Worker changed Git configuration, remote routing or hooks; reconcile')
         require(report['candidate'] == candidate, 'Worker reported a different candidate')
         require(report['outcome'] == 'CHANGED', 'Worker '+report['outcome']+': '+report['summary'][:4000])
         require(self.git(self.worker,'rev-parse','HEAD') == candidate['head'] and self.git(self.worker,'symbolic-ref','--short','HEAD') == candidate['head_ref'], 'Worker changed Git HEAD/branch; reconcile')

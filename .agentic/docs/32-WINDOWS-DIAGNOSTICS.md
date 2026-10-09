@@ -24,6 +24,8 @@ The quick installation check verifies installed bytes and configuration only. It
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' validate-config
 ```
 
+During upgrades, the trusted import preflight tolerates only `__pycache__/<module>.cpython-<version>[.opt-<level>].pyc` caches whose sibling `<module>.py` is manifest-pinned. Cache-only residue is neither a dry-run conflict nor a real post-install failure, and is preserved. Stray `.py`, bytecode outside `__pycache__`, caches without pinned sources, `.pth`, extensions and all other unexpected import files still fail before installed code runs.
+
 The full release self-test is `python -B scripts/self_test.py`. It writes an immediate start event, phase changes, test identities and heartbeats to stderr. The bounded heartbeat interval is 15 seconds. Its final JSON remains on stdout and records separate discovery, syntax, documentation, release-hygiene and test-suite timings. `created_at`, `elapsed_seconds` and `phase_timings_seconds` are the documented nondeterministic timing fields. A caught interruption or timeout records the last completed phase and current test when available, returns nonzero and never reports PASS; an external deadline retains the last emitted progress record as partial evidence.
 
 ## Output encoding
