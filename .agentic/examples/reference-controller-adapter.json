@@ -46,6 +46,7 @@
     "controller_actor_id": "CHANGE_ME_ACCOUNT",
     "token_env": "AWF_JIRA_TOKEN",
     "merged_status_id": "CHANGE_ME_DONE_STATUS",
+    "merged_transition_id": "CHANGE_ME_DONE_TRANSITION",
     "page_size": 100,
     "timeout_seconds": 30
   },

@@ -88,10 +88,18 @@ class FakeRunner:
             return {"permission": "push"}
         raise AssertionError("unexpected gh path: " + path)
 
-    def launch(self, argv, *, cwd, env, timeout, stdin):
+    def launch(self, argv, *, cwd, env, timeout, stdin, handoff_path, terminal_proof_path,
+               launch_nonce):
+        # The production contract requires the runner to persist the launch
+        # handoff before returning.  This fake models that boundary so restart
+        # tests cannot accidentally accept a PREPARED record without a PID.
         self.launches.append((list(argv), Path(cwd), dict(env)))
         self.prompts.append(stdin)
-        return {"pid": 1234, "status": "LAUNCHED"}
+        Path(handoff_path).write_text(json.dumps({"pid": 1234, "launch_nonce": launch_nonce,
+                                                   "status": "LAUNCHED"}), encoding="utf-8")
+        return {"pid": 1234, "launch_nonce": launch_nonce,
+                "handoff_path": str(handoff_path),
+                "terminal_proof_path": str(terminal_proof_path), "status": "LAUNCHED"}
 
     def observe(self, record, *, timeout):
         return {"status": "COMPLETED", "returncode": 0, "terminal": True}
@@ -117,10 +125,10 @@ class FakeHttp:
             if "startAt=0" in url:
                 issue = {"id": "100", "fields": {"issuetype": {"name": "Task"},
                     "status": {"statusCategory": {"key": "done"}}}}
-                return 200, json.dumps({"issues": [issue], "total": 2, "snapshot_id": "snap-1", "observed_at": NOW})
+                return 200, json.dumps({"issues": [issue], "total": 2})
             issue = {"id": "101", "fields": {"issuetype": {"name": "Task"},
                 "status": {"statusCategory": {"key": "new"}}}}
-            return 200, json.dumps({"issues": [issue], "total": 2, "snapshot_id": "snap-1", "observed_at": NOW})
+            return 200, json.dumps({"issues": [issue], "total": 2})
         if "/rest/api/3/issue/" in url and method == "GET":
             self.issue_reads += 1
             if "expand=changelog" in url:
@@ -132,6 +140,9 @@ class FakeHttp:
             status = "Ready" if self.issue_reads == 1 else "In Progress"
             return 200, json.dumps({"id": "100", "fields": {"status": {"id": status}}})
         if method == "POST" and "/transitions" in url:
+            self.transition_bodies = getattr(self, "transition_bodies", [])
+            self.transition_bodies.append(json.loads(body))
+            self.asserted_transition_id = self.transition_bodies[-1]["transition"]["id"]
             return 204, ""
         raise AssertionError("unexpected Jira request: " + method + " " + url)
 
@@ -151,7 +162,7 @@ class AdvancingPageHttp(FakeHttp):
         status, body = super().request(method, url, **kwargs)
         if "/rest/api/3/search?" in url:
             value = json.loads(body)
-            value["observed_at"] = NOW if "startAt=0" in url else "2026-10-09T08:00:01Z"
+            value["total"] = 2 if "startAt=0" in url else 3
             body = json.dumps(value)
         return status, body
 
@@ -177,7 +188,8 @@ def _base_config(root):
                    "page_size": 100},
         "jira": {"enabled": True, "cloud_id": "cloud-1", "site": "https://jira.example.invalid",
                  "provider_project_id": "project-1", "project_key": "EX", "controller_actor_id": "controller",
-                 "token_env": "AWF_JIRA_TOKEN", "merged_status_id": "Done", "page_size": 1},
+                 "token_env": "AWF_JIRA_TOKEN", "merged_status_id": "Done",
+                 "merged_transition_id": "done-transition", "page_size": 1},
         "outbox": {"directory": str(root / "outbox")},
     }
 
@@ -245,6 +257,10 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertNotIn("AWF_JIRA_TOKEN", child_env)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", runner.launches[0][0])
         self.assertIn("Ticket: AWF-32", runner.prompts[0])
+        outbox = self.root / "outbox" / "controller-status.jsonl"
+        self.assertEqual(len(outbox.read_text(encoding="utf-8").splitlines()), 1)
+        self.assertEqual(json.loads(outbox.read_text(encoding="utf-8").splitlines()[0])["delivery_id"],
+                         result["status_delivery"]["delivery_id"])
 
     def test_inventory_uses_controller_time_and_critic_route_is_reachable(self):
         runner = FakeRunner()
@@ -263,8 +279,11 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 
     def test_prepared_launch_crash_is_observed_without_replay(self):
         class CrashAfterLaunch(FakeRunner):
-            def launch(self, argv, *, cwd, env, timeout, stdin):
-                super().launch(argv, cwd=cwd, env=env, timeout=timeout, stdin=stdin)
+            def launch(self, argv, *, cwd, env, timeout, stdin, handoff_path, terminal_proof_path,
+                       launch_nonce):
+                super().launch(argv, cwd=cwd, env=env, timeout=timeout, stdin=stdin,
+                               handoff_path=handoff_path, terminal_proof_path=terminal_proof_path,
+                               launch_nonce=launch_nonce)
                 raise RuntimeError("simulated persistence interruption")
         runner = CrashAfterLaunch()
         adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
@@ -275,8 +294,14 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
                    "actor": "writer", "next_action": "continue"}
         with self.assertRaises(ValidationError):
             adapters["dispatch_ticket"](payload)
-        receipt = adapters["observe_dispatch"]({**payload, "reconcile_nonce": "r",
-                                                  "reconcile_at": NOW})
+        class RestartObserver(FakeRunner):
+            def observe(self, record, *, timeout):
+                self.observed_record = dict(record)
+                return {"status": "COMPLETED", "returncode": 0, "terminal": True}
+        restarted = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": RestartObserver(), "_clock": FakeClock()})
+        receipt = restarted["observe_dispatch"]({**payload, "reconcile_nonce": "r",
+                                                   "reconcile_at": NOW})
         self.assertEqual(receipt["status"], "ACCEPTED")
         self.assertEqual(len(runner.launches), 1)
 
@@ -312,6 +337,33 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertIn("--paginate", issue_call)
         self.assertIn("per_page=100", issue_call[-1])
 
+    def test_default_branch_only_ruleset_does_not_authorize_a_feature_ref(self):
+        class DefaultOnly(FakeRunner):
+            def run(self, argv, *, cwd, env, timeout, max_bytes):
+                if "rulesets" in argv[-1]:
+                    return [[{"id": 1, "enforcement": "active",
+                               "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}}]]
+                return super().run(argv, cwd=cwd, env=env, timeout=timeout, max_bytes=max_bytes)
+        runner = DefaultOnly()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        observation = adapters["observe_publication"]({"ticket": "AWF-32"})
+        self.assertEqual(observation["rules"]["state"], "UNOBSERVED")
+
+    def test_generated_adapter_example_is_idempotent_and_complete(self):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        try:
+            generated = __import__("runpy").run_path(str(ROOT / "scripts/generate_examples.py"),
+                                                       run_name="awf32_generator")
+        finally:
+            sys.path.pop(0)
+        expected = generated["controller_adapter_config"]()
+        stored = json.loads((ROOT / ".agentic/examples/reference-controller-adapter.json").read_text())
+        self.assertEqual(stored, expected)
+        self.assertIn("expected_actor_id", stored["github"])
+        self.assertIn("auth_profile", stored["github"])
+        self.assertIn("merged_transition_id", stored["jira"])
+
     def test_jira_lifecycle_is_read_before_one_write_and_readback(self):
         http = FakeHttp()
         clock = FakeClock()
@@ -333,6 +385,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
                 read_transition=adapters["read_transition"], observe_provider_identity=adapters["observe_provider_identity"])
         self.assertTrue(result["planned"])
         self.assertEqual(result["record"]["status"], "SUCCEEDED")
+        self.assertEqual(http.asserted_transition_id, "3")
         methods = [call[0] for call in http.calls]
         self.assertEqual(methods.count("POST"), 1)
         self.assertLess(methods.index("GET"), methods.index("POST"))

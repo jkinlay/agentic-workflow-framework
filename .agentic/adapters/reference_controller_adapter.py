@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import time
 import uuid
 from urllib.parse import quote
@@ -67,6 +68,50 @@ class _SubprocessRunner:
     def __init__(self):
         self._processes = {}
 
+    _WATCHER = r'''
+import ctypes
+import json
+import os
+import sys
+import tempfile
+import time
+
+pid = int(sys.argv[1])
+proof = sys.argv[2]
+nonce = sys.argv[3]
+code = None
+if os.name == "nt":
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(0x00100000 | 0x00000400, False, pid)
+    if handle:
+        kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+        value = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(value)):
+            code = int(value.value)
+        kernel32.CloseHandle(handle)
+else:
+    # The reference production host is Windows.  On POSIX a detached sibling
+    # cannot prove a foreign child's exit code, so it deliberately emits no
+    # terminal proof and the adapter remains fail-closed after a restart.
+    while True:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            break
+        time.sleep(0.1)
+if code is not None:
+    value = {"pid": pid, "launch_nonce": nonce, "status": "COMPLETED",
+             "returncode": code, "terminal": True}
+    directory = os.path.dirname(proof) or "."
+    fd, temporary = tempfile.mkstemp(prefix=".awf-terminal-", dir=directory)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+        json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, proof)
+'''
+
     def run(self, argv, *, cwd, env, timeout, max_bytes):
         try:
             result = subprocess.run(argv, cwd=str(cwd), env=env, shell=False,
@@ -83,7 +128,8 @@ class _SubprocessRunner:
         except UnicodeDecodeError as exc:
             raise ValidationError("External command output was not UTF-8") from exc
 
-    def launch(self, argv, *, cwd, env, timeout, stdin):
+    def launch(self, argv, *, cwd, env, timeout, stdin, handoff_path, terminal_proof_path,
+               launch_nonce):
         try:
             process = subprocess.Popen(argv, cwd=str(cwd), env=env, shell=False,
                                        stdin=subprocess.PIPE,
@@ -99,17 +145,39 @@ class _SubprocessRunner:
             process.kill()
             raise ValidationError("Codex prompt could not be delivered") from exc
         self._processes[process.pid] = process
-        return {"pid": process.pid, "status": "LAUNCHED"}
+        handoff = {"pid": process.pid, "launch_nonce": launch_nonce, "status": "LAUNCHED"}
+        try:
+            _write_record(Path(handoff_path), handoff)
+            watcher_env = dict(env)
+            subprocess.Popen([sys.executable, "-B", "-c", self._WATCHER,
+                              str(process.pid), str(terminal_proof_path), launch_nonce],
+                             cwd=str(cwd), env=watcher_env, shell=False,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError as exc:
+            raise ValidationError("Codex durable launch handoff failed") from exc
+        return {"pid": process.pid, "launch_nonce": launch_nonce,
+                "handoff_path": str(handoff_path),
+                "terminal_proof_path": str(terminal_proof_path), "status": "LAUNCHED"}
 
     def observe(self, record, *, timeout):
         pid = record.get("pid")
         if not isinstance(pid, int) or pid <= 0:
             raise ValidationError("Detached run record has no process identity")
+        proof_path = record.get("terminal_proof_path")
+        _require(isinstance(proof_path, str), "Detached run has no terminal-proof path")
+        proof = Path(proof_path)
+        if proof.is_file():
+            value = _read_record(proof)
+            _require(value.get("pid") == pid and value.get("launch_nonce") == record.get("launch_nonce"),
+                     "Detached terminal proof is bound to a different process")
+            _require(value.get("status") == "COMPLETED" and value.get("terminal") is True,
+                     "Detached Codex terminal outcome was not proven")
+            return value
         process = self._processes.get(pid)
         if process is None:
             # A vanished PID is not proof of a successful terminal outcome.
-            # After a host restart the default runner has no exit-code handle,
-            # so observation fails closed instead of accepting disappearance.
+            # After a host restart only the durable watcher proof is accepted.
             raise ValidationError("Detached Codex terminal outcome was not proven")
         try:
             code = process.wait(timeout=timeout)
@@ -119,7 +187,10 @@ class _SubprocessRunner:
             self._processes.pop(pid, None)
         if code != 0:
             raise ValidationError("Detached Codex run returned a non-zero exit")
-        return {"status": "COMPLETED", "returncode": 0, "terminal": True}
+        value = {"pid": pid, "launch_nonce": record["launch_nonce"],
+                 "status": "COMPLETED", "returncode": 0, "terminal": True}
+        _write_record(proof, value)
+        return value
 
 
 class _HttpTransport:
@@ -340,11 +411,15 @@ def _build(config):
 
     github = config["github"]
     required_github = {"host", "repository", "repository_id", "project_id", "scope_sha256",
-                       "base_branch", "branch_pattern", "executable"}
+                       "base_branch", "branch_pattern", "expected_actor_id", "auth_profile",
+                       "executable"}
     _require(required_github <= set(github), "GitHub adapter configuration is incomplete")
     _require(github["host"] == "https://github.com", "Only github.com is supported")
     _require(isinstance(github["repository_id"], int) and github["repository_id"] > 0,
              "GitHub repository_id must be positive")
+    _require(isinstance(github["expected_actor_id"], int) and github["expected_actor_id"] > 0,
+             "GitHub expected_actor_id must be positive")
+    _text(github["auth_profile"], "github.auth_profile")
     _text(github["repository"], "github.repository")
     _text(github["project_id"], "github.project_id")
     _require(re.fullmatch(r"[0-9a-f]{64}", github["scope_sha256"]) is not None,
@@ -357,10 +432,11 @@ def _build(config):
 
     jira = config["jira"]
     required_jira = {"enabled", "cloud_id", "site", "provider_project_id", "project_key",
-                     "controller_actor_id", "token_env", "merged_status_id"}
+                     "controller_actor_id", "token_env", "merged_status_id", "merged_transition_id"}
     _require(required_jira <= set(jira), "Jira adapter configuration is incomplete")
     _require(type(jira["enabled"]) is bool, "jira.enabled must be boolean")
-    for key in ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id", "merged_status_id"):
+    for key in ("cloud_id", "site", "provider_project_id", "project_key", "controller_actor_id",
+                "merged_status_id", "merged_transition_id"):
         _text(jira[key], "jira." + key)
     token_env = jira["token_env"]
     _require(isinstance(token_env, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{1,127}", token_env)
@@ -505,7 +581,9 @@ def _build(config):
             excludes = conditions.get("exclude", []) if isinstance(conditions, dict) else []
             _require(isinstance(includes, list) and isinstance(excludes, list),
                      "GitHub ruleset ref conditions are malformed")
-            matches = any(pattern in {"~ALL", "~DEFAULT_BRANCH", branch, ref}
+            matches = any(pattern == "~ALL"
+                          or (pattern == "~DEFAULT_BRANCH" and ref == "refs/heads/" + github["base_branch"])
+                          or pattern in {branch, ref}
                           or __import__("fnmatch").fnmatchcase(ref, pattern)
                           or __import__("fnmatch").fnmatchcase(branch, pattern)
                           for pattern in includes if isinstance(pattern, str))
@@ -552,24 +630,37 @@ def _build(config):
                 "-c", 'approval_policy="never"', "-c",
                 "model_reasoning_effort=" + selected["reasoning_effort"], "--model", selected["model"],
                 "--cd", str(worktree), "--json", "-"]
+        launch_nonce = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                      "awf:codex-launch:" + payload["dispatch_nonce"]))
+        handoff_path = record_path.with_suffix(".handoff.json")
+        terminal_proof_path = record_path.with_suffix(".terminal.json")
         record = {"format": "awf-reference-dispatch-1", "dispatch_id": payload["dispatch_id"],
                   "dispatch_nonce": payload["dispatch_nonce"], "stream": payload["stream"],
                   "ticket": payload["ticket"], "prepared_at": payload["prepared_at"],
                   "begun_at": payload["begun_at"], "role": role, "argv": argv,
                   "worktree": str(worktree), "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                   "argv_sha256": hashlib.sha256(canonical(argv)).hexdigest(),
-                  "launch_nonce": str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                                  "awf:codex-launch:" + payload["dispatch_nonce"])),
+                  "launch_nonce": launch_nonce, "handoff_path": str(handoff_path),
+                  "terminal_proof_path": str(terminal_proof_path),
                   "status": "PREPARED", "created_at": _clock_text(clock)}
         _write_record(record_path, record)
         _verify_executable(codex_executable)
+        launch_env = _safe_env(token_env)
+        launch_env["AWF_DISPATCH_NONCE"] = launch_nonce
         launched = _invoke(runner, "launch", [str(codex_executable["path"]), *argv],
-                           cwd=worktree, env=_safe_env(token_env), timeout=timeout,
-                           stdin=prompt)
+                           cwd=worktree, env=launch_env, timeout=timeout,
+                           stdin=prompt, handoff_path=str(handoff_path),
+                           terminal_proof_path=str(terminal_proof_path),
+                           launch_nonce=launch_nonce)
         _require(isinstance(launched, dict), "Codex launch returned an invalid result")
         _require(launched.get("status") == "LAUNCHED" and
                  type(launched.get("pid")) is int and launched["pid"] > 0,
                  "Codex launch did not return a durable process identity")
+        _require(launched.get("launch_nonce") == launch_nonce,
+                 "Codex launch identity is not nonce-bound")
+        _require(launched.get("handoff_path") == str(handoff_path) and
+                 launched.get("terminal_proof_path") == str(terminal_proof_path),
+                 "Codex launch did not return durable proof paths")
         record.update({"status": "LAUNCHED", "pid": launched["pid"],
                        "launched_at": _clock_text(clock)})
         _write_record(record_path, record)
@@ -589,6 +680,13 @@ def _build(config):
         if reconcile:
             _require(record.get("status") in {"PREPARED", "LAUNCHED", "COMPLETED"},
                      "Interrupted dispatch has no observable durable launch intent")
+            if record.get("status") == "PREPARED":
+                handoff = _read_record(Path(record["handoff_path"]))
+                _require(handoff.get("launch_nonce") == record["launch_nonce"] and
+                         type(handoff.get("pid")) is int and handoff["pid"] > 0,
+                         "Interrupted dispatch has no durable launch handoff")
+                record.update({"pid": handoff["pid"], "status": "LAUNCHED"})
+                _write_record(path, record)
             result = _invoke(runner, "observe", record, timeout=timeout)
             _require(isinstance(result, dict) and result.get("status") == "COMPLETED"
                      and result.get("returncode") == 0 and result.get("terminal") is True,
@@ -621,9 +719,13 @@ def _build(config):
                     row = {"delivery_id": delivery_id, "digest_sha256": fingerprint("controller-delivery", digest),
                            "digest": digest, "observed_at": _clock_text(clock)}
                     stream.seek(0, 2)
+                    position = stream.tell()
                     stream.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
                     stream.flush()
-                    found = row
+                    stream.seek(position)
+                    encoded = stream.readline()
+                    found = json.loads(encoded)
+                    _require(found == row, "Status outbox readback differs from the appended record")
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise ValidationError("Status outbox write or readback failed") from exc
         _require(found.get("digest_sha256") == fingerprint("controller-delivery", digest),
@@ -689,8 +791,10 @@ def _build(config):
         _require(isinstance(record, dict) and isinstance(record.get("binding"), dict),
                  "Jira transition record is missing its binding")
         issue_id = record["binding"]["issue_id"]
+        _require(isinstance(record.get("transition_id"), str) and record["transition_id"],
+                 "Jira transition identity is missing")
         jira_json("POST", "/rest/api/3/issue/" + quote(issue_id, safe="") + "/transitions",
-                  {"transition": {"id": record["to_status_id"]}})
+                  {"transition": {"id": record["transition_id"]}})
         return {"operation_id": record["operation_id"], "issue_id": issue_id,
                 "status": "ATTEMPTED", "observed_at": _clock_text(clock),
                 "jira_provider": record["jira_provider"]}
@@ -730,12 +834,15 @@ def _build(config):
         operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "awf:jira-merge:" + jira["cloud_id"] + ":" + ticket))
         if before["status_id"] != target:
             record = {"operation_id": operation_id, "binding": {"issue_id": ticket},
-                      "to_status_id": target, "jira_provider": provider}
+                      "transition_id": jira["merged_transition_id"], "to_status_id": target,
+                      "jira_provider": provider}
             write_transition({**record, "producer_id": provider["controller_actor_id"]})
             after = read_transition({**record, "producer_id": provider["controller_actor_id"]}, {})
         else:
             after = {"issue_id": ticket, "status": target, "actor": provider["controller_actor_id"],
                      "observed_at": before["observed_at"], "jira_provider": provider}
+        _require(after.get("actor") == provider["controller_actor_id"],
+                 "Jira merge transition actor was not independently observed")
         _require(after["status"] == target, "Jira merge readback did not reach the configured terminal status")
         return {"ticket": ticket, "issue_id": ticket, "cloud_id": provider["cloud_id"],
                 "project_id": provider["project_id"], "actor_id": provider["controller_actor_id"],
@@ -755,24 +862,26 @@ def _build(config):
         start = 0 if cursor is None else int(cursor)
         _require(start >= 0, "Jira scope cursor is invalid")
         page_size = min(jira.get("page_size", MAX_JIRA_PAGE), MAX_JIRA_PAGE)
-        result = jira_json("GET", "/rest/api/3/search?jql=" + quote(scope, safe="")
-                           + "&startAt=" + str(start) + "&maxResults=" + str(page_size))
-        issues = result.get("issues")
-        total = result.get("total")
-        _require(isinstance(issues, list) and type(total) is int and total >= 0
-                 and isinstance(result.get("snapshot_id"), str) and result["snapshot_id"]
-                 and isinstance(result.get("observed_at"), str),
-                 "Jira scope response is incomplete")
-        timestamp(result["observed_at"])
         snapshot = scope_snapshots.get(scope)
         if snapshot is None:
             _require(cursor is None, "Jira scope continuation has no retained snapshot")
-            scope_snapshots[scope] = {"snapshot_id": result["snapshot_id"],
-                                      "observed_at": result["observed_at"]}
+            observed_at = _clock_text(clock)
+            snapshot = {"observed_at": observed_at}
+            scope_snapshots[scope] = snapshot
+        bounded_scope = "(" + scope + ') AND updated <= "' + snapshot["observed_at"] + '"'
+        result = jira_json("GET", "/rest/api/3/search?jql=" + quote(bounded_scope, safe="")
+                           + "&startAt=" + str(start) + "&maxResults=" + str(page_size))
+        issues = result.get("issues")
+        total = result.get("total")
+        _require(isinstance(issues, list) and type(total) is int and total >= 0,
+                 "Jira scope response is incomplete")
+        if "total" in snapshot:
+            _require(total == snapshot["total"], "Jira scope total changed during pagination")
         else:
-            _require(result["snapshot_id"] == snapshot["snapshot_id"]
-                     and result["observed_at"] == snapshot["observed_at"],
-                     "Jira provider snapshot changed during pagination")
+            snapshot["total"] = total
+        snapshot_id = fingerprint("jira-search-snapshot", {"scope": scope, "binding": provider,
+                                                            "observed_at": snapshot["observed_at"],
+                                                            "total": total})
         items = []
         for issue in issues:
             fields = issue.get("fields", {}) if isinstance(issue, dict) else {}
@@ -784,8 +893,7 @@ def _build(config):
                           "status_category": "TERMINAL" if category == "done" else "NON_TERMINAL"})
         next_cursor = None if start + len(issues) >= total else str(start + len(issues))
         complete = next_cursor is None
-        snapshot_id = result["snapshot_id"]
-        observed_at = result["observed_at"]
+        observed_at = snapshot["observed_at"]
         return {"items": items, "next_cursor": next_cursor, "complete": complete,
                 "snapshot_id": snapshot_id, "scope_sha256": scope_sha,
                 "observed_at": observed_at}

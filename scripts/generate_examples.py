@@ -38,6 +38,7 @@ def controller_adapter_config():
             "host": "https://github.com", "repository": "CHANGE_ME/CHANGE_ME", "repository_id": 0,
             "project_id": "CHANGE_ME_PROJECT", "scope_sha256": "0" * 64, "base_branch": "main",
             "branch_pattern": "codex/{ticket}-{slug}",
+            "expected_actor_id": 0, "auth_profile": "CHANGE_ME_GH_PROFILE",
             "executable": {"path": "<GH_EXECUTABLE>", "sha256": "0" * 64},
             "inventory_endpoint": "repos/CHANGE_ME/CHANGE_ME/issues?state=open",
             "page_size": 100,
@@ -46,7 +47,8 @@ def controller_adapter_config():
             "enabled": True, "cloud_id": "CHANGE_ME_CLOUD", "site": "https://CHANGE_ME.atlassian.net",
             "provider_project_id": "CHANGE_ME_PROJECT", "project_key": "CHANGE_ME",
             "controller_actor_id": "CHANGE_ME_ACCOUNT", "token_env": "AWF_JIRA_TOKEN",
-            "merged_status_id": "CHANGE_ME_DONE_STATUS", "page_size": 100, "timeout_seconds": 30,
+            "merged_status_id": "CHANGE_ME_DONE_STATUS", "merged_transition_id": "CHANGE_ME_DONE_TRANSITION",
+            "page_size": 100, "timeout_seconds": 30,
         },
         "outbox": {"directory": "<STATE_DIR>/controller-outbox"},
     }

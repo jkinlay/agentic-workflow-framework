@@ -40,59 +40,58 @@ Final review submission separately requires the [review completion barrier](33-R
 
 ## Reference adapter (AWF-32)
 
-The shipped `.agentic/adapters/reference_controller_adapter.py` is a bounded
-Codex/GitHub/Jira adapter for cycle, Jira lifecycle and merge observation.
-Owner-publication operations are omitted, so those commands fail closed until
-a separately qualified host supplies their owner evidence.
+`.agentic/adapters/reference_controller_adapter.py` supplies bounded
+Codex/GitHub/Jira cycle, lifecycle, and merge operations. Owner-publication
+operations are omitted and fail closed.
 
-Copy `.agentic/examples/reference-controller-adapter.json` to operator state
-and replace its placeholders with absolute paths and accepted identities. Keep
-config, protected state, run records and outbox outside worktrees. Compute
-executable pins with `Get-FileHash -Algorithm SHA256 ABSOLUTE\codex.exe` and
-the equivalent command for `gh.exe`; compute the adapter pin with
+Copy the example to operator state and replace placeholders with absolute
+paths and accepted identities. Keep state outside worktrees. Pin executables
+with `Get-FileHash -Algorithm SHA256`; pin the adapter with
 `(Get-FileHash -Algorithm SHA256 .agentic/adapters/reference_controller_adapter.py).Hash.ToLower()`.
-The Jira token is read only from its configured environment-variable name and
-child environments strip `GH_TOKEN`, `GITHUB_TOKEN` and Jira credentials.
+The Jira token uses only its configured environment name; child environments
+strip `GH_TOKEN`, `GITHUB_TOKEN`, and Jira credentials.
 
-After AWF-36 ships and the owner enables dispatch, prepare these records in
-`<STATE_DIR>` outside every worktree:
+Create the command inputs as follows. Replace provider placeholders with the
+same owner-accepted bindings:
 
 ```powershell
-$NOW = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-'{"project_id":"PROJECT_ID","repository_id":"REPOSITORY_ID","scope_sha256":"SCOPE_SHA256"}' |
-  Set-Content -NoNewline -Encoding utf8 <STATE_DIR>\inventory-binding.json
-'{"run_registered":true,"worktree_verified":true}' |
-  Set-Content -NoNewline -Encoding utf8 <STATE_DIR>\facts.json
-'{"issue_id":"JIRA_ISSUE_ID"}' |
-  Set-Content -NoNewline -Encoding utf8 <STATE_DIR>\binding.json
+$STATE_DIR = (Resolve-Path <ABSOLUTE_SCRATCH_DIR>).Path
+New-Item -ItemType Directory -Force $STATE_DIR | Out-Null
+Copy-Item .agentic/examples/reference-controller-adapter.json "$STATE_DIR\reference-controller-adapter.json"
+$adapter = Get-Content "$STATE_DIR\reference-controller-adapter.json" -Raw | ConvertFrom-Json
+$project = Get-Content .agentic/examples/PROJECT_CONFIG.yaml -Raw | ConvertFrom-Json
+$project.jira.enabled = $true
+foreach ($name in @('cloud_id','site','provider_project_id','project_key','controller_actor_id')) { $project.jira.$name = $adapter.jira.$name }
+$project | ConvertTo-Json -Depth 100 | Set-Content "$STATE_DIR\PROJECT_CONFIG.yaml" -Encoding utf8
+@{project_id=[string]$adapter.github.project_id; repository_id=[string]$adapter.github.repository_id; scope_sha256=$adapter.github.scope_sha256} | ConvertTo-Json -Compress | Set-Content "$STATE_DIR\inventory-binding.json" -Encoding utf8
+@{run_registered=$true; worktree_verified=$true} | ConvertTo-Json -Compress | Set-Content "$STATE_DIR\facts.json" -Encoding utf8
+@{issue_id='2001'} | ConvertTo-Json -Compress | Set-Content "$STATE_DIR\binding.json" -Encoding utf8
+$bundle = Get-Content .agentic/examples/evidence-bundle.json -Raw | ConvertFrom-Json
+$bundle.contract | ConvertTo-Json -Depth 100 | Set-Content "$STATE_DIR\CONTRACT.json" -Encoding utf8
+@{merge_confirmed=$true; candidate_matched=$true} | ConvertTo-Json -Compress | Set-Content "$STATE_DIR\MERGE_FACTS.json" -Encoding utf8
+@{jira_enabled=$true; merged_ticket='2001'; scope='project = EX'; observed_at='2026-10-09T08:00:00Z'; jira_binding=@{cloud_id=[string]$adapter.jira.cloud_id; project_id=[string]$adapter.jira.provider_project_id; actor_id=[string]$adapter.jira.controller_actor_id}; max_pages=20; max_items=10000} | ConvertTo-Json -Depth 10 -Compress | Set-Content "$STATE_DIR\merge-progress.json" -Encoding utf8
 ```
 
-Use the same `$NOW` for cycle and lifecycle. The adapter receives this
-controller-owned inventory time and refuses partial or mismatched evidence.
-Use the accepted event contract, facts, binding and merge-progress records.
+Use one controller-owned `$NOW`; compute `$HEAD` and `$TREE` immediately before
+cycle. `merged_transition_id` is distinct from `merged_status_id`. Outputs have
+`execution_authority: false`; merge is `COUNTED` only after complete,
+same-snapshot pages. The adapter refuses partial or mismatched evidence.
 Then run:
 
 ```powershell
-python -B .agentic/scripts/workflow.py controller --state <STATE_DIR>\controller.sqlite3 --stream A --stream B --stream C --worktree-root <WORKTREE_ROOT> --project-config .agentic\PROJECT_CONFIG.yaml --adapter-module (Resolve-Path .agentic\adapters\reference_controller_adapter.py) --adapter-sha256 PIN --adapter-config <STATE_DIR>\reference-controller-adapter.json cycle --inventory-binding <STATE_DIR>\inventory-binding.json --repository-root <REPOSITORY_ROOT> --repository-head-sha FULL_HEAD --repository-tree-sha FULL_TREE --now $NOW --host-capacity 3 --dispatch-role writer
-python -B .agentic/scripts/workflow.py controller --state <STATE_DIR>\controller.sqlite3 --stream A --stream B --stream C --worktree-root <WORKTREE_ROOT> --project-config .agentic\PROJECT_CONFIG.yaml --adapter-module (Resolve-Path .agentic\adapters\reference_controller_adapter.py) --adapter-sha256 PIN --adapter-config <STATE_DIR>\reference-controller-adapter.json jira-lifecycle --contract CONTRACT.json --event WORKER_STARTED --facts <STATE_DIR>\facts.json --binding <STATE_DIR>\binding.json --producer-id CONTROLLER_ACTOR --run-id RUN_UUID --now $NOW --transition-id TRANSITION_ID
-python -B .agentic/scripts/workflow.py controller --state <STATE_DIR>\controller.sqlite3 --stream A --stream B --stream C --worktree-root <WORKTREE_ROOT> --project-config .agentic\PROJECT_CONFIG.yaml --adapter-module (Resolve-Path .agentic\adapters\reference_controller_adapter.py) --adapter-sha256 PIN --adapter-config <STATE_DIR>\reference-controller-adapter.json merge-observed --lifecycle-state MERGING --lifecycle-facts MERGE_FACTS.json --jira-progress <STATE_DIR>\merge-progress.json
+python -B .agentic/scripts/workflow.py controller --state <STATE_DIR>\controller.sqlite3 --stream A --stream B --stream C --worktree-root <WORKTREE_ROOT> --project-config <STATE_DIR>\PROJECT_CONFIG.yaml --adapter-module (Resolve-Path .agentic\adapters\reference_controller_adapter.py) --adapter-sha256 $ADAPTER_PIN --adapter-config <STATE_DIR>\reference-controller-adapter.json cycle --inventory-binding <STATE_DIR>\inventory-binding.json --repository-root <REPOSITORY_ROOT> --repository-head-sha $HEAD --repository-tree-sha $TREE --now $NOW --host-capacity 3 --dispatch-role writer
+python -B .agentic/scripts/workflow.py controller --state <STATE_DIR>\controller.sqlite3 --stream A --stream B --stream C --worktree-root <WORKTREE_ROOT> --project-config <STATE_DIR>\PROJECT_CONFIG.yaml --adapter-module (Resolve-Path .agentic\adapters\reference_controller_adapter.py) --adapter-sha256 $ADAPTER_PIN --adapter-config <STATE_DIR>\reference-controller-adapter.json jira-lifecycle --contract <STATE_DIR>\CONTRACT.json --event WORKER_STARTED --facts <STATE_DIR>\facts.json --binding <STATE_DIR>\binding.json --issue-type LEAF --lifecycle-state DISPATCHED --producer-id CONTROLLER_ACTOR --run-id 00000000-0000-0000-0000-000000000001 --now $NOW --transition-id TRANSITION_ID
+python -B .agentic/scripts/workflow.py controller --state <STATE_DIR>\controller.sqlite3 --stream A --stream B --stream C --worktree-root <WORKTREE_ROOT> --project-config <STATE_DIR>\PROJECT_CONFIG.yaml --adapter-module (Resolve-Path .agentic\adapters\reference_controller_adapter.py) --adapter-sha256 $ADAPTER_PIN --adapter-config <STATE_DIR>\reference-controller-adapter.json merge-observed --lifecycle-state MERGING --lifecycle-facts <STATE_DIR>\MERGE_FACTS.json --jira-progress <STATE_DIR>\merge-progress.json
 ```
 
 Cycle output includes `streams`, `dispatch_receipts`, `status_delivery`,
-`publication_readiness`, `errors`, and `execution_authority: false`. Jira
-readback is independent; merge counts are `COUNTED` only after complete
-pagination. Until AWF-32 and AWF-36 ship, no project may run its own adapter.
-Codex may still authenticate through `~/.codex/auth.json` after environment
-stripping; owner review is required.
+`publication_readiness`, `errors`, and `execution_authority: false`. Until
+AWF-32 and AWF-36 ship, no project may run its own adapter. Codex may still
+authenticate through `~/.codex/auth.json` after environment stripping.
 
-GitHub publication readiness observes the authenticated `gh` profile, numeric
-repository, permission, and active rulesets matching the prospective ref; it
-does not query an uncreated branch. Use `--dispatch-role critic` for the
-read-only route. Jira pages must carry one provider `snapshot_id` and
-`observed_at`; otherwise counts are unobserved.
-
-To stop, record the owner stop or blocker, let the command finish, and inspect
-`UNKNOWN` through a later observation-only cycle; never kill and replay. A
-PREPARED launch is accepted only with an independently observed terminal exit.
-Missing process proof, timeout, non-zero exit, incomplete pages, missing Jira
-snapshot metadata, or identity mismatch remains fail-closed.
+Each invocation is finite. To stop, schedule no more invocations, record the
+owner stop, and let the current one finish; use `Ctrl+C` only between
+invocations. If interrupted, inspect `UNKNOWN` by observation; never replay.
+A PREPARED launch requires an independent terminal exit proof.
+Missing proof, timeout, non-zero exit, incomplete pages, or identity mismatch
+remains fail-closed.

@@ -29,8 +29,9 @@ production state database.
    `execution_authority: false`. Confirm the outbox record can be read back.
 4. Interrupt one disposable Codex launch only if Jonathan explicitly wants
    the recovery case. Restart with the same scratch state and observe the
-   durable run record. Confirm the adapter performs no second launch, returns
-   an observation-bound receipt, or remains unknown and stops safely.
+   durable run record, its nonce-bound handoff, and the independent terminal
+   proof. Confirm the adapter performs no second launch, returns an
+   observation-bound receipt, or remains unknown and stops safely.
 5. Run one `jira-lifecycle` operation. Confirm a current-status read precedes
    at most one transition write and an independent status readback follows it.
    Then run `merge-observed` for the disposable merged PR. Confirm Jira
