@@ -284,6 +284,9 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
                 super().launch(argv, cwd=cwd, env=env, timeout=timeout, stdin=stdin,
                                handoff_path=handoff_path, terminal_proof_path=terminal_proof_path,
                                launch_nonce=launch_nonce)
+                Path(terminal_proof_path).write_text(json.dumps({
+                    "pid": 1234, "launch_nonce": launch_nonce,
+                    "status": "COMPLETED", "returncode": 0, "terminal": True}), encoding="utf-8")
                 raise RuntimeError("simulated persistence interruption")
         runner = CrashAfterLaunch()
         adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
@@ -297,7 +300,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         class RestartObserver(FakeRunner):
             def observe(self, record, *, timeout):
                 self.observed_record = dict(record)
-                return {"status": "COMPLETED", "returncode": 0, "terminal": True}
+                return json.loads(Path(record["terminal_proof_path"]).read_text(encoding="utf-8"))
         restarted = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
             {**self.config, "_runner": RestartObserver(), "_clock": FakeClock()})
         receipt = restarted["observe_dispatch"]({**payload, "reconcile_nonce": "r",
@@ -320,6 +323,128 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "terminal"):
             adapters["observe_dispatch"]({**payload, "reconcile_nonce": "r",
                                             "reconcile_at": NOW})
+
+    def test_restart_observer_reads_durable_terminal_proof_without_replay(self):
+        runner = FakeRunner()
+        cfg = {**self.config, "_runner": runner, "_clock": FakeClock()}
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](cfg)
+        payload = {"dispatch_id": "restart-proof", "stream": "A", "ticket": "AWF-32",
+                   "exact_tuple": "tuple", "dispatch_nonce": "restart-nonce",
+                   "prepared_at": NOW, "begun_at": NOW, "paths": ["a.py"],
+                   "actor": "writer", "next_action": "continue"}
+        adapters["dispatch_ticket"](payload)
+        record_path = self.root / "runs" / "restart-proof.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        Path(record["terminal_proof_path"]).write_text(json.dumps({
+            "pid": 1234, "launch_nonce": record["launch_nonce"],
+            "status": "COMPLETED", "returncode": 0, "terminal": True}), encoding="utf-8")
+
+        class RestartRunner(FakeRunner):
+            def observe(self, record, *, timeout):
+                proof = json.loads(Path(record["terminal_proof_path"]).read_text(encoding="utf-8"))
+                self.observed_record = dict(record)
+                return proof
+
+        restarted_runner = RestartRunner()
+        restarted = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": restarted_runner, "_clock": FakeClock()})
+        receipt = restarted["observe_dispatch"]({**payload, "reconcile_nonce": "r2", "reconcile_at": NOW})
+        self.assertEqual(receipt["status"], "ACCEPTED")
+        self.assertEqual(len(runner.launches), 1)
+        self.assertEqual(len(restarted_runner.launches), 0)
+
+    def test_detached_runner_persists_nonce_identity_before_process_launch(self):
+        namespace = __import__("runpy").run_path(str(self.adapter))
+        runner_class = namespace["_SubprocessRunner"]
+        handoff = self.root / "runner.handoff.json"
+        proof = self.root / "runner.terminal.json"
+        observed = []
+
+        class StdinProbe:
+            def write(self, value):
+                self.value = value
+
+            def close(self):
+                pass
+
+        class Process:
+            pid = 4321
+            stdin = StdinProbe()
+
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(argv, **kwargs):
+            observed.append(handoff.exists())
+            return Process()
+
+        with patch("subprocess.Popen", side_effect=fake_popen):
+            result = runner_class().launch(["fake-bin/codex", "exec"], cwd=self.root,
+                env={}, timeout=5, stdin="task", handoff_path=str(handoff),
+                terminal_proof_path=str(proof), launch_nonce="nonce")
+        self.assertEqual(observed, [True])
+        self.assertEqual(result["pid"], 4321)
+
+    def test_jira_old_history_entry_cannot_prove_current_transition(self):
+        class OldHistory(FakeHttp):
+            def request(self, method, url, **kwargs):
+                status, body = super().request(method, url, **kwargs)
+                if "expand=changelog" in url:
+                    value = json.loads(body)
+                    value["changelog"]["histories"][0]["created"] = "2020-01-01T00:00:00Z"
+                    body = json.dumps(value)
+                return status, body
+        http = OldHistory()
+        cfg = {**self.config, "_http_transport": http, "_clock": FakeClock()}
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](cfg)
+        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False):
+            with self.assertRaisesRegex(ValidationError, "current transition|operation"):
+                adapters["read_transition"]({"binding": {"issue_id": "10001"},
+                    "to_status_id": "In Progress", "jira_provider": {
+                        "cloud_id": "cloud-1", "project_id": "project-1", "controller_actor_id": "controller"},
+                    "operation_id": "op"}, {"observed_at": NOW})
+
+    def test_github_slurped_pages_are_bounded(self):
+        class TooManyPages(FakeRunner):
+            def run(self, argv, *, cwd, env, timeout, max_bytes):
+                if "issues?" in argv[-1]:
+                    return [[] for _ in range(21)]
+                return super().run(argv, cwd=cwd, env=env, timeout=timeout, max_bytes=max_bytes)
+        runner = TooManyPages()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        with self.assertRaisesRegex(ValidationError, "page"):
+            adapters["observe_inventory"](NOW)
+
+    def test_github_pagination_time_bound_uses_adapter_bound(self):
+        class SlowClock(FakeClock):
+            def monotonic(self):
+                self.ticks += 121
+                return self.ticks
+        runner = FakeRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": SlowClock()})
+        with self.assertRaisesRegex(ValidationError, "time bound"):
+            adapters["observe_inventory"](NOW)
+
+    def test_foreign_inventory_endpoint_is_rejected_before_consumption(self):
+        runner = FakeRunner()
+        cfg = json.loads(json.dumps(self.config))
+        cfg["github"]["inventory_endpoint"] = "repos/foreign/repository/issues?state=open"
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**cfg, "_runner": runner, "_clock": FakeClock()})
+        with self.assertRaisesRegex(ValidationError, "inventory endpoint"):
+            adapters["observe_inventory"](NOW)
+
+    def test_doc_example_defines_all_runtime_values_and_no_raw_placeholders(self):
+        doc = (ROOT / ".agentic/docs/34-CONTINUOUS-CONTROLLER.md").read_text(encoding="utf-8")
+        section = doc[doc.index("## Reference adapter (AWF-32)"):]
+        for name in ("$NOW", "$HEAD", "$TREE", "$ADAPTER_PIN", "$CONTROLLER_ACTOR", "$TRANSITION_ID"):
+            self.assertRegex(section, r"(?m)^\s*\$" + name[1:] + r"\s*=")
+        self.assertNotIn("<STATE_DIR>", section)
+        self.assertNotIn("<WORKTREE_ROOT>", section)
+        self.assertNotIn("--producer-id CONTROLLER_ACTOR", section)
+        self.assertNotIn("--transition-id TRANSITION_ID", section)
 
     def test_github_pagination_requires_provider_evidence_and_binds_page_size(self):
         class Paged(FakeRunner):
