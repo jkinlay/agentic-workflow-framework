@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -79,6 +80,12 @@ class ManifestConflictTests(unittest.TestCase):
             (root / name).write_bytes(data)
         shutil.copy2(ROOT / ".gitattributes", root / ".gitattributes")
         if driver:
+            attributes = (root / ".gitattributes").read_text(encoding="utf-8")
+            (root / ".gitattributes").write_text(
+                attributes.replace("merge=union", "merge=awf-manifest"),
+                encoding="utf-8",
+                newline="\n",
+            )
             shutil.copy2(ROOT / "scripts/manifest_merge_driver.py", root / "manifest_merge_driver.py")
         self.write_manifests(root, files)
         self.git(root, "init", "-b", "main")
@@ -107,13 +114,16 @@ class ManifestConflictTests(unittest.TestCase):
             for path in root.glob("*.txt")
         }
         machine, advisory = self.manifests(files)
-        self.assertEqual(machine, (root / "MANIFEST.json").read_bytes())
-        self.assertEqual(advisory, (root / "MANIFEST.md").read_bytes())
+        build_release.check_manifest_files(root, machine, advisory)
 
     def test_disjoint_prs_merge_without_manifest_conflict_in_either_order(self):
         root, files, base = self.make_repository()
-        left = self.branch_change(root, base, "pr-a", files, "alpha.txt", b"alpha from A\n")
-        right = self.branch_change(root, base, "pr-b", files, "omega.txt", b"omega from B\n")
+        left = self.branch_change(
+            root, base, "pr-a", files, "aardvark-a.txt", b"added by A\n"
+        )
+        right = self.branch_change(
+            root, base, "pr-b", files, "aardvark-b.txt", b"added by B\n"
+        )
 
         self.git(root, "checkout", "-b", "a-then-b", left)
         self.git(root, "merge", "--no-edit", right)
@@ -122,6 +132,19 @@ class ManifestConflictTests(unittest.TestCase):
         self.git(root, "checkout", "-b", "b-then-a", right)
         self.git(root, "merge", "--no-edit", left)
         self.assert_current(root)
+
+    def test_workflow_scopes_matrix_concurrency_to_manifest_job(self):
+        workflow = (ROOT / ".github/workflows/manifest-check.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIsNone(re.search(r"(?m)^concurrency:$", workflow))
+        self.assertRegex(
+            workflow,
+            r"(?ms)^jobs:\n  manifest:\n"
+            r"(?:    [^\n]*\n)*?    concurrency:\n"
+            r"      group: manifest-check-\$\{\{ github\.ref \}\}-"
+            r"\$\{\{ matrix\.os \}\}-\$\{\{ matrix\.python-version \}\}\n",
+        )
 
     def test_local_driver_keeps_same_file_conflict_out_of_manifests(self):
         root, files, base = self.make_repository(driver=True)
@@ -146,6 +169,27 @@ class ManifestConflictTests(unittest.TestCase):
         (root / "MANIFEST.json").write_bytes(machine)
         (root / "MANIFEST.md").write_bytes(advisory)
         build_release.check_manifest_files(root, machine, advisory)
+
+        alpha_json_row = (
+            f'    "alpha.txt": "{digest(files["alpha.txt"])}",\n'.encode()
+        )
+        (root / "MANIFEST.json").write_bytes(
+            machine.replace(alpha_json_row, alpha_json_row + alpha_json_row)
+        )
+        with self.assertRaisesRegex(ValidationError, "MANIFEST.json"):
+            build_release.check_manifest_files(root, machine, advisory)
+
+        (root / "MANIFEST.json").write_bytes(machine)
+        alpha_advisory_row = (
+            f'| `alpha.txt` | `{digest(files["alpha.txt"])}` |\n'.encode()
+        )
+        (root / "MANIFEST.md").write_bytes(
+            advisory.replace(
+                alpha_advisory_row, alpha_advisory_row + alpha_advisory_row
+            )
+        )
+        with self.assertRaisesRegex(ValidationError, "MANIFEST.md"):
+            build_release.check_manifest_files(root, machine, advisory)
 
         missing_entry = json.loads(machine)
         del missing_entry["files"]["alpha.txt"]
