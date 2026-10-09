@@ -363,14 +363,21 @@ def evaluate(config, workflow, bundle, contracts, now):
                 critic_receipt.get("findings_sha256")
                 == fingerprint("critic-findings", critic["findings"])
             )
-            # Retained 1.9.4 owner-disposition fixtures used an empty legacy
-            # receipt for a REQUEST_CHANGES artifact. Their signed disposition
-            # still controls the listed findings. APPROVE artifacts never get
-            # this compatibility exception: their substantive hash must match.
+            # Legacy 1.9.4 fixtures identified the run attestation instead of
+            # retaining a substantive critic artifact. Preserve that shape
+            # only for an empty approving review, or when an authenticated
+            # owner disposition controls the substantive findings. A bare
+            # lenient tier/cap classification is not artifact evidence.
+            critic_finding_ids = {finding["id"] for finding in critic["findings"]}
+            disposition_finding_ids = {record["finding_id"] for record in dispositions}
+            cap_finding_ids = set((bundle.get("cap_disposition") or {}).get(
+                "open_finding_ids", []))
             legacy_disposition_receipt = (
                 legacy_receipt
                 and critic.get("verdict") == "REQUEST_CHANGES"
-                and (tier == 1 or bundle.get("cap_disposition") is not None)
+                and bool(critic_finding_ids)
+                and (critic_finding_ids.issubset(disposition_finding_ids)
+                     or critic_finding_ids.issubset(cap_finding_ids))
             )
             terminal_artifact_matches = (
                 (retained_artifact and critic_receipt["record_id"] == critic["record_id"])
@@ -413,8 +420,6 @@ def evaluate(config, workflow, bundle, contracts, now):
                                and entry["sha256"] == observation.get("observation_sha256")
                                for entry in bundle["evidence_registry"])):
                 posting_evidence_ok = False
-            else:
-                posting_evidence_ok = posting_evidence_ok and observation.get("body_sha256") == pr["body_sha256"]
         if verdict["round"] == terminal_round:
             if isinstance(observation, dict):
                 fresh(observation["observed_at"], now, config["validation"]["max_evidence_age_seconds"])
@@ -516,7 +521,8 @@ def evaluate(config, workflow, bundle, contracts, now):
     terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
     terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
     critic_ok = (no_blockers and p2_ticketing_ok and critic_artifacts_ok
-                 and (critic_artifact_verdicts_match or lenient) and terminal_critic is not None
+                 and (critic_artifact_verdicts_match or legacy_disposition_receipt)
+                 and terminal_critic is not None
                  and terminal_verdict is terminal_critic
                  and terminal_verdict["verdict"] == "PASS"
                  and terminal_critic["verdict"] == "PASS"
