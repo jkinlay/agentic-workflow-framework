@@ -480,9 +480,68 @@ def _reviewed_git_archive_sha256(plan: dict, repository_relative_path: str) -> s
     return hashlib.sha256(raw).hexdigest()
 
 
-def _windows_launch_chain(plan: dict) -> dict:
-    interpreter = resolve_without_alias(Path(sys.executable).absolute(),
+def _path_within(path: str | os.PathLike[str], root: Path) -> bool:
+    """Return True when ``path`` is ``root`` or lies beneath it.
+
+    Compares the fully resolved, case-normalized paths and, as a fallback for
+    filesystem aliases that do not normalize lexically (Windows short names,
+    case-insensitive volumes), every resolved ancestor by file identity.
+    """
+    resolved = Path(os.path.realpath(path))
+    resolved_root = Path(os.path.realpath(root))
+    path_text = os.path.normcase(str(resolved))
+    root_text = os.path.normcase(str(resolved_root))
+    try:
+        if os.path.commonpath([path_text, root_text]) == root_text:
+            return True
+    except ValueError:
+        pass  # different drives or mixed absolute/relative paths
+    for ancestor in (resolved, *resolved.parents):
+        try:
+            if os.path.samefile(ancestor, resolved_root):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _controller_base_interpreter(working_directory: str | os.PathLike[str]) -> Path:
+    """Return the controller's base interpreter, installed outside the checkout.
+
+    A venv interpreter (for example the ignored in-checkout ``.agentic/.venv``)
+    reads its mutable ``pyvenv.cfg`` and selects its DLL/stdlib tree even under
+    ``-I -S -B``, so the launcher must run from the base installation. A base or
+    portable installation inside the reviewed working directory is equally
+    mutable: only the executable is pinned, while its adjacent DLLs, ``._pth``
+    files and standard library would be candidate-controlled. Fail closed unless
+    the interpreter and its installation prefixes all lie outside the checkout.
+    """
+    root = resolve_without_alias(Path(working_directory).absolute(),
+                                 "reviewed working directory", directory=True)
+    candidate = Path(getattr(sys, "_base_executable", None) or sys.executable).absolute()
+    # Base installations commonly alias python3 -> python3.X; pin the real file.
+    interpreter = resolve_without_alias(Path(os.path.realpath(candidate)),
                                         "controller Python executable", directory=False)
+    for parent in (interpreter.parent, interpreter.parent.parent):
+        if os.path.lexists(parent / "pyvenv.cfg"):
+            raise ValidationError(
+                "Controller Python executable belongs to a virtual environment; "
+                "run the controller from a base Python installation outside the checkout")
+    installation = [("executable", interpreter)]
+    for attribute in ("base_prefix", "base_exec_prefix"):
+        prefix = getattr(sys, attribute, None)
+        if prefix:
+            installation.append((attribute, Path(prefix).absolute()))
+    for label, location in installation:
+        if _path_within(location, root):
+            raise ValidationError(
+                f"Controller Python {label} is inside the reviewed checkout; "
+                "run the controller from a base Python installation outside the checkout")
+    return interpreter
+
+
+def _windows_launch_chain(plan: dict) -> dict:
+    interpreter = _controller_base_interpreter(plan["working_directory"])
     return {"interpreter": {"path": str(interpreter),
                              "sha256": _file_sha256(interpreter)},
             "interpreter_flags": list(_WINDOWS_LAUNCHER_FLAGS),
@@ -825,6 +884,14 @@ def _snapshot_executables(executables: list[dict], source_root: Path,
             launch_source = source
         else:
             launch_source = snapshot_root / relative
+            if not os.path.lexists(launch_source):
+                # An executable inside the checkout but outside the reviewed
+                # tree (for example the ignored .agentic/.venv interpreter,
+                # whose pyvenv.cfg and site-packages stay mutable) cannot be
+                # launched immutably; fail closed instead of using the live file.
+                raise ValidationError(
+                    f"Executable {relative.as_posix()} is inside the checkout but not in the "
+                    "reviewed snapshot; pin an interpreter installed outside the checkout")
         resolved = resolve_without_alias(launch_source, "snapshot executable", directory=False)
         result.append({**executable, "launch_source_path": str(resolved)})
     return result
