@@ -32,7 +32,7 @@ def valid_basis(value):
 
 
 def is_boundary(finding):
-    return str(finding.get('basis', '')).startswith('boundary:')
+    return isinstance(finding.get('basis'), str) and finding['basis'].startswith('boundary:')
 
 
 def serious(finding):
@@ -204,7 +204,9 @@ def validate_review(report, candidate, prior, files):
             loci.setdefault((item['file'], item['basis']), []).append(item['id'])
     for item in report['findings']:
         require(isinstance(item, dict) and set(item) - {'basis', 'supersedes'} == {'id','severity','status','file','message','evidence'}, 'Invalid finding')
-        require(all(isinstance(item[k], str) for k in item), 'Finding fields must be strings')
+        require(all(isinstance(item[k], str) for k in ('id','severity','status','file','message','evidence'))
+                and (item.get('basis') is None or isinstance(item.get('basis'), str))
+                and (item.get('supersedes') is None or isinstance(item.get('supersedes'), str)), 'Finding fields must be strings or nullable lineage fields')
         require(item['id'].strip() and item['id'] not in seen and item['message'].strip(), 'Empty or duplicate finding identity/message')
         seen.add(item['id'])
         require(item['severity'] in {'BLOCKER','MAJOR','MINOR'} and item['status'] in {'OPEN','DISPUTED','RESOLVED'}, 'Unknown finding severity/status')

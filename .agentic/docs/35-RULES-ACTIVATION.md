@@ -1,6 +1,6 @@
 # Repository rules at activation
 
-AWF 1.9.3 binds the proposed default-branch ruleset to the accepted project
+AWF 1.9.4 binds the proposed default-branch ruleset to the accepted project
 configuration. The configured merge method is one of `merge`, `squash`, or `rebase`.
 The generated proposal permits that method, so AWF never recommends a ruleset that
 would disable the project's merge policy.
