@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -18,6 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
+import venv
 from unittest import mock
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
@@ -503,6 +505,131 @@ class HeavyValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "symlink or reparse"):
                 resolve_without_alias(link, "fixture", directory=True)
 
+    @unittest.skipUnless(os.name != "nt", "POSIX venv interpreter symlink fixture")
+    def test_real_posix_venv_interpreter_symlink_resolves_to_pinned_regular_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            outer = Path(folder).resolve()
+            checkout = outer / "checkout"
+            checkout.mkdir()
+            environment = outer / "managed-venv"
+            venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
+            interpreter = environment / "bin" / "python"
+            self.assertTrue(interpreter.is_symlink(), "fixture must use a real venv symlink")
+            resolved = interpreter.resolve(strict=True)
+            value = {
+                "candidate": CANDIDATE,
+                "working_directory": str(checkout),
+                "partitions": [{"name": "venv", "executable": {
+                    "path": str(interpreter), "sha256": file_digest(resolved)}}],
+            }
+            root, executables = heavy._execution_context(value, CANDIDATE, checkout)
+            self.assertEqual(checkout, root)
+            self.assertEqual(resolved, Path(executables[0]["resolved_path"]))
+            self.assertEqual(file_digest(resolved), executables[0]["sha256"])
+            value["partitions"][0]["executable"]["sha256"] = "0" * 64
+            with self.assertRaisesRegex(ValidationError, "digest mismatch"):
+                heavy._execution_context(value, CANDIDATE, checkout)
+
+    @unittest.skipUnless(os.name != "nt", "POSIX venv interpreter symlink fixture")
+    def test_posix_venv_interpreter_symlink_chain_cannot_escape_allowed_prefixes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            outer = Path(folder).resolve()
+            internal_environment = outer / "internal-venv"
+            internal_binary = internal_environment / "bin"
+            internal_binary.mkdir(parents=True)
+            (internal_environment / "pyvenv.cfg").write_text(
+                "home = governed-fixture\n", encoding="utf-8", newline="\n")
+            internal_target = internal_binary / "python-real"
+            internal_target.write_bytes(b"trusted venv-local interpreter fixture")
+            internal_link = internal_binary / "python"
+            internal_link.symlink_to(internal_target.name)
+            self.assertEqual(
+                internal_target,
+                heavy.resolve_pinned_executable(internal_link, "partition venv executable"))
+
+            environment = outer / "venv"
+            binary = environment / "bin"
+            binary.mkdir(parents=True)
+            (environment / "pyvenv.cfg").write_text(
+                "home = governed-fixture\n", encoding="utf-8", newline="\n")
+            outside = outer / "outside-python"
+            outside.write_bytes(b"not trusted")
+            first = binary / "python"
+            second = binary / "python-chain"
+            second.symlink_to(outside)
+            first.symlink_to(second.name)
+            with self.assertRaisesRegex(ValidationError, "escapes"):
+                heavy.resolve_pinned_executable(first, "partition escape executable")
+
+            trusted_prefix = outer / "trusted-prefix"
+            trusted_binary = trusted_prefix / "bin"
+            trusted_binary.mkdir(parents=True)
+            trusted_target = trusted_binary / "python-real"
+            trusted_target.write_bytes(b"trusted base interpreter fixture")
+            outside_hop = outer / "outside-hop"
+            outside_hop.symlink_to(trusted_target)
+            leave_and_return = binary / "python-return"
+            leave_and_return.symlink_to(outside_hop)
+            with mock.patch.object(
+                    heavy, "_trusted_interpreter_prefixes",
+                    return_value=(trusted_prefix,)):
+                with self.assertRaisesRegex(ValidationError, "chain escapes"):
+                    heavy.resolve_pinned_executable(
+                        leave_and_return, "partition leave-and-return executable")
+
+    def test_simulated_posix_venv_chain_rejects_outside_hop_returning_to_prefix(self):
+        with tempfile.TemporaryDirectory() as folder:
+            outer = Path(folder).resolve()
+            environment = outer / "venv"
+            binary = environment / "bin"
+            trusted_prefix = outer / "trusted-prefix"
+            trusted_binary = trusted_prefix / "bin"
+            binary.mkdir(parents=True)
+            trusted_binary.mkdir(parents=True)
+            (environment / "pyvenv.cfg").write_text(
+                "home = governed-fixture\n", encoding="utf-8", newline="\n")
+            trusted_target = trusted_binary / "python-real"
+            trusted_target.write_bytes(b"trusted base interpreter fixture")
+            direct = binary / "python-direct"
+            outside_hop = outer / "outside-hop"
+            leave_and_return = binary / "python-return"
+            links = {
+                direct: trusted_target,
+                leave_and_return: outside_hop,
+                outside_hop: trusted_target,
+            }
+            real_lstat = os.lstat
+            real_readlink = os.readlink
+
+            def fixture_lstat(path):
+                observed = Path(path)
+                if observed in links:
+                    inode = tuple(links).index(observed) + 100
+                    return mock.Mock(st_mode=stat.S_IFLNK | 0o777,
+                                     st_ino=inode, st_dev=1,
+                                     st_file_attributes=0)
+                return real_lstat(path)
+
+            def fixture_readlink(path):
+                observed = Path(path)
+                if observed not in links:
+                    return real_readlink(path)
+                return str(links[observed])
+
+            with mock.patch.object(
+                    heavy, "_venv_root_for_interpreter", return_value=environment), \
+                    mock.patch.object(
+                        heavy, "_trusted_interpreter_prefixes",
+                        return_value=(trusted_prefix,)), \
+                    mock.patch.object(heavy.os, "lstat", side_effect=fixture_lstat), \
+                    mock.patch.object(heavy.os, "readlink", side_effect=fixture_readlink):
+                self.assertEqual(
+                    trusted_target,
+                    heavy.resolve_pinned_executable(direct, "direct POSIX venv executable"))
+                with self.assertRaisesRegex(ValidationError, "chain escapes"):
+                    heavy.resolve_pinned_executable(
+                        leave_and_return, "leave-and-return POSIX venv executable")
+
     def test_all_partition_barrier_failure_and_deterministic_order(self):
         raw = plan([partition("z", "print('z')"),
                     partition("a", "raise SystemExit(7)")], parallelism=2)
@@ -614,6 +741,30 @@ class HeavyValidationTests(unittest.TestCase):
                     second.result()
         self.assertTrue(event.is_set())
         self.assertEqual(["failed", "queued"], attempts)
+
+    def test_posix_snapshot_recheck_failure_blocks_the_serialized_launch_gate(self):
+        value = json.loads(plan([partition("snapshot-gate")], parallelism=1))
+        part = value["partitions"][0]
+        event = threading.Event()
+        gate = heavy._ChildLaunchAuthorization(
+            review={}, review_digest="0" * 64, plan_digest="1" * 64,
+            candidate=value["candidate"], authorization={}, authenticator=None,
+            capacity=None, max_capacity_age_seconds=300, capacity_required=False,
+            lease=None, lease_guard=lambda: None, clock=lambda: NOW,
+            cancel_event=event,
+            snapshot_verifier=mock.Mock(side_effect=ValidationError("snapshot changed")))
+        with mock.patch.object(heavy, "_authenticate_review",
+                               return_value={"status": "AUTHENTICATED"}), \
+                mock.patch.object(heavy, "_dispatch_freshness",
+                                  return_value={"status": "PASS", "reasons": []}):
+            with self.assertRaisesRegex(ValidationError, "snapshot_integrity_rejected"):
+                with gate.authorize(part, 1, "snapshot-gate-id"):
+                    self.fail("mutated POSIX snapshot reached child creation")
+        evidence = gate.evidence()
+        self.assertTrue(event.is_set())
+        self.assertEqual("REJECTED", evidence["status"])
+        self.assertEqual("REJECTED", evidence["checks"][0]["snapshot_integrity"]["status"])
+        self.assertEqual(["snapshot_integrity_rejected"], evidence["checks"][0]["reasons"])
 
     def test_incomplete_cleanup_keeps_broker_lease_held(self):
         raw = plan([partition("uncertain")], parallelism=1)
@@ -1742,7 +1893,6 @@ class HeavyValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "dirty"):
                 attestor(candidate, str(root))
 
-    @unittest.skipUnless(os.name == "nt", "Immutable snapshot lock (_lock_snapshot) is implemented only on Windows")
     def test_post_attestation_replace_and_ambient_git_config_cannot_redirect_snapshot(self):
         with tempfile.TemporaryDirectory() as folder:
             outer = Path(folder)
@@ -1811,12 +1961,19 @@ class HeavyValidationTests(unittest.TestCase):
             self.assertEqual(replacement_tree, ambient_tree)
             self.assertEqual("reviewed\n", tracked.read_text(encoding="utf-8"))
             with mock.patch.dict(os.environ, hostile):
-                with GitCheckoutSnapshotter(root)(candidate, str(root)) as evidence:
-                    snapshot = Path(evidence["snapshot_working_directory"])
-                    self.assertEqual("reviewed\n",
-                                     (snapshot / "tracked.txt").read_text(encoding="utf-8"))
-                    self.assertEqual(reviewed_tree, evidence["archive_source_object"])
-                    self.assertRegex(evidence["reviewed_tree_inventory_sha256"], r"^[0-9a-f]{64}$")
+                if os.name == "nt":
+                    with GitCheckoutSnapshotter(root)(candidate, str(root)) as evidence:
+                        snapshot = Path(evidence["snapshot_working_directory"])
+                        self.assertEqual("reviewed\n",
+                                         (snapshot / "tracked.txt").read_text(encoding="utf-8"))
+                        self.assertEqual(reviewed_tree, evidence["archive_source_object"])
+                        self.assertRegex(
+                            evidence["reviewed_tree_inventory_sha256"], r"^[0-9a-f]{64}$")
+                else:
+                    with self.assertRaisesRegex(
+                            ValidationError, "same-owner snapshot mutation exclusion"):
+                        with GitCheckoutSnapshotter(root)(candidate, str(root)):
+                            self.fail("POSIX snapshot skip was silently accepted")
                 chain_plan = json.loads(plan(
                     [partition("reviewed-launcher")], parallelism=1,
                     candidate=candidate, cwd=root))
@@ -1860,7 +2017,6 @@ class HeavyValidationTests(unittest.TestCase):
                 with snapshotter(candidate, str(root)):
                     self.fail("tree-mismatched archive was dispatched")
 
-    @unittest.skipUnless(os.name == "nt", "Immutable snapshot lock (_lock_snapshot) is implemented only on Windows")
     def test_git_object_snapshot_isolated_from_checkout_mutation(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -1879,6 +2035,12 @@ class HeavyValidationTests(unittest.TestCase):
                                   check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
             candidate = {**CANDIDATE, "head_sha": head, "tree_sha": tree}
             snapshotter = GitCheckoutSnapshotter(root)
+            if os.name != "nt":
+                with self.assertRaisesRegex(
+                        ValidationError, "same-owner snapshot mutation exclusion"):
+                    with snapshotter(candidate, str(root)):
+                        self.fail("POSIX snapshot skip was silently accepted")
+                return
             with snapshotter(candidate, str(root)) as evidence:
                 snapshot_file = Path(evidence["snapshot_working_directory"]) / "tracked.txt"
                 self.assertEqual("reviewed\n", snapshot_file.read_text(encoding="utf-8"))
@@ -1911,7 +2073,9 @@ class HeavyValidationTests(unittest.TestCase):
                     with snapshotter(candidate, str(root)):
                         self.fail("snapshot with an injected sibling was dispatched")
 
-    @unittest.skipUnless(os.name == "nt", "Immutable snapshot lock (_lock_snapshot) is implemented only on Windows")
+    @unittest.skipUnless(
+        os.name == "nt",
+        heavy_controller.POSIX_SNAPSHOT_SKIP_REASON)
     def test_production_snapshot_blocks_injection_during_execution(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -2028,6 +2192,78 @@ class HeavyValidationTests(unittest.TestCase):
                     target.write_bytes(b"raced")
                     self.assertEqual(expected, file_digest(artifact["launch_path"]))
                     self.assertNotEqual(str(target), artifact["launch_path"])
+
+    @unittest.skipUnless(os.name != "nt", "POSIX descriptor artifact fixture")
+    def test_simulated_macos_without_memfd_uses_unlinked_readonly_artifact(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder).resolve() / Path(TEST_PYTHON).name
+            shutil.copy2(TEST_PYTHON, target)
+            expected = file_digest(target)
+            with mock.patch.object(heavy, "_supports_sealed_memfd", return_value=False):
+                with heavy._immutable_executable(
+                        {"resolved_path": str(target), "sha256": expected}) as artifact:
+                    self.assertEqual("owner-only-unlinked-readonly-fd", artifact["method"])
+                    self.assertEqual(0o500, stat.S_IMODE(os.stat(artifact["launch_path"]).st_mode))
+                    target.write_bytes(b"raced")
+                    self.assertEqual(expected, file_digest(artifact["launch_path"]))
+                    launched = subprocess.run(
+                        [artifact["launch_path"], "-I", "-S", "-c", "print('fallback-ok')"],
+                        check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        pass_fds=artifact["pass_fds"], text=True)
+                    self.assertEqual(0, launched.returncode, launched.stderr)
+                    self.assertEqual("fallback-ok", launched.stdout.strip())
+
+    def test_simulated_macos_snapshot_exclusion_is_governed_skip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            snapshot = Path(folder).resolve() / "snapshot"
+            snapshot.mkdir(mode=0o700)
+            (snapshot / "reviewed.py").write_text(
+                "VALUE = 'reviewed'\n", encoding="utf-8", newline="\n")
+            GitCheckoutSnapshotter._freeze(snapshot)
+            try:
+                with mock.patch.object(heavy_controller.os, "name", "posix"):
+                    with self.assertRaisesRegex(
+                            ValidationError,
+                            "same-owner snapshot mutation exclusion is unavailable"):
+                        GitCheckoutSnapshotter._lock_snapshot(snapshot)
+            finally:
+                GitCheckoutSnapshotter._thaw(snapshot)
+
+    def test_windows_snapshot_root_preserves_lexical_path_for_reparse_check(self):
+        native_path = type(Path.cwd())
+        checkout = native_path("/synthetic/reviewed-checkout")
+        junction = native_path("/synthetic/windows-junction/snapshot")
+        junction_target = native_path("/synthetic/junction-target/snapshot")
+        snapshotter = object.__new__(GitCheckoutSnapshotter)
+        snapshotter.root = checkout
+        snapshotter.run_tree_inventory = lambda _tree: {}
+        snapshotter.run_archive = lambda _tree: b""
+
+        @contextmanager
+        def temporary_directory(**_kwargs):
+            yield str(junction)
+
+        def reject_lexical_alias(path, label, *, directory):
+            self.assertTrue(directory)
+            if label == "execution checkout":
+                return checkout
+            self.assertEqual("checkout snapshot root", label)
+            if path == junction:
+                raise ValidationError(
+                    f"{label} uses a symlink or reparse alias: {junction}")
+            self.fail("Windows snapshot root bypassed lexical reparse validation")
+
+        with mock.patch.object(heavy_controller, "Path", native_path), \
+                mock.patch.object(heavy_controller.os, "name", "nt"), \
+                mock.patch.object(heavy_controller.os.path, "realpath",
+                                  return_value=str(junction_target)), \
+                mock.patch.object(heavy_controller.tempfile, "TemporaryDirectory",
+                                  temporary_directory), \
+                mock.patch.object(heavy_controller, "resolve_without_alias",
+                                  side_effect=reject_lexical_alias):
+            with self.assertRaisesRegex(ValidationError, "reparse alias"):
+                with snapshotter({"tree_sha": "a" * 40}, str(checkout)):
+                    self.fail("Windows reparse alias was accepted")
 
     def test_windows_launcher_bytes_are_reviewed_and_mutation_fenced(self):
         value = json.loads(plan([partition("launcher")], parallelism=1))
