@@ -1,6 +1,6 @@
 # Review tiers, cap dispositions and closeout
 
-Version 1.9.4. The installed 1.9.4 runtime does not include the AWF-16 review-policy revision; that policy and migration ship in 1.9.5. The code (`review_tiers.py`, `review_policy.py`, `gates.py`, `jira_lifecycle.py`, `closeout.py`, `digest.py`, `host_preflight.py`) and the [lifecycle](23-TICKET-LIFECYCLE.md) are the authority; nothing here grants execution authority.
+Version 1.9.4 runtime; AWF-16 policy revision and migration ship in 1.9.5. The code (`review_tiers.py`, `review_policy.py`, `gates.py`, `jira_lifecycle.py`, `closeout.py`, `digest.py`, `host_preflight.py`) and the [lifecycle](23-TICKET-LIFECYCLE.md) are the authority; nothing here grants execution authority.
 
 ## Risk tiers
 
@@ -8,7 +8,7 @@ Every `ticket-contract` declares `risk_tier` (1, 2 or 3) with a `tier_justificat
 
 Tier 1 uses one critic; findings advise. Tier 2 uses three rounds; at cap, ticket P2s and route P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, uses three rounds and requires a recorded owner-review assertion naming a configured owner and the candidate. Provider verification remains the AWF-41 successor scope. Highest tier wins; escalation preserves history. Boundaries always block.
 
-Each round records its exact head, comment URL and body link. An unchanged diff preserves evidence; a changed diff invalidates it. Beyond a cap requires an authenticated owner disposition.
+Each round records its head, comment URL and body link. An unchanged diff preserves evidence; a changed diff invalidates it. Beyond a cap requires an authenticated owner disposition.
 
 ## Bases, lineage and dispositions
 
@@ -41,7 +41,7 @@ The controller is the sole writer. `WORKER_STARTED` → `in_progress`; `PR_READY
 
 ## Closeout and history
 
-`workflow.py validate-closeout RECORD --repository PATH` resolves reviewed head, base, merge commit, tree and every bound blob through Git plumbing and compares blob digests; an absent object fails closed; the working tree is never read; Markdown is output only. `JIRA_RECONCILED` requires `closeout_valid`. A required check declared `verifies_history: true` fails `provenance` unless `checkout_depth: full` (`actions/checkout` with `fetch-depth: 0`, in one governance PR with the long-path step).
+`workflow.py validate-closeout RECORD --repository PATH` resolves reviewed head, base, merge commit, tree and every bound blob through Git plumbing and compares blob digests; an absent object fails closed by name; the working tree is never read; Markdown is output only. `JIRA_RECONCILED` requires `closeout_valid`. A required check declared `verifies_history: true` fails `provenance` unless `checkout_depth: full` (`actions/checkout` with `fetch-depth: 0`, in one governance PR with the long-path step).
 
 ## Digests, skips, parity, resources, preflight
 
@@ -51,4 +51,4 @@ Worker validation records `tests_discovered`, `tests_executed`, `declared_skips`
 
 `execution.host_broker.resources` names resources and slots; contracts list `required_resources`, dispatches copy them, leases hold them, a missing slot refuses dispatch by name, and concurrent COMPLETE runs exceeding a resource's slots fail `provenance`. `POST_MERGE_FINDING` opens a successor (`successor_contract`) carrying `corrects`; merged state is unchanged.
 
-Preflight records nonblocking PASS/WARN/SKIP/N_A for path length, execution policy, symlinks, line endings and Git LFS.
+Preflight records PASS/WARN/SKIP/N_A for path length, `project_lint_scope`, `core.longpaths`, execution policy, symlinks, line endings and Git LFS. Lint scope warns when Ruff/flake8 includes `.agentic`.

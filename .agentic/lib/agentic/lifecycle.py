@@ -170,26 +170,43 @@ def transition(state, event, facts=None, resume_state=None):
 
 def review_round_transition(tier, round_number, *, verdict="PENDING", open_findings=(),
                             owner_review=False, ticketed_p2_records=(), owner_cap_disposition=None,
-                            owner_cap_verified=False, previous_diff_sha=None, current_diff_sha=None, base_only=False):
+                            owner_cap_verified=False, owner_cap_context=None,
+                            configured_owner_ids=None, expected_candidate_binding=None,
+                            previous_diff_sha=None, current_diff_sha=None, base_only=False):
     """Lifecycle-facing review policy API; provider posting remains AWF-29."""
     if previous_diff_sha is not None and current_diff_sha is not None:
         diff = diff_effect(previous_diff_sha, current_diff_sha, base_only=base_only)
     else:
         diff = {"changed": False, "invalidate": False, "reason": "no diff comparison supplied"}
-    # Validate the requested round before any diff shortcut.  A changed diff
-    # cannot be used to bypass the tier cap (especially a refused fourth
-    # round); cap disposition is authenticated by the controller before this
-    # policy API is called.
-    if owner_cap_disposition is not None and not owner_cap_verified:
-        raise ValidationError("Lifecycle requires an authenticated owner cap-disposition record")
+    # Validate the requested round before any diff shortcut.  The lifecycle
+    # API must not accept a schema-shaped mapping plus a caller-supplied
+    # boolean as authentication.  The controller supplies the full evidence
+    # context so the same owner-record verifier used by the real gate can
+    # authenticate the disposition.
+    if owner_cap_disposition is not None:
+        if owner_cap_verified:
+            raise ValidationError("Lifecycle does not trust caller-supplied cap verification")
+        if owner_cap_context is None:
+            raise ValidationError("Lifecycle requires an authenticated owner cap-disposition context")
+        from .authorization import verify_owner_record
+        verify_owner_record(owner_cap_disposition, "review-cap-disposition",
+                            owner_cap_context["config"], owner_cap_context["contracts"],
+                            owner_cap_context["now"],
+                            head_sha=owner_cap_context["head_sha"],
+                            binding=owner_cap_context["binding"],
+                            runs=owner_cap_context.get("runs"),
+                            excluded_contexts=owner_cap_context.get("excluded_contexts", ()),
+                            excluded_producers=owner_cap_context.get("excluded_producers", ()))
     validate_round(tier, round_number,
-                   owner_cap_disposition=owner_cap_disposition if owner_cap_verified else None)
+                   owner_cap_disposition=owner_cap_disposition)
     if diff["invalidate"]:
         return {"status": "REVIEW_REQUIRED", "round": round_number, "history_preserved": True,
                 "invalidated": True, "diff": diff}
     decision = review_decision(tier, round_number, latest_pass=verdict in {"PASS", "APPROVE"},
                                open_findings=open_findings, owner_review=owner_review,
                                owner_cap_disposition=owner_cap_disposition,
-                               ticketed_p2_records=ticketed_p2_records)
+                               ticketed_p2_records=ticketed_p2_records,
+                               configured_owner_ids=configured_owner_ids,
+                               expected_candidate_binding=expected_candidate_binding)
     return {**decision, "round": round_number, "history_preserved": True,
             "invalidated": False, "diff": diff, "verdict": verdict}

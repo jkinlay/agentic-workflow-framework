@@ -148,13 +148,14 @@ def validate_round(tier, round_number, *, owner_cap_disposition=None, config=Non
 
 
 def verdict_record(*, pr_comment_url, pr_body_link, verdict, tier, round_number, head_sha,
-                   reviewer_id, evidence=None, owner_review=False):
+                   reviewer_id, evidence=None, owner_review=False,
+                   owner_cap_disposition=None):
     """Build the policy-level verdict receipt; posting remains a successor concern."""
     if verdict not in {"PASS", "P1", "P2", "REQUEST_CHANGES"}:
         raise ValidationError("unknown review verdict")
     if not pr_comment_url or not pr_body_link:
         raise ValidationError("every verdict needs PR comment URL and PR-body link evidence")
-    validate_round(tier, round_number)
+    validate_round(tier, round_number, owner_cap_disposition=owner_cap_disposition)
     return {"verdict": verdict, "tier": tier, "round": round_number, "head_sha": head_sha,
             "reviewer_id": reviewer_id, "pr_comment_url": pr_comment_url,
             "pr_body_link": pr_body_link, "evidence": list(evidence or []),
@@ -176,8 +177,10 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
     # always consult the shared predicate first.
     if any(is_boundary(f) or f.get("boundary") or f.get("boundary_code") for f in findings):
         return {"status": "BLOCKED", "reason": "boundary finding blocks in every tier", "cap": cap}
-    if tier == TIER_3 and not _owner_review_valid(owner_review, configured_owner_ids=configured_owner_ids,
-                                                  expected_candidate_binding=expected_candidate_binding):
+    if tier == TIER_3 and (configured_owner_ids is None or expected_candidate_binding is None
+                           or not _owner_review_valid(owner_review,
+                                                      configured_owner_ids=configured_owner_ids,
+                                                      expected_candidate_binding=expected_candidate_binding)):
         return {"status": "OWNER_REVIEW_REQUIRED", "cap": cap}
     if tier == TIER_2 and rounds >= cap and p1:
         return {"status": "ROUTE_TO_OWNER", "reason": "P1 remains open at Tier 2 cap", "cap": cap}

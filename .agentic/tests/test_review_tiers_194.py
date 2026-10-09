@@ -83,8 +83,14 @@ class ReviewTiers194Tests(unittest.TestCase):
                  "candidate_binding": {"repository_id": 1, "pr_number": 1,
                                         "base_sha": "a" * 40, "head_sha": "b" * 40},
                  }
-        self.assertEqual("QUALIFIED", review_decision(3, 3, latest_pass=True,
-                         owner_review=owner)["status"])
+        self.assertEqual("QUALIFIED", review_decision(
+            3, 3, latest_pass=True, owner_review=owner,
+            configured_owner_ids=[1001],
+            expected_candidate_binding=owner["candidate_binding"])["status"])
+        self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(
+            3, 3, latest_pass=True, owner_review={**owner, "owner_id": 999},
+            configured_owner_ids=[1001],
+            expected_candidate_binding=owner["candidate_binding"])["status"])
         self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(
             3, 3, latest_pass=True, owner_review=True)["status"])
 
@@ -133,9 +139,31 @@ class ReviewTiers194Tests(unittest.TestCase):
                                 tier=1, round_number=1, head_sha="a" * 40, reviewer_id="critic")
         self.assertEqual("https://example.test/comment/1", record["pr_comment_url"])
 
+    def test_fourth_round_receipt_requires_the_owner_cap_record(self):
+        disposition = {
+            "decision": "EXTEND_ONE_CYCLE", "record_id": "owner-record",
+            "created_at": "2026-09-09T12:00:00Z", "producer_id": "verifier",
+            "run_id": "run", "binding": {}, "open_finding_ids": [],
+            "notes": "extend", "cycles": 3, "cap_extensions": 1,
+            "successor_ticket": None, "authorization_request_id": "request",
+            "owner_source": {"channel": "github_pr_comment", "comment_id": 1},
+            "evidence": ["urn:awf:fixture:evidence"]}
+        with self.assertRaises(ValidationError):
+            verdict_record(pr_comment_url="https://example.test/comment/4",
+                           pr_body_link="https://example.test/pr#verdict-4",
+                           verdict="PASS", tier=2, round_number=4,
+                           head_sha="a" * 40, reviewer_id="critic")
+        record = verdict_record(pr_comment_url="https://example.test/comment/4",
+                                pr_body_link="https://example.test/pr#verdict-4",
+                                verdict="PASS", tier=2, round_number=4,
+                                head_sha="a" * 40, reviewer_id="critic",
+                                owner_cap_disposition=disposition)
+        self.assertEqual(4, record["round"])
+
     def test_boundary_findings_block(self):
         result = review_decision(1, 1, latest_pass=True,
-                                 open_findings=[{"id": "B", "severity": "MINOR", "boundary_code": "SCOPE_ESCAPE"}])
+                                 open_findings=[{"id": "B", "severity": "MINOR",
+                                                 "basis": {"boundary_code": "SCOPE_ESCAPE"}}])
         self.assertEqual("BLOCKED", result["status"])
 
     def test_run_cap_is_independent_from_review_cap(self):

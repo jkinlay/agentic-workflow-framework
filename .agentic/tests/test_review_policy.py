@@ -434,6 +434,35 @@ class CapTests(Fixture):
         self.assertFalse(evidence_only(contract, ["evidence/run.json", "src/example.py"]))
         self.assertFalse(evidence_only(contract, []))
 
+    def test_gate_rejects_unbound_verdict_posting_urls(self):
+        verdict = self.bundle["review_verdicts"][0]
+        verdict["pr_comment_url"] = "https://example.invalid/unrelated/comment"
+        verdict["pr_body_link"] = "https://example.invalid/unrelated/body"
+        self.assertEqual("FAIL", self.gate()["gates"]["verdict_posting"]["result"])
+
+    def test_gate_preserves_old_head_round_and_requires_distinct_critic_runs(self):
+        first = self.bundle["review_verdicts"][0]
+        first["head_sha"] = "a" * 40
+        second_run = copy.deepcopy(next(run for run in self.bundle["runs"]
+                                        if run["run_id"] == first["run_id"]))
+        second_run.update(record_id=str(uuid.uuid4()), run_id=str(uuid.uuid4()),
+                          producer_id="fixture-critic-2", context_id=str(uuid.uuid4()))
+        self.bundle["runs"].append(second_run)
+        second = copy.deepcopy(first)
+        second.update(record_id=str(uuid.uuid4()), run_id=second_run["run_id"],
+                      producer_id=second_run["producer_id"], round=2,
+                      head_sha=self.bundle["candidate"]["head_sha"])
+        second["reviewer_id"] = second_run["producer_id"]
+        second["pr_comment_url"] = "https://github.com/fixture/example/pull/7#issuecomment-2"
+        second["pr_body_link"] = "https://github.com/fixture/example/pull/7#review-verdict-2"
+        self.bundle["review_verdicts"].append(second)
+        self.assertEqual("PASS", self.gate()["gates"]["verdict_posting"]["result"])
+        self.bundle["review_verdicts"][1]["run_id"] = first["run_id"]
+        self.bundle["review_verdicts"][1]["producer_id"] = first["producer_id"]
+        self.bundle["review_verdicts"][1]["reviewer_id"] = first["reviewer_id"]
+        with self.assertRaisesRegex(ValidationError, "distinct independent critic"):
+            self.gate()
+
 
 class ClosureAndParityTests(Fixture):
     def test_closure_standard_is_required_from_both_parties(self):

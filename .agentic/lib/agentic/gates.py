@@ -239,6 +239,12 @@ def evaluate(config, workflow, bundle, contracts, now):
     # signal.  Normalize that one historical omission for comparison, while
     # still requiring the bundle to carry an exact durable classification.
     durable_classification = classification
+    if legacy_security_classification:
+        # Normalize the one additive 1.9.3 omission in-place so an accepted
+        # legacy bundle retains the observed security signal durably.  No
+        # other classification drift gets compatibility treatment.
+        contract["risk_classification"] = durable_classification
+        bundle["tier_classification"] = durable_classification
     if declared_classification != durable_classification and not legacy_security_classification:
         raise ValidationError("Contract risk_classification does not match observed paths and risk evidence")
     if (bundle.get("tier_classification") != durable_classification
@@ -252,6 +258,7 @@ def evaluate(config, workflow, bundle, contracts, now):
     if {v["round"] for v in verdicts} != expected_rounds:
         raise ValidationError("Review verdicts must cover every consumed round without gaps")
     terminal_round = max(v["round"] for v in verdicts)
+    critic_run_ids = set()
     for verdict in verdicts:
         # Verdicts are retained review records. Their candidate identity and
         # freshness are current-gate requirements, while the contract hash
@@ -280,6 +287,9 @@ def evaluate(config, workflow, bundle, contracts, now):
             raise ValidationError("Owner/verifier assertions do not consume numbered critic review rounds")
         if run["role"] != "critic" or run["producer_id"] != verdict["reviewer_id"]:
             raise ValidationError("Review verdict must be bound to its independent critic run")
+        if verdict["run_id"] in critic_run_ids:
+            raise ValidationError("Each consumed review round needs a distinct independent critic run")
+        critic_run_ids.add(verdict["run_id"])
         registry_by_sha = {entry["sha256"] for entry in bundle["evidence_registry"]}
         if not verdict["evidence"] or not set(verdict["evidence"]).issubset(evidence_ids):
             raise ValidationError("Review verdict evidence must resolve through the evidence registry")
@@ -394,8 +404,10 @@ def evaluate(config, workflow, bundle, contracts, now):
     parity_ok, parity_problems = local_ci_parity(config, contract, worker, ci)
     outcomes = {
         "review_completion": True,
-        "verdict_posting": bool(verdicts) and all(v["head_sha"] == candidate["head_sha"]
-                                                   and v["pr_comment_url"] and v["pr_body_link"] for v in verdicts),
+        "verdict_posting": bool(verdicts) and all(
+            v["pr_comment_url"].startswith(f"{candidate['host']}/{candidate['repository']}/pull/{candidate['pr_number']}#")
+            and v["pr_body_link"].startswith(f"{candidate['host']}/{candidate['repository']}/pull/{candidate['pr_number']}#")
+            for v in verdicts if v["round"] == terminal_round),
         "acceptance_criteria": ac_ok and commands_ok and worker["status"] == "COMPLETE" and worker["self_review_complete"] and not worker["blockers"],
         "scope": scope_ok,
         "critic_current_tuple": critic_ok,
