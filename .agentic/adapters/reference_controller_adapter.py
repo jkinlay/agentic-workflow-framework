@@ -64,6 +64,9 @@ class _Clock:
 class _SubprocessRunner:
     """Small default runner; tests replace it with a fake."""
 
+    def __init__(self):
+        self._processes = {}
+
     def run(self, argv, *, cwd, env, timeout, max_bytes):
         try:
             result = subprocess.run(argv, cwd=str(cwd), env=env, shell=False,
@@ -80,26 +83,43 @@ class _SubprocessRunner:
         except UnicodeDecodeError as exc:
             raise ValidationError("External command output was not UTF-8") from exc
 
-    def launch(self, argv, *, cwd, env, timeout):
+    def launch(self, argv, *, cwd, env, timeout, stdin):
         try:
             process = subprocess.Popen(argv, cwd=str(cwd), env=env, shell=False,
-                                       stdin=subprocess.DEVNULL,
+                                       stdin=subprocess.PIPE,
                                        stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL,
                                        start_new_session=True)
         except OSError as exc:
             raise ValidationError("Codex detached launch failed") from exc
+        try:
+            process.stdin.write(stdin.encode("utf-8"))
+            process.stdin.close()
+        except (OSError, BrokenPipeError) as exc:
+            process.kill()
+            raise ValidationError("Codex prompt could not be delivered") from exc
+        self._processes[process.pid] = process
         return {"pid": process.pid, "status": "LAUNCHED"}
 
     def observe(self, record, *, timeout):
         pid = record.get("pid")
         if not isinstance(pid, int) or pid <= 0:
             raise ValidationError("Detached run record has no process identity")
+        process = self._processes.get(pid)
+        if process is None:
+            # A vanished PID is not proof of a successful terminal outcome.
+            # After a host restart the default runner has no exit-code handle,
+            # so observation fails closed instead of accepting disappearance.
+            raise ValidationError("Detached Codex terminal outcome was not proven")
         try:
-            os.kill(pid, 0)
-        except OSError:
-            return {"status": "COMPLETED"}
-        raise ValidationError("Detached Codex run is still in flight")
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise ValidationError("Detached Codex run timed out") from exc
+        finally:
+            self._processes.pop(pid, None)
+        if code != 0:
+            raise ValidationError("Detached Codex run returned a non-zero exit")
+        return {"status": "COMPLETED", "returncode": 0, "terminal": True}
 
 
 class _HttpTransport:
@@ -163,8 +183,8 @@ def _json_output(value):
     return result
 
 
-def _clock_text(clock):
-    value = _invoke(clock, "now")
+def _clock_text(clock, value=None):
+    value = _invoke(clock, "now") if value is None else value
     timestamp(value)
     return value
 
@@ -267,8 +287,6 @@ def _validate_ticket_records(items):
 
 
 def _page_items(response, *, key, page_size):
-    if isinstance(response, list):
-        return response, len(response) < page_size, None
     _require(isinstance(response, dict) and set(response) <= {key, "complete", "next_page"},
              "Paged GitHub response has an invalid shape")
     items = response.get(key)
@@ -284,9 +302,10 @@ def _page_items(response, *, key, page_size):
     return items, complete is True, next_page
 
 
-def _append_page(path, page, page_number):
+def _append_page(path, page_number, page_size):
+    path = re.sub(r"([?&])per_page=[^&]*", r"\1", path)
     separator = "&" if "?" in path else "?"
-    return path + separator + "page=" + str(page_number)
+    return path + separator + "page=" + str(page_number) + "&per_page=" + str(page_size)
 
 
 def _build(config):
@@ -375,10 +394,13 @@ def _build(config):
             return result
         return _normalize_command_result(result)
 
-    def gh_json(path):
+    def gh_json(path, *, paginate=False):
         _text(path, "GitHub API path", maximum=2048)
         _require(".." not in path and not path.startswith("http"), "GitHub API path is unsafe")
-        output = command(gh_executable, ["api", "--hostname", "github.com", "--method", "GET", path])
+        args = ["api", "--hostname", "github.com", "--method", "GET"]
+        if paginate:
+            args += ["--paginate", "--slurp"]
+        output = command(gh_executable, [*args, path])
         return _json_output(output)
 
     def github_pages(endpoint, key):
@@ -388,7 +410,19 @@ def _build(config):
         for _ in range(MAX_PAGES):
             _require(_invoke(clock, "monotonic") - started <= MAX_SECONDS,
                      "GitHub pagination exceeded its time bound")
-            response = gh_json(_append_page(endpoint, page, page))
+            response = gh_json(_append_page(endpoint, page, gh_page_size), paginate=True)
+            if isinstance(response, list):
+                # gh --paginate --slurp is provider pagination evidence: the
+                # CLI followed every Link header and returned one JSON value
+                # per page.  A bare provider-default list is deliberately not
+                # accepted because its page size is unknown.
+                _require(all(isinstance(part, list) for part in response),
+                         "GitHub response did not include pagination evidence")
+                values = []
+                for part in response:
+                    values.extend(part)
+                _require(len(values) <= 10000, "GitHub observation exceeded its item bound")
+                return values
             items, complete, next_page = _page_items(response, key=key, page_size=gh_page_size)
             values.extend(items)
             _require(len(values) <= 10000, "GitHub observation exceeded its item bound")
@@ -397,7 +431,7 @@ def _build(config):
             page = next_page or page + 1
         raise ValidationError("GitHub pagination did not prove completeness")
 
-    def observe_inventory():
+    def observe_inventory(controller_now=None):
         repository = gh_json("repos/" + github["repository"])
         _require(type(repository.get("id")) is int and repository["id"] == github["repository_id"]
                  and repository.get("full_name", "").casefold() == github["repository"].casefold(),
@@ -420,7 +454,8 @@ def _build(config):
         tickets = _validate_ticket_records(tickets)
         binding = {"project_id": github["project_id"], "repository_id": str(github["repository_id"]),
                    "scope_sha256": github["scope_sha256"]}
-        return {"source": "host_observation", "observed_at": _clock_text(clock),
+        observed_at = _clock_text(clock, controller_now)
+        return {"source": "host_observation", "observed_at": observed_at,
                 "binding": binding, "complete": True,
                 "inventory_sha256": fingerprint("controller-inventory", {"binding": binding, "tickets": tickets}),
                 "tickets": tickets}
@@ -433,8 +468,26 @@ def _build(config):
         branch = github["branch_pattern"].format(ticket=ticket, slug=slug)
         repo = gh_json("repos/" + github["repository"])
         actor = gh_json("user")
-        branch_observed = gh_json("repos/" + github["repository"] + "/branches/" + quote(branch, safe=""))
         permission = gh_json("repos/" + github["repository"] + "/collaborators/" + quote(str(actor.get("login")), safe="") + "/permission")
+        auth = _json_output(command(gh_executable, ["auth", "status", "--hostname", "github.com", "--json", "hosts"]))
+        hosts = auth.get("hosts") if isinstance(auth, dict) else None
+        _require(isinstance(hosts, dict) and isinstance(hosts.get("github.com"), list),
+                 "GitHub authentication profile observation is incomplete")
+        active = [entry for entry in hosts["github.com"]
+                  if isinstance(entry, dict) and entry.get("active") is True]
+        _require(len(active) == 1, "GitHub authentication profile is not uniquely observed")
+        auth_profile = active[0].get("profile") or active[0].get("login")
+        _require(isinstance(auth_profile, str) and auth_profile,
+                 "GitHub authentication profile is missing")
+        rules_response = gh_json(github.get(
+            "rules_endpoint", "repos/" + github["repository"] + "/rulesets?includes_parents=true"),
+            paginate=True)
+        if isinstance(rules_response, list) and all(isinstance(part, list) for part in rules_response):
+            rulesets = [rule for part in rules_response for rule in part]
+        elif isinstance(rules_response, dict) and isinstance(rules_response.get("items"), list):
+            rulesets = rules_response["items"]
+        else:
+            raise ValidationError("GitHub rules response did not prove completeness")
         _require(type(repo.get("id")) is int and repo["id"] == github["repository_id"]
                  and repo.get("full_name", "").casefold() == github["repository"].casefold(),
                  "GitHub publication repository identity mismatch")
@@ -442,18 +495,38 @@ def _build(config):
                  "GitHub actor observation is incomplete")
         permission_name = permission.get("permission")
         allowed = permission_name in {"push", "maintain", "admin"}
-        protected = branch_observed.get("protected") is True
+        ref = "refs/heads/" + branch
+        applicable = []
+        for ruleset in rulesets:
+            if not isinstance(ruleset, dict) or ruleset.get("enforcement") != "active":
+                continue
+            conditions = ruleset.get("conditions", {}).get("ref_name", {})
+            includes = conditions.get("include", []) if isinstance(conditions, dict) else []
+            excludes = conditions.get("exclude", []) if isinstance(conditions, dict) else []
+            _require(isinstance(includes, list) and isinstance(excludes, list),
+                     "GitHub ruleset ref conditions are malformed")
+            matches = any(pattern in {"~ALL", "~DEFAULT_BRANCH", branch, ref}
+                          or __import__("fnmatch").fnmatchcase(ref, pattern)
+                          or __import__("fnmatch").fnmatchcase(branch, pattern)
+                          for pattern in includes if isinstance(pattern, str))
+            excluded = any(__import__("fnmatch").fnmatchcase(ref, pattern)
+                           or __import__("fnmatch").fnmatchcase(branch, pattern)
+                           for pattern in excludes if isinstance(pattern, str))
+            if matches and not excluded:
+                applicable.append(ruleset)
+        rules_state = "ALLOWED" if applicable else "UNOBSERVED"
+        rules_evidence = ("Observed active GitHub ruleset(s) applicable to prospective " + ref
+                          if applicable else "No complete applicable ruleset observation for prospective " + ref)
         observed_at = _clock_text(clock)
         identity = {"actor_id": actor["id"], "actor_login": actor["login"],
-                    "auth_profile": github.get("auth_profile"), "repository_id": repo["id"],
+                    "auth_profile": auth_profile, "repository_id": repo["id"],
                     "repository": github["repository"], "readable": True,
                     "protocol": github.get("protocol", "https"), "observed_at": observed_at}
         return {"format": "awf-publication-readiness-1", "source": "host_observation",
                 "host": github["host"], "observed_at": observed_at, "ticket": ticket,
                 "slug": slug, "branch": branch, "identity": identity,
                 "authenticated": True, "remote_reachable": True,
-                "rules": {"state": "ALLOWED" if protected else "UNOBSERVED",
-                           "evidence": "GitHub branch protection observation"},
+                "rules": {"state": rules_state, "evidence": rules_evidence},
                 "push_permitted": allowed, "draft_pr_permitted": allowed}
 
     def dispatch_ticket(payload):
@@ -473,6 +546,8 @@ def _build(config):
         prompt = ("AWF continuous-controller role=" + role + "\nTicket: " + payload["ticket"]
                   + "\nAction: " + payload["next_action"] + "\nPaths: "
                   + ",".join(payload["paths"]))
+        _require(len(prompt.encode("utf-8")) <= MAX_OUTPUT,
+                 "Codex task prompt exceeded its byte bound")
         argv = ["exec", "--ephemeral", "--ignore-user-config", "--sandbox", sandbox,
                 "-c", 'approval_policy="never"', "-c",
                 "model_reasoning_effort=" + selected["reasoning_effort"], "--model", selected["model"],
@@ -481,13 +556,22 @@ def _build(config):
                   "dispatch_nonce": payload["dispatch_nonce"], "stream": payload["stream"],
                   "ticket": payload["ticket"], "prepared_at": payload["prepared_at"],
                   "begun_at": payload["begun_at"], "role": role, "argv": argv,
-                  "worktree": str(worktree), "status": "PREPARED", "created_at": _clock_text(clock)}
+                  "worktree": str(worktree), "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                  "argv_sha256": hashlib.sha256(canonical(argv)).hexdigest(),
+                  "launch_nonce": str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                                  "awf:codex-launch:" + payload["dispatch_nonce"])),
+                  "status": "PREPARED", "created_at": _clock_text(clock)}
         _write_record(record_path, record)
         _verify_executable(codex_executable)
         launched = _invoke(runner, "launch", [str(codex_executable["path"]), *argv],
-                           cwd=worktree, env=_safe_env(token_env), timeout=timeout)
+                           cwd=worktree, env=_safe_env(token_env), timeout=timeout,
+                           stdin=prompt)
         _require(isinstance(launched, dict), "Codex launch returned an invalid result")
-        record.update({"status": "LAUNCHED", "pid": launched.get("pid"), "launched_at": _clock_text(clock)})
+        _require(launched.get("status") == "LAUNCHED" and
+                 type(launched.get("pid")) is int and launched["pid"] > 0,
+                 "Codex launch did not return a durable process identity")
+        record.update({"status": "LAUNCHED", "pid": launched["pid"],
+                       "launched_at": _clock_text(clock)})
         _write_record(record_path, record)
         return _record_receipt(payload, record["launched_at"])
 
@@ -503,11 +587,12 @@ def _build(config):
                  "Dispatch observation identity differs from durable record")
         reconcile = "reconcile_nonce" in payload
         if reconcile:
-            _require(record.get("status") in {"LAUNCHED", "COMPLETED"},
-                     "Interrupted dispatch has no observable durable launch")
+            _require(record.get("status") in {"PREPARED", "LAUNCHED", "COMPLETED"},
+                     "Interrupted dispatch has no observable durable launch intent")
             result = _invoke(runner, "observe", record, timeout=timeout)
-            _require(isinstance(result, dict) and result.get("status") in {"COMPLETED", "ACCEPTED"},
-                     "Interrupted dispatch was not reconciled by observation")
+            _require(isinstance(result, dict) and result.get("status") == "COMPLETED"
+                     and result.get("returncode") == 0 and result.get("terminal") is True,
+                     "Interrupted dispatch terminal outcome was not proven by observation")
             record["status"] = "COMPLETED"
             record["observed_at"] = _clock_text(clock)
             _write_record(path, record)
@@ -576,12 +661,17 @@ def _build(config):
     def provider_identity():
         myself = jira_json("GET", "/rest/api/3/myself")
         project = jira_json("GET", "/rest/api/3/project/" + quote(jira["project_key"], safe=""))
+        tenant = jira_json("GET", "/_edge/tenant_info")
+        observed_cloud = tenant.get("cloudId")
+        observed_site = tenant.get("siteUrl")
         _require(myself.get("accountId") == jira["controller_actor_id"]
                  and str(project.get("id")) == jira["provider_project_id"]
-                 and project.get("key") == jira["project_key"],
+                 and project.get("key") == jira["project_key"]
+                 and observed_cloud == jira["cloud_id"]
+                 and isinstance(observed_site, str) and observed_site.rstrip("/") == site,
                  "Jira provider identity mismatch")
-        return {"cloud_id": jira["cloud_id"], "site": jira["site"],
-                "project_id": jira["provider_project_id"], "project_key": jira["project_key"],
+        return {"cloud_id": observed_cloud, "site": observed_site.rstrip("/"),
+                "project_id": str(project["id"]), "project_key": project["key"],
                 "controller_actor_id": jira["controller_actor_id"]}
 
     def read_current_status(binding):
@@ -606,11 +696,31 @@ def _build(config):
                 "jira_provider": record["jira_provider"]}
 
     def read_transition(record, operation):
-        current = read_current_status({"issue_id": record["binding"]["issue_id"],
-                                       "jira_provider": record["jira_provider"]})
-        return {"issue_id": current["issue_id"], "status": current["status_id"],
-                "actor": record["producer_id"], "observed_at": current["observed_at"],
-                "jira_provider": current["jira_provider"]}
+        issue_id = record["binding"]["issue_id"]
+        value = jira_json("GET", "/rest/api/3/issue/" + quote(issue_id, safe="")
+                           + "?fields=status&expand=changelog")
+        status = value.get("fields", {}).get("status", {}).get("id")
+        histories = value.get("changelog", {}).get("histories")
+        _require(isinstance(status, str) and status and isinstance(histories, list),
+                 "Jira transition history is unavailable")
+        candidates = []
+        for history in histories:
+            if not isinstance(history, dict) or not isinstance(history.get("created"), str):
+                continue
+            author = history.get("author", {})
+            actor = author.get("accountId") if isinstance(author, dict) else None
+            for item in history.get("items", []):
+                if not isinstance(item, dict) or item.get("field") != "status":
+                    continue
+                if item.get("to") == record.get("to_status_id") or item.get("toString") == status:
+                    if isinstance(actor, str) and actor:
+                        candidates.append((history["created"], actor))
+        _require(candidates, "Jira transition actor was not independently observed")
+        candidates.sort(key=lambda item: item[0])
+        _created, actor = candidates[-1]
+        observed_at = _clock_text(clock)
+        return {"issue_id": issue_id, "status": status, "actor": actor,
+                "observed_at": observed_at, "jira_provider": record["jira_provider"]}
 
     def reconcile_merged_ticket(ticket):
         _text(ticket, "Merged Jira ticket")
@@ -633,10 +743,14 @@ def _build(config):
                 "before_status_id": before["status_id"], "after_status_id": after["status"],
                 "observed_at": after["observed_at"]}
 
+    scope_snapshots = {}
+
     def fetch_scope_page(scope, cursor):
         _text(scope, "Jira scope", maximum=4096)
-        provider = {"cloud_id": jira["cloud_id"], "project_id": jira["provider_project_id"],
-                    "actor_id": jira["controller_actor_id"]}
+        observed_provider = provider_identity()
+        provider = {"cloud_id": observed_provider["cloud_id"],
+                    "project_id": observed_provider["project_id"],
+                    "actor_id": observed_provider["controller_actor_id"]}
         scope_sha = fingerprint("jira-progress-scope", {"scope": scope, "binding": provider, "include_epics": False})
         start = 0 if cursor is None else int(cursor)
         _require(start >= 0, "Jira scope cursor is invalid")
@@ -645,8 +759,20 @@ def _build(config):
                            + "&startAt=" + str(start) + "&maxResults=" + str(page_size))
         issues = result.get("issues")
         total = result.get("total")
-        _require(isinstance(issues, list) and type(total) is int and total >= 0,
+        _require(isinstance(issues, list) and type(total) is int and total >= 0
+                 and isinstance(result.get("snapshot_id"), str) and result["snapshot_id"]
+                 and isinstance(result.get("observed_at"), str),
                  "Jira scope response is incomplete")
+        timestamp(result["observed_at"])
+        snapshot = scope_snapshots.get(scope)
+        if snapshot is None:
+            _require(cursor is None, "Jira scope continuation has no retained snapshot")
+            scope_snapshots[scope] = {"snapshot_id": result["snapshot_id"],
+                                      "observed_at": result["observed_at"]}
+        else:
+            _require(result["snapshot_id"] == snapshot["snapshot_id"]
+                     and result["observed_at"] == snapshot["observed_at"],
+                     "Jira provider snapshot changed during pagination")
         items = []
         for issue in issues:
             fields = issue.get("fields", {}) if isinstance(issue, dict) else {}
@@ -658,8 +784,8 @@ def _build(config):
                           "status_category": "TERMINAL" if category == "done" else "NON_TERMINAL"})
         next_cursor = None if start + len(issues) >= total else str(start + len(issues))
         complete = next_cursor is None
-        snapshot_id = result.get("snapshot_id") or fingerprint("jira-snapshot", {"scope": scope, "total": total})
-        observed_at = _clock_text(clock)
+        snapshot_id = result["snapshot_id"]
+        observed_at = result["observed_at"]
         return {"items": items, "next_cursor": next_cursor, "complete": complete,
                 "snapshot_id": snapshot_id, "scope_sha256": scope_sha,
                 "observed_at": observed_at}

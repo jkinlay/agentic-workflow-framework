@@ -86,14 +86,9 @@ def main():
     output = args.output.absolute()
     output.parent.mkdir(parents=True, exist_ok=True)
     modes = load_modes(ROOT, args.git_mode_manifest)
-    # A materialized source can contain working-tree additions that were not
-    # present in the raw Git mode manifest used to reproduce its base tree.
-    # New regular files are conservatively archived non-executable; a live
-    # checkout without an explicit manifest remains strict via load_modes().
-    if args.git_mode_manifest:
-        with Tree(ROOT) as tree:
-            for relative in release_paths(tree):
-                modes.setdefault(relative.replace('\\', '/'), '100644')
+    # Every archive member must have an authoritative raw-Git mode.  Never
+    # silently manufacture a mode for a missing manifest entry: that can hide
+    # an incomplete source projection or strip an approved executable bit.
     prefix = 'agentic-workflow-template-v' + VERSION.removesuffix('.0') + '/'
     expected = {}
     with Tree(ROOT) as tree, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_STORED) as archive:

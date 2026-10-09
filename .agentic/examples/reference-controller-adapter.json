@@ -28,6 +28,8 @@
     "scope_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_branch": "main",
     "branch_pattern": "codex/{ticket}-{slug}",
+    "expected_actor_id": 0,
+    "auth_profile": "CHANGE_ME_GH_PROFILE",
     "executable": {
       "path": "<GH_EXECUTABLE>",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
