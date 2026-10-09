@@ -13,7 +13,7 @@ from unittest.mock import patch
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, loads, sha256
 from agentic.safeio import Tree
-from agentic.streams import DEFAULT_NATIVE_EXECUTION, JOURNAL, MARKDOWN, PLAN, plan_inventory, render_markdown, write_project_plan
+from agentic.streams import DEFAULT_NATIVE_EXECUTION, JOURNAL, MARKDOWN, PLAN, plan_inventory, recommendation_groups, render_markdown, write_project_plan
 from test_operating_integration import configuration as operating_configuration, governance as operating_governance
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -148,6 +148,16 @@ class PlannerTests(unittest.TestCase):
                                  r"^<redacted-worktree:sha256:[0-9a-f]{64}>$")
                 self.assertEqual(plan["path_redaction"]["applied_ticket_ids"], ["DEMO-11"])
                 self.assertEqual(plan["path_redaction"]["inventory_pin"], "original-verified-bytes")
+
+    def test_recommendation_groups_redacts_absolute_retained_owner_worktree(self):
+        absolute = synthetic_home_path(".codex", "worktrees", "project")
+        self.value["tickets"][0].update(status="in_progress", ownership=owner(), history=[history("Started")])
+        self.value["tickets"][0]["ownership"]["worktree"] = absolute
+        raw = canonical(self.value)
+        recommendation = recommendation_groups(raw, sha256(raw), NOW, allow_synthetic=True)
+        self.assertEqual(recommendation["inventory_sha256"], sha256(raw))
+        self.assertNotIn(absolute, json.dumps(recommendation))
+        self.assertTrue(any("DEMO-11" in group["ticket_ids"] for group in recommendation["groups"]))
 
     def test_redacted_worktree_identity_still_rejects_tampering(self):
         self.value["tickets"][0].update(status="in_progress", ownership=owner(), history=[history("Started")])

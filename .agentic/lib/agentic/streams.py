@@ -866,7 +866,8 @@ def recommendation_groups(raw, expected_sha256, now, execution=None, allow_synth
     shared prerequisites and later work. This is a proposal, never admission.
     """
     policy = native_execution_policy(execution)
-    plan = plan_inventory(raw, expected_sha256, now, allow_synthetic, execution=policy, _recommendation=True)
+    plan = plan_inventory(raw, expected_sha256, now, allow_synthetic, execution=policy,
+                          redact_ownership_worktrees=True, _recommendation=True)
     from .operating import operating_ceiling
     ceiling = operating_ceiling({"execution": policy})["effective_ceiling"]
     return {"inventory_sha256": expected_sha256, "governance_ceiling": ceiling,
