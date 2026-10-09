@@ -13,7 +13,7 @@ import json
 from agentic.installer import verify_installed
 from agentic.review_loop import (LoopStore, complete_first_draft,
     confirm_first_draft_publication, enroll, pause, record_first_draft_publication,
-    resume, resume_first_draft, tick, require)
+    require_first_draft_config_binding, resume, resume_first_draft, tick, require)
 from agentic.review_first_draft import (publish_tested_tree, render_first_draft_body,
     republish_prepared_tree, run_first_draft)
 from agentic.providers.github_review_host import HostDriver, load_config
@@ -62,12 +62,14 @@ def main(argv=None):
                     'first-draft requires an unbound first-draft host configuration')
             tier = config.get('risk_tier')
             require(tier in {1, 2, 3, 'Tier 1', 'Tier 2', 'Tier 3'}, 'A reviewed first-draft risk tier is required')
-            contract = Path(config['contract_path']).read_text(encoding='utf-8')
+            contract = driver.verified_contract_text()
             reserved = store.db.execute('SELECT 1 FROM prs WHERE key=?',
                                         (f"{config['repository_id']}:0",)).fetchone()
             prior = None
             if reserved:
                 reserved_state = store.get(f"{config['repository_id']}:0")
+                require_first_draft_config_binding(
+                    reserved_state, config, allow_bound_pr=config['pr'] > 0)
                 git_controls = reserved_state.get('first_draft_git_controls')
                 require(isinstance(git_controls, dict),
                         'Reserved first draft has no durable Git-control baseline')
@@ -134,6 +136,8 @@ def main(argv=None):
                 require(args.disposition is None,
                         'A first-draft reservation cannot consume an amendment-cap disposition')
                 first_state = store.get(first_key)
+                require_first_draft_config_binding(
+                    first_state, config, allow_bound_pr=config['pr'] > 0)
                 git_controls = first_state.get('first_draft_git_controls')
                 require(isinstance(git_controls, dict),
                         'Reserved first draft has no durable Git-control baseline')

@@ -496,6 +496,27 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
                          ('REVIEW', 1, 0))
         self.assertEqual(self.driver.calls.count(('POST', 'pulls')), 1)
 
+    def test_bound_pr_recovery_rejects_non_pr_host_policy_change(self):
+        self.driver.fail_snapshot_once = True
+        code, _, _ = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        paused = self.state('12:0')
+        self.assertEqual(paused['first_draft_config_binding']['pr'], 0)
+        value = json.loads(self.config_path.read_text(encoding='utf-8'))
+        value['models']['worker'] = 'changed-worker-policy'
+        self.config_path.write_text(json.dumps(value), encoding='utf-8')
+        self.config = load_config(self.config_path, ROOT)
+        self.driver.c = self.config
+        provider_calls = len(self.driver.calls)
+        code, _, error = self.cli('resume', '--reconciled-run', paused['inflight']['id'])
+        self.assertEqual(code, 2)
+        self.assertIn('host policy changed after reservation', error)
+        self.assertEqual(len(self.driver.calls), provider_calls)
+        self.assertEqual(self.state('12:0')['config_hash'],
+                         paused['first_draft_config_binding']['config_hash'])
+        with self.assertRaises(ValidationError):
+            self.state('12:41')
+
     def test_uncertain_create_is_reconciled_by_head_lookup_without_second_create(self):
         self.driver.lose_create_response_once = True
         code, _, _ = self.cli('first-draft', '--title', 'AWF-30 first draft')
@@ -667,6 +688,31 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         self.assertIn('repository-local credential configuration', error)
         self.assertFalse(any(call[0] == 'codex' for call in self.driver.calls))
         self.assertNotIn(('POST', 'pulls'), self.driver.calls)
+
+    def test_cli_revalidates_contract_before_first_draft_consumption(self):
+        Path(self.config['contract_path']).write_text('changed contract', encoding='utf-8')
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        self.assertIn('Frozen contract changed', error)
+        self.assertEqual(self.driver.calls, [])
+        with self.assertRaises(ValidationError):
+            self.state('12:0')
+
+    def test_worker_revalidates_contract_after_cli_verified_read(self):
+        provider_base = self.driver.provider_base
+        def mutate_contract_after_cli_read():
+            value = provider_base()
+            Path(self.config['contract_path']).write_text('changed contract',
+                                                          encoding='utf-8')
+            return value
+        self.driver.provider_base = mutate_contract_after_cli_read
+        code, _, error = self.cli('first-draft', '--title', 'AWF-30 first draft')
+        self.assertEqual(code, 2)
+        self.assertIn('Frozen contract changed', error)
+        self.assertFalse(any(call[0] == 'codex' for call in self.driver.calls))
+        self.assertNotIn(('POST', 'pulls'), self.driver.calls)
+        state = self.state('12:0')
+        self.assertEqual((state['phase'], state['agent_runs']), ('PAUSED', 1))
 
     def test_delayed_git_control_mutation_is_rechecked_before_commit(self):
         worker = self.driver.first_draft_worker

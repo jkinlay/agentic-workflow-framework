@@ -269,7 +269,10 @@ class HostDriver:
         path = Path(self.c['_config_path'])
         relative = path.relative_to(self.state).as_posix()
         with Tree(self.state) as tree:
-            raw = json.loads(tree.read(relative).decode('utf-8'))
+            source = tree.read(relative)
+            require(sha256(source) == self.c['config_hash'],
+                    'Host policy changed before provider PR assignment')
+            raw = json.loads(source.decode('utf-8'))
             require(raw.get('first_draft') is True and raw.get('pr') in {0, number},
                     'First-draft configuration was already bound or changed')
             if raw.get('pr') == 0:
@@ -279,6 +282,15 @@ class HostDriver:
         self.c['pr'] = number
         self.c['key'] = f"{self.c['repository_id']}:{number}"
         self.c['config_hash'] = sha256(path.read_bytes())
+
+    def verified_contract_text(self):
+        """Return one identity-stable read of the frozen UTF-8 contract."""
+        raw = Path(self.c['contract_path']).read_bytes()
+        require(sha256(raw) == self.c['contract_sha256'], 'Frozen contract changed')
+        try:
+            return raw.decode('utf-8')
+        except UnicodeDecodeError as exc:
+            raise ValidationError('Frozen contract is not valid UTF-8') from exc
 
     def observe_created_pr(self, value, *, body, risk_tier):
         """Read back the created PR body/tier before it can become loop authority."""
@@ -526,7 +538,7 @@ class HostDriver:
                 raise ValidationError('First-draft worker retry inventory exceeds bound')
         else:
             run.mkdir(parents=True)
-        contract = Path(self.c['contract_path']).read_text(encoding='utf-8')
+        contract = self.verified_contract_text()
         prompt = ((self.root / '.agentic/review-loop/first-draft-worker-prompt.md').read_text(encoding='utf-8')
                   + '\n\nFrozen contract:\n' + contract
                   + '\n\nExact allowed paths:\n' + json.dumps(self.c['allowed_paths']))

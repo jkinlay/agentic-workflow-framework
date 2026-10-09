@@ -50,6 +50,40 @@ def require(condition, message):
         raise ValidationError(message)
 
 
+def first_draft_config_policy_hash(config):
+    """Bind every reviewed host-policy field except the assigned PR number."""
+    policy = {key: value for key, value in config.items()
+              if key not in {'key', 'config_hash', 'pr'} and not key.startswith('_')}
+    encoded = json.dumps(policy, ensure_ascii=False, sort_keys=True,
+                         separators=(',', ':')).encode('utf-8')
+    return sha256(encoded)
+
+
+def require_first_draft_config_binding(state, config, *, allow_bound_pr=False):
+    """Accept only the reserved config or its sole pr=0 -> assigned transform."""
+    binding = state.get('first_draft_config_binding')
+    require(isinstance(binding, dict)
+            and set(binding) == {'config_hash', 'policy_hash', 'pr'},
+            'First-draft reservation has no durable configuration binding')
+    require(binding['config_hash'] == state.get('config_hash'),
+            'First-draft reservation configuration identity is inconsistent')
+    require(binding['policy_hash'] == first_draft_config_policy_hash(config),
+            'First-draft host policy changed after reservation')
+    current_pr = config.get('pr')
+    if current_pr == binding['pr']:
+        require(config.get('config_hash') == binding['config_hash'],
+                'First-draft host configuration bytes changed after reservation')
+        return
+    require(allow_bound_pr and binding['pr'] == 0
+            and type(current_pr) is int and current_pr > 0,
+            'First-draft configuration changed beyond provider PR assignment')
+    public_config = {key: value for key, value in config.items()
+                     if key not in {'key', 'config_hash'} and not key.startswith('_')}
+    bound_bytes = (json.dumps(public_config, indent=2, ensure_ascii=False) + '\n').encode('utf-8')
+    require(config.get('config_hash') == sha256(bound_bytes),
+            'Bound first-draft configuration is not the exact provider PR assignment')
+
+
 class LoopStore:
     """One canonical host database; transaction lock spans each bounded tick.
 
@@ -148,6 +182,11 @@ def reserve_first_draft(store, config, *, git_controls=None):
         'inflight': {'id': str(uuid.uuid4()), 'phase': 'FIRST_DRAFT',
                      'started_at': now_text(), 'attempt': 1},
         'last_review': None, 'first_draft_publication': None,
+        'first_draft_config_binding': {
+            'config_hash': config['config_hash'],
+            'policy_hash': first_draft_config_policy_hash(config),
+            'pr': config.get('pr'),
+        },
         'first_draft_git_controls': deepcopy(git_controls),
         'first_draft_publication_status': None, 'resume_ready': False,
         'reason': 'First-draft run reserved before worker execution', 'history': []}
@@ -159,8 +198,7 @@ def reserve_first_draft(store, config, *, git_controls=None):
         state = store.get(key)
         require(state['phase'] == 'FIRST_DRAFT' and state.get('resume_ready') is True,
                 'First-draft reservation already exists; reconcile it with resume before retrying')
-        require(state['config_hash'] == config['config_hash'],
-                'Configuration changed; retire and reconcile the reserved first draft')
+        require_first_draft_config_binding(state, config)
         require(1 <= state['agent_runs'] <= config['max_agent_runs']
                 and state['cycles'] == 0 and state.get('inflight'),
                 'First-draft reservation accounting is invalid')
@@ -260,6 +298,7 @@ def complete_first_draft(store, config, snapshot, reconciled_run=None):
                 'Created PR repository does not match the reserved repository')
         require(snapshot.get('pr') == config.get('pr') and config.get('pr', 0) > 0,
                 'Created PR number is not bound to the host configuration')
+        require_first_draft_config_binding(state, config, allow_bound_pr=True)
         state['key'] = config['key']
         state['owner'] = config['repository'] + ':' + snapshot['head_ref']
         state['config_hash'] = config['config_hash']
@@ -310,8 +349,7 @@ def resume_first_draft(store, config, reconciled_run, *, publication_status=None
                 'First-draft reservation is not awaiting reconciliation')
         require(config.get('pr') == 0,
                 'A provider-bound first draft must be completed from its observed PR')
-        require(state['config_hash'] == config['config_hash'],
-                'Configuration changed; retire and reconcile the reserved first draft')
+        require_first_draft_config_binding(state, config)
         require(state.get('inflight') and reconciled_run == state['inflight']['id'],
                 'Inspect and reconcile the retained first-draft run before resuming')
         require(1 <= state['agent_runs'] <= config['max_agent_runs']
