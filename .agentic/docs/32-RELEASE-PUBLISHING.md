@@ -12,13 +12,15 @@ Supply an independently pinned `awf-clean-windows-portable-check-1` record for t
 python -B scripts/publish_release.py --commit SHA --output-dir <new-external-output> --clean-windows-check <record.json> --expected-clean-windows-check-sha256 SHA256 --dry-run
 ```
 
-Dry-run builds and validates locally but creates no tag, push or hosted release. A real run creates an annotated `vX.Y.Z` tag, pushes that tag, then asks `gh release create --draft`; the owner reviews and publishes the draft. All Git reads, builds and verification retain the isolated Git environment. Only the tag-push command receives a command-scoped, reset credential helper that invokes `gh auth git-credential`; it does not read or write global/user Git configuration, persist a credential, or put one in release output.
+Dry-run builds and validates locally but creates no tag, push or hosted release. A real run creates an annotated `vX.Y.Z` tag, pushes that tag, then asks `gh release create --draft`; the owner reviews and publishes the draft. All Git reads, builds and verification retain the isolated Git environment. Only an HTTPS tag-push command receives command-scoped resets for origin's push URL and generic credentials plus an exact, user-free origin-URL reset/helper pair that invokes `gh auth git-credential`. The push-URL reset makes that validated credential-free endpoint the effective origin, and the exact helper scope takes precedence over matching repository URL-scoped helpers, including username-specific variants. Neither the scoped route nor any other step reads or writes global/user Git configuration, persists a credential, or puts one in release output.
 
 If the push fails, the local annotated tag remains, the remote tag status is unknown, and no GitHub release is created. The error suppresses raw Git output so a credential-bearing URL cannot be disclosed, instructs the operator to check `gh auth status`, and gives this exact retry (substitute the reported tag):
 
 ```text
-git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin refs/tags/vX.Y.Z
+git -c remote.origin.pushurl= -c remote.origin.pushurl=https://github.com/OWNER/REPOSITORY.git -c credential.helper= -c credential.https://github.com/OWNER/REPOSITORY.git.helper= -c 'credential.https://github.com/OWNER/REPOSITORY.git.helper=!gh auth git-credential' push origin refs/tags/vX.Y.Z
 ```
+
+The reported command uses the resolved, credential-free HTTPS origin scope, including its actual path and optional `.git` suffix. Push command failures, timeouts and launch errors all use this redacted recovery path; captured subprocess output is not repeated.
 
 Validation runs in a temporary detached Git worktree of the same commit, checked byte for byte against the raw tree and removed afterwards, because self-test cases inspect Git.
 

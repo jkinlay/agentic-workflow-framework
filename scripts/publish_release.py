@@ -99,6 +99,16 @@ def origin_repository(repository):
     return push
 
 
+def origin_push_url(repository):
+    """Return the single effective URL used by ``git push origin``."""
+    push_urls = [line.strip() for line in
+                 git(repository, "remote", "get-url", "--push", "--all", "origin").splitlines()
+                 if line.strip()]
+    if len(push_urls) != 1:
+        raise ReleaseError("origin must have exactly one push URL; refusing to select credentials")
+    return push_urls[0]
+
+
 def git(root, *args, text=True):
     return git_run(root, *args, text=text).stdout
 
@@ -109,23 +119,54 @@ def git_run(root, *args, text=True, input_data=None):
                input_data=input_data)
 
 
-def push_release_tag(repository, tag, *, gh):
+def _https_credential_scope(origin_url):
+    """Return an exact HTTPS credential scope without embedded user information."""
+    if not _ORIGIN_PATTERNS[0].match(origin_url):
+        return None
+    authority_and_path = origin_url.removeprefix("https://")
+    authority = authority_and_path.split("/", 1)[0]
+    if "@" in authority:
+        authority_and_path = authority_and_path.split("@", 1)[1]
+    return "https://" + authority_and_path
+
+
+def _push_credential_arguments(origin_url, gh):
+    helper = f"!{shlex.quote(str(gh))} auth git-credential"
+    arguments = ["-c", "credential.helper="]
+    scope = _https_credential_scope(origin_url)
+    if scope is None:
+        arguments.extend(("-c", f"credential.helper={helper}"))
+    else:
+        key = f"credential.{scope}.helper"
+        arguments.extend(("-c", "remote.origin.pushurl=", "-c", f"remote.origin.pushurl={scope}",
+                          "-c", f"{key}=", "-c", f"{key}={helper}"))
+    return arguments, scope
+
+
+def push_release_tag(repository, tag, *, gh, origin_url):
     """Push one release tag with the GitHub CLI credential helper only.
 
     Release Git commands normally cannot see a user's Git configuration.  Keep
     that isolation for the push too, but explicitly provide the same ``gh``
-    credential route used by the draft-release command.  The empty helper
-    first clears any repository-configured helper, so the only helper Git can
-    invoke for this operation is the requested GitHub CLI executable.
+    credential route used by the draft-release command.  For HTTPS, the empty
+    helper and requested helper are also bound to the exact, user-free origin
+    URL, and the command resets origin's push URL to that validated endpoint.
+    That most-specific effective scope excludes matching repository-configured
+    URL helpers (including username-specific variants) as well as generic helpers.
     """
-    helper = f"!{shlex.quote(str(gh))} auth git-credential"
+    credential_arguments, scope = _push_credential_arguments(origin_url, gh)
     try:
-        git_run(repository, "-c", "credential.helper=", "-c", f"credential.helper={helper}",
-                "push", "origin", f"refs/tags/{tag}")
-    except ReleaseError:
-        recovery = ("git -c credential.helper= "
-                    "-c 'credential.helper=!gh auth git-credential' "
-                    f"push origin refs/tags/{tag}")
+        git_run(repository, *credential_arguments, "push", "origin", f"refs/tags/{tag}")
+    except (ReleaseError, subprocess.SubprocessError, OSError):
+        if scope is None:
+            recovery_options = ("-c credential.helper= "
+                                "-c 'credential.helper=!gh auth git-credential'")
+        else:
+            key = f"credential.{scope}.helper"
+            recovery_options = (f"-c remote.origin.pushurl= -c remote.origin.pushurl={scope} "
+                                f"-c credential.helper= -c {key}= "
+                                f"-c '{key}=!gh auth git-credential'")
+        recovery = f"git {recovery_options} push origin refs/tags/{tag}"
         raise ReleaseError(
             f"Release tag push failed for refs/tags/{tag}. The local annotated tag remains at "
             f"refs/tags/{tag}; the remote tag status is unknown and no GitHub release was created. "
@@ -479,13 +520,16 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
             return result
         # Resolve and validate the release target before any local or remote mutation.
         release_repo = origin_repository(repository)
+        push_url = origin_push_url(repository)
+        if _parse_repository_url(push_url) != release_repo:
+            raise ReleaseError("origin push URL changed while resolving the release target; refusing to publish")
         tag_file = output / "tag-message.txt"
         body_file = output / "release-body.md"
         tag_file.write_text(tag_message, encoding="utf-8", newline="\n")
         body_file.write_text(body, encoding="utf-8", newline="\n")
         git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
                 "-F", str(tag_file))
-        push_release_tag(repository, tag, gh=gh)
+        push_release_tag(repository, tag, gh=gh, origin_url=push_url)
         run([gh, "release", "create", tag, *map(str, assets), "--repo", release_repo, "--draft", "--verify-tag",
              "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)
         return result
