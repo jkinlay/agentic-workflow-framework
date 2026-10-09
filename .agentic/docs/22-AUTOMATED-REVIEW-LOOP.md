@@ -2,7 +2,7 @@
 
 [SPECIFICATION](../SPECIFICATION.md) defines authority and acceptance. This reference adapter supports Codex CLI and GitHub.com same-repository PRs; `github_host` rejects other hosts. Installation does not enroll a PR or create a scheduler. Native-agent guidance is separate from this loop.
 
-These host/rules/qualification requirements apply to live loop enablement, not installation, configuration mapping or adoption PR preparation. Adopt first with missing/unobserved rules recorded as warnings. Before enrollment that permits amendments or scheduling, observe the actual default-branch rules and retain the existing host qualification. An APPLIED baseline with empty required checks does not establish CI/review provenance. Adoption accepts empty CI with `ci_gate: NOT_CONFIGURED`; live enrollment requires configured required CI and actual trusted merge owners. CONFIGURED/ACTIVE describe project adoption, never loop enrollment or qualification. The host/operator must enforce these prerequisites before using unchanged adapter entrypoints. Follow [adoption](20-NEW-PROJECT-SETUP.md) for owner application and any secret-repository publication restriction.
+These host/rules/qualification requirements apply to live loop enablement, not installation or adoption. Record missing rules as warnings; live enrollment still needs observed rules, configured CI and trusted merge owners. Follow [adoption](20-NEW-PROJECT-SETUP.md) for owner application and secret-repository restrictions.
 
 ## Prepare the host
 
@@ -16,9 +16,37 @@ Qualify sandbox restrictions, credential separation, exclusive branch ownership,
 
 [HostDriver](../lib/agentic/review_host.py) requests ephemeral contexts, read-only critic/workspace-write worker, no approval escalation and no sandbox network. It strips API-key variables and agent GitHub-token variables. Saved credentials, project tools and process descendants still need demonstrated host isolation. Token/dollar/resource quotas require external enforcement. Protected paths, Git configuration checks and separate clones supplement that boundary.
 
+## Create the first draft, then enroll
+
+An explicitly configured `first_draft` host may start with `pr: 0`. Before
+launch, the trusted runtime requires empty tracked, staged, untracked and
+ignored inventories, charges the worker and binds effort fallback to the
+observed base. It reserves the original local Git configuration, origin routes
+and hooks; later mismatch blocks credentials, commits and pushes. The worker
+stays on the configured head branch at that base. The publisher makes one
+child commit, validates the tested tree and `ignored_untracked`, durably
+records the receipt, publisher plan and base/head/body before scanning, pushes,
+creates one draft PR and enrolls only a matching head/base observation.
+
+```text
+python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json first-draft --title "AWF: implement ticket"
+```
+
+The body records reviewed Tier 1, 2 or 3. Every worker launch consumes one
+`max_agent_runs` unit and zero amendment cycles; prepared-publication recovery
+neither replays nor charges it. The provider PR number is persisted before its
+snapshot. Failure retains the UUID and charge. Inspect local/remote effects,
+then run `resume --reconciled-run UUID`; replay keeps that UUID and adds a charge
+only if no validated receipt survived. Scan denial or record failure resumes
+the exact local child without worker replay. With `pr: 0`, recovery looks up
+the exact head across all PR states without calling PR snapshot. A closed match
+blocks replacement. With no PR it reconciles the exact remote ref: a match
+avoids another push; proven absence retries only the frozen head and scan.
+Re-run `first-draft` with the original title. No second PR is created blindly.
+
 ## Check, enroll and run
 
-From the trusted runtime, substitute actual paths:
+From the trusted runtime, substitute paths:
 
 ```text
 python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json check
@@ -47,7 +75,7 @@ Immediately before its amendment push, the host scans every patch and message in
 
 Defaults allow three amendment attempts (plus at most `max_cap_extensions` owner extensions, default two), ten agent runs and 24 CI waits. Attempts remain consumed after failure/resume; amendments touching only `evidence_paths` consume none. At the cap the loop pauses with `REVIEW_CAP_REACHED` and resumes only with `--disposition` (an owner's MERGE_WITH_NOTES, PARK, RESCOPE or EXTEND_ONE_CYCLE). Critics retain finding identities and bases and review every changed file. CI requires current head, pinned App identity, Actions workflow path/content and successful conclusion; null App identity or unsupported provenance pauses.
 
-`READY_FOR_FINAL_GATE` hands complete evidence/specialist reconciliation to the [ticket lifecycle](23-TICKET-LIFECYCLE.md); it is not READY_FOR_OWNER_AUTHORIZATION until the final gate passes. The loop operates an existing PR, never creates the initial draft, merges or writes Jira. Native COMPLETE first creates the draft; current validation/requirements and mark-ready precede critic dispatch on the observed PR head. Jira lifecycle writes belong to the controller (one mapped write per event with readback, no Epic writes, no mismatch/unknown retry); the loop never writes Jira.
+`READY_FOR_FINAL_GATE` hands complete evidence/specialist reconciliation to the [ticket lifecycle](23-TICKET-LIFECYCLE.md); it is not READY_FOR_OWNER_AUTHORIZATION until the final gate passes. Ordinary enrolled ticks operate an existing PR; they never create the initial draft, merge or write Jira. The supported `first-draft` entry point creates the initial draft from a native ticket, then enrollment, current validation/requirements and mark-ready precede critic dispatch on the observed PR head. Jira lifecycle writes belong to the controller (one mapped write per event with readback, no Epic writes, no mismatch/unknown retry); the loop never writes Jira.
 
 ## Schedule and recover
 

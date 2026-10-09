@@ -24,6 +24,7 @@ from agentic.contracts import Contracts  # noqa: E402
 from agentic.model_routing import RoutingLedger  # noqa: E402
 from agentic.upgrade import (_insert_unbound_jira_identity, load_known_versions,  # noqa: E402
                              state_schema)
+from source_only import skip_unless_source_repo  # noqa: E402
 from upgrade_fixtures import (BLOB_ROOT, FIXTURE_ROOT, NEXT, advance_one_fixture_step,  # noqa: E402
     file_tree, fixture_blob, fixture_index, fixture_manifest, fixture_storage_statistics,
     managed_tree_from_receipt, materialize, verify_materialized)
@@ -47,8 +48,9 @@ def target_immutable():
             if managed(path) and path not in excluded}
 
 
-@unittest.skipUnless((FIXTURE_ROOT / "versions.json").is_file(),
-                     "historical upgrade fixtures are intentionally excluded from portable releases")
+@skip_unless_source_repo(
+    "historical upgrade fixtures are intentionally excluded from portable releases",
+    ".agentic/tests/fixtures/upgrades/versions.json")
 class UpgradeMatrixTests(unittest.TestCase):
     def setUp(self):
         self.base = Path(tempfile.gettempdir()) / ("awf-upgrade-matrix-" + uuid.uuid4().hex)
