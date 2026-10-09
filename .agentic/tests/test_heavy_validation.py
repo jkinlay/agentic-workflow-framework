@@ -22,6 +22,7 @@ from unittest import mock
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SOURCE_ROOT / ".agentic/lib"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, sha256, timestamp
@@ -33,16 +34,19 @@ from agentic.heavy_validation import (_engine_identity, _run_validation_at,
 from agentic.heavy_validation_controller import (
     FileLeaseBroker, GitCheckoutAttestor, GitCheckoutSnapshotter,
     GitHubReviewAuthenticator, read_result_log, write_result_log)
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple
 
 NOW = "2026-10-02T09:00:00Z"
-SOURCE_HEAD = subprocess.run(["git", "-C", str(SOURCE_ROOT), "rev-parse", "HEAD"],
-                             check=True, stdout=subprocess.PIPE,
-                             text=True).stdout.strip()
-SOURCE_TREE = subprocess.run(["git", "-C", str(SOURCE_ROOT), "rev-parse", "HEAD^{tree}"],
-                             check=True, stdout=subprocess.PIPE,
-                             text=True).stdout.strip()
+SOURCE_GIT_TUPLE = committed_git_tuple(SOURCE_ROOT)
+SOURCE_HEAD = SOURCE_GIT_TUPLE[0] if SOURCE_GIT_TUPLE else "0" * 40
+SOURCE_TREE = SOURCE_GIT_TUPLE[1] if SOURCE_GIT_TUPLE else "0" * 40
 CANDIDATE = {"repository_id": 101, "base_sha": "a" * 40,
              "head_sha": SOURCE_HEAD, "tree_sha": SOURCE_TREE}
+
+
+def setUpModule():
+    if SOURCE_GIT_TUPLE is None:
+        raise unittest.SkipTest(COMMITTED_GIT_REASON)
 
 
 def git_archive_file(root, head, relative_path):
