@@ -137,8 +137,10 @@ def _push_credential_arguments(origin_url, gh):
     if scope is None:
         arguments.extend(("-c", f"credential.helper={helper}"))
     else:
+        header_key = f"http.{scope}.extraHeader"
         key = f"credential.{scope}.helper"
         arguments.extend(("-c", "remote.origin.pushurl=", "-c", f"remote.origin.pushurl={scope}",
+                          "-c", f"{header_key}=",
                           "-c", f"{key}=", "-c", f"{key}={helper}"))
     return arguments, scope
 
@@ -151,8 +153,10 @@ def push_release_tag(repository, tag, *, gh, origin_url):
     credential route used by the draft-release command.  For HTTPS, the empty
     helper and requested helper are also bound to the exact, user-free origin
     URL, and the command resets origin's push URL to that validated endpoint.
-    That most-specific effective scope excludes matching repository-configured
-    URL helpers (including username-specific variants) as well as generic helpers.
+    An empty exact-URL HTTP extra-header value clears lower-priority authorization
+    headers.  That most-specific effective scope also excludes matching
+    repository-configured URL helpers (including username-specific variants) as
+    well as generic helpers.
     """
     credential_arguments, scope = _push_credential_arguments(origin_url, gh)
     try:
@@ -162,9 +166,10 @@ def push_release_tag(repository, tag, *, gh, origin_url):
             recovery_options = ("-c credential.helper= "
                                 "-c 'credential.helper=!gh auth git-credential'")
         else:
+            header_key = f"http.{scope}.extraHeader"
             key = f"credential.{scope}.helper"
             recovery_options = (f"-c remote.origin.pushurl= -c remote.origin.pushurl={scope} "
-                                f"-c credential.helper= -c {key}= "
+                                f"-c {header_key}= -c credential.helper= -c {key}= "
                                 f"-c '{key}=!gh auth git-credential'")
         recovery = f"git {recovery_options} push origin refs/tags/{tag}"
         raise ReleaseError(
