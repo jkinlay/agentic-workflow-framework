@@ -34,6 +34,19 @@ configured required CI, trusted merge owners and observed default-branch
 rules. Missing evidence fails closed for the live host but does not block
 local adoption or preparation of a draft PR.
 
+Use `review_loop.py qualify --confirm-disposable-pr` on a disposable
+same-repository PR as specified in the [review-loop
+runbook](22-AUTOMATED-REVIEW-LOOP.md). It launches concrete critic/worker
+write, network, environment, agent-auth-file, branch-lease and database probes,
+then writes an operator-local record without setting qualification. A readable
+or unevaluable `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`) is an explicit
+blocking finding, not isolation. After inspecting `PASS`, the named operator
+pins the record SHA-256 and sets the four flags. Loading requires that exact
+record, matching operator/host controls, and age no greater than the configured
+limit (maximum seven days). Bare legacy booleans/free-text evidence are refused;
+migrate to the pinned record fields and rerun live qualification. Offline fakes
+exercise the procedure but never qualify a host.
+
 Run the [scheduled review-loop](22-AUTOMATED-REVIEW-LOOP.md) commands only
 from a trusted runtime and protected state directory. Critics inspect the
 current observed PR head, retain stable finding IDs and re-review after every

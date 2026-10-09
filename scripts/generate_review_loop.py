@@ -1,4 +1,4 @@
-"""Reproduce the host loop schemas and first-draft config example."""
+"""Reproduce the host-loop schemas and configuration example."""
 from pathlib import Path
 import json
 ROOT = Path(__file__).resolve().parents[1] / '.agentic/review-loop'
@@ -32,9 +32,27 @@ def main():
         'ignored_untracked': {'type': 'array', 'items': string},
         'summary': string,
     })
+    qualification_probe = obj({
+        'role': {'enum': ['critic', 'worker']},
+        'checkout_write': {'enum': ['SUCCEEDED', 'DENIED', 'ERROR']},
+        'outside_write': {'enum': ['SUCCEEDED', 'DENIED', 'ERROR']},
+        'network': {'enum': ['SUCCEEDED', 'DENIED', 'ERROR']},
+        'credential_environment_names': {
+            'type': 'array', 'items': {'type': 'string',
+                                      'pattern': '^[A-Za-z_][A-Za-z0-9_]*$'},
+            'uniqueItems': True,
+        },
+        'agent_auth_files': {
+            'type': 'array', 'minItems': 2, 'maxItems': 2, 'items': obj({
+                'location': {'enum': ['~/.codex/auth.json', '$CODEX_HOME/auth.json']},
+                'status': {'enum': ['ABSENT', 'DENIED', 'READABLE', 'ERROR']},
+            }),
+        },
+    })
     write('critic-result.schema.json',critic)
     write('worker-result.schema.json',worker)
     write('first-draft-worker-result.schema.json', first_draft_worker)
+    write('qualification-probe-result.schema.json', qualification_probe)
     write('host-config.example.json',{'version':1,'automation_default':True,'first_draft':True,'github_host':'github.com','repository':'CHANGE_ME/CHANGE_ME',
         'repository_id':0,'pr':0,'head_branch':'codex/CHANGE_ME','base_branch':'main',
         'state_dir':'C:/awf-state','worker_checkout':'C:/awf-worker','critic_checkout':'C:/awf-critic',
@@ -44,7 +62,10 @@ def main():
         'governed_source_paths':[],'risk_tier':'Tier 3','allowed_paths':['src/CHANGE_ME.py'],'initial_findings':[],
         'required_checks':[{'name':'CHANGE_ME','app_id':0,'workflow_path':'.github/workflows/ci.yml','workflow_sha256':'CHANGE_ME'}],
         'max_amendment_cycles':3,'max_cap_extensions':2,'evidence_paths':[],'max_ci_wait_ticks':24,'max_agent_runs':10,'command_timeout_seconds':120,'agent_timeout_seconds':1800,'max_review_age_seconds':3600,
-        'qualification':{'operator':'CHANGE_ME','evidence':'CHANGE_ME','sandbox_verified':False,'credentials_isolated':False,'branch_owned':False,'single_host_database':False}})
+        'qualification':{'operator':'CHANGE_ME','evidence_path':'<state-dir>/review-host-qualification.json',
+                         'evidence_sha256':'CHANGE_ME','max_age_seconds':604800,
+                         'sandbox_verified':False,'credentials_isolated':False,
+                         'branch_owned':False,'single_host_database':False}})
 
 
 if __name__ == '__main__':
