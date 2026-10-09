@@ -1,6 +1,6 @@
 # Provider identity and child credentials
 
-Version 1.9.3. Provider identity checks are read-only observations. They never
+Version 1.9.4. Provider identity checks are read-only observations. They never
 switch accounts, select the first available connection, disclose tokens, or
 grant publication/Jira authority. Use them alongside [publication readiness](37-PUBLICATION-READINESS.md).
 

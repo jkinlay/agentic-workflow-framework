@@ -1,0 +1,40 @@
+{
+  "template_for": "review-completion",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "cycle_id": "00000000-0000-0000-0000-000000000000",
+    "state": "COLLECTING",
+    "current": false,
+    "ready": false,
+    "tuple": {
+      "repository": "UNFILLED",
+      "base_sha": "0000000000000000000000000000000000000000",
+      "head_sha": "0000000000000000000000000000000000000000",
+      "head_tree_sha": "0000000000000000000000000000000000000000",
+      "contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "review_input_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "tuple_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "required_reviewers": [
+      "UNFILLED"
+    ],
+    "reviewer_set_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "counts": {
+      "required": 0,
+      "completed": 0,
+      "acceptable": 0,
+      "failed": 0,
+      "stale": 0,
+      "outstanding": 0
+    },
+    "reviewers": [
+      {
+        "reviewer_id": "UNFILLED",
+        "state": "MISSING"
+      }
+    ],
+    "completion_snapshot_sha256": null
+  }
+}

@@ -1,6 +1,6 @@
 # Five-slot acceleration contract
 
-AWF 1.9.3 defaults to five concurrent implementation roles: one sole controller,
+AWF 1.9.4 defaults to five concurrent implementation roles: one sole controller,
 one dedicated adversarial-case handler, and worker streams A, B and C. The
 reviewed Epic integration/PR steward is deterministic non-model infrastructure,
 not a sixth agent. Reviewers run after the implementation candidate is frozen;

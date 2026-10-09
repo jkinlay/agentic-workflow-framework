@@ -5,7 +5,7 @@ credentials, product data, raw logs, and local paths; keep integrations behind
 adapters and retain human authority. Upstream changes need a current-head
 independent review and do not replace an adopter's own governance.
 
-Template 1.9.3. Read [.agentic/SPECIFICATION.md](.agentic/SPECIFICATION.md), reviewed configuration, project-owned `PROJECT_INSTRUCTIONS.md` if present, and the [ticket lifecycle](.agentic/docs/23-TICKET-LIFECYCLE.md). Then read the relevant runbook: [adoption](.agentic/docs/20-NEW-PROJECT-SETUP.md), [native work](.agentic/docs/24-STREAM-STARTUP.md), [routing](.agentic/docs/27-MODEL-ROUTING.md), or [scheduled review](.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md).
+Template 1.9.4. Read [.agentic/SPECIFICATION.md](.agentic/SPECIFICATION.md), reviewed configuration, project-owned `PROJECT_INSTRUCTIONS.md` if present, and the [ticket lifecycle](.agentic/docs/23-TICKET-LIFECYCLE.md). Then read the relevant runbook: [adoption](.agentic/docs/20-NEW-PROJECT-SETUP.md), [native work](.agentic/docs/24-STREAM-STARTUP.md), [routing](.agentic/docs/27-MODEL-ROUTING.md), or [scheduled review](.agentic/docs/22-AUTOMATED-REVIEW-LOOP.md).
 
 In the first adoption message explain: installing AWF changes repository governance files, so you will prepare a draft PR for the owner to merge. Adoption has no repository-rule precondition. Report actual APPLIED/MISSING/UNOBSERVED rules; missing/unobserved rules warn, and the shipped ruleset is offered separately. Never demand branch protection, CI, approval dismissal or bypass controls before preparing adoption.
 

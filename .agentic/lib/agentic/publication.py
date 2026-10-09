@@ -74,6 +74,18 @@ _HISTORICAL_SELF_REFERENCES = {
     (".agentic/tests/test_operating.py", "builtin.windows_absolute"): frozenset({
         "c39c65eb607d83ae03418e589ac08a2a6c9240e0f65757516f364b5b89de522f",
     }),
+    (".agentic/tests/fixtures/upgrades/blobs/05da6bcf88c887f911d9fef8e17e4c025c8ecf334f0028ac156d820a0d63b52e", "builtin.windows_absolute"): frozenset({
+        "d7fbe3c12939f4b8cc678ef0df2b0ccef6be82e32573a497a8ceec9b152e5623",
+        "d14fb78c046c0ef864260fe66d0942cef801f6e2b52c9358648d58fc5a46556a",
+        "bf62c11b0d9d2b50b0a90bfc98b89eeeef5671d914a23b65da2426c0aa1e3556",
+        "43c6c0fd1a7da22f4509715fe37cc4e707972b3371b6927e9bc2bcdb3623ea04",
+        "b1967f3102b3339b073b3592cd2ac53091acc21a9e6d341cbe7f8810cd6e0863",
+        "b52fe38587f1b343a408ad51e1136b29eaf10ed43ce87950122e50d90cd32c38",
+        "3670657890e919af3fd1ff9433954b72da855899ee8c4fcd09eb7c5f716e3cf3",
+    }),
+    (".agentic/tests/fixtures/upgrades/blobs/f6fb0ab95c1aa0689a3459298106994075749729f89ec0110e9e8ab21b391c6c", "builtin.windows_absolute"): frozenset({
+        "a34f47277920fd175fd2170362ba9c3312e08d77bd4a5191ea951297b216a7f3",
+    }),
 }
 
 # PR #34 initially used short Jira-shaped labels for synthetic controller test

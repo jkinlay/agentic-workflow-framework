@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   AC42 release gate (AWF-11): Windows end-to-end upgrade of a recorded AWF
-  installation fixture to this 1.9.3 candidate, with an evidence file.
+  installation fixture to this 1.9.4 candidate, with an evidence file.
 
 .DESCRIPTION
   Run from the root of a fresh clone of the candidate commit, on a Windows
@@ -35,7 +35,7 @@
 [CmdletBinding()]
 param(
     [string]$Python = "python",
-    [ValidateSet("1.8.3", "1.8.9", "1.9.1", "1.9.2")]
+    [ValidateSet("1.8.3", "1.8.9", "1.9.1", "1.9.2", "1.9.3")]
     [string]$FromVersion = "1.9.1",
     [string]$ScratchRoot = "C:\awf-ac42-scratch",
     [string]$Work = "",

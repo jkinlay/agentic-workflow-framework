@@ -1,6 +1,6 @@
 # Balanced model routing
 
-Version 1.9.3. [SPECIFICATION](../SPECIFICATION.md) defines authority. The router proposes routes and records usage; the host authenticates evidence, launches models and enforces limits.
+Version 1.9.4. [SPECIFICATION](../SPECIFICATION.md) defines authority. The router proposes routes and records usage; the host authenticates evidence, launches models and enforces limits.
 
 ## Policy and escalation
 
