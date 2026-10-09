@@ -1,6 +1,7 @@
 """External-resource admission stays bounded, per-task, and proportionate."""
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -57,6 +58,14 @@ class ExternalResourceTests(unittest.TestCase):
                   "execute": lambda command, cwd=None: self.success(), "now": NOW}
         values.update(kwargs)
         return admit_resource(self.registry, self.mappings, "raw_estate", **values)
+
+    def decide(self, receipt, **kwargs):
+        values = {"resource_alias": "raw_estate", "task_id": "AWF-8",
+                  "principal": "worker-A", "session_id": "session-1", "now": NOW,
+                  "expected_receipt_sha256": receipt.get("receipt_id"),
+                  "registry": self.registry, "mappings": self.mappings}
+        values.update(kwargs)
+        return admission_decision(receipt, **values)
 
     def test_registry_is_logical_only_and_schemas_accept_records(self):
         normalized = validate_registry(self.registry)
@@ -133,15 +142,16 @@ class ExternalResourceTests(unittest.TestCase):
         controller = self.admit(principal="controller")
         dispatch = require_admissions(
             ["raw_estate"], [controller], task_id="AWF-8", principal="worker-A",
-            session_id="session-1", now=NOW)
+            session_id="session-1", now=NOW,
+            expected_receipt_digests={"raw_estate": controller["receipt_id"]},
+            registry=self.registry, mappings=self.mappings)
         decision = dispatch["resources"][0]
         self.assertEqual(dispatch["status"], "REFUSED")
         self.assertEqual(decision["status"], "REFUSED")
         self.assertEqual(decision["state"], "STALE")
         self.assertTrue(decision["before_work_started"])
-        admitted = admission_decision(
-            self.admit(), resource_alias="raw_estate", task_id="AWF-8",
-            principal="worker-A", session_id="session-1", now=NOW)
+        receipt = self.admit()
+        admitted = self.decide(receipt)
         self.assertEqual(admitted["status"], "ADMITTED")
 
     def test_ac50_malformed_receipt_never_admits_work(self):
@@ -163,22 +173,61 @@ class ExternalResourceTests(unittest.TestCase):
                 lambda value: value["attempts"][-1].update(error_layer="FORGED")):
             with self.subTest(mutation=mutation):
                 receipt = self.admit()
+                trusted_receipt_sha256 = receipt["receipt_id"]
                 mutation(receipt)
                 with self.assertRaisesRegex(ValidationError, "identity|final attempt"):
-                    admission_decision(
-                        receipt, resource_alias="raw_estate", task_id="AWF-8",
-                        principal="worker-A", session_id="session-1", now=NOW)
+                    self.decide(receipt, expected_receipt_sha256=trusted_receipt_sha256)
+
+    def test_ac50_caller_recomputed_self_hash_is_not_trusted_host_evidence(self):
+        fabricated = {
+            "format": "awf-external-resource-receipt-1",
+            "visibility": "operator_local",
+            "resource_alias": "raw_estate",
+            "task_id": "AWF-8",
+            "principal": "worker-A",
+            "session_id": "session-1",
+            "observed_at": NOW,
+            "permission": {"access": "read_only", "scope": "task",
+                           "expires_at": None, "source": "existing_grant"},
+            "state": "READ_VERIFIED",
+            "error_layer": "READ_PROBE",
+            "command_sha256": "0" * 64,
+            "attempts": [{"attempted_at": NOW, "command_sha256": "0" * 64,
+                          "state": "READ_VERIFIED", "error_layer": "READ_PROBE",
+                          "exit_code": 0}],
+            "evidence": {"listing_limit": 8, "listing_count": 0,
+                         "sample_metadata_observed": True, "bytes_read": 1,
+                         "accessibility": "CONFIRMED", "data_validity": "UNCONFIRMED"},
+            "private_mapping_fingerprint": "0" * 64,
+            "execution_authority": False,
+        }
+        encoded = json.dumps(fabricated, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        fabricated["receipt_id"] = hashlib.sha256(encoded).hexdigest()
+
+        with self.assertRaisesRegex(ValidationError, "trusted receipt digest"):
+            self.decide(fabricated, expected_receipt_sha256=None)
+        trusted_receipt_sha256 = self.admit()["receipt_id"]
+        with self.assertRaisesRegex(ValidationError, "trusted receipt digest"):
+            self.decide(fabricated, expected_receipt_sha256=trusted_receipt_sha256)
+
+    def test_ac50_trusted_receipt_is_bound_to_registry_mapping_and_probe(self):
+        receipt = self.admit()
+        changed_registry = deepcopy(self.registry)
+        changed_registry["resources"]["raw_estate"]["probe"]["sample_relative_path"] = "other.bin"
+        with self.assertRaisesRegex(ValidationError, "declared probe and mapping"):
+            self.decide(receipt, registry=changed_registry)
+        changed_mapping = deepcopy(self.mappings)
+        changed_mapping["resources"]["raw_estate"]["canonical_locator"] = "\\\\host-b\\other"
+        remapped = self.decide(receipt, mappings=changed_mapping)
+        self.assertEqual(remapped["status"], "REFUSED")
+        self.assertEqual(remapped["state"], "MAPPING_CHANGED")
 
     def test_ac51_new_task_and_expired_lifetime_are_stale(self):
         receipt = self.admit(permission_scope="task", permission_expires_at="2026-10-09T12:05:00Z")
         self.assertEqual(receipt["permission"]["scope"], "task")
         self.assertEqual(receipt["permission"]["expires_at"], "2026-10-09T12:05:00Z")
-        new_task = admission_decision(
-            receipt, resource_alias="raw_estate", task_id="AWF-9",
-            principal="worker-A", session_id="session-1", now=NOW)
-        expired = admission_decision(
-            receipt, resource_alias="raw_estate", task_id="AWF-8",
-            principal="worker-A", session_id="session-1", now="2026-10-09T12:06:00Z")
+        new_task = self.decide(receipt, task_id="AWF-9")
+        expired = self.decide(receipt, now="2026-10-09T12:06:00Z")
         self.assertEqual(new_task["state"], "STALE")
         self.assertEqual(expired["state"], "STALE")
 

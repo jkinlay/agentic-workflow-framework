@@ -53,7 +53,9 @@ def parser():
     required = sub.add_parser("require")
     required.add_argument("--project-root", type=Path, required=True)
     required.add_argument("--receipt", type=Path, required=True)
-    required.add_argument("--mapping", type=Path)
+    required.add_argument("--registry", type=Path, required=True)
+    required.add_argument("--mapping", type=Path, required=True)
+    required.add_argument("--expected-receipt-sha256", required=True)
     required.add_argument("--resource", required=True)
     required.add_argument("--task", required=True)
     required.add_argument("--principal", required=True)
@@ -91,12 +93,13 @@ def main(argv=None):
                 cwd=str(args.project_root.resolve(strict=True)))
         elif args.command == "require":
             receipt = _private_load(args.receipt, args.project_root, "operator-local receipt")
-            mapping = (_private_load(args.mapping, args.project_root, "operator-local mapping")
-                       if args.mapping else None)
+            registry = load(args.registry.resolve(strict=True))
+            mapping = _private_load(args.mapping, args.project_root, "operator-local mapping")
             result = admission_decision(
                 receipt, resource_alias=args.resource, task_id=args.task,
                 principal=args.principal, session_id=args.session, now=args.now,
-                mappings=mapping)
+                expected_receipt_sha256=args.expected_receipt_sha256,
+                registry=registry, mappings=mapping)
         elif args.command == "public-evidence":
             result = public_evidence(_private_load(
                 args.receipt, args.project_root, "operator-local receipt"))

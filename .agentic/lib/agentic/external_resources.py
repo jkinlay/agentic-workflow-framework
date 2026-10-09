@@ -484,36 +484,64 @@ def _validate_receipt_shape(receipt):
     return receipt
 
 
-def admission_decision(receipt, *, resource_alias, task_id, principal, session_id,
-                       now=None, mappings=None):
-    """Decide dispatch admission before work starts; access is never inherited."""
+def _validate_admission_binding(receipt, *, expected_receipt_sha256, registry, mappings):
+    """Bind a receipt to a separately trusted host pin and the exact probe."""
     receipt = _validate_receipt_shape(receipt)
+    if (not isinstance(expected_receipt_sha256, str) or
+            SHA256_RE.fullmatch(expected_receipt_sha256) is None):
+        raise ValidationError("a separately trusted receipt digest is required for admission")
+    if receipt["receipt_id"] != expected_receipt_sha256:
+        raise ValidationError("external-resource receipt does not match the trusted receipt digest")
+    registry = validate_registry(registry)
+    mappings = validate_mappings(mappings)
+    alias = receipt["resource_alias"]
+    declaration = registry["resources"].get(alias)
+    if declaration is None:
+        raise ValidationError(f"resource {{{alias}}} is not declared by the trusted registry")
+    if declaration["access"] != "read_only":
+        raise ValidationError(f"resource {{{alias}}} is not declared read-only")
+    mapping = mappings["resources"].get(alias)
+    if mapping is None:
+        raise ValidationError(f"operator-local mapping for {{{alias}}} is missing")
+    expected_mapping = _mapping_identity(mapping["canonical_locator"])
+    mapping_changed = receipt["private_mapping_fingerprint"] != expected_mapping
+    expected_command = command_sha256(_command_payload(declaration, mapping))
+    if receipt["command_sha256"] != expected_command:
+        if mapping_changed:
+            return receipt, "MAPPING_CHANGED"
+        raise ValidationError("external-resource receipt is not bound to the declared probe and mapping")
+    if mapping_changed:
+        return receipt, "MAPPING_CHANGED"
+    if receipt["evidence"]["listing_limit"] != declaration["probe"]["listing_limit"]:
+        raise ValidationError("external-resource receipt is not bound to the declared probe bounds")
+    return receipt, None
+
+
+def admission_decision(receipt, *, resource_alias, task_id, principal, session_id,
+                       expected_receipt_sha256=None, registry=None, mappings=None,
+                       now=None):
+    """Decide dispatch admission from host-pinned evidence before work starts."""
+    receipt, reason = _validate_admission_binding(
+        receipt, expected_receipt_sha256=expected_receipt_sha256,
+        registry=registry, mappings=mappings)
     reference = _utc(now)
-    reason = None
     state = receipt["state"]
-    if state != "READ_VERIFIED":
+    if reason is None and state != "READ_VERIFIED":
         reason = state
-    elif receipt["resource_alias"] != resource_alias:
+    elif reason is None and receipt["resource_alias"] != resource_alias:
         reason = "RESOURCE_MISMATCH"
-    elif receipt["task_id"] != task_id:
+    elif reason is None and receipt["task_id"] != task_id:
         reason = "STALE"
-    elif receipt["principal"] != principal:
+    elif reason is None and receipt["principal"] != principal:
         reason = "STALE"
-    elif receipt["session_id"] != session_id:
+    elif reason is None and receipt["session_id"] != session_id:
         reason = "STALE"
-    elif receipt["permission"]["scope"] == "one_command":
+    elif reason is None and receipt["permission"]["scope"] == "one_command":
         reason = "STALE"
-    else:
+    elif reason is None:
         expires_at = receipt["permission"].get("expires_at")
         if expires_at is not None and reference >= _utc(expires_at):
             reason = "STALE"
-    if reason is None and mappings is not None:
-        mappings = validate_mappings(mappings)
-        mapping = mappings["resources"].get(resource_alias)
-        if mapping is None:
-            reason = "STALE"
-        elif receipt.get("private_mapping_fingerprint") != _mapping_identity(mapping["canonical_locator"]):
-            reason = "MAPPING_CHANGED"
     return {
         "status": "ADMITTED" if reason is None else "REFUSED",
         "resource_alias": resource_alias,
@@ -525,10 +553,12 @@ def admission_decision(receipt, *, resource_alias, task_id, principal, session_i
 
 
 def require_admissions(required_aliases, receipts, *, task_id, principal, session_id,
-                       now=None, mappings=None):
+                       expected_receipt_digests, registry, mappings, now=None):
     """Return one fail-closed dispatch decision for all required resources."""
     if not isinstance(required_aliases, list) or not all(isinstance(x, str) for x in required_aliases):
         raise ValidationError("required resources must be an array of aliases")
+    if not isinstance(expected_receipt_digests, dict):
+        raise ValidationError("trusted receipt digests must be supplied by resource alias")
     by_alias = {item.get("resource_alias"): item for item in receipts if isinstance(item, dict)}
     decisions = []
     for alias in required_aliases:
@@ -540,7 +570,8 @@ def require_admissions(required_aliases, receipts, *, task_id, principal, sessio
         else:
             decisions.append(admission_decision(
                 receipt, resource_alias=alias, task_id=task_id, principal=principal,
-                session_id=session_id, now=now, mappings=mappings))
+                session_id=session_id, expected_receipt_sha256=expected_receipt_digests.get(alias),
+                registry=registry, mappings=mappings, now=now))
     return {
         "status": "ADMITTED" if all(item["status"] == "ADMITTED" for item in decisions) else "REFUSED",
         "before_work_started": True,

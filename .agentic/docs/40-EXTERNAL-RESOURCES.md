@@ -84,9 +84,13 @@ still task-, principal- and session-bound. A new task runs admission again. A
 one-command grant proves that probe only and cannot admit subsequent worker
 work.
 
-Before dispatch, call `require_admissions` with every resource the task needs.
-It returns `REFUSED`, `before_work_started: true` for missing, stale, changed or
-wrong-principal receipts. The controller must not launch the worker on refusal.
+At probe time the trusted host captures and separately protects each receipt's
+SHA-256 identity. Before dispatch, call `require_admissions` with every required
+resource, those pins, the reviewed registry and the operator-local mapping.
+Admission recomputes the probe command, bounds and mapping fingerprint; a
+public self-hash alone cannot admit work. Missing, stale, changed or
+wrong-principal evidence returns `REFUSED`, `before_work_started: true`. The
+controller must not launch the worker on refusal.
 
 ## Bounded scans and claims
 
@@ -115,7 +119,7 @@ requests:
 ```text
 python -B .agentic/scripts/external_resources.py validate-registry --registry RESOURCE_REGISTRY.json
 python -B .agentic/scripts/external_resources.py admit --project-root PROJECT --registry RESOURCE_REGISTRY.json --mapping PRIVATE_MAPPING.json --resource raw_estate --task TICKET --principal WORKER --session SESSION
-python -B .agentic/scripts/external_resources.py require --project-root PROJECT --receipt PRIVATE_RECEIPT.json --mapping PRIVATE_MAPPING.json --resource raw_estate --task TICKET --principal WORKER --session SESSION
+python -B .agentic/scripts/external_resources.py require --project-root PROJECT --registry RESOURCE_REGISTRY.json --receipt PRIVATE_RECEIPT.json --mapping PRIVATE_MAPPING.json --expected-receipt-sha256 HOST_PROTECTED_RECEIPT_SHA256 --resource raw_estate --task TICKET --principal WORKER --session SESSION
 python -B .agentic/scripts/external_resources.py public-evidence --project-root PROJECT --receipt PRIVATE_RECEIPT.json
 python -B .agentic/scripts/external_resources.py validate-scan --request SCAN_REQUEST.json
 python -B .agentic/scripts/external_resources.py validate-claim --project-root PROJECT --receipt PRIVATE_RECEIPT.json --claim CLAIM.json

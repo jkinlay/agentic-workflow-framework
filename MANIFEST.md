@@ -2,7 +2,7 @@
 
 440 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `dbe91d05bec1eaa7989caaf25cb924cdcb235b1b2dd7007ec211ba423a35cafa`
+MANIFEST.json SHA-256: `2a472e3f259fa8d5b51d8e4537e904cf3a2df384954bc27099f80e4d44e02671`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -49,7 +49,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/37-PRIVATE-DENY-SCAN.md` | `54aee43783e6bed3fa25a08f4e0e1d28553fed92d7b71c9e97d8f47ab9db0e6c` |
 | `.agentic/docs/37-PUBLICATION-READINESS.md` | `2d49d868e9fb85daf69562178e9eb7d6e66f08c310701ad6297b25273d5c0eb1` |
 | `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `2408c1c8e4eaa10d041d6ec91c09bd5785ceec100002ac09e38b039cadcbfb2d` |
-| `.agentic/docs/40-EXTERNAL-RESOURCES.md` | `4100404a296122f205a4c96a8f468658063bedb2dbef8d1d5a5acfa2e0810d5c` |
+| `.agentic/docs/40-EXTERNAL-RESOURCES.md` | `39431036b0970d2c754af1f07981006d9100d90647202d899672a997baf2216e` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `73a25bafeaa92a93cd247a9d4e64fb9434e608dc9df583d3bfd2ce5acde47fc6` |
 | `.agentic/examples/OPERATING_CONFIG.yaml` | `f92108e68715147bb2e1b93f0bc3456f683a84ffde96d89db32870cb9893cd37` |
 | `.agentic/examples/PROJECT_CONFIG.yaml` | `dd1955337c91ba264de5d6ed9a683da10952099c5171c4cd7b9c2a5b2615ad77` |
@@ -81,7 +81,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/contracts.py` | `608011b68fd03da49340fe96cef754a22440363717490c613cef6c9280da356b` |
 | `.agentic/lib/agentic/controller_state.py` | `388065450c30c2a379fe27f7f5b08f1299384d74173c28d20f5c1ea11e96cba3` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
-| `.agentic/lib/agentic/external_resources.py` | `27bf82ad9699d76a7acf9944452dc41f870dbec6accdd38a67ba6c6b6f314db1` |
+| `.agentic/lib/agentic/external_resources.py` | `45cf24bf529d7a37b5a6cfe31ca708427c45025f548193cd96317b2d667547f9` |
 | `.agentic/lib/agentic/five_slot_acceleration.py` | `7fed880d1828ece267592e357313cc08fbb15279310479da8e60c5139acebbee` |
 | `.agentic/lib/agentic/gates.py` | `0e08c9f6ee291167c4470bf3413d12d3f4c938397595a80c65f37a39aa88fcab` |
 | `.agentic/lib/agentic/git_isolation.py` | `43b3258f19a9942a399a85ff21f78a26b45306b415a532ca9df3ec926cf91d26` |
@@ -195,7 +195,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/scripts/benchmark_native.py` | `27e423c7459c202e404156d78bfba95af554ef6a6e438896d2afca844ed018d2` |
 | `.agentic/scripts/continuous_controller.py` | `8b3d6dc90808f67105229f2138ec54a8b4b9d10b930fd6d47ae9babb170fa46f` |
 | `.agentic/scripts/evaluate_native.py` | `bf5bacc4cc19e8a39c672d91174c310fda48d477dce3af490b3f0bdcea2a9fa3` |
-| `.agentic/scripts/external_resources.py` | `3c85e7d8c7333d56ac95e229581ae88aea510f3ac1038ee39db06305ca0ab11f` |
+| `.agentic/scripts/external_resources.py` | `10c20b51ed8bacf667a7f02b88e8b7177fa80feed307f04af5110987c9fcd810` |
 | `.agentic/scripts/five_slot_acceleration.py` | `805bbbdf0947939a0deebffd8b515d2c16c616cdf2789fbced6ebb36c97635d5` |
 | `.agentic/scripts/operating.py` | `0ec1e1805a241ef585ae371d9ac32c29a52f53f459c4f0e504e7ae9fcd060a38` |
 | `.agentic/scripts/plan_streams.py` | `bae0f64700767bc0bffcf49a819a38b35de937edfe698860561717e5f233b29a` |
@@ -278,8 +278,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_config_diagnostics.py` | `e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07` |
 | `.agentic/tests/test_continuation.py` | `1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633` |
 | `.agentic/tests/test_continuous_controller.py` | `884fe9c9619a20354f8916d9eebe2aaef17cd6750cd0a65d168a5b6d7fed3735` |
-| `.agentic/tests/test_external_resources.py` | `9ed6eb0dcc1616ee77abebd571cf2f859082e4c33f32553ba0146bd2175ff33d` |
-| `.agentic/tests/test_external_resources_cli.py` | `7ba3bce9ebf95979029d823cdd2fa855d1bdb9d3eabbee8e82adcb5291f3943f` |
+| `.agentic/tests/test_external_resources.py` | `aadaf83efad99d5aa295a26064f7d4602ccad9d0dc490efdd4588beced234c40` |
+| `.agentic/tests/test_external_resources_cli.py` | `b4e4d3031bbeb864cb8fc7230f1d210e821f3b5eb5290bdc7f5ab3519e625429` |
 | `.agentic/tests/test_five_slot_acceleration.py` | `35b3f99410481c16f91e5be438d44ccb6e61e429e1b869fd18ac184a238bbb98` |
 | `.agentic/tests/test_gittree.py` | `e0d5b302d0d7d1f5701557b094126b8fc9002916781bce8e0d94b4cf1740da0e` |
 | `.agentic/tests/test_handoff.py` | `d0850e145d2a1568c53cf7d78f4ad1b363863e05a5086df7cf1e576bde395f77` |
