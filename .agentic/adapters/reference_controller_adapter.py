@@ -69,47 +69,56 @@ class _SubprocessRunner:
         self._processes = {}
 
     _WATCHER = r'''
-import ctypes
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
 
-pid = int(sys.argv[1])
-proof = sys.argv[2]
-nonce = sys.argv[3]
-code = None
-if os.name == "nt":
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    handle = kernel32.OpenProcess(0x00100000 | 0x00000400, False, pid)
-    if handle:
-        kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
-        value = ctypes.c_ulong()
-        if kernel32.GetExitCodeProcess(handle, ctypes.byref(value)):
-            code = int(value.value)
-        kernel32.CloseHandle(handle)
-else:
-    # The reference production host is Windows.  On POSIX a detached sibling
-    # cannot prove a foreign child's exit code, so it deliberately emits no
-    # terminal proof and the adapter remains fail-closed after a restart.
-    while True:
+spec_path = sys.argv[1]
+with open(spec_path, "r", encoding="utf-8") as stream:
+    spec = json.load(stream)
+
+def durable(path, value):
+    directory = os.path.dirname(path) or "."
+    fd, temporary = tempfile.mkstemp(prefix=".awf-durable-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
         try:
-            os.kill(pid, 0)
-        except OSError:
-            break
-        time.sleep(0.1)
-if code is not None:
-    value = {"pid": pid, "launch_nonce": nonce, "status": "COMPLETED",
-             "returncode": code, "terminal": True}
-    directory = os.path.dirname(proof) or "."
-    fd, temporary = tempfile.mkstemp(prefix=".awf-terminal-", dir=directory)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-        json.dump(value, stream, sort_keys=True, separators=(",", ":"))
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, proof)
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+pid = os.getpid()
+nonce = spec["launch_nonce"]
+handoff = spec["handoff_path"]
+proof = spec["terminal_proof_path"]
+durable(handoff, {"pid": pid, "launch_nonce": nonce, "status": "LAUNCHED"})
+code = None
+status = "COMPLETED"
+try:
+    child = subprocess.Popen(spec["argv"], cwd=spec["cwd"], env=spec["env"],
+                             shell=False, stdin=subprocess.PIPE,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        child.communicate(spec["stdin"].encode("utf-8"), timeout=spec["timeout"])
+        code = child.returncode
+    except subprocess.TimeoutExpired:
+        status = "TIMED_OUT"
+        child.kill()
+        child.communicate()
+except Exception:
+    status = "FAILED"
+value = {"pid": pid, "launch_nonce": nonce, "status": status,
+         "returncode": code, "terminal": True}
+durable(proof, value)
 '''
 
     def run(self, argv, *, cwd, env, timeout, max_bytes):
@@ -130,30 +139,28 @@ if code is not None:
 
     def launch(self, argv, *, cwd, env, timeout, stdin, handoff_path, terminal_proof_path,
                launch_nonce):
+        # The nonce-bound STARTING record exists before Popen.  The supervisor
+        # is the durable parent of Codex and rewrites this handoff before it
+        # creates the child, then writes terminal proof on every supported OS.
+        _write_record(Path(handoff_path), {"launch_nonce": launch_nonce, "status": "STARTING"})
+        spec_path = Path(handoff_path).with_suffix(".launch.json")
+        _write_record(spec_path, {"argv": list(argv), "cwd": str(cwd), "env": dict(env),
+                                  "stdin": stdin, "timeout": timeout,
+                                  "launch_nonce": launch_nonce, "handoff_path": str(handoff_path),
+                                  "terminal_proof_path": str(terminal_proof_path)})
         try:
-            process = subprocess.Popen(argv, cwd=str(cwd), env=env, shell=False,
-                                       stdin=subprocess.PIPE,
+            process = subprocess.Popen([sys.executable, "-B", "-c", self._WATCHER,
+                                        str(spec_path)], cwd=str(cwd), env=env, shell=False,
+                                       stdin=subprocess.DEVNULL,
                                        stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL,
                                        start_new_session=True)
         except OSError as exc:
             raise ValidationError("Codex detached launch failed") from exc
-        try:
-            process.stdin.write(stdin.encode("utf-8"))
-            process.stdin.close()
-        except (OSError, BrokenPipeError) as exc:
-            process.kill()
-            raise ValidationError("Codex prompt could not be delivered") from exc
         self._processes[process.pid] = process
         handoff = {"pid": process.pid, "launch_nonce": launch_nonce, "status": "LAUNCHED"}
         try:
             _write_record(Path(handoff_path), handoff)
-            watcher_env = dict(env)
-            subprocess.Popen([sys.executable, "-B", "-c", self._WATCHER,
-                              str(process.pid), str(terminal_proof_path), launch_nonce],
-                             cwd=str(cwd), env=watcher_env, shell=False,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
         except OSError as exc:
             raise ValidationError("Codex durable launch handoff failed") from exc
         return {"pid": process.pid, "launch_nonce": launch_nonce,
@@ -185,11 +192,16 @@ if code is not None:
             raise ValidationError("Detached Codex run timed out") from exc
         finally:
             self._processes.pop(pid, None)
-        if code != 0:
+        _require(proof.is_file(), "Detached Codex terminal outcome was not durably recorded")
+        value = _read_record(proof)
+        _require(value.get("pid") == pid and value.get("launch_nonce") == record.get("launch_nonce"),
+                 "Detached terminal proof is bound to a different process")
+        if value.get("status") == "TIMED_OUT":
+            raise ValidationError("Detached Codex run timed out")
+        _require(value.get("status") == "COMPLETED" and value.get("terminal") is True,
+                 "Detached Codex terminal outcome was not proven")
+        if value.get("returncode") != 0:
             raise ValidationError("Detached Codex run returned a non-zero exit")
-        value = {"pid": pid, "launch_nonce": record["launch_nonce"],
-                 "status": "COMPLETED", "returncode": 0, "terminal": True}
-        _write_record(proof, value)
         return value
 
 
@@ -455,7 +467,7 @@ def _build(config):
     _require(callable(getattr(clock, "now", None)) and callable(getattr(clock, "monotonic", None)),
              "Clock injection is incomplete")
 
-    def command(executable, args, *, cwd=None, stdin=None):
+    def command(executable, args, *, cwd=None, stdin=None, timeout_override=None):
         _verify_executable(executable)
         argv = [str(executable["path"]), *[str(item) for item in args]]
         _require(all(isinstance(item, str) and item for item in argv), "External argv is invalid")
@@ -465,7 +477,8 @@ def _build(config):
             # intentionally not passed to the shell because there is no shell.
             env["AWF_ADAPTER_STDIN_SHA256"] = hashlib.sha256(stdin.encode("utf-8")).hexdigest()
         result = _invoke(runner, "run", argv, cwd=cwd or worktree_root,
-                         env=env, timeout=timeout, max_bytes=MAX_OUTPUT)
+                         env=env, timeout=timeout if timeout_override is None else timeout_override,
+                         max_bytes=MAX_OUTPUT)
         if isinstance(result, (dict, list)):
             return result
         return _normalize_command_result(result)
@@ -476,7 +489,7 @@ def _build(config):
         args = ["api", "--hostname", "github.com", "--method", "GET"]
         if paginate:
             args += ["--paginate", "--slurp"]
-        output = command(gh_executable, [*args, path])
+        output = command(gh_executable, [*args, path], timeout_override=MAX_SECONDS if paginate else None)
         return _json_output(output)
 
     def github_pages(endpoint, key):
@@ -492,17 +505,22 @@ def _build(config):
                 # CLI followed every Link header and returned one JSON value
                 # per page.  A bare provider-default list is deliberately not
                 # accepted because its page size is unknown.
+                _require(len(response) <= MAX_PAGES, "GitHub pagination exceeded its page bound")
                 _require(all(isinstance(part, list) for part in response),
                          "GitHub response did not include pagination evidence")
                 values = []
                 for part in response:
                     values.extend(part)
                 _require(len(values) <= 10000, "GitHub observation exceeded its item bound")
+                _require(_invoke(clock, "monotonic") - started <= MAX_SECONDS,
+                         "GitHub pagination exceeded its time bound")
                 return values
             items, complete, next_page = _page_items(response, key=key, page_size=gh_page_size)
             values.extend(items)
             _require(len(values) <= 10000, "GitHub observation exceeded its item bound")
             if complete:
+                _require(_invoke(clock, "monotonic") - started <= MAX_SECONDS,
+                         "GitHub pagination exceeded its time bound")
                 return values
             page = next_page or page + 1
         raise ValidationError("GitHub pagination did not prove completeness")
@@ -512,7 +530,11 @@ def _build(config):
         _require(type(repository.get("id")) is int and repository["id"] == github["repository_id"]
                  and repository.get("full_name", "").casefold() == github["repository"].casefold(),
                  "GitHub inventory repository identity mismatch")
-        records = github_pages(github.get("inventory_endpoint", "repos/" + github["repository"] + "/issues?state=open"), "items")
+        inventory_endpoint = github.get("inventory_endpoint", "repos/" + github["repository"] + "/issues?state=open")
+        expected_prefix = "repos/" + github["repository"] + "/issues"
+        _require(inventory_endpoint == expected_prefix or inventory_endpoint.startswith(expected_prefix + "?"),
+                 "GitHub inventory endpoint is outside the configured repository scope")
+        records = github_pages(inventory_endpoint, "items")
         # A GitHub issue body may carry the controller ticket record.  This
         # keeps provider inventory transport-specific while validating the
         # controller's exact record at the adapter boundary.
@@ -811,6 +833,11 @@ def _build(config):
         for history in histories:
             if not isinstance(history, dict) or not isinstance(history.get("created"), str):
                 continue
+            _require(isinstance(operation, dict) and isinstance(operation.get("observed_at"), str),
+                     "Jira transition readback has no operation receipt time")
+            operation_time = operation["observed_at"]
+            if timestamp(history["created"]) < timestamp(operation_time):
+                continue
             author = history.get("author", {})
             actor = author.get("accountId") if isinstance(author, dict) else None
             for item in history.get("items", []):
@@ -819,7 +846,7 @@ def _build(config):
                 if item.get("to") == record.get("to_status_id") or item.get("toString") == status:
                     if isinstance(actor, str) and actor:
                         candidates.append((history["created"], actor))
-        _require(candidates, "Jira transition actor was not independently observed")
+        _require(candidates, "Jira transition history does not prove the current transition")
         candidates.sort(key=lambda item: item[0])
         _created, actor = candidates[-1]
         observed_at = _clock_text(clock)
@@ -836,8 +863,8 @@ def _build(config):
             record = {"operation_id": operation_id, "binding": {"issue_id": ticket},
                       "transition_id": jira["merged_transition_id"], "to_status_id": target,
                       "jira_provider": provider}
-            write_transition({**record, "producer_id": provider["controller_actor_id"]})
-            after = read_transition({**record, "producer_id": provider["controller_actor_id"]}, {})
+            operation = write_transition({**record, "producer_id": provider["controller_actor_id"]})
+            after = read_transition({**record, "producer_id": provider["controller_actor_id"]}, operation)
         else:
             after = {"issue_id": ticket, "status": target, "actor": provider["controller_actor_id"],
                      "observed_at": before["observed_at"], "jira_provider": provider}
