@@ -2,7 +2,7 @@
 
 429 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `2e63c6a19f0101a2094c891e0e3942468b62d86353b9f8dcff21ef364ccaf0ae`
+MANIFEST.json SHA-256: `5926f12fb25a894d96fc2f7c248a2cd3ab986a1a44c9e5e3ebe9979847694b7a`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -41,7 +41,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/32-ACTIVATION-STATUS.md` | `540dedcab8e58d188e7afad3ba0ffc254f18d5bc1e5e202a9ee61369679b161f` |
 | `.agentic/docs/32-RELEASE-PUBLISHING.md` | `65ca3ab73f68636a75aeaa3890f7eeb103bd7062c4e88ec8aaabeace5f88fce2` |
 | `.agentic/docs/32-WINDOWS-DIAGNOSTICS.md` | `2e7049857d2b88645f1a6ec92601d2e8ba0e10ac607653da03ea1b118b8a2925` |
-| `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `c9a8e9ac87db25f2f3f625314e64a5b240ebee85d9e250bc262b6a414e6c31f7` |
+| `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `5616e94040e9957b928da7770c0b9dc8d0c165988ac7e43c5836d0b3ec81b6a1` |
 | `.agentic/docs/33-REVIEW-COMPLETION-BARRIER.md` | `d8fed51697f646564bae3f31b9f626b3f08d59685aba46ecd61e1529bd0d3ee7` |
 | `.agentic/docs/34-CONTINUOUS-CONTROLLER.md` | `13fb81ecdf885012495921d40c6596dc92f72dcb9ce27e97bea114dde3aaedc3` |
 | `.agentic/docs/35-RULES-ACTIVATION.md` | `698a4f8ddce5cd6c9e3c244d3af1a3252c2a125e2779bbfe2fe09434cf035ede` |
@@ -85,9 +85,9 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/git_isolation.py` | `43b3258f19a9942a399a85ff21f78a26b45306b415a532ca9df3ec926cf91d26` |
 | `.agentic/lib/agentic/gittree.py` | `f1df153bf9f3e87cd95552aaf102fd0c6b0cd6f3a49bf51b6ef29c923340ff67` |
 | `.agentic/lib/agentic/handoff.py` | `8cc194abe6e6dbcdb857fa3dce8cde679c06f2651b310dd907ccf06943ca9904` |
-| `.agentic/lib/agentic/heavy_validation.py` | `6a6fab8ba89c66012f9706c0c6cf5d8eb33e421316c31a4876a5b9047d0ee63f` |
+| `.agentic/lib/agentic/heavy_validation.py` | `3c22a3bab970f3235a58a2c6b8a72281027458b777d5a6ff6288220b1c958407` |
 | `.agentic/lib/agentic/heavy_validation_child.py` | `1098a432539cd38f290f4491f3bd5b9196ee4c54d1be0871bd0550d4477a3d69` |
-| `.agentic/lib/agentic/heavy_validation_controller.py` | `01f6c10fd93f97aee3d0cb1641af1a36dfa6d11a42d16fe9cc1e9caa49c792e2` |
+| `.agentic/lib/agentic/heavy_validation_controller.py` | `e7e231c90dcf30956093c8843bbcd359b049901087421e1161a015e2ca04e08a` |
 | `.agentic/lib/agentic/host_preflight.py` | `e7ff4de32ab5b13889c652215f1c9644581494bd586e6198f6b73955d3b61298` |
 | `.agentic/lib/agentic/installer.py` | `af7593842bc4e7f3aae32b2150591dd1fbdb2d596819f5e2fdb937f305d3b3aa` |
 | `.agentic/lib/agentic/interaction.py` | `b44e4ba458cebd9473fd1dec7e0d0a0a90dd3132ab7fc10e1c922ae0101e5d47` |
@@ -272,7 +272,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_five_slot_acceleration.py` | `35b3f99410481c16f91e5be438d44ccb6e61e429e1b869fd18ac184a238bbb98` |
 | `.agentic/tests/test_gittree.py` | `e0d5b302d0d7d1f5701557b094126b8fc9002916781bce8e0d94b4cf1740da0e` |
 | `.agentic/tests/test_handoff.py` | `9fa04bac40a253cac1b728705cb2d3eb228c3b42427a16b25496ba32042d4788` |
-| `.agentic/tests/test_heavy_validation.py` | `9a0a21ef19e1de3ed961060538e34c298a67d708b80b650fcdb40feb3038a61a` |
+| `.agentic/tests/test_heavy_validation.py` | `9ec0d18d1f408d55602ca0a820807f55f7c6cd35d82c53c9db4bc1fa166a5c3a` |
 | `.agentic/tests/test_host_process.py` | `e51ef1f41d87493eeb3e3dbf38d815e5cec3d0d90e2f06f83fdc23436d131083` |
 | `.agentic/tests/test_interaction.py` | `7b0ac687daa56b3e49e9d849b578e4c2d2bd640c89c96b2f4b543b071ae5a996` |
 | `.agentic/tests/test_launch_surfaces.py` | `53fe382ae85b44ca3e7b919d7808eec0c3c170e90df4f85d3dd08124628d1f98` |

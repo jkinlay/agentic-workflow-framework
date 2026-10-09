@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 from typing import Any
@@ -174,6 +175,85 @@ def resolve_without_alias(path_value: str | os.PathLike[str], label: str, *, dir
     return resolved
 
 
+def _venv_root_for_interpreter(path: Path) -> Path | None:
+    """Return a POSIX venv root only for its conventional interpreter path."""
+    if os.name == "nt" or path.parent.name != "bin" or not path.name.startswith("python"):
+        return None
+    root = path.parent.parent
+    marker = root / "pyvenv.cfg"
+    try:
+        metadata = os.lstat(marker)
+    except (FileNotFoundError, OSError):
+        return None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return None
+    return root
+
+
+def _trusted_interpreter_prefixes() -> tuple[Path, ...]:
+    prefixes = []
+    base_executable = getattr(sys, "_base_executable", None)
+    if base_executable:
+        executable = Path(os.path.realpath(base_executable))
+        executable_prefix = executable.parent.parent
+        if (executable.is_absolute() and executable.is_file()
+                and executable_prefix != Path(executable_prefix.anchor)):
+            prefixes.append(executable_prefix)
+    for attribute in ("base_prefix", "base_exec_prefix"):
+        value = getattr(sys, attribute, None)
+        if value:
+            prefix = Path(os.path.realpath(value))
+            if (prefix.is_absolute() and prefix.is_dir()
+                    and prefix != Path(prefix.anchor) and prefix not in prefixes):
+                prefixes.append(prefix)
+    return tuple(prefixes)
+
+
+def resolve_pinned_executable(path_value: str | os.PathLike[str], label: str) -> Path:
+    """Resolve only a POSIX venv interpreter link into a trusted prefix.
+
+    Parent aliases and every Windows reparse point retain the general fail-closed
+    rule.  A final POSIX interpreter symlink is accepted only when a regular
+    ``pyvenv.cfg`` identifies its venv and the fully resolved target remains in
+    that venv or in one of the controller's base-interpreter prefixes.
+    """
+    lexical = Path(path_value)
+    if not lexical.is_absolute():
+        raise ValidationError(f"{label} must be absolute")
+    lexical = Path(os.path.abspath(os.fspath(lexical)))
+    root = _venv_root_for_interpreter(lexical)
+    if root is None:
+        return resolve_without_alias(lexical, label, directory=False)
+
+    current = Path(lexical.anchor)
+    for component in lexical.parts[1:-1]:
+        current /= component
+        try:
+            if _is_alias(current):
+                raise ValidationError(f"{label} uses a symlink or reparse alias: {current}")
+        except FileNotFoundError as exc:
+            raise ValidationError(f"{label} does not exist: {current}") from exc
+    try:
+        metadata = os.lstat(lexical)
+    except FileNotFoundError as exc:
+        raise ValidationError(f"{label} does not exist: {lexical}") from exc
+    if not stat.S_ISLNK(metadata.st_mode):
+        return resolve_without_alias(lexical, label, directory=False)
+
+    resolved = Path(os.path.realpath(lexical))
+    allowed_roots = (Path(os.path.realpath(root)), *_trusted_interpreter_prefixes())
+    if not any(_path_within(resolved, allowed) for allowed in allowed_roots):
+        raise ValidationError(
+            f"{label} symlink target escapes the virtual environment and base-interpreter prefixes")
+    try:
+        resolved_metadata = os.stat(resolved, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise ValidationError(f"{label} resolved target does not exist: {resolved}") from exc
+    if not stat.S_ISREG(resolved_metadata.st_mode):
+        raise ValidationError(f"{label} resolved target must be a regular file")
+    return resolved
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -202,6 +282,59 @@ def _windows_read_lock(path: Path):
     return kernel, handle
 
 
+def _supports_sealed_memfd() -> bool:
+    return hasattr(os, "memfd_create")
+
+
+@contextmanager
+def _owner_only_descriptor_executable(source: Path, expected: str):
+    """Copy executable bytes to an unlinked, read-only inherited descriptor."""
+    descriptor = None
+    with tempfile.TemporaryDirectory(prefix="awf-heavy-executable-") as folder:
+        directory = Path(folder)
+        directory.chmod(0o700)
+        staged = directory / "executable"
+        writer = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+        digest = hashlib.sha256()
+        try:
+            with source.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+                    view = memoryview(block)
+                    while view:
+                        written = os.write(writer, view)
+                        view = view[written:]
+            os.fsync(writer)
+            os.fchmod(writer, 0o500)
+        finally:
+            os.close(writer)
+        observed = digest.hexdigest()
+        if observed != expected:
+            raise ValidationError("Launch executable digest changed while capturing artifact")
+        descriptor = os.open(staged, os.O_RDONLY)
+        os.unlink(staged)
+        try:
+            # Re-hash the exact descriptor after the writable name is gone and
+            # immediately before exposing it to subprocess creation.
+            descriptor_digest = hashlib.sha256()
+            while True:
+                block = os.read(descriptor, 1024 * 1024)
+                if not block:
+                    break
+                descriptor_digest.update(block)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            if descriptor_digest.hexdigest() != expected:
+                raise ValidationError("Owner-only executable artifact digest mismatch")
+            launch = Path(f"/dev/fd/{descriptor}")
+            if not launch.exists():
+                raise ValidationError("Owner-only executable descriptor path is unavailable")
+            yield {"method": "owner-only-unlinked-readonly-fd",
+                   "source_path": str(source), "launch_path": str(launch),
+                   "sha256": descriptor_digest.hexdigest(), "pass_fds": (descriptor,)}
+        finally:
+            os.close(descriptor)
+
+
 @contextmanager
 def _immutable_executable(executable: dict):
     """Yield an exact launch target that cannot change after its digest check."""
@@ -223,8 +356,10 @@ def _immutable_executable(executable: dict):
             kernel.CloseHandle(handle)
         return
 
-    if not hasattr(os, "memfd_create"):
-        raise ValidationError("A sealed immutable executable artifact is unavailable")
+    if not _supports_sealed_memfd():
+        with _owner_only_descriptor_executable(source, expected) as artifact:
+            yield artifact
+        return
     try:
         import fcntl
         descriptor = os.memfd_create("awf-heavy-executable",
@@ -645,6 +780,51 @@ def _dispatch_freshness(review: dict, capacity: dict | None, now: str,
         "heavy-validation-dispatch-freshness", record)}
 
 
+def _snapshot_inventory(root: Path) -> dict:
+    files = []
+    directories = []
+    for path in sorted(root.rglob("*"), key=lambda item: str(item)):
+        relative = path.relative_to(root).as_posix()
+        try:
+            metadata = os.lstat(path)
+        except OSError as exc:
+            raise ValidationError("POSIX checkout snapshot could not be inspected") from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValidationError("POSIX checkout snapshot contains an alias")
+        if stat.S_ISDIR(metadata.st_mode):
+            directories.append(relative)
+        elif stat.S_ISREG(metadata.st_mode):
+            files.append({"path": relative, "sha256": _file_sha256(path)})
+        else:
+            raise ValidationError("POSIX checkout snapshot contains an unreviewed object")
+    return {"files": files, "directories": directories}
+
+
+def _verify_posix_snapshot(root: Path, expected_sha256: str):
+    """Re-hash the owner-only frozen tree immediately before child creation."""
+    expected = _expected_digest(expected_sha256, "POSIX snapshot content inventory SHA-256")
+    try:
+        root_metadata = os.lstat(root)
+    except OSError as exc:
+        raise ValidationError("POSIX checkout snapshot root could not be inspected") from exc
+    if (not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode)
+            or stat.S_IMODE(root_metadata.st_mode) & 0o077):
+        raise ValidationError("POSIX checkout snapshot root is not owner-only")
+    effective_uid = getattr(os, "geteuid", lambda: None)()
+    for path in (root, *sorted(root.rglob("*"), key=lambda item: str(item))):
+        try:
+            metadata = os.lstat(path)
+        except OSError as exc:
+            raise ValidationError("POSIX checkout snapshot could not be inspected") from exc
+        if effective_uid is not None and metadata.st_uid != effective_uid:
+            raise ValidationError("POSIX checkout snapshot ownership changed before child creation")
+        if stat.S_IMODE(metadata.st_mode) & 0o222:
+            raise ValidationError("POSIX checkout snapshot became writable before child creation")
+    observed = fingerprint("heavy-validation-snapshot-inventory", _snapshot_inventory(root))
+    if observed != expected:
+        raise ValidationError("POSIX checkout snapshot changed before child creation")
+
+
 class _ChildLaunchAuthorization:
     """Serialize the last authority check with each actual child creation.
 
@@ -657,7 +837,8 @@ class _ChildLaunchAuthorization:
                  candidate: dict, authorization: dict, authenticator,
                  capacity: dict | None, max_capacity_age_seconds: int,
                  capacity_required: bool, lease: dict | None, lease_guard,
-                 clock, cancel_event: threading.Event, lease_quarantiner=None):
+                 clock, cancel_event: threading.Event, lease_quarantiner=None,
+                 snapshot_verifier=None):
         self._review = review
         self._review_digest = review_digest
         self._plan_digest = plan_digest
@@ -672,6 +853,7 @@ class _ChildLaunchAuthorization:
         self._clock = clock
         self._cancel_event = cancel_event
         self._lease_quarantiner = lease_quarantiner
+        self._snapshot_verifier = snapshot_verifier
         self._lock = threading.Lock()
         self._checks: list[dict] = []
         self._blocked = False
@@ -726,6 +908,15 @@ class _ChildLaunchAuthorization:
             except Exception as exc:
                 lease_fence["error_type"] = type(exc).__name__
                 reasons.append("lease_fence_rejected")
+            snapshot_integrity = {"status": "NOT_REQUIRED"}
+            if self._snapshot_verifier is not None:
+                try:
+                    self._snapshot_verifier()
+                    snapshot_integrity = {"status": "PASS"}
+                except Exception as exc:
+                    snapshot_integrity = {"status": "REJECTED",
+                                          "error_type": type(exc).__name__}
+                    reasons.append("snapshot_integrity_rejected")
             reasons = list(dict.fromkeys(reasons))
             record = {
                 "sequence": len(self._checks) + 1,
@@ -737,6 +928,7 @@ class _ChildLaunchAuthorization:
                 "provider_authorization": provider,
                 "freshness": freshness,
                 "lease_fence": lease_fence,
+                "snapshot_integrity": snapshot_integrity,
                 "reasons": reasons,
             }
             record = {**record, "evidence_sha256": fingerprint(
@@ -848,7 +1040,11 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
                              "checkout snapshot content_inventory_sha256")
             _expected_digest(value["evidence_sha256"], "checkout snapshot evidence_sha256")
             _nonnegative_int(value["file_count"], "checkout snapshot file_count")
-            if value["mutation_guard"] != "windows-file-handles-and-sealed-directories":
+            supported_guards = {
+                "windows-file-handles-and-sealed-directories",
+                "posix-owner-only-frozen-tree-with-pre-exec-verification",
+            }
+            if value["mutation_guard"] not in supported_guards:
                 raise ValidationError("Checkout snapshot mutation guard is unsupported")
             _positive_int(value["guarded_paths"], "checkout snapshot guarded_paths")
             _positive_int(value["sealed_directories"],
@@ -866,6 +1062,9 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
                                                   "checkout snapshot root", directory=True)
             if os.path.normcase(str(snapshot_root)) == os.path.normcase(str(root)):
                 raise ValidationError("Checkout snapshot must be separate from the mutable checkout")
+            if value["mutation_guard"] == (
+                    "posix-owner-only-frozen-tree-with-pre-exec-verification"):
+                _verify_posix_snapshot(snapshot_root, value["content_inventory_sha256"])
             yield snapshot_root, deepcopy(value)
     except ValidationError:
         raise
@@ -1719,8 +1918,8 @@ def _execution_context(plan: dict, expected_candidate: dict,
         raise ValidationError("Execution cwd does not match reviewed plan")
     executables = []
     for part in plan["partitions"]:
-        path = resolve_without_alias(part["executable"]["path"],
-                                     f"partition {part['name']} executable", directory=False)
+        path = resolve_pinned_executable(
+            part["executable"]["path"], f"partition {part['name']} executable")
         observed = _file_sha256(path)
         if observed != part["executable"]["sha256"]:
             raise ValidationError(f"partition {part['name']} executable digest mismatch")
@@ -1816,7 +2015,13 @@ def _run_validation_at(*, plan_raw: bytes, expected_plan_sha256: str,
                         capacity_required=broker["enabled"], lease=lease,
                         lease_guard=guard, clock=dispatch_clock, cancel_event=event,
                         lease_quarantiner=lambda cleanup: _quarantine_lease(
-                            broker_client, lease, cleanup))
+                            broker_client, lease, cleanup),
+                        snapshot_verifier=(
+                            (lambda: _verify_posix_snapshot(
+                                snapshot_root, checkout_snapshot["content_inventory_sha256"]))
+                            if checkout_snapshot["mutation_guard"] ==
+                            "posix-owner-only-frozen-tree-with-pre-exec-verification"
+                            else None))
                     with ThreadPoolExecutor(max_workers=effective,
                                             thread_name_prefix="awf-heavy") as executor:
                         futures = {
