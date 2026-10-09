@@ -1,8 +1,8 @@
 # Release manifest — 1.9.4
 
-419 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
+420 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `ff43acc642b4f20541b4a9e3320427a065b8bec9b7a8b548fc008d143caee409`
+MANIFEST.json SHA-256: `9d5616dbbc5982caa4d1732100ee1d4d8d051c3d0c0413d22e2eb39c951d0ac2`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -311,7 +311,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.gitattributes` | `94c0646012f362c5ef9d09273f994d4de0513066e6cf2b8966308238b897d43b` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
-| `.github/workflows/ci.yml` | `469da3251767c5755683f4e956dbaf113edc06412f520aa47491f2f11b5c1257` |
+| `.github/workflows/ci.yml` | `57619918f6ab16098d2b19345e805447cc661b7e814e6b7d66a4023e5293584b` |
 | `.gitignore` | `b29d5d3e1e77e509edd9845790a2887d443936e8bea5d3016e8982f9abcb0743` |
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `AGENTS.md` | `dc2a7603f45f01fdfc9505a51af7747527582434b3daaa964d26464fd6293a75` |
@@ -414,6 +414,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/safe_materialize.py` | `a84f61708ae40b03d917320582e2e34c4b54f8b94e783504f0cf11850eddba4a` |
 | `scripts/self_test.py` | `b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496` |
 | `scripts/tests/test_ac42_e2e.py` | `0d3c1df367cc4031d8aa8777181c81fec16c45c0b36a986521200ff2c2c3db58` |
+| `scripts/tests/test_ci_suite_coverage.py` | `5655a8ccc4aafc40d32b394a57c4eb3bfc9ebd543f9c075af5855b64abfe62a9` |
 | `scripts/tests/test_cli_failure_paths.py` | `0a0cef4139b488d1f8a048401ff6e7ef1582171a245c6d320113acf0e4c30dd1` |
 | `scripts/tests/test_fresh_bootstrap.py` | `18cb82bb6399defac5969f8e7af82a00e8657516461a386374730b0c714d9a7a` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
