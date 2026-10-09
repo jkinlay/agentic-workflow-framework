@@ -68,6 +68,17 @@ A sceptical audience can check the repository themselves. As of 23 September 202
 | A direct push to `main` after that merge | `fbd4337 update presentation` is on `origin/main` without a PR | Protect `main` with the shipped ruleset (`.agentic/templates/awf-main-ruleset.json`). |
 | No tag or GitHub Release for 1.9.1 | `git tag` and `gh release list` are both empty | Tag `v1.9.1` and publish a Release with the distribution ZIP and its SHA-256. That becomes the independent pin for the checksum slide. |
 | Placeholder publisher | `PUBLISHER.json` → `"repository": "https://example.invalid/agentic-workflow-framework"` | Set the canonical repository URL. |
-| The AWF repo is not itself adopted | `.agentic/workflow-version.yaml`: `profile: manual_reference`, `install_id: null` | Either adopt it (true dogfooding) or say plainly on the slide that the framework is proven on its build process and on adopters, not by self-installation. |
+| The AWF repo is not yet itself adopted | `.agentic/workflow-version.yaml`: `profile: manual_reference`, `install_id: null` | Publish 1.9.5, merge the separately reviewed adoption PR, then complete the owner activation steps below. Until then, describe the repository as not self-adopted. |
 
 Closing the first three gaps also answers review findings M4 (checksum pin source) and B2 (a real critic finding on a current PR) from the 23 September deck review.
+
+### Owner activation after the adoption merge
+
+1. Publish the reviewed 1.9.5 release and retain its independently approved manifest SHA-256 plus a Git-free extraction outside the repository. A checksum recorded by the candidate itself is not independent release trust.
+2. Owner-merge the adoption PR to `main`. The observed merge must contain the receipt-changing adoption commit; a side branch, branch name or PR assertion cannot establish acceptance.
+3. Use a fresh clone of the updated default branch. Run the installed `.agentic/.venv` interpreter, not ambient Python, to execute `verify-installation` and `validate-config`; require exit 0, `integrity_valid: true` and `status: ACCEPTED` with matching digests.
+4. From that fresh clone, run the following with the actual PR number, trusted GitHub CLI and independent release evidence:
+
+   `ABS_CANONICAL_RUNTIME -B -I ABS_PROJECT/.agentic/scripts/workflow.py --root ABS_PROJECT status --require-active --adoption-pr PR_NUMBER --gh ABS_TRUSTED_GH --release-source ABS_RELEASE_EXTRACTION --expected-manifest-sha256 APPROVED_SHA256`
+
+Record the command, exit code and raw result. Only an actual `ACTIVE` result proves independently trusted release bytes, the observed receipt-changing merge, and accepted raw AWF/configuration/receipt/provenance bytes on fresh `main`. ACTIVE does not enable an adapter, Jira writes, scheduling or merge authority.
