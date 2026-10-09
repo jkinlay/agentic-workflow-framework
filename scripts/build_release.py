@@ -13,10 +13,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import ValidationError, VERSION
 from agentic.canonical import sha256
-from agentic.installer import RELEASE_EXCLUDED_PREFIXES, release_member, verify_release
+from agentic.installer import (CONFIG, PROVENANCE, RELEASE_EXCLUDED_PREFIXES,
+                               SOURCE_CONFIG_PATHS, SOURCE_CONFIG_PREFIX,
+                               install_owned_path, release_member)
 from agentic.safeio import Tree
 from release_hygiene import check_release
 from release_modes import archive_mode, load_modes
+
+
+SOURCE_CONFIGS = {
+    CONFIG: SOURCE_CONFIG_PREFIX + "PROJECT_CONFIG.yaml",
+    PROVENANCE: SOURCE_CONFIG_PREFIX + "workflow-version.yaml",
+    "OPERATING_CONFIG.yaml": SOURCE_CONFIG_PREFIX + "OPERATING_CONFIG.yaml",
+}
 
 
 def archive_time():
@@ -26,10 +35,37 @@ def archive_time():
 
 
 def release_paths(tree):
-    """List release members without traversing governed excluded directories."""
-    return [path for path in tree.file_list(exclude_root_git=True,
+    """List logical release members without reading install-owned source state."""
+    if set(SOURCE_CONFIGS) != set(SOURCE_CONFIG_PATHS):
+        raise ValidationError('Release source configuration mapping differs from installer-owned configuration')
+    paths = {path for path in tree.file_list(exclude_root_git=True,
                                              exclude_prefixes=RELEASE_EXCLUDED_PREFIXES)
-            if release_member(path)]
+             if release_member(path) and not install_owned_path(path)}
+    if hasattr(tree, 'inspect'):
+        missing = [source for source in SOURCE_CONFIGS.values() if tree.inspect(source) is None]
+        if missing:
+            raise ValidationError('Release source configuration is incomplete: ' + ', '.join(missing))
+        paths.update(SOURCE_CONFIGS)
+    return sorted(paths)
+
+
+def release_bytes(tree, path):
+    """Read one logical member, substituting the immutable source template."""
+    return tree.read(SOURCE_CONFIGS.get(path, path))
+
+
+def verify_virtual_release(tree, manifest_raw):
+    """Verify the logical source view that will be materialized into the ZIP."""
+    value = json.loads(manifest_raw)
+    expected = set(release_paths(tree)) - {'MANIFEST.json', 'MANIFEST.md'}
+    if set(value.get('files', {})) != expected:
+        raise ValidationError('Virtual release manifest file membership mismatch')
+    folded = [path.casefold() for path in expected]
+    if len(set(folded)) != len(folded):
+        raise ValidationError('Case-colliding paths in virtual release')
+    for path, digest in value['files'].items():
+        if sha256(release_bytes(tree, path)) != digest:
+            raise ValidationError(f'Virtual release digest mismatch: {path}')
 
 
 def manifest():
@@ -44,7 +80,7 @@ def manifest():
         # Do not bless checkout-induced EOL changes by simply rehashing them.
         # This release consists exclusively of UTF-8 text, including manifests.
         for path in all_paths:
-            data = tree.read(path)
+            data = release_bytes(tree, path)
             try:
                 data.decode('utf-8')
             except UnicodeDecodeError as exc:
@@ -64,7 +100,7 @@ def manifest():
     lines.extend(f'| `{p}` | `{h}` |' for p,h in files.items())
     (ROOT / 'MANIFEST.md').write_text('\n'.join(lines)+'\n', encoding='utf-8', newline='\n')
     with Tree(ROOT) as tree:
-        verify_release(tree, sha256(raw), allow_source_checkout=True)
+        verify_virtual_release(tree, raw)
     return sha256(raw)
 
 
@@ -90,7 +126,7 @@ def main():
     expected = {}
     with Tree(ROOT) as tree, zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_STORED) as archive:
         for relative in release_paths(tree):
-            data = tree.read(relative)
+            data = release_bytes(tree, relative)
             info = zipfile.ZipInfo(prefix + relative.replace('\\', '/'), date_time=archive_time())
             info.create_system = 3
             info.external_attr = archive_mode(modes, relative.replace('\\', '/')) << 16
