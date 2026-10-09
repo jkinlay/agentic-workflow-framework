@@ -157,6 +157,20 @@ class ReviewTiers195GateTests(Fixture):
                         owner_review=True, owner_id=1001)
         self.bundle["owner_review"] = terminal
 
+    def _retain_historical_posting_body(self, body_sha256):
+        observation = self.bundle["review_verdicts"][0]["posting_observation"]
+        observation["body_sha256"] = body_sha256
+        observation["observation_sha256"] = fingerprint(
+            "posting-observation", {key: observation.get(key) for key in (
+                "source", "observed_at", "producer_id", "run_id", "comment_url",
+                "body_link", "comment_sha256", "body_sha256")}
+        )
+        posting_entry = next(
+            entry for entry in self.bundle["evidence_registry"]
+            if entry["uri"].endswith("/posting-1")
+        )
+        posting_entry["sha256"] = observation["observation_sha256"]
+
     def test_awf16_r2c_002_terminal_findings_sha256_must_match_critic_artifact(self):
         self._review_history(1)
         verdict = self.bundle["review_verdicts"][-1]
@@ -181,6 +195,23 @@ class ReviewTiers195GateTests(Fixture):
         )
         self.assertEqual("NOT_READY", self.gate()["conclusion"])
 
+    def test_awf16_r2c_002_legacy_run_receipt_cannot_replace_terminal_critic_artifact(self):
+        self.tier1_bundle()
+        self._review_history(1, historical_tier=1, terminal_tier=1)
+        terminal = self.bundle["review_verdicts"][-1]
+        artifact_uri = f"urn:awf:critic-review:{terminal['critic_review']['record_id']}"
+        terminal["evidence"].remove(artifact_uri)
+        terminal["critic_review"]["record_id"] = next(
+            run["record_id"] for run in self.bundle["runs"]
+            if run["run_id"] == terminal["run_id"]
+        )
+        self.bundle["critic"].update(
+            verdict="REQUEST_CHANGES",
+            findings=[self.finding("SUBSTANTIVE-NIT", "NIT", None,
+                                   path="tests/test_example.py")],
+        )
+        self.assertEqual("NOT_READY", self.gate()["conclusion"])
+
     def test_awf16_r3_001_historical_run_keeps_original_candidate_binding(self):
         self._review_history(2)
         self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", self.gate()["conclusion"])
@@ -193,6 +224,18 @@ class ReviewTiers195GateTests(Fixture):
     def test_awf16_195_r3_004_pre_escalation_round_keeps_old_tier_and_binding(self):
         self._tier_three_candidate()
         self._review_history(2, historical_tier=2, terminal_tier=3)
+        self._owner_review()
+        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", self.gate()["conclusion"])
+
+    def test_awf16_r3_001_historical_posting_keeps_original_pr_body(self):
+        self._review_history(2)
+        self._retain_historical_posting_body("a" * 64)
+        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", self.gate()["conclusion"])
+
+    def test_awf16_195_r3_004_pre_escalation_posting_keeps_original_pr_body(self):
+        self._tier_three_candidate()
+        self._review_history(2, historical_tier=2, terminal_tier=3)
+        self._retain_historical_posting_body("a" * 64)
         self._owner_review()
         self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", self.gate()["conclusion"])
 
