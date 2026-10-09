@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:external-resource-claim",
+  "title": "Agentic Workflow 1.2 — external-resource-claim",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "status", "resource_alias", "kind", "value", "reason", "execution_authority"],
+  "properties": {
+    "format": {"const": "awf-external-resource-claim-1"},
+    "status": {"enum": ["CLAIM_ACCEPTED", "CLAIM_REJECTED"]},
+    "resource_alias": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "kind": {"enum": ["accessibility", "data_validity", "completeness", "absence"]},
+    "value": {"enum": ["CONFIRMED", "UNCONFIRMED"]},
+    "reason": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+    "execution_authority": {"const": false}
+  }
+}

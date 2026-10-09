@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:external-resource-evidence",
+  "title": "Agentic Workflow 1.2 — external-resource-evidence (tracked view)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "resource_alias", "observed_at", "result", "execution_authority"],
+  "properties": {
+    "format": {"const": "awf-external-resource-evidence-1"},
+    "resource_alias": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "result": {"enum": ["UNOBSERVED", "SANDBOX_BLOCKED", "PROCESS_START_FAILED", "COMMAND_NONZERO", "MAPPING_MISSING", "PATH_NOT_FOUND", "ACCESS_DENIED", "INVALID_OUTPUT", "READ_VERIFIED", "STALE", "MAPPING_CHANGED"]},
+    "execution_authority": {"const": false}
+  }
+}

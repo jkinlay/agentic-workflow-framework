@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:external-resource-registry",
+  "title": "Agentic Workflow 1.2 — external-resource-registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "resources"],
+  "properties": {
+    "format": {"const": "awf-external-resource-registry-1"},
+    "resources": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]{0,63}$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["access", "required_by", "host_mapping", "sensitivity", "probe"],
+        "properties": {
+          "access": {"enum": ["read", "read_only", "write"]},
+          "required_by": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1}
+          },
+          "host_mapping": {"const": "operator_local"},
+          "sensitivity": {"enum": ["public", "internal", "restricted", "confidential"]},
+          "probe": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sample_relative_path", "listing_limit", "timeout_seconds"],
+            "properties": {
+              "sample_relative_path": {"type": "string", "minLength": 1},
+              "listing_limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+              "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 30}
+            }
+          }
+        }
+      }
+    }
+  }
+}

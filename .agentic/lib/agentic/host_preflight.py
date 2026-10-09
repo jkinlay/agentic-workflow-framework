@@ -323,10 +323,13 @@ def _cancel_reader_io(thread):
     return None
 
 
-def run(args, cwd=None):
+def run(args, cwd=None, timeout_seconds=None):
     """Trusted-host executables only: never a file inside the checkout or a script wrapper."""
     from . import ValidationError
     from .providers.github_status import host_executable
+    deadline = HOST_COMMAND_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+    if type(deadline) not in {int, float} or deadline <= 0 or deadline > HOST_COMMAND_TIMEOUT_SECONDS:
+        raise ValueError(f"host command timeout must be positive and at most {HOST_COMMAND_TIMEOUT_SECONDS} seconds")
     executable = str(args[0])
     try:
         executable = host_executable(args[0], Path(cwd or os.getcwd()))
@@ -363,7 +366,7 @@ def run(args, cwd=None):
     timed_out = False
     cleanup_errors = []
     try:
-        process.wait(timeout=HOST_COMMAND_TIMEOUT_SECONDS)
+        process.wait(timeout=deadline)
     except subprocess.TimeoutExpired:
         timed_out = True
         try:
@@ -415,7 +418,7 @@ def run(args, cwd=None):
                           (("\n" + output) if output else ""))
     if timed_out:
         category = "TIMEOUT"
-        prefix = f"child exceeded {HOST_COMMAND_TIMEOUT_SECONDS}-second deadline"
+        prefix = f"child exceeded {deadline}-second deadline"
         output = _bounded(prefix + (("\n" + output) if output else ""))
         exit_code = None
     elif cleanup_errors:
@@ -688,13 +691,94 @@ def _provider_identity_rows(root, config, github_observation, jira_connections):
     return rows
 
 
-def preflight(root, *, platform=None, config=None, github_observation=None, jira_connections=None):
+def _process_launch_row(root):
+    probe = run(["git", "--version"], cwd=str(root))
+    passed = probe["exit_code"] == 0 and probe["diagnostic_category"] == "OK"
+    detail = "trusted host command launched" if passed else (
+        probe["diagnostic_category"] + (": " + probe["output"] if probe["output"] else ""))
+    return _observed(row(
+        "process_launch", "PASS" if passed else "WARN", detail,
+        "Resolve the host process-launch or sandbox restriction before normal work begins." if not passed else ""),
+        probe)
+
+
+def _repository_writable_row(root, probe=None):
+    try:
+        if probe is not None:
+            writable = bool(probe(Path(root)))
+        else:
+            with tempfile.TemporaryDirectory(prefix=".awf-write-probe-", dir=root):
+                writable = True
+        if writable:
+            return row("repository_writable", "PASS", "repository write probe succeeded", "")
+        return row("repository_writable", "WARN", "repository write probe was refused",
+                   "Grant the worker write access to the single repository root before normal work begins.")
+    except (OSError, PermissionError) as exc:
+        return row("repository_writable", "WARN", type(exc).__name__ + ": repository write probe failed",
+                   "Grant the worker write access to the single repository root before normal work begins.")
+
+
+def external_resource_rows(registry, mappings, *, execute=None, now=None):
+    """Return split-root and per-resource rows without exposing private locators."""
+    from . import ValidationError
+    from .external_resources import admit_resource, split_root_policy, validate_registry
+    if registry is None:
+        return [row("external_workspace_roots", "N_A", "no external-resource registry supplied", "")]
+    try:
+        registry = validate_registry(registry)
+        policy = split_root_policy(registry)
+    except (ValidationError, TypeError, ValueError) as exc:
+        return [row("external_workspace_roots", "WARN", "external-resource registry invalid: " + str(exc),
+                    "Fix the project-owned logical registry before normal work begins.")]
+    rows = [row(
+        "external_workspace_roots",
+        "PASS" if policy["status"] == "SUPPORTED" else "WARN",
+        ("repository is the sole writable root; external resources are read-only"
+         if policy["status"] == "SUPPORTED" else policy["status"] + ": " +
+         ", ".join("{" + alias + "}" for alias in policy["external_write_requested"])),
+        policy["remedy"] or "")]
+    mapping_values = mappings.get("resources", {}) if isinstance(mappings, dict) else {}
+    for alias, declaration in registry["resources"].items():
+        check = "external_resource:{" + alias + "}"
+        if declaration["access"] == "write":
+            rows.append(row(check, "SKIP", "UNOBSERVED: write access is refused by external_workspace_roots",
+                            ""))
+            continue
+        if alias not in mapping_values:
+            rows.append(row(check, "WARN", "UNOBSERVED: operator-local mapping and canonical locator were not supplied",
+                            "Provide the owner-approved mapping outside Git, then rerun this bounded read-only preflight."))
+            continue
+        try:
+            receipt = admit_resource(
+                registry, mappings, alias, task_id="host-preflight", principal="host-preflight",
+                session_id="host-preflight", execute=execute, permission_scope="task", now=now)
+            state = receipt["state"]
+            passed = state == "READ_VERIFIED"
+            human_state = {"MAPPING_MISSING": "mapping absent", "ACCESS_DENIED": "access denied",
+                           "PATH_NOT_FOUND": "path not found"}.get(state, state.casefold().replace("_", " "))
+            detail = state + " (" + human_state + "); layer=" + receipt["error_layer"] + "; canonical locator configured=yes"
+            remedy = ("" if passed else
+                      "Resolve the named layer for the owner-approved operator-local mapping; do not add this resource as another writable project root.")
+            rows.append(row(check, "PASS" if passed else "WARN", detail, remedy))
+        except (ValidationError, OSError, TypeError, ValueError) as exc:
+            rows.append(row(check, "WARN", "UNOBSERVED: " + str(exc),
+                            "Fix the operator-local mapping or bounded probe, then rerun preflight."))
+    return rows
+
+
+def preflight(root, *, platform=None, config=None, github_observation=None, jira_connections=None,
+              external_registry=None, external_mappings=None, resource_executor=None,
+              repository_write_probe=None):
     root = Path(root)
     windows = (platform or os.name) == "nt"
     rows = []
     depth = len(str(root.resolve()))
     rows.append(row("checkout_path_length", "WARN" if depth > PATH_WARN_LENGTH else "PASS",
                     f"{depth} characters", "Relocate the checkout below a shorter path; nested evidence copies exceeded 260 characters on PR #11." if depth > PATH_WARN_LENGTH else ""))
+    rows.append(_process_launch_row(root))
+    rows.append(_repository_writable_row(root, repository_write_probe))
+    rows.extend(external_resource_rows(external_registry, external_mappings,
+                                       execute=resource_executor))
     rows.append(project_lint_scope(root))
     rows.append(route_models_observed(root))
     rows.extend(_provider_identity_rows(root, config, github_observation, jira_connections))
