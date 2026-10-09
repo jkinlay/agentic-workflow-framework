@@ -21,6 +21,8 @@ import venv
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import SOURCE_ONLY_REASON, skip_unless_source_repo  # noqa: E402
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import host_preflight
@@ -154,8 +156,12 @@ class RuntimeCommandTests(unittest.TestCase):
             [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
              "--root", str(ROOT), "doctor", "--json"],
             cwd=ROOT, capture_output=True, text=True, timeout=30)
-        self.assertEqual(2, completed.returncode, completed.stderr)
         report = json.loads(completed.stdout)
+        # Exit 2 only while the managed interpreter is absent (source checkout);
+        # an installed project with .agentic/.venv is healthy and exits 0.
+        runtime = report["runtime"]
+        healthy = runtime["interpreter_exists"] and runtime["entry_point_exists"]
+        self.assertEqual(0 if healthy else 2, completed.returncode, completed.stderr)
         self.assertEqual(command_catalog(ROOT)["commands"], report["commands"])
         self.assertEqual(str(installed_paths(ROOT)[1]), report["runtime"]["interpreter"])
         self.assertEqual(str(installed_paths(ROOT)[2]), report["runtime"]["entry_point"])
@@ -205,6 +211,7 @@ class RuntimeCommandTests(unittest.TestCase):
             self.assertEqual({"adoption", "verification", "validation", "status", "operating"}, reached)
 
     @unittest.skipUnless(os.name == "nt", "AC36 real PowerShell execution requires a Windows host")
+    @skip_unless_source_repo(SOURCE_ONLY_REASON, "scripts/build_release.py")
     def test_ac36_generated_commands_execute_unchanged_in_real_powershell(self):
         powershell = shutil.which("powershell.exe")
         if powershell is None:
@@ -357,7 +364,14 @@ class HonestPreflightTests(unittest.TestCase):
             if Path(path).resolve() == (ROOT / ".gitattributes").resolve():
                 return "* text=auto filter=lfs\n"
             return original_read_text(path, *args, **kwargs)
-        with patch("agentic.host_preflight.run", side_effect=fake_run), patch.object(Path, "read_text", read_text):
+        original_is_file = Path.is_file
+        def is_file(path, *args, **kwargs):
+            # Installed projects may have no root .gitattributes; the fixture supplies one.
+            if Path(path).resolve() == (ROOT / ".gitattributes").resolve():
+                return True
+            return original_is_file(path, *args, **kwargs)
+        with patch("agentic.host_preflight.run", side_effect=fake_run), patch.object(Path, "read_text", read_text), \
+             patch.object(Path, "is_file", is_file):
             rows = {item["check"]: item for item in preflight(ROOT, platform="nt")["rows"]}
         for name in ("core.longpaths", "powershell_execution_policy", "line_endings", "git_lfs"):
             self.assertNotEqual("PASS", rows[name]["status"], rows[name])
