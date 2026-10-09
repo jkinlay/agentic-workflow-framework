@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
+from source_only import skip_unless_source_repo
 from agentic.canonical import fingerprint, sha256
 from agentic.continuous_controller import (
     ContinuousControllerStore, production_controller_cycle,
@@ -475,6 +476,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         observation = adapters["observe_publication"]({"ticket": "AWF-32"})
         self.assertEqual(observation["rules"]["state"], "UNOBSERVED")
 
+    @skip_unless_source_repo()
     def test_generated_adapter_example_is_idempotent_and_complete(self):
         sys.path.insert(0, str(ROOT / "scripts"))
         try:
