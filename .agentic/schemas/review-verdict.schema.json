@@ -18,7 +18,8 @@
     "posting_observation",
     "owner_review",
     "owner_id",
-    "candidate_binding"
+    "candidate_binding",
+    "critic_review"
   ],
   "properties": {
     "record_id": {
@@ -143,10 +144,13 @@
       "required": [
         "source",
         "observed_at",
+        "producer_id",
+        "run_id",
         "comment_url",
         "body_link",
         "comment_sha256",
-        "body_sha256"
+        "body_sha256",
+        "observation_sha256"
       ],
       "properties": {
         "source": {
@@ -156,6 +160,15 @@
           "type": "string",
           "minLength": 1,
           "format": "date-time"
+        },
+        "producer_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
         },
         "comment_url": {
           "type": "string",
@@ -173,6 +186,11 @@
           "pattern": "^[0-9a-f]{64}$"
         },
         "body_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "observation_sha256": {
           "type": "string",
           "minLength": 1,
           "pattern": "^[0-9a-f]{64}$"
@@ -216,6 +234,51 @@
           "type": "string",
           "minLength": 1,
           "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "critic_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_id",
+        "run_id",
+        "round",
+        "head_sha",
+        "verdict",
+        "findings_sha256"
+      ],
+      "properties": {
+        "record_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "head_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "verdict": {
+          "enum": [
+            "APPROVE",
+            "REQUEST_CHANGES"
+          ]
+        },
+        "findings_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
         }
       }
     }

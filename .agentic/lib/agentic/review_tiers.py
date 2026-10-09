@@ -92,10 +92,12 @@ def round_cap(tier, config=None):
     cap = ROUND_CAPS[tier] if configured is None else configured
     if type(cap) is not int or cap < 1:
         raise ValidationError(f"Tier {tier} review max_rounds must be a positive integer")
+    if cap > ROUND_CAPS[tier]:
+        raise ValidationError(f"Tier {tier} review max_rounds exceeds the mandatory {ROUND_CAPS[tier]}-round ceiling")
     return cap
 
 
-def _cap_disposition_valid(value):
+def _cap_disposition_valid(value, tier=None, cap=None):
     """Accept only the schema-shaped owner record already verified by the gate.
 
     The policy helper cannot authenticate a provider comment itself, but it must
@@ -103,6 +105,8 @@ def _cap_disposition_valid(value):
     substitute for the retained owner record.  ``gates.evaluate`` performs the
     actual owner-record verification before calling this predicate.
     """
+    if (tier is not None and tier != TIER_2) or (cap is not None and cap != ROUND_CAPS[TIER_2]):
+        return False
     if not isinstance(value, dict) or value.get("decision") != "EXTEND_ONE_CYCLE":
         return False
     required = {"record_id", "created_at", "producer_id", "run_id", "binding",
@@ -142,7 +146,7 @@ def validate_round(tier, round_number, *, owner_cap_disposition=None, config=Non
     cap = round_cap(tier, config)
     if type(round_number) is not int or round_number < 1:
         raise ValidationError("review round must be a positive integer")
-    if round_number > cap and (round_number != cap + 1 or not _cap_disposition_valid(owner_cap_disposition)):
+    if round_number > cap and (round_number != cap + 1 or not _cap_disposition_valid(owner_cap_disposition, tier, cap)):
         raise ValidationError(f"Tier {tier} review cap is {cap}; an additional round needs an explicit owner cap disposition")
     return True
 
@@ -164,10 +168,10 @@ def verdict_record(*, pr_comment_url, pr_body_link, verdict, tier, round_number,
 
 def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_review=False,
                     owner_cap_disposition=None, ticketed_p2_records=(), ticketed_p2_ids=None,
-                    configured_owner_ids=None, expected_candidate_binding=None):
+                    configured_owner_ids=None, expected_candidate_binding=None, config=None):
     """Derive qualification/escalation at the tier-specific round boundary."""
-    cap = round_cap(tier)
-    if rounds > cap and (rounds != cap + 1 or not _cap_disposition_valid(owner_cap_disposition)):
+    cap = round_cap(tier, config)
+    if rounds > cap and (rounds != cap + 1 or not _cap_disposition_valid(owner_cap_disposition, tier, cap)):
         raise ValidationError(f"Tier {tier} refuses review round {rounds}; owner cap disposition required")
     findings = list(open_findings or ())
     p1 = [f for f in findings if f.get("severity") in P1 or f.get("priority") in P1]

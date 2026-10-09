@@ -172,7 +172,7 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                             owner_review=False, ticketed_p2_records=(), owner_cap_disposition=None,
                             owner_cap_verified=False, owner_cap_context=None,
                             configured_owner_ids=None, expected_candidate_binding=None,
-                            previous_diff_sha=None, current_diff_sha=None, base_only=False):
+                            previous_diff_sha=None, current_diff_sha=None, base_only=False, config=None):
     """Lifecycle-facing review policy API; provider posting remains AWF-29."""
     if previous_diff_sha is not None and current_diff_sha is not None:
         diff = diff_effect(previous_diff_sha, current_diff_sha, base_only=base_only)
@@ -198,7 +198,7 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                             excluded_contexts=owner_cap_context.get("excluded_contexts", ()),
                             excluded_producers=owner_cap_context.get("excluded_producers", ()))
     validate_round(tier, round_number,
-                   owner_cap_disposition=owner_cap_disposition)
+                   owner_cap_disposition=owner_cap_disposition, config=config)
     if diff["invalidate"]:
         return {"status": "REVIEW_REQUIRED", "round": round_number, "history_preserved": True,
                 "invalidated": True, "diff": diff}
@@ -207,6 +207,7 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                                owner_cap_disposition=owner_cap_disposition,
                                ticketed_p2_records=ticketed_p2_records,
                                configured_owner_ids=configured_owner_ids,
-                               expected_candidate_binding=expected_candidate_binding)
+                               expected_candidate_binding=expected_candidate_binding,
+                               config=config)
     return {**decision, "round": round_number, "history_preserved": True,
             "invalidated": False, "diff": diff, "verdict": verdict}

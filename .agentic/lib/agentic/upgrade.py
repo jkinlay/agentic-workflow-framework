@@ -625,6 +625,43 @@ def review_tier_defaults(config):
         return bytes(config)
     lines = original_text.splitlines(keepends=True)
     newline = "\r\n" if "\r\n" in original_text else "\n"
+    # Valid YAML permits compact flow mappings.  Handle the common retained
+    # PROJECT_CONFIG form in place so we do not emit a duplicate top-level
+    # execution/risk_tiers key or discard comments and scalar spelling.
+    for index, line in enumerate(lines):
+        if not re.match(r"^execution:\s*\{", line):
+            continue
+        def matching_brace(text, opening):
+            depth = 0
+            quote = None
+            for position in range(opening, len(text)):
+                char = text[position]
+                if quote:
+                    if char == quote and (position == 0 or text[position - 1] != "\\"):
+                        quote = None
+                elif char in "'\"":
+                    quote = char
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return position
+            return None
+        risk_key = line.find("risk_tiers:")
+        if risk_key >= 0:
+            risk_open = line.find("{", risk_key)
+            risk_close = matching_brace(line, risk_open) if risk_open >= 0 else None
+            if risk_close is not None:
+                insertion = ", tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}"
+                lines[index] = line[:risk_close] + insertion + line[risk_close:]
+                return "".join(lines).encode("utf-8")
+        execution_open = line.find("{")
+        execution_close = matching_brace(line, execution_open)
+        if execution_close is not None:
+            insertion = ", risk_tiers: {tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}}"
+            lines[index] = line[:execution_close] + insertion + line[execution_close:]
+            return "".join(lines).encode("utf-8")
     execution = next((i for i, line in enumerate(lines)
                       if re.match(r"^execution:\s*(?:#.*)?(?:\r?\n)?$", line)), None)
     if execution is None:

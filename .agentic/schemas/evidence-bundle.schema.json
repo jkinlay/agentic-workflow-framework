@@ -20,6 +20,7 @@
     "publication_scan",
     "tier_classification",
     "review_verdicts",
+    "ticketed_p2_records",
     "evidence_registry",
     "provenance_mode"
   ],
@@ -287,6 +288,28 @@
       "type": "array",
       "items": {
         "$ref": "urn:awf:1.2:review-verdict"
+      },
+      "minItems": 0
+    },
+    "ticketed_p2_records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "finding_id",
+          "ticket_key"
+        ],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ticket_key": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       },
       "minItems": 0
     },

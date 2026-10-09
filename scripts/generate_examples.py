@@ -186,24 +186,31 @@ def example_bundle(cfg):
             "captured_command_output": "when committed or passed as provider text", "strict_utf8": True,
             "pr_bodies": True, "pr_comments": False},
         "execution_authority": False}
+    posting = {"source": "host_observation", "observed_at": NOW,
+               "producer_id": "fixture-collector", "run_id": next(run["run_id"] for run in runs if run["role"] == "collector"),
+               "comment_url": "https://github.com/fixture/example/pull/7#issuecomment-1",
+               "body_link": "https://github.com/fixture/example/pull/7#review-verdict-1",
+               "comment_sha256": sha256(b"Illustrative evidence; no external test was executed.\n"),
+               "body_sha256": pr["body_sha256"]}
+    posting["observation_sha256"] = fingerprint("posting-observation", posting)
     verdict = record("review-verdict-1", "critic", verdict="PASS", tier=classification["tier"], round=1,
         head_sha=candidate["head_sha"], reviewer_id="fixture-critic", pr_comment_url="https://github.com/fixture/example/pull/7#issuecomment-1",
         pr_body_link="https://github.com/fixture/example/pull/7#review-verdict-1", evidence=evidence,
         owner_review=False, owner_id=1001,
         candidate_binding={"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
                            "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
-        posting_observation={"source": "host_observation", "observed_at": NOW,
-                             "comment_url": "https://github.com/fixture/example/pull/7#issuecomment-1",
-                             "body_link": "https://github.com/fixture/example/pull/7#review-verdict-1",
-                             "comment_sha256": sha256(b"Illustrative evidence; no external test was executed.\n"),
-                             "body_sha256": pr["body_sha256"]},
+        posting_observation=posting,
+        critic_review={"record_id": next(run["record_id"] for run in runs if run["role"] == "critic"), "run_id": critic["run_id"], "round": 1, "head_sha": candidate["head_sha"],
+                       "verdict": "APPROVE", "findings_sha256": fingerprint("critic-findings", critic["findings"])},
         )
     verdict.pop("schema_version", None)
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,
             "specialists": [], "review_submission": review_submission, "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,
             "publication_scan": publication_scan, "tier_classification": classification, "review_verdicts": [verdict],
+            "ticketed_p2_records": [],
             "evidence_registry": [{"uri": evidence[0],
-                "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"}], "provenance_mode": "offline_fixture"}
+                "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"},
+               {"uri": evidence[0] + "/posting", "sha256": posting["observation_sha256"], "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"}], "provenance_mode": "offline_fixture"}
 
 
 def sample(schema, schemas):

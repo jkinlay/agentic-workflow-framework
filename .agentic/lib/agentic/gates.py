@@ -137,6 +137,8 @@ def evaluate(config, workflow, bundle, contracts, now):
         raise ValidationError("Snapshot summary/labels match jira.owner_closure_keywords; the contract must set owner_closure_required")
     criteria = unique(contract["acceptance_criteria"], "id", "contract acceptance criterion")
     verdicts = bundle.get("review_verdicts", [])
+    terminal_round_hint = max((v["round"] for v in verdicts), default=0)
+    historical_review_run_ids = {v["run_id"] for v in verdicts if v["round"] != terminal_round_hint}
     records = ([bundle[k] for k in ["dispatch", "worker", "critic", "ci", "pr"]]
                + bundle["specialists"] + bundle["runs"])
     if bundle.get("owner_review") is not None:
@@ -146,7 +148,8 @@ def evaluate(config, workflow, bundle, contracts, now):
     for record in records:
         if record["binding"] != binding:
             raise ValidationError(f"Cross-record binding mismatch: {record['record_id']}")
-        fresh(record["created_at"], now, config["validation"]["max_evidence_age_seconds"])
+        if not (record in bundle.get("runs", []) and record.get("run_id") in historical_review_run_ids):
+            fresh(record["created_at"], now, config["validation"]["max_evidence_age_seconds"])
     unique(bundle["runs"], "run_id", "run ID")
     runs = {run["run_id"]: run for run in bundle["runs"]}
     for run in runs.values():
@@ -247,6 +250,14 @@ def evaluate(config, workflow, bundle, contracts, now):
         # the observed durable value including security.
         contract_classification = durable_classification
         bundle_classification = durable_classification
+        # Upgrade the retained records in memory as part of the compatibility
+        # path.  A legacy omission is normalized narrowly, so the accepted
+        # durable evidence cannot continue to advertise a security-free view.
+        declared_classification.clear()
+        declared_classification.update(durable_classification)
+        if isinstance(bundle.get("tier_classification"), dict):
+            bundle["tier_classification"].clear()
+            bundle["tier_classification"].update(durable_classification)
     if contract_classification != durable_classification:
         raise ValidationError("Contract risk_classification does not match observed paths and risk evidence")
     if bundle_classification != durable_classification:
@@ -276,15 +287,44 @@ def evaluate(config, workflow, bundle, contracts, now):
             fresh(verdict["created_at"], now, config["validation"]["max_evidence_age_seconds"])
         if verdict["round"] == terminal_round and verdict["head_sha"] != candidate["head_sha"]:
             raise ValidationError("Review verdict is stale for the candidate head")
-        if verdict["tier"] != tier:
+        if verdict["round"] == terminal_round and verdict["tier"] != tier:
             raise ValidationError("Review verdict tier does not match the recomputed contract tier")
         from .review_tiers import validate_round
-        validate_round(tier, verdict["round"], owner_cap_disposition=bundle.get("cap_disposition"), config=config)
+        validate_round(verdict["tier"], verdict["round"], owner_cap_disposition=bundle.get("cap_disposition"), config=config)
+        critic_artifact = verdict.get("critic_review")
+        run = runs.get(verdict["run_id"])
+        if (not isinstance(critic_artifact, dict)
+                or run is None
+                or critic_artifact.get("record_id") != run["record_id"]
+                or critic_artifact.get("run_id") != verdict["run_id"]
+                or critic_artifact.get("round") != verdict["round"]
+                or critic_artifact.get("head_sha") != verdict["head_sha"]
+                or critic_artifact.get("verdict") != ("APPROVE" if verdict["verdict"] == "PASS" else "REQUEST_CHANGES")):
+            raise ValidationError("Review verdict is not bound to its critic artifact")
         if not verdict["pr_comment_url"] or not verdict["pr_body_link"]:
             raise ValidationError("Review verdict must carry PR comment and body-link evidence")
         observation = verdict.get("posting_observation")
         if not isinstance(observation, dict) or observation.get("source") != "host_observation":
             posting_evidence_ok = False
+        else:
+            observation_run = runs.get(observation.get("run_id"))
+            observation_entries = [entry for entry in bundle["evidence_registry"]
+                                   if entry["sha256"] == observation.get("comment_sha256")]
+            observation_payload = {key: observation.get(key) for key in (
+                "source", "observed_at", "producer_id", "run_id", "comment_url",
+                "body_link", "comment_sha256", "body_sha256")}
+            observation_digest_ok = observation.get("observation_sha256") == fingerprint(
+                "posting-observation", observation_payload)
+            if (observation_run is None or observation_run["role"] != "collector"
+                    or observation_run["producer_id"] != observation.get("producer_id")
+                    or not observation_digest_ok
+                    or not any(entry["producer_id"] == observation.get("producer_id")
+                               and (entry["uri"].endswith("/posting") or "/posting-" in entry["uri"])
+                               and entry["sha256"] == observation.get("observation_sha256")
+                               for entry in bundle["evidence_registry"])):
+                posting_evidence_ok = False
+            else:
+                posting_evidence_ok = posting_evidence_ok and observation.get("body_sha256") == pr["body_sha256"]
         if verdict["round"] == terminal_round:
             if isinstance(observation, dict):
                 fresh(observation["observed_at"], now, config["validation"]["max_evidence_age_seconds"])
@@ -327,6 +367,13 @@ def evaluate(config, workflow, bundle, contracts, now):
     prior = unique(bundle["prior_findings"], "id", "prior finding ID")
     current_findings = critic["findings"] + [f for r in bundle["specialists"] for f in r["findings"]]
     current = unique(current_findings, "id", "current finding ID")
+    from .review_tiers import round_cap
+    ticketed_p2 = {item.get("finding_id") for item in bundle.get("ticketed_p2_records", [])
+                   if isinstance(item, dict) and item.get("finding_id") and item.get("ticket_key")}
+    open_p2 = {finding["id"] for finding in current_findings
+               if finding["status"] != "RESOLVED" and finding["severity"] in {"P2", "MINOR"}}
+    p2_ticketing_ok = not (tier == 2 and terminal_round >= round_cap(2, config)
+                           and not open_p2.issubset(ticketed_p2))
     if set(critic["prior_finding_ids"]) != prior or not prior.issubset(current):
         raise ValidationError("Prior findings were omitted from review lineage")
     for finding in current_findings:
@@ -378,7 +425,7 @@ def evaluate(config, workflow, bundle, contracts, now):
     critic_verdicts = [v for v in verdicts if not v["owner_review"]]
     terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
     terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
-    critic_ok = (no_blockers and terminal_critic is not None
+    critic_ok = (no_blockers and p2_ticketing_ok and terminal_critic is not None
                  and terminal_verdict is terminal_critic
                  and terminal_verdict["verdict"] == "PASS"
                  and terminal_critic["verdict"] == "PASS"

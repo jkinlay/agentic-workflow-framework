@@ -647,17 +647,35 @@
       "posting_observation": {
         "source": "host_observation",
         "observed_at": "2026-09-09T12:00:00Z",
+        "producer_id": "fixture-collector",
+        "run_id": "8e9a288f-2dd8-5231-90ff-b338139b5de7",
         "comment_url": "https://github.com/fixture/example/pull/7#issuecomment-1",
         "body_link": "https://github.com/fixture/example/pull/7#review-verdict-1",
         "comment_sha256": "9701f32841a7f0e2a6c9496384a68061f61e01478768582917df9c7612f53e21",
-        "body_sha256": "1d5e587dac06f7f47ccd3a5f96972d5f55fcbe7db44f39f7abe54071fb24f75b"
+        "body_sha256": "1d5e587dac06f7f47ccd3a5f96972d5f55fcbe7db44f39f7abe54071fb24f75b",
+        "observation_sha256": "2a5feb982cdb79e783ac81f0fdddf71deae3513c931af8b851fa0b2d18b01f62"
+      },
+      "critic_review": {
+        "record_id": "f4120b2d-e705-5234-b465-9994c90134bf",
+        "run_id": "7d8465fe-d08b-53de-9c80-c839f0dad8fe",
+        "round": 1,
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "verdict": "APPROVE",
+        "findings_sha256": "58eb4ed82fa8baf0699487341c301586601ec6b1083ee2fbae36ecc48f760fcf"
       }
     }
   ],
+  "ticketed_p2_records": [],
   "evidence_registry": [
     {
       "uri": "urn:awf:fixture:example-evidence",
       "sha256": "9701f32841a7f0e2a6c9496384a68061f61e01478768582917df9c7612f53e21",
+      "producer_id": "fixture-collector",
+      "retained_until": "2030-01-01T00:00:00Z"
+    },
+    {
+      "uri": "urn:awf:fixture:example-evidence/posting",
+      "sha256": "2a5feb982cdb79e783ac81f0fdddf71deae3513c931af8b851fa0b2d18b01f62",
       "producer_id": "fixture-collector",
       "retained_until": "2030-01-01T00:00:00Z"
     }
