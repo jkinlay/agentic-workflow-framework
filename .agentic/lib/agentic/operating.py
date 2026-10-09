@@ -23,6 +23,7 @@ from jsonschema import Draft202012Validator
 
 from . import ValidationError, VERSION
 from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
+from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
 
 CONFIG = "OPERATING_CONFIG.yaml"
@@ -253,7 +254,12 @@ def validate_snapshot(snapshot, governance):
 @contextmanager
 def _lock(tree):
     if tree.inspect("MANIFEST.json") is not None:
-        fail("$", "Use an installed project outside the immutable release source for operating state")
+        if tree.inspect(INSTALLED) is None:
+            fail("$", "Use an installed project outside the immutable release source for operating state")
+        # An adopted source checkout legitimately retains the release build
+        # manifests.  Its receipt must verify before those manifests may stop
+        # identifying the checkout as an immutable, uninstalled release source.
+        verify_installed(tree.root)
     parent, handle, name = tree.parent(LOCK, create=True)
     tree.inspect(LOCK)
     if os.name == "nt":
