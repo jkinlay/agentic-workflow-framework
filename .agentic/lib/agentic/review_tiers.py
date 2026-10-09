@@ -7,6 +7,7 @@ PR.  No function here posts comments, authorizes a merge, or changes Jira.
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass
 
 from . import ValidationError
@@ -137,7 +138,8 @@ def _ticketed_finding_ids(records):
         finding_id = record.get("finding_id")
         ticket_key = record.get("ticket_key")
         if (isinstance(finding_id, str) and finding_id
-                and isinstance(ticket_key, str) and ticket_key):
+                and isinstance(ticket_key, str)
+                and re.fullmatch(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*", ticket_key)):
             result.add(finding_id)
     return result
 
@@ -188,7 +190,9 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
         return {"status": "OWNER_REVIEW_REQUIRED", "cap": cap}
     if tier == TIER_2 and rounds >= cap and p1:
         return {"status": "ROUTE_TO_OWNER", "reason": "P1 remains open at Tier 2 cap", "cap": cap}
-    if tier == TIER_2 and rounds >= cap and p2:
+    if tier == TIER_2 and p2:
+        if rounds < cap:
+            return {"status": "CONTINUE", "reason": "P2 remains open before the Tier 2 cap", "cap": cap}
         ids = {f.get("id") for f in p2}
         mapped = _ticketed_finding_ids(ticketed_p2_records)
         if not ids.issubset(mapped):

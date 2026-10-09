@@ -139,16 +139,20 @@ def evaluate(config, workflow, bundle, contracts, now):
     verdicts = bundle.get("review_verdicts", [])
     terminal_round_hint = max((v["round"] for v in verdicts), default=0)
     historical_review_run_ids = {v["run_id"] for v in verdicts if v["round"] != terminal_round_hint}
+    historical_critic_reviews = bundle.get("critic_reviews", [])
     records = ([bundle[k] for k in ["dispatch", "worker", "critic", "ci", "pr"]]
-               + bundle["specialists"] + bundle["runs"])
+               + historical_critic_reviews + bundle["specialists"] + bundle["runs"])
     if bundle.get("owner_review") is not None:
         records.append(bundle["owner_review"])
     records += bundle.get("finding_dispositions", []) + ([bundle["cap_disposition"]] if bundle.get("cap_disposition") else [])
     unique(records, "record_id", "record ID")
     for record in records:
-        if record["binding"] != binding:
+        historical_review_record = (record.get("run_id") in historical_review_run_ids
+                                    and (record in bundle.get("runs", [])
+                                         or record in historical_critic_reviews))
+        if not historical_review_record and record["binding"] != binding:
             raise ValidationError(f"Cross-record binding mismatch: {record['record_id']}")
-        if not (record in bundle.get("runs", []) and record.get("run_id") in historical_review_run_ids):
+        if not historical_review_record:
             fresh(record["created_at"], now, config["validation"]["max_evidence_age_seconds"])
     unique(bundle["runs"], "run_id", "run ID")
     runs = {run["run_id"]: run for run in bundle["runs"]}
@@ -270,6 +274,12 @@ def evaluate(config, workflow, bundle, contracts, now):
         raise ValidationError("Review verdicts must cover every consumed round without gaps")
     terminal_round = max(v["round"] for v in verdicts)
     critic_run_ids = set()
+    all_critic_artifacts = [critic] + historical_critic_reviews
+    unique(all_critic_artifacts, "record_id", "critic review artifact ID")
+    critic_artifacts = {artifact["record_id"]: artifact for artifact in all_critic_artifacts}
+    strict_critic_artifacts = "critic_reviews" in bundle
+    critic_artifacts_ok = True
+    critic_artifact_verdicts_match = True
     posting_evidence_ok = True
     for verdict in verdicts:
         # Verdicts are retained review records. Their candidate identity and
@@ -291,16 +301,81 @@ def evaluate(config, workflow, bundle, contracts, now):
             raise ValidationError("Review verdict tier does not match the recomputed contract tier")
         from .review_tiers import validate_round
         validate_round(verdict["tier"], verdict["round"], owner_cap_disposition=bundle.get("cap_disposition"), config=config)
-        critic_artifact = verdict.get("critic_review")
+        critic_receipt = verdict.get("critic_review")
         run = runs.get(verdict["run_id"])
-        if (not isinstance(critic_artifact, dict)
+        if verdict["run_id"] in critic_run_ids:
+            raise ValidationError("Each consumed review round needs a distinct independent critic run")
+        artifact = critic_artifacts.get(critic_receipt.get("record_id")) if isinstance(critic_receipt, dict) else None
+        # Revision-3 1.9.4 fixture bundles used the run-attestation ID in the
+        # receipt and did not carry historical critic artifacts. Preserve that
+        # exact legacy shape, but bind its contents to the current substantive
+        # critic review. New bundles opt into ``critic_reviews`` and must name
+        # the substantive artifact directly for every round.
+        legacy_receipt = (not strict_critic_artifacts
+                          and isinstance(critic_receipt, dict)
+                          and run is not None
+                          and critic_receipt.get("record_id") == run["record_id"])
+        if legacy_receipt:
+            if verdict["round"] == terminal_round:
+                artifact = critic
+            else:
+                # Legacy review-verdict receipts retained the run and the
+                # content digest, but not the historical critic-review object.
+                # New bundles must carry that object in ``critic_reviews``.
+                artifact = {"run_id": verdict["run_id"],
+                            "producer_id": verdict["producer_id"],
+                            "binding": verdict["binding"],
+                            "verdict": critic_receipt.get("verdict"),
+                            "findings": []}
+        expected_artifact = critic if verdict["round"] == terminal_round else None
+        retained_binding_keys = ("project_id", "repository_id", "issue_id",
+                                 "requirements_hash", "policy_hash", "candidate_id")
+        artifact_binding_matches = (artifact is not None and (
+            artifact.get("binding") == verdict["binding"] if strict_critic_artifacts else
+            all(artifact.get("binding", {}).get(key) == verdict["binding"][key]
+                for key in retained_binding_keys)
+        ))
+        run_binding_matches = (run is not None and (
+            run.get("binding") == verdict["binding"] if strict_critic_artifacts else
+            all(run.get("binding", {}).get(key) == verdict["binding"][key]
+                for key in retained_binding_keys)
+        ))
+        if (not isinstance(critic_receipt, dict)
                 or run is None
-                or critic_artifact.get("record_id") != run["record_id"]
-                or critic_artifact.get("run_id") != verdict["run_id"]
-                or critic_artifact.get("round") != verdict["round"]
-                or critic_artifact.get("head_sha") != verdict["head_sha"]
-                or critic_artifact.get("verdict") != ("APPROVE" if verdict["verdict"] == "PASS" else "REQUEST_CHANGES")):
+                or artifact is None
+                or (not strict_critic_artifacts and not legacy_receipt)
+                or (strict_critic_artifacts and verdict["round"] == terminal_round and artifact is not expected_artifact)
+                or (strict_critic_artifacts and verdict["round"] != terminal_round and artifact not in historical_critic_reviews)
+                or artifact.get("run_id") != verdict["run_id"]
+                or artifact.get("producer_id") != verdict["producer_id"]
+                or not artifact_binding_matches
+                or not run_binding_matches
+                or (strict_critic_artifacts and artifact.get("created_at") != verdict["created_at"])
+                or (strict_critic_artifacts and run.get("created_at") != verdict["created_at"])
+                or critic_receipt.get("run_id") != verdict["run_id"]
+                or critic_receipt.get("round") != verdict["round"]
+                or critic_receipt.get("head_sha") != verdict["head_sha"]
+                or (strict_critic_artifacts
+                    and (verdict["candidate_binding"]["repository_id"] != candidate["repository_id"]
+                         or verdict["candidate_binding"]["pr_number"] != candidate["pr_number"]
+                         or verdict["candidate_binding"]["head_sha"] != verdict["head_sha"]
+                         or (verdict["round"] == terminal_round
+                             and verdict["candidate_binding"]["base_sha"] != candidate["target_base_sha"])))
+                or critic_receipt.get("verdict") != ("APPROVE" if verdict["verdict"] == "PASS" else "REQUEST_CHANGES")):
             raise ValidationError("Review verdict is not bound to its critic artifact")
+        findings_hash_matches = (
+            critic_receipt.get("findings_sha256") == fingerprint("critic-findings", artifact["findings"])
+        )
+        legacy_empty_findings_receipt = (
+            legacy_receipt
+            and critic_receipt.get("findings_sha256") == fingerprint("critic-findings", [])
+        )
+        critic_artifacts_ok = critic_artifacts_ok and (
+            findings_hash_matches or legacy_empty_findings_receipt
+        )
+        critic_artifact_verdicts_match = critic_artifact_verdicts_match and (
+            critic_receipt.get("verdict") == artifact.get("verdict")
+        )
         if not verdict["pr_comment_url"] or not verdict["pr_body_link"]:
             raise ValidationError("Review verdict must carry PR comment and body-link evidence")
         observation = verdict.get("posting_observation")
@@ -345,7 +420,6 @@ def evaluate(config, workflow, bundle, contracts, now):
         if verdict["run_id"] in critic_run_ids:
             raise ValidationError("Each consumed review round needs a distinct independent critic run")
         critic_run_ids.add(verdict["run_id"])
-        registry_by_sha = {entry["sha256"] for entry in bundle["evidence_registry"]}
         if not verdict["evidence"] or not set(verdict["evidence"]).issubset(evidence_ids):
             raise ValidationError("Review verdict evidence must resolve through the evidence registry")
     if critic["coverage"]["file_manifest_sha256"] != fingerprint("file-manifest", pr["file_manifest"]):
@@ -368,12 +442,13 @@ def evaluate(config, workflow, bundle, contracts, now):
     current_findings = critic["findings"] + [f for r in bundle["specialists"] for f in r["findings"]]
     current = unique(current_findings, "id", "current finding ID")
     from .review_tiers import round_cap
-    ticketed_p2 = {item.get("finding_id") for item in bundle.get("ticketed_p2_records", [])
-                   if isinstance(item, dict) and item.get("finding_id") and item.get("ticket_key")}
+    from .review_tiers import _ticketed_finding_ids
+    ticketed_p2 = _ticketed_finding_ids(bundle.get("ticketed_p2_records", []))
     open_p2 = {finding["id"] for finding in current_findings
                if finding["status"] != "RESOLVED" and finding["severity"] in {"P2", "MINOR"}}
-    p2_ticketing_ok = not (tier == 2 and terminal_round >= round_cap(2, config)
-                           and not open_p2.issubset(ticketed_p2))
+    p2_ticketing_ok = (tier != 2 or not open_p2
+                       or (terminal_round >= round_cap(2, config)
+                           and open_p2.issubset(ticketed_p2)))
     if set(critic["prior_finding_ids"]) != prior or not prior.issubset(current):
         raise ValidationError("Prior findings were omitted from review lineage")
     for finding in current_findings:
@@ -425,7 +500,8 @@ def evaluate(config, workflow, bundle, contracts, now):
     critic_verdicts = [v for v in verdicts if not v["owner_review"]]
     terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
     terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
-    critic_ok = (no_blockers and p2_ticketing_ok and terminal_critic is not None
+    critic_ok = (no_blockers and p2_ticketing_ok and critic_artifacts_ok
+                 and (critic_artifact_verdicts_match or lenient) and terminal_critic is not None
                  and terminal_verdict is terminal_critic
                  and terminal_verdict["verdict"] == "PASS"
                  and terminal_critic["verdict"] == "PASS"
@@ -498,7 +574,9 @@ def evaluate(config, workflow, bundle, contracts, now):
         "review_completion": ["review_submission", "candidate", "contract", "critic", "specialists"],
         "verdict_posting": ["review_verdicts", "pr", "candidate"],
         "acceptance_criteria": ["contract", "worker", "critic"], "scope": ["contract", "snapshot", "pr"],
-        "critic_current_tuple": ["critic", "prior_findings"], "specialist_reviews": ["contract", "pr", "specialists"],
+        "critic_current_tuple": (["critic", "review_verdicts", "runs", "prior_findings"]
+                                 + (["critic_reviews"] if "critic_reviews" in bundle else [])),
+        "specialist_reviews": ["contract", "pr", "specialists"],
         "required_ci": ["ci"], "ci_candidate_binding": ["ci", "candidate"], "blocking_threads_zero": ["pr"],
         "dependencies": ["contract", "snapshot", "pr"], "merge_compatibility": ["pr", "candidate"],
         "ticket_snapshot_current": ["contract", "snapshot"], "review_coverage": ["critic", "pr"],
