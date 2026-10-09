@@ -39,3 +39,31 @@ from a trusted runtime and protected state directory. Critics inspect the
 current observed PR head, retain stable finding IDs and re-review after every
 amendment. Findings, review completion and CI status never authorize a merge;
 the final gate and human authorization remain mandatory.
+
+For a new ticket, the first-draft bridge in
+`agentic.review_first_draft` runs before this enrolled loop. The trusted
+`review_loop.py first-draft` entry point wires the pinned worker, publisher and
+GitHub host adapter together; it does not rely on a guessed PR number. It preserves the
+same pinned worker route and exact allowed paths, requires a tested-tree
+receipt, performs the history-aware scan on the prospective PR body before the
+first push, durably freezes the publication base/head/body before that push,
+creates one draft PR,
+persists its number before snapshot, and enrolls only when the observed head
+and base match. The host durably retains the original repository Git
+configuration, remotes and hooks baseline throughout recovery and every
+commit/push operation; changes or repository-local credential configuration
+block publication. It rejects any tracked, staged, untracked or ignored
+pre-worker residue, and requires the configured head branch to remain at the
+provider base until the publisher makes its single child commit. Each
+first-draft worker execution is counted in `max_agent_runs` before launch but
+does not consume an amendment cycle; prepared-publication recovery does not
+replay the worker. A host
+publisher may commit the worker's tested tree when Git metadata is unavailable
+inside the worker sandbox; any `HEAD^{tree}` mismatch is a scope violation and
+must return to the worker. Recovery retains the reservation UUID and charges
+each worker replay. A retained validated receipt and publisher plan let scan
+or durable-record failures resume the exact unpublished local child. Recovery
+looks up an uncertain PR in all states by the exact head, then reconciles the
+remote ref before any exact-head push retry. It never calls PR snapshot with
+`pr: 0`, reruns the worker for a prepared publication, or blindly creates a
+second PR.
