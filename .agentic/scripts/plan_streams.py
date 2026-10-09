@@ -15,12 +15,20 @@ from agentic.interaction import rejected_next_step
 from agentic.installer import verify_installed
 from agentic.operating import locked_operating, validate_operating
 from agentic.safeio import Tree
-from agentic.streams import native_execution_policy, write_project_plan
+from agentic.streams import EXTERNAL_CONFIG_PLACEHOLDER, native_execution_policy, write_project_plan
 
 
 class PlannerParser(argparse.ArgumentParser):
     def error(self, message):
         raise ValidationError(message)
+
+
+def snapshot_config_path(config_path, project_root):
+    """Return only repository-relative provenance or a non-path placeholder."""
+    try:
+        return config_path.relative_to(project_root).as_posix()
+    except ValueError:
+        return EXTERNAL_CONFIG_PLACEHOLDER
 
 
 def main(argv=None):
@@ -34,6 +42,8 @@ def main(argv=None):
     parser.add_argument("--coordinator-spawn-depth", type=int, default=0, help="Actual native coordinator depth (root=0); exhausted spawn depth permits its own writer only")
     parser.add_argument("--coordinator-agent-id", help="Observed native coordinator identity; prevents counting an existing coordinator owner as a new free writer")
     parser.add_argument("--allow-synthetic", action="store_true", help="Permit demonstration fixtures, never eligible for live dispatch")
+    parser.add_argument("--redact-ownership-worktrees", action="store_true",
+                        help="Replace absolute ownership worktrees with stable hashed placeholders after verifying the pinned inventory bytes")
     parser.add_argument("--now", default=None, help="RFC3339 test clock; omit for live planning")
     try:
         args = parser.parse_args(argv)
@@ -86,8 +96,10 @@ def main(argv=None):
                                         coordinator_spawn_depth=args.coordinator_spawn_depth,
                                         coordinator_agent_id=args.coordinator_agent_id,
                                         operating=operating, governance=config,
+                                        redact_ownership_worktrees=args.redact_ownership_worktrees,
                                         execution_provenance={"source": provenance_source,
-                                                              "config_path": str(config_path), "config_sha256": sha256(config_bytes)})
+                                                              "config_path": snapshot_config_path(config_path, args.project_root.absolute()),
+                                                              "config_sha256": sha256(config_bytes)})
         print(json.dumps(result, indent=2))
         return 0
     except Exception as exc:

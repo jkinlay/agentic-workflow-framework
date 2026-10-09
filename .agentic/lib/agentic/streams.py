@@ -28,6 +28,8 @@ MARKDOWN = "STREAMS.md"
 LOCK = ".awf-streams.lock"
 JOURNAL = ".awf-streams-transaction.json"
 MAX_TICKETS = 500
+REDACTED_WORKTREE_PREFIX = "<redacted-worktree:sha256:"
+EXTERNAL_CONFIG_PLACEHOLDER = "<external-project-configuration>"
 DEFAULT_NATIVE_EXECUTION = {
     "native_streams": {"enabled": True, "dispatch_policy": "ready_independent"},
     "independent_reviewers": {"allocation": "shared_critic"},
@@ -60,7 +62,20 @@ def overlap(left, right):
     return a[:len(b)] == b or b[:len(a)] == a
 
 
-def inventory(raw, expected_sha256, now, allow_synthetic=False):
+def _absolute_host_path(value):
+    """Recognize POSIX, Windows drive, UNC and rooted Windows paths on any host."""
+    normalized = value.replace("\\", "/")
+    return normalized.startswith("/") or re.match(r"^[A-Za-z]:/", normalized) is not None
+
+
+def _redacted_worktree(value):
+    normalized = value.replace("\\", "/")
+    if re.match(r"^[A-Za-z]:/", normalized) or normalized.startswith("//"):
+        normalized = normalized.casefold()
+    return f"{REDACTED_WORKTREE_PREFIX}{sha256(normalized.encode('utf-8'))}>"
+
+
+def inventory(raw, expected_sha256, now, allow_synthetic=False, redact_ownership_worktrees=False):
     require(isinstance(expected_sha256, str) and re.fullmatch(r"[0-9a-f]{64}", expected_sha256),
             "An externally verified input SHA256 is required")
     require(sha256(raw) == expected_sha256, "Inventory bytes differ from the caller's trusted hash")
@@ -140,6 +155,15 @@ def inventory(raw, expected_sha256, now, allow_synthetic=False):
             require(owner["stream"] in LABELS and owner["state"] in {"active", "paused", "released"}, "Invalid existing ownership")
             for name in ["agent_id", "worktree", "evidence"]:
                 text(owner[name], f"ownership {name}")
+            require(not owner["worktree"].startswith(REDACTED_WORKTREE_PREFIX),
+                    "Ownership worktree uses a planner-reserved redaction placeholder")
+            if _absolute_host_path(owner["worktree"]):
+                require(redact_ownership_worktrees,
+                        "Absolute ownership worktree paths require the planner-approved --redact-ownership-worktrees option")
+                owner["worktree"] = _redacted_worktree(owner["worktree"])
+            else:
+                owner["worktree"] = owner["worktree"].replace("\\", "/")
+                relative_parts(owner["worktree"])
             require(owner["state"] != "active" or ticket["status"] == "in_progress", "Active ownership must refer to in-progress work")
             require(ticket["status"] not in FINAL or owner["state"] == "released", "Completed/cancelled ownership must be released")
         require(ticket["dispatch_scope"] == "dependency_only" or ticket["status"] != "in_progress"
@@ -198,7 +222,7 @@ def _risk_metadata(value):
             require(isinstance(value[field], str) and value[field] in choices, f"Invalid recommendation {field}")
 
 
-def _preserve(previous, value, tickets):
+def _preserve(previous, value, tickets, redacted_worktree_tickets=()):
     fixed = {ticket_id: ticket["ownership"]["stream"] for ticket_id, ticket in tickets.items() if ticket["ownership"]}
     if previous is None:
         return fixed
@@ -212,8 +236,14 @@ def _preserve(previous, value, tickets):
         require(new["history"][:len(old["history"])] == old["history"], "Existing ticket history must be retained as an exact prefix")
         owner = old["ownership"]
         if owner is not None:
-            require(new["ownership"] is not None and all(new["ownership"][key] == owner[key]
-                    for key in ["stream", "agent_id", "worktree"]), "Existing ownership cannot be silently reassigned")
+            old_worktree = owner["worktree"].replace("\\", "/")
+            same_worktree = (new["ownership"] is not None and new["ownership"]["worktree"] == old_worktree)
+            if (new["ownership"] is not None and ticket_id in redacted_worktree_tickets
+                    and _absolute_host_path(owner["worktree"])):
+                same_worktree = new["ownership"]["worktree"] == _redacted_worktree(owner["worktree"])
+            require(new["ownership"] is not None and new["ownership"]["stream"] == owner["stream"]
+                    and new["ownership"]["agent_id"] == owner["agent_id"] and same_worktree,
+                    "Existing ownership cannot be silently reassigned")
         require(ticket_id not in fixed or fixed[ticket_id] == old["stream"], "Inventory contradicts the established stream assignment")
         if old["stream"] is not None:
             fixed[ticket_id] = old["stream"]
@@ -323,6 +353,10 @@ def _select_capacity(streams, packets, policy, host_writer_capacity, coordinator
     text(execution_provenance["source"], "execution provenance source")
     if execution_provenance["config_path"] is not None:
         text(execution_provenance["config_path"], "execution configuration path")
+        require(not _absolute_host_path(execution_provenance["config_path"]),
+                "Execution configuration provenance must be repository-relative or use the external configuration placeholder")
+        if execution_provenance["config_path"] != EXTERNAL_CONFIG_PLACEHOLDER:
+            relative_parts(execution_provenance["config_path"])
     if execution_provenance["config_sha256"] is not None:
         require(isinstance(execution_provenance["config_sha256"], str)
                 and re.fullmatch("[0-9a-f]{64}", execution_provenance["config_sha256"]), "Invalid configuration fingerprint")
@@ -579,7 +613,8 @@ def _antichain(potential, reaches):
 
 def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=None, *,
                    execution=None, host_writer_capacity=None, coordinator_spawn_depth=0, execution_provenance=None,
-                   coordinator_agent_id=None, operating=None, governance=None, _recommendation=False):
+                   coordinator_agent_id=None, operating=None, governance=None, redact_ownership_worktrees=False,
+                   _recommendation=False):
     """Return a stable plan from one caller-pinned snapshot; never dispatch work."""
     policy = native_execution_policy(execution)
     if operating is not None:
@@ -595,8 +630,15 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
         configured_ceiling = operating_ceiling({"execution": policy})["effective_ceiling"]
         operating_count = configured_ceiling if _recommendation else min(3, configured_ceiling)
         operating_hash = None
-    value, tickets, epics, order = inventory(raw, expected_sha256, now, allow_synthetic)
-    fixed = _preserve(previous, value, tickets)
+    value, tickets, epics, order = inventory(
+        raw, expected_sha256, now, allow_synthetic, redact_ownership_worktrees)
+    redacted_worktree_tickets = sorted(ticket_id for ticket_id, ticket in tickets.items()
+                                       if ticket["ownership"] is not None
+                                       and ticket["ownership"]["worktree"].startswith(REDACTED_WORKTREE_PREFIX))
+    path_redaction = {"ownership_worktrees": "sha256-placeholder-v1" if redact_ownership_worktrees else "reject-absolute",
+                      "applied_ticket_ids": redacted_worktree_tickets,
+                      "inventory_pin": "original-verified-bytes"}
+    fixed = _preserve(previous, value, tickets, path_redaction["applied_ticket_ids"])
     roots = {ticket_id: ticket_id for ticket_id in tickets}
 
     def root(ticket_id):
@@ -788,8 +830,9 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
                  if count > 1 else "At most one independent branch is available; parallel streams would create waiting or conflicting writers, so work remains in stream A.".replace("stream A", "stream " + labels[0]))
     rationale += " Established assignments and agent/worktree ownership are retained when present; an existing stream may remain blocked."
     result = {"plan_schema_version": 1, "template_version": VERSION, "project": deepcopy(value["project"]),
-              "operating_hash": operating_hash, "independent_future_group_count": len(future_anchors),
-              "inventory": deepcopy(value["inventory"]), "inventory_sha256": expected_sha256,
+               "operating_hash": operating_hash, "independent_future_group_count": len(future_anchors),
+               "inventory": deepcopy(value["inventory"]), "inventory_sha256": expected_sha256,
+               "path_redaction": path_redaction,
               "status": "COMPLETE" if complete else "READY" if packets else "BLOCKED",
               "execution_authority": False, "jira_mutations": False, "synthetic": synthetic,
               "rationale": rationale, "streams": streams,
@@ -999,7 +1042,8 @@ def _recover(tree, expected_plan_sha256=None, trusted_journal=None):
 def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
                        expected_plan_sha256=None, allow_synthetic=False, *, execution=None,
                        host_writer_capacity=None, coordinator_spawn_depth=0, execution_provenance=None,
-                       coordinator_agent_id=None, operating=None, governance=None):
+                       coordinator_agent_id=None, operating=None, governance=None,
+                       redact_ownership_worktrees=False):
     """CAS-update a project plan under a native lock with a recoverable journal."""
     project_root, runtime_root = Path(project_root).absolute(), Path(runtime_root).absolute()
     require(project_root.is_dir(), "Project root must already exist")
@@ -1025,7 +1069,8 @@ def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
         plan = plan_inventory(raw, expected_sha256, now, allow_synthetic, previous, execution=execution,
                               host_writer_capacity=host_writer_capacity, coordinator_spawn_depth=coordinator_spawn_depth,
                               execution_provenance=execution_provenance, coordinator_agent_id=coordinator_agent_id,
-                              operating=operating, governance=governance)
+                              operating=operating, governance=governance,
+                              redact_ownership_worktrees=redact_ownership_worktrees)
         markdown = render_markdown(plan)
         plan["markdown_sha256"] = sha256(markdown)
         new_plan = (json.dumps(plan, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
