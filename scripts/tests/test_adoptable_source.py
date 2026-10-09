@@ -1,7 +1,4 @@
-from contextlib import redirect_stdout
-import io
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,11 +15,11 @@ import build_release  # noqa: E402
 from agentic.canonical import sha256  # noqa: E402
 from agentic.installer import (INSTALL_OWNED_PATHS, SOURCE_CONFIG_PREFIX, install,  # noqa: E402
                                install_owned_path)
-from agentic.operating import main as operating_main  # noqa: E402
 
 
 WORKTREE_OVERLAY = (
     ".agentic/lib/agentic/installer.py",
+    ".agentic/lib/agentic/operating.py",
     ".agentic/templates/source-config/PROJECT_CONFIG.yaml",
     ".agentic/templates/source-config/workflow-version.yaml",
     ".agentic/templates/source-config/OPERATING_CONFIG.yaml",
@@ -105,6 +102,17 @@ class AdoptableSourceTests(unittest.TestCase):
         }
         release, pin = self.materialize_release()
 
+        uninstalled = subprocess.run([
+            sys.executable, "-B", ".agentic/scripts/workflow.py",
+            "--root", str(self.clone), "operating", "set",
+            "--instruction", "This uninstalled release source must remain immutable",
+            "--set", "streams.count=2", "--json",
+        ], cwd=self.clone, text=True, capture_output=True, timeout=180)
+        self.assertEqual(2, uninstalled.returncode, uninstalled.stderr)
+        refusal = json.loads(uninstalled.stdout)
+        self.assertEqual("REJECTED", refusal["status"])
+        self.assertIn("immutable release source", refusal["refusals"][0]["reason"])
+
         result = install(
             release, self.clone, pin, conflict="backup", configure=True,
             discover=False, overrides={
@@ -115,28 +123,14 @@ class AdoptableSourceTests(unittest.TestCase):
             })
         self.assertEqual("INSTALLED", result["status"])
         self.assertEqual("ACCEPTED", result["configuration"]["status"])
-        # The 1.9.4 operating command intentionally refuses a release-source
-        # tree while its generated manifests are present. They are build
-        # outputs, not operating inputs, so hold them outside the clone only
-        # for the command and restore their exact bytes before either CI gate.
-        held = []
-        try:
-            for name in ("MANIFEST.json", "MANIFEST.md"):
-                source = self.clone / name
-                destination = self.base / name
-                os.replace(source, destination)
-                held.append((source, destination))
-            with redirect_stdout(io.StringIO()) as output:
-                operating_exit = operating_main([
-                    "--root", str(self.clone), "set",
-                    "--instruction", "Use two worker streams for the source-repository adoption test",
-                    "--set", "streams.count=2", "--json",
-                ])
-        finally:
-            for source, destination in reversed(held):
-                os.replace(destination, source)
-        self.assertEqual(0, operating_exit, output.getvalue())
-        self.assertEqual("ACCEPTED", json.loads(output.getvalue())["status"])
+        self.assertTrue((self.clone / "MANIFEST.json").is_file())
+        self.assertTrue((self.clone / "MANIFEST.md").is_file())
+        operating = self.command(
+            ".agentic/scripts/workflow.py", "--root", self.clone,
+            "operating", "set",
+            "--instruction", "Use two worker streams for the source-repository adoption test",
+            "--set", "streams.count=2", "--json")
+        self.assertEqual("ACCEPTED", json.loads(operating.stdout)["status"])
 
         self.assertTrue((self.clone / ".agentic/installed-manifest.json").is_file())
         self.assertTrue((self.clone / ".agentic-backup").is_dir())

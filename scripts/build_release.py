@@ -60,6 +60,9 @@ def verify_virtual_release(tree, manifest_raw):
     expected = set(release_paths(tree)) - {'MANIFEST.json', 'MANIFEST.md'}
     if set(value.get('files', {})) != expected:
         raise ValidationError('Virtual release manifest file membership mismatch')
+    folded = [path.casefold() for path in expected]
+    if len(set(folded)) != len(folded):
+        raise ValidationError('Case-colliding paths in virtual release')
     for path, digest in value['files'].items():
         if sha256(release_bytes(tree, path)) != digest:
             raise ValidationError(f'Virtual release digest mismatch: {path}')

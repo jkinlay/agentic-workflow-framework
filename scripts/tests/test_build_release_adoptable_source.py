@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -8,6 +9,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 import build_release  # noqa: E402
+from agentic import ValidationError  # noqa: E402
+from agentic.canonical import sha256  # noqa: E402
 from agentic.installer import (INSTALL_OWNED_PATHS, SOURCE_CONFIG_PATHS,  # noqa: E402
                                SOURCE_CONFIG_PREFIX)
 
@@ -52,6 +55,22 @@ class AdoptableReleaseBuildTests(unittest.TestCase):
             self.assertIn(target, paths)
             self.assertNotIn(source, paths)
             self.assertEqual(tree.data[source], build_release.release_bytes(tree, target))
+
+    def test_virtual_release_rejects_case_colliding_paths(self):
+        tree = FakeTree()
+        tree.data["Readme.md"] = b"ambiguous release member\n"
+        files = {
+            path: sha256(build_release.release_bytes(tree, path))
+            for path in build_release.release_paths(tree)
+            if path not in {"MANIFEST.json", "MANIFEST.md"}
+        }
+        raw = json.dumps({
+            "format": "awf-manifest-1",
+            "template_version": "1.9.4",
+            "files": files,
+        }).encode("utf-8")
+        with self.assertRaisesRegex(ValidationError, "Case-colliding paths"):
+            build_release.verify_virtual_release(tree, raw)
 
 
 if __name__ == "__main__":
