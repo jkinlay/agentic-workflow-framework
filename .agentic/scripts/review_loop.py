@@ -11,7 +11,8 @@ scrub_process_env()
 import argparse
 import json
 from agentic.installer import verify_installed
-from agentic.review_loop import LoopStore, enroll, pause, resume, tick, require
+from agentic.review_loop import (LoopStore, complete_first_draft, enroll, pause,
+    resume, resume_first_draft, tick, require)
 from agentic.review_first_draft import (publish_tested_tree, render_first_draft_body,
     run_first_draft)
 from agentic.providers.github_review_host import HostDriver, load_config
@@ -52,7 +53,9 @@ def main(argv=None):
         elif args.command == 'tick':
             value = tick(store,config,driver)
         elif args.command == 'status':
-            value = store.get(config['key'])
+            first_key = f"{config['repository_id']}:0"
+            reserved = store.db.execute('SELECT 1 FROM prs WHERE key=?', (first_key,)).fetchone()
+            value = store.get(first_key if reserved else config['key'])
         elif args.command == 'first-draft':
             require(config.get('first_draft') is True and config['pr'] == 0,
                     'first-draft requires an unbound first-draft host configuration')
@@ -62,6 +65,12 @@ def main(argv=None):
             provider_base = driver.provider_base()
             local_base = driver.git(driver.worker, 'rev-parse', config['base_branch'])
             require(local_base == provider_base, 'Worker checkout base does not match the provider base snapshot')
+            reserved = store.db.execute('SELECT 1 FROM prs WHERE key=?',
+                                        (f"{config['repository_id']}:0",)).fetchone()
+            if reserved:
+                prior = store.get(f"{config['repository_id']}:0").get('first_draft_publication')
+                require(prior is None or prior.get('base') == provider_base,
+                        'Provider base moved after the recorded first-draft publication')
             def worker(run_id=None):
                 return driver.first_draft_worker(run_id=run_id)
             def publisher(receipt):
@@ -77,19 +86,37 @@ def main(argv=None):
                 return publish_tested_tree(driver.worker, provider_base,
                     config['head_branch'], receipt, body=body, commit_message=args.title,
                     git=GitAdapter(), allowed_paths=config['allowed_paths'],
-                    mapping_path=Path(config['state_dir']) / 'publication-deny.json') | {'body': body}
+                    mapping_path=Path(config['state_dir']) / 'publication-deny.json') | {
+                        'body': body, 'title': args.title}
             def observe(publication):
-                created = driver.create_draft_pr(title=args.title, body=publication['body'],
+                require(publication['title'] == args.title,
+                        'Retry title does not match the durably recorded first-draft publication')
+                created = driver.create_draft_pr(title=publication['title'], body=publication['body'],
                     head=config['head_branch'], base=config['base_branch'])
                 return driver.observe_created_pr(created, body=publication['body'], risk_tier=tier)
             value = run_first_draft(store, config, worker=worker, publisher=publisher, observe_pr=observe)
         elif args.command == 'pause':
             value = pause(store,config['key'],args.reason)
         else:
-            candidate = driver.snapshot()
-            driver.preflight(candidate)
-            disposition = json.loads(args.disposition.read_text(encoding='utf-8')) if args.disposition else None
-            value = resume(store,config,candidate,args.reconciled_run,disposition)
+            first_key = f"{config['repository_id']}:0"
+            reserved = store.db.execute('SELECT 1 FROM prs WHERE key=?', (first_key,)).fetchone()
+            if config.get('first_draft') is True and reserved:
+                require(args.disposition is None,
+                        'A first-draft reservation cannot consume an amendment-cap disposition')
+                first_state = store.get(first_key)
+                publication = first_state.get('first_draft_publication')
+                expected_body = publication.get('body_sha256') if isinstance(publication, dict) else None
+                candidate = driver.reconcile_created_pr(expected_body_sha256=expected_body)
+                if candidate is None:
+                    value = resume_first_draft(store, config, args.reconciled_run)
+                else:
+                    value = complete_first_draft(store, config, candidate,
+                                                 reconciled_run=args.reconciled_run)
+            else:
+                candidate = driver.snapshot()
+                driver.preflight(candidate)
+                disposition = json.loads(args.disposition.read_text(encoding='utf-8')) if args.disposition else None
+                value = resume(store,config,candidate,args.reconciled_run,disposition)
         if 'phase' in value:
             value['next_step']=loop_next_step(value)
         print(json.dumps(value,indent=2) if args.format=='json' else render_markdown(value))

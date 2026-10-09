@@ -141,22 +141,80 @@ def reserve_first_draft(store, config):
         'cap_extensions': 0, 'evidence_only_amendments': 0, 'dispositions': [],
         'agent_runs': 1, 'wait_ticks': 0, 'generation': 1,
         'inflight': {'id': str(uuid.uuid4()), 'phase': 'FIRST_DRAFT', 'started_at': now_text()},
-        'last_review': None, 'reason': 'First-draft run reserved before worker execution', 'history': []}
+        'last_review': None, 'first_draft_publication': None, 'resume_ready': False,
+        'reason': 'First-draft run reserved before worker execution', 'history': []}
     with store.lock():
-        store.save(state, new=True)
+        row = store.db.execute('SELECT state FROM prs WHERE key=?', (key,)).fetchone()
+        if row is None:
+            store.save(state, new=True)
+            return state
+        state = store.get(key)
+        require(state['phase'] == 'FIRST_DRAFT' and state.get('resume_ready') is True,
+                'First-draft reservation already exists; reconcile it with resume before retrying')
+        require(state['config_hash'] == config['config_hash'],
+                'Configuration changed; retire and reconcile the reserved first draft')
+        require(state['agent_runs'] == 1 and state['cycles'] == 0 and state.get('inflight'),
+                'First-draft reservation accounting is invalid')
+        state.update(resume_ready=False,
+                     reason='Reusing reconciled first-draft reservation without a new charge',
+                     generation=state['generation'] + 1)
+        store.save(state)
     return state
 
 
-def complete_first_draft(store, config, snapshot):
+def record_first_draft_publication(store, config, publication):
+    """Persist the exact pushed candidate before a draft-PR mutation is attempted."""
+    required = {'base', 'head', 'head_tree', 'branch', 'body', 'body_sha256', 'title'}
+    require(isinstance(publication, dict) and required <= set(publication),
+            'First-draft publication identity is incomplete')
+    require(all(isinstance(publication[name], str) and publication[name]
+                for name in required), 'First-draft publication identity is malformed')
+    require(sha256(publication['body'].encode('utf-8')) == publication['body_sha256'],
+            'First-draft publication body digest mismatch')
+    key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(key)
+        require(state['phase'] == 'FIRST_DRAFT' and state.get('inflight'),
+                'First-draft publication has no active reservation')
+        existing = state.get('first_draft_publication')
+        frozen = {name: publication[name] for name in sorted(required)}
+        require(existing is None or existing == frozen,
+                'First-draft publication identity changed during retry')
+        state.update(first_draft_publication=frozen,
+                     reason='First-draft publication pushed; draft-PR creation pending',
+                     generation=state['generation'] + 1)
+        store.save(state)
+        return state
+
+
+def complete_first_draft(store, config, snapshot, reconciled_run=None):
     """Atomically bind the reserved pr=0 record to the observed created PR."""
     old_key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
     with store.lock():
         state = store.get(old_key)
-        require(state['phase'] == 'FIRST_DRAFT' and state['inflight'], 'First-draft reservation is not resumable')
+        require(state['phase'] in {'FIRST_DRAFT', 'PAUSED'} and state['inflight'],
+                'First-draft reservation is not resumable')
+        if state['phase'] == 'PAUSED':
+            require(reconciled_run == state['inflight']['id'],
+                    'Inspect and reconcile the retained first-draft run before enrollment')
+        publication = state.get('first_draft_publication')
+        require(isinstance(publication, dict),
+                'First-draft publication was not durably recorded before enrollment')
+        require(snapshot.get('head') == publication['head'],
+                'Created PR observation does not match the published head')
+        require(snapshot.get('base') == publication['base'],
+                'Created PR base does not match the publication base; enrollment remains paused')
+        require(snapshot.get('head_ref') == publication['branch'],
+                'Created PR head branch does not match the published branch')
+        require(snapshot.get('repository_id') == config.get('repository_id'),
+                'Created PR repository does not match the reserved repository')
+        require(snapshot.get('pr') == config.get('pr') and config.get('pr', 0) > 0,
+                'Created PR number is not bound to the host configuration')
         state['key'] = config['key']
         state['owner'] = config['repository'] + ':' + snapshot['head_ref']
         state['config_hash'] = config['config_hash']
         state.update(phase='REVIEW', candidate=snapshot, inflight=None,
+                     resume_ready=False,
                      reason='Enrolled after first draft', generation=state['generation'] + 1)
         body = json.dumps(state, sort_keys=True)
         store.db.execute('BEGIN IMMEDIATE')
@@ -181,8 +239,36 @@ def first_draft_failure(store, config, reason):
         except ValidationError:
             return None
         if state['phase'] == 'FIRST_DRAFT':
-            state.update(phase='PAUSED', reason=reason, generation=state['generation'] + 1)
+            state.update(phase='PAUSED', resume_ready=False, reason=reason,
+                         generation=state['generation'] + 1)
             store.save(state)
+        return state
+
+
+def resume_first_draft(store, config, reconciled_run):
+    """Permit one retry after the operator reconciles local and remote effects.
+
+    The retained reservation UUID and its one agent-run charge are reused.  A
+    later ``first-draft`` call either resumes from the durably recorded pushed
+    publication or reruns the pre-publication worker step.
+    """
+    key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
+    with store.lock():
+        state = store.get(key)
+        require(state['phase'] in {'PAUSED', 'FIRST_DRAFT'},
+                'First-draft reservation is not awaiting reconciliation')
+        require(config.get('pr') == 0,
+                'A provider-bound first draft must be completed from its observed PR')
+        require(state['config_hash'] == config['config_hash'],
+                'Configuration changed; retire and reconcile the reserved first draft')
+        require(state.get('inflight') and reconciled_run == state['inflight']['id'],
+                'Inspect and reconcile the retained first-draft run before resuming')
+        require(state['agent_runs'] == 1 and state['cycles'] == 0,
+                'First-draft retry cannot change run or amendment accounting')
+        state.update(phase='FIRST_DRAFT', resume_ready=True,
+                     reason='Operator reconciled first-draft local and provider state; one retry is ready',
+                     generation=state['generation'] + 1)
+        store.save(state)
         return state
 
 
@@ -197,26 +283,7 @@ def pause(store, key, reason):
 def resume(store, config, snapshot, reconciled_run, disposition=None):
     """Resume a paused enrollment. A cap pause resumes only through an owner disposition record."""
     with store.lock():
-        try:
-            state = store.get(config['key'])
-        except ValidationError:
-            first_key = f"{config.get('repository_id', str(config['key']).split(':', 1)[0])}:0"
-            state = store.get(first_key)
-            require(config.get('pr', 0) > 0 and state['phase'] == 'PAUSED',
-                    'First-draft reservation is not available for reconciliation')
-            state['key'] = config['key']
-            state['owner'] = config['repository'] + ':' + config['head_branch']
-            state['config_hash'] = config['config_hash']
-            store.db.execute('BEGIN IMMEDIATE')
-            try:
-                body = json.dumps(state, sort_keys=True)
-                store.db.execute('DELETE FROM prs WHERE key=?', (first_key,))
-                store.db.execute('INSERT INTO prs VALUES (?,?,?)', (state['key'], state['owner'], body))
-                store.db.execute('INSERT INTO events(key,at,state) VALUES (?,?,?)', (state['key'], now_text(), body))
-                store.db.execute('COMMIT')
-            except Exception:
-                store.db.execute('ROLLBACK')
-                raise
+        state = store.get(config['key'])
         require(state['phase'] == 'PAUSED', 'Only paused enrollments can resume')
         require(state['config_hash'] == config['config_hash'], 'Configuration changed; retire and enroll a new reviewed configuration')
         expected = state['inflight']['id'] if state['inflight'] else 'none'
