@@ -14,7 +14,6 @@ on other hosts the same harness is a smoke test.
 from __future__ import annotations
 import argparse
 import base64
-import copy
 import difflib
 import hashlib
 import json
@@ -26,7 +25,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,8 +37,60 @@ from agentic.child_process import child_env, isolated_git_env  # noqa: E402
 REQUIRED = ("fixture", "upgrade", "verify_installation", "validate_config", "self_test",
             "adoption_merge", "active_single_status_run", "handoff_snapshot",
             "project_values_preserved", "external_data_unchanged", "autocrlf_fresh_clone",
-            "history_sensitive_value_blocked", "capability_matrix")
+            "history_sensitive_value_blocked", "capability_matrix",
+            "read_only_external_resource_admission")
 SENSITIVE = "C:\\Users\\synthetic-ac42\\raw_estate\\positions.csv"
+
+
+STATUS_FIXTURE_SITE = r'''"""AC42-only provider fixture for the installed status subprocess."""
+import copy
+import json
+import os
+from pathlib import Path
+import sys
+
+from agentic.providers import github_status as status
+
+fixture = json.loads(Path(os.environ["AWF_AC42_PROVIDER_FIXTURE"]).read_text(encoding="utf-8"))
+request_log = Path(os.environ["AWF_AC42_PROVIDER_REQUEST_LOG"])
+original_host_executable = status.host_executable
+
+
+def record(value):
+    with request_log.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(json.dumps(value, ensure_ascii=True) + "\n")
+
+
+def count(value):
+    return len(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=True).encode("utf-8"))
+
+
+def host_executable(name, root):
+    if name == "ac42-recorded-provider":
+        return sys.executable
+    return original_host_executable(name, root)
+
+
+def read(endpoint, deadline, gh, pr_file_metadata=False):
+    record(endpoint)
+    if endpoint not in fixture["api"]:
+        raise KeyError("unrecorded provider endpoint: " + endpoint)
+    value = copy.deepcopy(fixture["api"][endpoint])
+    return value, count(value)
+
+
+def read_graphql(query, variables, deadline, gh):
+    record("graphql")
+    value = copy.deepcopy(fixture["graphql"])
+    return value, count(value)
+
+
+status.host_executable = host_executable
+status._gh_get = read
+status._gh_get_pr_files = read
+status._gh_graphql = read_graphql
+'''
 
 
 def digest(raw):
@@ -52,15 +102,32 @@ def tree_digest(root):
             for path in sorted(root.rglob("*")) if path.is_file()}
 
 
-def run(command, cwd, timeout=1800, extra=None):
+def run(command, cwd, timeout=1800, extra=None, full_output=False):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", GIT_TERMINAL_PROMPT="0", **(extra or {}))
     started = time.monotonic()
     done = subprocess.run([str(part) for part in command], cwd=str(cwd), capture_output=True,
                           text=True, encoding="utf-8", errors="replace", timeout=timeout,
                           env=child_env(env), stdin=subprocess.DEVNULL)
-    return {"command": [str(part) for part in command], "exit_code": done.returncode,
-            "seconds": round(time.monotonic() - started, 1),
-            "stdout_tail": done.stdout[-2000:], "stderr_tail": done.stderr[-2000:],}
+    result = {"command": [str(part) for part in command], "exit_code": done.returncode,
+              "seconds": round(time.monotonic() - started, 1),
+              "stdout_tail": done.stdout[-2000:], "stderr_tail": done.stderr[-2000:]}
+    if full_output:
+        result["stdout"] = done.stdout
+        result["stderr"] = done.stderr
+    return result
+
+
+def gate_outcome(rows, *, execution_eligible, has_error=False):
+    """Return a fail-closed AC42 outcome and name every required failure."""
+    failures = []
+    for name in REQUIRED:
+        result = rows.get(name, {}).get("result", "MISSING")
+        if result != "PASS":
+            failures.append({"check": name, "result": result})
+    result = "PASS" if not failures and not has_error else "FAIL"
+    return {"result": result,
+            "gate_eligible": bool(execution_eligible and result == "PASS"),
+            "required_check_failures": failures}
 
 
 OWNER_BLOB_MAX_BYTES = 8 * 1024 * 1024
@@ -119,7 +186,6 @@ def provider_fixture(project, head, upgrade_commit, receipt, installed_files, fu
     """Recorded GitHub answers for a merged adoption PR #7 whose merge commit is head."""
     from agentic.installer import CONFIG, INSTALLED, PROVENANCE
     from agentic.providers import github_status as status
-    from agentic.installer import json_bytes
     repository = {"id": repository_id, "node_id": "R_ac42", "full_name": full_name}
     base = "repos/" + full_name
     entry = lambda name, raw: {"path": name, "type": "blob", "mode": "100644", "sha": status.blob_sha(raw)}
@@ -158,19 +224,37 @@ def provider_fixture(project, head, upgrade_commit, receipt, installed_files, fu
         pullRequest={"id": "PR_ac42", "number": 7, "baseRefName": branch, "headRefName": "awf/upgrade-1.9.4",
                      "headRefOid": "d" * 40, "headRepository": graph_repo, "state": "MERGED", "merged": True,
                      "mergedAt": "2026-10-07T12:00:00Z", "mergeCommit": {"oid": head, "repository": graph_repo}})}}
-    requests = []
+    return {"api": api, "graphql": graphql}
 
-    def read(endpoint, deadline, gh, pr_file_metadata=False):
-        requests.append(endpoint)
-        if endpoint not in api:
-            raise KeyError("unrecorded provider endpoint: " + endpoint)
-        value = api[endpoint]
-        return copy.deepcopy(value), len(json_bytes(value))
 
-    def read_graphql(query, variables, deadline, gh):
-        requests.append("graphql")
-        return copy.deepcopy(graphql), len(json_bytes(graphql))
-    return read, read_graphql, requests
+def installed_active_status(python, workflow, project, release, pin, fixture, work):
+    """Run ACTIVE through the installed workflow CLI with recorded provider answers."""
+    fixture_root = work / "active-status-fixture"
+    fixture_root.mkdir()
+    fixture_path = fixture_root / "provider.json"
+    request_log = fixture_root / "requests.jsonl"
+    (fixture_root / "sitecustomize.py").write_text(STATUS_FIXTURE_SITE, encoding="utf-8", newline="\n")
+    fixture_path.write_text(json.dumps(fixture, ensure_ascii=True), encoding="utf-8", newline="\n")
+    environment = {
+        "AWF_AC42_PROVIDER_FIXTURE": str(fixture_path),
+        "AWF_AC42_PROVIDER_REQUEST_LOG": str(request_log),
+        "PYTHONPATH": os.pathsep.join((str(fixture_root), str(project / ".agentic/lib"))),
+    }
+    step = run([python, "-B", workflow, "--root", project, "status", "--json", "--require-active",
+                "--adoption-pr", "7", "--gh", "ac42-recorded-provider",
+                "--release-source", release, "--expected-manifest-sha256", pin],
+               project, extra=environment, full_output=True)
+    stdout = step.pop("stdout")
+    step.pop("stderr")
+    if step["exit_code"] != 0:
+        raise RuntimeError("installed workflow.py status failed: " + step["stderr_tail"])
+    try:
+        observed = json.loads(stdout)
+    except ValueError as exc:
+        raise RuntimeError("installed workflow.py status returned invalid JSON") from exc
+    requests = ([json.loads(line) for line in request_log.read_text(encoding="utf-8").splitlines()]
+                if request_log.is_file() else [])
+    return observed, step, requests
 
 
 def main(argv=None):
@@ -193,14 +277,14 @@ def main(argv=None):
     from agentic.canonical import load
     from agentic.installer import CONFIG, INSTALLED, install
     from agentic.handoff import build_snapshot
-    from agentic.providers import github_status as status
     gate, started = Gate(), time.monotonic()
     pin = digest((ROOT / "MANIFEST.json").read_bytes())
+    execution_eligible = platform.system() == "Windows" and bool(args.runtime_wheelhouse) and not args.skip_self_test
     report = {"format": "awf-ac42-evidence-1", "awf_version": VERSION, "from_version": args.from_version,
               "source_manifest_sha256": pin, "host": {"system": platform.system(), "release": platform.release(),
               "python": sys.version.split()[0], "git": run(["git", "--version"], work)["stdout_tail"].strip()},
               "mode": "bootstrap_cli" if args.runtime_wheelhouse else "in_process_installer",
-              "gate_eligible": platform.system() == "Windows" and bool(args.runtime_wheelhouse) and not args.skip_self_test,
+              "execution_gate_eligible": execution_eligible, "gate_eligible": False,
               "provider_observations": "recorded synthetic fixture (no network)", "execution_authority": False}
     project, external = work / "project", work / "raw_estate"
     try:
@@ -276,21 +360,17 @@ def main(argv=None):
         receipt = load(project / INSTALLED)
         installed_files = {p.relative_to(project).as_posix(): p.read_bytes()
                            for p in project.rglob("*") if p.is_file() and ".git" not in p.parts}
-        read, read_graphql, requests = provider_fixture(project, head, upgrade_commit, receipt, installed_files,
-                                                        full_name, repository_id, branch)
+        fixture = provider_fixture(project, head, upgrade_commit, receipt, installed_files,
+                                   full_name, repository_id, branch)
         release = work / "release-source"
         shutil.copytree(ROOT, release, ignore=shutil.ignore_patterns(".git", ".tmp-tests", "__pycache__", "*.pyc"))
-        gitexe = shutil.which("git")
-        with patch.object(status, "host_executable", side_effect=lambda name, root: gitexe if name == "git" else sys.executable), \
-                patch.object(status, "_gh_get", side_effect=read), \
-                patch.object(status, "_gh_get_pr_files", side_effect=read), \
-                patch.object(status, "_gh_graphql", side_effect=read_graphql):
-            observed = status.project_status(project, adoption_pr=7, release_source=release,
-                                             expected_manifest_sha256=pin)
+        observed, status_step, requests = installed_active_status(
+            python, workflow, project, release, pin, fixture, work)
         blockers = [c for c in observed["checks"] if c["state"] not in ("PASS", "N_A", "SKIP")]
         gate.record("active_single_status_run", observed["project_state"] == "ACTIVE",
                     {"project_state": observed["project_state"], "line": observed.get("line"),
-                     "blockers": blockers, "provider_requests": requests})
+                     "blockers": blockers, "provider_requests": requests,
+                     "command": status_step["command"], "exit_code": status_step["exit_code"]})
         matrix = observed.get("capabilities")
         gate.record("capability_matrix", isinstance(matrix, dict) and bool(matrix), matrix)
         snapshot = build_snapshot(project, status=observed)
@@ -344,7 +424,8 @@ def main(argv=None):
         report["error"] = f"{type(exc).__name__}: {exc}"
     report["rows"] = gate.rows
     report["seconds"] = round(time.monotonic() - started, 1)
-    report["result"] = "PASS" if all(gate.rows.get(n, {}).get("result") == "PASS" for n in REQUIRED) and "error" not in report else "FAIL"
+    report.update(gate_outcome(gate.rows, execution_eligible=execution_eligible,
+                               has_error="error" in report))
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     with args.evidence.open("x", encoding="utf-8", newline="\n") as stream:
         json.dump(report, stream, indent=2, ensure_ascii=True, default=str)
