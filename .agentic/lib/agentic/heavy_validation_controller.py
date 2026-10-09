@@ -442,8 +442,11 @@ class GitCheckoutSnapshotter:
         with tempfile.TemporaryDirectory(prefix="awf-heavy-snapshot-") as folder:
             # macOS commonly exposes its temporary root through /var ->
             # /private/var.  Resolve this controller-created path before the
-            # ordinary alias-free validation; reviewed/user paths stay lexical.
-            snapshot_root = resolve_without_alias(Path(os.path.realpath(folder)),
+            # ordinary alias-free validation.  Windows paths stay lexical so
+            # junction/reparse components remain visible to that validation.
+            snapshot_path = (Path(folder) if os.name == "nt"
+                             else Path(os.path.realpath(folder)))
+            snapshot_root = resolve_without_alias(snapshot_path,
                                                   "checkout snapshot root", directory=True)
             file_count, extracted_inventory = self._extract(raw, snapshot_root)
             extracted_tree_inventory = {
