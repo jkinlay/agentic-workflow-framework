@@ -325,6 +325,61 @@ class ReviewTiers195FinalTests(Fixture):
                 "risk_tier": 2,
             }))
 
+    def test_awf16_r2_015_001_approval_bound_round_four_reaches_real_gate(self):
+        self._review_history(4)
+        cap = self.record(
+            decision="EXTEND_ONE_CYCLE",
+            open_finding_ids=[],
+            notes="AWF-OVERCAP-APPROVAL",
+            cycles=3,
+            cap_extensions=1,
+            successor_ticket=None,
+            **signed(),
+        )
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
+        terminal = self.bundle["review_verdicts"][-1]
+        receipt = self.bundle["review_round_receipts"][-1]
+        cap.update(
+            critic_artifact_binding=copy.deepcopy(terminal["critic_artifact_binding"]),
+            review_verdict_record_id=terminal["record_id"],
+            review_verdict_sha256=receipt["review_verdict_sha256"],
+        )
+        self.bundle["cap_disposition"] = sign(
+            cap, "cap", self.bundle["candidate"]["head_sha"]
+        )
+
+        self.contracts.validate("evidence-bundle", self.bundle)
+        gate = evaluate(
+            self.config,
+            definition(),
+            self.bundle,
+            self.contracts,
+            NOW,
+            posting_collector_registry=registry,
+        )
+        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", gate["conclusion"])
+        self.assertEqual(4, gate["verified_critic_artifact_bindings"][-1]["round"])
+
+    def test_awf16_r2_015_001_unbound_and_tier3_overcap_rounds_are_rejected(self):
+        self._review_history(4)
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
+        with self.assertRaisesRegex(ValidationError, "owner cap disposition"):
+            evaluate(
+                self.config,
+                definition(),
+                self.bundle,
+                self.contracts,
+                NOW,
+                posting_collector_registry=registry,
+            )
+
+        for round_number in (4, 5, 99):
+            with self.subTest(tier=3, round=round_number), self.assertRaisesRegex(
+                    ValidationError, "Tier 3"):
+                validate_round(3, round_number)
+
     def test_awf16_195_r3_002_unsupported_yaml_styles_are_refused(self):
         cases = {
             "quoted": b"template:\n  expected_workflow_version: 1.9.4\n'execution':\n  risk_tiers: {}\n",

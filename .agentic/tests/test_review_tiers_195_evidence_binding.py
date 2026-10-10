@@ -19,6 +19,7 @@ from agentic.gates import (decode_base64_bytes, evaluate,
                            posting_collector_receipt_sha256,
                            review_round_receipt_sha256)
 from agentic.lifecycle import definition
+from source_only import skip_unless_source_repo
 from test_review_policy import (Fixture, NOW, bind_production_posting_fixture,
                                 bind_review_admission)
 
@@ -224,12 +225,30 @@ class EvidenceBindingDesignTests(Fixture):
 
 
 class GeneratorParityTests(Fixture):
+    @skip_unless_source_repo(
+        "schema parity needs the source-only contract generator",
+        "scripts/generate_contracts.py",
+    )
     def test_awf16_r1_009_generated_schema_catalog_has_byte_parity(self):
         catalog = _generator_catalog()
-        for name, schema in catalog.items():
+        checked_in = {
+            path.name.removesuffix(".schema.json"): path
+            for path in (ROOT / ".agentic/schemas").glob("*.schema.json")
+        }
+        self.assertEqual(
+            51,
+            len(checked_in),
+            "AWF16-R1-009 must enumerate all 51 checked-in schemas",
+        )
+        self.assertEqual(
+            set(checked_in),
+            set(catalog),
+            "every checked-in schema must be generated, with no generator-only entries",
+        )
+        for name, path in sorted(checked_in.items()):
             with self.subTest(schema=name):
-                expected = json.dumps(schema, indent=2).encode("utf-8") + b"\n"
-                actual = (ROOT / ".agentic/schemas" / f"{name}.schema.json").read_bytes()
+                expected = json.dumps(catalog[name], indent=2).encode("utf-8") + b"\n"
+                actual = path.read_bytes()
                 self.assertEqual(expected, actual, f"first differing generated schema: {name}")
         tier3 = catalog["project-config"]["properties"]["execution"]["properties"][
             "risk_tiers"
