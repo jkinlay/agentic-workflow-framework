@@ -24,6 +24,38 @@ def file_bytes(root: Path):
 
 
 class GenerateExamplesSchemaReferencesTests(unittest.TestCase):
+    def test_AWF32_R1_011_controller_example_commands_are_complete_and_ordered(self):
+        document = (ROOT / ".agentic/docs/34-CONTINUOUS-CONTROLLER.md").read_text(
+            encoding="utf-8"
+        )
+        ordered = [
+            "git -C $SOURCE_ROOT worktree add --detach $WORKTREE_ROOT $HEAD",
+            "Copy-Item (Join-Path $WORKTREE_ROOT",
+            "$adapter=Get-Content $ADAPTER_CONFIG",
+            "$adapter.codex.executable.path=$CODEX_EXE",
+            "$adapter.codex.worktree_root=$WORKTREE_ROOT",
+            "$adapter.github.repository=[string]$repo.full_name",
+            "$adapter.github.executable.sha256=",
+            "$adapter.jira.cloud_id=$JIRA_CLOUD",
+            "$adapter.jira.controller_actor_id=$CONTROLLER_ACTOR",
+            "$adapter | ConvertTo-Json -Depth 100 | Set-Content $ADAPTER_CONFIG",
+            "@{project_id=$PROJECT_ID;repository_id=[string]$repo.id;scope_sha256=$SCOPE_SHA256}",
+            "$ticket=@{",
+            "& $GH_EXE issue create",
+            "function New-ObservationTime",
+            "$COMMON=@(",
+            "function Invoke-ControllerCycle",
+            "if (Test-Path $STOP_FILE)",
+            "& $PYTHON @COMMON cycle",
+            "& $PYTHON @COMMON jira-lifecycle",
+            "observed_at=$NOW;jira_binding=",
+            "& $PYTHON @COMMON merge-observed",
+            "Move-Item -LiteralPath $temporaryStop -Destination $STOP_FILE",
+        ]
+        positions = [document.find(marker) for marker in ordered]
+        self.assertNotIn(-1, positions, dict(zip(ordered, positions)))
+        self.assertEqual(sorted(positions), positions)
+
     @skip_unless_source_repo(
         "needs generate_examples.py and its checked-in generated outputs",
         "scripts/generate_examples.py",
