@@ -251,6 +251,32 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertTrue(any(item["ticket"] == "EX-RESERVED" and item["stream_id"] == "B"
                             for item in created), repr(created))
 
+    def test_awf5_c195_r1_001_matching_unknown_dispatch_stays_blocked_until_reconciled(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "persistent-unknown.sqlite3", ["A"])
+        reserved = ticket("EX-UNKNOWN", 1)
+        store.schedule([reserved], NOW, host_capacity=1)
+        intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(intent["dispatch_id"], NOW)
+        store.mark_dispatch_unknown(intent["dispatch_id"], "2026-10-02T10:00:01Z")
+
+        for observed_at in ("2026-10-02T10:00:02Z", "2026-10-02T10:00:03Z"):
+            snapshot = store.schedule([reserved], observed_at, host_capacity=1)
+            stream = snapshot[0]
+            self.assertEqual((stream["state"], stream["ticket"]),
+                             ("BLOCKED", "EX-UNKNOWN"))
+            self.assertIn(intent["dispatch_id"], stream["reason"])
+            self.assertTrue(stream["exact_tuple"])
+            self.assertIn("Observe the exact durable dispatch intent", stream["next_action"])
+            self.assertIn("fresh observation", stream["resume_trigger"])
+
+        digest = store.digest("2026-10-02T10:00:04Z")
+        self.assertFalse(digest["all_complete"])
+        self.assertEqual(digest["streams"][0]["state"], "BLOCKED")
+        unresolved = next(item for item in digest["unresolved_dispatches"]
+                          if item["dispatch_id"] == intent["dispatch_id"])
+        self.assertEqual((unresolved["ticket"], unresolved["status"], unresolved["detached"]),
+                         ("EX-UNKNOWN", "UNKNOWN", False))
+
     def test_pending_and_in_flight_dispatch_tickets_are_also_globally_reserved(self):
         for status in ("PENDING", "IN_FLIGHT"):
             with self.subTest(status=status):
