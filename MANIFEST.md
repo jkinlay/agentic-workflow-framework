@@ -2,7 +2,7 @@
 
 441 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `2fbcfaf82f65e933160c476f701da1d64423bfbf0b516bdaf69574fb4f15448c`
+MANIFEST.json SHA-256: `747169e026ee98d8ba133a0f662376fa38403ecc12060476a56d05a96b5a34b7`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -10,7 +10,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | --- | --- |
 | `.agentic/LICENSE` | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
 | `.agentic/NOTICE` | `778aa28d13e57cd0626adeb12099588fe0cf5e3eaa40e059b2409e855931ac57` |
-| `.agentic/PROJECT_CONFIG.yaml` | `2fee3306049955e46113d2de59000ecd1aa60b1c9525b8eab2929066ef34de52` |
+| `.agentic/PROJECT_CONFIG.yaml` | `e867fbf67bd04030ea0f3cb98a1c13b564670b881ffd1e72f7a1e93190dde086` |
 | `.agentic/SPECIFICATION.md` | `cb084697f575c763a1c35234ba28e9e6ebfffa4ca8a9db0ac974c93d2565993c` |
 | `.agentic/adapters/reference_controller_adapter.py` | `d58df0d035105ffe5283dad7e2c0f8b09605e879e25da040d470ae34a6cdfc54` |
 | `.agentic/benchmarks/native/EVALUATION-v1.8.2.md` | `4de70e8687980cf62c2073afc1bd3013b5c55dfd0c5d10474a5ec61f20740cc2` |
