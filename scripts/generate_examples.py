@@ -305,23 +305,35 @@ def example_bundle(cfg):
             "provenance_mode": "offline_fixture"}
 
 
-def sample(schema, schemas):
+def sample(schema, schemas, document=None):
+    if document is None:
+        document = schema
     if "$ref" in schema:
-        return sample(schemas[schema["$ref"].split(":")[-1]], schemas)
+        address, separator, fragment = schema["$ref"].partition("#")
+        if address:
+            document = schemas[address.rsplit(":", 1)[-1]]
+        target = document
+        if separator:
+            for token in fragment.removeprefix("/").split("/") if fragment else ():
+                target = target[token.replace("~1", "/").replace("~0", "~")]
+        return sample(target, schemas, document)
     if "const" in schema:
         return copy.deepcopy(schema["const"])
     if "enum" in schema:
         options = schema["enum"]
+        if (document.get("$id") == "urn:awf:1.2:private-deny-scan"
+                and options == ["PASS", "BLOCKED"]):
+            return "BLOCKED"
         return next((v for v in ["DRAFT", "PROPOSAL", "NOT_READY", "INCOMPLETE", "UNKNOWN", "FAIL", "REQUESTED", "DENY"] if v in options), options[0])
     if "oneOf" in schema:
-        return None if any(s.get("type") == "null" for s in schema["oneOf"]) else sample(schema["oneOf"][0], schemas)
+        return None if any(s.get("type") == "null" for s in schema["oneOf"]) else sample(schema["oneOf"][0], schemas, document)
     kind = schema.get("type")
     if kind == "object":
         # Draft forms expose optional evidence bindings as well as required
         # fields; nullable bindings remain explicitly unobserved until filled.
-        return {key: sample(child, schemas) for key, child in schema.get("properties", {}).items()}
+        return {key: sample(child, schemas, document) for key, child in schema.get("properties", {}).items()}
     if kind == "array":
-        return [sample(schema["items"], schemas) for _ in range(schema.get("minItems", 0))]
+        return [sample(schema["items"], schemas, document) for _ in range(schema.get("minItems", 0))]
     if kind == "boolean":
         return False
     if kind == "integer":
@@ -332,7 +344,7 @@ def sample(schema, schemas):
         return "1970-01-01T00:00:00Z"
     if schema.get("format") == "uri":
         return "urn:awf:UNFILLED"
-    if "{40}" in schema.get("pattern", ""):
+    if any(width in schema.get("pattern", "") for width in ("{40}", "{40,64}")):
         return "0" * 40
     if "{64}" in schema.get("pattern", ""):
         return "0" * 64
@@ -388,9 +400,11 @@ def main():
         validation=bundle["worker"]["validation"], ci=bundle["ci"]["checks"], reviewer={"engine": "codex", "run_id": "r-1"}), encoding="utf-8", newline="\n")
     (ROOT / ".agentic/examples/evidence.txt").write_text("Illustrative evidence; no external test was executed.\n", encoding="utf-8", newline="\n")
     for name, schema in schemas.items():
-        # The configuration-bound rules decision is owned by its dedicated
-        # generator; generic UNFILLED sampling cannot populate its open objects.
-        if name in {"project-config", "evidence-bundle", "candidate", "rules-activation-decision"}:
+        # Dedicated configuration and operating surfaces own these forms;
+        # generic UNFILLED sampling cannot populate their open objects.
+        if name in {"project-config", "evidence-bundle", "candidate", "rules-activation-decision",
+                    "operating-config", "operating-change", "operating-epics",
+                    "operating-recommendation"}:
             continue
         draft = {"template_for": name, "status": "UNFILLED", "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.", "record": sample(schema, schemas)}
         if name == "doctor-output":

@@ -1,8 +1,8 @@
 # Release manifest — 1.9.4
 
-445 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
+446 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `6dc81565ba9319dc56fdc1062f24860c833f3ae9c0644558e38b120797a0d686`
+MANIFEST.json SHA-256: `460e4574480641c7469b4188177d32979cf1b9e99b3634d7b048fbf7470725fa`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -417,7 +417,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/build_release.py` | `f26ecb1b162391b14a1bfd05f6b18f7e9131ab29d2a58261646b220dd3dfb49b` |
 | `scripts/build_skill_distribution.py` | `744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8` |
 | `scripts/generate_contracts.py` | `457c26d9914123730f05a04224f4fd0ae632fb4242f02b3cd3947ac300617175` |
-| `scripts/generate_examples.py` | `214ea33b1509f7504617ae978fdd24aae030cc89bf5e160b07971c113ff5418a` |
+| `scripts/generate_examples.py` | `58dbb0d0bf5132f8ab5a568e8c23cfae62ce2e6095235957dcfa28c938740944` |
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
 | `scripts/generate_review_loop.py` | `bc3180619fde2438a047fe96c5ea22cb7885158c910529b2a697a174cf1efc35` |
@@ -441,6 +441,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_ci_suite_coverage.py` | `e2afb082472a9c09282b06b8f4731034c6d0950b195c3da4bfb34c6c1be1e468` |
 | `scripts/tests/test_cli_failure_paths.py` | `0a0cef4139b488d1f8a048401ff6e7ef1582171a245c6d320113acf0e4c30dd1` |
 | `scripts/tests/test_fresh_bootstrap.py` | `18cb82bb6399defac5969f8e7af82a00e8657516461a386374730b0c714d9a7a` |
+| `scripts/tests/test_generate_examples_schema_refs.py` | `b35f0334da02ec3720f4dd4e39204610c08296513336ef28270dfa894f022853` |
 | `scripts/tests/test_installed_self_test.py` | `63937908a219b3681cb0bbee3a61714755b3bb25d276df317cb302dba68738e9` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
