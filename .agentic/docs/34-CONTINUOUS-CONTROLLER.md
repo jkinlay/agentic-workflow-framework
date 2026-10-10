@@ -1,6 +1,6 @@
 # Continuous controller contract
 
-Version 1.9.3. While scoped work remains, the controller continues every configured stream until completion, an owner stop, or a recorded stream-specific blocker. `ContinuousControllerStore` persists decisions and grants no host, provider, Jira, or merge authority.
+Version 1.9.4. While scoped work remains, the controller continues every configured stream until completion, an owner stop, or a recorded stream-specific blocker. `ContinuousControllerStore` persists decisions and grants no host, provider, Jira, or merge authority.
 
 ## Production entry point
 
@@ -37,3 +37,62 @@ Jira disabled means no read or write. Otherwise lifecycle production binds cloud
 After a validated merge, reconcile the merged ticket first. Only then page through the complete configured scope. Every page must share the scope digest, snapshot ID and observation time, and that observation must be at or after reconciliation. Counts use stable ticket IDs and terminal categories, exclude Epics unless requested, and enforce page, item, byte, time and cursor bounds. Any missing, stale, duplicate, partial or mismatched evidence reports both counts as `UNOBSERVED`.
 
 Final review submission separately requires the [review completion barrier](33-REVIEW-COMPLETION-BARRIER.md).
+
+## Reference adapter (AWF-32)
+
+The reference adapter supplies bounded Codex/GitHub/Jira operations; owner-publication operations are omitted and fail closed.
+
+Fill the copied example with absolute paths and identities; keep state outside
+worktrees. Pin executables and the adapter with `Get-FileHash -Algorithm SHA256`.
+Jira credentials are environment-only and stripped from children.
+
+Edit copied JSON values and pins first; `$TRANSITION_ID` comes from the
+owner-approved Jira workflow prompt.
+
+```powershell
+$REPOSITORY_ROOT = (Get-Location).Path
+$STATE_DIR = Join-Path $env:TEMP "awf32-controller-state"
+$WORKTREE_ROOT = Join-Path $STATE_DIR "worktrees"
+$ADAPTER_MODULE = (Resolve-Path ".agentic\adapters\reference_controller_adapter.py").Path
+$ADAPTER_CONFIG = Join-Path $STATE_DIR "reference-controller-adapter.json"
+$NOW = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+$HEAD = (git -C $REPOSITORY_ROOT rev-parse HEAD).Trim()
+$TREE = (git -C $REPOSITORY_ROOT rev-parse "HEAD^{tree}").Trim()
+$ADAPTER_PIN = (Get-FileHash $ADAPTER_MODULE -Algorithm SHA256).Hash.ToLower()
+New-Item -ItemType Directory -Force $STATE_DIR | Out-Null
+New-Item -ItemType Directory -Force $WORKTREE_ROOT | Out-Null
+Copy-Item ".agentic/examples/reference-controller-adapter.json" $ADAPTER_CONFIG
+$adapter = Get-Content $ADAPTER_CONFIG -Raw | ConvertFrom-Json
+$CONTROLLER_ACTOR = [string]$adapter.jira.controller_actor_id
+$TRANSITION_ID = Read-Host "Enter the owner-approved Jira transition ID"
+$project = Get-Content .agentic/examples/PROJECT_CONFIG.yaml -Raw | ConvertFrom-Json
+$project.jira.enabled = $true
+foreach ($name in @('cloud_id','site','provider_project_id','project_key','controller_actor_id')) { $project.jira.$name = $adapter.jira.$name }
+$project | ConvertTo-Json -Depth 100 | Set-Content (Join-Path $STATE_DIR "PROJECT_CONFIG.yaml") -Encoding utf8
+'{"project_id":"' + $adapter.github.project_id + '","repository_id":"' + $adapter.github.repository_id + '","scope_sha256":"' + $adapter.github.scope_sha256 + '"}' | Set-Content (Join-Path $STATE_DIR "inventory-binding.json") -Encoding utf8
+'{"run_registered":true,"worktree_verified":true}' | Set-Content (Join-Path $STATE_DIR "facts.json") -Encoding utf8
+'{"issue_id":"2001"}' | Set-Content (Join-Path $STATE_DIR "binding.json") -Encoding utf8
+$bundle = Get-Content .agentic/examples/evidence-bundle.json -Raw | ConvertFrom-Json
+$bundle.contract | ConvertTo-Json -Depth 100 | Set-Content (Join-Path $STATE_DIR "CONTRACT.json") -Encoding utf8
+'{"merge_confirmed":true,"candidate_matched":true}' | Set-Content (Join-Path $STATE_DIR "MERGE_FACTS.json") -Encoding utf8
+@{jira_enabled=$true; merged_ticket='2001'; scope='project = EX'; observed_at=$NOW; jira_binding=@{cloud_id=[string]$adapter.jira.cloud_id; project_id=[string]$adapter.jira.provider_project_id; actor_id=[string]$adapter.jira.controller_actor_id}; max_pages=20; max_items=10000} | ConvertTo-Json -Depth 10 -Compress | Set-Content (Join-Path $STATE_DIR "merge-progress.json") -Encoding utf8
+```
+
+Use one `$NOW`; compute `$HEAD` and `$TREE` immediately before cycle.
+`merged_transition_id` differs from `merged_status_id`; merge requires complete
+same-snapshot pages and outputs `execution_authority: false`.
+```powershell
+$COMMON = @("-B", ".agentic/scripts/workflow.py", "controller", "--state", (Join-Path $STATE_DIR "controller.sqlite3"), "--stream", "A", "--stream", "B", "--stream", "C", "--worktree-root", $WORKTREE_ROOT, "--project-config", (Join-Path $STATE_DIR "PROJECT_CONFIG.yaml"), "--adapter-module", $ADAPTER_MODULE, "--adapter-sha256", $ADAPTER_PIN, "--adapter-config", $ADAPTER_CONFIG)
+python @COMMON cycle --inventory-binding (Join-Path $STATE_DIR "inventory-binding.json") --repository-root $REPOSITORY_ROOT --repository-head-sha $HEAD --repository-tree-sha $TREE --now $NOW --host-capacity 3 --dispatch-role writer
+python @COMMON jira-lifecycle --contract (Join-Path $STATE_DIR "CONTRACT.json") --event WORKER_STARTED --facts (Join-Path $STATE_DIR "facts.json") --binding (Join-Path $STATE_DIR "binding.json") --issue-type LEAF --lifecycle-state DISPATCHED --producer-id $CONTROLLER_ACTOR --run-id 00000000-0000-0000-0000-000000000001 --now $NOW --transition-id $TRANSITION_ID
+python @COMMON merge-observed --lifecycle-state MERGING --lifecycle-facts (Join-Path $STATE_DIR "MERGE_FACTS.json") --jira-progress (Join-Path $STATE_DIR "merge-progress.json")
+```
+
+Cycle JSON has `streams`, `dispatch_receipts`, `status_delivery`, `publication_readiness`, `errors`, and `execution_authority: false`.
+Until AWF-32 and AWF-36 ship, no project may run its own adapter. Codex may
+still authenticate through `~/.codex/auth.json` after stripping.
+
+To stop, schedule no more invocations, record owner stop, and let the current
+one finish. On interruption inspect `UNKNOWN` by observation; never replay.
+PREPARED requires an independent atomic terminal proof; missing proof, timeout,
+non-zero exit, incomplete pages, or identity mismatch remains fail-closed.

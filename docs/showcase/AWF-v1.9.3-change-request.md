@@ -601,6 +601,12 @@ AWF generates single-line PowerShell where required, and never accidental forms 
 - admit a declared read-only external resource per stream, with a synthetic `{raw_estate}` (AC48–AC51);
 - report the capability matrix (AC47).
 
+The 1.9.5 AC42 harness treats every listed check as required: `NOT_COVERED`
+is an explicit gate failure and cannot produce `PASS` or `gate_eligible`.
+ACTIVE evidence is collected by the installed project's
+`.agentic/scripts/workflow.py status` command. Until AWF-8 supplies the
+AC48–AC51 admission exercise, AC42 therefore fails closed by design.
+
 ## Acceptance criteria
 
 | ID | Criterion | Validation |

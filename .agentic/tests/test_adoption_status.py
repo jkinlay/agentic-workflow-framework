@@ -18,7 +18,8 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
-AWF_SOURCE_REPOSITORY = (ROOT / "MANIFEST.json").is_file()  # source-only scripts/fixtures/inventory
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo  # noqa: E402
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION, ValidationError
 from agentic.providers import github, github_status as status
@@ -263,7 +264,7 @@ class AdoptionStatusTests(unittest.TestCase):
         else:
             self.assertNotIn('Next:', rendered)
 
-    @unittest.skipUnless(AWF_SOURCE_REPOSITORY, "needs AWF source-repository files absent from installed projects")
+    @skip_unless_source_repo()
     def test_ac34_installed_host_skill_establishes_durable_trust_and_active(self):
         with tempfile.TemporaryDirectory(prefix='awf-ac34-profile-') as raw:
             profile = Path(raw)

@@ -21,6 +21,8 @@ import venv
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import SOURCE_ONLY_REASON, skip_unless_source_repo  # noqa: E402
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import host_preflight
@@ -154,8 +156,12 @@ class RuntimeCommandTests(unittest.TestCase):
             [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
              "--root", str(ROOT), "doctor", "--json"],
             cwd=ROOT, capture_output=True, text=True, timeout=30)
-        self.assertEqual(2, completed.returncode, completed.stderr)
         report = json.loads(completed.stdout)
+        # Exit 2 only while the managed interpreter is absent (source checkout);
+        # an installed project with .agentic/.venv is healthy and exits 0.
+        runtime = report["runtime"]
+        healthy = runtime["interpreter_exists"] and runtime["entry_point_exists"]
+        self.assertEqual(0 if healthy else 2, completed.returncode, completed.stderr)
         self.assertEqual(command_catalog(ROOT)["commands"], report["commands"])
         self.assertEqual(str(installed_paths(ROOT)[1]), report["runtime"]["interpreter"])
         self.assertEqual(str(installed_paths(ROOT)[2]), report["runtime"]["entry_point"])
@@ -205,6 +211,7 @@ class RuntimeCommandTests(unittest.TestCase):
             self.assertEqual({"adoption", "verification", "validation", "status", "operating"}, reached)
 
     @unittest.skipUnless(os.name == "nt", "AC36 real PowerShell execution requires a Windows host")
+    @skip_unless_source_repo(SOURCE_ONLY_REASON, "scripts/build_release.py")
     def test_ac36_generated_commands_execute_unchanged_in_real_powershell(self):
         powershell = shutil.which("powershell.exe")
         if powershell is None:
@@ -263,7 +270,7 @@ class RuntimeCommandTests(unittest.TestCase):
                     elif item["purpose"] == "validation":
                         self.assertEqual("ACCEPTED", json.loads(completed.stdout)["status"])
                     elif item["purpose"] == "status":
-                        self.assertTrue(completed.stdout.splitlines()[0].startswith("AWF 1.9.3: "))
+                        self.assertTrue(completed.stdout.splitlines()[0].startswith("AWF 1.9.4: "))
                     elif item["purpose"] == "operating":
                         self.assertIn("operating configuration", completed.stdout)
                         self.assertIn("Options: keep", completed.stdout)
@@ -352,16 +359,20 @@ class HonestPreflightTests(unittest.TestCase):
     def test_every_nonzero_child_observation_is_never_pass(self):
         def fake_run(arguments, cwd=None):
             return probe(str(arguments[0]), 7, policy_output() if arguments[0] == "powershell" else "true")
-        original_read_text = Path.read_text
-        def read_text(path, *args, **kwargs):
-            if Path(path).resolve() == (ROOT / ".gitattributes").resolve():
-                return "* text=auto filter=lfs\n"
-            return original_read_text(path, *args, **kwargs)
-        with patch("agentic.host_preflight.run", side_effect=fake_run), patch.object(Path, "read_text", read_text):
-            rows = {item["check"]: item for item in preflight(ROOT, platform="nt")["rows"]}
-        for name in ("core.longpaths", "powershell_execution_policy", "line_endings", "git_lfs"):
+        with tempfile.TemporaryDirectory(prefix="awf-no-gitattributes-") as raw, \
+             patch("agentic.host_preflight.run", side_effect=fake_run):
+            project = Path(raw) / "commitless-project"
+            project.mkdir()
+            subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
+            self.assertFalse((project / ".gitattributes").exists())
+            rows = {item["check"]: item for item in preflight(project, platform="nt")["rows"]}
+        for name in ("core.longpaths", "powershell_execution_policy", "line_endings"):
             self.assertNotEqual("PASS", rows[name]["status"], rows[name])
             self.assertEqual(7, rows[name]["exit_code"])
+        self.assertEqual("N_A", rows["git_lfs"]["status"], rows["git_lfs"])
+        self.assertNotIn(
+            "exit_code", rows["git_lfs"],
+            "git_lfs has no child observation when root .gitattributes is absent")
 
     def test_nonzero_category_observes_stderr_even_when_stdout_is_present(self):
         code = ("import os,sys; os.write(1,b'partial rows'); "

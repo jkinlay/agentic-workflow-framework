@@ -3,3 +3,4 @@
 # This broad source rule is NOT installed over a target project's attributes.
 * text eol=lf
 .agentic/tests/fixtures/upgrades/blobs/** -text
+.agentic/tests/fixtures/upgrades/blobs/** -text whitespace=cr-at-eol
