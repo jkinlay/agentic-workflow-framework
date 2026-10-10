@@ -161,6 +161,11 @@ class Tree:
             return
         parent, handle, name = self.parent(relative)
         if os.name == "nt":
+            # Upgrade archives are made read-only before the managed-after
+            # journal update.  Windows refuses to unlink a read-only file, so
+            # crash rollback must clear that attribute after the confined,
+            # single-link regular-file check above.
+            os.chmod(parent / name, stat.S_IWRITE)
             os.unlink(parent / name)
         else:
             os.unlink(name, dir_fd=handle)
