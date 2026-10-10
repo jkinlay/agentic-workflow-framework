@@ -15,12 +15,13 @@ derives verdict/findings; copied fields cannot substitute. Unchanged diffs keep
 old-head history; changed diffs need a current round. Only Tier 2 may exceed the
 cap through authenticated owner disposition.
 
-Verdicts and posting observations repeat that binding. Posting also binds the
-verdict/digest, repository/PR, immutable comment ID/URL, exact comment/body,
-anchor, collector run and time. The runtime-owned production registry is empty
-until an adapter is installed. `production_posting_collector_ids` only narrows
-it; bundle/config/environment declarations and fixture collectors never
-register. Pending AWF-60, production posting remains `NOT_READY`.
+Verdicts/posting observations repeat it, binding verdict/digest,
+repository/PR, immutable comment ID/URL, exact comment/body, anchor, run/time.
+GitHub collector re-reads both via the review host, giving
+the CLI gate a runtime registry pinned to implementation, release, repository
+and per-run receipt (schema/template). Configured IDs narrow it;
+bundle/config/environment/fixtures never register. Mismatches stay `NOT_READY`
+with a reason.
 
 ## Bases, lineage and dispositions
 
