@@ -1,5 +1,6 @@
 """Change risk tiers, finding bases, dispositions, the amendment cap, closure, parity and digests."""
 from __future__ import annotations
+import base64
 import copy
 import json
 from pathlib import Path
@@ -15,17 +16,23 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
-from agentic.canonical import fingerprint, load
+from agentic.canonical import canonical, fingerprint, load, loads, sha256
 from agentic.contracts import Contracts
 from agentic.digest import PROSE_WORD_CAP, check_prose, digest_sha256, evidence_comment_event, footer, render
-from agentic.gates import critic_artifact_receipt_sha256, evaluate
+from agentic.gates import (critic_artifact_receipt_sha256, evaluate,
+                           posting_collector_receipt_sha256,
+                           review_round_receipt_sha256, review_verdict_json)
 from agentic.lifecycle import RESUME, STATES, definition, transition
 from agentic.review_policy import (BOUNDARY_SENTENCE, cap_disposition_plan, cap_status, check_tier_declaration,
                                    computed_tier, evidence_only, project_instructions_errors, validate_findings)
-from review_admission_fixture import bind_review_admission
+from review_admission_fixture import bind_review_admission as _legacy_bind_review_admission
 
 NOW = "2026-09-09T12:00:00Z"
 EVIDENCE = ["urn:awf:fixture:example-evidence"]
+
+
+def base64_bytes(value):
+    return {"encoding": "base64", "data": base64.b64encode(value).decode("ascii")}
 
 
 def sealed_runtime(folder):
@@ -55,13 +62,135 @@ def signed(**extra):
 def sign(record, kind, head_sha, actor_id=1001):
     from agentic.authorization import render_owner_record
     from agentic.canonical import sha256
+    if kind == "cap":
+        from agentic.gates import cap_disposition_record_id
+        record["record_id"] = cap_disposition_record_id(record)
     body = render_owner_record(record, kind, head_sha)
     record["owner_source"].update(raw_body=body, raw_body_sha256=sha256(body.encode("utf-8")), actor_id=actor_id)
     return record
 
 
+def bind_review_admission(bundle):
+    """Test-local upgrade of the legacy admission fixture to retained bytes."""
+    admission = _legacy_bind_review_admission(bundle)
+    results = []
+    for reviewer in admission["completion_snapshot"]["required_reviewers"]:
+        review = bundle["critic"] if reviewer == bundle["critic"]["producer_id"] else next(
+            item for item in bundle["specialists"] if item["producer_id"] == reviewer)
+        verdict = review["verdict"] if reviewer == bundle["critic"]["producer_id"] else (
+            "APPROVE" if review["verdict"] == "PASS" else "REQUEST_CHANGES")
+        result_json = canonical({"reviewer": reviewer, "verdict": verdict,
+                                 "findings": review["findings"]}).decode("utf-8")
+        results.append({"reviewer_id": reviewer, "state": "ACCEPTABLE",
+                        "result_sha256": sha256(result_json.encode("utf-8")),
+                        "terminal_at": NOW})
+    snapshot = admission["completion_snapshot"]
+    snapshot["results"] = results
+    admission["completion_snapshot_sha256"] = fingerprint("review-completion", snapshot)
+    admission["provider_preconditions"]["completion_snapshot_sha256"] = (
+        admission["completion_snapshot_sha256"])
+    return admission
+
+
+def bind_review_round_receipt(bundle, verdict, critic, completion_snapshot=None):
+    """Test-only construction of retained bytes for one critic round."""
+    result_json = canonical({"reviewer": verdict["reviewer_id"],
+                             "verdict": critic["verdict"],
+                             "findings": critic["findings"]}).decode("utf-8")
+    result_sha256 = sha256(result_json.encode("utf-8"))
+    artifact_binding = {"critic_run_id": verdict["run_id"],
+                        "result_sha256": result_sha256,
+                        "head_sha": verdict["head_sha"], "round": verdict["round"]}
+    verdict["critic_artifact_binding"] = copy.deepcopy(artifact_binding)
+    verdict["critic_review"].update(
+        record_id=critic["record_id"], run_id=verdict["run_id"],
+        round=verdict["round"], head_sha=verdict["head_sha"],
+        verdict=critic["verdict"],
+        findings_sha256=fingerprint("critic-findings", critic["findings"]),
+    )
+    if completion_snapshot is None:
+        completion_snapshot = copy.deepcopy(bundle["review_submission"]["completion_snapshot"])
+        completion_snapshot["cycle_id"] = str(uuid.uuid4())
+        completion_snapshot["tuple"]["head_sha"] = verdict["head_sha"]
+        completion_snapshot["tuple_sha256"] = fingerprint(
+            "review-tuple", completion_snapshot["tuple"])
+        completion_snapshot["required_reviewers"] = [verdict["reviewer_id"]]
+        completion_snapshot["reviewer_set_sha256"] = fingerprint(
+            "reviewer-set", completion_snapshot["required_reviewers"])
+        completion_snapshot["counts"] = {"required": 1, "completed": 1,
+            "acceptable": 1, "failed": 0, "stale": 0, "outstanding": 0}
+        completion_snapshot["results"] = [{"reviewer_id": verdict["reviewer_id"],
+            "state": "ACCEPTABLE",
+            "result_sha256": result_sha256, "terminal_at": verdict["created_at"]}]
+    else:
+        completion_snapshot = copy.deepcopy(completion_snapshot)
+        row = next(item for item in completion_snapshot["results"]
+                   if item["reviewer_id"] == verdict["reviewer_id"])
+        if row["result_sha256"] != result_sha256:
+            raise AssertionError("test completion digest differs from retained critic bytes")
+        verdict["critic_artifact_binding"] = copy.deepcopy(artifact_binding)
+    completion_snapshot_json = canonical(completion_snapshot).decode("utf-8")
+    verdict["pr_body_link"] = (
+        f"{bundle['candidate']['host']}/{bundle['candidate']['repository']}/pull/"
+        f"{bundle['candidate']['pr_number']}#review-verdict-{verdict['round']}-{verdict['record_id']}"
+    )
+    verdict_json = review_verdict_json(verdict)
+    verdict_sha256 = sha256(verdict_json.encode("utf-8"))
+    body_bytes = (f"Synthetic PR body round {verdict['round']}.\n\n"
+                  f"review-verdict:{verdict['round']}:{verdict['record_id']}:{verdict_sha256}\n")
+    if verdict["round"] == max(item["round"] for item in bundle["review_verdicts"]):
+        bundle["pr"]["body_sha256"] = sha256(body_bytes.encode("utf-8"))
+        bundle["publication_scan"]["pr_body_sha256"] = bundle["pr"]["body_sha256"]
+    previous_observation = verdict.get("posting_observation", {})
+    observation = {"producer_id": previous_observation.get("producer_id", "fixture-collector"),
+                   "run_id": previous_observation.get("run_id")}
+    comment_id = verdict["round"]
+    verdict["pr_comment_url"] = (
+        f"{bundle['candidate']['host']}/{bundle['candidate']['repository']}/pull/"
+        f"{bundle['candidate']['pr_number']}#issuecomment-{comment_id}"
+    )
+    provider_response = canonical({"comment_id": comment_id,
+        "comment_url": verdict["pr_comment_url"], "comment_body": verdict_json,
+        "pr_body": body_bytes})
+    observation.update(source="host_observation", observed_at=verdict["created_at"],
+        provider_kind="github", critic_artifact_binding=copy.deepcopy(artifact_binding),
+        review_verdict_record_id=verdict["record_id"], review_verdict_sha256=verdict_sha256,
+        repository_id=bundle["candidate"]["repository_id"],
+        pr_number=bundle["candidate"]["pr_number"], comment_id=comment_id,
+        comment_url=verdict["pr_comment_url"], comment_bytes=verdict_json,
+        comment_sha256=sha256(verdict_json.encode("utf-8")),
+        body_link=verdict["pr_body_link"], body_bytes=body_bytes,
+        body_sha256=sha256(body_bytes.encode("utf-8")),
+        provider_response_bytes=base64_bytes(provider_response),
+        provider_response_sha256=sha256(provider_response),
+        collector_receipt_sha256="0" * 64)
+    verdict["posting_observation"] = observation
+    posting_bytes = canonical(observation)
+    receipt = {"critic_artifact_binding": copy.deepcopy(artifact_binding),
+        "result_json": result_json, "completion_cycle_id": completion_snapshot["cycle_id"],
+        "completion_tuple_sha256": completion_snapshot["tuple_sha256"],
+        "completion_reviewer_set_sha256": completion_snapshot["reviewer_set_sha256"],
+        "completion_snapshot_json": completion_snapshot_json,
+        "completion_snapshot_sha256": fingerprint("review-completion", completion_snapshot),
+        "review_verdict_json": verdict_json, "review_verdict_sha256": verdict_sha256,
+        "posting_observation_json": base64_bytes(posting_bytes),
+        "posting_observation_sha256": sha256(posting_bytes)}
+    receipts = bundle.setdefault("review_round_receipts", [])
+    receipts[:] = [item for item in receipts
+                   if item["critic_artifact_binding"]["round"] != verdict["round"]]
+    receipts.append(receipt)
+    receipts.sort(key=lambda item: item["critic_artifact_binding"]["round"])
+    uri = f"urn:awf:review-round-receipt:{verdict['round']}"
+    bundle["evidence_registry"] = [entry for entry in bundle["evidence_registry"]
+                                   if entry["uri"] != uri]
+    bundle["evidence_registry"].append({"uri": uri,
+        "sha256": review_round_receipt_sha256(receipt),
+        "producer_id": verdict["producer_id"], "retained_until": "2030-01-01T00:00:00Z"})
+    return receipt
+
+
 def bind_production_posting_fixture(config, bundle):
-    """Promote the inert example to a registered production-observation test fixture."""
+    """Inject a trusted collector only into a test evaluator call."""
     collector_ids = config["merge_gate"]["production_posting_collector_ids"]
     if not collector_ids:
         raise AssertionError("the positive-path fixture needs a registered production collector")
@@ -73,24 +202,44 @@ def bind_production_posting_fixture(config, bundle):
     for name in ("ci", "pr"):
         if bundle[name]["producer_id"] in old_producers:
             bundle[name]["producer_id"] = producer_id
-    digest_changes = {}
-    for verdict in bundle.get("review_verdicts", []):
-        observation = verdict.get("posting_observation")
-        if isinstance(observation, dict) and observation.get("producer_id") in old_producers:
-            previous = observation["observation_sha256"]
-            observation["producer_id"] = producer_id
-            observation["observation_sha256"] = fingerprint(
-                "posting-observation", {key: observation.get(key) for key in (
-                    "source", "observed_at", "producer_id", "run_id", "comment_url",
-                    "body_link", "comment_sha256", "body_sha256")}
-            )
-            digest_changes[previous] = observation["observation_sha256"]
+    terminal = max(bundle["review_verdicts"], key=lambda item: item["round"])
+    bind_review_round_receipt(bundle, terminal, bundle["critic"],
+                              bundle["review_submission"]["completion_snapshot"])
+    registration = {"provider_kind": "github", "implementation_sha256": "a" * 64,
+        "release_sha256": "b" * 64,
+        "repository_ids": [bundle["candidate"]["repository_id"]], "receipts": {}}
+    used_collector_runs = set()
+    collector_template = next(run for run in bundle["runs"] if run["role"] == "collector")
+    for verdict in sorted(bundle.get("review_verdicts", []), key=lambda item: item["round"]):
+        receipt = next(item for item in bundle["review_round_receipts"]
+                       if item["critic_artifact_binding"]["round"] == verdict["round"])
+        observation = verdict["posting_observation"]
+        if observation["run_id"] in used_collector_runs:
+            collector_run = copy.deepcopy(collector_template)
+            collector_run.update(record_id=str(uuid.uuid4()), run_id=str(uuid.uuid4()),
+                                 context_id=str(uuid.uuid4()), producer_id=producer_id)
+            bundle["runs"].append(collector_run)
+            observation["run_id"] = collector_run["run_id"]
+        used_collector_runs.add(observation["run_id"])
+        observation["producer_id"] = producer_id
+        basis = copy.deepcopy(observation)
+        basis["collector_receipt_sha256"] = "0" * 64
+        binding_sha256 = sha256(canonical(basis))
+        collector_receipt = posting_collector_receipt_sha256(
+            observation, binding_sha256, registration)
+        observation["collector_receipt_sha256"] = collector_receipt
+        registration["receipts"][observation["run_id"]] = collector_receipt
+        posting_bytes = canonical(observation)
+        receipt["posting_observation_json"] = base64_bytes(posting_bytes)
+        receipt["posting_observation_sha256"] = sha256(posting_bytes)
+        uri = f"urn:awf:review-round-receipt:{verdict['round']}"
+        entry = next(item for item in bundle["evidence_registry"] if item["uri"] == uri)
+        entry["sha256"] = review_round_receipt_sha256(receipt)
     for entry in bundle["evidence_registry"]:
         if entry["producer_id"] in old_producers:
             entry["producer_id"] = producer_id
-        if entry["sha256"] in digest_changes:
-            entry["sha256"] = digest_changes[entry["sha256"]]
     bundle["provenance_mode"] = "production_observation"
+    return {producer_id: registration}
 
 
 class Fixture(unittest.TestCase):
@@ -105,9 +254,19 @@ class Fixture(unittest.TestCase):
         self.bundle = copy.deepcopy(self.bundle0)
 
     def gate(self):
-        bind_production_posting_fixture(self.config, self.bundle)
         bind_review_admission(self.bundle)
-        return evaluate(self.config, definition(), self.bundle, self.contracts, NOW)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
+        return evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
+
+    def prepare_test_gate(self):
+        """Freeze a valid test-only collector registry before an adversarial edit."""
+        bind_review_admission(self.bundle)
+        return bind_production_posting_fixture(self.config, self.bundle)
+
+    def gate_with_registry(self, registry):
+        return evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
 
     def verifier_run(self):
         """Register an independent verifier run (the party that authenticated the owner's comment)."""
@@ -123,6 +282,18 @@ class Fixture(unittest.TestCase):
     def record(self, **values):
         base = self.bundle["critic"]
         run = self.verifier_run()
+        if values.get("decision") in {"MERGE_WITH_NOTES", "PARK", "RESCOPE", "EXTEND_ONE_CYCLE"}:
+            bind_review_admission(self.bundle)
+            terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
+            bind_review_round_receipt(
+                self.bundle, terminal, self.bundle["critic"],
+                self.bundle["review_submission"]["completion_snapshot"])
+            receipt = next(item for item in self.bundle["review_round_receipts"]
+                           if item["critic_artifact_binding"]["round"] == terminal["round"])
+            values.setdefault("critic_artifact_binding",
+                              copy.deepcopy(terminal["critic_artifact_binding"]))
+            values.setdefault("review_verdict_record_id", terminal["record_id"])
+            values.setdefault("review_verdict_sha256", receipt["review_verdict_sha256"])
         return {"schema_version": 3, "record_id": str(uuid.uuid4()), "created_at": NOW, "producer_id": run["producer_id"],
                 "run_id": run["run_id"], "binding": copy.deepcopy(base["binding"]), "evidence": EVIDENCE, **values}
 
@@ -269,7 +440,7 @@ class BasisAndDispositionTests(Fixture):
         with self.assertRaisesRegex(ValidationError, "unknown finding"):
             validate_findings(prior + [new], prior, ["AC1"])
 
-    def test_tier1_advisory_findings_pass_only_with_owner_disposition(self):
+    def test_tier1_advisory_disposition_does_not_replace_terminal_pass(self):
         self.tier1_bundle()
         self.bundle["critic"].update(verdict="REQUEST_CHANGES", findings=[self.finding("F1", "MAJOR", {"criterion_id": "AC1"}, path="tests/test_example.py")])
         self.sync_critic_artifact()
@@ -281,7 +452,7 @@ class BasisAndDispositionTests(Fixture):
         self.contracts.validate("finding-disposition", disposition)
         self.bundle["finding_dispositions"] = [disposition]
         gate = self.gate()
-        self.assertEqual("PASS", gate["gates"]["critic_current_tuple"]["result"])
+        self.assertEqual("FAIL", gate["gates"]["critic_current_tuple"]["result"])
         self.assertTrue(any("ACCEPT_RISK" in item and "F1" in item for item in gate["residual_risks"]))
         self.assertEqual(["F1"], gate["accepted_findings"])
         # HEAD_CHANGED voids the disposition: a re-signed record for another head does not apply.
@@ -357,7 +528,7 @@ class BasisAndDispositionTests(Fixture):
         with self.assertRaisesRegex(ValidationError, "edited"):
             self.gate()
         self.bundle["finding_dispositions"] = [good]
-        self.assertEqual("PASS", self.gate()["gates"]["critic_current_tuple"]["result"])
+        self.assertEqual("FAIL", self.gate()["gates"]["critic_current_tuple"]["result"])
 
     def test_tier1_needs_configured_governance(self):
         del self.config["execution"]["risk_tiers"]
@@ -471,6 +642,12 @@ class CapTests(Fixture):
         gate = self.gate()
         self.assertEqual(("PASS", "READY_FOR_OWNER_AUTHORIZATION", ["F7"]), (gate["gates"]["critic_current_tuple"]["result"], gate["conclusion"], gate["accepted_findings"]))
         self.assertTrue(any("Merged with notes" in item and "F7" in item for item in gate["residual_risks"]))
+        unauthenticated = copy.deepcopy(self.bundle["cap_disposition"])
+        unauthenticated["critic_artifact_binding"]["result_sha256"] = "f" * 64
+        self.bundle["cap_disposition"] = unauthenticated
+        with self.assertRaisesRegex(ValidationError, "does not authenticate"):
+            self.gate()
+        self.bundle["cap_disposition"] = cap
         from agentic.authorization import make_request
         from agentic.interaction import gate_handoff
         request = make_request(gate, self.contracts, NOW)
@@ -495,8 +672,9 @@ class CapTests(Fixture):
             self.gate()
         boundary = self.finding("F8", "MAJOR", {"boundary_code": "SCOPE_ESCAPE"})
         self.bundle["critic"]["findings"].append(boundary)
-        with_boundary = copy.deepcopy(cap)
-        with_boundary["open_finding_ids"] = ["F7", "F8"]
+        with_boundary = self.record(decision="MERGE_WITH_NOTES",
+            open_finding_ids=["F7", "F8"], notes="owner accepts", cycles=3,
+            cap_extensions=0, successor_ticket=None, **signed())
         self.bundle["cap_disposition"] = sign(with_boundary, "cap", self.bundle["candidate"]["head_sha"])
         with self.assertRaisesRegex(ValidationError, "boundary"):
             self.gate()
@@ -508,24 +686,27 @@ class CapTests(Fixture):
         self.assertFalse(evidence_only(contract, []))
 
     def test_gate_rejects_unbound_verdict_posting_urls(self):
+        registry = self.prepare_test_gate()
         verdict = self.bundle["review_verdicts"][0]
         verdict["pr_comment_url"] = "https://example.invalid/unrelated/comment"
         verdict["pr_body_link"] = "https://example.invalid/unrelated/body"
-        self.assertEqual("FAIL", self.gate()["gates"]["verdict_posting"]["result"])
+        self.assertEqual("FAIL", self.gate_with_registry(registry)["gates"]["verdict_posting"]["result"])
 
     def test_gate_rejects_fabricated_candidate_prefixed_posting(self):
+        registry = self.prepare_test_gate()
         verdict = self.bundle["review_verdicts"][0]
         verdict["pr_comment_url"] = "https://github.com/fixture/example/pull/7#fabricated-comment"
         verdict["posting_observation"]["comment_url"] = verdict["pr_comment_url"]
         verdict["posting_observation"]["comment_sha256"] = "f" * 64
-        self.assertEqual("FAIL", self.gate()["gates"]["verdict_posting"]["result"])
+        self.assertEqual("FAIL", self.gate_with_registry(registry)["gates"]["verdict_posting"]["result"])
 
     def test_awf16_r1_003_gate_rejects_posting_observation_without_registered_host_producer(self):
         """AWF16-R1-003: posting evidence must be independently registered and hashed."""
+        registry = self.prepare_test_gate()
         verdict = self.bundle["review_verdicts"][0]
         worker = next(run for run in self.bundle["runs"] if run["role"] == "worker")
-        self.bundle["evidence_registry"][1]["producer_id"] = worker["producer_id"]
-        self.assertEqual("FAIL", self.gate()["gates"]["verdict_posting"]["result"])
+        verdict["posting_observation"]["producer_id"] = worker["producer_id"]
+        self.assertEqual("FAIL", self.gate_with_registry(registry)["gates"]["verdict_posting"]["result"])
 
     def test_awf16_r1_009_real_gate_and_schema_regressions(self):
         """AWF16-R1-009: exercise the real gate with canonical boundary and posting records."""
@@ -536,12 +717,13 @@ class CapTests(Fixture):
 
     def test_awf16_r2c_002_each_consumed_round_has_registered_critic_artifact(self):
         """AWF16-R2C-002: a terminal run cannot reuse the round-one critic artifact."""
+        registry = self.prepare_test_gate()
         verdict = self.bundle["review_verdicts"][0]
         verdict["critic_review"]["record_id"] = next(
             run["record_id"] for run in self.bundle["runs"]
             if run["run_id"] == verdict["run_id"]
         )
-        self.assertEqual("NOT_READY", self.gate()["conclusion"])
+        self.assertEqual("NOT_READY", self.gate_with_registry(registry)["conclusion"])
 
     def test_awf16_r2c_004_legacy_security_is_rejected_without_mutation(self):
         """AWF16-R2C-004: missing durable security evidence fails closed."""
@@ -598,12 +780,11 @@ class CapTests(Fixture):
     def test_awf16_r3_001_gate_preserves_old_head_round_and_requires_distinct_critic_runs(self):
         """AWF16-R3-001: retain an old-head verdict while the terminal round binds the new head."""
         first = self.bundle["review_verdicts"][0]
+        first_artifact = copy.deepcopy(self.bundle["critic"])
         first["head_sha"] = "a" * 40
+        first["created_at"] = "2020-01-01T00:00:00Z"
+        first["candidate_binding"]["head_sha"] = first["head_sha"]
         first["critic_review"]["head_sha"] = first["head_sha"]
-        first["posting_observation"]["observation_sha256"] = fingerprint(
-            "posting-observation", {key: first["posting_observation"].get(key) for key in (
-                "source", "observed_at", "producer_id", "run_id", "comment_url",
-                "body_link", "comment_sha256", "body_sha256")})
         first_run = next(run for run in self.bundle["runs"] if run["run_id"] == first["run_id"])
         first_run["created_at"] = "2020-01-01T00:00:00Z"
         second_run = copy.deepcopy(next(run for run in self.bundle["runs"]
@@ -614,31 +795,27 @@ class CapTests(Fixture):
         self.bundle["critic"].update(run_id=second_run["run_id"], producer_id=second_run["producer_id"], created_at=NOW)
         second = copy.deepcopy(first)
         second.update(record_id=str(uuid.uuid4()), run_id=second_run["run_id"],
-                      producer_id=second_run["producer_id"], round=2,
+                      producer_id=second_run["producer_id"], round=2, created_at=NOW,
                       head_sha=self.bundle["candidate"]["head_sha"])
         second["reviewer_id"] = second_run["producer_id"]
         second["pr_comment_url"] = "https://github.com/fixture/example/pull/7#issuecomment-2"
-        second["pr_body_link"] = "https://github.com/fixture/example/pull/7#review-verdict-2"
+        second["candidate_binding"]["head_sha"] = second["head_sha"]
         second["posting_observation"] = copy.deepcopy(first["posting_observation"])
-        second["posting_observation"].update(comment_url=second["pr_comment_url"], body_link=second["pr_body_link"])
-        second["posting_observation"]["observation_sha256"] = fingerprint(
-            "posting-observation", {key: second["posting_observation"].get(key) for key in (
-                "source", "observed_at", "producer_id", "run_id", "comment_url",
-                "body_link", "comment_sha256", "body_sha256")})
-        self.bundle["evidence_registry"].append({"uri": "urn:awf:fixture:example-evidence/posting-2",
-            "sha256": second["posting_observation"]["observation_sha256"],
-            "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"})
         second["critic_review"] = copy.deepcopy(first["critic_review"])
         second["critic_review"].update(record_id=second_run["record_id"], run_id=second_run["run_id"], round=2, head_sha=self.bundle["candidate"]["head_sha"])
         self.bundle["review_verdicts"].append(second)
-        self.assertEqual("PASS", self.gate()["gates"]["verdict_posting"]["result"])
+        self.bundle["review_round_receipts"] = []
+        bind_review_round_receipt(self.bundle, first, first_artifact)
+        bind_review_round_receipt(self.bundle, second, self.bundle["critic"])
+        registry = self.prepare_test_gate()
+        self.assertEqual("PASS", self.gate_with_registry(registry)["gates"]["verdict_posting"]["result"])
         self.bundle["review_verdicts"][1]["run_id"] = first["run_id"]
         self.bundle["review_verdicts"][1]["producer_id"] = first["producer_id"]
         self.bundle["review_verdicts"][1]["reviewer_id"] = first["reviewer_id"]
         self.bundle["review_verdicts"][1]["critic_review"]["run_id"] = first["run_id"]
         self.bundle["review_verdicts"][1]["critic_review"]["record_id"] = first["critic_review"]["record_id"]
         with self.assertRaisesRegex(ValidationError, "distinct independent critic"):
-            self.gate()
+            self.gate_with_registry(registry)
 
 
 class ClosureAndParityTests(Fixture):

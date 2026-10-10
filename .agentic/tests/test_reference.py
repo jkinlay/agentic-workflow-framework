@@ -31,8 +31,7 @@ from agentic.policy import validate_config, topological_order, require_reference
 from agentic.review_tiers import classify
 from agentic.safeio import Tree
 from agentic.store import Store
-from review_admission_fixture import bind_review_admission
-from test_review_policy import bind_production_posting_fixture
+from test_review_policy import bind_production_posting_fixture, bind_review_admission
 
 NOW = "2026-09-09T12:00:00Z"
 
@@ -49,9 +48,10 @@ class Fixture(unittest.TestCase):
         self.bundle = copy.deepcopy(self.bundle0)
 
     def gate(self):
-        bind_production_posting_fixture(self.config, self.bundle)
         bind_review_admission(self.bundle)
-        return evaluate(self.config, definition(), self.bundle, self.contracts, NOW)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
+        return evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
 
     def authorize(self, decision="AUTHORIZE"):
         gate = self.gate()
@@ -390,9 +390,11 @@ class LifecycleTests(unittest.TestCase):
                 if event == "FINAL_GATE_PASSED":
                     config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
                     bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
-                    bind_production_posting_fixture(config, bundle)
+                    bind_review_admission(bundle)
+                    registry = bind_production_posting_fixture(config, bundle)
                     facts["final_gate"] = evaluate(config, definition(), bundle,
-                                                     Contracts(ROOT / ".agentic/schemas"), NOW)
+                        Contracts(ROOT / ".agentic/schemas"), NOW,
+                        posting_collector_registry=registry)
                 self.assertEqual(transition(source, event, facts), target)
 
     def test_no_unverified_progress_for_all_state_event_pairs(self):

@@ -16,9 +16,9 @@ from agentic.lifecycle import definition, review_round_transition, transition
 from agentic.policy import validate_config
 from agentic.review_tiers import review_decision, validate_round
 from agentic.upgrade import review_tier_defaults
-from review_admission_fixture import bind_review_admission
 from test_review_policy import (Fixture, NOW, bind_production_posting_fixture,
-                                sign, signed)
+                                 bind_review_admission, bind_review_round_receipt,
+                                 sign, signed)
 
 
 POSTING_FIELDS = (
@@ -182,20 +182,34 @@ class ReviewTiers195FinalTests(Fixture):
             artifacts.append(artifact)
         self.bundle["critic"] = artifacts[-1]
         self.bundle["review_verdicts"] = verdicts
+        self.bundle["review_round_receipts"] = []
+        for verdict, artifact in zip(verdicts, artifacts):
+            bind_review_round_receipt(self.bundle, verdict, artifact)
 
     def test_awf16_r2c_002_tier1_empty_legacy_receipt_is_not_ready(self):
         self.tier1_bundle()
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
         self._legacy_terminal_receipt()
-        self.assertEqual("NOT_READY", self.gate()["conclusion"])
+        gate = evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
+        self.assertEqual("NOT_READY", gate["conclusion"])
 
     def test_awf16_r2c_002_tier2_empty_legacy_receipt_is_not_ready(self):
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
         self._legacy_terminal_receipt()
-        self.assertEqual("NOT_READY", self.gate()["conclusion"])
+        gate = evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
+        self.assertEqual("NOT_READY", gate["conclusion"])
 
     def test_awf16_r2c_002_tier3_empty_legacy_receipt_is_not_ready(self):
         self._tier_three_candidate_with_owner_review()
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
         self._legacy_terminal_receipt()
-        gate = self.gate()
+        gate = evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
         self.assertEqual("FAIL", gate["gates"]["critic_current_tuple"]["result"])
         self.assertEqual("NOT_READY", gate["conclusion"])
 
@@ -235,19 +249,16 @@ class ReviewTiers195FinalTests(Fixture):
 
     def test_awf16_r1_003_self_consistent_fabricated_posting_is_not_ready(self):
         self._bind_terminal_artifact()
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
         verdict = self.bundle["review_verdicts"][-1]
         verdict["pr_comment_url"] = "https://github.com/fixture/example/pull/7#fabricated-comment"
         verdict["pr_body_link"] = "https://github.com/fixture/example/pull/7#fabricated-body"
         observation = verdict["posting_observation"]
         observation.update(comment_url=verdict["pr_comment_url"],
                            body_link=verdict["pr_body_link"])
-        observation["observation_sha256"] = fingerprint(
-            "posting-observation", {key: observation.get(key) for key in POSTING_FIELDS}
-        )
-        posting = next(entry for entry in self.bundle["evidence_registry"]
-                       if entry["uri"].endswith("/posting"))
-        posting["sha256"] = observation["observation_sha256"]
-        gate = self.gate()
+        gate = evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
         self.assertEqual("FAIL", gate["gates"]["verdict_posting"]["result"])
         self.assertEqual("NOT_READY", gate["conclusion"])
 
@@ -273,12 +284,6 @@ class ReviewTiers195FinalTests(Fixture):
         observation = historical["posting_observation"]
         observation.update(comment_url="https://example.invalid/unrelated-comment",
                            body_link="https://example.invalid/unrelated-body")
-        observation["observation_sha256"] = fingerprint(
-            "posting-observation", {key: observation.get(key) for key in POSTING_FIELDS}
-        )
-        posting = next(entry for entry in self.bundle["evidence_registry"]
-                       if entry["uri"].endswith("/posting-1"))
-        posting["sha256"] = observation["observation_sha256"]
         gate = self.gate()
         self.assertEqual("FAIL", gate["gates"]["verdict_posting"]["result"])
         self.assertEqual("NOT_READY", gate["conclusion"])
@@ -349,11 +354,11 @@ class ReviewTiers195FinalTests(Fixture):
 
     def test_awf16_r1_009_arbitrary_findings_digest_fails_real_gate(self):
         verdict = self._bind_terminal_artifact()
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
         verdict["critic_review"]["findings_sha256"] = "f" * 64
-        artifact = next(entry for entry in self.bundle["evidence_registry"]
-                        if entry["uri"].startswith("urn:awf:critic-review:"))
-        artifact["sha256"] = critic_artifact_receipt_sha256(verdict)
-        gate = self.gate()
+        gate = evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
         self.assertEqual("FAIL", gate["gates"]["critic_current_tuple"]["result"])
 
     def test_awf16_r1_009_historical_old_candidate_run_binding_is_retained(self):
