@@ -198,11 +198,16 @@ class HostDriver:
         self.state = Path(config['state_dir'])
         self.url = f"https://github.com/{config['repository']}.git"
 
-    def run(self, name, args, cwd=None, stdin=None, timeout=None, log=None, binary=False):
+    def run(self, name, args, cwd=None, stdin=None, timeout=None, log=None,
+            binary=False):
+        env = dict(os.environ)
+        if name == 'codex' and not getattr(self, '_qualification_probe', False):
+            validate_config_qualification(
+                self.c, self.state, config_path=self.c.get('_config_path'),
+                environment=env)
         executable = self.c['executables'][name]
         require(sha256(Path(executable['path']).read_bytes()) == executable['sha256'], 'Executable changed after configuration validation')
         require(sha256(Path(self.c['_config_path']).read_bytes()) == self.c['config_hash'], 'Host policy changed during operation')
-        env = dict(os.environ)
         # Neither candidate Git overrides nor paid API auth is inherited.
         for key in list(env):
             if key.upper().startswith('GIT_'):
@@ -527,8 +532,13 @@ class HostDriver:
             'codex_config_overrides': overrides,
             'network_access': False,
         }, sort_keys=True), encoding='utf-8')
-        self.run('codex', args, stdin=prompt,
-                 timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
+        self._qualification_probe = True
+        try:
+            self.run('codex', args, stdin=prompt,
+                     timeout=self.c['agent_timeout_seconds'],
+                     log=run / 'codex.jsonl')
+        finally:
+            self._qualification_probe = False
         require(output.is_file() and output.stat().st_size <= 1024 * 1024,
                 'Qualification agent output missing or too large')
         value = loads(output.read_text(encoding='utf-8'))

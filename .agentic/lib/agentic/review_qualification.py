@@ -15,6 +15,7 @@ import sqlite3
 import uuid
 
 from .canonical import fingerprint, fresh, loads, now_text, sha256, timestamp
+from .child_process import HOST_AUTH_ENV_VARS, PROVIDER_API_KEY_ENV_VARS
 from .review_loop import ValidationError, require
 from .safeio import Tree
 
@@ -24,6 +25,9 @@ MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 FLAGS = ("sandbox_verified", "credentials_isolated", "branch_owned",
          "single_host_database")
 AUTH_LOCATIONS = ("~/.codex/auth.json", "$CODEX_HOME/auth.json")
+AGENT_AUTH_ROOT_ENV_VARS = ("HOME", "USERPROFILE", "CODEX_HOME")
+CREDENTIAL_ENVIRONMENT_NAME = re.compile(
+    r"(?:TOKEN|API_KEY|SECRET|PASSWORD|CREDENTIAL)", re.IGNORECASE)
 AGENT_RESULT_KEYS = {
     "role", "checkout_write", "outside_write", "network",
     "credential_environment_names", "agent_auth_files",
@@ -41,7 +45,25 @@ PROTECTED_STATE_NAMES = {
 }
 
 
-def host_binding_sha256(config):
+def _ambient_environment_binding(environment=None):
+    """Return only launch-relevant names and agent-auth root locations."""
+    environment = os.environ if environment is None else environment
+    always_stripped = PROVIDER_API_KEY_ENV_VARS | HOST_AUTH_ENV_VARS
+    credential_names = sorted({
+        name for name in environment
+        if (isinstance(name, str)
+            and name.upper() not in always_stripped
+            and CREDENTIAL_ENVIRONMENT_NAME.search(name))
+    })
+    return {
+        "credential_environment_names": credential_names,
+        "agent_auth_roots": {
+            name: environment.get(name) for name in AGENT_AUTH_ROOT_ENV_VARS
+        },
+    }
+
+
+def host_binding_sha256(config, *, environment=None):
     """Bind evidence to the host controls that establish its isolation.
 
     PR/head/contract/scope fields are deliberately excluded: qualification is
@@ -63,6 +85,7 @@ def host_binding_sha256(config):
         "reasoning_effort": config.get("reasoning_effort"),
         "codex_config_overrides": config.get("codex_config_overrides"),
         "agent_timeout_seconds": config.get("agent_timeout_seconds"),
+        "ambient_environment": _ambient_environment_binding(environment),
     }
     return fingerprint("review_host_qualification", value)
 
@@ -200,7 +223,8 @@ def _derived_flags(probes):
     }
 
 
-def validate_qualification_record(record, config, *, now=None):
+def validate_qualification_record(record, config, *, now=None,
+                                  environment=None):
     required = {
         "format", "record_id", "observed_at", "operator",
         "host_binding_sha256", "disposable_pr_confirmed", "candidate",
@@ -220,8 +244,10 @@ def validate_qualification_record(record, config, *, now=None):
             "Qualification operator identity mismatch")
     fresh(record["observed_at"], now or now_text(),
           qualification["max_age_seconds"])
-    require(record["host_binding_sha256"] == host_binding_sha256(config),
-            "Qualification evidence is for different host controls")
+    require(record["host_binding_sha256"] == host_binding_sha256(
+                config, environment=environment),
+            "Qualification evidence is for different host controls, including "
+            "credential environment names or agent-auth roots")
     require(record["disposable_pr_confirmed"] is True,
             "Qualification evidence does not identify a disposable PR")
     candidate = record["candidate"]
@@ -293,7 +319,8 @@ def _evidence_path(config, state_root, *, config_path=None):
 
 
 def validate_config_qualification(config, state_root, *, require_record=True,
-                                  now=None, config_path=None):
+                                  now=None, config_path=None,
+                                  environment=None):
     qualification = _qualification_shape(config, require_record=require_record)
     state_root = Path(state_root).resolve(strict=True)
     evidence = _evidence_path(config, state_root, config_path=config_path)
@@ -310,7 +337,8 @@ def validate_config_qualification(config, state_root, *, require_record=True,
         record = loads(raw.decode("utf-8"))
     except UnicodeDecodeError as exc:
         raise ValidationError("Qualification evidence is not UTF-8") from exc
-    return validate_qualification_record(record, config, now=now)
+    return validate_qualification_record(record, config, now=now,
+                                         environment=environment)
 
 
 def _database_probes(store, config, candidate, record_id):
