@@ -396,13 +396,18 @@ def catalog():
         "resume_trigger": text(), "exact_tuple": text(), "activity": text(), "verification_gate": text(),
         "reviewer_completion": review_counts, "open_findings": integer(), "jira_status": text(),
         "updated_at": TIME})
-    schemas["controller-status-digest"] = obj({"schema_version": const(3), "delivery_id": DIGEST, "observed_at": TIME,
+    unresolved_dispatch = obj({"dispatch_id": text(), "stream": text(), "ticket": text(),
+        "exact_tuple": text(), "status": const("UNKNOWN"), "detached": BOOL, "updated_at": TIME})
+    controller_status_digest = obj({"schema_version": const(3), "delivery_id": DIGEST, "observed_at": TIME,
         "kind": enum("REGULAR", "CHANGE"), "cadence_seconds": integer(1), "all_complete": BOOL,
+        "unresolved_dispatches": {"type": "array", "items": unresolved_dispatch},
         "streams": arr(stream_status, 1, uniqueItems=True)}, allOf=[
             {"if": {"properties": {"all_complete": const(True)}},
              "then": {"properties": {"streams": {"items": {"properties": {"state": const("COMPLETE")}}}}}},
             {"if": {"properties": {"all_complete": const(False)}},
              "then": {"properties": {"streams": {"contains": {"properties": {"state": {"not": const("COMPLETE")}}}}}}}])
+    controller_status_digest["required"].remove("unresolved_dispatches")
+    schemas["controller-status-digest"] = controller_status_digest
     count_or_unobserved = {"oneOf": [integer(), const("UNOBSERVED")]}
     schemas["jira-progress"] = obj({"schema_version": const(3), "merged_ticket": text(), "scope": text(),
         "scope_sha256": DIGEST, "include_epics": BOOL, "snapshot_id": nullable(text()),
@@ -807,7 +812,7 @@ def catalog():
     schemas["project-config"]["properties"]["execution"]["properties"]["independent_reviewers"] = obj({
         "count": integer(0), "allocation": enum("one_per_stream", "shared_critic")}, required=["allocation"])
     # Optional for upgraded configurations; absence means the documented
-    # 15-minute controller status cadence.
+    # 10-minute / 600-second controller status cadence.
     schemas["project-config"]["properties"]["controller"]["required"].remove("status_cadence_seconds")
     # This allowlist can only narrow a runtime-owned registry.  It is optional
     # for migrated configurations and cannot register a collector by itself.

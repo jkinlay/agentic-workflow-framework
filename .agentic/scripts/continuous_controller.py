@@ -72,6 +72,10 @@ def main(argv=None, default_root=ROOT):
     parser.add_argument("--stream", action="append", dest="streams")
     parser.add_argument("--worktree-root", type=Path, action="append", required=True)
     parser.add_argument("--cadence-seconds", type=int)
+    parser.add_argument("--disable-periodic-status", action="store_true",
+                        help="disable scheduled status digests while keeping change digests enabled")
+    parser.add_argument("--migrate-status-cadence", action="store_true",
+                        help="explicitly replace the protected state database's saved cadence with the configured value")
     parser.add_argument("--project-config", type=Path)
     parser.add_argument("--adapter-module", type=Path)
     parser.add_argument("--adapter-sha256")
@@ -120,7 +124,7 @@ def main(argv=None, default_root=ROOT):
     args = parser.parse_args(argv)
     config_path = args.project_config or (default_root / ".agentic/PROJECT_CONFIG.yaml")
     config = load(config_path)
-    configured_cadence = config.get("controller", {}).get("status_cadence_seconds", 900)
+    configured_cadence = config.get("controller", {}).get("status_cadence_seconds", 600)
     cadence_seconds = args.cadence_seconds if args.cadence_seconds is not None else configured_cadence
     if not isinstance(cadence_seconds, int) or isinstance(cadence_seconds, bool) or cadence_seconds < 1:
         parser.error("controller.status_cadence_seconds must be a positive integer")
@@ -128,7 +132,9 @@ def main(argv=None, default_root=ROOT):
         store = OwnerPublicationStore(args.state, worktree_roots=args.worktree_root)
     else:
         store = ContinuousControllerStore(args.state, args.streams, cadence_seconds,
-                                          worktree_roots=args.worktree_root)
+                                          worktree_roots=args.worktree_root,
+                                          periodic_status_enabled=not args.disable_periodic_status,
+                                          migrate_cadence=args.migrate_status_cadence)
     adapters = None
     if args.command in {"cycle", "jira-lifecycle", "merge-observed", "owner-publication-prepare",
                         "owner-publication-resume"}:
