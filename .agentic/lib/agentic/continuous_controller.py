@@ -25,7 +25,7 @@ from .controller_state import configure_database, protected_state_path, restrict
 
 STREAM_STATES = {"WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"}
 TICKET_STATES = {"ELIGIBLE", "PAUSED_INPUT", "BLOCKED", "COMPLETE"}
-DEFAULT_STATUS_CADENCE_SECONDS = 15 * 60
+DEFAULT_STATUS_CADENCE_SECONDS = 10 * 60
 STATE_APPLICATION_ID = 0x41574631
 
 DDL = """
@@ -306,13 +306,16 @@ class ContinuousControllerStore:
     """Durable scheduler in which every configured stream has a visible state."""
 
     def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS,
-                 worktree_roots=()):
+                 worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False):
         self.path = protected_state_path(path, worktree_roots)
         _require(isinstance(stream_ids, (list, tuple)) and stream_ids and
                  len(stream_ids) == len(set(stream_ids)) and
                  all(isinstance(item, str) and item.strip() for item in stream_ids),
                  "Configured stream identities must be unique nonempty strings")
         _require(type(cadence_seconds) is int and cadence_seconds > 0, "Status cadence must be positive seconds")
+        _require(type(periodic_status_enabled) is bool, "Periodic status enablement must be boolean")
+        _require(type(migrate_cadence) is bool, "Cadence migration choice must be boolean")
+        self.periodic_status_enabled = periodic_status_enabled
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             db.executescript(DDL)
@@ -325,8 +328,13 @@ class ContinuousControllerStore:
                                    ("revision", "0"), ("last_regular_digest", ""),
                                    ("last_digest_revision", "-1")):
                     db.execute("INSERT OR IGNORE INTO controller_meta VALUES(?,?)", (key, value))
-                _require(int(self._meta(db, "cadence_seconds")) == cadence_seconds,
-                         "Configured status cadence changed; call set_cadence explicitly")
+                stored_cadence = int(self._meta(db, "cadence_seconds"))
+                if stored_cadence != cadence_seconds and migrate_cadence:
+                    db.execute("UPDATE controller_meta SET value=? WHERE key='cadence_seconds'",
+                               (str(cadence_seconds),))
+                else:
+                    _require(stored_cadence == cadence_seconds,
+                             "Configured status cadence changed; explicitly migrate the stored cadence")
                 for stream in sorted(stream_ids):
                     db.execute("INSERT OR IGNORE INTO stream_status VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                (stream, "COMPLETE", None, "controller", "No scoped work has been scheduled",
@@ -422,27 +430,67 @@ class ContinuousControllerStore:
     def _schedule(self, db, tickets, now, host_capacity):
         rows = db.execute("SELECT * FROM stream_status ORDER BY stream_id").fetchall()
         inventory = {item["ticket"]: item for item in tickets}
+        # A durable dispatch intent reserves its ticket globally until the host
+        # outcome is observed. Otherwise a priority change can move the same
+        # ticket to another stream and create a second dispatch while the first
+        # may still be running.
+        reserved_dispatches, capacity_intents, unknown_dispatches = {}, [], {}
+        for intent in db.execute(
+                "SELECT dispatch_id,ticket,stream_id,exact_tuple,status FROM controller_dispatch "
+                "WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN')"):
+            reserved_dispatches.setdefault(intent["ticket"], set()).add(intent["stream_id"])
+            if intent["status"] in {"IN_FLIGHT", "UNKNOWN"}:
+                capacity_intents.append((intent["stream_id"], intent["ticket"]))
+            if intent["status"] == "UNKNOWN":
+                unknown_dispatches.setdefault(intent["stream_id"], []).append(intent)
+        reserved_tickets = set(reserved_dispatches)
         working, held_paths = [], []
         for row in rows:
             item = inventory.get(row["ticket"]) if row["state"] == "WORKING" else None
             prerequisites = item is not None and item["disposition"] == "ELIGIBLE" and all((
                 item["dependencies_satisfied"], item["budget_available"], item["cap_available"],
                 item["review_independent"]))
-            if (prerequisites and len(working) < host_capacity and
+            intent_streams = reserved_dispatches.get(item["ticket"], set()) if item else set()
+            intent_matches_stream = not intent_streams or intent_streams == {row["stream_id"]}
+            if (prerequisites and intent_matches_stream and len(working) < host_capacity and
                     not any(_overlap(item["paths"], paths) for paths in held_paths)):
                 working.append(row)
                 held_paths.append(item["paths"])
                 self._update_stream(db, row["stream_id"], "WORKING", item, now)
         assigned = {row["ticket"] for row in working}
-        slots = max(0, host_capacity - len(working))
+        represented_intents = {(row["stream_id"], row["ticket"]) for row in working}
+        represented_capacity = len({intent for intent in capacity_intents
+                                    if intent in represented_intents})
+        unresolved_capacity = max(0, len(capacity_intents) - represented_capacity)
+        slots = max(0, host_capacity - len(working) - unresolved_capacity)
         eligible = sorted((item for item in tickets if item["ticket"] not in assigned and
+                           item["ticket"] not in reserved_tickets and
                            item["disposition"] == "ELIGIBLE"), key=lambda item: (item["priority"], item["ticket"]))
         paused = sorted((item for item in tickets if item["ticket"] not in assigned and
+                         item["ticket"] not in reserved_tickets and
                          item["disposition"] == "PAUSED_INPUT"), key=lambda item: (item["priority"], item["ticket"]))
         blocked = sorted((item for item in tickets if item["ticket"] not in assigned and
+                          item["ticket"] not in reserved_tickets and
                           item["disposition"] == "BLOCKED"), key=lambda item: (item["priority"], item["ticket"]))
         free_rows = [row for row in rows if row not in working]
         for row in free_rows:
+            matching_unknown = next((intent for intent in unknown_dispatches.get(row["stream_id"], [])
+                                     if row["ticket"] == intent["ticket"] and
+                                     row["exact_tuple"] == intent["exact_tuple"] and
+                                     intent["ticket"] in inventory and
+                                     inventory[intent["ticket"]]["disposition"] != "COMPLETE"), None)
+            if matching_unknown is not None:
+                item = inventory[matching_unknown["ticket"]]
+                blocked_item = {
+                    **item,
+                    "exact_tuple": matching_unknown["exact_tuple"],
+                    "reason": (f"Dispatch outcome unknown for {matching_unknown['ticket']} "
+                               f"({matching_unknown['dispatch_id']}); reconcile before retry"),
+                    "next_action": "Observe the exact durable dispatch intent before dispatching more work on this stream",
+                    "resume_trigger": "the host returns a fresh observation for this dispatch and its ticket",
+                }
+                self._update_stream(db, row["stream_id"], "BLOCKED", blocked_item, now)
+                continue
             selected = None
             for item in eligible:
                 prerequisites = (item["dependencies_satisfied"] and item["budget_available"] and
@@ -522,9 +570,22 @@ class ContinuousControllerStore:
             cadence = int(self._meta(db, "cadence_seconds"))
             elapsed = None if not last_regular else (current - timestamp(last_regular)).total_seconds()
             _require(elapsed is None or elapsed >= 0, "Host clock moved backwards; reconcile cadence before delivery")
-            regular_due = not last_regular or elapsed >= cadence
-            change_due = revision > last_revision
+            regular_due = self.periodic_status_enabled and (not last_regular or elapsed >= cadence)
+            change_due = revision > last_revision and (self.periodic_status_enabled or revision > 0)
             streams = self._snapshot(db)
+            unresolved_dispatches = []
+            for row in db.execute(
+                    "SELECT dispatch_id,stream_id,ticket,exact_tuple,status,updated_at "
+                    "FROM controller_dispatch WHERE status='UNKNOWN' ORDER BY stream_id,dispatch_id"):
+                owner = db.execute("SELECT ticket,exact_tuple FROM stream_status WHERE stream_id=?",
+                                   (row["stream_id"],)).fetchone()
+                detached = (owner is None or owner["ticket"] != row["ticket"] or
+                            owner["exact_tuple"] != row["exact_tuple"])
+                unresolved_dispatches.append({
+                    "dispatch_id": row["dispatch_id"], "stream": row["stream_id"],
+                    "ticket": row["ticket"], "exact_tuple": row["exact_tuple"],
+                    "status": row["status"], "detached": detached,
+                    "updated_at": row["updated_at"]})
             all_complete = all(s["state"] == "COMPLETE" for s in streams)
             if all_complete and not change_due:
                 return None
@@ -533,7 +594,8 @@ class ContinuousControllerStore:
             kind = "REGULAR" if regular_due else "CHANGE"
             from .canonical import fingerprint
             body = {"schema_version": 3, "observed_at": now, "kind": kind,
-                    "cadence_seconds": cadence, "all_complete": all_complete, "streams": streams}
+                    "cadence_seconds": cadence, "all_complete": all_complete, "streams": streams,
+                    "unresolved_dispatches": unresolved_dispatches}
             delivery_id = fingerprint("controller-status-digest", {"revision": revision, **body})
             body["delivery_id"] = delivery_id
             db.execute("INSERT INTO controller_outbox VALUES(?,?,?,?,?,NULL)",
@@ -568,7 +630,7 @@ class ContinuousControllerStore:
             for row in db.execute("SELECT * FROM stream_status WHERE state='WORKING' ORDER BY stream_id"):
                 prior = db.execute(
                     "SELECT * FROM controller_dispatch WHERE stream_id=? AND ticket=? AND exact_tuple=? "
-                    "ORDER BY rowid DESC LIMIT 1",
+                    "AND status<>'CANCELLED' ORDER BY rowid DESC LIMIT 1",
                     (row["stream_id"], row["ticket"], row["exact_tuple"])).fetchone()
                 if prior is not None:
                     continue
@@ -583,6 +645,34 @@ class ContinuousControllerStore:
                             "PENDING", canonical(payload).decode(), now))
             return [dict(row) | {"payload": loads(row["payload_json"])} for row in db.execute(
                 "SELECT * FROM controller_dispatch WHERE status IN ('PENDING','UNKNOWN') ORDER BY stream_id,dispatch_id")]
+
+    def pending_dispatches(self):
+        """Read never-begun intents so fresh preflight can cancel them safely."""
+        with self.connection() as db:
+            return [dict(row) | {"payload": loads(row["payload_json"])} for row in db.execute(
+                "SELECT * FROM controller_dispatch WHERE status='PENDING' ORDER BY stream_id,dispatch_id")]
+
+    def cancel_pending_dispatch(self, dispatch_id, now, reason):
+        """Durably retire an intent proven not to have reached the host."""
+        timestamp(now)
+        _require(isinstance(reason, str) and reason.strip(),
+                 "Pending dispatch cancellation requires a preflight reason")
+        with self.transaction() as db:
+            row = db.execute("SELECT status,payload_json FROM controller_dispatch WHERE dispatch_id=?",
+                             (dispatch_id,)).fetchone()
+            _require(row is not None and row["status"] == "PENDING",
+                     "Only a never-begun pending dispatch can be cancelled")
+            payload = loads(row["payload_json"])
+            _require("begun_at" not in payload,
+                     "A dispatch with a host-call begin time cannot be cancelled")
+            payload["cancelled_at"] = now
+            payload["cancellation_reason"] = reason.strip()
+            db.execute("UPDATE controller_dispatch SET status='CANCELLED',payload_json=?,updated_at=? "
+                       "WHERE dispatch_id=? AND status='PENDING'",
+                       (canonical(payload).decode(), now, dispatch_id))
+            revision = int(self._meta(db, "revision")) + 1
+            db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
+            return dict(row) | {"status": "CANCELLED", "payload": payload}
 
     def begin_dispatch(self, dispatch_id, now):
         """Move one intent to IN_FLIGHT before the external host call."""
@@ -621,15 +711,42 @@ class ContinuousControllerStore:
                      "Dispatch receipt is stale relative to the durable intent or reconciliation")
             db.execute("UPDATE controller_dispatch SET status='ACCEPTED',receipt_json=?,updated_at=? WHERE dispatch_id=?",
                        (canonical(receipt).decode(), now, dispatch_id))
+            if reconcile:
+                revision = int(self._meta(db, "revision")) + 1
+                db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
             return receipt
 
     def mark_dispatch_unknown(self, dispatch_id, now):
         timestamp(now)
         with self.transaction() as db:
-            row = db.execute("SELECT status FROM controller_dispatch WHERE dispatch_id=?", (dispatch_id,)).fetchone()
-            _require(row is not None and row["status"] == "IN_FLIGHT", "Only an in-flight dispatch can become unknown")
-            db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?",
-                       (now, dispatch_id))
+            row = db.execute("SELECT status,payload_json FROM controller_dispatch WHERE dispatch_id=?",
+                             (dispatch_id,)).fetchone()
+            _require(row is not None and row["status"] in {"IN_FLIGHT", "UNKNOWN"},
+                     "Only an in-flight or reconciling dispatch can report an unknown outcome")
+            if row["status"] == "IN_FLIGHT":
+                db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?",
+                           (now, dispatch_id))
+            self._record_dispatch_unknown(db, dispatch_id, loads(row["payload_json"]), now)
+
+    def _record_dispatch_unknown(self, db, dispatch_id, payload, now):
+        stream = db.execute("SELECT * FROM stream_status WHERE stream_id=?", (payload["stream"],)).fetchone()
+        _require(stream is not None, "Unknown dispatch stream is missing from the protected state")
+        if (stream["ticket"] != payload["ticket"] or
+                stream["exact_tuple"] != payload["exact_tuple"]):
+            # The ticket may have been reallocated since this old operation
+            # became uncertain. Preserve the current stream owner and still
+            # emit an urgent revision for the retained UNKNOWN intent.
+            revision = int(self._meta(db, "revision")) + 1
+            db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
+            return
+        db.execute("UPDATE stream_status SET state='BLOCKED',actor='controller',"
+                   "reason=?,next_action=?,resume_trigger=?,updated_at=? WHERE stream_id=?",
+                   (f"Dispatch outcome unknown for {payload['ticket']} ({dispatch_id}); reconcile before retry",
+                    "Observe the exact durable dispatch intent before dispatching more work on this stream",
+                    "the host returns a fresh observation for this dispatch and its ticket",
+                    now, payload["stream"]))
+        revision = int(self._meta(db, "revision")) + 1
+        db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
 
     def begin_dispatch_reconciliation(self, dispatch_id, now):
         """Persist a fresh challenge before observing an UNKNOWN dispatch."""
@@ -649,7 +766,11 @@ class ContinuousControllerStore:
         """A crash while calling the host becomes UNKNOWN, never PENDING."""
         timestamp(now)
         with self.transaction() as db:
-            db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE status='IN_FLIGHT'", (now,))
+            rows = db.execute("SELECT dispatch_id,payload_json FROM controller_dispatch WHERE status='IN_FLIGHT'").fetchall()
+            for row in rows:
+                db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?",
+                           (now, row["dispatch_id"]))
+                self._record_dispatch_unknown(db, row["dispatch_id"], loads(row["payload_json"]), now)
 
     def prepare_jira_operation(self, record, now):
         """Persist an immutable deterministic Jira intent before any provider call."""
@@ -917,18 +1038,56 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                               "resume_trigger": "the exact completion path passes publication readiness"}
             errors.append({"operation": "publication_readiness", "ticket": item["ticket"],
                            "state": "BLOCKED", "reason": reason})
+    # A never-begun intent is safe to retire when fresh inventory or publication
+    # preflight no longer admits its ticket. Do this before scheduling so the
+    # ticket's new PAUSED/BLOCKED/COMPLETE state remains visible immediately.
+    ticket_by_id = {item["ticket"]: item for item in tickets}
+    for operation in store.pending_dispatches():
+        payload = operation["payload"]
+        current = ticket_by_id.get(payload["ticket"])
+        if (current is not None and current["disposition"] == "ELIGIBLE" and
+                payload["ticket"] in publication_reports):
+            continue
+        if current is None:
+            reason = "Fresh complete inventory no longer contains the pending ticket"
+        elif current["disposition"] != "ELIGIBLE":
+            reason = f"Fresh preflight disposition is {current['disposition']}: {current['reason']}"
+        else:
+            reason = "Fresh publication preflight did not admit the pending ticket"
+        try:
+            store.cancel_pending_dispatch(operation["dispatch_id"], now, reason)
+        except Exception as exc:
+            errors.append({"operation": "dispatch_cancellation", "dispatch_id": operation["dispatch_id"],
+                           "state": "PENDING", "reason": type(exc).__name__})
     streams = store.schedule(tickets, now, host_capacity)
     dispatches = []
     for operation in store.prepare_dispatches(now):
         payload, dispatch_id = operation["payload"], operation["dispatch_id"]
-        if operation["status"] == "PENDING" and not (
-                payload["ticket"] in publication_reports and any(
+        if operation["status"] == "PENDING":
+            admitted = (payload["ticket"] in publication_reports and any(
                     stream["stream"] == payload["stream"] and stream["state"] == "WORKING"
                     and stream["ticket"] == payload["ticket"] and stream["exact_tuple"] == payload["exact_tuple"]
-                    for stream in streams)):
-            # No host call has occurred. Preserve the intent for a later fresh
-            # preflight instead of classifying known non-execution as UNKNOWN.
-            continue
+                    for stream in streams))
+            if not admitted:
+                current = next((item for item in tickets if item["ticket"] == payload["ticket"]), None)
+                if current is None:
+                    reason = "Fresh complete inventory no longer contains the pending ticket"
+                elif current["disposition"] != "ELIGIBLE":
+                    reason = (f"Fresh preflight disposition is {current['disposition']}: "
+                              f"{current['reason']}")
+                elif payload["ticket"] not in publication_reports:
+                    reason = "Fresh publication preflight did not admit the pending ticket"
+                else:
+                    reason = "Fresh schedule did not retain this exact stream, ticket, and tuple"
+                try:
+                    store.cancel_pending_dispatch(dispatch_id, now, reason)
+                except Exception as exc:
+                    errors.append({"operation": "dispatch_cancellation", "dispatch_id": dispatch_id,
+                                   "state": "PENDING", "reason": type(exc).__name__})
+                # PENDING proves begin_dispatch did not run, so this durable
+                # cancellation is safe and makes the ticket eligible for a
+                # newly prepared intent after a later fresh preflight.
+                continue
         try:
             if operation["status"] == "PENDING":
                 payload = store.begin_dispatch(dispatch_id, now)
@@ -939,11 +1098,10 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                 receipt = observe_dispatch({**payload, "role": dispatch_role})
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now, reconcile=True))
         except Exception as exc:
-            if operation["status"] == "PENDING":
-                try:
-                    store.mark_dispatch_unknown(dispatch_id, now)
-                except Exception:
-                    pass
+            try:
+                store.mark_dispatch_unknown(dispatch_id, now)
+            except Exception:
+                pass
             errors.append({"operation": "dispatch", "dispatch_id": dispatch_id,
                            "state": "UNKNOWN", "reason": type(exc).__name__})
     digest = store.digest(now)
@@ -961,6 +1119,7 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
         except Exception as exc:
             errors.append({"operation": "status_delivery", "delivery_id": digest["delivery_id"],
                            "state": "PENDING", "reason": type(exc).__name__})
+    streams = store.snapshot()
     return {"schema_version": 3, "observed_at": now, "streams": streams,
             "dispatch_receipts": dispatches, "status_delivery": delivery,
             "publication_readiness": publication_reports,
