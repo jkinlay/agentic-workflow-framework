@@ -33,6 +33,7 @@ from test_review_policy import (
     bind_review_admission,
     sealed_runtime,
 )
+from source_only import skip_unless_source_repo
 
 
 RELEASE_SHA256 = "d" * 64
@@ -204,12 +205,12 @@ class PostingCollectorTests(Fixture):
         self.assertFalse(hasattr(production, "TestOnlyReviewHost"))
         self.assertNotIn("TestOnlyReviewHost", Path(production.__file__).read_text(encoding="utf-8"))
 
-    def test_ac5_registration_schema_and_template_validate(self):
-        from source_only import SOURCE_ONLY_REASON, is_awf_source_repository
-
-        if not is_awf_source_repository(ROOT):
-            self.skipTest(SOURCE_ONLY_REASON)
-
+    @skip_unless_source_repo(
+        "AC5 byte parity needs the source-only contract and example generators",
+        "scripts/generate_contracts.py",
+        "scripts/generate_examples.py",
+    )
+    def test_ac5_generated_registration_schema_and_template_have_byte_parity(self):
         scripts_path = str(ROOT / "scripts")
         inserted_scripts_path = scripts_path not in sys.path
         if inserted_scripts_path:
@@ -246,30 +247,32 @@ class PostingCollectorTests(Fixture):
                 self.assertEqual(
                     checked_template.read_bytes(), generated_template.read_bytes()
                 )
-
-                template = load(checked_template)
-                self.assertEqual(
-                    "posting-collector-registration", template["template_for"]
-                )
-                filled_record = copy.deepcopy(template["record"])
-                filled_record["receipts"] = {
-                    "00000000-0000-0000-0000-000000000001": "f" * 64,
-                }
-                self.contracts.validate(
-                    "posting-collector-registration", filled_record
-                )
-
-                refused_record = copy.deepcopy(filled_record)
-                refused_record["receipts"] = {}
-                with self.assertRaises(ValidationError) as refused:
-                    self.contracts.validate(
-                        "posting-collector-registration", refused_record
-                    )
-                self.assertIn("receipts", str(refused.exception))
-                self.assertIn("non-empty", str(refused.exception))
         finally:
             if inserted_scripts_path:
                 sys.path.remove(scripts_path)
+
+    def test_ac5_shipped_registration_template_validates_and_refuses_empty_receipts(self):
+        checked_template = (
+            ROOT / ".agentic/templates/posting-collector-registration.yaml"
+        )
+        template = load(checked_template)
+        self.assertEqual(
+            "posting-collector-registration", template["template_for"]
+        )
+        filled_record = copy.deepcopy(template["record"])
+        filled_record["receipts"] = {
+            "00000000-0000-0000-0000-000000000001": "f" * 64,
+        }
+        self.contracts.validate("posting-collector-registration", filled_record)
+
+        refused_record = copy.deepcopy(filled_record)
+        refused_record["receipts"] = {}
+        with self.assertRaises(ValidationError) as refused:
+            self.contracts.validate(
+                "posting-collector-registration", refused_record
+            )
+        self.assertIn("receipts", str(refused.exception))
+        self.assertIn("non-empty", str(refused.exception))
 
     def test_cli_supplies_only_runtime_collector_registry_to_gate(self):
         _registrations, registry = self._install_runtime_observations()
