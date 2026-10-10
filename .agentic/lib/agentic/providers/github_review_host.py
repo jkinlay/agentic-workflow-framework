@@ -234,11 +234,19 @@ class HostDriver:
         require(len(result.stdout) <= 8 * 1024 * 1024, 'Command output exceeds record limit')
         return result.stdout
 
+    def _repository_sets_autocrlf(self, checkout):
+        value = self.run('git', ['--no-replace-objects', '-c','core.useReplaceRefs=false',
+            '-c','core.hooksPath=' + str(self.state / 'empty-hooks'),
+            '-c','protocol.file.allow=never', '-c','core.fsmonitor=false',
+            '-C',str(checkout),'config','--local','--null','--list'], binary=True)
+        return any(item.partition(b'\n')[0].lower() == b'core.autocrlf' for item in value.split(b'\0') if item)
+
     def git(self, checkout, *args, strip=True, binary=False):
         # The isolated Git environment intentionally ignores host configuration.
-        # Pin Windows' checkout conversion so a clean CRLF worktree does not
-        # become falsely dirty when the user's global core.autocrlf is removed.
-        conversion = ['-c', 'core.autocrlf=true'] if os.name == 'nt' else []
+        # Keep its Windows conversion fallback only when the checkout has not
+        # selected its own repository-local line-ending policy.
+        conversion = (['-c', 'core.autocrlf=true']
+                      if os.name == 'nt' and not self._repository_sets_autocrlf(checkout) else [])
         value = self.run('git', ['--no-replace-objects', '-c','core.useReplaceRefs=false',
             *conversion, '-c','core.hooksPath=' + str(self.state / 'empty-hooks'),
             '-c','protocol.file.allow=never', '-c','core.fsmonitor=false',

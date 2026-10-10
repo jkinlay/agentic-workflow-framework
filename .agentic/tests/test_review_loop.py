@@ -537,6 +537,42 @@ class HostTests(unittest.TestCase):
         self.assertEqual(driver.run('git',['-c','print("fixture")']).strip(),'fixture')
         with self.assertRaises(ValidationError): driver.run('git',['-c','raise SystemExit(3)'])
 
+    def test_host_git_windows_respects_repository_autocrlf(self):
+        driver = HostDriver(self.config(),self.base/'runtime')
+        calls = []
+        def run(name, args, **kwargs):
+            calls.append((name, args, kwargs))
+            return b'core.autocrlf\nfalse\0' if args[-4:] == ['config','--local','--null','--list'] else 'clean\n'
+        driver.run = run
+        with patch('agentic.providers.github_review_host.os.name','nt'):
+            self.assertEqual(driver.git(driver.worker,'status','--porcelain'),'clean')
+        self.assertEqual(calls[0][1][-6:],['-C',str(driver.worker),'config','--local','--null','--list'])
+        self.assertIn('protocol.file.allow=never',calls[0][1])
+        self.assertNotIn('core.autocrlf=true',calls[1][1])
+
+    def test_host_git_windows_falls_back_to_autocrlf_when_repository_does_not_set_it(self):
+        driver = HostDriver(self.config(),self.base/'runtime')
+        calls = []
+        def run(name, args, **kwargs):
+            calls.append((name, args, kwargs))
+            return b'core.repositoryformatversion\n0\0' if args[-4:] == ['config','--local','--null','--list'] else 'clean\n'
+        driver.run = run
+        with patch('agentic.providers.github_review_host.os.name','nt'):
+            self.assertEqual(driver.git(driver.worker,'status','--porcelain'),'clean')
+        self.assertEqual(calls[0][1][-6:],['-C',str(driver.worker),'config','--local','--null','--list'])
+        self.assertIn('protocol.file.allow=never',calls[0][1])
+        self.assertIn('core.autocrlf=true',calls[1][1])
+
+    def test_host_git_non_windows_does_not_probe_or_override_autocrlf(self):
+        driver = HostDriver(self.config(),self.base/'runtime')
+        calls = []
+        driver.run = lambda name, args, **kwargs: (calls.append((name, args, kwargs)) or 'clean\n')
+        with patch('agentic.providers.github_review_host.os.name','posix'):
+            self.assertEqual(driver.git(driver.worker,'status','--porcelain'),'clean')
+        self.assertEqual(len(calls),1)
+        self.assertNotIn('config',calls[0][1])
+        self.assertNotIn('core.autocrlf=true',calls[0][1])
+
     def test_codex_invocation_uses_fresh_sandboxed_context_and_structured_output(self):
         policy = self.base/'worker/.agentic'; policy.mkdir()
         (policy/'PROJECT_CONFIG.yaml').write_text(json.dumps({'execution': {'model_routing': {'models': {'fixture-critic': {'reasoning_efforts': ['ultra']}}}}}))
