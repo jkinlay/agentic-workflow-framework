@@ -25,6 +25,8 @@ from test_publication_readiness import publication_config, publication_observati
 from agentic.cli import local_semantics
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple  # noqa: E402
 
 NOW = "2026-10-02T10:00:00Z"
 BINDING = {"cloud_id": "cloud-1", "project_id": "project-1", "actor_id": "actor-1"}
@@ -32,13 +34,17 @@ COUNTS = {"required": 1, "completed": 0, "acceptable": 0,
           "failed": 0, "stale": 0, "outstanding": 1}
 INVENTORY_BINDING = {"project_id": "project-1", "repository_id": "101",
                      "scope_sha256": "a" * 64}
+SOURCE_GIT_TUPLE = committed_git_tuple(ROOT)
 REPOSITORY = {
     "repository_root": ROOT,
-    "repository_head_sha": subprocess.check_output(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip(),
-    "repository_tree_sha": subprocess.check_output(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD^{tree}"], text=True).strip(),
+    "repository_head_sha": SOURCE_GIT_TUPLE[0] if SOURCE_GIT_TUPLE else "0" * 40,
+    "repository_tree_sha": SOURCE_GIT_TUPLE[1] if SOURCE_GIT_TUPLE else "0" * 40,
 }
+
+
+def setUpModule():
+    if SOURCE_GIT_TUPLE is None:
+        raise unittest.SkipTest(COMMITTED_GIT_REASON)
 
 
 def production_controller_cycle(*args, **kwargs):

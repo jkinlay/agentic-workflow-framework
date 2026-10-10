@@ -20,7 +20,8 @@ import uuid
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
-AWF_SOURCE_REPOSITORY = (ROOT / "MANIFEST.json").is_file()  # source-only scripts/fixtures/inventory
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo  # noqa: E402
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
 from agentic import ValidationError, VERSION
@@ -618,7 +619,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual(sha256(receipt["source_manifest_json"].encode()), self.pin)
         self.assertEqual(verify_installed(self.dest), self.pin)
 
-    @unittest.skipUnless(AWF_SOURCE_REPOSITORY, "needs AWF source-repository files absent from installed projects")
+    @skip_unless_source_repo()
     def test_192_upgrade_changes_only_version_line_in_owner_config(self):
         from upgrade_fixtures import materialize
         materialize("1.9.2", self.dest)
@@ -642,7 +643,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         text = text.replace('  "execution": {', '  # owner budget policy\n  "execution": {')
         before = (text + "\n").replace("\n", "\r\n").encode("utf-8")
         config_path.write_bytes(before)
-        # MIGRATION-to-v1.9.3.md: "The migration inserts null immutable Jira
+        # MIGRATION-to-v1.9.4.md: "The migration inserts null immutable Jira
         # bindings where absent, preserving owner values." Every other owner
         # byte, including comments and CRLF endings, must be unchanged.
         jira_anchor = b'  "jira": {\r\n    "enabled": true,\r\n'
@@ -650,7 +651,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         null_bindings = (b'    "cloud_id": null,\r\n    "provider_project_id": null,\r\n'
                          b'    "controller_actor_id": null,\r\n')
         expected = before.replace(b'"expected_workflow_version": "1.9.2"',
-                                  b'"expected_workflow_version": "1.9.3"'
+                                  b'"expected_workflow_version": "1.9.4"'
                                   ).replace(jira_anchor, jira_anchor + null_bindings)
 
         second = self.perform(mode="upgrade")
@@ -667,7 +668,7 @@ class ConfiguredInstallerTests(unittest.TestCase):
         self.assertEqual(old_install_id, second["install_id"])
         self.assertEqual(verify_installed(self.dest), self.pin)
 
-    @unittest.skipUnless(AWF_SOURCE_REPOSITORY, "needs AWF source-repository files absent from installed projects")
+    @skip_unless_source_repo()
     def test_192_pure_migration_changes_only_version_line(self):
         from types import MappingProxyType
         from agentic.upgrade import MigrationBundle, load_known_versions, migrate_1_9_2_to_1_9_3
@@ -1694,8 +1695,7 @@ class BootstrapRuntimeTransactionRegressionTests(unittest.TestCase):
 
 
 class BootstrapMainTests(unittest.TestCase):
-    @unittest.skipUnless((ROOT / "scripts/bootstrap_project.py").is_file(),
-                         "Source bootstrap entry point is not shipped in installed runtimes")
+    @skip_unless_source_repo("Source bootstrap entry point is not shipped in installed runtimes", "scripts/bootstrap_project.py")
     def test_normal_exit_states_and_dryrun_skip_postcheck(self):
         spec = importlib.util.spec_from_file_location("test_bootstrap_entry", ROOT / "scripts/bootstrap_project.py")
         module = importlib.util.module_from_spec(spec)

@@ -1,6 +1,6 @@
 # Activation status and capabilities
 
-Version 1.9.3. `workflow.py status` is a read-only observation. It creates no directory or lock and evaluates independent stages into `checks`. Each row has a stable `code`, `stage`, `state`, `evidence`, `remedy` and `observed_at`.
+Version 1.9.4. `workflow.py status` is a read-only observation. It creates no directory or lock and evaluates independent stages into `checks`. Each row has a stable `code`, `stage`, `state`, `evidence`, `remedy` and `observed_at`.
 
 Check states are `PASS`, `INVALID`, `MISMATCH`, `UNAVAILABLE`, `UNOBSERVED` and `NOT_APPLICABLE`. An unavailable later observation never lowers a state already established by earlier stages. Text output lists every blocker before one `Next command`; JSON uses the [activation-status schema](../schemas/activation-status.schema.json).
 

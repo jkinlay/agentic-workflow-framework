@@ -18,7 +18,7 @@ CONFIG = ".agentic/PROJECT_CONFIG.yaml"
 INSTALLED = ".agentic/installed-manifest.json"
 PROVENANCE = ".agentic/workflow-version.yaml"
 OPERATING = "OPERATING_CONFIG.yaml"
-ARCHIVE_ROOT = ".agentic-state/archive/upgrade-to-1.9.3"
+ARCHIVE_ROOT = ".agentic-state/archive/upgrade-to-1.9.4"
 CURRENT_RECEIPT_SCHEMA = "awf-installed-receipt-embedded-manifest-1"
 
 
@@ -577,6 +577,148 @@ def migrate_1_9_2_to_1_9_3(bundle, target):
     return migrate_step(bundle, "1.9.2", "1.9.3", target)
 
 
+def migrate_1_9_3_to_1_9_4(bundle, target):
+    """The shipped 1.9.3 -> 1.9.4 step is version-only."""
+    return migrate_step(bundle, "1.9.3", "1.9.4", target)
+
+
+def migrate_1_9_4_to_1_9_5(bundle, target):
+    """Apply the additive review-tier migration while retaining all history."""
+    migrated = migrate_step(bundle, "1.9.4", "1.9.5", target)
+    return MigrationBundle(review_tier_defaults(migrated.project_config),
+                            migrated.operating_config, migrated.receipt,
+                            migrated.provenance, migrated.state)
+
+
+def review_tier_defaults(config):
+    """Return additive 1.9.5 review policy defaults without losing legacy data.
+
+    Upgraded 1.9.4 configurations may omit the new tier block.  The 1.9.4 to
+    1.9.5 migration calls this helper; it is additive and never rewrites
+    retained records or invents reviewer identities.
+    """
+    import copy
+    raw = isinstance(config, (bytes, bytearray))
+    original_text = bytes(config).decode("utf-8") if raw else None
+    if raw and original_text.lstrip().startswith(("{", "[")):
+        try:
+            value = json.loads(original_text)
+        except json.JSONDecodeError as exc:
+            raise ValidationError("Migration is not deterministic. Project configuration JSON is invalid") from exc
+        execution = value.setdefault("execution", {})
+        tiers = execution.setdefault("risk_tiers", {})
+        tiers.setdefault("tier3_review", {"roles": ["critic", "specialist"], "findings": "blocking", "max_rounds": 3})
+        output = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        if json.loads(output) != value:
+            raise ValidationError("Migration output did not preserve the expected additive project configuration")
+        return output
+    value = copy.deepcopy(load_yaml(config) if raw else config)
+    if not isinstance(value, dict):
+        raise ValidationError("Migration is not deterministic. Project configuration must be a mapping")
+    execution = value.setdefault("execution", {})
+    tiers = execution.setdefault("risk_tiers", {})
+    had_tier3 = "tier3_review" in tiers
+    tiers.setdefault("tier3_review", {"roles": ["critic", "specialist"],
+                                       "findings": "blocking", "max_rounds": 3})
+    if not raw:
+        return value
+    def verified_yaml_output(output):
+        try:
+            reparsed = load_yaml(output)
+        except Exception as exc:
+            raise ValidationError(
+                "Migration refused unsupported YAML mapping style for execution/risk_tiers"
+            ) from exc
+        if reparsed != value:
+            raise ValidationError(
+                "Migration refused unsupported YAML mapping style for execution/risk_tiers; "
+                "emitted bytes did not equal the expected additive mapping"
+            )
+        return output
+    # The migration is byte-preserving apart from the one additive mapping.
+    # Re-emitting parsed YAML as JSON loses comments, quoting and scalar style.
+    if had_tier3:
+        return verified_yaml_output(bytes(config))
+    lines = original_text.splitlines(keepends=True)
+    newline = "\r\n" if "\r\n" in original_text else "\n"
+    # Valid YAML permits compact flow mappings.  Handle the common retained
+    # PROJECT_CONFIG form in place so we do not emit a duplicate top-level
+    # execution/risk_tiers key or discard comments and scalar spelling.
+    for index, line in enumerate(lines):
+        if not re.match(r"^execution:\s*\{", line):
+            continue
+        def matching_brace(text, opening):
+            depth = 0
+            quote = None
+            for position in range(opening, len(text)):
+                char = text[position]
+                if quote:
+                    if char == quote and (position == 0 or text[position - 1] != "\\"):
+                        quote = None
+                elif char in "'\"":
+                    quote = char
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return position
+            return None
+        risk_key = line.find("risk_tiers:")
+        if risk_key >= 0:
+            risk_open = line.find("{", risk_key)
+            risk_close = matching_brace(line, risk_open) if risk_open >= 0 else None
+            if risk_close is not None:
+                insertion = ", tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}"
+                lines[index] = line[:risk_close] + insertion + line[risk_close:]
+                return verified_yaml_output("".join(lines).encode("utf-8"))
+        execution_open = line.find("{")
+        execution_close = matching_brace(line, execution_open)
+        if execution_close is not None:
+            insertion = ", risk_tiers: {tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}}"
+            lines[index] = line[:execution_close] + insertion + line[execution_close:]
+            return verified_yaml_output("".join(lines).encode("utf-8"))
+    execution = next((i for i, line in enumerate(lines)
+                      if re.match(r"^execution:\s*(?:#.*)?(?:\r?\n)?$", line)), None)
+    if execution is None:
+        suffix = "" if not lines or lines[-1].endswith(("\n", "\r")) else newline
+        return verified_yaml_output((original_text + suffix
+                + "execution:" + newline
+                + "  risk_tiers:" + newline
+                + "    tier3_review:" + newline
+                + "      roles: [critic, specialist]" + newline
+                + "      findings: blocking" + newline
+                + "      max_rounds: 3" + newline).encode("utf-8"))
+    execution_end = len(lines)
+    for i in range(execution + 1, len(lines)):
+        if lines[i].strip() and not lines[i].lstrip().startswith("#") and not lines[i].startswith((" ", "\t")):
+            execution_end = i
+            break
+    risk = next((i for i in range(execution + 1, execution_end)
+                 if re.match(r"^\s{2}risk_tiers:\s*(?:#.*)?(?:\r?\n)?$", lines[i])), None)
+    addition = ["    tier3_review:" + newline,
+                "      roles: [critic, specialist]" + newline,
+                "      findings: blocking" + newline,
+                "      max_rounds: 3" + newline]
+    if risk is None:
+        lines[execution_end:execution_end] = ["  risk_tiers:" + newline] + addition
+    else:
+        risk_indent = len(lines[risk]) - len(lines[risk].lstrip(" "))
+        risk_end = execution_end
+        for i in range(risk + 1, execution_end):
+            stripped = lines[i].strip()
+            if stripped and not stripped.startswith("#") and len(lines[i]) - len(lines[i].lstrip(" ")) <= risk_indent:
+                risk_end = i
+                break
+        adjusted = [line.replace("    tier3_review:", " " * (risk_indent + 2) + "tier3_review:", 1)
+                    .replace("      roles:", " " * (risk_indent + 4) + "roles:", 1)
+                    .replace("      findings:", " " * (risk_indent + 4) + "findings:", 1)
+                    .replace("      max_rounds:", " " * (risk_indent + 4) + "max_rounds:", 1)
+                    for line in addition]
+        lines[risk_end:risk_end] = adjusted
+    return verified_yaml_output("".join(lines).encode("utf-8"))
+
+
 def config_diff(before, after, previous, current):
     return "".join(difflib.unified_diff(before.decode("utf-8").splitlines(keepends=True),
         after.decode("utf-8").splitlines(keepends=True), fromfile=previous, tofile=current))
@@ -601,7 +743,9 @@ def apply_chain(table, version, project_config, operating_config, receipt, prove
     reports = []
     for previous, current, new_settings in migration_chain(table, version):
         target = target_entry if current == table["target"] else table["versions"][current]
-        migrated = migrate_step(bundle, previous, current, target)
+        migration = {("1.9.3", "1.9.4"): migrate_1_9_3_to_1_9_4,
+                     ("1.9.4", "1.9.5"): migrate_1_9_4_to_1_9_5}.get((previous, current))
+        migrated = migration(bundle, target) if migration else migrate_step(bundle, previous, current, target)
         reports.append({"from": previous, "to": current, "configuration_diff":
                         config_diff(bundle.project_config, migrated.project_config, previous, current),
                         "new_required_settings": list(new_settings),
@@ -626,7 +770,7 @@ def state_archive_plan(state):
         files.append({"source": path, "archive": archive, "sha256": sha256(raw),
                       "source_retained": True, "validation_path": path,
                       "validation_reason": reason})
-    manifest = {"format": "awf-state-archive-1", "target_version": "1.9.3", "files": files}
+    manifest = {"format": "awf-state-archive-1", "target_version": "1.9.4", "files": files}
     additions[f"{ARCHIVE_ROOT}/manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
     return additions, [{"path": item["source"], "action": "archived_read_only_copy",
                         "archive": item["archive"],

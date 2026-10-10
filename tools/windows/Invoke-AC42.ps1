@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   AC42 release gate (AWF-11): Windows end-to-end upgrade of a recorded AWF
-  installation fixture to this 1.9.3 candidate, with an evidence file.
+  installation fixture to this 1.9.4 candidate, with an evidence file.
 
 .DESCRIPTION
   Run from the root of a fresh clone of the candidate commit, on a Windows
@@ -16,10 +16,15 @@
   scripts/ac42_e2e.py, which upgrades the fixture through
   scripts/bootstrap_project.py with that wheelhouse, then runs
   verify-installation, validate-config and the self-test; merges the upgrade
-  PR fixture; requires ACTIVE in one status run; emits a handoff snapshot;
+  PR fixture; requires ACTIVE from the installed project's
+  .agentic\scripts\workflow.py status command; emits a handoff snapshot;
   checks owner values and external data are unchanged and that a fresh
   core.autocrlf=true clone still verifies; and checks that a value added
   and then removed in branch history blocks publication (AC43).
+
+  Every required row must PASS before the result or gate_eligible can pass.
+  Until AWF-8 implements the AC48-AC51 read-only external-resource admission
+  exercise, that row is NOT_COVERED and this release gate fails closed.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\Invoke-AC42.ps1
@@ -35,7 +40,7 @@
 [CmdletBinding()]
 param(
     [string]$Python = "python",
-    [ValidateSet("1.8.3", "1.8.9", "1.9.1", "1.9.2")]
+    [ValidateSet("1.8.3", "1.8.9", "1.9.1", "1.9.2", "1.9.3")]
     [string]$FromVersion = "1.9.1",
     [string]$ScratchRoot = "C:\awf-ac42-scratch",
     [string]$Work = "",

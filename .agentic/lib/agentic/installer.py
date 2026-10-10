@@ -27,12 +27,42 @@ RUNTIME = ".agentic/.venv"
 CODEOWNERS = ".github/CODEOWNERS"
 GITIGNORE = ".gitignore"
 GITIGNORE_TEMPLATE = ".agentic/templates/operating.gitignore"
-RELEASE_EXCLUDED_PREFIXES = ("docs/showcase/", ".tmp-tests/", ".agentic/tests/fixtures/upgrades/")
+SOURCE_CONFIG_PREFIX = ".agentic/templates/source-config/"
+SOURCE_CONFIG_PATHS = frozenset({
+    CONFIG,
+    PROVENANCE,
+    "OPERATING_CONFIG.yaml",
+})
+INSTALL_GENERATED_PATHS = frozenset({
+    MARKER,
+    INSTALLED,
+    GITIGNORE,
+})
+INSTALL_OWNED_PATHS = SOURCE_CONFIG_PATHS | INSTALL_GENERATED_PATHS
+INSTALL_OWNED_PREFIXES = (
+    ".agentic-install/",
+    ".agentic-state/",
+    ".agentic-backup/",
+    RUNTIME + "/",
+    RUNTIME + ".staging-",
+    RUNTIME + ".backup-",
+    RUNTIME + ".cleanup-",
+)
+RELEASE_EXCLUDED_PREFIXES = (
+    "docs/showcase/",
+    ".tmp-tests/",
+    ".agentic/tests/fixtures/upgrades/",
+    SOURCE_CONFIG_PREFIX,
+    *INSTALL_OWNED_PREFIXES,
+)
 KNOWN_VERSIONS = ".agentic/upgrade/known-versions.json"
 RELEASE_EXCLUDED_PATHS = frozenset({
     "docs/AWF-1.8.9-Showcase-Presentation.html",
     "docs/AWF-1.9.1-Showcase-Presentation.html",
     "docs/AWF-Showcase-Presentation-Plan.md",
+    MARKER,
+    INSTALLED,
+    GITIGNORE,
 })
 
 
@@ -140,6 +170,11 @@ def _recover_pending_runtime_update(tree, journal, journal_raw, marker):
 
 def managed(path):
     return path in {"AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md", CODEOWNERS} or path.startswith(".agentic/")
+
+
+def install_owned_path(path):
+    """Return source-checkout paths whose bytes belong to one installation."""
+    return path in INSTALL_OWNED_PATHS or any(path.startswith(prefix) for prefix in INSTALL_OWNED_PREFIXES)
 
 
 def _inventory_managed(path):

@@ -1,0 +1,38 @@
+{
+  "template_for": "controller-status-digest",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "schema_version": 3,
+    "delivery_id": "0000000000000000000000000000000000000000000000000000000000000000",
+    "observed_at": "1970-01-01T00:00:00Z",
+    "kind": "REGULAR",
+    "cadence_seconds": 1,
+    "all_complete": false,
+    "streams": [
+      {
+        "stream": "UNFILLED",
+        "state": "WORKING",
+        "ticket": null,
+        "actor": "UNFILLED",
+        "reason": "UNFILLED",
+        "next_action": "UNFILLED",
+        "resume_trigger": "UNFILLED",
+        "exact_tuple": "UNFILLED",
+        "activity": "UNFILLED",
+        "verification_gate": "UNFILLED",
+        "reviewer_completion": {
+          "required": 0,
+          "completed": 0,
+          "acceptable": 0,
+          "failed": 0,
+          "stale": 0,
+          "outstanding": 0
+        },
+        "open_findings": 0,
+        "jira_status": "UNFILLED",
+        "updated_at": "1970-01-01T00:00:00Z"
+      }
+    ]
+  }
+}

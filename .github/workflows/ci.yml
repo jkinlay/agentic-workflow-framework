@@ -58,3 +58,135 @@ jobs:
       - name: Unit tests (scripts/tests)
         run: |
           "$PY" -B -m unittest discover -s scripts/tests -t scripts/tests
+      - name: Unit tests (portable core)
+        run: |
+          "$PY" -B -m unittest discover -s global/awf/tests
+      - name: Unit tests (portable host)
+        run: |
+          "$PY" -B -m unittest discover -s global/awf-portable/tests
+
+  installed-runtime-self-test:
+    name: Windows installed-runtime self-test
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/'))
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Initialize installed-runtime evidence paths
+        shell: pwsh
+        run: |
+          $artifactDir = Join-Path $env:RUNNER_TEMP "awf-installed-self-test-artifacts"
+          $workDir = Join-Path $env:RUNNER_TEMP "awf-installed-self-test-work"
+          "AWF_ARTIFACT_DIR=$artifactDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AWF_WORK_DIR=$workDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+          "Installer did not start." | Set-Content -Encoding utf8 "$artifactDir\installer.log"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.3"
+      - name: Install hash-locked dependencies
+        run: |
+          python -m pip install --require-hashes "--only-binary=:all:" -r requirements.txt
+      - name: Build the release template from this commit
+        shell: pwsh
+        run: |
+          $python = (Get-Command python).Source
+          $archive = "$env:AWF_WORK_DIR\agentic-workflow-template.zip"
+          $extracted = "$env:AWF_WORK_DIR\release"
+          & $python -B scripts/build_release.py --output $archive
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Expand-Archive -LiteralPath $archive -DestinationPath $extracted
+          $releaseRoots = @(Get-ChildItem -LiteralPath $extracted -Directory)
+          if ($releaseRoots.Count -ne 1) {
+            throw "Expected one release root in $extracted; found $($releaseRoots.Count)"
+          }
+          "AWF_RELEASE_ROOT=$($releaseRoots[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Prepare the offline runtime wheelhouse
+        shell: pwsh
+        run: |
+          $python = (Get-Command python).Source
+          $wheelhouse = "$env:AWF_WORK_DIR\wheelhouse"
+          New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
+          & $python -m pip download --disable-pip-version-check --require-hashes "--only-binary=:all:" --dest $wheelhouse -r "$env:AWF_RELEASE_ROOT\.agentic\requirements.lock"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "AWF_WHEELHOUSE=$wheelhouse" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install into a fresh unborn Git repository
+        shell: pwsh
+        run: |
+          $python = (Get-Command python).Source
+          $project = "$env:AWF_WORK_DIR\project"
+          New-Item -ItemType Directory -Force -Path $project | Out-Null
+          git -C $project init -q -b main
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C $project rev-parse --verify --quiet HEAD
+          if ($LASTEXITCODE -eq 0) { throw "Fresh installation fixture unexpectedly has a commit" }
+          $manifestPin = (Get-FileHash -Algorithm SHA256 "$env:AWF_RELEASE_ROOT\MANIFEST.json").Hash.ToLowerInvariant()
+          $installer = "$env:AWF_RELEASE_ROOT\scripts\bootstrap_project.py"
+          $arguments = @(
+            "-B", $installer,
+            "--mode", "install",
+            "--dest", $project,
+            "--expected-manifest-sha256", $manifestPin,
+            "--runtime-wheelhouse", $env:AWF_WHEELHOUSE,
+            "--github-repo", "example-owner/example-project",
+            "--repository-id", "54321",
+            "--project-name", "example-project",
+            "--project-short-name", "EX",
+            "--test-command", "python -m unittest",
+            "--codeowner", "@example-owner",
+            "--default-branch", "main"
+          )
+          & $python @arguments 2>&1 | Tee-Object -FilePath "$env:AWF_ARTIFACT_DIR\installer.log"
+          $installerExit = $LASTEXITCODE
+          if ($installerExit -ne 0) { exit $installerExit }
+          "AWF_INSTALLED_PROJECT=$project" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run the installed self-test
+        shell: pwsh
+        run: |
+          $installedPython = "$env:AWF_INSTALLED_PROJECT\.agentic\.venv\Scripts\python.exe"
+          $selfTest = "$env:AWF_INSTALLED_PROJECT\.agentic\scripts\self_test.py"
+          $reportPath = "$env:AWF_ARTIFACT_DIR\self-test.json"
+          Push-Location $env:AWF_INSTALLED_PROJECT
+          try {
+            & $installedPython -B $selfTest --checks-only --report $reportPath
+            $selfTestExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+          if ($selfTestExit -ne 0) {
+            if (-not (Test-Path -LiteralPath $reportPath)) {
+              @{ status = "FAILED"; reason = "Installed self-test exited $selfTestExit without producing a report." } |
+                ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $reportPath
+            }
+            exit $selfTestExit
+          }
+          $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+          if ($report.status -ne "PASS") { throw "Installed self-test status is $($report.status)" }
+          if ($report.tests.failures -ne 0 -or $report.tests.errors -ne 0) {
+            throw "Installed self-test reported $($report.tests.failures) failures and $($report.tests.errors) errors"
+          }
+          foreach ($skip in $report.tests.skipped) {
+            if (-not $skip.test -or -not $skip.reason) { throw "Installed self-test reported a skip without a test and reason" }
+          }
+          $report.tests.skipped | ConvertTo-Json -Depth 4
+      - name: Preserve self-test evidence after an earlier failure
+        if: always()
+        shell: pwsh
+        run: |
+          $reportPath = "$env:AWF_ARTIFACT_DIR\self-test.json"
+          if (-not (Test-Path -LiteralPath $reportPath)) {
+            @{ status = "NOT_RUN"; reason = "Installed self-test did not run because an earlier job step failed." } |
+              ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $reportPath
+          }
+      - name: Upload installed-runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installed-runtime-self-test-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}\awf-installed-self-test-artifacts\self-test.json
+            ${{ runner.temp }}\awf-installed-self-test-artifacts\installer.log
+          if-no-files-found: warn

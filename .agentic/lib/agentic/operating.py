@@ -23,6 +23,7 @@ from jsonschema import Draft202012Validator
 
 from . import ValidationError, VERSION
 from .canonical import canonical, fingerprint, load_yaml, loads, now_text, sha256, timestamp
+from .installer import INSTALLED, verify_installed
 from .safeio import Tree, relative_parts
 
 CONFIG = "OPERATING_CONFIG.yaml"
@@ -59,14 +60,14 @@ def _pair(model, effort):
 
 
 def _stream():
-    return {"worker": _pair("gpt-6-luna", "medium")}
+    return {"worker": _pair("gpt-5.6-luna", "medium")}
 
 
 def default_operating():
     return {"version": 1, "source": "default", "streams": {"count": 3, **{s: _stream() for s in LABELS[:3]}},
-            "critic": _pair("gpt-6-astra", "high"),
-            "controller": _pair("gpt-6-astra", "high"), "specialist": _pair("gpt-6-astra", "high"),
-            "simple_worker": {"enabled": True, **_pair("gpt-6-luna", "low")}}
+            "critic": _pair("gpt-5.6-sol", "high"),
+            "controller": _pair("gpt-5.6-sol", "high"), "specialist": _pair("gpt-5.6-sol", "high"),
+            "simple_worker": {"enabled": True, **_pair("gpt-5.6-luna", "low")}}
 
 
 def operating_applicability(governance):
@@ -253,7 +254,12 @@ def validate_snapshot(snapshot, governance):
 @contextmanager
 def _lock(tree):
     if tree.inspect("MANIFEST.json") is not None:
-        fail("$", "Use an installed project outside the immutable release source for operating state")
+        if tree.inspect(INSTALLED) is None:
+            fail("$", "Use an installed project outside the immutable release source for operating state")
+        # An adopted source checkout legitimately retains the release build
+        # manifests.  Its receipt must verify before those manifests may stop
+        # identifying the checkout as an immutable, uninstalled release source.
+        verify_installed(tree.root)
     parent, handle, name = tree.parent(LOCK, create=True)
     tree.inspect(LOCK)
     if os.name == "nt":

@@ -1,6 +1,6 @@
 # Release publication
 
-Version 1.9.3. Publication is an owner-controlled operation from the exact clean commit being tagged.
+Version 1.9.4. Publication is an owner-controlled operation from the exact clean commit being tagged.
 
 ## Preconditions
 
@@ -13,6 +13,8 @@ python -B scripts/publish_release.py --commit SHA --output-dir <new-external-out
 ```
 
 Dry-run builds and validates locally but creates no tag, push or hosted release. A real run creates an annotated `vX.Y.Z` tag, pushes that tag, then asks `gh release create --draft`; the owner reviews and publishes the draft.
+
+Validation runs in a temporary detached Git worktree of the same commit, checked byte for byte against the raw tree and removed afterwards, because self-test cases inspect Git.
 
 ## Reproducible assets
 

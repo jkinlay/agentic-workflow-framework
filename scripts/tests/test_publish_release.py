@@ -55,7 +55,7 @@ class PublishReleaseTests(unittest.TestCase):
         cls.epoch = int(command(["git", "show", "-s", "--format=%ct", cls.commit], cls.repository, cls.git_env))
         cls.windows_check = cls.base / "windows-check.json"
         cls.windows_check.write_text(json.dumps({
-            "format": "awf-clean-windows-portable-check-1", "status": "PASS", "version": "1.9.3",
+            "format": "awf-clean-windows-portable-check-1", "status": "PASS", "version": "1.9.4",
             "source_commit": cls.commit,
             "checks": {"portable_build": "PASS", "host_skill_install": "PASS", "host_skill_verify": "PASS"},
         }, sort_keys=True), encoding="utf-8")
@@ -137,14 +137,58 @@ class PublishReleaseTests(unittest.TestCase):
             self.assertIn(digest, result["tag_message"])
             self.assertIn(digest, result["release_body"])
         self.assertFalse(result["remote_changes"])
-        self.assertEqual("", command(["git", "tag", "--list", "v1.9.3"], self.repository))
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"], self.repository))
+
+    def worktree_paths(self):
+        listing = command(["git", "worktree", "list", "--porcelain"], self.repository, self.git_env)
+        return [line[len("worktree "):] for line in listing.splitlines() if line.startswith("worktree ")]
+
+    def test_validation_runs_real_git_dependent_tests_in_a_removed_checkout_of_the_commit(self):
+        # Regression: validation ran in the Git-less projection, so self-test
+        # cases needing HEAD, attributes or ls-tree failed with "not a git
+        # repository".  Run real cases of that kind through publish's own path.
+        before = self.worktree_paths()
+        seen = {}
+
+        def real_git_validation(source, output, env):
+            seen["source"] = Path(source)
+            seen["head"] = command(["git", "rev-parse", "HEAD"], source)
+            seen["status"] = command(["git", "status", "--porcelain", "--untracked-files=all"], source)
+            result = subprocess.run(
+                [sys.executable, "-B", "-m", "unittest",
+                 "test_upgrade_matrix.UpgradeMatrixTests.test_fixture_blobs_are_stored_byte_exactly_by_git",
+                 "test_publication.PublicationScanTests.test_alias_renderer_and_shipped_ignore_rule"],
+                cwd=Path(source) / ".agentic/tests", env=env, capture_output=True, text=True, timeout=600)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertIn("Ran 2 tests", result.stderr)
+            return self.fake_validation(source, output, env)
+
+        result = publisher.publish(self.repository, self.commit, self.base / "git-validation-output",
+                                   self.windows_check, self.windows_pin, dry_run=True,
+                                   validation_runner=real_git_validation)
+        self.assertEqual("DRY_RUN", result["status"])
+        self.assertEqual(self.commit, seen["head"])
+        self.assertEqual("", seen["status"])
+        self.assertFalse(seen["source"].exists())
+        self.assertEqual(before, self.worktree_paths())
+
+        def failing_validation(source, output, env):
+            seen["failed_source"] = Path(source)
+            raise publisher.ReleaseError("synthetic validation failure")
+
+        with self.assertRaisesRegex(publisher.ReleaseError, "synthetic validation failure"):
+            publisher.publish(self.repository, self.commit, self.base / "git-validation-failure-output",
+                              self.windows_check, self.windows_pin, dry_run=True,
+                              validation_runner=failing_validation)
+        self.assertFalse(seen["failed_source"].exists())
+        self.assertEqual(before, self.worktree_paths())
 
     def test_k6_reports_untracked_tracked_and_version_disagreement_together(self):
         readme = self.repository / "README.md"
         original = readme.read_bytes()
         untracked = self.repository / "synthetic-untracked.txt"
         try:
-            readme.write_text(readme.read_text(encoding="utf-8").replace("Release 1.9.3", "Release 9.9.9", 1), encoding="utf-8")
+            readme.write_text(readme.read_text(encoding="utf-8").replace("Release 1.9.4", "Release 9.9.9", 1), encoding="utf-8")
             untracked.write_text("fixture", encoding="utf-8")
             report = publisher.source_report(self.repository, self.commit)
             joined = "\n".join(report["problems"])
@@ -393,19 +437,19 @@ else: raise SystemExit(2)
                                        self.windows_check, self.windows_pin,
                                        validation_runner=self.fake_validation, gh=str(executable))
             self.assertEqual("DRAFT_CREATED", result["status"])
-            verified = publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-output",
+            verified = publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-output",
                                             gh=str(executable))
             self.assertEqual("PASS", verified["status"])
             extra = store / "unexpected-extra.zip"
             extra.write_bytes(b"unrecorded release asset")
             with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):
-                publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-extra-output",
+                publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-extra-output",
                                      gh=str(executable))
             extra.unlink()
             changed = next(store.glob("*.zip"))
             changed.write_bytes(changed.read_bytes() + b"changed")
             with self.assertRaisesRegex(publisher.ReleaseError, "published release assets differ"):
-                publisher.verify_tag(self.repository, "v1.9.3", self.base / "verify-fail-output",
+                publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-fail-output",
                                      gh=str(executable))
         finally:
             os.environ.clear(); os.environ.update(old)

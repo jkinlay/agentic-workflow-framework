@@ -9,11 +9,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import uuid
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.canonical import load
-from agentic.closeout import render_markdown, validate_closeout
+from agentic.closeout import MergeProbe, integration_tree, render_markdown, validate_closeout
 from agentic.contracts import Contracts
 from agentic.host_preflight import preflight, render_markdown as render_preflight, route_models_observed
 from agentic.interaction import decide_action, jira_write_classification
@@ -23,7 +27,6 @@ from agentic.review_loop import LoopStore, enroll, resume, tick, validate_review
 from agentic.store import Store
 from review_admission_fixture import bind_review_admission
 
-ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-09T12:00:00Z"
 EVIDENCE = ["urn:awf:fixture:example-evidence"]
 
@@ -231,6 +234,193 @@ class CloseoutTests(unittest.TestCase):
         subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + str(self.repo), str(shallow)], check=True, capture_output=True)
         with self.assertRaisesRegex(ValidationError, "absent from the object store"):
             validate_closeout(self.record(), shallow, self.contracts)
+
+    def bound(self, merge, **over):
+        content = self.git("cat-file", "blob", f"{merge}:src/a.py").encode("utf-8") + b"\n"
+        value = {"merge_commit_sha": merge, "merge_tree_sha": self.git("rev-parse", merge + "^{tree}"),
+                 "bound_files": [{"path": "src/a.py", "blob_sha": self.git("rev-parse", f"{merge}:src/a.py"),
+                                  "sha256": hashlib.sha256(content).hexdigest()}]}
+        value.update(over)
+        return self.record(**value)
+
+    def squash(self, parent, source, branch, extra=None):
+        self.git("checkout", "-q", "-b", branch, parent)
+        self.git("merge", "-q", "--squash", source)
+        if extra:
+            (self.repo / "src/a.py").write_bytes(extra)
+            self.git("add", "src/a.py")
+        self.git("commit", "-q", "-m", "squash")
+        sha = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "main")
+        return sha
+
+    def test_merge_commit_must_integrate_the_reviewed_head_onto_the_base(self):
+        self.assertEqual("merge_commit", validate_closeout(self.record(), self.repo, self.contracts)["merge_relationship"])
+        self.git("checkout", "-q", "-b", "stale", self.base)
+        (self.repo / "src/b.py").write_bytes(b"unreviewed = True\n")
+        self.git("add", "src/b.py")
+        self.git("commit", "-q", "-m", "unreviewed")
+        stale = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "main")
+        with self.assertRaisesRegex(ValidationError, "does not merge reviewed_head_sha"):
+            validate_closeout(self.record(reviewed_head_sha=stale), self.repo, self.contracts)
+        with self.assertRaisesRegex(ValidationError, "base_sha .* is not an ancestor"):
+            validate_closeout(self.record(base_sha=stale), self.repo, self.contracts)
+        with self.assertRaisesRegex(ValidationError, "does not merge reviewed_head_sha"):
+            validate_closeout(self.record(reviewed_head_sha=self.base), self.repo, self.contracts)
+        # A merge of some other branch is not the reviewed merge, even on the same base.
+        self.git("checkout", "-q", "-b", "other-merge", self.base)
+        self.git("merge", "-q", "--no-ff", "-m", "merge other", "stale")
+        other = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "main")
+        with self.assertRaisesRegex(ValidationError, "does not merge reviewed_head_sha"):
+            validate_closeout(self.bound(other), self.repo, self.contracts)
+
+    def test_squash_merge_tree_must_equal_the_reviewed_head_merged_onto_the_base(self):
+        squash = self.squash(self.base, "codex/x", "squash")
+        self.assertEqual("squash", validate_closeout(self.bound(squash), self.repo, self.contracts)["merge_relationship"])
+        tampered = self.squash(self.base, "codex/x", "tampered", extra=b"value = 99\n")
+        with self.assertRaisesRegex(ValidationError, "tree is not reviewed_head_sha"):
+            validate_closeout(self.bound(tampered), self.repo, self.contracts)
+        # The base advanced before the squash: the expected tree is a real three-way merge.
+        self.git("checkout", "-q", "-b", "advanced", self.base)
+        (self.repo / "src/c.py").write_bytes(b"other = 1\n")
+        self.git("add", "src/c.py")
+        self.git("commit", "-q", "-m", "advance base")
+        advanced = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "main")
+        # Computing the expected tree (not yet in the store) leaves the repository's objects untouched.
+        before = self.git("count-objects", "-v")
+        expected = integration_tree(self.repo, advanced, self.head)
+        self.assertEqual(before, self.git("count-objects", "-v"))
+        merged = self.squash(advanced, "codex/x", "squash-advanced")
+        self.assertEqual(expected, self.git("rev-parse", merged + "^{tree}"))
+        report = validate_closeout(self.bound(merged, base_sha=advanced), self.repo, self.contracts)
+        self.assertEqual("squash", report["merge_relationship"])
+        skipped = self.squash(advanced, "codex/x", "squash-skipped", extra=b"value = 3\n")
+        with self.assertRaisesRegex(ValidationError, "tree is not reviewed_head_sha"):
+            validate_closeout(self.bound(skipped, base_sha=advanced), self.repo, self.contracts)
+        # A squash whose parent is not the recorded base fails closed.
+        with self.assertRaisesRegex(ValidationError, "does not merge reviewed_head_sha"):
+            validate_closeout(self.bound(merged), self.repo, self.contracts)
+
+    def advance(self, branch="advanced", start=None):
+        self.git("checkout", "-q", "-b", branch, start or self.base)
+        (self.repo / "src/c.py").write_bytes(b"other = 1\n")
+        self.git("add", "src/c.py")
+        self.git("commit", "-q", "-m", "advance base")
+        sha = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "main")
+        return sha
+
+    def test_merge_commit_tree_must_be_the_reviewed_integration(self):
+        forged = self.git("commit-tree", self.base + "^{tree}", "-p", self.base, "-p", self.head, "-m", "forged")
+        with self.assertRaisesRegex(ValidationError, "tree is not reviewed_head_sha"):
+            validate_closeout(self.bound(forged), self.repo, self.contracts)
+        advanced = self.advance()
+        self.git("checkout", "-q", "-b", "merged-advanced", advanced)
+        self.git("merge", "-q", "--no-ff", "-m", "merge", "codex/x")
+        merged = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "main")
+        report = validate_closeout(self.bound(merged, base_sha=advanced), self.repo, self.contracts)
+        self.assertEqual("merge_commit", report["merge_relationship"])
+        # The first parent must be the recorded base itself, not merely a descendant of it.
+        with self.assertRaisesRegex(ValidationError, "does not merge reviewed_head_sha"):
+            validate_closeout(self.bound(merged), self.repo, self.contracts)
+        forged = self.git("commit-tree", advanced + "^{tree}", "-p", advanced, "-p", self.head, "-m", "forged")
+        with self.assertRaisesRegex(ValidationError, "tree is not reviewed_head_sha"):
+            validate_closeout(self.bound(forged, base_sha=advanced), self.repo, self.contracts)
+
+    def test_rebase_merge_is_a_bounded_linear_chain_onto_the_base(self):
+        self.git("checkout", "-q", "-b", "codex/y", self.base)
+        for value in (b"value = 5\n", b"value = 6\n"):
+            (self.repo / "src/a.py").write_bytes(value)
+            self.git("commit", "-q", "-am", "step")
+        head = self.git("rev-parse", "HEAD")
+        advanced = self.advance()
+        self.git("checkout", "-q", "-b", "rebased", head)
+        self.git("rebase", "-q", advanced)
+        rebased = self.git("rev-parse", "HEAD")
+        (self.repo / "src/a.py").write_bytes(b"value = 7\n")
+        self.git("commit", "-q", "-am", "unreviewed tip")
+        extended = self.git("rev-parse", "HEAD")
+        self.git("reset", "-q", "--hard", rebased)
+        (self.repo / "src/a.py").write_bytes(b"value = 8\n")
+        self.git("commit", "-q", "--amend", "--no-edit", "-a")
+        tampered = self.git("rev-parse", "HEAD")
+        # Final tree correct, but the first replayed commit carries unreviewed content.
+        first, second = self.git("rev-list", "--reverse", f"{self.base}..{head}").split()
+        self.git("reset", "-q", "--hard", advanced)
+        self.git("cherry-pick", first)
+        (self.repo / "src/secret.py").write_bytes(b"token = 'unreviewed'\n")
+        self.git("add", "src/secret.py")
+        self.git("commit", "-q", "--amend", "--no-edit")
+        self.git("cherry-pick", second)
+        self.git("rm", "-q", "src/secret.py")
+        self.git("commit", "-q", "--amend", "--no-edit")
+        laundered = self.git("rev-parse", "HEAD")
+        self.assertEqual(self.git("rev-parse", rebased + "^{tree}"), self.git("rev-parse", laundered + "^{tree}"))
+        # Same trees, but a replayed commit message differs from the reviewed one.
+        self.git("reset", "-q", "--hard", rebased)
+        self.git("commit", "-q", "--amend", "-m", "rewritten message")
+        renamed = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "main")
+        report = validate_closeout(self.bound(rebased, reviewed_head_sha=head, base_sha=advanced), self.repo, self.contracts)
+        self.assertEqual("rebase", report["merge_relationship"])
+        with self.assertRaisesRegex(ValidationError, "tree is not reviewed_head_sha"):
+            validate_closeout(self.bound(tampered, reviewed_head_sha=head, base_sha=advanced), self.repo, self.contracts)
+        with self.assertRaisesRegex(ValidationError, "tree is not reviewed_head_sha"):
+            validate_closeout(self.bound(laundered, reviewed_head_sha=head, base_sha=advanced), self.repo, self.contracts)
+        with self.assertRaisesRegex(ValidationError, "does not merge reviewed_head_sha"):
+            validate_closeout(self.bound(renamed, reviewed_head_sha=head, base_sha=advanced), self.repo, self.contracts)
+        # A chain longer than the reviewed commits is not the rebased review.
+        with self.assertRaisesRegex(ValidationError, "does not merge reviewed_head_sha"):
+            validate_closeout(self.bound(extended, reviewed_head_sha=head, base_sha=advanced), self.repo, self.contracts)
+
+    def test_merge_computation_never_runs_repository_merge_drivers(self):
+        lines = b"".join(b"line %d\n" % n for n in range(1, 9))
+        self.git("checkout", "-q", "-b", "drivers", self.base)
+        (self.repo / "src/m.txt").write_bytes(lines)
+        self.git("add", "src/m.txt")
+        self.git("commit", "-q", "-m", "multi-line base")
+        base = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "-b", "feature-m")
+        (self.repo / "src/m.txt").write_bytes(lines.replace(b"line 1\n", b"line one\n"))
+        self.git("commit", "-q", "-am", "feature edit")
+        head = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "drivers")
+        (self.repo / "src/m.txt").write_bytes(lines.replace(b"line 8\n", b"line eight\n"))
+        self.git("commit", "-q", "-am", "base edit")
+        advanced = self.git("rev-parse", "HEAD")
+        squashed = self.squash(advanced, "feature-m", "squash-drivers")
+        marker = Path(self.temp.name) / "driver-ran"
+        (self.repo / ".git/info").mkdir(exist_ok=True)
+        (self.repo / ".git/info/attributes").write_text("* merge=probe\n", encoding="utf-8")
+        self.git("config", "merge.probe.name", "probe")
+        self.git("config", "merge.probe.driver", f"echo ran > '{marker.as_posix()}'; exit 1")
+        report = validate_closeout(self.bound(squashed, reviewed_head_sha=head, base_sha=advanced), self.repo, self.contracts)
+        self.assertEqual("squash", report["merge_relationship"])
+        self.assertFalse(marker.exists())
+        self.assertNotEqual(base, advanced)
+
+    def test_probe_alternates_pointer_is_written_with_lf_line_endings(self):
+        # A CRLF alternates file (Python's default text mode on Windows) hides the borrowed store from Git.
+        real_write_text, calls = Path.write_text, []
+
+        def spy(path, *args, **kwargs):
+            calls.append((path.name, kwargs.get("newline")))
+            return real_write_text(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "write_text", autospec=True, side_effect=spy), MergeProbe(self.repo) as probe:
+            raw = (probe.probe / "objects/info/alternates").read_bytes()
+            self.assertEqual(self.git("rev-parse", self.head + "^{tree}"), probe.merge_tree(self.base, self.head))
+        self.assertIn(("alternates", "\n"), calls)
+        self.assertTrue(raw.endswith(b"\n"))
+        self.assertNotIn(b"\r", raw)
+
+    def test_fast_forward_is_the_reviewed_head_itself(self):
+        report = validate_closeout(self.bound(self.head), self.repo, self.contracts)
+        self.assertEqual("fast_forward", report["merge_relationship"])
 
     def test_markdown_is_derived_and_never_an_input(self):
         record = self.record()

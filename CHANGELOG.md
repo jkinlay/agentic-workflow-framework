@@ -1,28 +1,43 @@
 # Change history
 
-## 1.9.3 — 24 September 2026
+## 1.9.4 — 8 October 2026
 
-Adds Git-format-aware `tested_tree`; undeclared changes fail or are excluded, and the publisher's `HEAD^{tree}` must match.
+AWF-15 (#56) binds closeout records to the merge SHA. AWF-29 fixes protected-path refusal, critic-schema compatibility, and sandbox/effort pass-through. AWF-40 (#68) fixes doc 22 guidance. AWF-16 and AWF-30 are deferred to 1.9.5; AWF-41 remains an owner-review check. The 1.9.3 → 1.9.4 fallback is version-only and ships no tier-3 review configuration.
 
-Sets 1.9.3 defaults: workers A/B/C use `gpt-6-luna` / medium; the controller uses `gpt-6-astra` / high. Critic, adversarial handler and specialist remain independent, with risk/review floors. Escalation advances through `gpt-6-sol` / high to `gpt-6-astra` / high. Five slots cover three workers, critic and controller. Per-ticket/daily caps stay unchanged; adopted configurations and legacy models/routes remain accepted. New adoptions use the reviewed 16-run ticket ceiling; upgrades retain configured ceilings. Release trust binds host receipts and verified archives; ACTIVE requires fresh default-branch status.
+### Known issues (1.9.5)
 
-Adds outcome templates; verdicts remain separate.
+- AWF-24 (#52): AC42 Windows fixes moved to 1.9.5; the caveat still applies.
+- AWF-31: operator qualification flags.
+- AWF-32: missing controller adapter.
+- AWF-33: sessions can pick up an older skill.
+- AWF-18 (#22): Release tooling forces `core.autocrlf=true` on Windows, overriding repo setting.
+- AWF-19 (#23): Upgrade: crash during `managed_after` journal update can't be rolled back.
+- AWF-21 (#48): `doctor --handoff` can MATCH an incomplete snapshot; `host_broker` read from wrong config location.
+- AWF-22 (#51): AC42 can pass without the admission check; ACTIVE check uses the source checkout, not the installed `workflow.py`.
+- AWF-23: Heavy validation: support POSIX hosts and symlinked managed-venv interpreters (`.agentic/.venv/bin/python`).
+- AWF-34: Publication scan can never PASS on a repo with an existing tracked file over 32 MB: add a recorded allowance or baseline.
+- AWF-35: self_test fails on project-owned scripts not listed in install-pinned .agentic/launch-surfaces.json.
 
-Adds byte-verified install/upgrade; unsafe evidence fails closed.
+Known issues: AWF-34 and AWF-35 (accepted for 1.9.4 installs, fix in 1.9.5).
 
-Scans messages, patches, files and PR text; findings block, and receipts bind base/head/body. An ignored mapping supplements built-in detectors.
+## 1.9.3 — 8 October 2026
 
-Adds one-commit unpublished-branch rewrite with tree preservation, replacement scanning and ref-reachability checks. It refuses published evidence or unsupported counts and reports reflog retention (L1/L2/L9; producer retrofits remain P1).
+Adds Git-aware `tested_tree`, bounded routing, byte-verified upgrades, publication scanning and strict release trust; unsafe evidence fails closed.
 
-Hardens activation with versioned REST/GraphQL merge identity, complete PR/base/head/state/time cross-checks, Git-object checkout comparison, lock-free inspection, structured blockers, strict ACTIVE exit and capabilities. Network detectors self-scan without weakening detection.
+Upgrades tolerate a venv `lib64` → `lib` link (#54). `gh release` binds `--repo`; origin is validated before tagging (#55).
 
-Adds K8-K11 Windows diagnostics, preflight, self-test progress, safe encoding, and rollback-safe runtimes from pinned offline wheels.
+### Known issues (1.9.4)
 
-Adds environment exclusions, launch inventory, provider identity gates, Jira binding proposals, publication readiness before dispatch, and durable owner-publication handoffs that resume draft PRs without repeating work.
+- AWF-18 (#22): Release tooling forces `core.autocrlf=true` on Windows, overriding repo setting.
+- AWF-19 (#23): Upgrade: crash during `managed_after` journal update can't be rolled back.
+- AWF-20 (#47): Source-repo detection: a downstream project with a root `MANIFEST.json` is treated as the AWF source.
+- AWF-21 (#48): `doctor --handoff` can MATCH an incomplete snapshot; `host_broker` read from wrong config location.
+- AWF-22 (#51): AC42 can pass without the admission check; ACTIVE check uses the source checkout, not the installed `workflow.py`.
+- AWF-23: Heavy validation: support POSIX hosts and symlinked managed-venv interpreters (`.agentic/.venv/bin/python`).
 
 ## 1.9.2 — 23 September 2026
 
-Adds token-only budgets, higher new-project caps, publisher commits for sandboxes unable to write Git metadata, lint-scope preflight and portable skills. Child processes exclude provider API keys. Release builds reject temp residue and forbid `.tmp-tests` links. Budgets reflect expected ticket volume and prior AWF workloads; existing project configuration remains preserved, and review, merge, reconciliation and Jira boundaries stay unchanged. No model pilot.
+Adds token-only budgets, publisher commits for metadata-limited sandboxes, lint-scope preflight and portable skills. Existing configuration and review, merge, reconciliation and Jira boundaries remain preserved. No model pilot.
 
 ## 1.9.1 — 21 September 2026
 
@@ -32,10 +47,7 @@ Corrects the adoption-status regression test for Windows host-preflight WARN row
 
 [Review tiers, cap dispositions, Jira lifecycle mirroring, closeout binding, digests, host preflight and named resource leases](MIGRATION-v1.8.9-to-v1.9.0.md). This is a provider-neutral framework release; no new model pilot.
 
-The public upstream port from the earlier 0.1.x scaffold uses neutral resource
-fixtures and excludes product-specific material. Its contract semantics match
-the verified 1.9.1 source; the port has its own regenerated manifest and
-current-head review requirements. See [the port migration](MIGRATION-v0.1.2-to-v1.9.1.md).
+The public upstream port from the earlier 0.1.x scaffold uses neutral fixtures and its own regenerated manifest; see [the port migration](MIGRATION-v0.1.2-to-v1.9.1.md).
 
 ## 1.8.9 — 16 September 2026
 
@@ -55,7 +67,7 @@ Bootstrap checks installed commands and reports configuration remedies. Empty CI
 
 ## 1.8.5 — 14 September 2026
 
-Ordinary self-tests run without release-review pins and report unqualified component success; explicit release checks, archive acceptance and catalog publication retain current-review requirements. Adoption proceeds with missing/unobserved repository rules as warnings. Live enablement retains observed-rule prerequisites and existing qualification. A shipped ruleset follows the default branch, requires PRs without solo-maintainer self-approval, permits squash/rebase and starts with no required checks. CODEOWNERS seeds a configurable owner, defaults to @maintainer and preserves project-owned policy. Read-only observations distinguish APPLIED, MISSING and UNOBSERVED without granting execution authority. Prior release/pilot evidence, including the strict 10/12 FAIL, is preserved; changed prompts have no new model measurements.
+[Ordinary self-tests separated from release qualification, adoption warnings, rulesets, CODEOWNERS and read-only observations](MIGRATION-v1.8.4-to-v1.8.5.md). Prior release/pilot evidence, including the strict 10/12 FAIL, is preserved.
 
 ## 1.8.4 — 14 September 2026
 

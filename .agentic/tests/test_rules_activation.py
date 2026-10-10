@@ -13,7 +13,8 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
-AWF_SOURCE_REPOSITORY = (ROOT / "MANIFEST.json").is_file()  # source-only scripts/fixtures/inventory
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo  # noqa: E402
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
@@ -286,7 +287,7 @@ class RulesActivationTests(unittest.TestCase):
         self.assertEqual("NOT_APPLICABLE", result["post_action_observation"]["state"])
         self.assertFalse(result["provider_mutation_performed"])
 
-    @unittest.skipUnless(AWF_SOURCE_REPOSITORY, "needs AWF source-repository files absent from installed projects")
+    @skip_unless_source_repo()
     def test_contract_template_is_deterministic_and_valid(self):
         result = self.decide("merge")
         self.assertIs(result, self.contracts.validate("rules-activation-decision", result))

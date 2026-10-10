@@ -89,6 +89,7 @@ def main(argv=None, default_root=ROOT):
     cycle.add_argument("--repository-tree-sha", required=True)
     cycle.add_argument("--now", required=True)
     cycle.add_argument("--host-capacity", type=int, required=True)
+    cycle.add_argument("--dispatch-role", choices=("writer", "critic"), default="writer")
 
 
     jira = sub.add_parser("jira-lifecycle", help="Read, optionally write once, and read back Jira lifecycle state")
@@ -154,7 +155,8 @@ def main(argv=None, default_root=ROOT):
             store, now=args.now, host_capacity=args.host_capacity,
             inventory_binding=load(args.inventory_binding), repository_root=args.repository_root,
             repository_head_sha=args.repository_head_sha,
-            repository_tree_sha=args.repository_tree_sha, publication_config=config, **calls)
+            repository_tree_sha=args.repository_tree_sha, publication_config=config,
+            dispatch_role=args.dispatch_role, **calls)
 
     elif args.command == "jira-lifecycle":
         calls = _require_adapters(adapters, {"observe_provider_identity", "read_current_status", "write_transition",

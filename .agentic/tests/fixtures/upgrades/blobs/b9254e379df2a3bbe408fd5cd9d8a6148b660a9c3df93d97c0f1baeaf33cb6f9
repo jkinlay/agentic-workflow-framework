@@ -1,0 +1,29 @@
+{
+  "format": "awf-accepted-finding-provenance-1",
+  "record_id": "PR-26-OWNER-ACCEPTANCE-SUMMARIES",
+  "authority": {
+    "kind": "owner_supplied_decision",
+    "context": "PR #26 follow-up owner decision supplied for this repair",
+    "historical_source_claimed": false
+  },
+  "findings": [
+    {
+      "finding_id": "C26-F03",
+      "acceptance_text": "Prove snapshot content by recomputing its object ID.",
+      "inventory_regression_id": "C26-F03-REGRESSION",
+      "inventory_test_id": "PublicationRewriteTests.test_ac44_snapshot_present_packed_graph_objects_get_bounded_content_oid_proof"
+    },
+    {
+      "finding_id": "C26-F05",
+      "acceptance_text": "Use a deterministic fixed fanout and identity fixture.",
+      "inventory_regression_id": "C26-F05-REGRESSION",
+      "inventory_test_id": "PublicationRewriteTests.test_ac44_fanout_alias_is_rejected_before_object_installation"
+    },
+    {
+      "finding_id": "C26-F06",
+      "acceptance_text": "Bound rewrite-message and quarantine-object reads.",
+      "inventory_regression_id": "C26-F06-REGRESSION",
+      "inventory_test_id": "PublicationRewriteTests.test_ac44_oversized_quarantine_loose_object_rejects_before_content_read"
+    }
+  ]
+}

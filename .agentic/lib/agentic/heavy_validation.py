@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 from typing import Any
@@ -174,6 +175,147 @@ def resolve_without_alias(path_value: str | os.PathLike[str], label: str, *, dir
     return resolved
 
 
+def _venv_root_for_interpreter(path: Path) -> Path | None:
+    """Return a POSIX venv root only for its conventional interpreter path."""
+    if os.name == "nt" or path.parent.name != "bin" or not path.name.startswith("python"):
+        return None
+    root = path.parent.parent
+    marker = root / "pyvenv.cfg"
+    try:
+        metadata = os.lstat(marker)
+    except (FileNotFoundError, OSError):
+        return None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return None
+    return root
+
+
+def _trusted_interpreter_prefixes() -> tuple[Path, ...]:
+    prefixes = []
+    base_executable = getattr(sys, "_base_executable", None)
+    if base_executable:
+        executable = Path(os.path.realpath(base_executable))
+        executable_prefix = executable.parent.parent
+        if (executable.is_absolute() and executable.is_file()
+                and executable_prefix != Path(executable_prefix.anchor)):
+            prefixes.append(executable_prefix)
+    for attribute in ("base_prefix", "base_exec_prefix"):
+        value = getattr(sys, attribute, None)
+        if value:
+            prefix = Path(os.path.realpath(value))
+            if (prefix.is_absolute() and prefix.is_dir()
+                    and prefix != Path(prefix.anchor) and prefix not in prefixes):
+                prefixes.append(prefix)
+    return tuple(prefixes)
+
+
+def _lexically_within(path: Path, roots: tuple[Path, ...]) -> bool:
+    """Check a normalized path without resolving a link at that path."""
+    path_text = os.path.normcase(str(path))
+    for root in roots:
+        root_text = os.path.normcase(str(root))
+        try:
+            if os.path.commonpath([path_text, root_text]) == root_text:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _lexically_on_trusted_route(path: Path, roots: tuple[Path, ...]) -> bool:
+    """Allow an absolute-path ancestor only while walking toward a trusted root."""
+    if _lexically_within(path, roots):
+        return True
+    return any(_lexically_within(root, (path,)) for root in roots)
+
+
+def _resolve_trusted_interpreter_chain(path: Path, roots: tuple[Path, ...],
+                                       label: str) -> Path:
+    """Resolve a POSIX link chain while keeping every hop inside ``roots``."""
+    pending = list(path.parts[1:])
+    current = Path(path.anchor)
+    followed: set[tuple[int, int]] = set()
+    hops = 0
+    while pending:
+        current /= pending.pop(0)
+        if not _lexically_on_trusted_route(current, roots):
+            raise ValidationError(
+                f"{label} symlink chain escapes the virtual environment and "
+                "base-interpreter prefixes")
+        try:
+            metadata = os.lstat(current)
+        except OSError as exc:
+            raise ValidationError(f"{label} symlink target does not exist: {current}") from exc
+        is_reparse = bool(
+            getattr(metadata, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+        if is_reparse and not stat.S_ISLNK(metadata.st_mode):
+            raise ValidationError(f"{label} uses a reparse alias: {current}")
+        if not stat.S_ISLNK(metadata.st_mode):
+            continue
+        identity = (metadata.st_dev, metadata.st_ino)
+        if identity in followed or hops >= 40:
+            raise ValidationError(f"{label} symlink chain is cyclic or too deep")
+        followed.add(identity)
+        hops += 1
+        try:
+            target = Path(os.readlink(current))
+        except OSError as exc:
+            raise ValidationError(f"{label} symlink target is unreadable: {current}") from exc
+        if not target.is_absolute():
+            target = current.parent / target
+        target = Path(os.path.abspath(os.fspath(target)))
+        if not _lexically_within(target, roots):
+            raise ValidationError(
+                f"{label} symlink chain escapes the virtual environment and "
+                "base-interpreter prefixes")
+        pending = [*target.parts[1:], *pending]
+        current = Path(target.anchor)
+    return current
+
+
+def resolve_pinned_executable(path_value: str | os.PathLike[str], label: str) -> Path:
+    """Resolve only a POSIX venv interpreter link into a trusted prefix.
+
+    Parent aliases and every Windows reparse point retain the general fail-closed
+    rule.  A final POSIX interpreter symlink is accepted only when a regular
+    ``pyvenv.cfg`` identifies its venv and the fully resolved target remains in
+    that venv or in one of the controller's base-interpreter prefixes.
+    """
+    lexical = Path(path_value)
+    if not lexical.is_absolute():
+        raise ValidationError(f"{label} must be absolute")
+    lexical = Path(os.path.abspath(os.fspath(lexical)))
+    root = _venv_root_for_interpreter(lexical)
+    if root is None:
+        return resolve_without_alias(lexical, label, directory=False)
+
+    current = Path(lexical.anchor)
+    for component in lexical.parts[1:-1]:
+        current /= component
+        try:
+            if _is_alias(current):
+                raise ValidationError(f"{label} uses a symlink or reparse alias: {current}")
+        except FileNotFoundError as exc:
+            raise ValidationError(f"{label} does not exist: {current}") from exc
+    try:
+        metadata = os.lstat(lexical)
+    except FileNotFoundError as exc:
+        raise ValidationError(f"{label} does not exist: {lexical}") from exc
+    if not stat.S_ISLNK(metadata.st_mode):
+        return resolve_without_alias(lexical, label, directory=False)
+
+    allowed_roots = (Path(os.path.realpath(root)), *_trusted_interpreter_prefixes())
+    resolved = _resolve_trusted_interpreter_chain(lexical, allowed_roots, label)
+    try:
+        resolved_metadata = os.stat(resolved, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise ValidationError(f"{label} resolved target does not exist: {resolved}") from exc
+    if not stat.S_ISREG(resolved_metadata.st_mode):
+        raise ValidationError(f"{label} resolved target must be a regular file")
+    return resolved
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -202,6 +344,59 @@ def _windows_read_lock(path: Path):
     return kernel, handle
 
 
+def _supports_sealed_memfd() -> bool:
+    return hasattr(os, "memfd_create")
+
+
+@contextmanager
+def _owner_only_descriptor_executable(source: Path, expected: str):
+    """Copy executable bytes to an unlinked, read-only inherited descriptor."""
+    descriptor = None
+    with tempfile.TemporaryDirectory(prefix="awf-heavy-executable-") as folder:
+        directory = Path(folder)
+        directory.chmod(0o700)
+        staged = directory / "executable"
+        writer = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+        digest = hashlib.sha256()
+        try:
+            with source.open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+                    view = memoryview(block)
+                    while view:
+                        written = os.write(writer, view)
+                        view = view[written:]
+            os.fsync(writer)
+            os.fchmod(writer, 0o500)
+        finally:
+            os.close(writer)
+        observed = digest.hexdigest()
+        if observed != expected:
+            raise ValidationError("Launch executable digest changed while capturing artifact")
+        descriptor = os.open(staged, os.O_RDONLY)
+        os.unlink(staged)
+        try:
+            # Re-hash the exact descriptor after the writable name is gone and
+            # immediately before exposing it to subprocess creation.
+            descriptor_digest = hashlib.sha256()
+            while True:
+                block = os.read(descriptor, 1024 * 1024)
+                if not block:
+                    break
+                descriptor_digest.update(block)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            if descriptor_digest.hexdigest() != expected:
+                raise ValidationError("Owner-only executable artifact digest mismatch")
+            launch = Path(f"/dev/fd/{descriptor}")
+            if not launch.exists():
+                raise ValidationError("Owner-only executable descriptor path is unavailable")
+            yield {"method": "owner-only-unlinked-readonly-fd",
+                   "source_path": str(source), "launch_path": str(launch),
+                   "sha256": descriptor_digest.hexdigest(), "pass_fds": (descriptor,)}
+        finally:
+            os.close(descriptor)
+
+
 @contextmanager
 def _immutable_executable(executable: dict):
     """Yield an exact launch target that cannot change after its digest check."""
@@ -223,8 +418,10 @@ def _immutable_executable(executable: dict):
             kernel.CloseHandle(handle)
         return
 
-    if not hasattr(os, "memfd_create"):
-        raise ValidationError("A sealed immutable executable artifact is unavailable")
+    if not _supports_sealed_memfd():
+        with _owner_only_descriptor_executable(source, expected) as artifact:
+            yield artifact
+        return
     try:
         import fcntl
         descriptor = os.memfd_create("awf-heavy-executable",
@@ -480,9 +677,68 @@ def _reviewed_git_archive_sha256(plan: dict, repository_relative_path: str) -> s
     return hashlib.sha256(raw).hexdigest()
 
 
-def _windows_launch_chain(plan: dict) -> dict:
-    interpreter = resolve_without_alias(Path(sys.executable).absolute(),
+def _path_within(path: str | os.PathLike[str], root: Path) -> bool:
+    """Return True when ``path`` is ``root`` or lies beneath it.
+
+    Compares the fully resolved, case-normalized paths and, as a fallback for
+    filesystem aliases that do not normalize lexically (Windows short names,
+    case-insensitive volumes), every resolved ancestor by file identity.
+    """
+    resolved = Path(os.path.realpath(path))
+    resolved_root = Path(os.path.realpath(root))
+    path_text = os.path.normcase(str(resolved))
+    root_text = os.path.normcase(str(resolved_root))
+    try:
+        if os.path.commonpath([path_text, root_text]) == root_text:
+            return True
+    except ValueError:
+        pass  # different drives or mixed absolute/relative paths
+    for ancestor in (resolved, *resolved.parents):
+        try:
+            if os.path.samefile(ancestor, resolved_root):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _controller_base_interpreter(working_directory: str | os.PathLike[str]) -> Path:
+    """Return the controller's base interpreter, installed outside the checkout.
+
+    A venv interpreter (for example the ignored in-checkout ``.agentic/.venv``)
+    reads its mutable ``pyvenv.cfg`` and selects its DLL/stdlib tree even under
+    ``-I -S -B``, so the launcher must run from the base installation. A base or
+    portable installation inside the reviewed working directory is equally
+    mutable: only the executable is pinned, while its adjacent DLLs, ``._pth``
+    files and standard library would be candidate-controlled. Fail closed unless
+    the interpreter and its installation prefixes all lie outside the checkout.
+    """
+    root = resolve_without_alias(Path(working_directory).absolute(),
+                                 "reviewed working directory", directory=True)
+    candidate = Path(getattr(sys, "_base_executable", None) or sys.executable).absolute()
+    # Base installations commonly alias python3 -> python3.X; pin the real file.
+    interpreter = resolve_without_alias(Path(os.path.realpath(candidate)),
                                         "controller Python executable", directory=False)
+    for parent in (interpreter.parent, interpreter.parent.parent):
+        if os.path.lexists(parent / "pyvenv.cfg"):
+            raise ValidationError(
+                "Controller Python executable belongs to a virtual environment; "
+                "run the controller from a base Python installation outside the checkout")
+    installation = [("executable", interpreter)]
+    for attribute in ("base_prefix", "base_exec_prefix"):
+        prefix = getattr(sys, attribute, None)
+        if prefix:
+            installation.append((attribute, Path(prefix).absolute()))
+    for label, location in installation:
+        if _path_within(location, root):
+            raise ValidationError(
+                f"Controller Python {label} is inside the reviewed checkout; "
+                "run the controller from a base Python installation outside the checkout")
+    return interpreter
+
+
+def _windows_launch_chain(plan: dict) -> dict:
+    interpreter = _controller_base_interpreter(plan["working_directory"])
     return {"interpreter": {"path": str(interpreter),
                              "sha256": _file_sha256(interpreter)},
             "interpreter_flags": list(_WINDOWS_LAUNCHER_FLAGS),
@@ -598,7 +854,8 @@ class _ChildLaunchAuthorization:
                  candidate: dict, authorization: dict, authenticator,
                  capacity: dict | None, max_capacity_age_seconds: int,
                  capacity_required: bool, lease: dict | None, lease_guard,
-                 clock, cancel_event: threading.Event, lease_quarantiner=None):
+                 clock, cancel_event: threading.Event, lease_quarantiner=None,
+                 snapshot_verifier=None):
         self._review = review
         self._review_digest = review_digest
         self._plan_digest = plan_digest
@@ -613,6 +870,7 @@ class _ChildLaunchAuthorization:
         self._clock = clock
         self._cancel_event = cancel_event
         self._lease_quarantiner = lease_quarantiner
+        self._snapshot_verifier = snapshot_verifier
         self._lock = threading.Lock()
         self._checks: list[dict] = []
         self._blocked = False
@@ -667,6 +925,15 @@ class _ChildLaunchAuthorization:
             except Exception as exc:
                 lease_fence["error_type"] = type(exc).__name__
                 reasons.append("lease_fence_rejected")
+            snapshot_integrity = {"status": "NOT_REQUIRED"}
+            if self._snapshot_verifier is not None:
+                try:
+                    self._snapshot_verifier()
+                    snapshot_integrity = {"status": "PASS"}
+                except Exception as exc:
+                    snapshot_integrity = {"status": "REJECTED",
+                                          "error_type": type(exc).__name__}
+                    reasons.append("snapshot_integrity_rejected")
             reasons = list(dict.fromkeys(reasons))
             record = {
                 "sequence": len(self._checks) + 1,
@@ -678,6 +945,7 @@ class _ChildLaunchAuthorization:
                 "provider_authorization": provider,
                 "freshness": freshness,
                 "lease_fence": lease_fence,
+                "snapshot_integrity": snapshot_integrity,
                 "reasons": reasons,
             }
             record = {**record, "evidence_sha256": fingerprint(
@@ -789,7 +1057,10 @@ def _immutable_checkout(snapshotter, candidate: dict, root: Path):
                              "checkout snapshot content_inventory_sha256")
             _expected_digest(value["evidence_sha256"], "checkout snapshot evidence_sha256")
             _nonnegative_int(value["file_count"], "checkout snapshot file_count")
-            if value["mutation_guard"] != "windows-file-handles-and-sealed-directories":
+            supported_guards = {
+                "windows-file-handles-and-sealed-directories",
+            }
+            if value["mutation_guard"] not in supported_guards:
                 raise ValidationError("Checkout snapshot mutation guard is unsupported")
             _positive_int(value["guarded_paths"], "checkout snapshot guarded_paths")
             _positive_int(value["sealed_directories"],
@@ -825,6 +1096,14 @@ def _snapshot_executables(executables: list[dict], source_root: Path,
             launch_source = source
         else:
             launch_source = snapshot_root / relative
+            if not os.path.lexists(launch_source):
+                # An executable inside the checkout but outside the reviewed
+                # tree (for example the ignored .agentic/.venv interpreter,
+                # whose pyvenv.cfg and site-packages stay mutable) cannot be
+                # launched immutably; fail closed instead of using the live file.
+                raise ValidationError(
+                    f"Executable {relative.as_posix()} is inside the checkout but not in the "
+                    "reviewed snapshot; pin an interpreter installed outside the checkout")
         resolved = resolve_without_alias(launch_source, "snapshot executable", directory=False)
         result.append({**executable, "launch_source_path": str(resolved)})
     return result
@@ -1652,8 +1931,8 @@ def _execution_context(plan: dict, expected_candidate: dict,
         raise ValidationError("Execution cwd does not match reviewed plan")
     executables = []
     for part in plan["partitions"]:
-        path = resolve_without_alias(part["executable"]["path"],
-                                     f"partition {part['name']} executable", directory=False)
+        path = resolve_pinned_executable(
+            part["executable"]["path"], f"partition {part['name']} executable")
         observed = _file_sha256(path)
         if observed != part["executable"]["sha256"]:
             raise ValidationError(f"partition {part['name']} executable digest mismatch")
