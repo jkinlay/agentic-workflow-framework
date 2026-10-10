@@ -17,7 +17,7 @@ from ..canonical import loads, sha256
 from ..child_process import child_env, isolated_git_env
 from ..path_containment import is_within, relative_within
 from ..review_loop import ValidationError, require
-from ..review_qualification import validate_config_qualification
+from .. import review_qualification
 from ..safeio import Tree
 
 
@@ -146,9 +146,9 @@ def load_config(path, runtime_root, *, require_qualification=True):
     require(is_within(path, roots[1]), 'Host configuration must be in the external state directory')
     contract = Path(config['contract_path']).resolve(strict=True)
     require(is_within(contract, roots[1]) and sha256(contract.read_bytes()) == config['contract_sha256'], 'Contract must be pinned in external state')
-    validate_config_qualification(config, roots[1],
-                                  require_record=require_qualification,
-                                  config_path=path)
+    review_qualification.validate_config_qualification(
+        config, roots[1], require_record=require_qualification,
+        config_path=path)
     require(set(config['executables']) == {'git','gh','codex'}, 'Pin git, gh and codex executables')
     for item in config['executables'].values():
         require(isinstance(item, dict) and set(item) == {'path','sha256'}, 'Invalid executable pin')
@@ -202,7 +202,7 @@ class HostDriver:
             binary=False):
         env = dict(os.environ)
         if name == 'codex' and not getattr(self, '_qualification_probe', False):
-            validate_config_qualification(
+            review_qualification.validate_config_qualification(
                 self.c, self.state, config_path=self.c.get('_config_path'),
                 environment=env)
         executable = self.c['executables'][name]
@@ -215,8 +215,9 @@ class HostDriver:
         if name == 'git':
             env = isolated_git_env(env)
         if name == 'codex':
-            for key in ['GH_TOKEN','GITHUB_TOKEN']:
-                env.pop(key, None)
+            for key in list(env):
+                if review_qualification.is_host_auth_environment_name(key):
+                    env.pop(key)
             env['PYTHONDONTWRITEBYTECODE'] = '1'
         env['GIT_TERMINAL_PROMPT'] = '0'
         command = [executable['path'], *args]

@@ -45,14 +45,19 @@ PROTECTED_STATE_NAMES = {
 }
 
 
+def is_host_auth_environment_name(name):
+    """Return whether an environment name carries GitHub host authentication."""
+    return isinstance(name, str) and name.upper() in HOST_AUTH_ENV_VARS
+
+
 def _ambient_environment_binding(environment=None):
     """Return only launch-relevant names and agent-auth root locations."""
     environment = os.environ if environment is None else environment
-    always_stripped = PROVIDER_API_KEY_ENV_VARS | HOST_AUTH_ENV_VARS
     credential_names = sorted({
         name for name in environment
         if (isinstance(name, str)
-            and name.upper() not in always_stripped
+            and name.upper() not in PROVIDER_API_KEY_ENV_VARS
+            and not is_host_auth_environment_name(name)
             and CREDENTIAL_ENVIRONMENT_NAME.search(name))
     })
     return {
