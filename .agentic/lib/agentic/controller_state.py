@@ -7,6 +7,7 @@ import sqlite3
 import stat
 
 from . import ValidationError
+from .path_containment import is_within
 
 
 STATE_SCHEMA_VERSION = 1
@@ -28,7 +29,7 @@ def protected_state_path(path, worktree_roots):
     normalized = candidate.resolve(strict=False)
     for worktree in worktree_roots:
         root = Path(worktree).resolve(strict=False)
-        if normalized.is_relative_to(root):
+        if is_within(normalized, root):
             raise ValidationError("Controller state must be outside worker and reviewer worktrees")
     normalized.parent.mkdir(parents=True, exist_ok=True)
     verify_state_file(normalized)
