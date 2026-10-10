@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from ..canonical import loads, sha256
 from ..child_process import child_env, isolated_git_env
+from ..path_containment import is_within, relative_within
 from ..review_loop import ValidationError, require
 from ..safeio import Tree
 
@@ -141,9 +142,9 @@ def load_config(path, runtime_root):
         require(Path(config[key]).is_absolute(), f'{key} must be absolute')
         roots.append(Path(config[key]).resolve(strict=True))
     require(all(not a.is_relative_to(b) and not b.is_relative_to(a) for i,a in enumerate(roots) for b in roots[i+1:]), 'Runtime, state and two checkouts must be physically separate directories')
-    require(path.is_relative_to(roots[1]), 'Host configuration must be in the external state directory')
+    require(is_within(path, roots[1]), 'Host configuration must be in the external state directory')
     contract = Path(config['contract_path']).resolve(strict=True)
-    require(contract.is_relative_to(roots[1]) and sha256(contract.read_bytes()) == config['contract_sha256'], 'Contract must be pinned in external state')
+    require(is_within(contract, roots[1]) and sha256(contract.read_bytes()) == config['contract_sha256'], 'Contract must be pinned in external state')
     require(isinstance(config['qualification'], dict) and set(config['qualification']) == {'operator','evidence','sandbox_verified','credentials_isolated','branch_owned','single_host_database'}, 'Invalid qualification record')
     require(all(config['qualification'][k] is True for k in ['sandbox_verified','credentials_isolated','branch_owned','single_host_database']), 'Host qualification incomplete')
     require(all(isinstance(config['qualification'][k], str) and config['qualification'][k].strip() and 'CHANGE_ME' not in config['qualification'][k] for k in ['operator','evidence']), 'Qualification operator/evidence missing')
@@ -279,7 +280,7 @@ class HostDriver:
         """Persist the provider-assigned PR number before loop observation."""
         require(type(number) is int and number > 0, 'Created PR number is invalid')
         path = Path(self.c['_config_path'])
-        relative = path.relative_to(self.state).as_posix()
+        relative = relative_within(path, self.state).as_posix()
         with Tree(self.state) as tree:
             source = tree.read(relative)
             require(sha256(source) == self.c['config_hash'],
