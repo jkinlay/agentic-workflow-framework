@@ -26,9 +26,9 @@ Reviewer counts are admitted only when `required = completed + outstanding` and 
 
 ## Dispatch and cadence
 
-Dispatch intent is durable before host calls. `PENDING`, `IN_FLIGHT`, and `UNKNOWN` tickets reserve globally; the latter two also consume host capacity. Fresh preflight cancels never-begun pending intents that lose admission, so later eligibility can prepare a new intent. Unknown reconciliation updates a stream only while its ticket and tuple still match; late observations cannot overwrite reassigned work. Other streams use remaining capacity.
+Persist intents before host calls. `PENDING`, `IN_FLIGHT` and `UNKNOWN` reserve tickets; latter consume capacity. Preflight cancels unbegun, newly ineligible intents. UNKNOWN results update only matching stream/ticket/tuple, preventing late overwrite after reassignment. Other streams use free capacity.
 
-Cadence defaults to 600 seconds. Existing state keeps its stored value; `--migrate-status-cadence` explicitly applies the configured cadence, while mismatch otherwise fails closed. `--disable-periodic-status` suppresses scheduled digests, not immediate blocker, failure, input-required or merge-ready `CHANGE` digests. Pending outbox items replay unchanged until exact readback; newer changes follow afterward. Changes do not reset the regular deadline. Restarts preserve pending delivery; clock rollback fails closed. Digests cover each stream/gate and unresolved UNKNOWN intent (ticket, tuple, detached flag).
+Cadence is 600 seconds. Stored cadence changes only via `--migrate-status-cadence`; mismatch fails closed. `--disable-periodic-status` suppresses scheduled digests only; blocker, failure, input-required and merge-ready changes stay immediate. Outbox items replay to exact readback, then updates. Deadlines and delivery survive changes/restarts; clock rollback fails closed. Digests cover every stream/gate and unresolved UNKNOWN ticket, tuple and detached flag.
 
 ## Jira lifecycle and merge progress
 

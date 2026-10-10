@@ -53,13 +53,33 @@
           "updated_at"
         ],
         "properties": {
-          "dispatch_id": {"type": "string", "minLength": 1},
-          "stream": {"type": "string", "minLength": 1},
-          "ticket": {"type": "string", "minLength": 1},
-          "exact_tuple": {"type": "string", "minLength": 1},
-          "status": {"const": "UNKNOWN"},
-          "detached": {"type": "boolean"},
-          "updated_at": {"type": "string", "minLength": 1, "format": "date-time"}
+          "dispatch_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "stream": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ticket": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exact_tuple": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "const": "UNKNOWN"
+          },
+          "detached": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "type": "string",
+            "minLength": 1,
+            "format": "date-time"
+          }
         }
       }
     },
