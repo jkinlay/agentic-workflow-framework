@@ -2,7 +2,7 @@
 
 447 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `dc66ff91a899d79a714d07c1deeb659ffd8be7cf68f69309e1e58a2735928e4a`
+MANIFEST.json SHA-256: `93dfdb089756aa887628b7f707a8d4d7ccefe2d00ffa8e5a77e04135695de902`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -123,7 +123,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/review_tiers.py` | `f851eb29cafff4f6a1d01ca461d2ad3412e21390d1be214d7d1e612cd6b937e6` |
 | `.agentic/lib/agentic/rules_activation.py` | `f9c5ccdfc309acc13ec998466d458ee9898298f692d19a6309bfbaf3fb76d7cb` |
 | `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
-| `.agentic/lib/agentic/safeio.py` | `d2e8324e082da9bffcfaded5acc0cf7e5449b7f111644a5fdfb6864a934f76be` |
+| `.agentic/lib/agentic/safeio.py` | `63dc54a24acb667aaa5c4b7ef8bf1bcf4024c3e98792af4defc94debf1f0266e` |
 | `.agentic/lib/agentic/store.py` | `91287fc2aa44e9db2b1343027baa6f32e0660a838db54f8dd628b1caf0336b6c` |
 | `.agentic/lib/agentic/streams.py` | `235df2c92198ce8a97e6cc5e89c969448a66f14dabdc0e21bc3a37d5e99a1535` |
 | `.agentic/lib/agentic/upgrade.py` | `d1ab051319ab5e53e28f18a273c4b147c26c8e2c5ee47054f256acd022c08432` |
@@ -321,7 +321,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_store_regressions.py` | `2cf43379f37928ead367f3fc60e4e282a7814a84194765b6cdd759a99dc42859` |
 | `.agentic/tests/test_streams.py` | `48f359adfefd62954d36373f4791819b3e61291ba41326979dac463c8411c122` |
 | `.agentic/tests/test_upgrade_194.py` | `9a830eb7bb65ef835c9de24c205d656db78d3edcf902c4463c31c73a2216ef53` |
-| `.agentic/tests/test_upgrade_journal.py` | `4e7d16be26696d517be105e17275ecdef12f375f3c4f4fbf77ebe1343c792ff5` |
+| `.agentic/tests/test_upgrade_journal.py` | `449c96d3f8a9138335bfdf1cd413d453cf2b5f35be5125d860a3726d1d260270` |
 | `.agentic/tests/test_upgrade_matrix.py` | `ae4397837a1b4c4e8b888d379a1ea1f61e403f414724ecfaf91945c00fec6675` |
 | `.agentic/tests/test_upgrade_pycache.py` | `1d09c8b67c2321a67f82e2f09ddf1191ab0e015425ee5a359e0e305343cdaadd` |
 | `.agentic/tests/test_windows_diagnostics.py` | `f14c58f9f4ca0232b4ff8127b440109332d59860e5ae239ef4e970481d56e6e3` |

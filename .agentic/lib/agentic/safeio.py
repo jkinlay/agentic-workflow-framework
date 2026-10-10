@@ -22,30 +22,27 @@ if os.name == "nt":
             ("accessed", wintypes.FILETIME), ("written", wintypes.FILETIME), ("volume", wintypes.DWORD),
             ("size_high", wintypes.DWORD), ("size_low", wintypes.DWORD), ("links", wintypes.DWORD),
             ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
-    class FileBasicInformation(ctypes.Structure):
-        _fields_ = [("creation_time", ctypes.c_longlong), ("last_access_time", ctypes.c_longlong),
-            ("last_write_time", ctypes.c_longlong), ("change_time", ctypes.c_longlong),
-            ("file_attributes", wintypes.DWORD)]
     class FileDispositionInformation(ctypes.Structure):
         _fields_ = [("delete_file", wintypes.BOOLEAN)]
+    class FileDispositionInformationEx(ctypes.Structure):
+        _fields_ = [("flags", wintypes.DWORD)]
     kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
                                    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(FileInformation)]
     kernel.GetFileInformationByHandle.restype = wintypes.BOOL
-    kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
-                                                     wintypes.DWORD]
-    kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
     kernel.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
                                                    wintypes.DWORD]
     kernel.SetFileInformationByHandle.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
     INVALID_HANDLE = wintypes.HANDLE(-1).value
-    FILE_BASIC_INFO = 0
     FILE_DISPOSITION_INFO = 4
+    FILE_DISPOSITION_INFO_EX = 21
+    FILE_DISPOSITION_FLAG_DELETE = 0x1
+    FILE_DISPOSITION_FLAG_POSIX_SEMANTICS = 0x2
+    FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE = 0x10
     FILE_ATTRIBUTE_READONLY = 0x1
-    FILE_ATTRIBUTE_NORMAL = 0x80
 
     def win_open(path, directory=False, lock=False):
         access = 0x80 if directory else (0xC0000000 if lock else 0x80000000)
@@ -69,13 +66,12 @@ if os.name == "nt":
             raise ctypes.WinError(ctypes.get_last_error())
 
     def win_unlink(path):
-        """Validate, make writable, and delete one leaf through the same handle."""
+        """Validate and atomically mark one leaf for deletion through one handle."""
         delete = 0x00010000
         read_attributes = 0x80
-        write_attributes = 0x100
         # Omitting FILE_SHARE_DELETE prevents a concurrent rename or replacement
         # from changing which object is mutated while this handle is held.
-        handle = kernel.CreateFileW(str(path), delete | read_attributes | write_attributes,
+        handle = kernel.CreateFileW(str(path), delete | read_attributes,
                                     0x1 | 0x2, None, 3, 0x00200000, None)
         if handle == INVALID_HANDLE:
             error = ctypes.get_last_error()
@@ -89,16 +85,17 @@ if os.name == "nt":
             if info.attributes & 0x400 or info.attributes & 0x10 or info.links != 1:
                 raise ValidationError(f"Refusing link, reparse point, or wrong file type: {path}")
             if info.attributes & FILE_ATTRIBUTE_READONLY:
-                basic = FileBasicInformation()
-                if not kernel.GetFileInformationByHandleEx(
-                        handle, FILE_BASIC_INFO, ctypes.byref(basic), ctypes.sizeof(basic)):
-                    raise ctypes.WinError(ctypes.get_last_error())
-                basic.file_attributes &= ~FILE_ATTRIBUTE_READONLY
-                if basic.file_attributes == 0:
-                    basic.file_attributes = FILE_ATTRIBUTE_NORMAL
-                _win_set_file_information(handle, FILE_BASIC_INFO, basic)
-            _win_set_file_information(
-                handle, FILE_DISPOSITION_INFO, FileDispositionInformation(True))
+                # FileDispositionInfoEx applies the read-only override and delete
+                # disposition in one kernel operation. If the host does not support
+                # it the call fails without first persisting a writable mode.
+                flags = (FILE_DISPOSITION_FLAG_DELETE |
+                         FILE_DISPOSITION_FLAG_POSIX_SEMANTICS |
+                         FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE)
+                _win_set_file_information(
+                    handle, FILE_DISPOSITION_INFO_EX, FileDispositionInformationEx(flags))
+            else:
+                _win_set_file_information(
+                    handle, FILE_DISPOSITION_INFO, FileDispositionInformation(True))
             return True
         finally:
             kernel.CloseHandle(handle)
@@ -186,6 +183,12 @@ class Tree:
     def write(self, relative, data):
         if not isinstance(data, bytes):
             raise TypeError("write requires bytes")
+        # Replacing identical bytes would create a mode-only intermediate state:
+        # the existing mode becomes the private temporary-file mode even though
+        # the content did not change. Keep an already-durable identical leaf so
+        # an interrupted journaled operation has no ambiguous mode transition.
+        if self.inspect(relative) is not None and self.read(relative) == data:
+            return
         parent, handle, name = self.parent(relative, create=True)
         self.inspect(relative)
         temp = f".awf-{uuid.uuid4().hex}.tmp"
@@ -216,8 +219,8 @@ class Tree:
         parent, handle, name = self.parent(relative)
         if os.name == "nt":
             # Upgrade archives are made read-only before the managed-after
-            # journal update. Validate, clear that attribute, and delete through
-            # one handle which denies replacement of the validated leaf.
+            # journal update. Validate and delete through one handle which denies
+            # replacement and atomically ignores the read-only attribute.
             win_unlink(parent / name)
         else:
             if self.inspect(relative) is None:

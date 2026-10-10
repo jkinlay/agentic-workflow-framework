@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
 
 from agentic.canonical import sha256  # noqa: E402
-from agentic.installer import JOURNAL, install, recover, verify_installed  # noqa: E402
+from agentic.installer import JOURNAL, MARKER, install, recover, rollback, verify_installed  # noqa: E402
 import agentic.safeio as safeio  # noqa: E402
 from agentic.safeio import Tree  # noqa: E402
 from source_only import skip_unless_source_repo  # noqa: E402
@@ -47,6 +47,7 @@ class SafeIoWindowsTests(unittest.TestCase):
         replacement = root / "replacement.txt"
         outside = base / "outside.txt"
         victim.write_bytes(b"victim")
+        victim.chmod(stat.S_IREAD)
         outside.write_bytes(b"outside")
         outside.chmod(stat.S_IREAD)
         os.link(outside, replacement)
@@ -72,6 +73,90 @@ class SafeIoWindowsTests(unittest.TestCase):
         self.assertTrue(outside.exists())
         self.assertEqual(outside.read_bytes(), b"outside")
         self.assertTrue(os.stat(outside).st_file_attributes & stat.FILE_ATTRIBUTE_READONLY)
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle semantics")
+    def test_readonly_rollback_crash_before_atomic_disposition_is_retryable(self):
+        self.assert_readonly_rollback_crash_retryable("before")
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle semantics")
+    def test_readonly_rollback_crash_after_atomic_disposition_is_retryable(self):
+        self.assert_readonly_rollback_crash_retryable("after")
+
+    def assert_readonly_rollback_crash_retryable(self, phase):
+        base = Path(tempfile.gettempdir()) / (f"awf-unlink-{phase}-" + uuid.uuid4().hex)
+        base.mkdir()
+        self.addCleanup(self.cleanup_readonly_tree, base)
+        archive = base / ".agentic-state" / "archive.json"
+        archive.parent.mkdir()
+        archive.write_bytes(b"archive")
+        archive.chmod(stat.S_IREAD)
+        (base / ".agentic").mkdir()
+        (base / Path(MARKER)).write_bytes(b"marker")
+        (base / Path(JOURNAL)).parent.mkdir()
+        (base / Path(JOURNAL)).write_bytes(b"journal")
+        mode = stat.S_IMODE(archive.stat().st_mode)
+        journal = {
+            "format": "awf-install-journal-3",
+            "transaction_id": str(uuid.uuid4()),
+            "phase": "active",
+            "files": [{"path": ".agentic-state/archive.json", "old": None,
+                       "old_mode": None, "new_sha256": sha256(b"archive"),
+                       "new_mode": mode}],
+            "managed_before": [],
+            "managed_after": [],
+            "runtime": None,
+        }
+        original = safeio._win_set_file_information
+        injected = {"crashed": False}
+
+        def crash_at_disposition(handle, information_class, information):
+            if information_class == safeio.FILE_DISPOSITION_INFO_EX:
+                injected["crashed"] = True
+                if phase == "before":
+                    raise SimulatedCrash("before atomic read-only disposition")
+                original(handle, information_class, information)
+                raise SimulatedCrash("after atomic read-only disposition")
+            return original(handle, information_class, information)
+
+        with patch.object(safeio, "_win_set_file_information",
+                          side_effect=crash_at_disposition):
+            with Tree(base) as tree, self.assertRaises(SimulatedCrash):
+                rollback(tree, journal)
+
+        self.assertTrue(injected["crashed"])
+        if phase == "before":
+            self.assertEqual(archive.read_bytes(), b"archive")
+            self.assertTrue(os.stat(archive).st_file_attributes & stat.FILE_ATTRIBUTE_READONLY)
+        else:
+            self.assertFalse(archive.exists())
+        with Tree(base) as tree:
+            rollback(tree, journal)
+        self.assertFalse(archive.exists())
+
+    @staticmethod
+    def cleanup_readonly_tree(base):
+        if not base.exists():
+            return
+        for path in base.rglob("*"):
+            if path.is_file():
+                path.chmod(stat.S_IWRITE | stat.S_IREAD)
+        shutil.rmtree(base)
+
+
+class SafeIoWriteTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX mode transition regression")
+    def test_identical_write_preserves_existing_mode(self):
+        base = Path(tempfile.gettempdir()) / ("awf-identical-write-" + uuid.uuid4().hex)
+        base.mkdir()
+        self.addCleanup(shutil.rmtree, base)
+        target = base / "managed.txt"
+        target.write_bytes(b"same")
+        target.chmod(0o640)
+
+        with Tree(base) as tree:
+            tree.write("managed.txt", b"same")
+
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
 
 
 @skip_unless_source_repo(
