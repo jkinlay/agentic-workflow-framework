@@ -691,6 +691,34 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertFalse(seen["failed_source"].exists())
         self.assertEqual(before, self.worktree_paths())
 
+    def test_validation_checkout_preserves_local_and_global_autocrlf(self):
+        home = self.base / "autocrlf-home"
+        home.mkdir(exist_ok=True)
+        global_config = home / "global.gitconfig"
+        global_config.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8", newline="\n")
+        global_before = global_config.read_bytes()
+        try:
+            for value in ("false", "input"):
+                with self.subTest(value=value):
+                    command(["git", "config", "--local", "core.autocrlf", value],
+                            self.repository, self.git_env)
+                    destination = self.base / f"autocrlf-{value}-validation"
+                    with patch.dict(os.environ, {"HOME": str(home),
+                                                 "GIT_CONFIG_GLOBAL": str(global_config)}):
+                        with publisher.validation_checkout(self.repository, self.commit, destination):
+                            self.assertEqual(self.commit, command(["git", "rev-parse", "HEAD"], destination,
+                                                                  self.git_env))
+                            expected = publisher.git_run(
+                                self.repository, "show", f"{self.commit}:MANIFEST.json", text=False).stdout
+                            self.assertEqual(expected, (destination / "MANIFEST.json").read_bytes())
+                    self.assertFalse(destination.exists())
+                    self.assertEqual(value, command(["git", "config", "--local", "--get",
+                                                     "core.autocrlf"], self.repository, self.git_env))
+                    self.assertEqual(global_before, global_config.read_bytes())
+        finally:
+            command(["git", "config", "--local", "core.autocrlf", "false"],
+                    self.repository, self.git_env)
+
     def test_k6_reports_untracked_tracked_and_version_disagreement_together(self):
         readme = self.repository / "README.md"
         original = readme.read_bytes()

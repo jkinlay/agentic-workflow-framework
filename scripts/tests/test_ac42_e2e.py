@@ -104,5 +104,43 @@ class OwnerBlobTests(unittest.TestCase):
                 harness.owner_blob(repo, "HEAD", ".gitignore", max_bytes=3)
 
 
+class AutocrlfScopeTests(unittest.TestCase):
+    def test_fresh_clone_preserves_false_and_input_without_global_writes(self):
+        harness = _load_harness()
+        for value in ("false", "input"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory(prefix="awf-ac42-autocrlf-") as raw:
+                root = Path(raw)
+                home = root / "home"
+                home.mkdir()
+                global_config = home / "global.gitconfig"
+                global_config.write_text("[core]\n\tautocrlf = false\n", encoding="utf-8", newline="\n")
+                global_before = global_config.read_bytes()
+                overrides = {"HOME": str(home), "GIT_CONFIG_GLOBAL": str(global_config),
+                             "GIT_CONFIG_NOSYSTEM": "1"}
+                environment = dict(os.environ, **overrides)
+                source = root / "source"
+                source.mkdir()
+
+                def command(*arguments, cwd=source, check=True):
+                    return subprocess.run(["git", *arguments], cwd=cwd, env=child_env(environment),
+                                          capture_output=True, check=check, text=True)
+
+                command("init", "-q", "-b", "main")
+                command("config", "--local", "core.autocrlf", value)
+                (source / "plain.txt").write_bytes(b"one\ntwo\n")
+                command("add", "plain.txt")
+                command("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "-q", "-m", "fixture")
+                clone = root / "clone"
+                result = harness.clone_with_autocrlf(source, clone, root, extra=overrides)
+                self.assertEqual(0, result["exit_code"], result)
+                self.assertEqual(b"one\r\ntwo\r\n", (clone / "plain.txt").read_bytes())
+                self.assertEqual(value, command("config", "--local", "--get", "core.autocrlf").stdout.strip())
+                clone_setting = command("config", "--local", "--get", "core.autocrlf",
+                                        cwd=clone, check=False)
+                self.assertEqual(1, clone_setting.returncode)
+                self.assertEqual(global_before, global_config.read_bytes())
+
+
 if __name__ == "__main__":
     unittest.main()

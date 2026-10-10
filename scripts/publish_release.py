@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Build, draft-publish, or verify a reproducible AWF release."""
+"""Build, draft-publish, or verify a reproducible AWF release.
+
+Release payloads come from raw Git blobs and are byte-identical on Windows and
+POSIX.  Git-dependent validation uses ``core.autocrlf=false`` only for the
+command that creates its temporary worktree; repository and global Git
+configuration are read-only and retain any explicit ``false`` or ``input``
+setting.
+"""
 from __future__ import annotations
 
 import argparse
@@ -412,7 +419,9 @@ def validation_checkout(repository, commit, destination):
     Self-test cases inspect Git (HEAD, attributes, the raw tree), so they cannot
     run in the Git-less release projection.  The worktree shares the release
     repository's objects, must match the raw tree byte for byte with a clean
-    status, and is always removed afterwards.
+    status, and is always removed afterwards.  Windows and POSIX use the same
+    command-scoped ``core.autocrlf=false`` checkout; this does not write the
+    release repository, its linked-worktree config, or global Git config.
     """
     repository, destination = Path(repository), Path(destination)
     if destination.exists():
