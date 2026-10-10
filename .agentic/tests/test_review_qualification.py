@@ -4,7 +4,9 @@ from copy import deepcopy
 import importlib.util
 from io import StringIO
 import json
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,7 +15,9 @@ from agentic import ValidationError
 from agentic.canonical import sha256
 from agentic.review_loop import LoopStore
 from agentic.review_qualification import (collect_qualification,
-    validate_config_qualification)
+    host_binding_sha256, validate_config_qualification)
+from agentic.providers.github_review_host import HostDriver
+from source_only import skip_unless_source_repo
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -110,6 +114,30 @@ class QualificationTests(unittest.TestCase):
                      'branch_owned', 'single_host_database'):
             self.config['qualification'][name] = True
 
+    def launchable_driver(self):
+        self.config['command_timeout_seconds'] = 30
+        executable = {
+            'path': sys.executable,
+            'sha256': sha256(Path(sys.executable).read_bytes()),
+        }
+        self.config['executables'] = {
+            name: deepcopy(executable) for name in ('git', 'gh', 'codex')
+        }
+        config_path = self.base / 'state' / 'host-config.json'
+        config_path.write_text(json.dumps(self.config), encoding='utf-8')
+        self.config['_config_path'] = str(config_path)
+        self.config['config_hash'] = sha256(config_path.read_bytes())
+        return HostDriver(self.config, ROOT)
+
+    @staticmethod
+    def isolated_agent_environment():
+        return {
+            'PATH': '/fixture/bin',
+            'HOME': '/fixture/home',
+            'USERPROFILE': '/fixture/profile',
+            'CODEX_HOME': '/fixture/codex',
+        }
+
     def test_live_shape_probes_write_hashed_record_without_setting_config(self):
         before = deepcopy(self.config['qualification'])
         result, driver = self.collect()
@@ -142,6 +170,79 @@ class QualificationTests(unittest.TestCase):
         self.config['models']['critic'] = 'different-critic'
         with self.assertRaisesRegex(ValidationError, 'different host controls'):
             validate_config_qualification(self.config, self.base / 'state')
+
+    def test_awf31_r3_001_new_credential_name_invalidates_and_refuses_worker_and_critic_launches(self):
+        environment = self.isolated_agent_environment()
+        with patch.dict(os.environ, environment, clear=True):
+            driver = self.launchable_driver()
+            result, _ = self.collect()
+            self.pin(result)
+            self.assertEqual(
+                validate_config_qualification(self.config, self.base / 'state')['result'],
+                'PASS')
+            baseline_binding = json.loads(
+                Path(result['evidence_path']).read_text(encoding='utf-8')
+            )['host_binding_sha256']
+
+            with patch.dict(os.environ,
+                            {'LATE_DATABASE_SECRET': 'fixture-value-one'},
+                            clear=False):
+                with self.assertRaisesRegex(ValidationError,
+                                            'credential|host controls'):
+                    validate_config_qualification(self.config,
+                                                  self.base / 'state')
+                with patch('agentic.providers.github_review_host.subprocess.run') as launch:
+                    for sandbox in ('workspace-write', 'read-only'):
+                        with self.subTest(sandbox=sandbox), \
+                             self.assertRaisesRegex(ValidationError,
+                                                    'credential|host controls'):
+                            driver.run('codex', ['exec', '--sandbox', sandbox])
+                    launch.assert_not_called()
+
+            with patch.dict(os.environ,
+                            {'LATE_DATABASE_SECRET': 'fixture-value-two'},
+                            clear=False):
+                second_binding = host_binding_sha256(self.config)
+            self.assertNotEqual(baseline_binding, second_binding)
+
+            with patch.dict(os.environ,
+                            {'LATE_DATABASE_SECRET': 'fixture-value-one'},
+                            clear=False):
+                first_value_binding = host_binding_sha256(self.config)
+            self.assertEqual(first_value_binding, second_binding)
+
+    def test_awf31_r3_001_agent_auth_root_changes_invalidate_and_refuse_launch(self):
+        environment = self.isolated_agent_environment()
+        with patch.dict(os.environ, environment, clear=True):
+            driver = self.launchable_driver()
+            result, _ = self.collect()
+            self.pin(result)
+
+            for name in ('CODEX_HOME', 'HOME', 'USERPROFILE'):
+                with self.subTest(name=name), \
+                     patch.dict(os.environ, {name: f'/changed/{name.lower()}'},
+                                clear=False), \
+                     self.assertRaisesRegex(ValidationError,
+                                            'auth-root|host controls'), \
+                     patch('agentic.providers.github_review_host.subprocess.run') as launch:
+                    driver.run('codex', ['exec', '--sandbox', 'read-only'])
+                launch.assert_not_called()
+
+    def test_awf31_r3_001_unchanged_environment_remains_pass_and_launches(self):
+        environment = self.isolated_agent_environment()
+        with patch.dict(os.environ, environment, clear=True):
+            driver = self.launchable_driver()
+            result, _ = self.collect()
+            self.pin(result)
+            self.assertEqual(
+                validate_config_qualification(self.config, self.base / 'state')['result'],
+                'PASS')
+            completed = unittest.mock.Mock(returncode=0, stdout='')
+            with patch('agentic.providers.github_review_host.subprocess.run',
+                       return_value=completed) as launch:
+                self.assertEqual(
+                    driver.run('codex', ['exec', '--sandbox', 'read-only']), '')
+            launch.assert_called_once()
 
     def test_readable_agent_auth_is_an_explicit_blocking_finding(self):
         result, _ = self.collect(readable_auth=True)
@@ -212,6 +313,7 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(driver.calls, [])
         self.assertEqual(host_config.read_bytes(), b'host configuration sentinel')
 
+    @skip_unless_source_repo()
     def test_generator_reproduces_qualification_schema_and_config(self):
         spec = importlib.util.spec_from_file_location(
             'awf_generate_review_loop_qualification',
