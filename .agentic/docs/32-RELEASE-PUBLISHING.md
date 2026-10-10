@@ -12,7 +12,15 @@ Supply an independently pinned `awf-clean-windows-portable-check-1` record for t
 python -B scripts/publish_release.py --commit SHA --output-dir <new-external-output> --clean-windows-check <record.json> --expected-clean-windows-check-sha256 SHA256 --dry-run
 ```
 
-Dry-run builds and validates locally but creates no tag, push or hosted release. A real run creates an annotated `vX.Y.Z` tag, pushes that tag, then asks `gh release create --draft`; the owner reviews and publishes the draft.
+Dry-run validates without remote changes. A real run validates and freezes the credential-isolated push plan before creating the local tag, then tags, pushes, and creates a draft release for owner publication. Reads, builds and verification stay isolated. For HTTPS, only the tag push receives a command-scoped, credential-free push URL and `gh auth git-credential` helper. In the exact push environment and working directory, Git lists with includes enabled every `http.extraHeader` and `http.*.extraHeader` key across all applied scopes; any entry, or any result other than a clean no-match, refuses before tag creation with only its key, scope and origin reported. The generated push and recovery commands retain their generic, URL-scoped and included-local empty header resets, while exact helper resets override generic and URL-scoped helpers. Nothing writes Git configuration, persists a credential or puts one in release output.
+
+If the push fails, the local annotated tag remains, the remote tag status is unknown, and no GitHub release is created. The error suppresses raw Git output so a credential-bearing URL cannot be disclosed, instructs the operator to check `gh auth status`, and gives this exact retry (substitute the reported tag):
+
+```text
+git -c credential.helper= -c remote.origin.pushurl= -c remote.origin.pushurl=https://github.com/OWNER/REPOSITORY.git -c http.extraHeader= -c http.https://github.com/OWNER/REPOSITORY.git.extraHeader= -c credential.https://github.com/OWNER/REPOSITORY.git.helper= -c 'credential.https://github.com/OWNER/REPOSITORY.git.helper=!gh auth git-credential' push origin refs/tags/vX.Y.Z
+```
+
+Recovery uses the resolved, credential-free HTTPS origin and repeats an empty `-c` reset for every safe local header key, excluding path-specific Authorization. Failures, timeouts and launch errors suppress subprocess output and header values.
 
 Validation runs in a temporary detached Git worktree of the same commit, checked byte for byte against the raw tree and removed afterwards, because self-test cases inspect Git.
 
