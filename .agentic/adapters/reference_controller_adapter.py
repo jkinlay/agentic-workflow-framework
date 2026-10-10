@@ -34,7 +34,11 @@ MAX_OUTPUT = 1024 * 1024
 MAX_PAGES = 20
 MAX_SECONDS = 120
 MAX_JIRA_PAGE = 100
-_CREDENTIAL_NAMES = {"GH_TOKEN", "GITHUB_TOKEN"}
+_CREDENTIAL_NAME_MARKERS = (
+    "TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY", "APIKEY",
+    "ACCESS_KEY", "PRIVATE_KEY", "CREDENTIAL",
+)
+_CREDENTIAL_SERVICE_NAMES = ("JIRA", "ATLASSIAN")
 
 
 def _require(condition, message):
@@ -274,12 +278,11 @@ def _clock_text(clock, value=None):
 
 def _safe_env(jira_token_env=None):
     result = dict(os.environ)
-    result.pop("GH_TOKEN", None)
-    result.pop("GITHUB_TOKEN", None)
-    if jira_token_env:
-        result.pop(jira_token_env, None)
     for key in tuple(result):
-        if "JIRA" in key.upper() and ("TOKEN" in key.upper() or "PASSWORD" in key.upper()):
+        normalized = key.upper()
+        if (key == jira_token_env
+                or any(service in normalized for service in _CREDENTIAL_SERVICE_NAMES)
+                or any(marker in normalized for marker in _CREDENTIAL_NAME_MARKERS)):
             result.pop(key, None)
     result["GH_PROMPT_DISABLED"] = "1"
     result["GIT_TERMINAL_PROMPT"] = "0"
@@ -577,15 +580,15 @@ def _build(config):
         auth_profile = active[0].get("profile") or active[0].get("login")
         _require(isinstance(auth_profile, str) and auth_profile,
                  "GitHub authentication profile is missing")
-        rules_response = gh_json(github.get(
-            "rules_endpoint", "repos/" + github["repository"] + "/rulesets?includes_parents=true"),
-            paginate=True)
-        if isinstance(rules_response, list) and all(isinstance(part, list) for part in rules_response):
-            rulesets = [rule for part in rules_response for rule in part]
-        elif isinstance(rules_response, dict) and isinstance(rules_response.get("items"), list):
-            rulesets = rules_response["items"]
-        else:
-            raise ValidationError("GitHub rules response did not prove completeness")
+        rules_endpoint = github.get(
+            "rules_endpoint", "repos/" + github["repository"] + "/rulesets?includes_parents=true")
+        expected_rules_endpoint = "repos/" + github["repository"] + "/rulesets"
+        folded_rules_endpoint = rules_endpoint.casefold() if isinstance(rules_endpoint, str) else ""
+        folded_expected_endpoint = expected_rules_endpoint.casefold()
+        _require(folded_rules_endpoint == folded_expected_endpoint
+                 or folded_rules_endpoint.startswith(folded_expected_endpoint + "?"),
+                 "GitHub rules endpoint is outside the configured repository scope")
+        rulesets = github_pages(rules_endpoint, "items")
         _require(type(repo.get("id")) is int and repo["id"] == github["repository_id"]
                  and repo.get("full_name", "").casefold() == github["repository"].casefold(),
                  "GitHub publication repository identity mismatch")
@@ -815,10 +818,11 @@ def _build(config):
         issue_id = record["binding"]["issue_id"]
         _require(isinstance(record.get("transition_id"), str) and record["transition_id"],
                  "Jira transition identity is missing")
+        attempted_at = _clock_text(clock)
         jira_json("POST", "/rest/api/3/issue/" + quote(issue_id, safe="") + "/transitions",
                   {"transition": {"id": record["transition_id"]}})
         return {"operation_id": record["operation_id"], "issue_id": issue_id,
-                "status": "ATTEMPTED", "observed_at": _clock_text(clock),
+                "status": "ATTEMPTED", "observed_at": attempted_at,
                 "jira_provider": record["jira_provider"]}
 
     def read_transition(record, operation):
@@ -834,7 +838,7 @@ def _build(config):
             if not isinstance(history, dict) or not isinstance(history.get("created"), str):
                 continue
             _require(isinstance(operation, dict) and isinstance(operation.get("observed_at"), str),
-                     "Jira transition readback has no operation receipt time")
+                     "Jira transition readback has no operation attempt time")
             operation_time = operation["observed_at"]
             if timestamp(history["created"]) < timestamp(operation_time):
                 continue
