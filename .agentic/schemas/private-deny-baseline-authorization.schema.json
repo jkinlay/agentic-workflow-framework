@@ -1,16 +1,39 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:awf:1.2:private-deny-baseline-authorization",
-  "title": "One-candidate private deny baseline authorization",
   "type": "object",
   "additionalProperties": false,
-  "required": ["format", "candidate", "provider_pr_body_sha256", "mapping_sha256", "authorized_by", "authorization_ref"],
+  "required": [
+    "format",
+    "candidate",
+    "provider_pr_body_sha256",
+    "mapping_sha256",
+    "authorized_by",
+    "authorization_ref"
+  ],
   "properties": {
-    "format": {"const": "awf-private-deny-baseline-authorization-1"},
-    "candidate": {"$ref": "urn:awf:1.2:private-deny-scan#/$defs/candidate"},
-    "provider_pr_body_sha256": {"$ref": "urn:awf:1.2:private-deny-scan#/$defs/sha256"},
-    "mapping_sha256": {"$ref": "urn:awf:1.2:private-deny-scan#/$defs/sha256"},
-    "authorized_by": {"type": "string", "minLength": 1, "maxLength": 512},
-    "authorization_ref": {"type": "string", "minLength": 1, "maxLength": 512}
-  }
+    "format": {
+      "const": "awf-private-deny-baseline-authorization-1"
+    },
+    "candidate": {
+      "$ref": "urn:awf:1.2:private-deny-scan#/$defs/candidate"
+    },
+    "provider_pr_body_sha256": {
+      "$ref": "urn:awf:1.2:private-deny-scan#/$defs/sha256"
+    },
+    "mapping_sha256": {
+      "$ref": "urn:awf:1.2:private-deny-scan#/$defs/sha256"
+    },
+    "authorized_by": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "authorization_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:private-deny-baseline-authorization",
+  "title": "Agentic Workflow 1.2 \u2014 private-deny-baseline-authorization"
 }

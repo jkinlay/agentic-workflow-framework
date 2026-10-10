@@ -7,6 +7,7 @@ captured a complete, acceptable result set for one frozen candidate tuple.
 """
 from __future__ import annotations
 
+import base64
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ import uuid
 from urllib.parse import urlsplit
 
 from . import ValidationError
-from .canonical import canonical, fingerprint, fresh, loads, now_text, timestamp
+from .canonical import canonical, fingerprint, fresh, loads, now_text, sha256, timestamp
 from .controller_state import configure_database, protected_state_path, restrict_state_permissions
 
 
@@ -33,6 +34,10 @@ FINAL_STATES = {"SUBMITTED", "SUBMISSION_UNKNOWN"}
 SHA40 = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 STATE_APPLICATION_ID = 0x41574632
+
+
+def _base64_bytes(value):
+    return {"encoding": "base64", "data": base64.b64encode(value).decode("ascii")}
 
 
 DDL = """
@@ -549,7 +554,10 @@ class ReviewCompletionStore:
             "cycle_id", "reviewer_id", "tuple_sha256", "reviewer_set_sha256"}, "Malformed reviewer result binding")
         _require(result_binding["reviewer_id"] == reviewer_id, "Reviewer identity differs from dispatch binding")
         raw = _terminal_result(reviewer_id, outcome, result)
-        result_hash = fingerprint("reviewer-result", result)
+        # This digest is deliberately over the exact retained canonical UTF-8
+        # result.json bytes.  Reconstructing a digest from copied fields would
+        # let a later receipt self-attest to different artifact content.
+        result_hash = sha256(raw.encode("utf-8"))
         with self.transaction() as db:
             cycle = self._active(db)
             required = loads(cycle["reviewers_json"])
@@ -633,6 +641,55 @@ class ReviewCompletionStore:
                            ("candidate or reviewer set moved during provider submission", cycle["cycle_id"]))
                 cycle = self._active(db)
             return self._summary(db, cycle, current=current)
+
+    def export_round_receipt(self, reviewer_id, critic_artifact_binding,
+                             review_verdict_json, posting_observation_json):
+        """Export the exact retained critic bytes from a frozen completion.
+
+        The caller supplies the separately retained verdict and provider
+        observation bytes.  The protected ledger supplies result.json and the
+        frozen completion identities; no digest is reconstructed from copied
+        critic fields.
+        """
+        _require(isinstance(critic_artifact_binding, dict) and
+                 set(critic_artifact_binding) == {
+                     "critic_run_id", "result_sha256", "head_sha", "round"},
+                 "Critic artifact binding must be the exact four-field tuple")
+        _require(isinstance(review_verdict_json, str) and review_verdict_json,
+                 "Review verdict bytes are required")
+        _require(isinstance(posting_observation_json, str) and posting_observation_json,
+                 "Posting observation bytes are required")
+        with self.transaction() as db:
+            cycle = self._active(db)
+            _require(cycle["completion_snapshot_json"] is not None,
+                     "Review completion must be frozen before round export")
+            row = db.execute(
+                "SELECT reviewer_id,state,result_json,result_sha256,terminal_at "
+                "FROM reviewer_results WHERE cycle_id=? AND reviewer_id=?",
+                (cycle["cycle_id"], reviewer_id)).fetchone()
+            _require(row is not None and row["state"] == "ACCEPTABLE",
+                     "Round receipt needs one acceptable frozen critic result")
+            _require(row["result_sha256"] == critic_artifact_binding["result_sha256"],
+                     "Critic artifact binding differs from retained result.json")
+            tuple_value = loads(cycle["tuple_json"])
+            _require(tuple_value["head_sha"] == critic_artifact_binding["head_sha"],
+                     "Critic artifact binding differs from frozen completion head")
+            snapshot_json = cycle["completion_snapshot_json"]
+            return {
+                "critic_artifact_binding": critic_artifact_binding,
+                "result_json": row["result_json"],
+                "completion_cycle_id": cycle["cycle_id"],
+                "completion_tuple_sha256": cycle["tuple_sha256"],
+                "completion_reviewer_set_sha256": cycle["reviewer_set_sha256"],
+                "completion_snapshot_json": snapshot_json,
+                "completion_snapshot_sha256": cycle["completion_snapshot_sha256"],
+                "review_verdict_json": review_verdict_json,
+                "review_verdict_sha256": sha256(review_verdict_json.encode("utf-8")),
+                "posting_observation_json": _base64_bytes(
+                    posting_observation_json.encode("utf-8")),
+                "posting_observation_sha256": sha256(
+                    posting_observation_json.encode("utf-8")),
+            }
 
     def prepare_submission(self, candidate, reviewers, aggregate):
         """Atomically capture the complete set and immutable final aggregate."""

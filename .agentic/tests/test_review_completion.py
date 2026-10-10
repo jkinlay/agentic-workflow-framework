@@ -16,16 +16,17 @@ from pathlib import Path
 
 from agentic import ValidationError
 from agentic.authorization import make_request
-from agentic.canonical import fingerprint, load
+from agentic.canonical import canonical, fingerprint, load, sha256
 from agentic.contracts import Contracts
 from agentic.cli import local_semantics
-from agentic.gates import evaluate
+from agentic.gates import decode_base64_bytes, evaluate
 from agentic.interaction import gate_handoff
 from agentic.lifecycle import definition, transition
 from agentic.review_completion import ReviewCompletionStore, review_authority_from_config
 from agentic.providers.github_reviewer_removal import (approval_comment_body,
     github_reviewer_removal_observer)
 from agentic.store import Store
+from test_review_policy import bind_production_posting_fixture, bind_review_admission
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -666,6 +667,32 @@ class ReviewCompletionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "counts"):
             local_semantics("review-submission", forged)
 
+    def test_awf16_r2c_002_exported_round_receipt_keeps_result_json_bytes(self):
+        reviewers = ["one"]
+        self.store.freeze(self.current, reviewers)
+        dispatch = self.store.dispatch("one", self.current, reviewers)
+        result = {"verdict": "APPROVE", "reviewer": "one", "findings": []}
+        self.store.record_result("one", dispatch, "ACCEPTABLE", result)
+        admission = self.store.prepare_submission(
+            self.current, reviewers, {"verdict": "APPROVE"})
+        frozen = admission["completion_snapshot"]["results"][0]
+        verdict_json = canonical({"record_id": "verdict-1"}).decode("utf-8")
+        posting_json = canonical({"source": "host_observation"}).decode("utf-8")
+        receipt = self.store.export_round_receipt("one", {
+            "critic_run_id": str(uuid.uuid4()),
+            "result_sha256": frozen["result_sha256"],
+            "head_sha": self.current["head_sha"], "round": 1,
+        }, verdict_json, posting_json)
+        self.assertEqual(canonical(result).decode("utf-8"), receipt["result_json"])
+        self.assertEqual(frozen["result_sha256"],
+                         sha256(receipt["result_json"].encode("utf-8")))
+        self.assertEqual(admission["completion_snapshot_sha256"],
+                         receipt["completion_snapshot_sha256"])
+        self.assertEqual(posting_json.encode("utf-8"), decode_base64_bytes(
+            receipt["posting_observation_json"], "posting_observation_json"))
+        self.assertEqual(sha256(posting_json.encode("utf-8")),
+                         receipt["posting_observation_sha256"])
+
     def test_transport_cannot_assert_acceptable_against_result(self):
         for result, message in [
             ({"verdict": "REQUEST_CHANGES", "reviewer": "one", "findings": []}, "APPROVE"),
@@ -736,7 +763,8 @@ class ReviewCompletionTests(unittest.TestCase):
             snapshot = value["completion_snapshot"]
             snapshot["required_reviewers"].append("reviewer-z")
             snapshot["results"].append({"reviewer_id": "reviewer-z", "state": "ACCEPTABLE",
-                "result_sha256": "9" * 64, "terminal_at": snapshot["results"][0]["terminal_at"]})
+                "result_sha256": "9" * 64,
+                "terminal_at": snapshot["results"][0]["terminal_at"]})
             snapshot["counts"].update(required=2, completed=2, acceptable=2)
             snapshot["reviewer_set_sha256"] = fingerprint("reviewer-set", snapshot["required_reviewers"])
             value["provider_preconditions"]["reviewer_set_sha256"] = snapshot["reviewer_set_sha256"]
@@ -831,7 +859,10 @@ class ReviewCompletionTests(unittest.TestCase):
         contracts = Contracts(ROOT / ".agentic/schemas")
         config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
         bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
-        gate = evaluate(config, definition(), bundle, contracts, "2026-09-09T12:00:00Z")
+        bind_review_admission(bundle)
+        registry = bind_production_posting_fixture(config, bundle)
+        gate = evaluate(config, definition(), bundle, contracts, "2026-09-09T12:00:00Z",
+                        posting_collector_registry=registry)
         request = make_request(gate, contracts, "2026-09-09T12:00:00Z")
         gate_handoff(gate, request, config, contracts, "2026-09-09T12:00:00Z")
         facts = {"derived_gate_ready": True, "requirements_current": True,

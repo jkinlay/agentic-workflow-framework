@@ -1,17 +1,34 @@
 """Offline evidence evaluation. Returns analysis, never an execution permit."""
 from __future__ import annotations
+import base64
+import binascii
 from datetime import timedelta
 import fnmatch
 import re
 import uuid
 
 from . import ValidationError
-from .canonical import fingerprint, fresh, timestamp, unique
+from .canonical import canonical, fingerprint, fresh, loads, sha256, timestamp, unique
 from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_path,
                      specialist_domains, validate_config)
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
                             tier1_specialist_domains, validate_findings)
 from .review_tiers import classify
+
+
+def decode_base64_bytes(value, field):
+    """Decode one canonical base64 envelope without changing the bound bytes."""
+    if (not isinstance(value, dict) or set(value) != {"encoding", "data"}
+            or value.get("encoding") != "base64" or not isinstance(value.get("data"), str)):
+        raise ValidationError(f"{field} must be an exact base64 envelope")
+    encoded = value["data"]
+    try:
+        raw = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (UnicodeError, ValueError, binascii.Error) as exc:
+        raise ValidationError(f"{field} is not strict base64") from exc
+    if base64.b64encode(raw).decode("ascii") != encoded:
+        raise ValidationError(f"{field} is not canonical base64")
+    return raw
 
 
 def resource_overlaps(runs, limits):
@@ -70,6 +87,9 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
     for schema, record in records:
         verify_owner_record(record, schema, config, contracts, now, head_sha=head, binding=binding,
                             runs=runs, excluded_contexts=excluded_contexts, excluded_producers=excluded_producers)
+        if schema == "review-cap-disposition" and record["record_id"] != cap_disposition_record_id(record):
+            raise ValidationError(
+                "Review cap disposition record ID does not authenticate its critic artifact and verdict binding")
         comment = record["owner_source"]["comment_id"]
         if comment in comments:
             raise ValidationError(f"{schema}: owner comment {comment} already signs another record")
@@ -108,22 +128,67 @@ def publication_receipt_consistent(publication):
 
 
 def critic_artifact_receipt_sha256(verdict):
-    """Bind a retained substantive critic artifact to its review round."""
+    """Legacy helper retained for migration diagnostics, never gate trust."""
     receipt = verdict["critic_review"]
     return fingerprint("critic-review-artifact-receipt", {
-        "record_id": receipt["record_id"],
-        "run_id": verdict["run_id"],
-        "producer_id": verdict["producer_id"],
-        "binding": verdict["binding"],
-        "created_at": verdict["created_at"],
-        "round": verdict["round"],
-        "head_sha": verdict["head_sha"],
-        "verdict": receipt["verdict"],
+        "record_id": receipt["record_id"], "run_id": verdict["run_id"],
+        "producer_id": verdict["producer_id"], "binding": verdict["binding"],
+        "created_at": verdict["created_at"], "round": verdict["round"],
+        "head_sha": verdict["head_sha"], "verdict": receipt["verdict"],
         "findings_sha256": receipt["findings_sha256"],
     })
 
 
-def evaluate(config, workflow, bundle, contracts, now):
+def review_verdict_json(verdict):
+    """Canonical retained verdict bytes; provider observation is separate."""
+    return canonical({key: value for key, value in verdict.items()
+                      if key != "posting_observation"}).decode("utf-8")
+
+
+def posting_collector_receipt_sha256(observation, observation_binding_sha256, registration):
+    """Digest provider bytes and the complete runtime-owned posting binding."""
+    payload = {
+        "collector_id": observation["producer_id"],
+        "collector_run_id": observation["run_id"],
+        "provider_kind": registration["provider_kind"],
+        "implementation_sha256": registration["implementation_sha256"],
+        "release_sha256": registration["release_sha256"],
+        "repository_id": observation["repository_id"],
+        "pr_number": observation["pr_number"],
+        "provider_response_sha256": observation["provider_response_sha256"],
+        "posting_binding_sha256": observation_binding_sha256,
+        "critic_artifact_binding": observation["critic_artifact_binding"],
+        "review_verdict_record_id": observation["review_verdict_record_id"],
+        "review_verdict_sha256": observation["review_verdict_sha256"],
+        "comment_id": observation["comment_id"],
+        "comment_url": observation["comment_url"],
+        "comment_sha256": observation["comment_sha256"],
+        "body_link": observation["body_link"],
+        "body_sha256": observation["body_sha256"],
+        "observed_at": observation["observed_at"],
+    }
+    return fingerprint("production-posting-collector-receipt", payload)
+
+
+def review_round_receipt_sha256(receipt):
+    """Hash the exact canonical retained round receipt bytes."""
+    return sha256(canonical(receipt))
+
+
+def cap_disposition_record_id(record):
+    """Content-address cap binding fields through the signed owner record ID."""
+    return fingerprint("review-cap-artifact-binding", {
+        "critic_artifact_binding": record["critic_artifact_binding"],
+        "review_verdict_record_id": record["review_verdict_record_id"],
+        "review_verdict_sha256": record["review_verdict_sha256"],
+    })
+
+
+def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_registry=None):
+    # Production intentionally has no built-in collector registration.  Only a
+    # runtime adapter may pass a registry.  Configuration and environment data
+    # can narrow that registry but can never create membership.
+    trusted_posting_collectors = posting_collector_registry or {}
     validate_config(config, workflow, contracts)
     if config["jira"].get("enabled", True) is False:
         raise ValidationError("Jira is disabled; this Jira evidence evaluator requires Jira scope. Continue provisional local planning through the native host.")
@@ -260,11 +325,20 @@ def evaluate(config, workflow, bundle, contracts, now):
         raise ValidationError("Review verdicts must cover every consumed round without gaps")
     terminal_round = max(v["round"] for v in verdicts)
     critic_run_ids = set()
-    critic_artifact_ids = set()
+    completion_cycle_ids = set()
     critic_artifacts_ok = True
     critic_artifact_verdicts_match = True
     posting_evidence_ok = True
-    for verdict in verdicts:
+    verified_artifact_bindings = []
+    round_receipts = bundle.get("review_round_receipts", [])
+    receipt_rounds = [item["critic_artifact_binding"]["round"] for item in round_receipts]
+    if len(round_receipts) != len(verdicts) or len(receipt_rounds) != len(set(receipt_rounds)):
+        critic_artifacts_ok = False
+    receipts_by_round = {item["critic_artifact_binding"]["round"]: item
+                         for item in round_receipts}
+    if set(receipts_by_round) != expected_rounds:
+        critic_artifacts_ok = False
+    for verdict in sorted(verdicts, key=lambda item: item["round"]):
         # Verdicts are retained review records. Their candidate identity and
         # freshness are current-gate requirements, while the contract hash
         # may legitimately reflect the contract revision that the round
@@ -284,18 +358,90 @@ def evaluate(config, workflow, bundle, contracts, now):
             raise ValidationError("Review verdict tier does not match the recomputed contract tier")
         from .review_tiers import validate_round
         validate_round(verdict["tier"], verdict["round"], owner_cap_disposition=bundle.get("cap_disposition"), config=config)
+        artifact_binding = verdict["critic_artifact_binding"]
+        receipt = receipts_by_round.get(verdict["round"])
         critic_receipt = verdict.get("critic_review")
         run = runs.get(verdict["run_id"])
         if verdict["run_id"] in critic_run_ids:
             raise ValidationError("Each consumed review round needs a distinct independent critic run")
-        artifact_uri = (f"urn:awf:critic-review:{critic_receipt.get('record_id')}"
-                        if isinstance(critic_receipt, dict) else None)
-        retained_artifact = artifact_uri in verdict.get("evidence", [])
+        if receipt is None:
+            critic_artifacts_ok = False
+            posting_evidence_ok = False
+            if not run or run["producer_id"] != verdict["producer_id"]:
+                raise ValidationError("Review verdict has no matching registered review run")
+            critic_run_ids.add(verdict["run_id"])
+            continue
+        retained_result_json = receipt.get("result_json", "")
+        result_bytes = retained_result_json.encode("utf-8")
+        result_sha256 = sha256(result_bytes)
+        observation_bytes = b""
+        try:
+            result = loads(retained_result_json)
+            completion_snapshot = loads(receipt["completion_snapshot_json"])
+            retained_verdict = loads(receipt["review_verdict_json"])
+            observation_bytes = decode_base64_bytes(
+                receipt["posting_observation_json"], "posting_observation_json")
+            retained_observation = loads(observation_bytes.decode("utf-8"))
+        except (ValidationError, UnicodeError):
+            critic_artifacts_ok = False
+            posting_evidence_ok = False
+            result = completion_snapshot = retained_verdict = retained_observation = {}
+        result_findings_valid = False
+        if (isinstance(result, dict) and isinstance(result.get("findings"), list)
+                and all(isinstance(item, dict) for item in result["findings"])):
+            try:
+                validate_findings(result["findings"], bundle["prior_findings"],
+                                  [item["id"] for item in contract["acceptance_criteria"]])
+            except ValidationError:
+                pass
+            else:
+                result_findings_valid = True
+        canonical_result = (isinstance(result, dict)
+                            and set(result) == {"reviewer", "verdict", "findings"}
+                            and result.get("reviewer") == verdict["reviewer_id"]
+                            and result.get("verdict") in {"APPROVE", "REQUEST_CHANGES"}
+                            and result_findings_valid
+                            and canonical(result).decode("utf-8") == retained_result_json)
+        completion_results = completion_snapshot.get("results", []) if isinstance(completion_snapshot, dict) else []
+        completion_rows = [row for row in completion_results
+                           if isinstance(row, dict) and row.get("reviewer_id") == verdict["reviewer_id"]]
+        completion_tuple = completion_snapshot.get("tuple", {}) if isinstance(completion_snapshot, dict) else {}
+        completion_bound = (
+            isinstance(completion_snapshot, dict)
+            and canonical(completion_snapshot).decode("utf-8") == receipt["completion_snapshot_json"]
+            and fingerprint("review-completion", completion_snapshot) == receipt["completion_snapshot_sha256"]
+            and completion_snapshot.get("cycle_id") == receipt["completion_cycle_id"]
+            and completion_snapshot.get("tuple_sha256") == receipt["completion_tuple_sha256"]
+            and completion_snapshot.get("reviewer_set_sha256") == receipt["completion_reviewer_set_sha256"]
+            and fingerprint("review-tuple", completion_tuple) == receipt["completion_tuple_sha256"]
+            and completion_tuple.get("head_sha") == verdict["head_sha"]
+            and len(completion_rows) == 1
+            and completion_rows[0].get("state") == "ACCEPTABLE"
+            and completion_rows[0].get("result_sha256") == result_sha256
+        )
+        verdict_bytes = receipt["review_verdict_json"].encode("utf-8")
+        expected_verdict_json = review_verdict_json(verdict)
+        retained_records_bound = (
+            retained_verdict == loads(expected_verdict_json)
+            and receipt["review_verdict_json"] == expected_verdict_json
+            and receipt["review_verdict_sha256"] == sha256(verdict_bytes)
+            and retained_observation == verdict.get("posting_observation")
+            and (isinstance(retained_observation, dict)
+                 and canonical(retained_observation) == observation_bytes)
+            and receipt["posting_observation_sha256"] == sha256(observation_bytes)
+        )
         run_binding_matches = run is not None and run.get("binding") == verdict["binding"]
         artifact_bound = (
-            isinstance(critic_receipt, dict)
+            canonical_result
+            and artifact_binding == receipt["critic_artifact_binding"]
+            and artifact_binding == {
+                "critic_run_id": verdict["run_id"],
+                "result_sha256": result_sha256,
+                "head_sha": verdict["head_sha"],
+                "round": verdict["round"],
+            }
+            and isinstance(critic_receipt, dict)
             and run is not None
-            and retained_artifact
             and run_binding_matches
             and run.get("created_at") == verdict["created_at"]
             and critic_receipt.get("run_id") == verdict["run_id"]
@@ -306,32 +452,40 @@ def evaluate(config, workflow, bundle, contracts, now):
             and verdict["candidate_binding"]["head_sha"] == verdict["head_sha"]
             and (verdict["round"] != terminal_round
                  or verdict["candidate_binding"]["base_sha"] == candidate["target_base_sha"])
-            and critic_receipt.get("verdict")
+            and critic_receipt.get("verdict") == result.get("verdict")
+            and critic_receipt.get("findings_sha256")
+                == fingerprint("critic-findings", result.get("findings"))
+            and result.get("verdict")
                 == ("APPROVE" if verdict["verdict"] == "PASS" else "REQUEST_CHANGES")
+            and completion_bound
+            and retained_records_bound
         )
         critic_artifacts_ok = critic_artifacts_ok and artifact_bound
         if artifact_bound:
-            if critic_receipt["record_id"] in critic_artifact_ids:
+            if receipt["completion_cycle_id"] in completion_cycle_ids:
                 critic_artifacts_ok = False
-            critic_artifact_ids.add(critic_receipt["record_id"])
-            expected_receipt_sha256 = critic_artifact_receipt_sha256(verdict)
-            artifact_entries = [entry for entry in bundle["evidence_registry"]
-                                if entry["uri"] == artifact_uri]
-            critic_artifacts_ok = critic_artifacts_ok and bool(artifact_entries) and all(
-                entry["sha256"] == expected_receipt_sha256
+            completion_cycle_ids.add(receipt["completion_cycle_id"])
+            receipt_uri = f"urn:awf:review-round-receipt:{verdict['round']}"
+            receipt_entries = [entry for entry in bundle["evidence_registry"]
+                               if entry["uri"] == receipt_uri]
+            critic_artifacts_ok = critic_artifacts_ok and bool(receipt_entries) and all(
+                entry["sha256"] == review_round_receipt_sha256(receipt)
                 and entry["producer_id"] == verdict["producer_id"]
-                for entry in artifact_entries
+                for entry in receipt_entries
             )
+            verified_artifact_bindings.append(artifact_binding)
         if verdict["round"] == terminal_round:
             terminal_findings_match = (
-                critic_receipt.get("findings_sha256")
-                == fingerprint("critic-findings", critic["findings"])
+                result.get("findings") == critic["findings"]
             )
             critic_artifacts_ok = (critic_artifacts_ok
                                    and critic_receipt["record_id"] == critic["record_id"]
-                                   and terminal_findings_match)
+                                   and terminal_findings_match
+                                   and completion_snapshot == review_submission["completion_snapshot"]
+                                   and receipt["completion_snapshot_sha256"]
+                                       == review_submission["completion_snapshot_sha256"])
             critic_artifact_verdicts_match = critic_artifact_verdicts_match and (
-                critic_receipt.get("verdict") == critic.get("verdict")
+                result.get("verdict") == critic.get("verdict")
                 and critic.get("run_id") == verdict["run_id"]
                 and critic.get("producer_id") == verdict["producer_id"]
                 and critic.get("binding") == verdict["binding"]
@@ -344,46 +498,70 @@ def evaluate(config, workflow, bundle, contracts, now):
             posting_evidence_ok = False
         else:
             observation_run = runs.get(observation.get("run_id"))
-            observation_entries = [entry for entry in bundle["evidence_registry"]
-                                   if entry["sha256"] == observation.get("comment_sha256")]
-            observation_payload = {key: observation.get(key) for key in (
-                "source", "observed_at", "producer_id", "run_id", "comment_url",
-                "body_link", "comment_sha256", "body_sha256")}
-            observation_digest_ok = observation.get("observation_sha256") == fingerprint(
-                "posting-observation", observation_payload)
-            production_collectors = set(config["merge_gate"].get(
+            registration = trusted_posting_collectors.get(observation.get("producer_id"))
+            configured_collectors = set(config["merge_gate"].get(
                 "production_posting_collector_ids", []))
             candidate_prefix = (
                 f"{candidate['host']}/{candidate['repository']}/pull/{candidate['pr_number']}"
             )
-            comment_pattern = re.compile(re.escape(candidate_prefix) + r"#issuecomment-[1-9][0-9]*$")
-            body_pattern = re.compile(
-                re.escape(candidate_prefix) + rf"#review-verdict-{verdict['round']}$"
-            )
+            expected_comment_url = f"{candidate_prefix}#issuecomment-{observation['comment_id']}"
+            expected_body_link = (f"{candidate_prefix}#review-verdict-{verdict['round']}-"
+                                  f"{verdict['record_id']}")
+            registration_shape_ok = (isinstance(registration, dict)
+                and set(registration) == {"provider_kind", "implementation_sha256",
+                                          "release_sha256", "repository_ids", "receipts"}
+                and registration.get("provider_kind") == observation.get("provider_kind")
+                and re.fullmatch(r"[0-9a-f]{64}", registration.get("implementation_sha256", ""))
+                and re.fullmatch(r"[0-9a-f]{64}", registration.get("release_sha256", ""))
+                and candidate["repository_id"] in registration.get("repository_ids", [])
+                and isinstance(registration.get("receipts"), dict))
+            observation_receipt_basis = dict(observation)
+            observation_receipt_basis["collector_receipt_sha256"] = "0" * 64
+            observation_binding_sha256 = sha256(canonical(observation_receipt_basis))
+            try:
+                provider_response_bytes = decode_base64_bytes(
+                    observation.get("provider_response_bytes"), "provider_response_bytes")
+            except ValidationError:
+                provider_response_matches = False
+            else:
+                provider_response_matches = (
+                    observation.get("provider_response_sha256")
+                    == sha256(provider_response_bytes))
+            expected_collector_receipt = (posting_collector_receipt_sha256(
+                observation, observation_binding_sha256, registration)
+                if registration_shape_ok else None)
             if (bundle.get("provenance_mode") != "production_observation"
                     or observation_run is None or observation_run["role"] != "collector"
                     or observation_run["producer_id"] != observation.get("producer_id")
-                    or observation.get("producer_id") not in production_collectors
-                    or observation.get("producer_id", "").startswith(("fixture-", "generator-"))
-                    or not observation_digest_ok
+                    or not registration_shape_ok
+                    or (configured_collectors
+                        and observation.get("producer_id") not in configured_collectors)
+                    or registration["receipts"].get(observation.get("run_id"))
+                        != expected_collector_receipt
+                    or observation.get("collector_receipt_sha256") != expected_collector_receipt
+                    or observation.get("critic_artifact_binding") != artifact_binding
+                    or observation.get("review_verdict_record_id") != verdict["record_id"]
+                    or observation.get("review_verdict_sha256") != receipt["review_verdict_sha256"]
+                    or observation.get("repository_id") != candidate["repository_id"]
+                    or observation.get("pr_number") != candidate["pr_number"]
                     or observation.get("comment_url") != verdict["pr_comment_url"]
                     or observation.get("body_link") != verdict["pr_body_link"]
-                    or not comment_pattern.fullmatch(verdict["pr_comment_url"])
-                    or not body_pattern.fullmatch(verdict["pr_body_link"])
-                    or not observation_entries
-                    or not all(entry["producer_id"] == observation.get("producer_id")
-                               for entry in observation_entries)
-                    or not any(entry["producer_id"] == observation.get("producer_id")
-                               and (entry["uri"].endswith("/posting") or "/posting-" in entry["uri"])
-                               and entry["sha256"] == observation.get("observation_sha256")
-                               for entry in bundle["evidence_registry"])):
+                    or observation.get("comment_url") != expected_comment_url
+                    or observation.get("body_link") != expected_body_link
+                    or observation.get("comment_sha256")
+                        != sha256(observation.get("comment_bytes", "").encode("utf-8"))
+                    or receipt["review_verdict_json"] not in observation.get("comment_bytes", "")
+                    or observation.get("body_sha256")
+                        != sha256(observation.get("body_bytes", "").encode("utf-8"))
+                    or (f"review-verdict:{verdict['round']}:{verdict['record_id']}:"
+                        f"{receipt['review_verdict_sha256']}" not in observation.get("body_bytes", ""))
+                    or not provider_response_matches):
                 posting_evidence_ok = False
         if verdict["round"] == terminal_round:
             if isinstance(observation, dict):
                 fresh(observation["observed_at"], now, config["validation"]["max_evidence_age_seconds"])
                 posting_evidence_ok = posting_evidence_ok and (
-                    observation.get("body_sha256") == pr["body_sha256"]
-                    and observation.get("comment_sha256") in {entry["sha256"] for entry in bundle["evidence_registry"]})
+                    observation.get("body_sha256") == pr["body_sha256"])
         run = runs.get(verdict["run_id"])
         if not run or run["producer_id"] != verdict["producer_id"]:
             raise ValidationError("Review verdict has no matching registered review run")
@@ -436,6 +614,18 @@ def evaluate(config, workflow, bundle, contracts, now):
             raise ValidationError(f"Finding disposition names an unknown finding: {record['finding_id']}")
     cap_accepted = ()
     if cap_disposition is not None:
+        terminal_verdict_record = next(v for v in verdicts if v["round"] == terminal_round)
+        terminal_receipt = receipts_by_round.get(terminal_round)
+        if terminal_receipt is None:
+            critic_artifacts_ok = False
+        elif (cap_disposition["critic_artifact_binding"]
+                != terminal_verdict_record["critic_artifact_binding"]
+                or cap_disposition["review_verdict_record_id"]
+                    != terminal_verdict_record["record_id"]
+                or cap_disposition["review_verdict_sha256"]
+                    != terminal_receipt["review_verdict_sha256"]):
+            raise ValidationError(
+                "Review cap disposition must bind the exact terminal verdict and critic artifact")
         if cap_disposition["decision"] == "EXTEND_ONE_CYCLE":
             # An authenticated extension is consumed as round-cap evidence;
             # it does not itself accept residual findings into the final gate.
@@ -452,10 +642,11 @@ def evaluate(config, workflow, bundle, contracts, now):
             cap_accepted = tuple(cap_disposition["open_finding_ids"])
     open_blocking, accepted = blocking_findings(config, tier, current_findings, dispositions, candidate["head_sha"], cap_accepted)
     no_blockers = not open_blocking
-    # Tier 2 needs the critic's APPROVE; Tier 1 findings advise the owner, so a
-    # REQUEST_CHANGES verdict passes once every serious finding is dispositioned.
-    # An owner's recorded MERGE_WITH_NOTES carries the listed findings as notes in either tier.
-    lenient = tier == 1 or cap_disposition is not None
+    # An ordinary terminal critic result must approve.  Only an authenticated
+    # MERGE_WITH_NOTES cap disposition may carry the same bound artifact's
+    # REQUEST_CHANGES result forward.
+    lenient = (cap_disposition is not None
+               and cap_disposition["decision"] == "MERGE_WITH_NOTES")
     owner = bundle.get("owner_review")
     owner_run = runs.get(owner.get("run_id")) if owner is not None else None
     owner_review_ok = tier != 3 or (owner is not None
@@ -578,6 +769,7 @@ def evaluate(config, workflow, bundle, contracts, now):
                if cap_disposition is not None else [])
             + [f"Provenance: {item}" for item in provenance_problems] + [f"Local/CI parity: {item}" for item in parity_problems],
         "accepted_findings": [item["finding_id"] for item in accepted],
+        "verified_critic_artifact_bindings": verified_artifact_bindings,
         "review_submission": review_submission,
         "conclusion": "READY_FOR_OWNER_AUTHORIZATION" if all(outcomes.values()) else "NOT_READY",
         "execution_authority": False, "evaluation_mode": "offline_reference", "expires_at": expires.isoformat().replace("+00:00", "Z")}

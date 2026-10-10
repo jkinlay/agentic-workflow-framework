@@ -11,9 +11,11 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.canonical import fingerprint
-from agentic.gates import critic_artifact_receipt_sha256
+from agentic.gates import critic_artifact_receipt_sha256, evaluate
+from agentic.lifecycle import definition
 from agentic.review_tiers import review_decision
-from test_review_policy import Fixture, NOW
+from test_review_policy import (Fixture, NOW, bind_production_posting_fixture,
+                                bind_review_admission, bind_review_round_receipt)
 
 
 class ReviewTiers195GateTests(Fixture):
@@ -127,6 +129,9 @@ class ReviewTiers195GateTests(Fixture):
         self.bundle["runs"].extend(runs)
         self.bundle["critic"] = artifacts[-1]
         self.bundle["review_verdicts"] = verdicts
+        self.bundle["review_round_receipts"] = []
+        for verdict, artifact in zip(verdicts, artifacts):
+            bind_review_round_receipt(self.bundle, verdict, artifact)
 
     def _minor_finding(self):
         finding = self.finding("OPEN-P2", "MINOR", None)
@@ -163,28 +168,30 @@ class ReviewTiers195GateTests(Fixture):
         self.bundle["owner_review"] = terminal
 
     def _retain_historical_posting_body(self, body_sha256):
-        observation = self.bundle["review_verdicts"][0]["posting_observation"]
-        observation["body_sha256"] = body_sha256
-        observation["observation_sha256"] = fingerprint(
-            "posting-observation", {key: observation.get(key) for key in (
-                "source", "observed_at", "producer_id", "run_id", "comment_url",
-                "body_link", "comment_sha256", "body_sha256")}
-        )
-        posting_entry = next(
-            entry for entry in self.bundle["evidence_registry"]
-            if entry["uri"].endswith("/posting-1")
-        )
-        posting_entry["sha256"] = observation["observation_sha256"]
+        verdict = self.bundle["review_verdicts"][0]
+        receipt = self.bundle["review_round_receipts"][0]
+        observation = verdict["posting_observation"]
+        observation["body_bytes"] = (
+            "Retained historical body.\n\n"
+            f"review-verdict:1:{verdict['record_id']}:{receipt['review_verdict_sha256']}\n")
+        from agentic.canonical import sha256
+        observation["body_sha256"] = sha256(observation["body_bytes"].encode("utf-8"))
 
     def test_awf16_r2c_002_terminal_findings_sha256_must_match_critic_artifact(self):
         self._review_history(1)
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
         verdict = self.bundle["review_verdicts"][-1]
         verdict["critic_review"]["findings_sha256"] = "f" * 64
-        self.assertEqual("NOT_READY", self.gate()["conclusion"])
+        gate = evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
+        self.assertEqual("NOT_READY", gate["conclusion"])
 
     def test_awf16_r2c_002_awf16_195_r1c_001_legacy_terminal_hash_must_match(self):
         """The optional compatibility shape must still hash the substantive review."""
         self._review_history(1)
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
         self.bundle["critic"]["findings"] = [self.finding("SUBSTANTIVE-NIT", "NIT", None)]
         terminal = self.bundle["review_verdicts"][-1]
         artifact_uri = f"urn:awf:critic-review:{terminal['critic_review']['record_id']}"
@@ -194,11 +201,16 @@ class ReviewTiers195GateTests(Fixture):
             if run["run_id"] == terminal["run_id"]
         )
         terminal["critic_review"]["findings_sha256"] = fingerprint("critic-findings", [])
-        self.assertEqual("NOT_READY", self.gate()["conclusion"])
+        bind_review_admission(self.bundle)
+        gate = evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
+        self.assertEqual("NOT_READY", gate["conclusion"])
         terminal["critic_review"]["findings_sha256"] = fingerprint(
             "critic-findings", self.bundle["critic"]["findings"]
         )
-        self.assertEqual("NOT_READY", self.gate()["conclusion"])
+        gate = evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
+        self.assertEqual("NOT_READY", gate["conclusion"])
 
     def test_awf16_r2c_002_legacy_run_receipt_cannot_replace_terminal_critic_artifact(self):
         self.tier1_bundle()

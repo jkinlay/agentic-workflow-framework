@@ -1,7 +1,19 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:awf:1.2:operating-change",
   "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "created_at",
+    "instruction",
+    "before_hash",
+    "after_hash",
+    "changes",
+    "source",
+    "applied_from",
+    "sequence",
+    "previous_change_id",
+    "governance_hash"
+  ],
   "properties": {
     "id": {
       "type": "string",
@@ -9,8 +21,8 @@
     },
     "created_at": {
       "type": "string",
-      "format": "date-time",
       "minLength": 20,
+      "format": "date-time",
       "maxLength": 40
     },
     "instruction": {
@@ -40,6 +52,12 @@
       "maxItems": 64,
       "items": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "before",
+          "after"
+        ],
         "properties": {
           "path": {
             "type": "string",
@@ -48,13 +66,7 @@
           },
           "before": {},
           "after": {}
-        },
-        "required": [
-          "path",
-          "before",
-          "after"
-        ],
-        "additionalProperties": false
+        }
       }
     },
     "source": {
@@ -83,20 +95,6 @@
       "pattern": "^[0-9a-f]{64}$"
     }
   },
-  "required": [
-    "id",
-    "created_at",
-    "instruction",
-    "before_hash",
-    "after_hash",
-    "changes",
-    "source",
-    "applied_from",
-    "sequence",
-    "previous_change_id",
-    "governance_hash"
-  ],
-  "additionalProperties": false,
   "allOf": [
     {
       "if": {
@@ -122,5 +120,8 @@
         }
       }
     }
-  ]
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:operating-change",
+  "title": "Agentic Workflow 1.2 \u2014 operating-change"
 }

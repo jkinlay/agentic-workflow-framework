@@ -14,6 +14,7 @@ import uuid
 from . import ValidationError
 from .canonical import canonical, fingerprint, loads, now_text, timestamp
 from .lifecycle import transition
+from .path_containment import is_within
 
 DDL = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -49,7 +50,7 @@ class Store:
         if self.path.exists() and self.path.stat().st_nlink > 1:
             raise ValidationError("State file has multiple hardlinks")
         for worktree in worktree_roots:
-            if self.path.is_relative_to(Path(worktree).resolve()):
+            if is_within(self.path, Path(worktree).resolve()):
                 raise ValidationError("Trusted state must be outside worker worktrees")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.project_id = project_id

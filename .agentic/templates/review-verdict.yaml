@@ -20,6 +20,12 @@
     "tier": 1,
     "round": 1,
     "head_sha": "0000000000000000000000000000000000000000",
+    "critic_artifact_binding": {
+      "critic_run_id": "00000000-0000-0000-0000-000000000000",
+      "result_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "head_sha": "0000000000000000000000000000000000000000",
+      "round": 1
+    },
     "reviewer_id": "UNFILLED",
     "pr_comment_url": "urn:awf:UNFILLED",
     "pr_body_link": "urn:awf:UNFILLED",
@@ -29,11 +35,30 @@
       "observed_at": "1970-01-01T00:00:00Z",
       "producer_id": "UNFILLED",
       "run_id": "00000000-0000-0000-0000-000000000000",
+      "provider_kind": "github",
+      "critic_artifact_binding": {
+        "critic_run_id": "00000000-0000-0000-0000-000000000000",
+        "result_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "head_sha": "0000000000000000000000000000000000000000",
+        "round": 1
+      },
+      "review_verdict_record_id": "00000000-0000-0000-0000-000000000000",
+      "review_verdict_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "repository_id": 1,
+      "pr_number": 1,
+      "comment_id": 1,
       "comment_url": "urn:awf:UNFILLED",
-      "body_link": "urn:awf:UNFILLED",
+      "comment_bytes": "UNFILLED",
       "comment_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "body_link": "urn:awf:UNFILLED",
+      "body_bytes": "UNFILLED",
       "body_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "observation_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "provider_response_bytes": {
+        "encoding": "base64",
+        "data": "UNFILLED"
+      },
+      "provider_response_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "collector_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "owner_review": false,
     "owner_id": 1,

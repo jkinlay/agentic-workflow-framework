@@ -35,6 +35,7 @@
         "state": "MISSING"
       }
     ],
-    "completion_snapshot_sha256": null
+    "completion_snapshot_sha256": null,
+    "exported_round_receipts": []
   }
 }
