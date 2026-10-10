@@ -37,6 +37,10 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
 
 
 def validate_config(config, workflow, contracts):
+    tier3_cap = (config.get("execution", {}).get("risk_tiers", {})
+                 .get("tier3_review", {}).get("max_rounds"))
+    if tier3_cap is not None and (type(tier3_cap) is not int or tier3_cap > 3):
+        raise ValidationError("$.execution.risk_tiers.tier3_review.max_rounds: mandatory maximum is 3")
     report = inspect_config(config, workflow, contracts)
     if report['status'] != 'ACCEPTED':
         raise ValidationError('Unresolved configuration values: ' + '; '.join(
