@@ -711,6 +711,9 @@ class ContinuousControllerStore:
                      "Dispatch receipt is stale relative to the durable intent or reconciliation")
             db.execute("UPDATE controller_dispatch SET status='ACCEPTED',receipt_json=?,updated_at=? WHERE dispatch_id=?",
                        (canonical(receipt).decode(), now, dispatch_id))
+            if reconcile:
+                revision = int(self._meta(db, "revision")) + 1
+                db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
             return receipt
 
     def mark_dispatch_unknown(self, dispatch_id, now):
