@@ -812,7 +812,7 @@ def catalog():
     schemas["project-config"]["properties"]["execution"]["properties"]["independent_reviewers"] = obj({
         "count": integer(0), "allocation": enum("one_per_stream", "shared_critic")}, required=["allocation"])
     # Optional for upgraded configurations; absence means the documented
-    # 15-minute controller status cadence.
+    # 10-minute / 600-second controller status cadence.
     schemas["project-config"]["properties"]["controller"]["required"].remove("status_cadence_seconds")
     # This allowlist can only narrow a runtime-owned registry.  It is optional
     # for migrated configurations and cannot register a collector by itself.

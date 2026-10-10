@@ -434,13 +434,15 @@ class ContinuousControllerStore:
         # outcome is observed. Otherwise a priority change can move the same
         # ticket to another stream and create a second dispatch while the first
         # may still be running.
-        reserved_dispatches, capacity_intents = {}, []
+        reserved_dispatches, capacity_intents, unknown_dispatches = {}, [], {}
         for intent in db.execute(
-                "SELECT ticket,stream_id,status FROM controller_dispatch "
+                "SELECT dispatch_id,ticket,stream_id,exact_tuple,status FROM controller_dispatch "
                 "WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN')"):
             reserved_dispatches.setdefault(intent["ticket"], set()).add(intent["stream_id"])
             if intent["status"] in {"IN_FLIGHT", "UNKNOWN"}:
                 capacity_intents.append((intent["stream_id"], intent["ticket"]))
+            if intent["status"] == "UNKNOWN":
+                unknown_dispatches.setdefault(intent["stream_id"], []).append(intent)
         reserved_tickets = set(reserved_dispatches)
         working, held_paths = [], []
         for row in rows:
@@ -472,6 +474,23 @@ class ContinuousControllerStore:
                           item["disposition"] == "BLOCKED"), key=lambda item: (item["priority"], item["ticket"]))
         free_rows = [row for row in rows if row not in working]
         for row in free_rows:
+            matching_unknown = next((intent for intent in unknown_dispatches.get(row["stream_id"], [])
+                                     if row["ticket"] == intent["ticket"] and
+                                     row["exact_tuple"] == intent["exact_tuple"] and
+                                     intent["ticket"] in inventory and
+                                     inventory[intent["ticket"]]["disposition"] != "COMPLETE"), None)
+            if matching_unknown is not None:
+                item = inventory[matching_unknown["ticket"]]
+                blocked_item = {
+                    **item,
+                    "exact_tuple": matching_unknown["exact_tuple"],
+                    "reason": (f"Dispatch outcome unknown for {matching_unknown['ticket']} "
+                               f"({matching_unknown['dispatch_id']}); reconcile before retry"),
+                    "next_action": "Observe the exact durable dispatch intent before dispatching more work on this stream",
+                    "resume_trigger": "the host returns a fresh observation for this dispatch and its ticket",
+                }
+                self._update_stream(db, row["stream_id"], "BLOCKED", blocked_item, now)
+                continue
             selected = None
             for item in eligible:
                 prerequisites = (item["dependencies_satisfied"] and item["budget_available"] and
