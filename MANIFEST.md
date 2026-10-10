@@ -2,7 +2,7 @@
 
 445 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `683148c17ff7fc78d414e1b9eb80ab8a11b89aa6ae81eeb7951e7fda67d8baa8`
+MANIFEST.json SHA-256: `6dc81565ba9319dc56fdc1062f24860c833f3ae9c0644558e38b120797a0d686`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -152,9 +152,9 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/schemas/controller-status-digest.schema.json` | `7fecbb3490e6aa2c6892538faa43fe1da3f49de6c901acf6f2f0cd8b5a7d20b8` |
 | `.agentic/schemas/critic-review.schema.json` | `1b27b856ffd71225feab1ff2fffed64a3a8029e9cd12262beb50e9ebce8f963c` |
 | `.agentic/schemas/doctor-output.schema.json` | `3794becf14843c782d689a83a3fc583b77828c21aaca7ed83fa238f85310da7e` |
-| `.agentic/schemas/evidence-bundle.schema.json` | `c46d8f44fc35ac5562391bcdfe6f4ada185de5a901b07667e78db0294d311cee` |
+| `.agentic/schemas/evidence-bundle.schema.json` | `9781e2f1062261b8f340f7cfe936bc13dc488c223cfe1723c1d28701d2000a74` |
 | `.agentic/schemas/failure.schema.json` | `26f8b625849912ee6f69d9d98ea7865fbc0ddf8456850e38e3281100cf28f627` |
-| `.agentic/schemas/final-gate.schema.json` | `7e66d276f2c236b3ff32806467f3421b5849126847374d2fd2a530675865ab99` |
+| `.agentic/schemas/final-gate.schema.json` | `2adbc27499fafb045a7d7a57307908fcb22dc9d5aa38745667d2d5b01154f32a` |
 | `.agentic/schemas/finding-disposition.schema.json` | `f1d2b66331284297a49a549c4aba57af56b2016c23319323265c20bafa59bdce` |
 | `.agentic/schemas/host-lease.schema.json` | `8b2191c2cfd965d96e8d2e0bc506ab65af6575deb7fc1758649cf63d859262a2` |
 | `.agentic/schemas/jira-progress.schema.json` | `ced55c5167ffd313f1e312d798c41fcd96a443f88596125c53db65f7c6975a6b` |
@@ -162,24 +162,24 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/schemas/jira-transition.schema.json` | `821ee7838dbb33cdec5f4bd40afad420f61f69383195e14fb2a4d954ce163f1d` |
 | `.agentic/schemas/merge-attempt.schema.json` | `a3aa129652b705649fdb6c5e50f1915854017e89c180f7716acadb24e9fa36ba` |
 | `.agentic/schemas/merge-result.schema.json` | `b36d8ce3bcab84525ab0d63f685280c92d53b83262de23a5da4267435eb2aabd` |
-| `.agentic/schemas/operating-change.schema.json` | `a00dda13e8ca3906e67d9dd7d630e992b16d6d04418eb922fe2640f80b2e030f` |
-| `.agentic/schemas/operating-config.schema.json` | `63142d7aafa53273238f1b5e88483d1d1afed1ac1f68c9cb180b2575e8590594` |
-| `.agentic/schemas/operating-epics.schema.json` | `94136229bd4769a411f573e6ed67730a9bd622e8a290e04a5b14d6b49b95ff76` |
-| `.agentic/schemas/operating-recommendation.schema.json` | `e2ccd8df0a842d7f940ff3d9b94edd8cd41f48867ae14ac80032cf9854d373e9` |
+| `.agentic/schemas/operating-change.schema.json` | `fd835900c288494850f8ce4aeafd1102ea6a8b1042e2af1bf9193749b1a503b0` |
+| `.agentic/schemas/operating-config.schema.json` | `d98e924e3960eb6956247c48ba35009334b8d223cafad35d4c85c28df27c6cb9` |
+| `.agentic/schemas/operating-epics.schema.json` | `64b87be3760a1c31fa2656682052896cbd3897ec19a53dde6fbc4ff6f03dc3db` |
+| `.agentic/schemas/operating-recommendation.schema.json` | `2ce179328ab6996c745829165147872652631fe1e36d8189684be9a7d6661e24` |
 | `.agentic/schemas/owner-authorization.schema.json` | `f05d3b05fc4e9910084e3b370aa131380abdbfa23bd54aa8ac032bcdbea00150` |
 | `.agentic/schemas/owner-closure.schema.json` | `04ff275d512e296c7fe31d6ca808db10f9e1cfbbc292a908e8e4a46c2c37ef9a` |
 | `.agentic/schemas/pr-snapshot.schema.json` | `a51558e568d233c67e125efab398287060aaae4addf77b7f3418e0dc01fdce55` |
-| `.agentic/schemas/private-deny-baseline-authorization.schema.json` | `0b151125fa5371172a58a8ee92b6f2fcc19fb0b9317fb764b11dea39a85a7a83` |
-| `.agentic/schemas/private-deny-scan.schema.json` | `8df13068646807846d0a78db65eb60fcfe67c26f7c91f990b08bfa295a8ac161` |
+| `.agentic/schemas/private-deny-baseline-authorization.schema.json` | `97b068534a24606566d3d1b8adc63a4c87a05246f2abb3ef78d06e5d84c81918` |
+| `.agentic/schemas/private-deny-scan.schema.json` | `a9b49b7362a683b393354fe71b31e9fb667bb104b88d4bfd67c1304fd9523915` |
 | `.agentic/schemas/project-config.schema.json` | `6a5afe011e440d88660f05bd1b88335e8213a055ebd14b9d347e72bc8a632e7b` |
 | `.agentic/schemas/project-state.schema.json` | `65f3f9045b57ac87255c5868d8bf1bb6e7a616e99ffd7f2f3f77131991d5bb6a` |
 | `.agentic/schemas/publication-scan.schema.json` | `943ce5dc080355feeead8aa97aca35c8acbdac87b75d6c3065c2e1753aaffac5` |
 | `.agentic/schemas/reconciliation.schema.json` | `37a89eb37109fa811a7736d164eb442fc6c11cbae7595b0dbd20a827724dbd7c` |
 | `.agentic/schemas/recovery.schema.json` | `99f476e67b6944b6871a0fb656e02d86cd02613ae4caa65bc83b38c71e85a375` |
-| `.agentic/schemas/review-cap-disposition.schema.json` | `e80b55ca4630ca5fd7783af827087da33b319fec48f77c0c86817f5c23af1002` |
-| `.agentic/schemas/review-completion.schema.json` | `0a30b47926f042eaa00d190d7a949df3dcb5625f24b3fe94bfff9fe95bba2c9b` |
+| `.agentic/schemas/review-cap-disposition.schema.json` | `7665fb02e705f1d39f8fcf5af92f2a54ffa5091f21efaa161df70662adf4ae06` |
+| `.agentic/schemas/review-completion.schema.json` | `ef71cb56285af40b08a45c966604689cfa781fdcd1dbbe6f29d11623d7ca0633` |
 | `.agentic/schemas/review-submission.schema.json` | `d5e831e2eab94f34bb403c09a9c993a7c7b8bd1acb2d437a5d8c47bce28474e1` |
-| `.agentic/schemas/review-verdict.schema.json` | `fd353ec2785fda57cea0791090753309ee40e6243f9a3863ebd11483d2c18184` |
+| `.agentic/schemas/review-verdict.schema.json` | `12172887f67fda6f4793bb06483890463dafed688d7bd6b2fcc4a8aa19839afb` |
 | `.agentic/schemas/risk-classification.schema.json` | `40c4da65597337d545ac7407c70bcded2fe1a8097a321456aaca9a13feba2b2c` |
 | `.agentic/schemas/rules-activation-decision.schema.json` | `c547f6f65e9d4ad70566472925d9817796a5291fa16f5baf7689d0d5522e49b2` |
 | `.agentic/schemas/run-attestation.schema.json` | `aac7597bf36ee9e7f2fbfb793515b644989e25293c13b3d1e6844ef22f797d24` |
@@ -310,8 +310,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_review_loop.py` | `49006b5d464f1f9b794e79d961fc329a901214cf8fa813ec6defc51d6574d01b` |
 | `.agentic/tests/test_review_policy.py` | `9047bd683451f462078fa3e0edffebb50d37e33a7e3c2e433f5369f8a1e5c29e` |
 | `.agentic/tests/test_review_tiers_194.py` | `5d6fbb5f4e45af267574bcc225e1e1dd2d4fe6e8b6e0cbe2f28b56c72417c516` |
-| `.agentic/tests/test_review_tiers_195_evidence_binding.py` | `3bf956f9f7f33443066a8624f360bfb88a4a68a4a20173e3a695d27eeb01e30b` |
-| `.agentic/tests/test_review_tiers_195_final.py` | `76a95785affe18111d9d2c2f4bd53caf030e2f09233ca7a1c17f4e4c4c5a34b2` |
+| `.agentic/tests/test_review_tiers_195_evidence_binding.py` | `afa103a502db922a1afd9b668c68208bb675c09775912d6cc0cb4e937f806192` |
+| `.agentic/tests/test_review_tiers_195_final.py` | `dd95c5b1e7d093e33caf1b3c0d469f27aee6fc2368e514ad0848e4a1e7bc5b0d` |
 | `.agentic/tests/test_review_tiers_195_gates.py` | `ac36ce9df95d68e7ba22aeb8b67ef8b89dbd6e801a90e99d177dc3b4d6ea3520` |
 | `.agentic/tests/test_routine_publication.py` | `006a1f4203876510a9aae96f3be66a579d5b14cf4630f6aa3ede1b5a297d32f1` |
 | `.agentic/tests/test_routing_cli.py` | `3961ba8354548fb84917514011b3b788e333f2b6165b7eb63bd0e3c13715ab4f` |
@@ -416,7 +416,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/bootstrap_project.py` | `34a6480ce63d44fe4966a151e5dc90d30cd18947b023f0893a00c631480f5eb9` |
 | `scripts/build_release.py` | `f26ecb1b162391b14a1bfd05f6b18f7e9131ab29d2a58261646b220dd3dfb49b` |
 | `scripts/build_skill_distribution.py` | `744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8` |
-| `scripts/generate_contracts.py` | `7006738ddbc2b89142e4d4ae84eeb699c367cf268ed034308c48585c556bdd04` |
+| `scripts/generate_contracts.py` | `457c26d9914123730f05a04224f4fd0ae632fb4242f02b3cd3947ac300617175` |
 | `scripts/generate_examples.py` | `214ea33b1509f7504617ae978fdd24aae030cc89bf5e160b07971c113ff5418a` |
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |

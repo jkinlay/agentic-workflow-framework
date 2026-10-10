@@ -645,7 +645,7 @@
           "round": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 3
+            "maximum": 9007199254740991
           }
         }
       },

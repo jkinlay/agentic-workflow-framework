@@ -109,7 +109,7 @@
     "round": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 3
+      "maximum": 9007199254740991
     },
     "head_sha": {
       "type": "string",
@@ -144,7 +144,7 @@
         "round": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 3
+          "maximum": 9007199254740991
         }
       }
     },
@@ -245,7 +245,7 @@
             "round": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 3
+              "maximum": 9007199254740991
             }
           }
         },
