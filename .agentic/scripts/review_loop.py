@@ -17,6 +17,7 @@ from agentic.review_loop import (LoopStore, complete_first_draft,
     resume, resume_first_draft, tick, require)
 from agentic.review_first_draft import (publish_tested_tree, render_first_draft_body,
     republish_prepared_tree, run_first_draft)
+from agentic.review_qualification import collect_qualification
 from agentic.providers.github_review_host import HostDriver, load_config
 from agentic.interaction import loop_next_step, next_step, render_markdown, rejected_next_step
 
@@ -28,6 +29,9 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='command',required=True)
     for name in ['check','enroll','tick','status']:
         sub.add_parser(name)
+    p = sub.add_parser('qualify')
+    p.add_argument('--confirm-disposable-pr', action='store_true', required=True,
+                   help='Confirm the configured open PR exists only for live host qualification')
     p = sub.add_parser('pause')
     p.add_argument('--reason',required=True)
     p = sub.add_parser('resume')
@@ -39,11 +43,19 @@ def main(argv=None):
     store = None
     try:
         digest = verify_installed(ROOT)
-        config = load_config(args.config,ROOT)
+        config = load_config(args.config, ROOT,
+                             require_qualification=args.command != 'qualify')
         require(config['runtime_manifest_sha256'] == digest, 'Runtime is not the enrolled approved release')
         driver = HostDriver(config,ROOT)
         store = LoopStore(config['state_dir'])
-        if args.command == 'check':
+        if args.command == 'qualify':
+            value = collect_qualification(
+                config, driver, store,
+                confirm_disposable_pr=args.confirm_disposable_pr)
+            value['next_step'] = next_step(
+                'Inspect the retained probes. Only after PASS, pin evidence_sha256 '
+                'and set all four qualification flags true; this command never edits configuration.')
+        elif args.command == 'check':
             candidate = driver.snapshot()
             driver.preflight(candidate)
             value = {'status':'PREFLIGHT_PASSED','candidate':candidate,'live_model_tested':False,'scheduler_tested':False,
@@ -174,7 +186,8 @@ def main(argv=None):
         if 'phase' in value:
             value['next_step']=loop_next_step(value)
         print(json.dumps(value,indent=2) if args.format=='json' else render_markdown(value))
-        return 2 if value.get('phase') == 'PAUSED' else 0
+        return 2 if (value.get('phase') == 'PAUSED'
+                     or value.get('result') == 'FAIL') else 0
     except Exception as exc:
         reason=f'{type(exc).__name__}: {exc}'
         value={'status':'REJECTED','reason':reason,'merge_authorized':False,'next_step':rejected_next_step(reason)}
