@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:external-resource-receipt",
+  "title": "Agentic Workflow 1.2 — external-resource-receipt (operator local)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "visibility", "receipt_id", "resource_alias", "task_id", "principal", "session_id", "observed_at", "permission", "state", "error_layer", "command_sha256", "attempts", "evidence", "private_mapping_fingerprint", "execution_authority"],
+  "properties": {
+    "format": {"const": "awf-external-resource-receipt-1"},
+    "visibility": {"const": "operator_local"},
+    "receipt_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "resource_alias": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "task_id": {"type": "string", "minLength": 1},
+    "principal": {"type": "string", "minLength": 1},
+    "session_id": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["access", "scope", "expires_at", "source"],
+      "properties": {
+        "access": {"const": "read_only"},
+        "scope": {"enum": ["one_command", "task", "application_session", "project"]},
+        "expires_at": {"oneOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+        "source": {"enum": ["existing_grant", "narrow_approval"]}
+      }
+    },
+    "state": {"enum": ["UNOBSERVED", "SANDBOX_BLOCKED", "PROCESS_START_FAILED", "COMMAND_NONZERO", "MAPPING_MISSING", "PATH_NOT_FOUND", "ACCESS_DENIED", "INVALID_OUTPUT", "READ_VERIFIED", "STALE", "MAPPING_CHANGED"]},
+    "error_layer": {"type": "string", "minLength": 1},
+    "command_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "attempts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["attempted_at", "command_sha256", "state", "error_layer", "exit_code"],
+        "properties": {
+          "attempted_at": {"type": "string", "format": "date-time"},
+          "command_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "state": {"enum": ["UNOBSERVED", "SANDBOX_BLOCKED", "PROCESS_START_FAILED", "COMMAND_NONZERO", "MAPPING_MISSING", "PATH_NOT_FOUND", "ACCESS_DENIED", "INVALID_OUTPUT", "READ_VERIFIED", "STALE", "MAPPING_CHANGED"]},
+          "error_layer": {"type": "string", "minLength": 1},
+          "exit_code": {"oneOf": [{"type": "integer"}, {"type": "null"}]}
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["listing_limit", "listing_count", "sample_metadata_observed", "bytes_read", "accessibility", "data_validity"],
+      "properties": {
+        "listing_limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "listing_count": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "sample_metadata_observed": {"type": "boolean"},
+        "bytes_read": {"type": "integer", "minimum": 0, "maximum": 1},
+        "accessibility": {"enum": ["CONFIRMED", "UNCONFIRMED"]},
+        "data_validity": {"const": "UNCONFIRMED"}
+      }
+    },
+    "private_mapping_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "execution_authority": {"const": false}
+  }
+}
