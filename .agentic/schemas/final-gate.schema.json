@@ -17,7 +17,9 @@
     "risk_tier",
     "tier_justification",
     "closure_standard",
+    "risk_classification",
     "accepted_findings",
+    "verified_critic_artifact_bindings",
     "conclusion",
     "execution_authority",
     "evaluation_mode",
@@ -106,6 +108,7 @@
       "additionalProperties": false,
       "required": [
         "review_completion",
+        "verdict_posting",
         "acceptance_criteria",
         "scope",
         "critic_current_tuple",
@@ -123,6 +126,33 @@
       ],
       "properties": {
         "review_completion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "evidence"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "PASS",
+                "FAIL",
+                "N_A"
+              ]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "verdict_posting": {
           "type": "object",
           "additionalProperties": false,
           "required": [
@@ -559,7 +589,8 @@
     "risk_tier": {
       "enum": [
         1,
-        2
+        2,
+        3
       ]
     },
     "tier_justification": {
@@ -572,11 +603,51 @@
         "DECLARED_LIMITATIONS"
       ]
     },
+    "risk_classification": {
+      "$ref": "urn:awf:1.2:risk-classification"
+    },
     "accepted_findings": {
       "type": "array",
       "items": {
         "type": "string",
         "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "verified_critic_artifact_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "critic_run_id",
+          "result_sha256",
+          "head_sha",
+          "round"
+        ],
+        "properties": {
+          "critic_run_id": {
+            "type": "string",
+            "minLength": 1,
+            "format": "uuid"
+          },
+          "result_sha256": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "head_sha": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "round": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        }
       },
       "minItems": 0,
       "uniqueItems": true
@@ -616,6 +687,13 @@
           "gates": {
             "properties": {
               "review_completion": {
+                "properties": {
+                  "result": {
+                    "const": "PASS"
+                  }
+                }
+              },
+              "verdict_posting": {
                 "properties": {
                   "result": {
                     "const": "PASS"

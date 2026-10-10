@@ -56,6 +56,10 @@ UUID = text(format="uuid")
 TIME = text(format="date-time")
 BOOL = {"type": "boolean"}
 STRINGS = arr(text(), uniqueItems=True)
+BASE64_BYTES = obj({
+    "encoding": const("base64"),
+    "data": text(4, pattern="^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"),
+})
 TRUE, FALSE = const(True), const(False)
 ROLES = ["controller", "worker", "critic", "specialist", "collector", "owner", "verifier"]
 STATES = ["BACKLOG", "READY", "DISPATCHED", "IN_PROGRESS", "PR_DRAFT", "READY_FOR_CRITIC",
@@ -76,6 +80,19 @@ EVIDENCE = arr(text(format="uri"), 1, uniqueItems=True)
 BINDING = obj({"project_id": UUID, "repository_id": integer(1), "issue_id": text(),
                "requirements_hash": DIGEST, "contract_hash": DIGEST, "policy_hash": DIGEST,
                "candidate_id": DIGEST})
+CRITIC_ARTIFACT_BINDING = obj({"critic_run_id": UUID, "result_sha256": DIGEST,
+                               "head_sha": SHA, "round": integer(1)})
+REVIEW_ROUND_RECEIPT = obj({
+    "critic_artifact_binding": CRITIC_ARTIFACT_BINDING,
+    "result_json": text(2), "completion_cycle_id": UUID,
+    "completion_tuple_sha256": DIGEST, "completion_reviewer_set_sha256": DIGEST,
+    "completion_snapshot_json": text(2), "completion_snapshot_sha256": DIGEST,
+    "review_verdict_json": text(2), "review_verdict_sha256": DIGEST,
+    "posting_observation_json": BASE64_BYTES, "posting_observation_sha256": DIGEST,
+})
+# Legacy receipts stay schema-readable only so the semantic evaluator can
+# return NOT_READY for absent retained bytes.  Current exports always include it.
+REVIEW_ROUND_RECEIPT["required"].remove("result_json")
 JIRA_PROVIDER = obj({"cloud_id": text(), "site": text(format="uri"), "project_id": text(),
                      "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
                      "controller_actor_id": text()})
@@ -99,7 +116,7 @@ NO_BLOCKERS = {"not": {"contains": {"type": "object", "required": ["severity", "
                                      "properties": {"severity": enum("BLOCKER", "MAJOR"),
                                                     "status": enum("OPEN", "DISPUTED")}}}}
 AC_RESULT = obj({"id": text(), "verdict": enum("PASS", "FAIL", "UNKNOWN"), "evidence": EVIDENCE})
-GATE_NAMES = ["review_completion", "acceptance_criteria", "scope", "critic_current_tuple", "specialist_reviews",
+GATE_NAMES = ["review_completion", "verdict_posting", "acceptance_criteria", "scope", "critic_current_tuple", "specialist_reviews",
               "required_ci", "ci_candidate_binding", "blocking_threads_zero", "dependencies",
               "merge_compatibility", "ticket_snapshot_current", "review_coverage", "provenance", "local_ci_parity",
               "publication_safety"]
@@ -107,6 +124,206 @@ GATE_NAMES = ["review_completion", "acceptance_criteria", "scope", "critic_curre
 
 def catalog():
     schemas = {}
+    operating_model = obj({
+        "model": text(maxLength=256),
+        "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
+        "pinned": BOOL,
+    }, required=["model", "reasoning_effort"])
+    operating_stream = obj({
+        "worker": operating_model,
+        "reviewer": operating_model,
+    }, required=["worker"])
+    operating_epic_stream = {
+        "type": "object", "minProperties": 1,
+        "properties": {
+        "worker": {"$ref": "#/properties/controller"},
+        "reviewer": {"$ref": "#/properties/controller"},
+        },
+        "additionalProperties": False,
+    }
+    operating_epic_override = {
+        "type": "object", "minProperties": 1,
+        "properties": {
+        "streams": {
+            "type": "object", "minProperties": 1,
+            "patternProperties": {"^[A-F]$": operating_epic_stream},
+            "additionalProperties": False,
+        },
+        "controller": {"$ref": "#/properties/controller"},
+        "specialist": {"$ref": "#/properties/specialist"},
+        "critic": {"$ref": "#/properties/critic"},
+        },
+        "additionalProperties": False,
+    }
+    operating_streams = obj({
+        "count": integer(1, maximum=6),
+        **{label: operating_stream for label in "ABCDEF"},
+    }, required=["count"])
+    reviewer_requirements = []
+    for count, label in enumerate("ABCDEF", 1):
+        reviewer_requirements.append({
+            "if": {"properties": {"streams": {"properties": {
+                "count": {"minimum": count},
+            }}}, "required": ["streams"]},
+            "then": {"properties": {"streams": {"properties": {
+                label: {"required": ["reviewer"]},
+            }}}},
+        })
+    schemas["operating-config"] = obj({
+        "version": const(1),
+        "source": {"type": "string", "pattern": "^(default|user|recommendation:R-[0-9a-f]{24})$"},
+        "epic_overrides": {
+            "type": "object", "maxProperties": 1000,
+            "propertyNames": {"maxLength": 80},
+            "patternProperties": {
+                "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$": operating_epic_override,
+            },
+            "additionalProperties": False,
+        },
+        "streams": operating_streams,
+        "controller": operating_model,
+        "specialist": operating_model,
+        "simple_worker": obj({**operating_model["properties"], "enabled": BOOL},
+                             required=["model", "reasoning_effort", "enabled"]),
+        "critic": operating_model,
+    }, required=["version", "source", "streams", "controller", "specialist", "simple_worker"],
+       allOf=[{"if": {"not": {"required": ["critic"]}},
+               "then": {"allOf": reviewer_requirements}}])
+    schemas["operating-change"] = obj({
+        "id": {"type": "string", "pattern": "^C-[0-9a-f]{32}$"},
+        "created_at": text(20, format="date-time", maxLength=40),
+        "instruction": {"type": ["string", "null"], "maxLength": 65536},
+        "before_hash": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                                    {"type": "null"}]},
+        "after_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "changes": {"type": "array", "maxItems": 64,
+                    "items": obj({"path": text(maxLength=128), "before": {}, "after": {}})},
+        "source": {"type": "string", "pattern": "^(default|user|recommendation:R-[0-9a-f]{24})$"},
+        "applied_from": enum("chat", "bootstrap"),
+        "sequence": {"type": "integer", "minimum": 1},
+        "previous_change_id": {"type": ["string", "null"],
+                               "pattern": "^C-[0-9a-f]{32}$"},
+        "governance_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    }, allOf=[{
+        "if": {"properties": {"applied_from": const("chat")}},
+        "then": {"properties": {"instruction": text()}},
+        "else": {"properties": {"instruction": {"type": "null"}}},
+    }])
+    schemas["operating-epics"] = obj({
+        "schema_version": const(1),
+        "epics": {"type": "array", "maxItems": 1000, "items": obj({
+            "id": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"},
+            "title": text(maxLength=2048),
+            "scope": {"anyOf": [
+                {"type": "null"},
+                {"type": "array", "maxItems": 64,
+                 "items": {"type": "string", "maxLength": 512}},
+            ]},
+            "risk_flags": {"type": "array", "uniqueItems": True, "maxItems": 32,
+                           "items": text(maxLength=128)},
+            "complexity": enum("low", "medium", "high"),
+            "uncertainty": enum("low", "medium", "high"),
+            "verification": enum("strong", "weak", "none"),
+        }, required=["id", "title", "scope"])},
+    })
+    schemas["operating-recommendation"] = obj({
+        "id": {"type": "string", "pattern": "^R-[0-9a-f]{24}$"},
+        "created_at": text(20, format="date-time", maxLength=40),
+        "operating_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "governance_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "inputs": obj({
+            "epics": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "inventory": {"anyOf": [
+                {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                {"type": "null"},
+            ]},
+        }),
+        "input_files": obj({
+            "epics": {"type": ["string", "null"]},
+            "inventory": {"type": ["string", "null"]},
+        }),
+        "input_content": obj({
+            "epics": {"type": "string", "maxLength": 1048576},
+            "inventory": {"type": ["string", "null"], "maxLength": 1048576},
+        }),
+        "rows": {"type": "array", "maxItems": 14016, "items": obj({
+            "path": text(maxLength=128), "current": {}, "recommended": {},
+            "reason": text(maxLength=4096),
+        })},
+        "epic_count": {"type": "integer", "minimum": 0},
+        "ticket_count": {"type": "integer", "minimum": 0},
+        "execution_authority": FALSE,
+        "applied": FALSE,
+    })
+    private_sha = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    private_count = integer(0, maximum=1000000)
+    private_candidate = obj({
+        "repository_id": {"type": "integer", "minimum": 1},
+        "pr_number": {"type": "integer", "minimum": 1},
+        "base_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "tree_sha": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "provider_pr_body_sha256": {"$ref": "#/$defs/sha256"},
+    })
+    schemas["private-deny-scan"] = obj({
+        "format": const("awf-private-deny-scan-receipt-1"),
+        "policy_id": const("exact-current-tree-baseline-v1"),
+        "status": enum("PASS", "BLOCKED"),
+        "classification": enum("NO_MATCHES", "BASE_PREEXISTING_UNCHANGED"),
+        "candidate": {"$ref": "#/$defs/candidate"},
+        "provider_pr_body_sha256": {"$ref": "#/$defs/sha256"},
+        "mapping_sha256": {"$ref": "#/$defs/sha256"},
+        "scanner_sha256": {"$ref": "#/$defs/sha256"},
+        "counts": obj({name: private_count for name in (
+            "history_matches", "diff_added_matches", "diff_deleted_matches",
+            "body_matches", "base_matches", "head_matches",
+        )}),
+        "paths": {"type": "array", "items": obj({
+            "path": text(maxLength=512, pattern="^[A-Za-z0-9._ -]+(/[A-Za-z0-9._ -]+)*$"),
+            "base_count": private_count, "head_count": private_count,
+            "multiset_equal": BOOL,
+        })},
+        "unscanned": {"type": "array", "maxItems": 10000,
+                      "items": text(maxLength=1024)},
+        "scan_complete": BOOL,
+        "baseline_authorization_sha256": {"oneOf": [
+            {"type": "null"}, {"$ref": "#/$defs/sha256"},
+        ]},
+        "private_match_values_included": FALSE,
+        "execution_authority": FALSE,
+    }, allOf=[
+        {"if": {"properties": {"status": const("PASS")}},
+         "then": {"properties": {
+            "unscanned": {"maxItems": 0}, "scan_complete": const(True),
+        }}},
+        {"if": {"properties": {"classification": const("NO_MATCHES")}},
+         "then": {"properties": {
+            "counts": {"properties": {"base_matches": const(0),
+                                         "head_matches": const(0)}},
+            "paths": {"maxItems": 0},
+            "baseline_authorization_sha256": {"type": "null"},
+        }}},
+        {"if": {"properties": {"status": const("PASS"),
+                                  "classification": const("BASE_PREEXISTING_UNCHANGED")}},
+         "then": {"properties": {
+             "counts": {"properties": {
+                 "base_matches": {"minimum": 1}, "head_matches": {"minimum": 1},
+                 "history_matches": const(0), "diff_added_matches": const(0),
+                 "diff_deleted_matches": const(0), "body_matches": const(0),
+             }},
+             "paths": {"minItems": 1},
+             "baseline_authorization_sha256": {"$ref": "#/$defs/sha256"},
+         }}},
+    ], **{"$defs": {"sha256": private_sha, "candidate": private_candidate}})
+    schemas["private-deny-baseline-authorization"] = obj({
+        "format": const("awf-private-deny-baseline-authorization-1"),
+        "candidate": {"$ref": "urn:awf:1.2:private-deny-scan#/$defs/candidate"},
+        "provider_pr_body_sha256": {"$ref": "urn:awf:1.2:private-deny-scan#/$defs/sha256"},
+        "mapping_sha256": {"$ref": "urn:awf:1.2:private-deny-scan#/$defs/sha256"},
+        "authorized_by": text(maxLength=512),
+        "authorization_ref": text(maxLength=512),
+    })
     schemas["candidate"] = obj({"host": text(format="uri"), "repository_id": integer(1),
         "repository": text(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"),
         "pr_number": integer(1), "target_base_branch": text(), "head_sha": SHA,
@@ -130,6 +347,8 @@ def catalog():
                 "state": const("COLLECTING"), "current": const(True),
                 "counts": {"properties": {"failed": const(0), "stale": const(0), "outstanding": const(0)}},
                 "reviewers": {"items": {"properties": {"state": const("ACCEPTABLE")}}}}}}])
+    schemas["review-completion"]["properties"]["exported_round_receipts"] = arr(
+        REVIEW_ROUND_RECEIPT, uniqueItems=True)
     completion_snapshot = obj({"cycle_id": UUID, "tuple": review_tuple, "tuple_sha256": DIGEST,
         "required_reviewers": arr(text(), 1, uniqueItems=True), "reviewer_set_sha256": DIGEST,
         "counts": review_counts, "results": arr(obj({"reviewer_id": text(), "state": const("ACCEPTABLE"),
@@ -143,6 +362,35 @@ def catalog():
             "tuple_sha256": DIGEST, "reviewer_set_sha256": DIGEST,
             "completion_snapshot_sha256": DIGEST, "aggregate_sha256": DIGEST}),
         "execution_authority": FALSE})
+    classification_evidence = {str(tier): STRINGS for tier in (1, 2, 3)}
+    classification_evidence_schema = obj(classification_evidence, minProperties=1)
+    classification_evidence_schema["required"] = []
+    schemas["risk-classification"] = obj({
+        "tier": enum(1, 2, 3), "matched_tiers": arr(enum(1, 2, 3), 1, uniqueItems=True),
+        "evidence": classification_evidence_schema, "rule": text(), "risk_flags": STRINGS})
+    schemas["review-verdict"] = obj({
+        "record_id": UUID, "created_at": TIME, "producer_id": text(), "run_id": UUID, "binding": BINDING,
+        "verdict": enum("PASS", "P1", "P2", "REQUEST_CHANGES"),
+        "tier": enum(1, 2, 3), "round": integer(1), "head_sha": SHA,
+        "critic_artifact_binding": CRITIC_ARTIFACT_BINDING,
+        "reviewer_id": text(), "pr_comment_url": text(format="uri"),
+        "pr_body_link": text(format="uri"), "evidence": STRINGS,
+        "posting_observation": obj({"source": const("host_observation"), "observed_at": TIME,
+            "producer_id": text(), "run_id": UUID, "provider_kind": const("github"),
+            "critic_artifact_binding": CRITIC_ARTIFACT_BINDING,
+            "review_verdict_record_id": UUID, "review_verdict_sha256": DIGEST,
+            "repository_id": integer(1), "pr_number": integer(1), "comment_id": integer(1),
+            "comment_url": text(format="uri"), "comment_bytes": text(2), "comment_sha256": DIGEST,
+            "body_link": text(format="uri"), "body_bytes": text(2), "body_sha256": DIGEST,
+            "provider_response_bytes": BASE64_BYTES, "provider_response_sha256": DIGEST,
+            "collector_receipt_sha256": DIGEST}),
+        "owner_review": BOOL,
+        "owner_id": integer(1),
+        "candidate_binding": obj({"repository_id": integer(1), "pr_number": integer(1),
+                                   "base_sha": SHA, "head_sha": SHA}),
+        "critic_review": obj({"record_id": UUID, "run_id": UUID, "round": integer(1), "head_sha": SHA,
+                               "verdict": enum("APPROVE", "REQUEST_CHANGES"), "findings_sha256": DIGEST}),
+        })
     stream_status = obj({"stream": text(), "state": enum("WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"),
         "ticket": nullable(text()), "actor": text(), "reason": text(), "next_action": text(),
         "resume_trigger": text(), "exact_tuple": text(), "activity": text(), "verification_gate": text(),
@@ -182,9 +430,9 @@ def catalog():
                            "tests_not_applicable_reason": nullable(text()),
                            "required_resources": STRINGS,
                            "platform_distinction": nullable(obj({"reason": text(), "regression_test_id": text()}))}),
-        "risk_flags": obj({k: BOOL for k in ["security", "schema_or_migration", "public_api", "data_loss", "concurrency", "production"]}),
+        "risk_flags": obj({k: BOOL for k in ["security", "schema_or_migration", "public_api", "data_loss", "concurrency", "production", "permissions", "release", "merge_gate", "ci_gate", "high_complexity", "high_uncertainty"]}),
         "specialist_domains": STRINGS, "disposition": enum("DRAFT", "BLOCKED", "READY"),
-        "risk_tier": enum(1, 2), "tier_justification": text(),
+        "risk_tier": enum(1, 2, 3), "tier_justification": text(),
         "closure_standard": obj({"kind": enum("FULL", "DECLARED_LIMITATIONS"),
                                  "accepted_limitations": arr(obj({"id": text(), "text": text(), "attribution": text()})),
                                  "evidence_required": STRINGS}),
@@ -194,6 +442,16 @@ def catalog():
                 "then": {"properties": {"closure_standard": {"properties": {"accepted_limitations": {"minItems": 1}}}}}}])
     schemas["ticket-contract"]["properties"]["scope"]["properties"]["evidence_paths"] = STRINGS
     schemas["ticket-contract"]["properties"]["scope"]["required"].append("evidence_paths")
+    schemas["ticket-contract"]["properties"]["risk_flags"]["required"] = [
+        key for key in schemas["ticket-contract"]["properties"]["risk_flags"]["required"]
+        if key not in {"permissions", "release", "merge_gate", "ci_gate", "high_complexity", "high_uncertainty"}]
+    contract_classification_evidence = obj({str(tier): STRINGS for tier in (1, 2, 3)}, minProperties=1)
+    contract_classification_evidence["required"] = []
+    schemas["ticket-contract"]["properties"]["risk_classification"] = obj({
+        "tier": enum(1, 2, 3), "matched_tiers": arr(enum(1, 2, 3), 1, uniqueItems=True),
+        "evidence": contract_classification_evidence,
+        "rule": text(), "risk_flags": STRINGS})
+    schemas["ticket-contract"]["required"].append("risk_classification")
     schemas["work-dispatch"] = bound({"contract_id": UUID, "contract_version": integer(1),
         "role": enum("worker", "amendment"), "branch": text(), "worktree_id": UUID,
         "lease": obj({"required": BOOL, "lease_id": nullable(UUID), "fencing_token": nullable(integer(1)), "expires_at": nullable(TIME)},
@@ -334,8 +592,10 @@ def catalog():
     gate_pass["properties"]["gates"]["properties"]["specialist_reviews"] = {"properties": {"result": enum("PASS", "N_A")}}
     schemas["final-gate"] = bound({"candidate": ref("candidate"), "review_submission": ref("review-submission"), "gates": gate_results,
         "record_ids": STRINGS, "required_specialist_domains": STRINGS, "residual_risks": STRINGS,
-        "risk_tier": enum(1, 2), "tier_justification": text(), "closure_standard": enum("FULL", "DECLARED_LIMITATIONS"),
+        "risk_tier": enum(1, 2, 3), "tier_justification": text(), "closure_standard": enum("FULL", "DECLARED_LIMITATIONS"),
+        "risk_classification": ref("risk-classification"),
         "accepted_findings": STRINGS,
+        "verified_critic_artifact_bindings": arr(CRITIC_ARTIFACT_BINDING, uniqueItems=True),
         "conclusion": enum("READY_FOR_OWNER_AUTHORIZATION", "NOT_READY"),
         "execution_authority": FALSE, "evaluation_mode": const("offline_reference"), "expires_at": TIME},
         allOf=[when("conclusion", "READY_FOR_OWNER_AUTHORIZATION", gate_pass), {
@@ -370,7 +630,10 @@ def catalog():
         allOf=[when("lifecycle_event", "JIRA_RECONCILED", {"properties": {"merge_result_id": UUID}})])
     signed = {"authorization_request_id": UUID, "owner_source": obj({"channel": const("github_pr_comment"), "comment_id": integer(1),
         "actor_id": integer(1), "actor_login": text(), "raw_body": text(), "raw_body_sha256": DIGEST, "created_at": TIME, "updated_at": TIME})}
-    schemas["review-cap-disposition"] = bound({"decision": enum("MERGE_WITH_NOTES", "PARK", "RESCOPE", "EXTEND_ONE_CYCLE"),
+    schemas["review-cap-disposition"] = bound({"record_id": DIGEST,
+        "decision": enum("MERGE_WITH_NOTES", "PARK", "RESCOPE", "EXTEND_ONE_CYCLE"),
+        "critic_artifact_binding": CRITIC_ARTIFACT_BINDING,
+        "review_verdict_record_id": UUID, "review_verdict_sha256": DIGEST,
         "open_finding_ids": STRINGS, "notes": text(0), "cycles": integer(), "cap_extensions": integer(),
         "successor_ticket": nullable(text()), **signed, "evidence": EVIDENCE},
         allOf=[when("decision", "RESCOPE", {"properties": {"successor_ticket": text()}})])
@@ -436,8 +699,15 @@ def catalog():
         "ci": ref("ci-evidence"), "pr": ref("pr-snapshot"), "runs": arr(ref("run-attestation"), 3),
         "prior_findings": arr(FINDING), "finding_dispositions": arr(ref("finding-disposition")),
         "cap_disposition": nullable(ref("review-cap-disposition")), "publication_scan": ref("publication-scan"),
+        "tier_classification": nullable(ref("risk-classification")), "review_verdicts": arr(ref("review-verdict"), 1),
+        "review_round_receipts": arr(REVIEW_ROUND_RECEIPT),
+        "ticketed_p2_records": arr(obj({"finding_id": text(), "ticket_key": text()})),
+        "owner_review": nullable(ref("review-verdict")),
         "evidence_registry": arr(obj({"uri": text(format="uri"), "sha256": DIGEST,
-            "producer_id": text(), "retained_until": TIME}), 1), "provenance_mode": const("offline_fixture")})
+            "producer_id": text(), "retained_until": TIME}), 1),
+        "provenance_mode": enum("offline_fixture", "production_observation")})
+    schemas["evidence-bundle"]["required"].remove("owner_review")
+    schemas["evidence-bundle"]["required"].remove("review_round_receipts")
     role_policy = obj({"model": text(), "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
         "fallback": const("deny"), "approved_model_ids": arr(text(), 1, uniqueItems=True),
         "permission_profile": text(), "network_allowlist": STRINGS})
@@ -466,7 +736,8 @@ def catalog():
            "risk_tiers": obj({"tier1_eligible_paths": STRINGS, "tier1_excluded_paths": STRINGS,
                "tier1_review": obj({"roles": arr(enum("critic", "specialist"), 1, uniqueItems=True),
                                     "specialist_when_touching": STRINGS, "findings": const("advisory")}),
-               "tier2_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking")})}),
+               "tier2_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking")}),
+                "tier3_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking"), "max_rounds": integer(1, maximum=3)})}),
            "transient_retry_limit": integer(0, maximum=5), "max_run_seconds": integer(1),
            "max_tool_calls_per_run": integer(1), "max_tokens_per_ticket": integer(1),
            "max_cost_microusd_per_ticket": nullable(integer(1)), "daily_project_cost_microusd": nullable(integer(1)),
@@ -493,6 +764,7 @@ def catalog():
           "require_required_ci_green": TRUE, "require_zero_unresolved_blocking_threads": TRUE,
           "invalidate_on_head_change": TRUE, "invalidate_on_target_base_change": TRUE,
           "authorization_ttl_seconds": integer(1, maximum=86400), "trusted_owner_ids": arr(integer(1), 0, uniqueItems=True),
+          "production_posting_collector_ids": arr(text(), 0, uniqueItems=True),
           "high_risk_owner_quorum": integer(1)}),
         "controller": obj({**{k: FALSE for k in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments"]},
                            "auto_transition_jira": BOOL, "status_cadence_seconds": integer(1)}),
@@ -507,6 +779,8 @@ def catalog():
                             (jira, ["lifecycle_writes", "owner_closure_keywords"]),
                             (schemas["project-config"]["properties"]["validation"]["properties"]["required_ci_checks"]["items"], ["verifies_history", "local_command"])):
         container["required"] = [key for key in container["required"] if key not in keys]
+    execution["properties"]["risk_tiers"]["required"] = [key for key in execution["properties"]["risk_tiers"]["required"]
+                                                            if key != "tier3_review"]
     # Null is an explicit installation residue, rejected by semantic acceptance.
     schemas["project-config"]["properties"]["github"]["properties"]["repository_id"] = {"anyOf": [integer(1), {"type": "null"}]}
     github = schemas["project-config"]["properties"]["github"]
@@ -535,6 +809,10 @@ def catalog():
     # Optional for upgraded configurations; absence means the documented
     # 15-minute controller status cadence.
     schemas["project-config"]["properties"]["controller"]["required"].remove("status_cadence_seconds")
+    # This allowlist can only narrow a runtime-owned registry.  It is optional
+    # for migrated configurations and cannot register a collector by itself.
+    schemas["project-config"]["properties"]["merge_gate"]["required"].remove(
+        "production_posting_collector_ids")
     # Optional and append-only for upgrades: tracked declarations add detectors;
     # built-ins can be tuned only by the ignored operator-local mapping.
     schemas["project-config"]["properties"]["publication"] = obj({

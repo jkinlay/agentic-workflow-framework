@@ -91,6 +91,12 @@
           "urn:awf:UNFILLED"
         ]
       },
+      "verdict_posting": {
+        "result": "FAIL",
+        "evidence": [
+          "urn:awf:UNFILLED"
+        ]
+      },
       "acceptance_criteria": {
         "result": "FAIL",
         "evidence": [
@@ -182,7 +188,21 @@
     "risk_tier": 1,
     "tier_justification": "UNFILLED",
     "closure_standard": "FULL",
+    "risk_classification": {
+      "tier": 1,
+      "matched_tiers": [
+        1
+      ],
+      "evidence": {
+        "1": [],
+        "2": [],
+        "3": []
+      },
+      "rule": "UNFILLED",
+      "risk_flags": []
+    },
     "accepted_findings": [],
+    "verified_critic_artifact_bindings": [],
     "conclusion": "NOT_READY",
     "execution_authority": false,
     "evaluation_mode": "offline_reference",
