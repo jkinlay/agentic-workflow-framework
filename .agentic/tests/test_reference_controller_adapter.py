@@ -243,7 +243,11 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         head = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
         tree = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD^{tree}"], text=True).strip()
         state = ContinuousControllerStore(self.root / "state.sqlite3", ["A"], worktree_roots=[self.root / "worktree"])
-        with patch.dict(os.environ, {"GH_TOKEN": "secret-gh", "GITHUB_TOKEN": "secret-github", "AWF_JIRA_TOKEN": "secret-jira"}, clear=False):
+        with patch.dict(os.environ, {"GH_TOKEN": "secret-gh", "GITHUB_TOKEN": "secret-github",
+                                     "AWF_JIRA_TOKEN": "secret-jira",
+                                     "ATLASSIAN_API_TOKEN": "secret-atlassian",
+                                     "JIRA_API_KEY": "secret-jira-key",
+                                     "EXAMPLE_CLIENT_SECRET": "secret-generic"}, clear=False):
             result = production_controller_cycle(state, now=NOW, host_capacity=1,
                 inventory_binding=inventory_binding, repository_root=repository,
                 repository_head_sha=head, repository_tree_sha=tree,
@@ -253,9 +257,9 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertEqual(len(result["dispatch_receipts"]), 1, result)
         self.assertTrue(runner.launches)
         child_env = runner.launches[0][2]
-        self.assertNotIn("GH_TOKEN", child_env)
-        self.assertNotIn("GITHUB_TOKEN", child_env)
-        self.assertNotIn("AWF_JIRA_TOKEN", child_env)
+        for name in ("GH_TOKEN", "GITHUB_TOKEN", "AWF_JIRA_TOKEN",
+                     "ATLASSIAN_API_TOKEN", "JIRA_API_KEY", "EXAMPLE_CLIENT_SECRET"):
+            self.assertNotIn(name, child_env.keys())
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", runner.launches[0][0])
         self.assertIn("Ticket: AWF-32", runner.prompts[0])
         outbox = self.root / "outbox" / "controller-status.jsonl"
@@ -379,12 +383,64 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
             observed.append(handoff.exists())
             return Process()
 
+        with patch.dict(os.environ, {"ATLASSIAN_API_TOKEN": "secret-atlassian",
+                                     "JIRA_API_KEY": "secret-jira-key",
+                                     "EXAMPLE_CLIENT_SECRET": "secret-generic"}, clear=False):
+            child_env = namespace["_safe_env"]("AWF_JIRA_TOKEN")
         with patch("subprocess.Popen", side_effect=fake_popen):
             result = runner_class().launch(["fake-bin/codex", "exec"], cwd=self.root,
-                env={}, timeout=5, stdin="task", handoff_path=str(handoff),
+                env=child_env, timeout=5, stdin="task", handoff_path=str(handoff),
                 terminal_proof_path=str(proof), launch_nonce="nonce")
         self.assertEqual(observed, [True])
         self.assertEqual(result["pid"], 4321)
+        launch_spec = json.loads(handoff.with_suffix(".launch.json").read_text(encoding="utf-8"))
+        for name in ("ATLASSIAN_API_TOKEN", "JIRA_API_KEY", "EXAMPLE_CLIENT_SECRET"):
+            self.assertNotIn(name, launch_spec["env"].keys())
+
+    def test_jira_transition_history_between_attempt_and_receipt_is_accepted(self):
+        class RealisticTransitionHttp(FakeHttp):
+            def __init__(self):
+                super().__init__()
+                self.transition_posted = False
+
+            def request(self, method, url, **kwargs):
+                if method == "POST" and "/transitions" in url:
+                    self.transition_posted = True
+                return super().request(method, url, **kwargs)
+
+        class MutationClock(FakeClock):
+            def __init__(self, transport):
+                super().__init__()
+                self.transport = transport
+
+            def now(self):
+                if self.transport.transition_posted:
+                    return "2026-10-09T08:00:02Z"
+                return NOW
+
+        http = RealisticTransitionHttp()
+        clock = MutationClock(http)
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_http_transport": http, "_clock": clock})
+        project_config = json.loads((ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text())
+        project_config["jira"].update(cloud_id="cloud-1", site="https://jira.example.invalid",
+                                       provider_project_id="project-1", project_key="EX",
+                                       controller_actor_id="controller")
+        contract = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())["contract"]
+        store = ContinuousControllerStore(self.root / "jira-timing.sqlite3", ["A"],
+                                          worktree_roots=[self.root / "worktree"])
+        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False):
+            result = production_jira_lifecycle(store, config=project_config, contract=contract,
+                event="WORKER_STARTED", facts={"run_registered": True, "worktree_verified": True},
+                binding={"issue_id": "10001"}, issue_type="LEAF", state="DISPATCHED",
+                producer_id="controller", run_id="00000000-0000-0000-0000-000000000001",
+                now=NOW, evidence=[], transition_id="3",
+                read_current_status=adapters["read_current_status"],
+                write_transition=adapters["write_transition"],
+                read_transition=adapters["read_transition"],
+                observe_provider_identity=adapters["observe_provider_identity"])
+        self.assertIn("record", result, result)
+        self.assertEqual(result["record"]["status"], "SUCCEEDED")
 
     def test_jira_old_history_entry_cannot_prove_current_transition(self):
         class OldHistory(FakeHttp):
@@ -417,6 +473,31 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "page"):
             adapters["observe_inventory"](NOW)
 
+    def test_ruleset_slurped_pages_are_bounded(self):
+        class TooManyRulesetPages(FakeRunner):
+            def run(self, argv, *, cwd, env, timeout, max_bytes):
+                if "rulesets" in argv[-1]:
+                    rule = {"id": 1, "enforcement": "active",
+                            "conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}}}
+                    return [[rule] for _ in range(21)]
+                return super().run(argv, cwd=cwd, env=env, timeout=timeout, max_bytes=max_bytes)
+
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": TooManyRulesetPages(), "_clock": FakeClock()})
+        with self.assertRaisesRegex(ValidationError, "page"):
+            adapters["observe_publication"]({"ticket": "AWF-32"})
+
+    def test_ruleset_pagination_time_bound_uses_adapter_bound(self):
+        class SlowRulesClock(FakeClock):
+            def monotonic(self):
+                self.ticks += 121
+                return self.ticks
+
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": FakeRunner(), "_clock": SlowRulesClock()})
+        with self.assertRaisesRegex(ValidationError, "time bound"):
+            adapters["observe_publication"]({"ticket": "AWF-32"})
+
     def test_github_pagination_time_bound_uses_adapter_bound(self):
         class SlowClock(FakeClock):
             def monotonic(self):
@@ -436,6 +517,17 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
             {**cfg, "_runner": runner, "_clock": FakeClock()})
         with self.assertRaisesRegex(ValidationError, "inventory endpoint"):
             adapters["observe_inventory"](NOW)
+
+    def test_foreign_rules_endpoint_is_rejected_before_consumption(self):
+        runner = FakeRunner()
+        cfg = json.loads(json.dumps(self.config))
+        cfg["github"]["rules_endpoint"] = "repos/foreign/repository/rulesets"
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**cfg, "_runner": runner, "_clock": FakeClock()})
+        with self.assertRaisesRegex(ValidationError, "rules endpoint"):
+            adapters["observe_publication"]({"ticket": "AWF-32"})
+        self.assertFalse(any("repos/foreign/repository/rulesets" in call[0][-1]
+                             for call in runner.calls))
 
     def test_doc_example_defines_all_runtime_values_and_no_raw_placeholders(self):
         doc = (ROOT / ".agentic/docs/34-CONTINUOUS-CONTROLLER.md").read_text(encoding="utf-8")
