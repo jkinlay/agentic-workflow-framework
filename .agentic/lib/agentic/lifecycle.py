@@ -96,6 +96,8 @@ def transition(state, event, facts=None, resume_state=None):
         missing = [name for name in names if facts.get(name) is not True]
         if missing:
             raise ValidationError("Missing verified guards: " + ", ".join(missing))
+    if event == "CAP_EXTEND_ONE_CYCLE" and facts.get("risk_tier") != 2:
+        raise ValidationError("CAP_EXTEND_ONE_CYCLE is a Tier 2-only transition; Tier 3 is hard-capped at three rounds")
     if state == "FINAL_REVIEW" and event == "FINAL_GATE_PASSED":
         from .review_completion import validate_ready_gate_completion
         validate_ready_gate_completion(facts.get("final_gate"))

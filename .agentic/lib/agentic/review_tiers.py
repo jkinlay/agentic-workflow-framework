@@ -148,6 +148,8 @@ def validate_round(tier, round_number, *, owner_cap_disposition=None, config=Non
     cap = round_cap(tier, config)
     if type(round_number) is not int or round_number < 1:
         raise ValidationError("review round must be a positive integer")
+    if tier == TIER_3 and round_number > cap:
+        raise ValidationError(f"Tier 3 review cap is {cap}; Tier 3 never permits an extension round")
     if round_number > cap and (round_number != cap + 1 or not _cap_disposition_valid(owner_cap_disposition, tier, cap)):
         raise ValidationError(f"Tier {tier} review cap is {cap}; an additional round needs an explicit owner cap disposition")
     return True
@@ -173,6 +175,8 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
                     configured_owner_ids=None, expected_candidate_binding=None, config=None):
     """Derive qualification/escalation at the tier-specific round boundary."""
     cap = round_cap(tier, config)
+    if tier == TIER_3 and rounds > cap:
+        raise ValidationError(f"Tier 3 refuses review round {rounds}; Tier 3 never permits an extension round")
     if rounds > cap and (rounds != cap + 1 or not _cap_disposition_valid(owner_cap_disposition, tier, cap)):
         raise ValidationError(f"Tier {tier} refuses review round {rounds}; owner cap disposition required")
     findings = list(open_findings or ())

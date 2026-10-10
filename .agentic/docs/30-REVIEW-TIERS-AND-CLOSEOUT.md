@@ -6,9 +6,9 @@ Version 1.9.4 runtime; AWF-16 policy revision and migration ship in 1.9.5. The c
 
 Every `ticket-contract` declares `risk_tier` (1, 2 or 3) with a `tier_justification`; uncertain is Tier 2. Tier 1 needs eligible paths, no protected paths and no true `risk_flags`. The gate recomputes the tier; highest match wins. Only an owner-signed `tier-reassignment` changes a declared tier; the owner re-issues the contract and every record rebinds. Round policy is in `review_tiers.py`; AWF-29 owns provider posting.
 
-Tier 1 uses one critic; findings advise. Tier 2 uses three rounds; at cap, ticket P2s and route P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, uses three rounds and requires a recorded owner-review assertion naming a configured owner and the candidate. Provider verification remains the AWF-41 successor scope. Highest tier wins; escalation preserves history. Boundaries always block.
+Tier 1 uses one critic; findings advise. Tier 2 uses three rounds; at cap, ticket P2s and route P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, has an unextendable three-round cap and requires an owner-review assertion binding a trusted owner and candidate. Provider verification remains the AWF-41 successor scope. Highest tier wins; escalation preserves history. Boundaries always block.
 
-Each round records its head, comment URL and body link. An unchanged diff preserves evidence; a changed diff invalidates it. Beyond a cap requires an authenticated owner disposition.
+Each round records head, comment URL and body link. An unchanged diff preserves evidence; a changed diff invalidates it. Only Tier 2 may exceed the cap through authenticated owner disposition.
 
 ## Bases, lineage and dispositions
 
@@ -31,7 +31,7 @@ A BLOCKER or MAJOR finding carries `basis`: `{criterion_id}` from the contract o
 | `MERGE_WITH_NOTES` | → FINAL_REVIEW | Listed open non-boundary findings become notes in `residual_risks` and the authorization text. |
 | `PARK` | → BLOCKED | `reason_code: REVIEW_CAP_PARKED`, `resume_state: CHANGES_REQUESTED`. |
 | `RESCOPE` | → SUPERSEDED | Successor recorded. |
-| `EXTEND_ONE_CYCLE` | → CHANGES_REQUESTED | `cap_extensions += 1`; refused by name at `execution.max_cap_extensions` (default 2, maximum 3). |
+| `EXTEND_ONE_CYCLE` | → CHANGES_REQUESTED | Tier 2 only: increments `cap_extensions`; refused at `execution.max_cap_extensions` (default 2, maximum 3). |
 
 `workflow.py cap-plan` translates a disposition into event and facts or refuses it; the host loop pauses with `REVIEW_CAP_REACHED` and resumes only with `--disposition`.
 

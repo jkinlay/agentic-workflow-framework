@@ -359,7 +359,10 @@
       "minItems": 1
     },
     "provenance_mode": {
-      "const": "offline_fixture"
+      "enum": [
+        "offline_fixture",
+        "production_observation"
+      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

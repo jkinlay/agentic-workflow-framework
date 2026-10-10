@@ -249,7 +249,7 @@ def cap_status(config, cycles, cap_extensions):
             "extension_available": cap_extensions < extensions}
 
 
-def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findings):
+def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findings, *, risk_tier=2):
     """Translate an owner cap disposition into the lifecycle event and verified facts."""
     status = cap_status(config, cycles, cap_extensions)
     decision = disposition["decision"]
@@ -262,10 +262,12 @@ def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findi
         raise ValidationError("Cap disposition does not list the currently open findings exactly")
     facts = {"cap_disposition_verified": True}
     if decision == "EXTEND_ONE_CYCLE":
+        if risk_tier != 2:
+            raise ValidationError("EXTEND_ONE_CYCLE is available only for Tier 2; Tier 3 is hard-capped at three rounds")
         if not status["extension_available"]:
             raise ValidationError(f"Extension {cap_extensions + 1} exceeds $.execution.max_cap_extensions = {status['max_cap_extensions']}; "
                                   "choose MERGE_WITH_NOTES, PARK or RESCOPE")
-        facts["cap_extension_available"] = True
+        facts.update(cap_extension_available=True, risk_tier=2)
         return {"event": CAP_EVENTS[decision], "facts": facts, "cycles": cycles, "cap_extensions": cap_extensions + 1}
     if decision == "MERGE_WITH_NOTES":
         boundaries = [item["id"] for item in open_findings if is_boundary(item)]

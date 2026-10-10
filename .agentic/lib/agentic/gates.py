@@ -2,6 +2,7 @@
 from __future__ import annotations
 from datetime import timedelta
 import fnmatch
+import re
 import uuid
 
 from . import ValidationError
@@ -245,38 +246,9 @@ def evaluate(config, workflow, bundle, contracts, now):
     declared_classification = contract.get("risk_classification")
     if declared_classification is None:
         raise ValidationError("Contract risk_classification is required for a current contract")
-    # 1.9.3 reference bundles may predate durable retention of the additive
-    # security specialist signal.  Preserve their established tier/path
-    # classification while carrying the observed signal in the recomputed
-    # classification; every other classification change remains stale.
-    legacy_security_classification = (
-        declared_classification != classification
-        and all(declared_classification.get(key) == classification.get(key)
-                for key in ("tier", "matched_tiers", "evidence", "rule"))
-        and set(declared_classification.get("risk_flags", []))
-            | {"security"} == set(classification.get("risk_flags", []))
-        and "security" not in declared_classification.get("risk_flags", []))
-    # A 1.9.3 retained classification may lack only the additive security
-    # signal.  Normalize that one historical omission for comparison, while
-    # still requiring the bundle to carry an exact durable classification.
     durable_classification = classification
-    contract_classification = declared_classification
     bundle_classification = bundle.get("tier_classification")
-    if legacy_security_classification:
-        # Narrowly normalize retained 1.9.3 records for this evaluation. Keep
-        # the caller's bytes untouched; the evaluated classification remains
-        # the observed durable value including security.
-        contract_classification = durable_classification
-        bundle_classification = durable_classification
-        # Upgrade the retained records in memory as part of the compatibility
-        # path.  A legacy omission is normalized narrowly, so the accepted
-        # durable evidence cannot continue to advertise a security-free view.
-        declared_classification.clear()
-        declared_classification.update(durable_classification)
-        if isinstance(bundle.get("tier_classification"), dict):
-            bundle["tier_classification"].clear()
-            bundle["tier_classification"].update(durable_classification)
-    if contract_classification != durable_classification:
+    if declared_classification != durable_classification:
         raise ValidationError("Contract risk_classification does not match observed paths and risk evidence")
     if bundle_classification != durable_classification:
         raise ValidationError("Evidence bundle tier_classification is missing or stale")
@@ -319,36 +291,28 @@ def evaluate(config, workflow, bundle, contracts, now):
         artifact_uri = (f"urn:awf:critic-review:{critic_receipt.get('record_id')}"
                         if isinstance(critic_receipt, dict) else None)
         retained_artifact = artifact_uri in verdict.get("evidence", [])
-        legacy_receipt = (not retained_artifact
-                          and isinstance(critic_receipt, dict)
-                          and run is not None
-                          and critic_receipt.get("record_id") == run["record_id"])
-        retained_binding_keys = ("project_id", "repository_id", "issue_id",
-                                 "requirements_hash", "policy_hash", "candidate_id")
-        run_binding_matches = (run is not None and (
-            run.get("binding") == verdict["binding"] if retained_artifact else
-            all(run.get("binding", {}).get(key) == verdict["binding"][key]
-                for key in retained_binding_keys)
-        ))
-        if (not isinstance(critic_receipt, dict)
-                or run is None
-                or (not retained_artifact and not legacy_receipt)
-                or not run_binding_matches
-                or (retained_artifact and run.get("created_at") != verdict["created_at"])
-                or critic_receipt.get("run_id") != verdict["run_id"]
-                or critic_receipt.get("round") != verdict["round"]
-                or critic_receipt.get("head_sha") != verdict["head_sha"]
-                or (retained_artifact
-                    and (verdict["candidate_binding"]["repository_id"] != candidate["repository_id"]
-                         or verdict["candidate_binding"]["pr_number"] != candidate["pr_number"]
-                         or verdict["candidate_binding"]["head_sha"] != verdict["head_sha"]
-                         or (verdict["round"] == terminal_round
-                             and verdict["candidate_binding"]["base_sha"] != candidate["target_base_sha"])))
-                or critic_receipt.get("verdict") != ("APPROVE" if verdict["verdict"] == "PASS" else "REQUEST_CHANGES")):
-            raise ValidationError("Review verdict is not bound to its critic artifact")
-        if retained_artifact:
+        run_binding_matches = run is not None and run.get("binding") == verdict["binding"]
+        artifact_bound = (
+            isinstance(critic_receipt, dict)
+            and run is not None
+            and retained_artifact
+            and run_binding_matches
+            and run.get("created_at") == verdict["created_at"]
+            and critic_receipt.get("run_id") == verdict["run_id"]
+            and critic_receipt.get("round") == verdict["round"]
+            and critic_receipt.get("head_sha") == verdict["head_sha"]
+            and verdict["candidate_binding"]["repository_id"] == candidate["repository_id"]
+            and verdict["candidate_binding"]["pr_number"] == candidate["pr_number"]
+            and verdict["candidate_binding"]["head_sha"] == verdict["head_sha"]
+            and (verdict["round"] != terminal_round
+                 or verdict["candidate_binding"]["base_sha"] == candidate["target_base_sha"])
+            and critic_receipt.get("verdict")
+                == ("APPROVE" if verdict["verdict"] == "PASS" else "REQUEST_CHANGES")
+        )
+        critic_artifacts_ok = critic_artifacts_ok and artifact_bound
+        if artifact_bound:
             if critic_receipt["record_id"] in critic_artifact_ids:
-                raise ValidationError("Each consumed review round needs a distinct critic artifact")
+                critic_artifacts_ok = False
             critic_artifact_ids.add(critic_receipt["record_id"])
             expected_receipt_sha256 = critic_artifact_receipt_sha256(verdict)
             artifact_entries = [entry for entry in bundle["evidence_registry"]
@@ -363,40 +327,15 @@ def evaluate(config, workflow, bundle, contracts, now):
                 critic_receipt.get("findings_sha256")
                 == fingerprint("critic-findings", critic["findings"])
             )
-            # Legacy 1.9.4 fixtures identified the run attestation instead of
-            # retaining a substantive critic artifact. Preserve that shape
-            # only for an empty approving review, or when an authenticated
-            # owner disposition controls the substantive findings. A bare
-            # lenient tier/cap classification is not artifact evidence.
-            critic_finding_ids = {finding["id"] for finding in critic["findings"]}
-            disposition_finding_ids = {record["finding_id"] for record in dispositions}
-            cap_finding_ids = set((bundle.get("cap_disposition") or {}).get(
-                "open_finding_ids", []))
-            legacy_disposition_receipt = (
-                legacy_receipt
-                and critic.get("verdict") == "REQUEST_CHANGES"
-                and bool(critic_finding_ids)
-                and (critic_finding_ids.issubset(disposition_finding_ids)
-                     or critic_finding_ids.issubset(cap_finding_ids))
-            )
-            terminal_artifact_matches = (
-                (retained_artifact and critic_receipt["record_id"] == critic["record_id"])
-                or (legacy_receipt and (not critic["findings"] or legacy_disposition_receipt))
-            )
-            critic_artifacts_ok = (critic_artifacts_ok and terminal_artifact_matches
-                                   and (terminal_findings_match or legacy_disposition_receipt))
+            critic_artifacts_ok = (critic_artifacts_ok
+                                   and critic_receipt["record_id"] == critic["record_id"]
+                                   and terminal_findings_match)
             critic_artifact_verdicts_match = critic_artifact_verdicts_match and (
                 critic_receipt.get("verdict") == critic.get("verdict")
                 and critic.get("run_id") == verdict["run_id"]
                 and critic.get("producer_id") == verdict["producer_id"]
-                and (critic.get("binding") == verdict["binding"] if retained_artifact else
-                     all(critic.get("binding", {}).get(key) == verdict["binding"][key]
-                         for key in retained_binding_keys))
+                and critic.get("binding") == verdict["binding"]
                 and critic.get("created_at") == verdict["created_at"]
-            )
-        elif legacy_receipt:
-            critic_artifacts_ok = critic_artifacts_ok and (
-                critic_receipt.get("findings_sha256") == fingerprint("critic-findings", [])
             )
         if not verdict["pr_comment_url"] or not verdict["pr_body_link"]:
             raise ValidationError("Review verdict must carry PR comment and body-link evidence")
@@ -412,9 +351,28 @@ def evaluate(config, workflow, bundle, contracts, now):
                 "body_link", "comment_sha256", "body_sha256")}
             observation_digest_ok = observation.get("observation_sha256") == fingerprint(
                 "posting-observation", observation_payload)
-            if (observation_run is None or observation_run["role"] != "collector"
+            production_collectors = set(config["merge_gate"].get(
+                "production_posting_collector_ids", []))
+            candidate_prefix = (
+                f"{candidate['host']}/{candidate['repository']}/pull/{candidate['pr_number']}"
+            )
+            comment_pattern = re.compile(re.escape(candidate_prefix) + r"#issuecomment-[1-9][0-9]*$")
+            body_pattern = re.compile(
+                re.escape(candidate_prefix) + rf"#review-verdict-{verdict['round']}$"
+            )
+            if (bundle.get("provenance_mode") != "production_observation"
+                    or observation_run is None or observation_run["role"] != "collector"
                     or observation_run["producer_id"] != observation.get("producer_id")
+                    or observation.get("producer_id") not in production_collectors
+                    or observation.get("producer_id", "").startswith(("fixture-", "generator-"))
                     or not observation_digest_ok
+                    or observation.get("comment_url") != verdict["pr_comment_url"]
+                    or observation.get("body_link") != verdict["pr_body_link"]
+                    or not comment_pattern.fullmatch(verdict["pr_comment_url"])
+                    or not body_pattern.fullmatch(verdict["pr_body_link"])
+                    or not observation_entries
+                    or not all(entry["producer_id"] == observation.get("producer_id")
+                               for entry in observation_entries)
                     or not any(entry["producer_id"] == observation.get("producer_id")
                                and (entry["uri"].endswith("/posting") or "/posting-" in entry["uri"])
                                and entry["sha256"] == observation.get("observation_sha256")
@@ -424,9 +382,7 @@ def evaluate(config, workflow, bundle, contracts, now):
             if isinstance(observation, dict):
                 fresh(observation["observed_at"], now, config["validation"]["max_evidence_age_seconds"])
                 posting_evidence_ok = posting_evidence_ok and (
-                    observation.get("comment_url") == verdict["pr_comment_url"]
-                    and observation.get("body_link") == verdict["pr_body_link"]
-                    and observation.get("body_sha256") == pr["body_sha256"]
+                    observation.get("body_sha256") == pr["body_sha256"]
                     and observation.get("comment_sha256") in {entry["sha256"] for entry in bundle["evidence_registry"]})
         run = runs.get(verdict["run_id"])
         if not run or run["producer_id"] != verdict["producer_id"]:
@@ -520,12 +476,13 @@ def evaluate(config, workflow, bundle, contracts, now):
     critic_verdicts = [v for v in verdicts if not v["owner_review"]]
     terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
     terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
+    terminal_verdict_ok = (terminal_verdict["verdict"] in {"PASS", "REQUEST_CHANGES"}
+                           if lenient else terminal_verdict["verdict"] == "PASS")
     critic_ok = (no_blockers and p2_ticketing_ok and critic_artifacts_ok
-                 and (critic_artifact_verdicts_match or legacy_disposition_receipt)
+                 and critic_artifact_verdicts_match
                  and terminal_critic is not None
                  and terminal_verdict is terminal_critic
-                 and terminal_verdict["verdict"] == "PASS"
-                 and terminal_critic["verdict"] == "PASS"
+                 and terminal_verdict_ok
                  and critic["verdict"] in ({"APPROVE", "REQUEST_CHANGES"} if lenient else {"APPROVE"})
                  and owner_review_ok)
     provenance_problems = [f"exclusive resource {name} held by overlapping COMPLETE runs {a} and {b}"

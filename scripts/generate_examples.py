@@ -17,6 +17,7 @@ from agentic.policy import CAPABILITIES, PROTECTED_PATHS, policy_hash
 from agentic.review_policy import DEFAULT_RISK_TIERS
 from agentic.review_tiers import classify
 from agentic.review_completion import gate_review_aggregate, gate_review_tuple
+from agentic.gates import critic_artifact_receipt_sha256
 from generate_contracts import catalog
 
 NOW = "2026-09-09T12:00:00Z"
@@ -112,7 +113,8 @@ def config(example=True):
         "merge_gate": {"human_authorization_required": True, "execution_after_authorization": "owner_manual", "automatic_merge_enabled": False,
             "require_critic_approval_current_tuple": True, "require_specialist_reviews_current_tuple": True, "require_required_ci_green": True,
             "require_zero_unresolved_blocking_threads": True, "invalidate_on_head_change": True, "invalidate_on_target_base_change": True,
-            "authorization_ttl_seconds": 900, "trusted_owner_ids": [1001] if example else [], "high_risk_owner_quorum": 1},
+            "authorization_ttl_seconds": 900, "trusted_owner_ids": [1001] if example else [], "high_risk_owner_quorum": 1,
+            **({"production_posting_collector_ids": ["github-production-posting-collector"]} if example else {})},
         "controller": {**{key: False for key in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments", "auto_transition_jira"]},
                        "status_cadence_seconds": 900},
         "audit": {"store_must_be_outside_worktrees": True, "retention_days": 90, "redact_secrets": True},
@@ -226,14 +228,15 @@ def example_bundle(cfg):
                "comment_sha256": sha256(b"Illustrative evidence; no external test was executed.\n"),
                "body_sha256": pr["body_sha256"]}
     posting["observation_sha256"] = fingerprint("posting-observation", posting)
+    critic_artifact_uri = f"urn:awf:critic-review:{critic['record_id']}"
     verdict = record("review-verdict-1", "critic", verdict="PASS", tier=classification["tier"], round=1,
         head_sha=candidate["head_sha"], reviewer_id="fixture-critic", pr_comment_url="https://github.com/fixture/example/pull/7#issuecomment-1",
-        pr_body_link="https://github.com/fixture/example/pull/7#review-verdict-1", evidence=evidence,
+        pr_body_link="https://github.com/fixture/example/pull/7#review-verdict-1", evidence=evidence + [critic_artifact_uri],
         owner_review=False, owner_id=1001,
         candidate_binding={"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
                            "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
         posting_observation=posting,
-        critic_review={"record_id": next(run["record_id"] for run in runs if run["role"] == "critic"), "run_id": critic["run_id"], "round": 1, "head_sha": candidate["head_sha"],
+        critic_review={"record_id": critic["record_id"], "run_id": critic["run_id"], "round": 1, "head_sha": candidate["head_sha"],
                        "verdict": "APPROVE", "findings_sha256": fingerprint("critic-findings", critic["findings"])},
         )
     verdict.pop("schema_version", None)
@@ -243,7 +246,10 @@ def example_bundle(cfg):
             "ticketed_p2_records": [],
             "evidence_registry": [{"uri": evidence[0],
                 "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"},
-               {"uri": evidence[0] + "/posting", "sha256": posting["observation_sha256"], "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"}], "provenance_mode": "offline_fixture"}
+               {"uri": evidence[0] + "/posting", "sha256": posting["observation_sha256"], "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"},
+               {"uri": critic_artifact_uri, "sha256": critic_artifact_receipt_sha256(verdict),
+                "producer_id": verdict["producer_id"], "retained_until": "2030-01-01T00:00:00Z"}],
+            "provenance_mode": "offline_fixture"}
 
 
 def sample(schema, schemas):
@@ -287,7 +293,9 @@ def main():
     write(ROOT / "OPERATING_CONFIG.yaml", default_operating())
     write(ROOT / ".agentic/examples/OPERATING_CONFIG.yaml", default_operating())
     write(ROOT / ".agentic/workflow.yaml", definition())
-    write(ROOT / ".agentic/PROJECT_CONFIG.yaml", config(False))
+    source_config = config(False)
+    write(ROOT / ".agentic/PROJECT_CONFIG.yaml", source_config)
+    write(ROOT / ".agentic/templates/source-config/PROJECT_CONFIG.yaml", source_config)
     write(ROOT / ".agentic/examples/unconfigured-project.yaml", config(False))
     write(ROOT / ".agentic/workflow-version.yaml", {"template": {"name": "generic-agentic-development-workflow", "version": VERSION, "schema_revision": 3},
         "installation": {"install_id": None, "last_operation": None, "operation_at": None, "source_manifest_sha256": None, "profile": "manual_reference"}})

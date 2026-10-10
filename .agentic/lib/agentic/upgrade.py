@@ -608,7 +608,10 @@ def review_tier_defaults(config):
         execution = value.setdefault("execution", {})
         tiers = execution.setdefault("risk_tiers", {})
         tiers.setdefault("tier3_review", {"roles": ["critic", "specialist"], "findings": "blocking", "max_rounds": 3})
-        return (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        output = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        if json.loads(output) != value:
+            raise ValidationError("Migration output did not preserve the expected additive project configuration")
+        return output
     value = copy.deepcopy(load_yaml(config) if raw else config)
     if not isinstance(value, dict):
         raise ValidationError("Migration is not deterministic. Project configuration must be a mapping")
@@ -619,10 +622,23 @@ def review_tier_defaults(config):
                                        "findings": "blocking", "max_rounds": 3})
     if not raw:
         return value
+    def verified_yaml_output(output):
+        try:
+            reparsed = load_yaml(output)
+        except Exception as exc:
+            raise ValidationError(
+                "Migration refused unsupported YAML mapping style for execution/risk_tiers"
+            ) from exc
+        if reparsed != value:
+            raise ValidationError(
+                "Migration refused unsupported YAML mapping style for execution/risk_tiers; "
+                "emitted bytes did not equal the expected additive mapping"
+            )
+        return output
     # The migration is byte-preserving apart from the one additive mapping.
     # Re-emitting parsed YAML as JSON loses comments, quoting and scalar style.
     if had_tier3:
-        return bytes(config)
+        return verified_yaml_output(bytes(config))
     lines = original_text.splitlines(keepends=True)
     newline = "\r\n" if "\r\n" in original_text else "\n"
     # Valid YAML permits compact flow mappings.  Handle the common retained
@@ -655,24 +671,24 @@ def review_tier_defaults(config):
             if risk_close is not None:
                 insertion = ", tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}"
                 lines[index] = line[:risk_close] + insertion + line[risk_close:]
-                return "".join(lines).encode("utf-8")
+                return verified_yaml_output("".join(lines).encode("utf-8"))
         execution_open = line.find("{")
         execution_close = matching_brace(line, execution_open)
         if execution_close is not None:
             insertion = ", risk_tiers: {tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}}"
             lines[index] = line[:execution_close] + insertion + line[execution_close:]
-            return "".join(lines).encode("utf-8")
+            return verified_yaml_output("".join(lines).encode("utf-8"))
     execution = next((i for i, line in enumerate(lines)
                       if re.match(r"^execution:\s*(?:#.*)?(?:\r?\n)?$", line)), None)
     if execution is None:
         suffix = "" if not lines or lines[-1].endswith(("\n", "\r")) else newline
-        return (original_text + suffix
+        return verified_yaml_output((original_text + suffix
                 + "execution:" + newline
                 + "  risk_tiers:" + newline
                 + "    tier3_review:" + newline
                 + "      roles: [critic, specialist]" + newline
                 + "      findings: blocking" + newline
-                + "      max_rounds: 3" + newline).encode("utf-8")
+                + "      max_rounds: 3" + newline).encode("utf-8"))
     execution_end = len(lines)
     for i in range(execution + 1, len(lines)):
         if lines[i].strip() and not lines[i].lstrip().startswith("#") and not lines[i].startswith((" ", "\t")):
@@ -700,7 +716,7 @@ def review_tier_defaults(config):
                     .replace("      max_rounds:", " " * (risk_indent + 4) + "max_rounds:", 1)
                     for line in addition]
         lines[risk_end:risk_end] = adjusted
-    return "".join(lines).encode("utf-8")
+    return verified_yaml_output("".join(lines).encode("utf-8"))
 
 
 def config_diff(before, after, previous, current):
