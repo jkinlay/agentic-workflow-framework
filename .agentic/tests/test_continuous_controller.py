@@ -203,6 +203,198 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertTrue(all(item["state"] in {"WORKING", "BLOCKED", "PAUSED_INPUT", "COMPLETE"}
                             for item in snapshot))
 
+    def test_unresolved_dispatch_ticket_is_reserved_across_streams_after_priority_change(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "global-reservation.sqlite3", ["A", "B"])
+        original = ticket("EX-RESERVED", 1)
+        store.schedule([original], NOW, host_capacity=1)
+        old_intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(old_intent["dispatch_id"], NOW)
+        store.mark_dispatch_unknown(old_intent["dispatch_id"], "2026-10-02T10:00:01Z")
+
+        # The original stream is reprioritized onto another ticket while the
+        # old dispatch is unresolved. The second stream must not take EX-RESERVED.
+        later = "2026-10-02T10:00:02Z"
+        replacement = ticket("EX-REPLACEMENT", 2)
+        store.schedule([ticket("EX-RESERVED", 1, "COMPLETE"), replacement], later,
+                       host_capacity=2)
+        replacement_intent = next(item for item in store.prepare_dispatches(later)
+                                  if item["ticket"] == "EX-REPLACEMENT")
+        begun = store.begin_dispatch(replacement_intent["dispatch_id"], "2026-10-02T10:00:03Z")
+        store.finish_dispatch(replacement_intent["dispatch_id"],
+                              dispatch_receipt(begun, "2026-10-02T10:00:04Z"),
+                              "2026-10-02T10:00:04Z")
+
+        reprioritized = [ticket("EX-RESERVED", 0), ticket("EX-REPLACEMENT", 1)]
+        snapshot = store.schedule(reprioritized, "2026-10-02T10:00:05Z", host_capacity=2)
+        self.assertEqual(next(row for row in snapshot if row["stream"] == "A")["ticket"],
+                         "EX-REPLACEMENT")
+        self.assertNotEqual(next(row for row in snapshot if row["stream"] == "B")["ticket"],
+                            "EX-RESERVED")
+        pending = store.prepare_dispatches("2026-10-02T10:00:05Z")
+        self.assertEqual([item["ticket"] for item in pending], ["EX-RESERVED"])
+        with store.connection() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM controller_dispatch WHERE ticket='EX-RESERVED'").fetchone()[0], 1)
+
+        # A fresh reconciliation readback ends the old unresolved intent. A
+        # distinct exact tuple may then be admitted as later work.
+        recon_at = "2026-10-02T10:00:06Z"
+        recon = store.begin_dispatch_reconciliation(old_intent["dispatch_id"], recon_at)
+        store.finish_dispatch(old_intent["dispatch_id"],
+                              dispatch_receipt(recon, "2026-10-02T10:00:07Z"),
+                              "2026-10-02T10:00:07Z", reconcile=True)
+        next_work = ticket("EX-RESERVED", 0, exact_tuple="base:a/head:new/tree:new/contract:d/review:e")
+        snapshot = store.schedule([next_work, replacement], "2026-10-02T10:00:08Z", host_capacity=2)
+        self.assertEqual(next(row for row in snapshot if row["stream"] == "B")["ticket"],
+                         "EX-RESERVED")
+        created = store.prepare_dispatches("2026-10-02T10:00:08Z")
+        self.assertTrue(any(item["ticket"] == "EX-RESERVED" and item["stream_id"] == "B"
+                            for item in created), repr(created))
+
+    def test_awf5_c195_r1_001_matching_unknown_dispatch_stays_blocked_until_reconciled(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "persistent-unknown.sqlite3", ["A"])
+        reserved = ticket("EX-UNKNOWN", 1)
+        store.schedule([reserved], NOW, host_capacity=1)
+        intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(intent["dispatch_id"], NOW)
+        store.mark_dispatch_unknown(intent["dispatch_id"], "2026-10-02T10:00:01Z")
+
+        for observed_at in ("2026-10-02T10:00:02Z", "2026-10-02T10:00:03Z"):
+            snapshot = store.schedule([reserved], observed_at, host_capacity=1)
+            stream = snapshot[0]
+            self.assertEqual((stream["state"], stream["ticket"]),
+                             ("BLOCKED", "EX-UNKNOWN"))
+            self.assertIn(intent["dispatch_id"], stream["reason"])
+            self.assertTrue(stream["exact_tuple"])
+            self.assertIn("Observe the exact durable dispatch intent", stream["next_action"])
+            self.assertIn("fresh observation", stream["resume_trigger"])
+
+        digest = store.digest("2026-10-02T10:00:04Z")
+        self.assertFalse(digest["all_complete"])
+        self.assertEqual(digest["streams"][0]["state"], "BLOCKED")
+        unresolved = next(item for item in digest["unresolved_dispatches"]
+                          if item["dispatch_id"] == intent["dispatch_id"])
+        self.assertEqual((unresolved["ticket"], unresolved["status"], unresolved["detached"]),
+                         ("EX-UNKNOWN", "UNKNOWN", False))
+
+    def test_pending_and_in_flight_dispatch_tickets_are_also_globally_reserved(self):
+        for status in ("PENDING", "IN_FLIGHT"):
+            with self.subTest(status=status):
+                path = Path(self.temporary.name) / f"reservation-{status.lower()}.sqlite3"
+                store = ContinuousControllerStore(path, ["A", "B"])
+                reserved = ticket("EX-HELD", 1)
+                replacement = ticket("EX-NEXT", 2)
+                store.schedule([reserved], NOW, host_capacity=1)
+                intent = store.prepare_dispatches(NOW)[0]
+                if status == "IN_FLIGHT":
+                    store.begin_dispatch(intent["dispatch_id"], NOW)
+                later = "2026-10-02T10:00:01Z"
+                store.schedule([ticket("EX-HELD", 1, "COMPLETE"), replacement], later,
+                               host_capacity=2 if status == "IN_FLIGHT" else 1)
+                snapshot = store.schedule([ticket("EX-HELD", 0), replacement],
+                                          "2026-10-02T10:00:02Z", host_capacity=2)
+                self.assertEqual(next(row for row in snapshot if row["stream"] == "A")["ticket"],
+                                 "EX-NEXT")
+                self.assertNotEqual(next(row for row in snapshot if row["stream"] == "B")["ticket"],
+                                    "EX-HELD")
+                with store.connection() as db:
+                    rows = db.execute("SELECT stream_id,status FROM controller_dispatch "
+                                      "WHERE ticket='EX-HELD'").fetchall()
+                self.assertEqual([(row["stream_id"], row["status"]) for row in rows], [("A", status)])
+
+    def test_unresolved_dispatches_consume_capacity_but_other_available_slots_continue(self):
+        for intent_state in ("PENDING", "IN_FLIGHT", "UNKNOWN"):
+            for capacity in (1, 2):
+                with self.subTest(intent_state=intent_state, capacity=capacity):
+                    path = Path(self.temporary.name) / f"capacity-{intent_state.lower()}-{capacity}.sqlite3"
+                    store = ContinuousControllerStore(path, ["A", "B"])
+                    store.schedule([ticket("EX-IN-FLIGHT", 1)], NOW, host_capacity=1)
+                    intent = store.prepare_dispatches(NOW)[0]
+                    if intent_state != "PENDING":
+                        store.begin_dispatch(intent["dispatch_id"], NOW)
+                    if intent_state == "UNKNOWN":
+                        store.mark_dispatch_unknown(intent["dispatch_id"], "2026-10-02T10:00:01Z")
+                    later = "2026-10-02T10:00:02Z"
+                    snapshot = store.schedule([
+                        ticket("EX-IN-FLIGHT", 1, "COMPLETE"),
+                        ticket("EX-AVAILABLE-1", 2),
+                        ticket("EX-AVAILABLE-2", 3),
+                    ], later, host_capacity=capacity)
+                    reserved = 0 if intent_state == "PENDING" else 1
+                    self.assertEqual(sum(row["state"] == "WORKING" for row in snapshot),
+                                     max(0, capacity - reserved))
+                    self.assertNotIn("EX-IN-FLIGHT", [row["ticket"] for row in snapshot])
+
+    def test_orphan_pending_dispatch_is_cancelled_and_recreated_after_fresh_preflight(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "orphan-pending.sqlite3", ["A", "B"])
+        store.schedule([ticket("EX-8", 1)], NOW, host_capacity=1)
+        original = store.prepare_dispatches(NOW)[0]
+        calls = []
+        blocked_at = "2026-10-02T10:00:01Z"
+        blocked_cycle = production_controller_cycle(store, now=blocked_at, host_capacity=1,
+            inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+            observe_inventory=lambda: inventory_observation(blocked_at, [
+                ticket("EX-8", 1, "BLOCKED", reason="fresh preflight paused this ticket"),
+                ticket("EX-9", 2),
+            ]),
+            dispatch_ticket=lambda payload: calls.append(payload["ticket"]) or
+                dispatch_receipt(payload, blocked_at),
+            observe_dispatch=lambda payload: self.fail("PENDING cancellation must not reconcile"),
+            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": blocked_at})
+        self.assertNotIn("EX-8", calls, repr(blocked_cycle))
+        with store.connection() as db:
+            cancelled = db.execute("SELECT status,payload_json FROM controller_dispatch "
+                                    "WHERE dispatch_id=?", (original["dispatch_id"],)).fetchone()
+        self.assertEqual(cancelled["status"], "CANCELLED")
+        self.assertIn("fresh preflight", json.loads(cancelled["payload_json"])["cancellation_reason"])
+
+        resumed_at = "2026-10-02T10:00:02Z"
+        resumed = production_controller_cycle(store, now=resumed_at, host_capacity=1,
+            inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+            observe_inventory=lambda: inventory_observation(resumed_at, [
+                ticket("EX-8", 1), ticket("EX-9", 2, "COMPLETE")]),
+            dispatch_ticket=lambda payload: calls.append(payload["ticket"]) or
+                dispatch_receipt(payload, resumed_at),
+            observe_dispatch=lambda payload: self.fail("cancelled PENDING intent cannot reconcile"),
+            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": resumed_at})
+        self.assertEqual(calls, ["EX-9", "EX-8"], repr((blocked_cycle, resumed)))
+        self.assertIn("EX-8", [receipt["ticket"] for receipt in resumed["dispatch_receipts"]])
+
+    def test_pending_dispatch_cancellation_refuses_any_intent_that_reached_begin(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "cancel-inflight.sqlite3", ["A"])
+        store.schedule([ticket("EX-CANCEL", 1)], NOW, host_capacity=1)
+        intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(intent["dispatch_id"], NOW)
+        with self.assertRaisesRegex(ValidationError, "never-begun pending"):
+            store.cancel_pending_dispatch(intent["dispatch_id"], "2026-10-02T10:00:01Z",
+                                          "preflight changed")
+
+    def test_pending_dispatch_cancels_when_preflight_pauses_or_completes_ticket(self):
+        for disposition in ("PAUSED_INPUT", "COMPLETE"):
+            with self.subTest(disposition=disposition):
+                path = Path(self.temporary.name) / f"cancel-{disposition.lower()}.sqlite3"
+                store = ContinuousControllerStore(path, ["A"])
+                ticket_id = "EX-10" if disposition == "PAUSED_INPUT" else "EX-11"
+                store.schedule([ticket(ticket_id, 1)], NOW, host_capacity=1)
+                intent = store.prepare_dispatches(NOW)[0]
+                observed_at = "2026-10-02T10:00:01Z"
+                result = production_controller_cycle(store, now=observed_at, host_capacity=1,
+                    inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+                    observe_inventory=lambda: inventory_observation(observed_at, [
+                        ticket(ticket_id, 1, disposition)]),
+                    dispatch_ticket=lambda payload: self.fail("non-eligible PENDING intent reached host"),
+                    observe_dispatch=lambda payload: self.fail("never-begun intent cannot reconcile"),
+                    deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                        "status": "DELIVERED", "observed_at": observed_at})
+                self.assertEqual(next(row for row in result["streams"] if row["stream"] == "A")["state"],
+                                 disposition)
+                with store.connection() as db:
+                    status = db.execute("SELECT status FROM controller_dispatch WHERE dispatch_id=?",
+                                        (intent["dispatch_id"],)).fetchone()[0]
+                self.assertEqual(status, "CANCELLED")
+
     def test_contradictory_reviewer_counts_fail_before_dispatch_or_delivery(self):
         malformed = ticket("QA-BAD", 1, reviewer_completion={
             "required": 2, "completed": 1, "acceptable": 1,
@@ -229,7 +421,7 @@ class ContinuousControllerTests(unittest.TestCase):
 
     def test_default_and_configured_cadence_with_immediate_change_digest(self):
         first = self.store.digest(NOW)
-        self.assertEqual((first["kind"], first["cadence_seconds"]), ("REGULAR", 900))
+        self.assertEqual((first["kind"], first["cadence_seconds"]), ("REGULAR", 600))
         self.assertEqual(self.store.digest("2026-10-02T10:00:30Z"), first)
         self.store.acknowledge_digest(first["delivery_id"], "2026-10-02T10:00:31Z")
         self.assertIsNone(self.store.digest("2026-10-02T10:01:00Z"))
@@ -239,12 +431,68 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(len(changed["streams"]), 3)
         self.assertTrue(all(item["exact_tuple"] for item in changed["streams"]))
         self.store.acknowledge_digest(changed["delivery_id"], "2026-10-02T10:02:02Z")
-        # The change digest does not move the regular 15-minute deadline.
-        regular = self.store.digest("2026-10-02T10:15:00Z")
+        # The change digest does not move the regular 10-minute deadline.
+        regular = self.store.digest("2026-10-02T10:10:00Z")
         self.assertEqual(regular["kind"], "REGULAR")
-        self.store.acknowledge_digest(regular["delivery_id"], "2026-10-02T10:15:01Z")
+        self.store.acknowledge_digest(regular["delivery_id"], "2026-10-02T10:10:01Z")
         self.store.set_cadence(300)
         self.assertEqual(self.store.digest("2026-10-02T10:20:00Z")["cadence_seconds"], 300)
+
+    def test_disabled_periodic_status_suppresses_regular_and_keeps_urgent_stream_changes(self):
+        path = Path(self.temporary.name) / "disabled.sqlite3"
+        store = ContinuousControllerStore(path, ["A", "B", "C"], periodic_status_enabled=False)
+        self.assertIsNone(store.digest(NOW))
+        self.assertIsNone(store.digest("2026-10-02T10:20:00Z"))
+        store.schedule([
+            ticket("EX-BLOCKED", 1, "BLOCKED", reason="dependency blocker evidence"),
+            ticket("EX-INPUT", 2, "PAUSED_INPUT", reason="owner input required"),
+            ticket("EX-READY", 3, verification_gate="MERGE_READY"),
+        ], "2026-10-02T10:20:01Z", host_capacity=3)
+        digest = store.digest("2026-10-02T10:20:02Z")
+        self.assertEqual(digest["kind"], "CHANGE")
+        rows = {row["ticket"]: row for row in digest["streams"] if row["ticket"]}
+        self.assertEqual(rows["EX-BLOCKED"]["state"], "BLOCKED")
+        self.assertIn("blocker evidence", rows["EX-BLOCKED"]["reason"])
+        self.assertEqual(rows["EX-INPUT"]["state"], "PAUSED_INPUT")
+        self.assertIn("input required", rows["EX-INPUT"]["reason"])
+        self.assertEqual(rows["EX-READY"]["verification_gate"], "MERGE_READY")
+        store.acknowledge_digest(digest["delivery_id"], "2026-10-02T10:20:03Z")
+        self.assertIsNone(store.digest("2026-10-02T10:40:00Z"))
+
+    def test_pending_digest_replays_after_restart_while_periodic_status_is_disabled(self):
+        first = self.store.digest(NOW)
+        restarted = ContinuousControllerStore(self.path, ["A", "B", "C"],
+                                               periodic_status_enabled=False)
+        self.assertEqual(restarted.digest("2026-10-02T10:20:00Z"), first)
+
+    def test_crashed_dispatch_recovery_queues_immediate_failure_digest_while_disabled(self):
+        path = Path(self.temporary.name) / "crashed-dispatch.sqlite3"
+        store = ContinuousControllerStore(path, ["A"], periodic_status_enabled=False)
+        store.schedule([ticket("EX-CRASH", 1)], NOW, host_capacity=1)
+        operation = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(operation["dispatch_id"], NOW)
+        restarted = ContinuousControllerStore(path, ["A"], periodic_status_enabled=False)
+        restarted.recover_dispatches("2026-10-02T10:00:01Z")
+        digest = restarted.digest("2026-10-02T10:00:02Z")
+        self.assertEqual(digest["kind"], "CHANGE")
+        stream = digest["streams"][0]
+        self.assertEqual(stream["state"], "BLOCKED")
+        self.assertIn("Dispatch outcome unknown", stream["reason"])
+        with restarted.connection() as db:
+            status = db.execute("SELECT status FROM controller_dispatch WHERE dispatch_id=?",
+                                (operation["dispatch_id"],)).fetchone()[0]
+            pending = db.execute("SELECT acknowledged_at FROM controller_outbox WHERE delivery_id=?",
+                                 (digest["delivery_id"],)).fetchone()[0]
+        self.assertEqual(status, "UNKNOWN")
+        self.assertIsNone(pending)
+
+    def test_legacy_cadence_requires_and_supports_explicit_migration(self):
+        path = Path(self.temporary.name) / "legacy-cadence.sqlite3"
+        ContinuousControllerStore(path, ["A"], cadence_seconds=300)
+        with self.assertRaisesRegex(ValidationError, "explicitly migrate"):
+            ContinuousControllerStore(path, ["A"])
+        migrated = ContinuousControllerStore(path, ["A"], migrate_cadence=True)
+        self.assertEqual(migrated.digest(NOW)["cadence_seconds"], 600)
 
     def test_generated_digest_contract_accepts_runtime_record(self):
         self.store.schedule([ticket("EX-1", 1)], NOW, host_capacity=1)
@@ -365,7 +613,7 @@ class ContinuousControllerTests(unittest.TestCase):
         command = [sys.executable, "-B", str(ROOT / ".agentic/scripts/workflow.py"),
                    "--root", str(ROOT), "controller", "--state", str(self.path),
                    "--stream", "A", "--stream", "B", "--stream", "C",
-                   "--worktree-root", str(worktree), "snapshot"]
+                   "--worktree-root", str(worktree), "--disable-periodic-status", "snapshot"]
         completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=30)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(len(json.loads(completed.stdout)["streams"]), 3)
@@ -392,8 +640,10 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(sum(kind == "deliver" for kind, _ in calls), 1)
 
     def test_uncertain_dispatch_is_observed_and_never_blindly_reissued(self):
-        store = ContinuousControllerStore(Path(self.temporary.name) / "unknown.sqlite3", ["A"])
+        store = ContinuousControllerStore(Path(self.temporary.name) / "unknown.sqlite3", ["A"],
+                                          periodic_status_enabled=False)
         dispatch_calls = []
+        delivered = []
         def fail_dispatch(payload):
             dispatch_calls.append(payload)
             raise RuntimeError("synthetic uncertain host result")
@@ -403,9 +653,13 @@ class ContinuousControllerTests(unittest.TestCase):
             **REPOSITORY,
             observe_inventory=lambda: inventory_observation(NOW, first_tickets),
             dispatch_ticket=fail_dispatch, observe_dispatch=lambda payload: self.fail("not yet"),
-            deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
-                "status": "DELIVERED", "observed_at": NOW})
+            deliver_status=lambda digest: delivered.append(digest) or {
+                "delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": NOW})
         self.assertEqual(first["errors"][0]["state"], "UNKNOWN")
+        self.assertEqual(first["streams"][0]["state"], "BLOCKED")
+        self.assertIn("Dispatch outcome unknown", first["streams"][0]["reason"])
+        self.assertEqual(delivered[0]["kind"], "CHANGE")
+        self.assertIn("Dispatch outcome unknown", delivered[0]["streams"][0]["reason"])
         later = "2026-10-02T10:00:01Z"
         def observe(payload):
             return dispatch_receipt(payload, later)
@@ -420,6 +674,86 @@ class ContinuousControllerTests(unittest.TestCase):
                 "status": "DELIVERED", "observed_at": later})
         self.assertEqual(len(dispatch_calls), 1)
         self.assertEqual(second["dispatch_receipts"][0]["status"], "ACCEPTED")
+
+    def test_old_unknown_reconciliation_failure_cannot_clobber_reassigned_stream(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "reassigned-unknown.sqlite3",
+                                          ["A", "B"])
+        old_ticket = ticket("EX-19", 1)
+        store.schedule([old_ticket], NOW, host_capacity=1)
+        old_intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(old_intent["dispatch_id"], NOW)
+        store.mark_dispatch_unknown(old_intent["dispatch_id"], "2026-10-02T10:00:01Z")
+
+        # A is reused for Y while T remains UNKNOWN; capacity two leaves the
+        # second slot available for this unrelated stream work.
+        replacement = ticket("EX-20", 2)
+        allocated_at = "2026-10-02T10:00:02Z"
+        store.schedule([ticket("EX-19", 1, "COMPLETE"), replacement], allocated_at,
+                       host_capacity=2)
+        replacement_intent = next(item for item in store.prepare_dispatches(allocated_at)
+                                  if item["ticket"] == "EX-20")
+        begun = store.begin_dispatch(replacement_intent["dispatch_id"], "2026-10-02T10:00:03Z")
+        store.finish_dispatch(replacement_intent["dispatch_id"],
+                              dispatch_receipt(begun, "2026-10-02T10:00:04Z"),
+                              "2026-10-02T10:00:04Z")
+
+        observed_at = "2026-10-02T10:00:05Z"
+        delivered = []
+        def fail_reconciliation(payload):
+            raise RuntimeError("observation unavailable")
+        result = production_controller_cycle(store, now=observed_at, host_capacity=2,
+            inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+            observe_inventory=lambda: inventory_observation(observed_at, [
+                ticket("EX-19", 1, "COMPLETE"), replacement]),
+            dispatch_ticket=lambda payload: self.fail("reassigned Y must not receive a duplicate intent"),
+            observe_dispatch=fail_reconciliation,
+            deliver_status=lambda digest: delivered.append(digest) or {"delivery_id": digest["delivery_id"],
+                "status": "DELIVERED", "observed_at": observed_at})
+        owner = next(row for row in result["streams"] if row["stream"] == "A")
+        self.assertEqual((owner["state"], owner["ticket"], owner["exact_tuple"]),
+                         ("WORKING", "EX-20", replacement["exact_tuple"]))
+        self.assertEqual(len(delivered), 1)
+        detached = next(item for item in delivered[0]["unresolved_dispatches"]
+                        if item["dispatch_id"] == old_intent["dispatch_id"])
+        self.assertEqual((detached["ticket"], detached["status"], detached["detached"]),
+                         ("EX-19", "UNKNOWN", True))
+        delivered_owner = next(row for row in delivered[0]["streams"] if row["stream"] == "A")
+        self.assertEqual((delivered_owner["state"], delivered_owner["ticket"],
+                          delivered_owner["exact_tuple"]),
+                         ("WORKING", "EX-20", replacement["exact_tuple"]))
+        self.assertEqual([item["state"] for item in result["errors"] if item["operation"] == "dispatch"],
+                         ["UNKNOWN"])
+        with store.connection() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM controller_dispatch WHERE ticket='EX-20'").fetchone()[0], 1)
+
+    def test_detached_unknown_reconciliation_emits_change_digest_while_periodic_disabled(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "reconciled-unknown.sqlite3",
+                                          ["A", "B"], periodic_status_enabled=False)
+        old_ticket = ticket("EX-OLD", 1)
+        store.schedule([old_ticket], NOW, host_capacity=1)
+        old_intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(old_intent["dispatch_id"], NOW)
+        store.mark_dispatch_unknown(old_intent["dispatch_id"], "2026-10-02T10:00:01Z")
+
+        replacement = ticket("EX-NEW", 2)
+        store.schedule([ticket("EX-OLD", 1, "COMPLETE"), replacement],
+                       "2026-10-02T10:00:02Z", host_capacity=2)
+        unresolved = store.digest("2026-10-02T10:00:03Z")
+        self.assertEqual(unresolved["kind"], "CHANGE")
+        self.assertEqual([(row["ticket"], row["detached"])
+                          for row in unresolved["unresolved_dispatches"]], [("EX-OLD", True)])
+        store.acknowledge_digest(unresolved["delivery_id"], "2026-10-02T10:00:04Z")
+
+        reconcile_at = "2026-10-02T10:00:05Z"
+        reconciliation = store.begin_dispatch_reconciliation(old_intent["dispatch_id"], reconcile_at)
+        store.finish_dispatch(old_intent["dispatch_id"],
+                              dispatch_receipt(reconciliation, reconcile_at),
+                              reconcile_at, reconcile=True)
+        reconciled = store.digest("2026-10-02T10:00:06Z")
+        self.assertIsNotNone(reconciled)
+        self.assertEqual(reconciled["kind"], "CHANGE")
+        self.assertEqual(reconciled["unresolved_dispatches"], [])
 
     def test_dispatch_rejects_stale_direct_and_cached_restart_receipts(self):
         store = ContinuousControllerStore(Path(self.temporary.name) / "dispatch-stale.sqlite3", ["A"])

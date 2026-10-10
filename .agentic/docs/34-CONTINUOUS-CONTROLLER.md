@@ -26,9 +26,9 @@ Reviewer counts are admitted only when `required = completed + outstanding` and 
 
 ## Dispatch and cadence
 
-Dispatch intent is durable before the host call. An interrupted call becomes `UNKNOWN` and is reconciled only by observation; it is never blindly replayed. Unrelated streams continue after one adapter failure.
+Persist intents before host calls. `PENDING`, `IN_FLIGHT` and `UNKNOWN` reserve tickets; latter consume capacity. Preflight cancels unbegun, newly ineligible intents. UNKNOWN results update only matching stream/ticket/tuple, preventing late overwrite after reassignment. Other streams use free capacity.
 
-The default digest cadence is 900 seconds; configured cadence must be positive. A change can produce an immediate `CHANGE` digest without resetting the next regular deadline. The acknowledged outbox replays one `delivery_id` until exact delivery readback succeeds. Restarts preserve pending delivery, and clock rollback fails closed. Every digest covers all streams and their exact gate state.
+Cadence is 600 seconds. Stored cadence changes only via `--migrate-status-cadence`; mismatch fails closed. `--disable-periodic-status` suppresses scheduled digests only; blocker, failure, input-required and merge-ready changes stay immediate. Outbox items replay to exact readback, then updates. Deadlines and delivery survive changes/restarts; clock rollback fails closed. Digests cover every stream/gate and unresolved UNKNOWN ticket, tuple and detached flag.
 
 ## Jira lifecycle and merge progress
 
