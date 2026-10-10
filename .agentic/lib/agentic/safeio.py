@@ -22,14 +22,30 @@ if os.name == "nt":
             ("accessed", wintypes.FILETIME), ("written", wintypes.FILETIME), ("volume", wintypes.DWORD),
             ("size_high", wintypes.DWORD), ("size_low", wintypes.DWORD), ("links", wintypes.DWORD),
             ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
+    class FileBasicInformation(ctypes.Structure):
+        _fields_ = [("creation_time", ctypes.c_longlong), ("last_access_time", ctypes.c_longlong),
+            ("last_write_time", ctypes.c_longlong), ("change_time", ctypes.c_longlong),
+            ("file_attributes", wintypes.DWORD)]
+    class FileDispositionInformation(ctypes.Structure):
+        _fields_ = [("delete_file", wintypes.BOOLEAN)]
     kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
                                    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(FileInformation)]
     kernel.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                     wintypes.DWORD]
+    kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                   wintypes.DWORD]
+    kernel.SetFileInformationByHandle.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
     INVALID_HANDLE = wintypes.HANDLE(-1).value
+    FILE_BASIC_INFO = 0
+    FILE_DISPOSITION_INFO = 4
+    FILE_ATTRIBUTE_READONLY = 0x1
+    FILE_ATTRIBUTE_NORMAL = 0x80
 
     def win_open(path, directory=False, lock=False):
         access = 0x80 if directory else (0xC0000000 if lock else 0x80000000)
@@ -46,6 +62,46 @@ if os.name == "nt":
             kernel.CloseHandle(handle)
             raise ValidationError(f"Refusing link, reparse point, or wrong file type: {path}")
         return handle
+
+    def _win_set_file_information(handle, information_class, information):
+        if not kernel.SetFileInformationByHandle(
+                handle, information_class, ctypes.byref(information), ctypes.sizeof(information)):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def win_unlink(path):
+        """Validate, make writable, and delete one leaf through the same handle."""
+        delete = 0x00010000
+        read_attributes = 0x80
+        write_attributes = 0x100
+        # Omitting FILE_SHARE_DELETE prevents a concurrent rename or replacement
+        # from changing which object is mutated while this handle is held.
+        handle = kernel.CreateFileW(str(path), delete | read_attributes | write_attributes,
+                                    0x1 | 0x2, None, 3, 0x00200000, None)
+        if handle == INVALID_HANDLE:
+            error = ctypes.get_last_error()
+            if error in {2, 3}:
+                return False
+            raise ctypes.WinError(error)
+        try:
+            info = FileInformation()
+            if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if info.attributes & 0x400 or info.attributes & 0x10 or info.links != 1:
+                raise ValidationError(f"Refusing link, reparse point, or wrong file type: {path}")
+            if info.attributes & FILE_ATTRIBUTE_READONLY:
+                basic = FileBasicInformation()
+                if not kernel.GetFileInformationByHandleEx(
+                        handle, FILE_BASIC_INFO, ctypes.byref(basic), ctypes.sizeof(basic)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                basic.file_attributes &= ~FILE_ATTRIBUTE_READONLY
+                if basic.file_attributes == 0:
+                    basic.file_attributes = FILE_ATTRIBUTE_NORMAL
+                _win_set_file_information(handle, FILE_BASIC_INFO, basic)
+            _win_set_file_information(
+                handle, FILE_DISPOSITION_INFO, FileDispositionInformation(True))
+            return True
+        finally:
+            kernel.CloseHandle(handle)
 
 
 def relative_parts(value):
@@ -157,17 +213,15 @@ class Tree:
                 pass
 
     def unlink(self, relative):
-        if self.inspect(relative) is None:
-            return
         parent, handle, name = self.parent(relative)
         if os.name == "nt":
             # Upgrade archives are made read-only before the managed-after
-            # journal update.  Windows refuses to unlink a read-only file, so
-            # crash rollback must clear that attribute after the confined,
-            # single-link regular-file check above.
-            os.chmod(parent / name, stat.S_IWRITE)
-            os.unlink(parent / name)
+            # journal update. Validate, clear that attribute, and delete through
+            # one handle which denies replacement of the validated leaf.
+            win_unlink(parent / name)
         else:
+            if self.inspect(relative) is None:
+                return
             os.unlink(name, dir_fd=handle)
             os.fsync(handle)
 

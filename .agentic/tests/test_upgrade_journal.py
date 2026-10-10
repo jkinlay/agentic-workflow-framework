@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT / ".agentic/tests"))
 
 from agentic.canonical import sha256  # noqa: E402
 from agentic.installer import JOURNAL, install, recover, verify_installed  # noqa: E402
+import agentic.safeio as safeio  # noqa: E402
 from agentic.safeio import Tree  # noqa: E402
 from source_only import skip_unless_source_repo  # noqa: E402
 from upgrade_fixtures import file_tree, materialize, verify_materialized  # noqa: E402
@@ -27,6 +28,50 @@ from upgrade_fixtures import file_tree, materialize, verify_materialized  # noqa
 
 class SimulatedCrash(BaseException):
     """Escape the installer's Exception rollback like a terminated process."""
+
+
+class SafeIoWindowsTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows handle semantics")
+    def test_unlink_leaf_swap_cannot_mutate_outside_file(self):
+        base = Path(tempfile.gettempdir()) / ("awf-unlink-swap-" + uuid.uuid4().hex)
+        base.mkdir()
+        def cleanup():
+            for path in base.rglob("*"):
+                if path.is_file():
+                    path.chmod(stat.S_IWRITE | stat.S_IREAD)
+            shutil.rmtree(base)
+        self.addCleanup(cleanup)
+        root = base / "root"
+        root.mkdir()
+        victim = root / "victim.txt"
+        replacement = root / "replacement.txt"
+        outside = base / "outside.txt"
+        victim.write_bytes(b"victim")
+        outside.write_bytes(b"outside")
+        outside.chmod(stat.S_IREAD)
+        os.link(outside, replacement)
+
+        original = safeio._win_set_file_information
+        swap = {"attempted": False, "blocked": False}
+
+        def attempt_swap(handle, information_class, information):
+            if not swap["attempted"]:
+                swap["attempted"] = True
+                try:
+                    os.replace(replacement, victim)
+                except OSError:
+                    swap["blocked"] = True
+            return original(handle, information_class, information)
+
+        with patch.object(safeio, "_win_set_file_information", side_effect=attempt_swap):
+            with Tree(root) as tree:
+                tree.unlink("victim.txt")
+
+        self.assertEqual(swap, {"attempted": True, "blocked": True})
+        self.assertFalse(victim.exists())
+        self.assertTrue(outside.exists())
+        self.assertEqual(outside.read_bytes(), b"outside")
+        self.assertTrue(os.stat(outside).st_file_attributes & stat.FILE_ATTRIBUTE_READONLY)
 
 
 @skip_unless_source_repo(
@@ -78,7 +123,14 @@ class UpgradeJournalCrashTests(unittest.TestCase):
             if Path(directory).name == ".agentic-install" and "lock" in names:
                 ignored.append("lock")
             return ignored
-        shutil.copytree(source, destination, ignore=ignore)
+        shutil.copytree(source, destination, ignore=ignore, copy_function=shutil.copyfile)
+        # copyfile deliberately leaves metadata unspecified. Apply the captured
+        # modes explicitly so recovery sees the exact durable state on every
+        # supported Python/platform combination.
+        for original in source.rglob("*"):
+            copied = destination / original.relative_to(source)
+            if original.is_file() and copied.is_file():
+                copied.chmod(stat.S_IMODE(original.stat().st_mode))
 
     def crash_during_managed_after_update(self, phase):
         destination = self.base / ("destination-" + phase)
