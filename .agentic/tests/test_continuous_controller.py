@@ -727,6 +727,34 @@ class ContinuousControllerTests(unittest.TestCase):
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM controller_dispatch WHERE ticket='EX-20'").fetchone()[0], 1)
 
+    def test_detached_unknown_reconciliation_emits_change_digest_while_periodic_disabled(self):
+        store = ContinuousControllerStore(Path(self.temporary.name) / "reconciled-unknown.sqlite3",
+                                          ["A", "B"], periodic_status_enabled=False)
+        old_ticket = ticket("EX-OLD", 1)
+        store.schedule([old_ticket], NOW, host_capacity=1)
+        old_intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(old_intent["dispatch_id"], NOW)
+        store.mark_dispatch_unknown(old_intent["dispatch_id"], "2026-10-02T10:00:01Z")
+
+        replacement = ticket("EX-NEW", 2)
+        store.schedule([ticket("EX-OLD", 1, "COMPLETE"), replacement],
+                       "2026-10-02T10:00:02Z", host_capacity=2)
+        unresolved = store.digest("2026-10-02T10:00:03Z")
+        self.assertEqual(unresolved["kind"], "CHANGE")
+        self.assertEqual([(row["ticket"], row["detached"])
+                          for row in unresolved["unresolved_dispatches"]], [("EX-OLD", True)])
+        store.acknowledge_digest(unresolved["delivery_id"], "2026-10-02T10:00:04Z")
+
+        reconcile_at = "2026-10-02T10:00:05Z"
+        reconciliation = store.begin_dispatch_reconciliation(old_intent["dispatch_id"], reconcile_at)
+        store.finish_dispatch(old_intent["dispatch_id"],
+                              dispatch_receipt(reconciliation, reconcile_at),
+                              reconcile_at, reconcile=True)
+        reconciled = store.digest("2026-10-02T10:00:06Z")
+        self.assertIsNotNone(reconciled)
+        self.assertEqual(reconciled["kind"], "CHANGE")
+        self.assertEqual(reconciled["unresolved_dispatches"], [])
+
     def test_dispatch_rejects_stale_direct_and_cached_restart_receipts(self):
         store = ContinuousControllerStore(Path(self.temporary.name) / "dispatch-stale.sqlite3", ["A"])
         payloads = []
