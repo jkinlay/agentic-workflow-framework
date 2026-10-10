@@ -12,10 +12,12 @@ import unittest
 from unittest.mock import patch
 
 from agentic import ValidationError
+from agentic import review_qualification
 from agentic.canonical import sha256
 from agentic.review_loop import LoopStore
 from agentic.review_qualification import (collect_qualification,
     host_binding_sha256, validate_config_qualification)
+from agentic.providers import github_review_host
 from agentic.providers.github_review_host import HostDriver
 from source_only import skip_unless_source_repo
 
@@ -243,6 +245,76 @@ class QualificationTests(unittest.TestCase):
                 self.assertEqual(
                     driver.run('codex', ['exec', '--sandbox', 'read-only']), '')
             launch.assert_called_once()
+
+    def test_awf31_r4_001_case_variant_tokens_are_removed_from_worker_and_critic_children(self):
+        environment = self.isolated_agent_environment()
+        with patch.dict(os.environ, environment, clear=True):
+            driver = self.launchable_driver()
+            result, _ = self.collect()
+            self.pin(result)
+
+        child_environment = dict(environment)
+        child_environment.update({
+            'gh_token': 'synthetic-token-value',
+            'Github_Token': 'synthetic-token-value',
+        })
+        completed = unittest.mock.Mock(returncode=0, stdout='')
+        with patch.object(github_review_host.os, 'environ', child_environment), \
+             patch('agentic.providers.github_review_host.subprocess.run',
+                   return_value=completed) as launch:
+            for sandbox in ('workspace-write', 'read-only'):
+                with self.subTest(sandbox=sandbox):
+                    self.assertEqual(
+                        driver.run('codex', ['exec', '--sandbox', sandbox]), '')
+
+        self.assertEqual(launch.call_count, 2)
+        for call in launch.call_args_list:
+            names = set(call.kwargs['env'])
+            self.assertNotIn('gh_token', names)
+            self.assertNotIn('Github_Token', names)
+
+    def test_awf31_r4_001_unstrippable_case_variant_invalidates_stale_qualification(self):
+        environment = self.isolated_agent_environment()
+        with patch.dict(os.environ, environment, clear=True):
+            driver = self.launchable_driver()
+            result, _ = self.collect()
+            self.pin(result)
+
+        changed_environment = dict(environment)
+        changed_environment['Github_Token'] = 'synthetic-token-value'
+        shared_predicate = review_qualification.is_host_auth_environment_name
+
+        def cannot_strip_mixed_case(name):
+            if name == 'Github_Token':
+                return False
+            return shared_predicate(name)
+
+        with patch.object(review_qualification, 'is_host_auth_environment_name',
+                          side_effect=cannot_strip_mixed_case), \
+             patch.object(github_review_host.os, 'environ', changed_environment), \
+             patch('agentic.providers.github_review_host.subprocess.run') as launch, \
+             self.assertRaisesRegex(ValidationError, 'credential|host controls'):
+            driver.run('codex', ['exec', '--sandbox', 'read-only'])
+        launch.assert_not_called()
+
+    def test_awf31_r4_001_unchanged_explicit_environment_remains_pass(self):
+        environment = self.isolated_agent_environment()
+        with patch.dict(os.environ, environment, clear=True):
+            driver = self.launchable_driver()
+            result, _ = self.collect()
+            self.pin(result)
+
+        self.assertEqual(
+            validate_config_qualification(
+                self.config, self.base / 'state', environment=environment)['result'],
+            'PASS')
+        completed = unittest.mock.Mock(returncode=0, stdout='')
+        with patch.object(github_review_host.os, 'environ', environment), \
+             patch('agentic.providers.github_review_host.subprocess.run',
+                   return_value=completed) as launch:
+            self.assertEqual(
+                driver.run('codex', ['exec', '--sandbox', 'read-only']), '')
+        launch.assert_called_once()
 
     def test_readable_agent_auth_is_an_explicit_blocking_finding(self):
         result, _ = self.collect(readable_auth=True)
