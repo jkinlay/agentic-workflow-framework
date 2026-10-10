@@ -4,3 +4,8 @@
 * text eol=lf
 .agentic/tests/fixtures/upgrades/blobs/** -text
 .agentic/tests/fixtures/upgrades/blobs/** -text whitespace=cr-at-eol
+# AWF sync/batch tooling registers merge.awf-manifest.driver to invoke
+# scripts/manifest_merge_driver.py. The driver performs a canonical three-way
+# merge of the derived inventories, including disjoint edits and deletions.
+MANIFEST.json merge=awf-manifest
+MANIFEST.md merge=awf-manifest
