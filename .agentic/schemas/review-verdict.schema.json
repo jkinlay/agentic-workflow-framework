@@ -1,0 +1,424 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_id",
+    "created_at",
+    "producer_id",
+    "run_id",
+    "binding",
+    "verdict",
+    "tier",
+    "round",
+    "head_sha",
+    "critic_artifact_binding",
+    "reviewer_id",
+    "pr_comment_url",
+    "pr_body_link",
+    "evidence",
+    "posting_observation",
+    "owner_review",
+    "owner_id",
+    "candidate_binding",
+    "critic_review"
+  ],
+  "properties": {
+    "record_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "format": "date-time"
+    },
+    "producer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uuid"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "repository_id",
+        "issue_id",
+        "requirements_hash",
+        "contract_hash",
+        "policy_hash",
+        "candidate_id"
+      ],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "issue_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requirements_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "contract_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_hash": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "verdict": {
+      "enum": [
+        "PASS",
+        "P1",
+        "P2",
+        "REQUEST_CHANGES"
+      ]
+    },
+    "tier": {
+      "enum": [
+        1,
+        2,
+        3
+      ]
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "head_sha": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "critic_artifact_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "critic_run_id",
+        "result_sha256",
+        "head_sha",
+        "round"
+      ],
+      "properties": {
+        "critic_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "result_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "head_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "reviewer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pr_comment_url": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uri"
+    },
+    "pr_body_link": {
+      "type": "string",
+      "minLength": 1,
+      "format": "uri"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "posting_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "observed_at",
+        "producer_id",
+        "run_id",
+        "provider_kind",
+        "critic_artifact_binding",
+        "review_verdict_record_id",
+        "review_verdict_sha256",
+        "repository_id",
+        "pr_number",
+        "comment_id",
+        "comment_url",
+        "comment_bytes",
+        "comment_sha256",
+        "body_link",
+        "body_bytes",
+        "body_sha256",
+        "provider_response_bytes",
+        "provider_response_sha256",
+        "collector_receipt_sha256"
+      ],
+      "properties": {
+        "source": {
+          "const": "host_observation"
+        },
+        "observed_at": {
+          "type": "string",
+          "minLength": 1,
+          "format": "date-time"
+        },
+        "producer_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "provider_kind": {
+          "const": "github"
+        },
+        "critic_artifact_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "critic_run_id",
+            "result_sha256",
+            "head_sha",
+            "round"
+          ],
+          "properties": {
+            "critic_run_id": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uuid"
+            },
+            "result_sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "head_sha": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "round": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "review_verdict_record_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "review_verdict_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "pr_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "comment_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "comment_url": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
+        },
+        "comment_bytes": {
+          "type": "string",
+          "minLength": 2
+        },
+        "comment_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "body_link": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
+        },
+        "body_bytes": {
+          "type": "string",
+          "minLength": 2
+        },
+        "body_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "provider_response_bytes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "encoding",
+            "data"
+          ],
+          "properties": {
+            "encoding": {
+              "const": "base64"
+            },
+            "data": {
+              "type": "string",
+              "minLength": 4,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            }
+          }
+        },
+        "provider_response_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "collector_receipt_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "owner_review": {
+      "type": "boolean"
+    },
+    "owner_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "candidate_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository_id",
+        "pr_number",
+        "base_sha",
+        "head_sha"
+      ],
+      "properties": {
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "pr_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "base_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "head_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "critic_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_id",
+        "run_id",
+        "round",
+        "head_sha",
+        "verdict",
+        "findings_sha256"
+      ],
+      "properties": {
+        "record_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "head_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "verdict": {
+          "enum": [
+            "APPROVE",
+            "REQUEST_CHANGES"
+          ]
+        },
+        "findings_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:review-verdict",
+  "title": "Agentic Workflow 1.2 \u2014 review-verdict"
+}
