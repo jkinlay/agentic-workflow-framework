@@ -192,77 +192,70 @@ def _push_credential_arguments(origin_url, gh, *, local_header_keys=()):
     return arguments, scope
 
 
-def _http_extra_header_sources(repository, environment):
-    """Return value-free source labels for configured HTTP extra-header keys."""
-    try:
-        result = subprocess.run(
-            ["git", *RAW_GIT_ARGUMENTS, "config", "--null", "--show-origin", "--show-scope",
-             "--name-only", "--list"],
-            cwd=repository, env=child_env(environment), capture_output=True, timeout=300,
-            check=False)
-    except (subprocess.SubprocessError, OSError):
-        return ()
-    if result.returncode:
-        return ()
-    fields = result.stdout.split(b"\0")
-    if fields and fields[-1] == b"":
-        fields.pop()
-    if len(fields) % 3:
-        return ()
-    sources = []
-    for index in range(0, len(fields), 3):
-        scope, origin, name = (field.decode("utf-8", errors="replace")
-                               for field in fields[index:index + 3])
-        folded = name.casefold()
-        if folded != "http.extraheader" and not (
-                folded.startswith("http.") and folded.endswith(".extraheader")):
-            continue
-        label = f"{scope} ({origin})"
-        if label not in sources:
-            sources.append(label)
-    return tuple(sources)
-
-
-def _refuse_effective_http_extra_header(repository, remote_url, environment):
-    """Require Git itself to prove no HTTP extra header applies to the push URL."""
-    command = ["git", *RAW_GIT_ARGUMENTS, "config", "--get-urlmatch",
-               "http.extraHeader", remote_url]
+def _refuse_any_http_extra_header(repository, environment):
+    """Refuse every HTTP extra-header key visible to the release push."""
+    command = ["git", *RAW_GIT_ARGUMENTS, "config", "--show-origin", "--show-scope",
+               "--includes", "--name-only", "--get-regexp",
+               r"^http\.(extraheader|.*\.extraheader)$"]
     try:
         result = subprocess.run(
             command, cwd=repository, env=child_env(environment), capture_output=True,
             timeout=300, check=False)
     except (subprocess.SubprocessError, OSError):
         raise ReleaseError(
-            "Unable to verify that no `http.extraHeader` applies to the release remote URL; "
-            "remove every effective `http.*.extraHeader` setting and retry the release.") from None
+            "Unable to inspect Git configuration for HTTP extraHeader keys. Remove every "
+            "`http.extraHeader` and `http.*.extraHeader` key, fix the Git configuration "
+            "error, and retry; no release tag was created.") from None
     if result.returncode == 1 and not result.stdout and not result.stderr:
         return
-    if result.returncode == 0 and result.stdout:
-        sources = _http_extra_header_sources(repository, environment)
-        detail = " Configured source(s): " + ", ".join(sources) + "." if sources else ""
-        raise ReleaseError(
-            "An effective `http.extraHeader` applies to the release remote URL."
-            f"{detail} Remove it from every reported source and retry the release; "
-            "no release tag was created.")
+    if result.returncode == 0 and result.stdout and not result.stderr:
+        entries = []
+        for raw_line in result.stdout.splitlines():
+            fields = raw_line.split(b"\t", 2)
+            if len(fields) != 3:
+                break
+            scope, origin, key = (field.decode("utf-8", errors="backslashreplace")
+                                  for field in fields)
+            folded = key.casefold()
+            if folded != "http.extraheader" and not (
+                    folded.startswith("http.") and folded.endswith(".extraheader")):
+                break
+            entries.append((key, scope, origin))
+        else:
+            details = "\n".join(
+                f"- key={json.dumps(key)} scope={json.dumps(scope)} origin={json.dumps(origin)}"
+                for key, scope, origin in entries)
+            if entries:
+                raise ReleaseError(
+                    "Git configuration contains `http.extraHeader` keys forbidden during "
+                    f"release publication:\n{details}\nRemove every listed key from its "
+                    "reported scope/origin and retry the release; no release tag was created.")
     raise ReleaseError(
-        "Git could not prove that `http.extraHeader` is absent for the release remote URL; "
-        "remove every effective `http.*.extraHeader` setting, fix the Git configuration error, "
-        "and retry the release.")
+        "Git could not prove that every HTTP extraHeader key is absent. Remove every "
+        "`http.extraHeader` and `http.*.extraHeader` key, fix the Git configuration "
+        "error, and retry; no release tag was created.")
+
+
+def _tag_push_transport_plan(repository, tag, *, gh, origin_url, environment=None):
+    """Build the isolated transport/recovery plan for an existing release tag."""
+    if environment is None:
+        environment = isolated_git_env()
+    local_header_keys = _repository_http_extra_header_keys(repository, environment=environment)
+    credential_arguments, scope = _push_credential_arguments(
+        origin_url, gh, local_header_keys=local_header_keys)
+    remote_url = scope or origin_url
+    recovery_arguments, _ = _push_credential_arguments(
+        remote_url, "gh", local_header_keys=local_header_keys)
+    recovery = shlex.join(["git", *recovery_arguments, "push", "origin", f"refs/tags/{tag}"])
+    return ReleaseTagPushPlan(tuple(credential_arguments), recovery, environment)
 
 
 def _release_tag_push_plan(repository, tag, *, gh, origin_url):
     """Validate and freeze the credential-isolated push before tag creation."""
     environment = isolated_git_env()
-    local_header_keys = _repository_http_extra_header_keys(repository, environment=environment)
-    credential_arguments, scope = _push_credential_arguments(
-        origin_url, gh, local_header_keys=local_header_keys)
-    remote_url = scope or origin_url
-    if scope is not None:
-        _refuse_effective_http_extra_header(repository, remote_url, environment)
-    recovery_arguments, _ = _push_credential_arguments(
-        remote_url, "gh", local_header_keys=local_header_keys)
-    recovery = shlex.join(["git", *recovery_arguments, "push", "origin", f"refs/tags/{tag}"])
-    return ReleaseTagPushPlan(tuple(credential_arguments), recovery, environment)
+    _refuse_any_http_extra_header(repository, environment)
+    return _tag_push_transport_plan(
+        repository, tag, gh=gh, origin_url=origin_url, environment=environment)
 
 
 def push_release_tag(repository, tag, *, gh, origin_url, plan=None):
@@ -279,7 +272,9 @@ def push_release_tag(repository, tag, *, gh, origin_url, plan=None):
     (including username-specific variants) as well as generic helpers.
     """
     if plan is None:
-        plan = _release_tag_push_plan(repository, tag, gh=gh, origin_url=origin_url)
+        # This path transports an already-created tag (including recovery). The
+        # publication path supplies its pre-tag, blanket-validated frozen plan.
+        plan = _tag_push_transport_plan(repository, tag, gh=gh, origin_url=origin_url)
     try:
         git_run(repository, *plan.arguments, "push", "origin", f"refs/tags/{tag}",
                 environment=plan.environment)
