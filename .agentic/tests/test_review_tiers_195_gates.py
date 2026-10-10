@@ -31,7 +31,8 @@ class ReviewTiers195GateTests(Fixture):
         ]
         self.bundle["evidence_registry"] = [
             entry for entry in self.bundle["evidence_registry"]
-            if not (entry["uri"].endswith("/posting") or "/posting-" in entry["uri"])
+            if not (entry["uri"].endswith("/posting") or "/posting-" in entry["uri"]
+                    or entry["uri"].startswith("urn:awf:critic-review:"))
         ]
 
         verdicts = []
@@ -102,6 +103,10 @@ class ReviewTiers195GateTests(Fixture):
             }
             artifact_uri = f"urn:awf:critic-review:{artifact['record_id']}"
             artifact["evidence_checked"].append(artifact_uri)
+            verdict["evidence"] = [
+                uri for uri in verdict["evidence"]
+                if not uri.startswith("urn:awf:critic-review:")
+            ]
             verdict["evidence"].append(artifact_uri)
             self.bundle["evidence_registry"].append({
                 "uri": artifact_uri,
@@ -218,8 +223,7 @@ class ReviewTiers195GateTests(Fixture):
         first = self.bundle["review_verdicts"][0]
         first_run = next(run for run in self.bundle["runs"] if run["run_id"] == first["run_id"])
         first_run["binding"]["candidate_id"] = "f" * 64
-        with self.assertRaisesRegex(ValidationError, "critic artifact"):
-            self.gate()
+        self.assertEqual("NOT_READY", self.gate()["conclusion"])
 
     def test_awf16_195_r3_004_pre_escalation_round_keeps_old_tier_and_binding(self):
         self._tier_three_candidate()

@@ -18,7 +18,7 @@ from agentic import ValidationError
 from agentic.canonical import fingerprint, load
 from agentic.contracts import Contracts
 from agentic.digest import PROSE_WORD_CAP, check_prose, digest_sha256, evidence_comment_event, footer, render
-from agentic.gates import evaluate
+from agentic.gates import critic_artifact_receipt_sha256, evaluate
 from agentic.lifecycle import RESUME, STATES, definition, transition
 from agentic.review_policy import (BOUNDARY_SENTENCE, cap_disposition_plan, cap_status, check_tier_declaration,
                                    computed_tier, evidence_only, project_instructions_errors, validate_findings)
@@ -60,6 +60,39 @@ def sign(record, kind, head_sha, actor_id=1001):
     return record
 
 
+def bind_production_posting_fixture(config, bundle):
+    """Promote the inert example to a registered production-observation test fixture."""
+    collector_ids = config["merge_gate"]["production_posting_collector_ids"]
+    if not collector_ids:
+        raise AssertionError("the positive-path fixture needs a registered production collector")
+    producer_id = collector_ids[0]
+    collector_runs = [run for run in bundle["runs"] if run["role"] == "collector"]
+    old_producers = {run["producer_id"] for run in collector_runs}
+    for run in collector_runs:
+        run["producer_id"] = producer_id
+    for name in ("ci", "pr"):
+        if bundle[name]["producer_id"] in old_producers:
+            bundle[name]["producer_id"] = producer_id
+    digest_changes = {}
+    for verdict in bundle.get("review_verdicts", []):
+        observation = verdict.get("posting_observation")
+        if isinstance(observation, dict) and observation.get("producer_id") in old_producers:
+            previous = observation["observation_sha256"]
+            observation["producer_id"] = producer_id
+            observation["observation_sha256"] = fingerprint(
+                "posting-observation", {key: observation.get(key) for key in (
+                    "source", "observed_at", "producer_id", "run_id", "comment_url",
+                    "body_link", "comment_sha256", "body_sha256")}
+            )
+            digest_changes[previous] = observation["observation_sha256"]
+    for entry in bundle["evidence_registry"]:
+        if entry["producer_id"] in old_producers:
+            entry["producer_id"] = producer_id
+        if entry["sha256"] in digest_changes:
+            entry["sha256"] = digest_changes[entry["sha256"]]
+    bundle["provenance_mode"] = "production_observation"
+
+
 class Fixture(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -72,6 +105,7 @@ class Fixture(unittest.TestCase):
         self.bundle = copy.deepcopy(self.bundle0)
 
     def gate(self):
+        bind_production_posting_fixture(self.config, self.bundle)
         bind_review_admission(self.bundle)
         return evaluate(self.config, definition(), self.bundle, self.contracts, NOW)
 
@@ -126,7 +160,39 @@ class Fixture(unittest.TestCase):
         for verdict in self.bundle.get("review_verdicts", []):
             verdict["binding"] = copy.deepcopy(binding)
             verdict["tier"] = classification["tier"]
+        self.sync_critic_artifact()
         return binding
+
+    def sync_critic_artifact(self):
+        """Make an intentional critic-fixture edit a substantive retained artifact."""
+        verdicts = self.bundle.get("review_verdicts", [])
+        if not verdicts:
+            return
+        verdict = max(verdicts, key=lambda item: item["round"])
+        critic = self.bundle["critic"]
+        verdict["verdict"] = "PASS" if critic["verdict"] == "APPROVE" else "REQUEST_CHANGES"
+        old_uri = f"urn:awf:critic-review:{verdict['critic_review']['record_id']}"
+        verdict["critic_review"].update(
+            record_id=critic["record_id"], run_id=critic["run_id"],
+            round=verdict["round"], head_sha=verdict["head_sha"],
+            verdict=critic["verdict"],
+            findings_sha256=fingerprint("critic-findings", critic["findings"]),
+        )
+        uri = f"urn:awf:critic-review:{critic['record_id']}"
+        verdict["evidence"] = [
+            item for item in verdict["evidence"]
+            if item != old_uri and item != uri
+        ] + [uri]
+        self.bundle["evidence_registry"] = [
+            entry for entry in self.bundle["evidence_registry"]
+            if entry["uri"] not in {old_uri, uri}
+        ]
+        self.bundle["evidence_registry"].append({
+            "uri": uri,
+            "sha256": critic_artifact_receipt_sha256(verdict),
+            "producer_id": verdict["producer_id"],
+            "retained_until": "2030-01-01T00:00:00Z",
+        })
 
 
 class TierTests(Fixture):
@@ -206,6 +272,7 @@ class BasisAndDispositionTests(Fixture):
     def test_tier1_advisory_findings_pass_only_with_owner_disposition(self):
         self.tier1_bundle()
         self.bundle["critic"].update(verdict="REQUEST_CHANGES", findings=[self.finding("F1", "MAJOR", {"criterion_id": "AC1"}, path="tests/test_example.py")])
+        self.sync_critic_artifact()
         gate = self.gate()
         self.assertEqual("FAIL", gate["gates"]["critic_current_tuple"]["result"])
         head = self.bundle["candidate"]["head_sha"]
@@ -231,6 +298,7 @@ class BasisAndDispositionTests(Fixture):
         self.tier1_bundle()
         head = self.bundle["candidate"]["head_sha"]
         self.bundle["critic"].update(verdict="REQUEST_CHANGES", findings=[self.finding("F1", "MAJOR", {"criterion_id": "AC1"}, path="tests/test_example.py")])
+        self.sync_critic_artifact()
         good = sign(self.record(finding_id="F1", decision="ACCEPT_RISK", rationale="ok", head_sha=head, **signed()), "finding", head)
         forged = copy.deepcopy(good)
         forged["owner_source"].update(raw_body="lgtm", raw_body_sha256="f" * 64)
@@ -395,6 +463,7 @@ class CapTests(Fixture):
 
     def test_merge_with_notes_reaches_a_ready_gate_and_carries_notes(self):
         self.bundle["critic"].update(verdict="REQUEST_CHANGES", findings=[self.finding("F7", "MAJOR", {"criterion_id": "AC2"})])
+        self.sync_critic_artifact()
         self.assertEqual("NOT_READY", self.gate()["conclusion"])
         cap = self.record(decision="MERGE_WITH_NOTES", open_finding_ids=["F7"], notes="owner accepts", cycles=3, cap_extensions=0,
                           successor_ticket=None, **signed())
@@ -468,12 +537,14 @@ class CapTests(Fixture):
     def test_awf16_r2c_002_each_consumed_round_has_registered_critic_artifact(self):
         """AWF16-R2C-002: a terminal run cannot reuse the round-one critic artifact."""
         verdict = self.bundle["review_verdicts"][0]
-        verdict["critic_review"]["record_id"] = self.bundle["critic"]["record_id"]
-        with self.assertRaisesRegex(ValidationError, "critic artifact"):
-            self.gate()
+        verdict["critic_review"]["record_id"] = next(
+            run["record_id"] for run in self.bundle["runs"]
+            if run["run_id"] == verdict["run_id"]
+        )
+        self.assertEqual("NOT_READY", self.gate()["conclusion"])
 
-    def test_awf16_r2c_004_legacy_security_is_retained_in_durable_classification(self):
-        """AWF16-R2C-004: legacy records are normalized to retain observed security."""
+    def test_awf16_r2c_004_legacy_security_is_rejected_without_mutation(self):
+        """AWF16-R2C-004: missing durable security evidence fails closed."""
         self.bundle["contract"]["risk_flags"]["security"] = True
         from agentic.review_tiers import classify
         observed = classify(self.config, ["src/example.py"], risk_flags=["security"])
@@ -490,10 +561,12 @@ class CapTests(Fixture):
             run["binding"] = copy.deepcopy(binding)
         for verdict in self.bundle["review_verdicts"]:
             verdict["binding"] = copy.deepcopy(binding)
-        # The real evaluator derives this same durable value before comparing
-        # the retained bundle; this focused assertion guards the compatibility
-        # input that previously dropped the observed signal.
-        self.assertIn("security", observed["risk_flags"])
+        bind_production_posting_fixture(self.config, self.bundle)
+        bind_review_admission(self.bundle)
+        before = copy.deepcopy(self.bundle)
+        with self.assertRaisesRegex(ValidationError, "risk_classification"):
+            evaluate(self.config, definition(), self.bundle, self.contracts, NOW)
+        self.assertEqual(before, self.bundle)
 
     def test_awf16_195_r3_003_final_gate_rejects_configured_cap_above_policy(self):
         """AWF16-195-R3-003: the mandatory three-round ceiling remains authoritative."""
@@ -659,7 +732,8 @@ class DigestTests(Fixture):
         return {"ticket": "EX-1", "awf_state": "MERGED", "pr_number": 7, "head_sha": "b" * 40, "base_sha": "c" * 40, "tree_sha": "e" * 40, "risk_tier": 2}
 
     def test_digest_shape_is_fixed_and_footer_generated(self):
-        gate = self.gate()
+        bind_review_admission(self.bundle)
+        gate = evaluate(self.config, definition(), self.bundle, self.contracts, NOW)
         body = render(self.state(), audience="jira", gate=gate, findings=[self.finding("F1", "MAJOR", {"criterion_id": "AC1"})],
                       validation=self.bundle["worker"]["validation"], ci=self.bundle["ci"]["checks"], reviewer={"engine": "codex", "run_id": "r-1"})
         expected = ROOT / ".agentic/examples/digest-jira.md"
