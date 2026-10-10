@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate complete inert forms and a deterministic offline evidence example."""
 from __future__ import annotations
+import base64
 import copy
 import json
 from pathlib import Path
@@ -10,15 +11,23 @@ import uuid
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
-from agentic.canonical import fingerprint, sha256
+from agentic.canonical import canonical, fingerprint, sha256
 from agentic import VERSION
 from agentic.lifecycle import definition
 from agentic.policy import CAPABILITIES, PROTECTED_PATHS, policy_hash
 from agentic.review_policy import DEFAULT_RISK_TIERS
+from agentic.review_tiers import classify
 from agentic.review_completion import gate_review_aggregate, gate_review_tuple
+from agentic.gates import (critic_artifact_receipt_sha256,
+                           posting_collector_receipt_sha256,
+                           review_round_receipt_sha256, review_verdict_json)
 from generate_contracts import catalog
 
 NOW = "2026-09-09T12:00:00Z"
+
+
+def base64_bytes(value):
+    return {"encoding": "base64", "data": base64.b64encode(value).decode("ascii")}
 
 
 def controller_adapter_config():
@@ -111,7 +120,8 @@ def config(example=True):
         "merge_gate": {"human_authorization_required": True, "execution_after_authorization": "owner_manual", "automatic_merge_enabled": False,
             "require_critic_approval_current_tuple": True, "require_specialist_reviews_current_tuple": True, "require_required_ci_green": True,
             "require_zero_unresolved_blocking_threads": True, "invalidate_on_head_change": True, "invalidate_on_target_base_change": True,
-            "authorization_ttl_seconds": 900, "trusted_owner_ids": [1001] if example else [], "high_risk_owner_quorum": 1},
+            "authorization_ttl_seconds": 900, "trusted_owner_ids": [1001] if example else [], "high_risk_owner_quorum": 1,
+            **({"production_posting_collector_ids": ["github-production-posting-collector"]} if example else {})},
         "controller": {**{key: False for key in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments", "auto_transition_jira"]},
                        "status_cadence_seconds": 900},
         "audit": {"store_must_be_outside_worktrees": True, "retention_days": 90, "redact_secrets": True},
@@ -146,6 +156,8 @@ def example_bundle(cfg):
         "risk_tier": 2, "tier_justification": "Product source under src/ is outside the Tier 1 eligible paths.",
         "closure_standard": {"kind": "FULL", "accepted_limitations": [], "evidence_required": ["validation command exit 0"]},
         "owner_closure_required": False, "corrects": None}
+    classification = classify(cfg, ["src/example.py"], risk_flags=[])
+    contract["risk_classification"] = classification
     binding = {"project_id": cfg["project"]["id"], "repository_id": 101, "issue_id": "2001", "requirements_hash": contract["requirements_hash"],
         "contract_hash": fingerprint("contract", contract), "policy_hash": contract["policy_hash"], "candidate_id": fingerprint("candidate", candidate)}
     def record(name, producer_role, **values):
@@ -175,6 +187,11 @@ def example_bundle(cfg):
     review_tuple = gate_review_tuple(candidate, contract, aggregate)
     reviewers = aggregate["required_reviewers"]
     cycle_id = uid("review-cycle")
+    critic_result_json = canonical({
+        "reviewer": critic["producer_id"], "verdict": critic["verdict"],
+        "findings": critic["findings"],
+    }).decode("utf-8")
+    critic_result_sha256 = sha256(critic_result_json.encode("utf-8"))
     completion_snapshot = {"cycle_id": cycle_id, "tuple": review_tuple,
         "tuple_sha256": fingerprint("review-tuple", review_tuple),
         "required_reviewers": reviewers,
@@ -182,8 +199,7 @@ def example_bundle(cfg):
         "counts": {"required": 1, "completed": 1, "acceptable": 1,
                    "failed": 0, "stale": 0, "outstanding": 0},
         "results": [{"reviewer_id": reviewers[0], "state": "ACCEPTABLE",
-            "result_sha256": fingerprint("reviewer-result", {
-                "reviewer": reviewers[0], "verdict": "APPROVE", "findings": []}),
+            "result_sha256": critic_result_sha256,
             "terminal_at": NOW}]}
     submission_id = uid("review-submission")
     review_submission = {"submission_id": submission_id, "cycle_id": cycle_id,
@@ -202,9 +218,8 @@ def example_bundle(cfg):
     ci = record("ci", "collector", retrieval_complete=True, candidate_type="synthetic_merge", checks=[{"name": "unit-tests", "check_id": "check-1", "app_id": 42,
         "workflow_path": ".github/workflows/test.yml", "workflow_sha": "a" * 40, "attempt": 1, "event": "pull_request", "conclusion": "success",
         "tested_tree_sha": candidate["integration_tree_sha"], "tested_commit_sha": candidate["tested_merge_sha"], "tests_executed": 2, "completed_at": NOW, "evidence": evidence, "checkout_depth": "full"}], collector_attestation_id=uid("attestation-collector"))
-    pr_body = "Synthetic draft body.\n"
     pr = record("pr", "collector", state="OPEN", draft=False, mergeable=True, retrieval_complete=True, file_manifest=files,
-        body_sha256=sha256(pr_body.encode("utf-8")), blocking_threads=[], scope_pass=True,
+        body_sha256="0" * 64, blocking_threads=[], scope_pass=True,
         dependency_compatibility_pass=True, ruleset_verified=True, specialist_domains=[], classification_complete=True, collector_attestation_id=uid("attestation-collector"), evidence=evidence)
     publication_scan = {"schema_version": 3, "status": "PASS", "base_sha": candidate["target_base_sha"],
         "head_sha": candidate["head_sha"], "pr_body_sha256": pr["body_sha256"], "additional_pr_body_sha256": [],
@@ -216,29 +231,109 @@ def example_bundle(cfg):
             "captured_command_output": "when committed or passed as provider text", "strict_utf8": True,
             "pr_bodies": True, "pr_comments": False},
         "execution_authority": False}
+    critic_artifact_uri = f"urn:awf:critic-review:{critic['record_id']}"
+    artifact_binding = {"critic_run_id": critic["run_id"],
+                        "result_sha256": critic_result_sha256,
+                        "head_sha": candidate["head_sha"], "round": 1}
+    verdict = record("review-verdict-1", "critic", verdict="PASS", tier=classification["tier"], round=1,
+        head_sha=candidate["head_sha"], reviewer_id="fixture-critic", pr_comment_url="https://github.com/fixture/example/pull/7#issuecomment-1",
+        pr_body_link=f"https://github.com/fixture/example/pull/7#review-verdict-1-{uid('review-verdict-1')}", evidence=evidence + [critic_artifact_uri],
+        critic_artifact_binding=artifact_binding,
+        owner_review=False, owner_id=1001,
+        candidate_binding={"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
+                           "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
+        critic_review={"record_id": critic["record_id"], "run_id": critic["run_id"], "round": 1, "head_sha": candidate["head_sha"],
+                       "verdict": "APPROVE", "findings_sha256": fingerprint("critic-findings", critic["findings"])},
+        )
+    verdict.pop("schema_version", None)
+    verdict_json = review_verdict_json(verdict)
+    verdict_sha256 = sha256(verdict_json.encode("utf-8"))
+    pr_body = ("Synthetic draft body.\n\n"
+               f"review-verdict:1:{verdict['record_id']}:{verdict_sha256}\n")
+    pr["body_sha256"] = sha256(pr_body.encode("utf-8"))
+    publication_scan["pr_body_sha256"] = pr["body_sha256"]
+    provider_response = canonical({
+        "comment_id": 1, "comment_url": verdict["pr_comment_url"],
+        "comment_body": verdict_json, "pr_body": pr_body,
+    })
+    posting = {"source": "host_observation", "observed_at": NOW,
+        "producer_id": "fixture-collector",
+        "run_id": next(run["run_id"] for run in runs if run["role"] == "collector"),
+        "provider_kind": "github", "critic_artifact_binding": artifact_binding,
+        "review_verdict_record_id": verdict["record_id"],
+        "review_verdict_sha256": verdict_sha256,
+        "repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
+        "comment_id": 1, "comment_url": verdict["pr_comment_url"],
+        "comment_bytes": verdict_json, "comment_sha256": sha256(verdict_json.encode("utf-8")),
+        "body_link": verdict["pr_body_link"], "body_bytes": pr_body,
+        "body_sha256": pr["body_sha256"],
+        "provider_response_bytes": base64_bytes(provider_response),
+        "provider_response_sha256": sha256(provider_response),
+        "collector_receipt_sha256": "0" * 64}
+    test_registration = {"provider_kind": "github", "implementation_sha256": "a" * 64,
+        "release_sha256": "b" * 64, "repository_ids": [candidate["repository_id"]], "receipts": {}}
+    # The receipt binds the final observation digest.  Its own field is blanked
+    # only for that digest calculation, avoiding a self-referential hash.
+    posting_digest_basis = copy.deepcopy(posting)
+    posting_digest_basis["collector_receipt_sha256"] = "0" * 64
+    posting_digest = sha256(canonical(posting_digest_basis))
+    posting["collector_receipt_sha256"] = posting_collector_receipt_sha256(
+        posting, posting_digest, test_registration)
+    verdict["posting_observation"] = posting
+    posting_bytes = canonical(posting)
+    completion_snapshot_json = canonical(completion_snapshot).decode("utf-8")
+    round_receipt = {"critic_artifact_binding": artifact_binding,
+        "result_json": critic_result_json, "completion_cycle_id": cycle_id,
+        "completion_tuple_sha256": completion_snapshot["tuple_sha256"],
+        "completion_reviewer_set_sha256": completion_snapshot["reviewer_set_sha256"],
+        "completion_snapshot_json": completion_snapshot_json,
+        "completion_snapshot_sha256": review_submission["completion_snapshot_sha256"],
+        "review_verdict_json": verdict_json, "review_verdict_sha256": verdict_sha256,
+        "posting_observation_json": base64_bytes(posting_bytes),
+        "posting_observation_sha256": sha256(posting_bytes)}
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,
             "specialists": [], "review_submission": review_submission, "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,
-            "publication_scan": publication_scan, "evidence_registry": [{"uri": evidence[0],
-                "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"}], "provenance_mode": "offline_fixture"}
+            "publication_scan": publication_scan, "tier_classification": classification, "review_verdicts": [verdict],
+            "review_round_receipts": [round_receipt],
+            "ticketed_p2_records": [],
+            "evidence_registry": [{"uri": evidence[0],
+                "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"},
+               {"uri": "urn:awf:review-round-receipt:1", "sha256": review_round_receipt_sha256(round_receipt),
+                "producer_id": verdict["producer_id"], "retained_until": "2030-01-01T00:00:00Z"},
+               {"uri": critic_artifact_uri, "sha256": critic_artifact_receipt_sha256(verdict),
+                "producer_id": verdict["producer_id"], "retained_until": "2030-01-01T00:00:00Z"}],
+            "provenance_mode": "offline_fixture"}
 
 
-def sample(schema, schemas):
+def sample(schema, schemas, document=None):
+    if document is None:
+        document = schema
     if "$ref" in schema:
-        return sample(schemas[schema["$ref"].split(":")[-1]], schemas)
+        address, separator, fragment = schema["$ref"].partition("#")
+        if address:
+            document = schemas[address.rsplit(":", 1)[-1]]
+        target = document
+        if separator:
+            for token in fragment.removeprefix("/").split("/") if fragment else ():
+                target = target[token.replace("~1", "/").replace("~0", "~")]
+        return sample(target, schemas, document)
     if "const" in schema:
         return copy.deepcopy(schema["const"])
     if "enum" in schema:
         options = schema["enum"]
+        if (document.get("$id") == "urn:awf:1.2:private-deny-scan"
+                and options == ["PASS", "BLOCKED"]):
+            return "BLOCKED"
         return next((v for v in ["DRAFT", "PROPOSAL", "NOT_READY", "INCOMPLETE", "UNKNOWN", "FAIL", "REQUESTED", "DENY"] if v in options), options[0])
     if "oneOf" in schema:
-        return None if any(s.get("type") == "null" for s in schema["oneOf"]) else sample(schema["oneOf"][0], schemas)
+        return None if any(s.get("type") == "null" for s in schema["oneOf"]) else sample(schema["oneOf"][0], schemas, document)
     kind = schema.get("type")
     if kind == "object":
         # Draft forms expose optional evidence bindings as well as required
         # fields; nullable bindings remain explicitly unobserved until filled.
-        return {key: sample(child, schemas) for key, child in schema.get("properties", {}).items()}
+        return {key: sample(child, schemas, document) for key, child in schema.get("properties", {}).items()}
     if kind == "array":
-        return [sample(schema["items"], schemas) for _ in range(schema.get("minItems", 0))]
+        return [sample(schema["items"], schemas, document) for _ in range(schema.get("minItems", 0))]
     if kind == "boolean":
         return False
     if kind == "integer":
@@ -249,7 +344,7 @@ def sample(schema, schemas):
         return "1970-01-01T00:00:00Z"
     if schema.get("format") == "uri":
         return "urn:awf:UNFILLED"
-    if "{40}" in schema.get("pattern", ""):
+    if any(width in schema.get("pattern", "") for width in ("{40}", "{40,64}")):
         return "0" * 40
     if "{64}" in schema.get("pattern", ""):
         return "0" * 64
@@ -263,7 +358,9 @@ def main():
     write(ROOT / "OPERATING_CONFIG.yaml", default_operating())
     write(ROOT / ".agentic/examples/OPERATING_CONFIG.yaml", default_operating())
     write(ROOT / ".agentic/workflow.yaml", definition())
-    write(ROOT / ".agentic/PROJECT_CONFIG.yaml", config(False))
+    source_config = config(False)
+    write(ROOT / ".agentic/PROJECT_CONFIG.yaml", source_config)
+    write(ROOT / ".agentic/templates/source-config/PROJECT_CONFIG.yaml", source_config)
     write(ROOT / ".agentic/examples/unconfigured-project.yaml", config(False))
     write(ROOT / ".agentic/workflow-version.yaml", {"template": {"name": "generic-agentic-development-workflow", "version": VERSION, "schema_revision": 3},
         "installation": {"install_id": None, "last_operation": None, "operation_at": None, "source_manifest_sha256": None, "profile": "manual_reference"}})
@@ -303,9 +400,11 @@ def main():
         validation=bundle["worker"]["validation"], ci=bundle["ci"]["checks"], reviewer={"engine": "codex", "run_id": "r-1"}), encoding="utf-8", newline="\n")
     (ROOT / ".agentic/examples/evidence.txt").write_text("Illustrative evidence; no external test was executed.\n", encoding="utf-8", newline="\n")
     for name, schema in schemas.items():
-        # The configuration-bound rules decision is owned by its dedicated
-        # generator; generic UNFILLED sampling cannot populate its open objects.
-        if name in {"project-config", "evidence-bundle", "candidate", "rules-activation-decision"}:
+        # Dedicated configuration and operating surfaces own these forms;
+        # generic UNFILLED sampling cannot populate their open objects.
+        if name in {"project-config", "evidence-bundle", "candidate", "rules-activation-decision",
+                    "operating-config", "operating-change", "operating-epics",
+                    "operating-recommendation"}:
             continue
         draft = {"template_for": name, "status": "UNFILLED", "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.", "record": sample(schema, schemas)}
         if name == "doctor-output":

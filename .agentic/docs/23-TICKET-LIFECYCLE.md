@@ -1,12 +1,13 @@
 # Ticket lifecycle
 
-This renders [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/lifecycle.py) is authoritative. These are AWF states; Jira writes are mirrored below. The reference state machine has no external side effects.
+This renders [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/lifecycle.py) is authoritative. These AWF states have no external side effects; Jira writes are mirrored below.
+
 
 ## Routine work
 
-On COMPLETE, publish a draft PR. A Git-blocked worker leaves the tree uncommitted and reports only commit BLOCKED with `commit_route: PUBLISHER`, `tested_tree`, `changes`, and excluded `ignored_untracked`. The publisher commits without edits, compares `HEAD^{tree}`, and rejects differences. Absent `commit_route` means `WORKER`. Observe PR/head/base/target before PR-bound records. Mark-ready precedes critic review; changes require re-review. Owner-ready requires critic, specialists and final gate. Neither authorizes merge.
+On COMPLETE, publish a draft PR. A Git-blocked worker leaves the tree uncommitted and reports commit BLOCKED with `commit_route: PUBLISHER`, `tested_tree`, `changes`, and excluded `ignored_untracked`. The publisher commits without edits and requires matching `HEAD^{tree}`. Absent `commit_route` means `WORKER`. Observe PR/head/base/target before PR records. Mark-ready precedes review; changes require re-review. Owner-ready requires critic, specialists and final gate, but does not authorize merge.
 
-Before push or PR creation, the publisher runs the [publication scan](31-PUBLICATION-SAFETY.md) on the exact base, head and final body. Require exit 0 and a matching PASS receipt; the final gate binds it to the candidate and observed body digest. Repeat for amendments; scan body edits and comments before posting. `diff --check` is whitespace-only.
+Before push or PR creation, run the [publication scan](31-PUBLICATION-SAFETY.md) on the exact base, head and final body. Require exit 0 and a matching PASS receipt bound to the candidate and observed body. Repeat for amendments; scan body edits and comments before posting. `diff --check` is whitespace-only.
 
 Routine publication requires accepted repository/ref bindings, branch pattern and fresh APPLIED rules. Classification is presentation only: retain scope, permissions, non-force refs and secret/adapter prerequisites. Report missing action and owner.
 
@@ -20,7 +21,7 @@ Routine publication requires accepted repository/ref bindings, branch pattern an
 | READY_FOR_CRITIC | CRITIC_REJECTED → CHANGES_REQUESTED | Current review. |
 | CHANGES_REQUESTED | AMENDMENT_ACCEPTED → AMENDING | Permitted dispatch, current lease/ownership, reserved budget, cycles available. |
 | CHANGES_REQUESTED | CAP_REACHED → REVIEW_CAP_REACHED | Cycles exhausted; open findings presented to the owner. |
-| REVIEW_CAP_REACHED | CAP_MERGE_WITH_NOTES / CAP_PARK / CAP_RESCOPE / CAP_EXTEND_ONE_CYCLE | Owner-signed [disposition](30-REVIEW-TIERS-AND-CLOSEOUT.md). |
+| REVIEW_CAP_REACHED | CAP_MERGE_WITH_NOTES / CAP_PARK / CAP_RESCOPE / CAP_EXTEND_ONE_CYCLE | Owner-signed [disposition](30-REVIEW-TIERS-AND-CLOSEOUT.md); EXTEND_ONE_CYCLE is Tier 2 only, and Tier 3 is hard-capped at three rounds. |
 | AMENDING | AMENDMENT_COMPLETED → READY_FOR_CRITIC | Valid result, current validation and registered new head. |
 | READY_FOR_CRITIC | CRITIC_APPROVED_SPECIALISTS → SPECIALIST_REVIEW | Current critic and required specialists. |
 | READY_FOR_CRITIC | CRITIC_APPROVED_FINAL → FINAL_REVIEW | Current critic; no specialists required. |
@@ -40,11 +41,17 @@ Routine publication requires accepted repository/ref bindings, branch pattern an
 | FAILED | RECOVERABLE_FAILURE → BLOCKED | Recoverable failure and recorded blocker. |
 | REOPENED | REOPEN_DISPOSITION → CANCELLED | Owner disposition and recorded successor. |
 
+`FINAL_GATE_PASSED` rehashes every round's retained critic result, completion,
+verdict and provider-observation bytes. Missing or inconsistent history fails.
+The current terminal artifact must pass unless its exact verdict/artifact has an
+authenticated `MERGE_WITH_NOTES`. Production posting requires a
+runtime-registered provider collector; configuration cannot register one.
+
 ## Jira boundary
 
-Only the controller writes Jira: WORKER_STARTED=`in_progress`; PR_READY=`in_review`; owner changes=`in_progress`; post-merge JIRA_RECONCILED=`done` with PR/head/merge. BLOCK/PARK never write. Owner-closure tickets wait for that record. Never transition Epics. `jira.lifecycle_writes` can disable mappings. Already-target is a no-op; disabled Jira forbids writes.
+Only the controller writes Jira: WORKER_STARTED=`in_progress`; PR_READY=`in_review`; owner changes=`in_progress`; post-merge JIRA_RECONCILED=`done` with PR/head/merge. BLOCK/PARK never write; owner-closure tickets wait. Never transition Epics. `jira.lifecycle_writes` can disable mappings. Already-target is a no-op; disabled Jira forbids writes.
 
-Read back after every write; keep actor/timestamp only when observed. A mismatch or unknown result stops that ticket's writes, not unaffected streams: report a suspected external automation conflict, never reissue. Comments are digests bound by `digest_sha256` (`evidence_comment`), never transitions. The shipped adapter performs no Jira writes.
+Read back every write. A mismatch or unknown stops that ticket's writes: report suspected external automation and never reissue. Comments are `digest_sha256`-bound `evidence_comment`s, never transitions. The shipped adapter performs no Jira writes.
 
 ## Control and recovery
 

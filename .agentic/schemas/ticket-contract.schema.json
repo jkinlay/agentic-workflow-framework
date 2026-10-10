@@ -26,7 +26,8 @@
     "tier_justification",
     "closure_standard",
     "owner_closure_required",
-    "corrects"
+    "corrects",
+    "risk_classification"
   ],
   "properties": {
     "schema_version": {
@@ -346,6 +347,24 @@
         },
         "production": {
           "type": "boolean"
+        },
+        "permissions": {
+          "type": "boolean"
+        },
+        "release": {
+          "type": "boolean"
+        },
+        "merge_gate": {
+          "type": "boolean"
+        },
+        "ci_gate": {
+          "type": "boolean"
+        },
+        "high_complexity": {
+          "type": "boolean"
+        },
+        "high_uncertainty": {
+          "type": "boolean"
         }
       }
     },
@@ -368,7 +387,8 @@
     "risk_tier": {
       "enum": [
         1,
-        2
+        2,
+        3
       ]
     },
     "tier_justification": {
@@ -456,6 +476,86 @@
           "type": "null"
         }
       ]
+    },
+    "risk_classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tier",
+        "matched_tiers",
+        "evidence",
+        "rule",
+        "risk_flags"
+      ],
+      "properties": {
+        "tier": {
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        },
+        "matched_tiers": {
+          "type": "array",
+          "items": {
+            "enum": [
+              1,
+              2,
+              3
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [],
+          "properties": {
+            "1": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 0,
+              "uniqueItems": true
+            },
+            "2": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 0,
+              "uniqueItems": true
+            },
+            "3": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 0,
+              "uniqueItems": true
+            }
+          },
+          "minProperties": 1
+        },
+        "rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "risk_flags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      }
     }
   },
   "allOf": [
