@@ -1283,11 +1283,6 @@
           "minItems": 0,
           "uniqueItems": true
         },
-        "high_risk_owner_quorum": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
-        },
         "production_posting_collector_ids": {
           "type": "array",
           "items": {
@@ -1296,6 +1291,11 @@
           },
           "minItems": 0,
           "uniqueItems": true
+        },
+        "high_risk_owner_quorum": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         }
       }
     },

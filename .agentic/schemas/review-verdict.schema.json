@@ -11,6 +11,7 @@
     "tier",
     "round",
     "head_sha",
+    "critic_artifact_binding",
     "reviewer_id",
     "pr_comment_url",
     "pr_body_link",
@@ -108,12 +109,44 @@
     "round": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 9007199254740991
+      "maximum": 3
     },
     "head_sha": {
       "type": "string",
       "minLength": 1,
       "pattern": "^[0-9a-f]{40}$"
+    },
+    "critic_artifact_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "critic_run_id",
+        "result_sha256",
+        "head_sha",
+        "round"
+      ],
+      "properties": {
+        "critic_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "result_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "head_sha": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        }
+      }
     },
     "reviewer_id": {
       "type": "string",
@@ -146,11 +179,22 @@
         "observed_at",
         "producer_id",
         "run_id",
+        "provider_kind",
+        "critic_artifact_binding",
+        "review_verdict_record_id",
+        "review_verdict_sha256",
+        "repository_id",
+        "pr_number",
+        "comment_id",
         "comment_url",
-        "body_link",
+        "comment_bytes",
         "comment_sha256",
+        "body_link",
+        "body_bytes",
         "body_sha256",
-        "observation_sha256"
+        "provider_response_bytes",
+        "provider_response_sha256",
+        "collector_receipt_sha256"
       ],
       "properties": {
         "source": {
@@ -170,27 +214,118 @@
           "minLength": 1,
           "format": "uuid"
         },
+        "provider_kind": {
+          "const": "github"
+        },
+        "critic_artifact_binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "critic_run_id",
+            "result_sha256",
+            "head_sha",
+            "round"
+          ],
+          "properties": {
+            "critic_run_id": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uuid"
+            },
+            "result_sha256": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "head_sha": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "round": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3
+            }
+          }
+        },
+        "review_verdict_record_id": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uuid"
+        },
+        "review_verdict_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "repository_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "pr_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "comment_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
         "comment_url": {
           "type": "string",
           "minLength": 1,
           "format": "uri"
         },
-        "body_link": {
+        "comment_bytes": {
           "type": "string",
-          "minLength": 1,
-          "format": "uri"
+          "minLength": 2
         },
         "comment_sha256": {
           "type": "string",
           "minLength": 1,
           "pattern": "^[0-9a-f]{64}$"
         },
+        "body_link": {
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
+        },
+        "body_bytes": {
+          "type": "string",
+          "minLength": 2
+        },
         "body_sha256": {
           "type": "string",
           "minLength": 1,
           "pattern": "^[0-9a-f]{64}$"
         },
-        "observation_sha256": {
+        "provider_response_bytes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "encoding",
+            "data"
+          ],
+          "properties": {
+            "encoding": {
+              "const": "base64"
+            },
+            "data": {
+              "type": "string",
+              "minLength": 4,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            }
+          }
+        },
+        "provider_response_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "collector_receipt_sha256": {
           "type": "string",
           "minLength": 1,
           "pattern": "^[0-9a-f]{64}$"

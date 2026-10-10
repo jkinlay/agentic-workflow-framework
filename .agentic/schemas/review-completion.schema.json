@@ -189,6 +189,121 @@
           "type": "null"
         }
       ]
+    },
+    "exported_round_receipts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "critic_artifact_binding",
+          "completion_cycle_id",
+          "completion_tuple_sha256",
+          "completion_reviewer_set_sha256",
+          "completion_snapshot_json",
+          "completion_snapshot_sha256",
+          "review_verdict_json",
+          "review_verdict_sha256",
+          "posting_observation_json",
+          "posting_observation_sha256"
+        ],
+        "properties": {
+          "critic_artifact_binding": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "critic_run_id",
+              "result_sha256",
+              "head_sha",
+              "round"
+            ],
+            "properties": {
+              "critic_run_id": {
+                "type": "string",
+                "minLength": 1,
+                "format": "uuid"
+              },
+              "result_sha256": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "head_sha": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "round": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              }
+            }
+          },
+          "result_json": {
+            "type": "string",
+            "minLength": 2
+          },
+          "completion_cycle_id": {
+            "type": "string",
+            "minLength": 1,
+            "format": "uuid"
+          },
+          "completion_tuple_sha256": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "completion_reviewer_set_sha256": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "completion_snapshot_json": {
+            "type": "string",
+            "minLength": 2
+          },
+          "completion_snapshot_sha256": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "review_verdict_json": {
+            "type": "string",
+            "minLength": 2
+          },
+          "review_verdict_sha256": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "posting_observation_json": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "encoding",
+              "data"
+            ],
+            "properties": {
+              "encoding": {
+                "const": "base64"
+              },
+              "data": {
+                "type": "string",
+                "minLength": 4,
+                "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+              }
+            }
+          },
+          "posting_observation_sha256": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "minItems": 0,
+      "uniqueItems": true
     }
   },
   "allOf": [

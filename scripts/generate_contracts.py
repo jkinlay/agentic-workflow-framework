@@ -56,6 +56,10 @@ UUID = text(format="uuid")
 TIME = text(format="date-time")
 BOOL = {"type": "boolean"}
 STRINGS = arr(text(), uniqueItems=True)
+BASE64_BYTES = obj({
+    "encoding": const("base64"),
+    "data": text(4, pattern="^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"),
+})
 TRUE, FALSE = const(True), const(False)
 ROLES = ["controller", "worker", "critic", "specialist", "collector", "owner", "verifier"]
 STATES = ["BACKLOG", "READY", "DISPATCHED", "IN_PROGRESS", "PR_DRAFT", "READY_FOR_CRITIC",
@@ -76,6 +80,19 @@ EVIDENCE = arr(text(format="uri"), 1, uniqueItems=True)
 BINDING = obj({"project_id": UUID, "repository_id": integer(1), "issue_id": text(),
                "requirements_hash": DIGEST, "contract_hash": DIGEST, "policy_hash": DIGEST,
                "candidate_id": DIGEST})
+CRITIC_ARTIFACT_BINDING = obj({"critic_run_id": UUID, "result_sha256": DIGEST,
+                               "head_sha": SHA, "round": integer(1, maximum=3)})
+REVIEW_ROUND_RECEIPT = obj({
+    "critic_artifact_binding": CRITIC_ARTIFACT_BINDING,
+    "result_json": text(2), "completion_cycle_id": UUID,
+    "completion_tuple_sha256": DIGEST, "completion_reviewer_set_sha256": DIGEST,
+    "completion_snapshot_json": text(2), "completion_snapshot_sha256": DIGEST,
+    "review_verdict_json": text(2), "review_verdict_sha256": DIGEST,
+    "posting_observation_json": BASE64_BYTES, "posting_observation_sha256": DIGEST,
+})
+# Legacy receipts stay schema-readable only so the semantic evaluator can
+# return NOT_READY for absent retained bytes.  Current exports always include it.
+REVIEW_ROUND_RECEIPT["required"].remove("result_json")
 JIRA_PROVIDER = obj({"cloud_id": text(), "site": text(format="uri"), "project_id": text(),
                      "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
                      "controller_actor_id": text()})
@@ -130,6 +147,8 @@ def catalog():
                 "state": const("COLLECTING"), "current": const(True),
                 "counts": {"properties": {"failed": const(0), "stale": const(0), "outstanding": const(0)}},
                 "reviewers": {"items": {"properties": {"state": const("ACCEPTABLE")}}}}}}])
+    schemas["review-completion"]["properties"]["exported_round_receipts"] = arr(
+        REVIEW_ROUND_RECEIPT, uniqueItems=True)
     completion_snapshot = obj({"cycle_id": UUID, "tuple": review_tuple, "tuple_sha256": DIGEST,
         "required_reviewers": arr(text(), 1, uniqueItems=True), "reviewer_set_sha256": DIGEST,
         "counts": review_counts, "results": arr(obj({"reviewer_id": text(), "state": const("ACCEPTABLE"),
@@ -152,14 +171,19 @@ def catalog():
     schemas["review-verdict"] = obj({
         "record_id": UUID, "created_at": TIME, "producer_id": text(), "run_id": UUID, "binding": BINDING,
         "verdict": enum("PASS", "P1", "P2", "REQUEST_CHANGES"),
-        "tier": enum(1, 2, 3), "round": integer(1), "head_sha": SHA,
+        "tier": enum(1, 2, 3), "round": integer(1, maximum=3), "head_sha": SHA,
+        "critic_artifact_binding": CRITIC_ARTIFACT_BINDING,
         "reviewer_id": text(), "pr_comment_url": text(format="uri"),
         "pr_body_link": text(format="uri"), "evidence": STRINGS,
         "posting_observation": obj({"source": const("host_observation"), "observed_at": TIME,
-                                     "producer_id": text(), "run_id": UUID,
-                                     "comment_url": text(format="uri"), "body_link": text(format="uri"),
-                                     "comment_sha256": DIGEST, "body_sha256": DIGEST,
-                                     "observation_sha256": DIGEST}),
+            "producer_id": text(), "run_id": UUID, "provider_kind": const("github"),
+            "critic_artifact_binding": CRITIC_ARTIFACT_BINDING,
+            "review_verdict_record_id": UUID, "review_verdict_sha256": DIGEST,
+            "repository_id": integer(1), "pr_number": integer(1), "comment_id": integer(1),
+            "comment_url": text(format="uri"), "comment_bytes": text(2), "comment_sha256": DIGEST,
+            "body_link": text(format="uri"), "body_bytes": text(2), "body_sha256": DIGEST,
+            "provider_response_bytes": BASE64_BYTES, "provider_response_sha256": DIGEST,
+            "collector_receipt_sha256": DIGEST}),
         "owner_review": BOOL,
         "owner_id": integer(1),
         "candidate_binding": obj({"repository_id": integer(1), "pr_number": integer(1),
@@ -371,6 +395,7 @@ def catalog():
         "risk_tier": enum(1, 2, 3), "tier_justification": text(), "closure_standard": enum("FULL", "DECLARED_LIMITATIONS"),
         "risk_classification": ref("risk-classification"),
         "accepted_findings": STRINGS,
+        "verified_critic_artifact_bindings": arr(CRITIC_ARTIFACT_BINDING, uniqueItems=True),
         "conclusion": enum("READY_FOR_OWNER_AUTHORIZATION", "NOT_READY"),
         "execution_authority": FALSE, "evaluation_mode": const("offline_reference"), "expires_at": TIME},
         allOf=[when("conclusion", "READY_FOR_OWNER_AUTHORIZATION", gate_pass), {
@@ -405,7 +430,10 @@ def catalog():
         allOf=[when("lifecycle_event", "JIRA_RECONCILED", {"properties": {"merge_result_id": UUID}})])
     signed = {"authorization_request_id": UUID, "owner_source": obj({"channel": const("github_pr_comment"), "comment_id": integer(1),
         "actor_id": integer(1), "actor_login": text(), "raw_body": text(), "raw_body_sha256": DIGEST, "created_at": TIME, "updated_at": TIME})}
-    schemas["review-cap-disposition"] = bound({"decision": enum("MERGE_WITH_NOTES", "PARK", "RESCOPE", "EXTEND_ONE_CYCLE"),
+    schemas["review-cap-disposition"] = bound({"record_id": DIGEST,
+        "decision": enum("MERGE_WITH_NOTES", "PARK", "RESCOPE", "EXTEND_ONE_CYCLE"),
+        "critic_artifact_binding": CRITIC_ARTIFACT_BINDING,
+        "review_verdict_record_id": UUID, "review_verdict_sha256": DIGEST,
         "open_finding_ids": STRINGS, "notes": text(0), "cycles": integer(), "cap_extensions": integer(),
         "successor_ticket": nullable(text()), **signed, "evidence": EVIDENCE},
         allOf=[when("decision", "RESCOPE", {"properties": {"successor_ticket": text()}})])
@@ -471,12 +499,15 @@ def catalog():
         "ci": ref("ci-evidence"), "pr": ref("pr-snapshot"), "runs": arr(ref("run-attestation"), 3),
         "prior_findings": arr(FINDING), "finding_dispositions": arr(ref("finding-disposition")),
         "cap_disposition": nullable(ref("review-cap-disposition")), "publication_scan": ref("publication-scan"),
-        "tier_classification": nullable(ref("risk-classification")), "review_verdicts": arr(ref("review-verdict")),
+        "tier_classification": nullable(ref("risk-classification")), "review_verdicts": arr(ref("review-verdict"), 1),
+        "review_round_receipts": arr(REVIEW_ROUND_RECEIPT),
         "ticketed_p2_records": arr(obj({"finding_id": text(), "ticket_key": text()})),
         "owner_review": nullable(ref("review-verdict")),
         "evidence_registry": arr(obj({"uri": text(format="uri"), "sha256": DIGEST,
-            "producer_id": text(), "retained_until": TIME}), 1), "provenance_mode": const("offline_fixture")})
+            "producer_id": text(), "retained_until": TIME}), 1),
+        "provenance_mode": enum("offline_fixture", "production_observation")})
     schemas["evidence-bundle"]["required"].remove("owner_review")
+    schemas["evidence-bundle"]["required"].remove("review_round_receipts")
     role_policy = obj({"model": text(), "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
         "fallback": const("deny"), "approved_model_ids": arr(text(), 1, uniqueItems=True),
         "permission_profile": text(), "network_allowlist": STRINGS})
@@ -506,7 +537,7 @@ def catalog():
                "tier1_review": obj({"roles": arr(enum("critic", "specialist"), 1, uniqueItems=True),
                                     "specialist_when_touching": STRINGS, "findings": const("advisory")}),
                "tier2_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking")}),
-               "tier3_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking"), "max_rounds": integer(1)})}),
+                "tier3_review": obj({"roles": arr(enum("critic", "specialist"), 2, uniqueItems=True), "findings": const("blocking"), "max_rounds": integer(1, maximum=3)})}),
            "transient_retry_limit": integer(0, maximum=5), "max_run_seconds": integer(1),
            "max_tool_calls_per_run": integer(1), "max_tokens_per_ticket": integer(1),
            "max_cost_microusd_per_ticket": nullable(integer(1)), "daily_project_cost_microusd": nullable(integer(1)),
@@ -533,6 +564,7 @@ def catalog():
           "require_required_ci_green": TRUE, "require_zero_unresolved_blocking_threads": TRUE,
           "invalidate_on_head_change": TRUE, "invalidate_on_target_base_change": TRUE,
           "authorization_ttl_seconds": integer(1, maximum=86400), "trusted_owner_ids": arr(integer(1), 0, uniqueItems=True),
+          "production_posting_collector_ids": arr(text(), 0, uniqueItems=True),
           "high_risk_owner_quorum": integer(1)}),
         "controller": obj({**{k: FALSE for k in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments"]},
                            "auto_transition_jira": BOOL, "status_cadence_seconds": integer(1)}),
@@ -577,6 +609,10 @@ def catalog():
     # Optional for upgraded configurations; absence means the documented
     # 15-minute controller status cadence.
     schemas["project-config"]["properties"]["controller"]["required"].remove("status_cadence_seconds")
+    # This allowlist can only narrow a runtime-owned registry.  It is optional
+    # for migrated configurations and cannot register a collector by itself.
+    schemas["project-config"]["properties"]["merge_gate"]["required"].remove(
+        "production_posting_collector_ids")
     # Optional and append-only for upgrades: tracked declarations add detectors;
     # built-ins can be tuned only by the ignored operator-local mapping.
     schemas["project-config"]["properties"]["publication"] = obj({

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate complete inert forms and a deterministic offline evidence example."""
 from __future__ import annotations
+import base64
 import copy
 import json
 from pathlib import Path
@@ -10,17 +11,23 @@ import uuid
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
-from agentic.canonical import fingerprint, sha256
+from agentic.canonical import canonical, fingerprint, sha256
 from agentic import VERSION
 from agentic.lifecycle import definition
 from agentic.policy import CAPABILITIES, PROTECTED_PATHS, policy_hash
 from agentic.review_policy import DEFAULT_RISK_TIERS
 from agentic.review_tiers import classify
 from agentic.review_completion import gate_review_aggregate, gate_review_tuple
-from agentic.gates import critic_artifact_receipt_sha256
+from agentic.gates import (critic_artifact_receipt_sha256,
+                           posting_collector_receipt_sha256,
+                           review_round_receipt_sha256, review_verdict_json)
 from generate_contracts import catalog
 
 NOW = "2026-09-09T12:00:00Z"
+
+
+def base64_bytes(value):
+    return {"encoding": "base64", "data": base64.b64encode(value).decode("ascii")}
 
 
 def controller_adapter_config():
@@ -180,6 +187,11 @@ def example_bundle(cfg):
     review_tuple = gate_review_tuple(candidate, contract, aggregate)
     reviewers = aggregate["required_reviewers"]
     cycle_id = uid("review-cycle")
+    critic_result_json = canonical({
+        "reviewer": critic["producer_id"], "verdict": critic["verdict"],
+        "findings": critic["findings"],
+    }).decode("utf-8")
+    critic_result_sha256 = sha256(critic_result_json.encode("utf-8"))
     completion_snapshot = {"cycle_id": cycle_id, "tuple": review_tuple,
         "tuple_sha256": fingerprint("review-tuple", review_tuple),
         "required_reviewers": reviewers,
@@ -187,8 +199,7 @@ def example_bundle(cfg):
         "counts": {"required": 1, "completed": 1, "acceptable": 1,
                    "failed": 0, "stale": 0, "outstanding": 0},
         "results": [{"reviewer_id": reviewers[0], "state": "ACCEPTABLE",
-            "result_sha256": fingerprint("reviewer-result", {
-                "reviewer": reviewers[0], "verdict": "APPROVE", "findings": []}),
+            "result_sha256": critic_result_sha256,
             "terminal_at": NOW}]}
     submission_id = uid("review-submission")
     review_submission = {"submission_id": submission_id, "cycle_id": cycle_id,
@@ -207,9 +218,8 @@ def example_bundle(cfg):
     ci = record("ci", "collector", retrieval_complete=True, candidate_type="synthetic_merge", checks=[{"name": "unit-tests", "check_id": "check-1", "app_id": 42,
         "workflow_path": ".github/workflows/test.yml", "workflow_sha": "a" * 40, "attempt": 1, "event": "pull_request", "conclusion": "success",
         "tested_tree_sha": candidate["integration_tree_sha"], "tested_commit_sha": candidate["tested_merge_sha"], "tests_executed": 2, "completed_at": NOW, "evidence": evidence, "checkout_depth": "full"}], collector_attestation_id=uid("attestation-collector"))
-    pr_body = "Synthetic draft body.\n"
     pr = record("pr", "collector", state="OPEN", draft=False, mergeable=True, retrieval_complete=True, file_manifest=files,
-        body_sha256=sha256(pr_body.encode("utf-8")), blocking_threads=[], scope_pass=True,
+        body_sha256="0" * 64, blocking_threads=[], scope_pass=True,
         dependency_compatibility_pass=True, ruleset_verified=True, specialist_domains=[], classification_complete=True, collector_attestation_id=uid("attestation-collector"), evidence=evidence)
     publication_scan = {"schema_version": 3, "status": "PASS", "base_sha": candidate["target_base_sha"],
         "head_sha": candidate["head_sha"], "pr_body_sha256": pr["body_sha256"], "additional_pr_body_sha256": [],
@@ -221,32 +231,75 @@ def example_bundle(cfg):
             "captured_command_output": "when committed or passed as provider text", "strict_utf8": True,
             "pr_bodies": True, "pr_comments": False},
         "execution_authority": False}
-    posting = {"source": "host_observation", "observed_at": NOW,
-               "producer_id": "fixture-collector", "run_id": next(run["run_id"] for run in runs if run["role"] == "collector"),
-               "comment_url": "https://github.com/fixture/example/pull/7#issuecomment-1",
-               "body_link": "https://github.com/fixture/example/pull/7#review-verdict-1",
-               "comment_sha256": sha256(b"Illustrative evidence; no external test was executed.\n"),
-               "body_sha256": pr["body_sha256"]}
-    posting["observation_sha256"] = fingerprint("posting-observation", posting)
     critic_artifact_uri = f"urn:awf:critic-review:{critic['record_id']}"
+    artifact_binding = {"critic_run_id": critic["run_id"],
+                        "result_sha256": critic_result_sha256,
+                        "head_sha": candidate["head_sha"], "round": 1}
     verdict = record("review-verdict-1", "critic", verdict="PASS", tier=classification["tier"], round=1,
         head_sha=candidate["head_sha"], reviewer_id="fixture-critic", pr_comment_url="https://github.com/fixture/example/pull/7#issuecomment-1",
-        pr_body_link="https://github.com/fixture/example/pull/7#review-verdict-1", evidence=evidence + [critic_artifact_uri],
+        pr_body_link=f"https://github.com/fixture/example/pull/7#review-verdict-1-{uid('review-verdict-1')}", evidence=evidence + [critic_artifact_uri],
+        critic_artifact_binding=artifact_binding,
         owner_review=False, owner_id=1001,
         candidate_binding={"repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
                            "base_sha": candidate["target_base_sha"], "head_sha": candidate["head_sha"]},
-        posting_observation=posting,
         critic_review={"record_id": critic["record_id"], "run_id": critic["run_id"], "round": 1, "head_sha": candidate["head_sha"],
                        "verdict": "APPROVE", "findings_sha256": fingerprint("critic-findings", critic["findings"])},
         )
     verdict.pop("schema_version", None)
+    verdict_json = review_verdict_json(verdict)
+    verdict_sha256 = sha256(verdict_json.encode("utf-8"))
+    pr_body = ("Synthetic draft body.\n\n"
+               f"review-verdict:1:{verdict['record_id']}:{verdict_sha256}\n")
+    pr["body_sha256"] = sha256(pr_body.encode("utf-8"))
+    publication_scan["pr_body_sha256"] = pr["body_sha256"]
+    provider_response = canonical({
+        "comment_id": 1, "comment_url": verdict["pr_comment_url"],
+        "comment_body": verdict_json, "pr_body": pr_body,
+    })
+    posting = {"source": "host_observation", "observed_at": NOW,
+        "producer_id": "fixture-collector",
+        "run_id": next(run["run_id"] for run in runs if run["role"] == "collector"),
+        "provider_kind": "github", "critic_artifact_binding": artifact_binding,
+        "review_verdict_record_id": verdict["record_id"],
+        "review_verdict_sha256": verdict_sha256,
+        "repository_id": candidate["repository_id"], "pr_number": candidate["pr_number"],
+        "comment_id": 1, "comment_url": verdict["pr_comment_url"],
+        "comment_bytes": verdict_json, "comment_sha256": sha256(verdict_json.encode("utf-8")),
+        "body_link": verdict["pr_body_link"], "body_bytes": pr_body,
+        "body_sha256": pr["body_sha256"],
+        "provider_response_bytes": base64_bytes(provider_response),
+        "provider_response_sha256": sha256(provider_response),
+        "collector_receipt_sha256": "0" * 64}
+    test_registration = {"provider_kind": "github", "implementation_sha256": "a" * 64,
+        "release_sha256": "b" * 64, "repository_ids": [candidate["repository_id"]], "receipts": {}}
+    # The receipt binds the final observation digest.  Its own field is blanked
+    # only for that digest calculation, avoiding a self-referential hash.
+    posting_digest_basis = copy.deepcopy(posting)
+    posting_digest_basis["collector_receipt_sha256"] = "0" * 64
+    posting_digest = sha256(canonical(posting_digest_basis))
+    posting["collector_receipt_sha256"] = posting_collector_receipt_sha256(
+        posting, posting_digest, test_registration)
+    verdict["posting_observation"] = posting
+    posting_bytes = canonical(posting)
+    completion_snapshot_json = canonical(completion_snapshot).decode("utf-8")
+    round_receipt = {"critic_artifact_binding": artifact_binding,
+        "result_json": critic_result_json, "completion_cycle_id": cycle_id,
+        "completion_tuple_sha256": completion_snapshot["tuple_sha256"],
+        "completion_reviewer_set_sha256": completion_snapshot["reviewer_set_sha256"],
+        "completion_snapshot_json": completion_snapshot_json,
+        "completion_snapshot_sha256": review_submission["completion_snapshot_sha256"],
+        "review_verdict_json": verdict_json, "review_verdict_sha256": verdict_sha256,
+        "posting_observation_json": base64_bytes(posting_bytes),
+        "posting_observation_sha256": sha256(posting_bytes)}
     return {"schema_version": 3, "candidate": candidate, "snapshot": snapshot, "contract": contract, "dispatch": dispatch, "worker": worker, "critic": critic,
             "specialists": [], "review_submission": review_submission, "ci": ci, "pr": pr, "runs": runs, "prior_findings": [], "finding_dispositions": [], "cap_disposition": None,
             "publication_scan": publication_scan, "tier_classification": classification, "review_verdicts": [verdict],
+            "review_round_receipts": [round_receipt],
             "ticketed_p2_records": [],
             "evidence_registry": [{"uri": evidence[0],
                 "sha256": sha256(b"Illustrative evidence; no external test was executed.\n"), "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"},
-               {"uri": evidence[0] + "/posting", "sha256": posting["observation_sha256"], "producer_id": "fixture-collector", "retained_until": "2030-01-01T00:00:00Z"},
+               {"uri": "urn:awf:review-round-receipt:1", "sha256": review_round_receipt_sha256(round_receipt),
+                "producer_id": verdict["producer_id"], "retained_until": "2030-01-01T00:00:00Z"},
                {"uri": critic_artifact_uri, "sha256": critic_artifact_receipt_sha256(verdict),
                 "producer_id": verdict["producer_id"], "retained_until": "2030-01-01T00:00:00Z"}],
             "provenance_mode": "offline_fixture"}

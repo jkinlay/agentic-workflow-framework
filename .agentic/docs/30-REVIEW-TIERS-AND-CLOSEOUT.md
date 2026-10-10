@@ -4,11 +4,23 @@ Version 1.9.4 runtime; AWF-16 policy revision and migration ship in 1.9.5. The c
 
 ## Risk tiers
 
-Every `ticket-contract` declares `risk_tier` (1, 2 or 3) with a `tier_justification`; uncertain is Tier 2. Tier 1 needs eligible paths, no protected paths and no true `risk_flags`. The gate recomputes the tier; highest match wins. Only an owner-signed `tier-reassignment` changes a declared tier; the owner re-issues the contract and every record rebinds. Round policy is in `review_tiers.py`; AWF-29 owns provider posting.
+Every contract declares `risk_tier` (1, 2 or 3) and justification; uncertain is Tier 2. Tier 1 needs eligible paths, no protected paths and no true `risk_flags`. The gate recomputes the highest match. Only an owner-signed `tier-reassignment` and re-issued contract changes it; all records rebind.
 
-Tier 1 uses one critic; findings advise. Tier 2 uses three rounds; at cap, ticket P2s and route P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, has an unextendable three-round cap and requires an owner-review assertion binding a trusted owner and candidate. Provider verification remains the AWF-41 successor scope. Highest tier wins; escalation preserves history. Boundaries always block.
+Tier 1 uses one critic; findings advise. Tier 2 has three rounds; at cap, ticket P2s and route P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, has an unextendable three-round cap, and requires owner review bound to the candidate. Escalation preserves history. Boundaries always block.
 
-Each round records head, comment URL and body link. An unchanged diff preserves evidence; a changed diff invalidates it. Only Tier 2 may exceed the cap through authenticated owner disposition.
+Each round's exact `critic_artifact_binding` contains critic run ID, retained
+canonical UTF-8 `result.json` SHA-256, head and round. Its receipt retains those
+bytes and frozen completion identities. The gate reparses every artifact and
+derives verdict/findings; copied fields cannot substitute. Unchanged diffs keep
+old-head history; changed diffs need a current round. Only Tier 2 may exceed the
+cap through authenticated owner disposition.
+
+Verdicts and posting observations repeat that binding. Posting also binds the
+verdict/digest, repository/PR, immutable comment ID/URL, exact comment/body,
+anchor, collector run and time. The runtime-owned production registry is empty
+until an adapter is installed. `production_posting_collector_ids` only narrows
+it; bundle/config/environment declarations and fixture collectors never
+register. Pending AWF-60, production posting remains `NOT_READY`.
 
 ## Bases, lineage and dispositions
 
@@ -16,7 +28,7 @@ A BLOCKER or MAJOR finding carries `basis`: `{criterion_id}` from the contract o
 
 `finding-disposition` `ACCEPT_RISK` or `NOT_A_DEFECT` makes a non-boundary finding non-blocking for the exact `head_sha` and copies it into `residual_risks`; `REQUIRE_FIX` keeps it open; `HEAD_CHANGED` voids it.
 
-`authorization.verify_owner_record` authenticates every owner record: its exact `AWF1.2 DISPOSE` comment digest matches, the actor is trusted, the unedited comment signs one record, and its verifier run is independent of worker and critic. Cap dispositions sign `cycles/extensions:ids`; tier/closure records sign `head=-`.
+`authorization.verify_owner_record` requires an exact `AWF1.2 DISPOSE` comment, trusted actor, one unedited comment per record, and a verifier independent of worker/critic. Cap dispositions sign `cycles/extensions:ids`; tier/closure records sign `head=-`.
 
 ## Closure standard
 
@@ -35,6 +47,10 @@ A BLOCKER or MAJOR finding carries `basis`: `{criterion_id}` from the contract o
 
 `workflow.py cap-plan` translates a disposition into event and facts or refuses it; the host loop pauses with `REVIEW_CAP_REACHED` and resumes only with `--disposition`.
 
+`MERGE_WITH_NOTES` authenticates the exact terminal verdict/digest and artifact.
+Otherwise the terminal artifact must be `APPROVE`/`PASS`; only this cap path may
+carry its `REQUEST_CHANGES`. The gate records its ordered verified bindings.
+
 ## Jira lifecycle mirroring
 
 The controller is the sole writer. `WORKER_STARTED` → `in_progress`; `PR_READY` → `in_review`; `OWNER_CHANGES_REQUESTED` or `HEAD_CHANGED` → `in_progress`; `JIRA_RECONCILED` → `done` with a closing comment naming the PR, reviewed head and merge commit. BLOCK/PARK never write. Tickets matching `jira.owner_closure_keywords` (the gate refuses a contract hiding the match) wait in `MERGED_PENDING_OWNER_CLOSURE` for an `owner-closure` record. `jira.lifecycle_writes` turns a mapping off, never adds one. Read back after every write; a mismatch or unknown result stops that ticket's writes, keeps observed actor/time or unknown, and is never reissued. `controller.auto_transition_jira: true` skips the per-write prompt.
@@ -45,10 +61,19 @@ The controller is the sole writer. `WORKER_STARTED` → `in_progress`; `PR_READY
 
 ## Digests, skips, parity, resources, preflight
 
-`workflow.py digest --ticket T --for jira|pr|owner --input RECORDS.json` renders the fixed shape (state line, gate table, open findings with basis, validation, reviewer) and the only authority footer; `--prose` refuses free text over 80 words. A posted digest is an `evidence_comment` event carrying `digest_sha256`; a status write is a `lifecycle_transition`.
+`workflow.py digest` renders the fixed state, gates, findings, validation,
+reviewer and authority footer; `--prose` caps free text at 80 words. Posted
+digests are `digest_sha256`-bound `evidence_comment`s, never transitions.
 
-Worker validation records `tests_discovered`, `tests_executed`, `declared_skips` (fixed reason codes) and `unevaluable_files`; unevaluable files or undeclared skips fail `acceptance_criteria`. `local_ci_parity` matches each required check to its local command (`local_command`, else the contract command by index) unless `validation.platform_distinction` names a regression test; a discrepancy across two candidates becomes a successor.
+Worker validation records discovered/executed tests, fixed-code skips and
+unevaluable files; undeclared skips or unevaluable files fail acceptance.
+`local_ci_parity` matches required checks to local commands unless a declared
+platform distinction names a regression test.
 
-`execution.host_broker.resources` names resources and slots; contracts list `required_resources`, dispatches copy them, leases hold them, a missing slot refuses dispatch by name, and concurrent COMPLETE runs exceeding a resource's slots fail `provenance`. `POST_MERGE_FINDING` opens a successor (`successor_contract`) carrying `corrects`; merged state is unchanged.
+Host resources have named slots copied contract→dispatch→lease; missing or
+overlapping capacity fails dispatch/provenance. `POST_MERGE_FINDING` opens a
+`corrects` successor without changing merged state.
 
-Preflight records nonblocking PASS/WARN/SKIP/N_A for path length, `project_lint_scope`, `core.longpaths`, execution policy, symlinks, line endings and Git LFS. Lint scope warns when Ruff/flake8 includes `.agentic`; preflight warnings do not by themselves block adoption or review.
+Preflight records nonblocking PASS/WARN/SKIP/N_A for paths, lint scope,
+`core.longpaths`, policy, symlinks, line endings and LFS. Warnings alone do not
+block adoption or review.
