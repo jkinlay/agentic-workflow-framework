@@ -52,6 +52,7 @@ class TreeEntry(NamedTuple):
 class ReleaseTagPushPlan(NamedTuple):
     arguments: tuple[str, ...]
     recovery: str
+    environment: dict[str, str]
 
 
 def sha256(path):
@@ -120,9 +121,10 @@ def git(root, *args, text=True):
     return git_run(root, *args, text=text).stdout
 
 
-def git_run(root, *args, text=True, input_data=None, failure_message=None):
+def git_run(root, *args, text=True, input_data=None, failure_message=None, environment=None):
     """Run Git with replacement objects disabled for release identity and bytes."""
-    options = {"cwd": root, "env": isolated_git_env(), "text": text, "input_data": input_data}
+    options = {"cwd": root, "env": isolated_git_env() if environment is None else environment,
+               "text": text, "input_data": input_data}
     if failure_message is not None:
         options["failure_message"] = failure_message
     return run(["git", *RAW_GIT_ARGUMENTS, *args], **options)
@@ -139,10 +141,11 @@ def _https_credential_scope(origin_url):
     return "https://" + authority_and_path
 
 
-def _repository_http_extra_header_keys(repository):
+def _repository_http_extra_header_keys(repository, *, environment=None):
     """Return repository-local HTTP extra-header keys without reading their values."""
     names = git_run(
         repository, "config", "--local", "--includes", "--null", "--name-only", "--list",
+        environment=environment,
         failure_message=("Unable to inspect repository-local HTTP extraHeader key names; "
                          "fix `git config --local --includes --name-only --list` and retry."),
     ).stdout
@@ -189,15 +192,77 @@ def _push_credential_arguments(origin_url, gh, *, local_header_keys=()):
     return arguments, scope
 
 
+def _http_extra_header_sources(repository, environment):
+    """Return value-free source labels for configured HTTP extra-header keys."""
+    try:
+        result = subprocess.run(
+            ["git", *RAW_GIT_ARGUMENTS, "config", "--null", "--show-origin", "--show-scope",
+             "--name-only", "--list"],
+            cwd=repository, env=child_env(environment), capture_output=True, timeout=300,
+            check=False)
+    except (subprocess.SubprocessError, OSError):
+        return ()
+    if result.returncode:
+        return ()
+    fields = result.stdout.split(b"\0")
+    if fields and fields[-1] == b"":
+        fields.pop()
+    if len(fields) % 3:
+        return ()
+    sources = []
+    for index in range(0, len(fields), 3):
+        scope, origin, name = (field.decode("utf-8", errors="replace")
+                               for field in fields[index:index + 3])
+        folded = name.casefold()
+        if folded != "http.extraheader" and not (
+                folded.startswith("http.") and folded.endswith(".extraheader")):
+            continue
+        label = f"{scope} ({origin})"
+        if label not in sources:
+            sources.append(label)
+    return tuple(sources)
+
+
+def _refuse_effective_http_extra_header(repository, remote_url, environment):
+    """Require Git itself to prove no HTTP extra header applies to the push URL."""
+    command = ["git", *RAW_GIT_ARGUMENTS, "config", "--get-urlmatch",
+               "http.extraHeader", remote_url]
+    try:
+        result = subprocess.run(
+            command, cwd=repository, env=child_env(environment), capture_output=True,
+            timeout=300, check=False)
+    except (subprocess.SubprocessError, OSError):
+        raise ReleaseError(
+            "Unable to verify that no `http.extraHeader` applies to the release remote URL; "
+            "remove every effective `http.*.extraHeader` setting and retry the release.") from None
+    if result.returncode == 1 and not result.stdout and not result.stderr:
+        return
+    if result.returncode == 0 and result.stdout:
+        sources = _http_extra_header_sources(repository, environment)
+        detail = " Configured source(s): " + ", ".join(sources) + "." if sources else ""
+        raise ReleaseError(
+            "An effective `http.extraHeader` applies to the release remote URL."
+            f"{detail} Remove it from every reported source and retry the release; "
+            "no release tag was created.")
+    raise ReleaseError(
+        "Git could not prove that `http.extraHeader` is absent for the release remote URL; "
+        "remove every effective `http.*.extraHeader` setting, fix the Git configuration error, "
+        "and retry the release.")
+
+
 def _release_tag_push_plan(repository, tag, *, gh, origin_url):
     """Validate and freeze the credential-isolated push before tag creation."""
-    local_header_keys = _repository_http_extra_header_keys(repository)
+    environment = isolated_git_env()
+    local_header_keys = _repository_http_extra_header_keys(repository, environment=environment)
     credential_arguments, scope = _push_credential_arguments(
         origin_url, gh, local_header_keys=local_header_keys)
+    remote_url = scope or origin_url
+    if scope is not None:
+        _refuse_effective_http_extra_header(repository, remote_url, environment)
     recovery_arguments, _ = _push_credential_arguments(
-        scope or origin_url, "gh", local_header_keys=local_header_keys)
+        remote_url, "gh", local_header_keys=local_header_keys)
     recovery = shlex.join(["git", *recovery_arguments, "push", "origin", f"refs/tags/{tag}"])
-    return ReleaseTagPushPlan(tuple(credential_arguments), recovery)
+    return ReleaseTagPushPlan(tuple(credential_arguments), recovery, environment)
 
 
 def push_release_tag(repository, tag, *, gh, origin_url, plan=None):
@@ -216,7 +281,8 @@ def push_release_tag(repository, tag, *, gh, origin_url, plan=None):
     if plan is None:
         plan = _release_tag_push_plan(repository, tag, gh=gh, origin_url=origin_url)
     try:
-        git_run(repository, *plan.arguments, "push", "origin", f"refs/tags/{tag}")
+        git_run(repository, *plan.arguments, "push", "origin", f"refs/tags/{tag}",
+                environment=plan.environment)
     except (ReleaseError, subprocess.SubprocessError, OSError):
         raise ReleaseError(
             f"Release tag push failed for refs/tags/{tag}. The local annotated tag remains at "
