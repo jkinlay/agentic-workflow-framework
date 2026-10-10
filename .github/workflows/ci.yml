@@ -70,16 +70,17 @@ jobs:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/'))
     runs-on: windows-latest
     timeout-minutes: 90
-    env:
-      AWF_ARTIFACT_DIR: ${{ runner.temp }}\awf-installed-self-test-artifacts
-      AWF_WORK_DIR: ${{ runner.temp }}\awf-installed-self-test-work
     steps:
       - name: Initialize installed-runtime evidence paths
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path $env:AWF_ARTIFACT_DIR | Out-Null
-          New-Item -ItemType Directory -Force -Path $env:AWF_WORK_DIR | Out-Null
-          "Installer did not start." | Set-Content -Encoding utf8 "$env:AWF_ARTIFACT_DIR\installer.log"
+          $artifactDir = Join-Path $env:RUNNER_TEMP "awf-installed-self-test-artifacts"
+          $workDir = Join-Path $env:RUNNER_TEMP "awf-installed-self-test-work"
+          "AWF_ARTIFACT_DIR=$artifactDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AWF_WORK_DIR=$workDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+          "Installer did not start." | Set-Content -Encoding utf8 "$artifactDir\installer.log"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0

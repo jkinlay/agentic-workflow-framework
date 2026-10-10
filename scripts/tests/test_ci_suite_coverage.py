@@ -96,11 +96,17 @@ class CiSuiteCoverageTests(unittest.TestCase):
             "startsWith(github.head_ref, 'release/'))",
             job["if"],
         )
+        job_environment = "\n".join(str(value) for value in job.get("env", {}).values())
+        self.assertNotIn("runner.temp", job_environment)
 
         actions = [step.get("uses") for step in job["steps"] if "uses" in step]
         self.assertIn("actions/checkout@v4", actions)
         self.assertIn("actions/setup-python@v5", actions)
         self.assertEqual("Initialize installed-runtime evidence paths", job["steps"][0]["name"])
+        self.assertIn("$env:RUNNER_TEMP", job["steps"][0]["run"])
+        self.assertIn("AWF_ARTIFACT_DIR=$artifactDir", job["steps"][0]["run"])
+        self.assertIn("AWF_WORK_DIR=$workDir", job["steps"][0]["run"])
+        self.assertIn("$env:GITHUB_ENV", job["steps"][0]["run"])
         self.assertNotIn("self-test.json", job["steps"][0]["run"])
         self.assertIn("installer.log", job["steps"][0]["run"])
         self.assertEqual(1, len(steps_with(job, "scripts/build_release.py --output")))
