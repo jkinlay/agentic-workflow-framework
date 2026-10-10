@@ -295,7 +295,9 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"],
                                      self.repository, self.git_env))
         message = str(raised.exception)
-        self.assertIn("remove every repository-local `http.*.extraHeader` entry", message)
+        self.assertIn(rejected_key.casefold(), message.casefold())
+        self.assertIn('scope="local"', message)
+        self.assertIn("Remove every listed key", message)
         self.assertIn("retry the release", message)
         self.assertNotIn("REJECTED_SECRET", message)
 
@@ -382,6 +384,100 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"],
                                      repository, push_environment))
 
+    def _awf26_r6_001_refusal(self, repository, remote, push_environment):
+        error = None
+        with patch.object(publisher, "isolated_git_env", return_value=push_environment):
+            try:
+                publisher._release_tag_push_plan(
+                    repository, "v1.9.4", gh="gh", origin_url=remote)
+                publisher.git_run(
+                    repository, "-c", "tag.gpgSign=false", "tag", "-a", "v1.9.4",
+                    self.commit, "-m", "Synthetic release tag",
+                    environment=push_environment)
+            except publisher.ReleaseError as exc:
+                error = exc
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"],
+                                     repository, push_environment))
+        self.assertIsNotNone(error)
+        message = str(error)
+        self.assertIn("remove", message.casefold())
+        self.assertIn("no release tag was created", message.casefold())
+        return message
+
+    def test_AWF26_R6_001_worktree_path_extra_header_is_refused_before_tag(self):
+        repository, remote, _global_config, environment, push_environment = \
+            self._awf26_r5_001_isolated_repository("awf26-r6-001-worktree")
+        key = f"http.{remote}/info/refs.extraHeader"
+        command(["git", "config", "extensions.worktreeConfig", "true"],
+                repository, environment)
+        command(["git", "config", "--worktree", key,
+                 "Authorization: Bearer WORKTREE_R6_SECRET"], repository, environment)
+
+        message = self._awf26_r6_001_refusal(repository, remote, push_environment)
+        self.assertIn(key.casefold(), message.casefold())
+        self.assertIn("worktree", message.casefold())
+        self.assertIn("config.worktree", message.casefold())
+
+    def test_AWF26_R6_001_unrelated_url_local_extra_header_is_refused_before_tag(self):
+        repository, remote, _global_config, environment, push_environment = \
+            self._awf26_r5_001_isolated_repository("awf26-r6-001-local-unrelated")
+        key = "http.https://example.invalid/.extraHeader"
+        command(["git", "config", "--local", key,
+                 "Authorization: Bearer LOCAL_R6_SECRET"], repository, environment)
+
+        message = self._awf26_r6_001_refusal(repository, remote, push_environment)
+        self.assertIn(key.casefold(), message.casefold())
+        self.assertIn("local", message.casefold())
+        self.assertIn("config", message.casefold())
+
+    def test_AWF26_R6_001_global_extra_header_is_refused_before_tag(self):
+        repository, remote, global_config, environment, push_environment = \
+            self._awf26_r5_001_isolated_repository("awf26-r6-001-global")
+        key = "http.https://global.invalid/.extraHeader"
+        command(["git", "config", "--file", str(global_config), key,
+                 "Authorization: Bearer GLOBAL_R6_SECRET"], repository, environment)
+
+        message = self._awf26_r6_001_refusal(repository, remote, push_environment)
+        self.assertIn(key.casefold(), message.casefold())
+        self.assertIn("global", message.casefold())
+        self.assertIn(global_config.name.casefold(), message.casefold())
+
+    def test_AWF26_R6_001_environment_extra_header_is_refused_before_tag(self):
+        repository, remote, _global_config, _environment, push_environment = \
+            self._awf26_r5_001_isolated_repository("awf26-r6-001-environment")
+        key = "http.https://environment.invalid/.extraHeader"
+        push_environment.update({
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": key,
+            "GIT_CONFIG_VALUE_0": "Authorization: Bearer ENVIRONMENT_R6_SECRET",
+        })
+
+        message = self._awf26_r6_001_refusal(repository, remote, push_environment)
+        self.assertIn(key.casefold(), message.casefold())
+        self.assertIn("command", message.casefold())
+
+    def test_AWF26_R6_001_clean_config_passes_blanket_preflight(self):
+        repository, remote, _global_config, _environment, push_environment = \
+            self._awf26_r5_001_isolated_repository("awf26-r6-001-clean")
+        with patch.object(publisher, "isolated_git_env", return_value=push_environment):
+            plan = publisher._release_tag_push_plan(
+                repository, "v1.9.4", gh="gh", origin_url=remote)
+        self.assertEqual(push_environment, plan.environment)
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"],
+                                     repository, push_environment))
+
+    def test_AWF26_R6_001_error_never_contains_header_value(self):
+        repository, remote, _global_config, environment, push_environment = \
+            self._awf26_r5_001_isolated_repository("awf26-r6-001-value-redaction")
+        key = "http.https://redaction.invalid/.extraHeader"
+        secret = "Authorization: Bearer HEADER_VALUE_MUST_STAY_SECRET"
+        command(["git", "config", "--local", key, secret], repository, environment)
+
+        message = self._awf26_r6_001_refusal(repository, remote, push_environment)
+        self.assertIn(key.casefold(), message.casefold())
+        self.assertNotIn(secret, message)
+        self.assertNotIn("HEADER_VALUE_MUST_STAY_SECRET", message)
+
     def test_tag_push_failure_explains_that_release_creation_does_not_follow(self):
         secret = "ghs_must_not_reach_release_output"
         with patch.object(publisher, "_repository_http_extra_header_keys", return_value=[]), \
@@ -441,15 +537,7 @@ class PublishReleaseTests(unittest.TestCase):
                      f"!{publisher.shlex.quote(str(repository_helper))}"], self.repository, self.git_env)
             self.addCleanup(subprocess.run, ["git", "config", "--unset-all", scoped_key],
                             cwd=self.repository, capture_output=True)
-        header_secret = "SYNTHETIC_LOCAL_HEADER"
-        header_key = f"http.{safe_remote}.extraHeader"
         request_url = safe_remote + "/info/refs"
-        request_header_key = f"http.{request_url}.extraHeader"
-        for key in (request_header_key,):
-            command(["git", "config", key, f"Authorization: Bearer {header_secret}"],
-                    self.repository, self.git_env)
-            self.addCleanup(subprocess.run, ["git", "config", "--unset-all", key],
-                            cwd=self.repository, capture_output=True)
         self.addCleanup(subprocess.run, ["git", "remote", "remove", "origin"],
                         cwd=self.repository, capture_output=True)
         self.addCleanup(subprocess.run, ["git", "tag", "-d", "v1.9.4"],
@@ -485,7 +573,6 @@ class PublishReleaseTests(unittest.TestCase):
                     + ["config", "--get-urlmatch", "http.extraHeader", request_url],
                     cwd=cwd, env=env, text=True)
                 self.assertEqual("", header_lookup.stdout.strip())
-                self.assertNotIn(header_secret, header_lookup.stdout)
                 credential_lookup = command_line[:push_index] + ["credential", "fill"]
                 lookup = real_run(
                     credential_lookup, cwd=cwd, env=env, text=True,
@@ -518,7 +605,6 @@ class PublishReleaseTests(unittest.TestCase):
         push, push_env = push_calls[0]
         helper_key = "credential.https://github.com/jkinlay/awf-fixture.git.helper"
         header_key = "http.https://github.com/jkinlay/awf-fixture.git.extraHeader"
-        listed_request_header_key = "http.https://github.com/jkinlay/awf-fixture.git/info/refs.extraheader"
         helper = f"{helper_key}=!{publisher.shlex.quote(fake_gh)} auth git-credential"
         push_index = push.index("push")
         self.assertEqual(
@@ -526,9 +612,8 @@ class PublishReleaseTests(unittest.TestCase):
              "-c", f"remote.origin.pushurl={safe_remote}",
              "-c", "http.extraHeader=",
              "-c", f"{header_key}=",
-             "-c", f"{listed_request_header_key}=",
              "-c", f"{helper_key}=", "-c", helper],
-            push[push_index - 16:push_index])
+            push[push_index - 14:push_index])
         self.assertEqual(["push", "origin", "refs/tags/v1.9.4"], push[push_index:])
         for line, env in git_calls:
             with self.subTest(command=line):
@@ -549,14 +634,12 @@ class PublishReleaseTests(unittest.TestCase):
             "-c remote.origin.pushurl=https://github.com/jkinlay/awf-fixture.git "
             "-c http.extraHeader= "
             "-c http.https://github.com/jkinlay/awf-fixture.git.extraHeader= "
-            "-c http.https://github.com/jkinlay/awf-fixture.git/info/refs.extraheader= "
             "-c credential.https://github.com/jkinlay/awf-fixture.git.helper= "
             "-c 'credential.https://github.com/jkinlay/awf-fixture.git.helper="
             "!gh auth git-credential' "
             "push origin refs/tags/v1.9.4", message)
         self.assertNotIn(helper_secret, message)
         self.assertNotIn(transport_secret, message)
-        self.assertNotIn(header_secret, message)
         self.assertNotIn("embedded-secret", message)
         self.assertNotIn("x-access-token", message)
         self.assertFalse(repository_helper_log.exists())
