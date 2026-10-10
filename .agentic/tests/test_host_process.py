@@ -15,10 +15,82 @@ import tempfile
 import unittest
 
 from agentic import VERSION
-from agentic.canonical import sha256
+from agentic.canonical import now_text, sha256
+from agentic.review_qualification import host_binding_sha256
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = Path(__file__).parent / 'fixtures/fake_host_process.py'
+
+
+def pin_synthetic_qualification(config, state, head):
+    """Pin offline schema-valid input; this is not live host qualification."""
+    evidence = state / 'qualification.json'
+    config['qualification'] = {
+        'operator': 'synthetic fixture', 'evidence_path': str(evidence),
+        'evidence_sha256': 'CHANGE_ME', 'max_age_seconds': 604800,
+        'sandbox_verified': False, 'credentials_isolated': False,
+        'branch_owned': False, 'single_host_database': False,
+    }
+    flags = {
+        'sandbox_verified': True, 'credentials_isolated': True,
+        'branch_owned': True, 'single_host_database': True,
+    }
+    def role_probe(role):
+        worker = role == 'worker'
+        return {
+            'status': 'OBSERVED', 'error': None,
+            'result': {
+                'role': role,
+                'checkout_write': 'SUCCEEDED' if worker else 'DENIED',
+                'outside_write': 'DENIED', 'network': 'DENIED',
+                'credential_environment_names': [],
+                'agent_auth_files': [
+                    {'location': '~/.codex/auth.json', 'status': 'ABSENT'},
+                    {'location': '$CODEX_HOME/auth.json', 'status': 'ABSENT'},
+                ],
+            },
+            'artifacts': {name: 'f' * 64 for name in
+                          ('input_sha256', 'effective_config_sha256',
+                           'codex_log_sha256', 'result_sha256')},
+            'host_observation': {
+                'checkout_marker': 'EXACT' if worker else 'ABSENT',
+                'outside_marker': 'ABSENT',
+                'checkout_clean_after_cleanup': True,
+            },
+        }
+    record = {
+        'format': 'awf-review-host-qualification-1',
+        'record_id': '00000000-0000-0000-0000-000000000123',
+        'observed_at': now_text(), 'operator': 'synthetic fixture',
+        'host_binding_sha256': host_binding_sha256(config),
+        'disposable_pr_confirmed': True,
+        'candidate': {
+            'repository_id': config['repository_id'], 'pr': config['pr'],
+            'head': head, 'base': '0' * 40,
+            'head_ref': config['head_branch'],
+            'base_ref': config['base_branch'],
+        },
+        'probes': {
+            'critic': role_probe('critic'), 'worker': role_probe('worker'),
+            'branch_lease': {
+                'unowned_before_probe': True,
+                'unique_owner_constraint': True,
+                'temporary_lease_rolled_back': True,
+            },
+            'canonical_database': {
+                'relative_path': 'review-loop.sqlite3',
+                'resolved_path_sha256': 'f' * 64,
+                'integrity_check': 'ok', 'writer_lock_exclusive': True,
+            },
+        },
+        'findings': [], 'qualification': flags, 'result': 'PASS',
+        'execution_authority': False,
+    }
+    raw = (json.dumps(record, indent=2, ensure_ascii=False, sort_keys=True)
+           + '\n').encode('utf-8')
+    evidence.write_bytes(raw)
+    config['qualification']['evidence_sha256'] = sha256(raw)
+    config['qualification'].update(flags)
 
 
 class HostProcessTests(unittest.TestCase):
@@ -130,11 +202,10 @@ class Launcher {
             head_branch='codex/test', state_dir=str(self.state), worker_checkout=str(self.worker), critic_checkout=str(self.critic),
             contract_path=str(contract), contract_sha256=sha256(contract.read_bytes()), runtime_manifest_sha256=sha256(manifest_raw),
             models={'worker': 'fixture-worker', 'critic': 'fixture-critic'}, allowed_paths=['src/a.py'],
-            required_checks=[{'name': 'test', 'app_id': 1, 'workflow_path': '.github/workflows/ci.yml', 'workflow_sha256': sha256(b'workflow\n')}],
-            qualification={'operator': 'synthetic fixture', 'evidence': 'Synthetic process test only; no live host qualification',
-                'sandbox_verified': True, 'credentials_isolated': True, 'branch_owned': True, 'single_host_database': True})
+            required_checks=[{'name': 'test', 'app_id': 1, 'workflow_path': '.github/workflows/ci.yml', 'workflow_sha256': sha256(b'workflow\n')}])
         self.config['executables'] = {kind: {'path': str(self.launchers / ('fake-' + kind + '.exe')),
             'sha256': sha256((self.launchers / ('fake-' + kind + '.exe')).read_bytes())} for kind in ['git', 'gh', 'codex']}
+        pin_synthetic_qualification(self.config, self.state, self.head)
         self.config_path = self.state / 'host.json'
         self.config_path.write_text(json.dumps(self.config), encoding='utf-8')
         self.calls = self.base / 'process-calls.jsonl'
