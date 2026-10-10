@@ -2,13 +2,13 @@
 
 Version 1.9.4 runtime; AWF-16 policy revision and migration ship in 1.9.5. The code (`review_tiers.py`, `review_policy.py`, `gates.py`, `jira_lifecycle.py`, `closeout.py`, `digest.py`, `host_preflight.py`) and the [lifecycle](23-TICKET-LIFECYCLE.md) are the authority; nothing here grants execution authority.
 
-## Risk tiers
+## Risk tiers and intake assignment
 
-Every `ticket-contract` declares `risk_tier` (1, 2 or 3) with a `tier_justification`; uncertain is Tier 2. Tier 1 needs eligible paths, no protected paths and no true `risk_flags`. The gate recomputes the tier; highest match wins. Only an owner-signed `tier-reassignment` changes a declared tier; the owner re-issues the contract and every record rebinds. Round policy is in `review_tiers.py`; AWF-29 owns provider posting.
+At project start/intake, the controller records an `intake-assignment`, writes Jira `tier-N` plus a comment, and verifies read-back. State/PR bind it. Tier 1 cap 1 covers docs/tests-only, small configuration/labels and bounded single-file fixes without security/install/upgrade effects. Tier 2 cap 2 covers moderate one-area code. Tier 3 cap 3 plus trusted-owner review covers security/credentials, governance/merge gates, migrations, install/upgrade/packaging, controller and release PRs. Every tier stops at its first critic PASS.
 
-Tier 1 uses one critic; findings advise. Tier 2 uses three rounds; at cap, ticket P2s and route P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, has an unextendable three-round cap and requires an owner-review assertion binding a trusted owner and candidate. Provider verification remains the AWF-41 successor scope. Highest tier wins; escalation preserves history. Boundaries always block.
+`execution.risk_tiers` is the reviewed override path. Tier 1 needs eligible, non-excluded paths and no risk flags; `scope.protected_paths` imposes at least Tier 2. Below-floor changes are rejected and recorded. Only a trusted owner may change assignments; state, Jira and PR retain who, when, why, old and new. The next round reads the current record while preserving history. Non-owner changes write nothing.
 
-Each round records head, comment URL and body link. An unchanged diff preserves evidence; a changed diff invalidates it. Only Tier 2 may exceed the cap through authenticated owner disposition.
+Rounds record head/links. Unchanged diffs preserve evidence; changed diffs invalidate it. Boundaries block. Legacy contracts retain AWF-16 policy; record-bound work uses its cap.
 
 ## Bases, lineage and dispositions
 

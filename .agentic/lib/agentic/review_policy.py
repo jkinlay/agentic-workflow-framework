@@ -241,17 +241,24 @@ def evidence_only(contract, files_changed):
     return bool(files_changed) and bool(patterns) and all(matches(path, patterns) for path in files_changed)
 
 
-def cap_status(config, cycles, cap_extensions):
+def cap_status(config, cycles, cap_extensions, *, assignment_record=None):
     limit = config["execution"]["max_amendment_cycles"]
+    if assignment_record is not None:
+        from .review_tiers import round_cap
+        tier = assignment_record.get("tier") if isinstance(assignment_record, dict) else None
+        limit = round_cap(tier, config, assignment_record)
     extensions = config["execution"].get("max_cap_extensions", 2)
     return {"cycles": cycles, "max_amendment_cycles": limit, "cap_reached": cycles >= limit,
             "cap_extensions": cap_extensions, "max_cap_extensions": extensions,
             "extension_available": cap_extensions < extensions}
 
 
-def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findings, *, risk_tier=2):
+def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findings, *, risk_tier=2,
+                         assignment_record=None):
     """Translate an owner cap disposition into the lifecycle event and verified facts."""
-    status = cap_status(config, cycles, cap_extensions)
+    if assignment_record is not None and assignment_record.get("tier") != risk_tier:
+        raise ValidationError("Cap disposition risk tier disagrees with the current assignment record")
+    status = cap_status(config, cycles, cap_extensions, assignment_record=assignment_record)
     decision = disposition["decision"]
     if decision not in CAP_DECISIONS:
         raise ValidationError("Unknown cap disposition")

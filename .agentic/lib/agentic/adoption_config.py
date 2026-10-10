@@ -659,6 +659,13 @@ def detect_test_command(root):
     return None
 
 
+def assign_project_start(config, inventory, state, jira_client, *, now, controller_actor_id):
+    """Adoption hook: assign every supplied inventory ticket before dispatch."""
+    from .intake_assignment import assign_inventory
+    return assign_inventory(config, inventory, state, jira_client, now=now,
+                            controller_actor_id=controller_actor_id, source="project_start")
+
+
 def operating_capacity_proposal(config, *, existing, requested=False, dry_run=False):
     """Offer a bounded local PR change; ordinary adoption never applies it."""
     proposed = copy.deepcopy(config)

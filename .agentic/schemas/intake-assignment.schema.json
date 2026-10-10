@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:intake-assignment",
+  "title": "Agentic Workflow 1.2 — intake-assignment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "assignment_id", "assignment_sha256", "ticket_key",
+    "created_at", "source", "assigned_by", "tier", "round_cap",
+    "owner_review_required", "protected_path_floor", "protected_paths",
+    "write_paths", "risk_flags", "reasons", "rule",
+    "previous_assignment_id", "change_audit", "jira"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "assignment_id": {"type": "string", "format": "uuid"},
+    "assignment_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "ticket_key": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "source": {"enum": ["intake", "project_start", "owner_change"]},
+    "assigned_by": {"type": ["string", "integer"]},
+    "tier": {"enum": [1, 2, 3]},
+    "round_cap": {"type": "integer", "minimum": 1, "maximum": 3},
+    "owner_review_required": {"type": "boolean"},
+    "protected_path_floor": {"enum": [1, 2]},
+    "protected_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "write_paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true},
+    "risk_flags": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+    "rule": {"type": "string", "minLength": 1},
+    "previous_assignment_id": {"type": ["string", "null"], "format": "uuid"},
+    "change_audit": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["who", "when", "why", "old", "new"],
+          "properties": {
+            "who": {"type": ["string", "integer"]},
+            "when": {"type": "string", "format": "date-time"},
+            "why": {"type": "string", "minLength": 1},
+            "old": {"$ref": "#/$defs/tierCap"},
+            "new": {"$ref": "#/$defs/tierCap"}
+          }
+        }
+      ]
+    },
+    "jira": {
+      "type": "object", "additionalProperties": false,
+      "required": ["read_back_status", "label", "comment_id"],
+      "properties": {
+        "read_back_status": {"enum": ["VERIFIED", "DISABLED"]},
+        "label": {"type": ["string", "null"]},
+        "comment_id": {"type": ["string", "null"]},
+        "controller_actor_id": {"type": ["string", "integer"]},
+        "before": {"$ref": "#/$defs/labels"},
+        "after": {"$ref": "#/$defs/labels"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"tier": {"const": 1}}, "required": ["tier"]},
+      "then": {"properties": {"round_cap": {"const": 1}, "owner_review_required": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"tier": {"const": 2}}, "required": ["tier"]},
+      "then": {"properties": {"round_cap": {"maximum": 2}, "owner_review_required": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"tier": {"const": 3}}, "required": ["tier"]},
+      "then": {"properties": {"owner_review_required": {"const": true}}}
+    },
+    {
+      "if": {"properties": {"protected_path_floor": {"const": 2}}, "required": ["protected_path_floor"]},
+      "then": {"properties": {"tier": {"enum": [2, 3]}}}
+    }
+  ],
+  "$defs": {
+    "tierCap": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tier", "round_cap"],
+      "properties": {
+        "tier": {"enum": [1, 2, 3]},
+        "round_cap": {"type": "integer", "minimum": 1, "maximum": 3}
+      }
+    },
+    "labels": {
+      "type": "object", "additionalProperties": false,
+      "required": ["labels"],
+      "properties": {
+        "labels": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    }
+  }
+}

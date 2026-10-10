@@ -15,7 +15,14 @@ if _missing:
 from agentic.installer import complete_runtime_transaction, install, recover
 from agentic import ValidationError
 from agentic.adoption_config import (ensure_installed_runtime, post_install_checks,
-                                     prevalidate_runtime_wheelhouse)
+                                     prevalidate_runtime_wheelhouse,
+                                     assign_project_start)
+
+
+def assign_startup_inventory(config, inventory, state, jira_client, *, now, controller_actor_id):
+    """Controller hook for assigning a complete bootstrap ticket inventory."""
+    return assign_project_start(config, inventory, state, jira_client, now=now,
+                                controller_actor_id=controller_actor_id)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

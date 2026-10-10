@@ -31,7 +31,7 @@ New ownership defaults to `@maintainer`; `--codeowner '@handle'` or `'@organizat
 | Test command | Prefer an npm test script, then evident pytest markers; otherwise supply `--test-command COMMAND`. Run the selected project tests separately. |
 | Jira | Supply both `--jira-site URL` and `--jira-key KEY`. Neither sets `jira.enabled: false`, with null site/key, for a fresh project. Preserve existing Jira configuration. |
 
-Keep `template.expected_workflow_version: 1.9.4`, real paths, scope and protected limits. Bootstrap preserves root operating choices or seeds three worker streams and one shared independent critic within ceiling six (five slots including the controller). Disabled/unscoped Jira permits no ticket mutations; use provisional local records.
+Keep `template.expected_workflow_version: 1.9.4`, paths and limits. Bootstrap preserves choices. Its controller hook assigns tickets from `execution.risk_tiers`, binding state and PRs and verifying Jira `tier-N`/comments when enabled. Disabled Jira stays local; only trusted owners change audited values; protected paths floor at Tier 2.
 
 Existing projects get `governance_proposal.adoption_pr_section` with exact current/proposed ceiling and reviewer allocation/count. Ordinary upgrades preserve both. Explicit `--propose-operating-capacity` stages ceiling six (higher preserved) and retains the current reviewer allocation for owner review/merge; `--dry-run` writes nothing. Other governance/operating choices remain unchanged.
 

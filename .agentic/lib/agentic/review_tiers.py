@@ -17,6 +17,7 @@ TIER_1 = 1
 TIER_2 = 2
 TIER_3 = 3
 ROUND_CAPS = {TIER_1: 1, TIER_2: 3, TIER_3: 3}
+ASSIGNMENT_CAPS = {TIER_1: 1, TIER_2: 2, TIER_3: 3}
 P1 = {"P1", "BLOCKER", "MAJOR"}
 P2 = {"P2", "MINOR"}
 
@@ -85,9 +86,29 @@ def classify(config, paths, *, risk_flags=(), evidence=(), complexity=None):
             "risk_flags": classification_flags}
 
 
-def round_cap(tier, config=None):
+def _assignment_cap(tier, assignment_record):
+    from .intake_assignment import verify_assignment_record
+    verify_assignment_record(assignment_record)
+    assigned_tier = assignment_record.get("tier")
+    if assigned_tier != tier:
+        raise ValidationError(
+            f"Review tier {tier} disagrees with assignment record tier {assigned_tier}; rebind the next round")
+    cap = assignment_record.get("round_cap")
+    if type(cap) is not int or cap < 1 or cap > ASSIGNMENT_CAPS[tier]:
+        raise ValidationError(
+            f"Assignment record Tier {tier} round_cap must be between 1 and {ASSIGNMENT_CAPS[tier]}")
+    if not isinstance(assignment_record.get("assignment_id"), str) or not assignment_record["assignment_id"]:
+        raise ValidationError("Review assignment record needs assignment_id")
+    if tier == TIER_3 and assignment_record.get("owner_review_required") is not True:
+        raise ValidationError("Tier 3 assignment record must require trusted-owner review")
+    return cap
+
+
+def round_cap(tier, config=None, assignment_record=None):
     if tier not in ROUND_CAPS:
         raise ValidationError(f"unknown review tier: {tier}")
+    if assignment_record is not None:
+        return _assignment_cap(tier, assignment_record)
     configured = ((config or {}).get("execution", {}).get("risk_tiers", {})
                   .get(f"tier{tier}_review", {}).get("max_rounds"))
     cap = ROUND_CAPS[tier] if configured is None else configured
@@ -106,7 +127,7 @@ def _cap_disposition_valid(value, tier=None, cap=None):
     substitute for the retained owner record.  ``gates.evaluate`` performs the
     actual owner-record verification before calling this predicate.
     """
-    if (tier is not None and tier != TIER_2) or (cap is not None and cap != ROUND_CAPS[TIER_2]):
+    if tier is not None and tier != TIER_2:
         return False
     if not isinstance(value, dict) or value.get("decision") != "EXTEND_ONE_CYCLE":
         return False
@@ -124,7 +145,7 @@ def _cap_disposition_valid(value, tier=None, cap=None):
             and bool(value["evidence"])
             and isinstance(value.get("open_finding_ids"), list)
             and type(value.get("cycles")) is int
-            and value.get("cycles") == ROUND_CAPS[TIER_2]
+            and value.get("cycles") == (ROUND_CAPS[TIER_2] if cap is None else cap)
             and type(value.get("cap_extensions")) is int
             and value.get("cap_extensions") == 1)
 
@@ -144,8 +165,9 @@ def _ticketed_finding_ids(records):
     return result
 
 
-def validate_round(tier, round_number, *, owner_cap_disposition=None, config=None):
-    cap = round_cap(tier, config)
+def validate_round(tier, round_number, *, owner_cap_disposition=None, config=None,
+                   assignment_record=None):
+    cap = round_cap(tier, config, assignment_record)
     if type(round_number) is not int or round_number < 1:
         raise ValidationError("review round must be a positive integer")
     if tier == TIER_3 and round_number > cap:
@@ -157,13 +179,14 @@ def validate_round(tier, round_number, *, owner_cap_disposition=None, config=Non
 
 def verdict_record(*, pr_comment_url, pr_body_link, verdict, tier, round_number, head_sha,
                    reviewer_id, evidence=None, owner_review=False,
-                   owner_cap_disposition=None):
+                   owner_cap_disposition=None, assignment_record=None):
     """Build the policy-level verdict receipt; posting remains a successor concern."""
     if verdict not in {"PASS", "P1", "P2", "REQUEST_CHANGES"}:
         raise ValidationError("unknown review verdict")
     if not pr_comment_url or not pr_body_link:
         raise ValidationError("every verdict needs PR comment URL and PR-body link evidence")
-    validate_round(tier, round_number, owner_cap_disposition=owner_cap_disposition)
+    validate_round(tier, round_number, owner_cap_disposition=owner_cap_disposition,
+                   assignment_record=assignment_record)
     return {"verdict": verdict, "tier": tier, "round": round_number, "head_sha": head_sha,
             "reviewer_id": reviewer_id, "pr_comment_url": pr_comment_url,
             "pr_body_link": pr_body_link, "evidence": list(evidence or []),
@@ -172,9 +195,10 @@ def verdict_record(*, pr_comment_url, pr_body_link, verdict, tier, round_number,
 
 def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_review=False,
                     owner_cap_disposition=None, ticketed_p2_records=(), ticketed_p2_ids=None,
-                    configured_owner_ids=None, expected_candidate_binding=None, config=None):
+                    configured_owner_ids=None, expected_candidate_binding=None, config=None,
+                    assignment_record=None):
     """Derive qualification/escalation at the tier-specific round boundary."""
-    cap = round_cap(tier, config)
+    cap = round_cap(tier, config, assignment_record)
     if tier == TIER_3 and rounds > cap:
         raise ValidationError(f"Tier 3 refuses review round {rounds}; Tier 3 never permits an extension round")
     if rounds > cap and (rounds != cap + 1 or not _cap_disposition_valid(owner_cap_disposition, tier, cap)):
