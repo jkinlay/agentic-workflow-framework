@@ -17,12 +17,14 @@ CAP_EVENTS = {"MERGE_WITH_NOTES": "CAP_MERGE_WITH_NOTES", "PARK": "CAP_PARK",
               "RESCOPE": "CAP_RESCOPE", "EXTEND_ONE_CYCLE": "CAP_EXTEND_ONE_CYCLE"}
 FINDING_DECISIONS = ("ACCEPT_RISK", "REQUIRE_FIX", "NOT_A_DEFECT")
 NON_BLOCKING_DECISIONS = {"ACCEPT_RISK", "NOT_A_DEFECT"}
-RISK_FLAGS = ("security", "schema_or_migration", "public_api", "data_loss", "concurrency", "production")
+RISK_FLAGS = ("security", "schema_or_migration", "public_api", "data_loss", "concurrency", "production",
+              "permissions", "release", "merge_gate", "ci_gate", "high_complexity", "high_uncertainty")
 DEFAULT_RISK_TIERS = {
     "tier1_eligible_paths": ["tests/**", "fixtures/**", "tools/**", "evidence/**", "docs/**", "*.manifest.json"],
     "tier1_excluded_paths": [],
     "tier1_review": {"roles": ["critic"], "specialist_when_touching": ["security"], "findings": "advisory"},
     "tier2_review": {"roles": ["critic", "specialist"], "findings": "blocking"},
+    "tier3_review": {"roles": ["critic", "specialist"], "findings": "blocking", "max_rounds": 3},
 }
 # Sentences that would make a mandatory boundary advisory. PROJECT_INSTRUCTIONS.md
 # may add review policy; it can never weaken these. Fixed scan, like hygiene.
@@ -72,14 +74,26 @@ def computed_tier(config, paths, contract=None):
         for flag in RISK_FLAGS:
             if contract["risk_flags"].get(flag) is True:
                 reasons.append(f"risk_flags.{flag}: set")
+    # 1.9.4 adds a mandatory governance/release/merge/CI tier.  Keep the
+    # historical path checks above as Tier 2 evidence, then apply the additive
+    # classifier so older contracts remain safe but are never over-permissive.
+    from .review_tiers import classify
+    # Retained 1.9.3 configurations migrate safely and keep their historical
+    # Tier 1/2 evaluator until the owner adopts the additive Tier 3 settings.
+    if "tier3_review" not in risk_tiers(config):
+        return (2 if reasons else 1), reasons
+    flags = [] if contract is None else [key for key, value in contract.get("risk_flags", {}).items() if value]
+    classification = classify(config, paths, risk_flags=flags)
+    if classification["tier"] == 3:
+        return 3, reasons + classification["evidence"].get("3", [])
     return (2 if reasons else 1), reasons
 
 
 def check_tier_declaration(config, contract, paths):
     """Refuse a declared tier more permissive than the computed one; Tier 2 is always accepted."""
     declared = contract.get("risk_tier", 2)
-    if declared not in (1, 2) or not str(contract.get("tier_justification", "")).strip():
-        raise ValidationError("Contract must declare risk_tier 1 or 2 with a non-empty tier_justification")
+    if declared not in (1, 2, 3) or not str(contract.get("tier_justification", "")).strip():
+        raise ValidationError("Contract must declare risk_tier 1, 2 or 3 with a non-empty tier_justification")
     computed, reasons = computed_tier(config, paths, contract)
     if declared < computed:
         raise ValidationError("risk_tier 1 is not eligible: " + "; ".join(reasons))
@@ -89,7 +103,7 @@ def check_tier_declaration(config, contract, paths):
 def review_roles(config, tier, domains_touched=()):
     """Roles consulted for a tier; boundaries are never narrowed by the tier."""
     tiers = risk_tiers(config)
-    if tier == 2:
+    if tier in (2, 3):
         return {"roles": list(tiers["tier2_review"]["roles"]), "findings": "blocking", "specialist_domains": "all_triggered"}
     consulted = [d for d in tiers["tier1_review"]["specialist_when_touching"] if d in set(domains_touched)]
     return {"roles": list(tiers["tier1_review"]["roles"]) + (["specialist"] if consulted else []),
@@ -98,7 +112,7 @@ def review_roles(config, tier, domains_touched=()):
 
 def tier1_specialist_domains(config, tier, required_domains):
     """Tier 1 consults only the configured touching domains; Tier 2 consults every trigger."""
-    if tier == 2:
+    if tier in (2, 3):
         return set(required_domains)
     allowed = set(risk_tiers(config)["tier1_review"]["specialist_when_touching"])
     return set(required_domains) & allowed
@@ -235,7 +249,7 @@ def cap_status(config, cycles, cap_extensions):
             "extension_available": cap_extensions < extensions}
 
 
-def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findings):
+def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findings, *, risk_tier=2):
     """Translate an owner cap disposition into the lifecycle event and verified facts."""
     status = cap_status(config, cycles, cap_extensions)
     decision = disposition["decision"]
@@ -248,10 +262,12 @@ def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findi
         raise ValidationError("Cap disposition does not list the currently open findings exactly")
     facts = {"cap_disposition_verified": True}
     if decision == "EXTEND_ONE_CYCLE":
+        if risk_tier != 2:
+            raise ValidationError("EXTEND_ONE_CYCLE is available only for Tier 2; Tier 3 is hard-capped at three rounds")
         if not status["extension_available"]:
             raise ValidationError(f"Extension {cap_extensions + 1} exceeds $.execution.max_cap_extensions = {status['max_cap_extensions']}; "
                                   "choose MERGE_WITH_NOTES, PARK or RESCOPE")
-        facts["cap_extension_available"] = True
+        facts.update(cap_extension_available=True, risk_tier=2)
         return {"event": CAP_EVENTS[decision], "facts": facts, "cycles": cycles, "cap_extensions": cap_extensions + 1}
     if decision == "MERGE_WITH_NOTES":
         boundaries = [item["id"] for item in open_findings if is_boundary(item)]

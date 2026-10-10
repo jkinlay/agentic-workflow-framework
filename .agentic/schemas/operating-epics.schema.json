@@ -1,7 +1,10 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:awf:1.2:operating-epics",
   "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "epics"
+  ],
   "properties": {
     "schema_version": {
       "const": 1
@@ -11,6 +14,12 @@
       "maxItems": 1000,
       "items": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "scope"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -67,19 +76,11 @@
               "none"
             ]
           }
-        },
-        "required": [
-          "id",
-          "title",
-          "scope"
-        ],
-        "additionalProperties": false
+        }
       }
     }
   },
-  "required": [
-    "schema_version",
-    "epics"
-  ],
-  "additionalProperties": false
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:operating-epics",
+  "title": "Agentic Workflow 1.2 \u2014 operating-epics"
 }

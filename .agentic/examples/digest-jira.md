@@ -2,6 +2,7 @@ AWF EX-1 | state MERGED | PR 7 | head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb |
 
 | Gate | Result |
 | review_completion | PASS |
+| verdict_posting | FAIL |
 | acceptance_criteria | PASS |
 | scope | PASS |
 | critic_current_tuple | PASS |
@@ -16,7 +17,7 @@ AWF EX-1 | state MERGED | PR 7 | head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb |
 | provenance | PASS |
 | local_ci_parity | PASS |
 | publication_safety | PASS |
-| conclusion | READY_FOR_OWNER_AUTHORIZATION |
+| conclusion | NOT_READY |
 
 Open findings:
 - F1 MAJOR basis=AC1 status=OPEN

@@ -1,0 +1,80 @@
+{
+  "template_for": "review-verdict",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "record_id": "00000000-0000-0000-0000-000000000000",
+    "created_at": "1970-01-01T00:00:00Z",
+    "producer_id": "UNFILLED",
+    "run_id": "00000000-0000-0000-0000-000000000000",
+    "binding": {
+      "project_id": "00000000-0000-0000-0000-000000000000",
+      "repository_id": 1,
+      "issue_id": "UNFILLED",
+      "requirements_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "policy_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "candidate_id": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "verdict": "PASS",
+    "tier": 1,
+    "round": 1,
+    "head_sha": "0000000000000000000000000000000000000000",
+    "critic_artifact_binding": {
+      "critic_run_id": "00000000-0000-0000-0000-000000000000",
+      "result_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "head_sha": "0000000000000000000000000000000000000000",
+      "round": 1
+    },
+    "reviewer_id": "UNFILLED",
+    "pr_comment_url": "urn:awf:UNFILLED",
+    "pr_body_link": "urn:awf:UNFILLED",
+    "evidence": [],
+    "posting_observation": {
+      "source": "host_observation",
+      "observed_at": "1970-01-01T00:00:00Z",
+      "producer_id": "UNFILLED",
+      "run_id": "00000000-0000-0000-0000-000000000000",
+      "provider_kind": "github",
+      "critic_artifact_binding": {
+        "critic_run_id": "00000000-0000-0000-0000-000000000000",
+        "result_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "head_sha": "0000000000000000000000000000000000000000",
+        "round": 1
+      },
+      "review_verdict_record_id": "00000000-0000-0000-0000-000000000000",
+      "review_verdict_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "repository_id": 1,
+      "pr_number": 1,
+      "comment_id": 1,
+      "comment_url": "urn:awf:UNFILLED",
+      "comment_bytes": "UNFILLED",
+      "comment_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "body_link": "urn:awf:UNFILLED",
+      "body_bytes": "UNFILLED",
+      "body_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "provider_response_bytes": {
+        "encoding": "base64",
+        "data": "UNFILLED"
+      },
+      "provider_response_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "collector_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "owner_review": false,
+    "owner_id": 1,
+    "candidate_binding": {
+      "repository_id": 1,
+      "pr_number": 1,
+      "base_sha": "0000000000000000000000000000000000000000",
+      "head_sha": "0000000000000000000000000000000000000000"
+    },
+    "critic_review": {
+      "record_id": "00000000-0000-0000-0000-000000000000",
+      "run_id": "00000000-0000-0000-0000-000000000000",
+      "round": 1,
+      "head_sha": "0000000000000000000000000000000000000000",
+      "verdict": "APPROVE",
+      "findings_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}

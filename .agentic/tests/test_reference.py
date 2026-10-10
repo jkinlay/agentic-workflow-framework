@@ -13,20 +13,26 @@ from concurrent.futures import ThreadPoolExecutor
 import unittest
 import uuid
 
+# Keep this test module bound to the checkout under test when a parent
+# validation harness has another AWF checkout on PYTHONPATH.
+ROOT = Path(__file__).resolve().parents[2]
+import sys
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+
 from agentic import CapabilityUnavailable, ValidationError
 from agentic.authorization import make_request, parse_text, render_request, verify_record, verify_webhook
 from agentic.canonical import canonical, fingerprint, load, loads, sha256, timestamp
 from agentic.cli import local_semantics
 from agentic.contracts import Contracts
-from agentic.gates import evaluate, expected_binding
+from agentic.gates import critic_artifact_receipt_sha256, evaluate, expected_binding
 from agentic.installer import install, recover, rollback, verify_installed, verify_release, ensure_usable, json_bytes, JOURNAL, MARKER
 from agentic.lifecycle import definition, transition, STATES, NORMAL, INVALIDATING, CONTROL_EVENTS
 from agentic.policy import validate_config, topological_order, require_reference_capability, inside_scope
+from agentic.review_tiers import classify
 from agentic.safeio import Tree
 from agentic.store import Store
-from review_admission_fixture import bind_review_admission
+from test_review_policy import bind_production_posting_fixture, bind_review_admission
 
-ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-09T12:00:00Z"
 
 
@@ -43,7 +49,9 @@ class Fixture(unittest.TestCase):
 
     def gate(self):
         bind_review_admission(self.bundle)
-        return evaluate(self.config, definition(), self.bundle, self.contracts, NOW)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
+        return evaluate(self.config, definition(), self.bundle, self.contracts, NOW,
+                        posting_collector_registry=registry)
 
     def authorize(self, decision="AUTHORIZE"):
         gate = self.gate()
@@ -168,6 +176,9 @@ class GateTests(Fixture):
     def test_required_specialist_positive_path(self):
         self.bundle["contract"]["risk_flags"]["security"] = True
         self.bundle["contract"]["specialist_domains"] = ["security"]
+        classification = classify(self.config, ["src/example.py"], risk_flags=["security"])
+        self.bundle["contract"]["risk_classification"] = copy.deepcopy(classification)
+        self.bundle["tier_classification"] = copy.deepcopy(classification)
         run = copy.deepcopy(self.bundle["runs"][2])
         run.update(record_id=str(uuid.uuid4()), run_id=str(uuid.uuid4()), role="specialist",
                    context_id=str(uuid.uuid4()), producer_id="fixture-security-specialist")
@@ -179,8 +190,15 @@ class GateTests(Fixture):
         self.bundle["runs"].append(run)
         self.bundle["specialists"].append(review)
         binding = expected_binding(self.config, definition(), self.bundle)
-        for record in [self.bundle[k] for k in ["dispatch", "worker", "critic", "ci", "pr"]] + self.bundle["runs"] + self.bundle["specialists"]:
+        for record in ([self.bundle[k] for k in ["dispatch", "worker", "critic", "ci", "pr"]]
+                       + self.bundle["runs"] + self.bundle["specialists"]
+                       + self.bundle["review_verdicts"]):
             record["binding"] = copy.deepcopy(binding)
+        verdict = self.bundle["review_verdicts"][0]
+        artifact_uri = f"urn:awf:critic-review:{verdict['critic_review']['record_id']}"
+        artifact = next(entry for entry in self.bundle["evidence_registry"]
+                        if entry["uri"] == artifact_uri)
+        artifact["sha256"] = critic_artifact_receipt_sha256(verdict)
         gate = self.gate()
         self.assertEqual(gate["conclusion"], "READY_FOR_OWNER_AUTHORIZATION")
         self.assertEqual(gate["gates"]["specialist_reviews"]["result"], "PASS")
@@ -367,11 +385,16 @@ class LifecycleTests(unittest.TestCase):
         for source, event, target, guards in NORMAL:
             with self.subTest(source=source, event=event):
                 facts = {g: True for g in guards}
+                if event == "CAP_EXTEND_ONE_CYCLE":
+                    facts["risk_tier"] = 2
                 if event == "FINAL_GATE_PASSED":
                     config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
                     bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+                    bind_review_admission(bundle)
+                    registry = bind_production_posting_fixture(config, bundle)
                     facts["final_gate"] = evaluate(config, definition(), bundle,
-                                                     Contracts(ROOT / ".agentic/schemas"), NOW)
+                        Contracts(ROOT / ".agentic/schemas"), NOW,
+                        posting_collector_registry=registry)
                 self.assertEqual(transition(source, event, facts), target)
 
     def test_no_unverified_progress_for_all_state_event_pairs(self):
