@@ -417,6 +417,73 @@ class ContinuousControllerStore:
             revision = int(self._meta(db, "revision")) + 1
             db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
 
+    @staticmethod
+    def _stream_restore_snapshot(state, ticket):
+        """Retain the scheduling row hidden by an UNKNOWN-dispatch blocker."""
+        return {
+            "state": state, "ticket": ticket["ticket"], "actor": ticket["actor"],
+            "reason": ticket["reason"], "next_action": ticket["next_action"],
+            "resume_trigger": ticket["resume_trigger"], "exact_tuple": ticket["exact_tuple"],
+            "activity": ticket["activity"], "verification_gate": ticket["verification_gate"],
+            "reviewer_completion": ticket["reviewer_completion"],
+            "open_findings": ticket["open_findings"], "jira_status": ticket["jira_status"],
+            "paths": ticket["paths"],
+        }
+
+    @staticmethod
+    def _row_restore_snapshot(row):
+        return {
+            "state": row["state"], "ticket": row["ticket"], "actor": row["actor"],
+            "reason": row["reason"], "next_action": row["next_action"],
+            "resume_trigger": row["resume_trigger"], "exact_tuple": row["exact_tuple"],
+            "activity": row["activity"], "verification_gate": row["verification_gate"],
+            "reviewer_completion": loads(row["reviewer_completion"]),
+            "open_findings": row["open_findings"], "jira_status": row["jira_status"],
+            "paths": loads(row["paths"]),
+        }
+
+    @staticmethod
+    def _remember_unknown_stream(db, dispatch_id, snapshot, *, replace):
+        operation = db.execute(
+            "SELECT payload_json FROM controller_dispatch WHERE dispatch_id=?", (dispatch_id,)).fetchone()
+        _require(operation is not None, "Unknown dispatch is missing from the protected state")
+        payload = loads(operation["payload_json"])
+        if replace or "_stream_before_unknown" not in payload:
+            payload["_stream_before_unknown"] = snapshot
+            db.execute("UPDATE controller_dispatch SET payload_json=? WHERE dispatch_id=?",
+                       (canonical(payload).decode(), dispatch_id))
+
+    @staticmethod
+    def _restore_unknown_stream(db, dispatch_id, payload, now):
+        stream = db.execute("SELECT * FROM stream_status WHERE stream_id=?",
+                            (payload["stream"],)).fetchone()
+        unknown_reason = (f"Dispatch outcome unknown for {payload['ticket']} ({dispatch_id}); "
+                          "reconcile before retry")
+        if (stream is None or stream["ticket"] != payload["ticket"] or
+                stream["exact_tuple"] != payload["exact_tuple"] or
+                stream["state"] != "BLOCKED" or stream["reason"] != unknown_reason):
+            return
+        restore = payload.get("_stream_before_unknown")
+        _require(isinstance(restore, dict) and set(restore) == {
+            "state", "ticket", "actor", "reason", "next_action", "resume_trigger",
+            "exact_tuple", "activity", "verification_gate", "reviewer_completion",
+            "open_findings", "jira_status", "paths"},
+            "UNKNOWN dispatch is missing its matching stream restoration state")
+        _require(restore["state"] in STREAM_STATES and restore["state"] != "COMPLETE" and
+                 restore["ticket"] == payload["ticket"] and
+                 restore["exact_tuple"] == payload["exact_tuple"],
+                 "UNKNOWN dispatch stream restoration state is mismatched")
+        db.execute(
+            "UPDATE stream_status SET state=?,ticket=?,actor=?,reason=?,next_action=?,"
+            "resume_trigger=?,exact_tuple=?,activity=?,verification_gate=?,reviewer_completion=?,"
+            "open_findings=?,jira_status=?,paths=?,updated_at=? WHERE stream_id=?",
+            (restore["state"], restore["ticket"], restore["actor"], restore["reason"],
+             restore["next_action"], restore["resume_trigger"], restore["exact_tuple"],
+             restore["activity"], restore["verification_gate"],
+             canonical(_reviewer_counts(restore["reviewer_completion"])).decode(),
+             restore["open_findings"], restore["jira_status"],
+             canonical(restore["paths"]).decode(), now, payload["stream"]))
+
     def schedule(self, inventory, now, host_capacity):
         """Fill every free stream or record its concrete pause/block/complete state."""
         timestamp(now)
@@ -481,6 +548,10 @@ class ContinuousControllerStore:
                                      inventory[intent["ticket"]]["disposition"] != "COMPLETE"), None)
             if matching_unknown is not None:
                 item = inventory[matching_unknown["ticket"]]
+                underlying_state = "WORKING" if item["disposition"] == "ELIGIBLE" else item["disposition"]
+                self._remember_unknown_stream(
+                    db, matching_unknown["dispatch_id"],
+                    self._stream_restore_snapshot(underlying_state, item), replace=True)
                 blocked_item = {
                     **item,
                     "exact_tuple": matching_unknown["exact_tuple"],
@@ -712,6 +783,7 @@ class ContinuousControllerStore:
             db.execute("UPDATE controller_dispatch SET status='ACCEPTED',receipt_json=?,updated_at=? WHERE dispatch_id=?",
                        (canonical(receipt).decode(), now, dispatch_id))
             if reconcile:
+                self._restore_unknown_stream(db, dispatch_id, payload, now)
                 revision = int(self._meta(db, "revision")) + 1
                 db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
             return receipt
@@ -739,6 +811,8 @@ class ContinuousControllerStore:
             revision = int(self._meta(db, "revision")) + 1
             db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
             return
+        self._remember_unknown_stream(
+            db, dispatch_id, self._row_restore_snapshot(stream), replace=False)
         db.execute("UPDATE stream_status SET state='BLOCKED',actor='controller',"
                    "reason=?,next_action=?,resume_trigger=?,updated_at=? WHERE stream_id=?",
                    (f"Dispatch outcome unknown for {payload['ticket']} ({dispatch_id}); reconcile before retry",
@@ -760,7 +834,8 @@ class ContinuousControllerStore:
             payload["reconcile_at"] = now
             db.execute("UPDATE controller_dispatch SET payload_json=?,updated_at=? WHERE dispatch_id=?",
                        (canonical(payload).decode(), now, dispatch_id))
-            return payload
+            return {key: value for key, value in payload.items()
+                    if key != "_stream_before_unknown"}
 
     def recover_dispatches(self, now):
         """A crash while calling the host becomes UNKNOWN, never PENDING."""
