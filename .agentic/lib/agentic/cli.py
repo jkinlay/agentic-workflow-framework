@@ -93,6 +93,10 @@ def main(argv=None, default_root=None):
     gate_parser.add_argument("--config", type=Path)
     gate_parser.add_argument("--now", default=None)
     gate_parser.add_argument("--request", action="store_true")
+    gate_parser.add_argument(
+        "--posting-collector-host-config", type=Path,
+        help="Enrolled review-host config used for live posting observation; it cannot declare registry membership",
+    )
     auth_parser = sub.add_parser("verify-authorization")
     for key in ["record", "request", "gate", "config"]:
         auth_parser.add_argument("--" + key, type=Path, required=True)
@@ -372,7 +376,29 @@ def main(argv=None, default_root=None):
                     output["execution_authority"] = False
                 elif args.command == "evaluate":
                     config = load(args.config or root / ".agentic/PROJECT_CONFIG.yaml")
-                    gate = evaluate(config, workflow, load(args.bundle), contracts, args.now or now_text())
+                    bundle = load(args.bundle)
+                    posting_collector_registry = {}
+                    posting_collector_reason = None
+                    if args.posting_collector_host_config is not None:
+                        from .posting_collector import (
+                            PostingCollectorMismatch, registry_from_host_config,
+                        )
+                        try:
+                            posting_collector_registry = registry_from_host_config(
+                                root, args.posting_collector_host_config, bundle, digest
+                            )
+                        except PostingCollectorMismatch as exc:
+                            # A provider mismatch is gate evidence, not permission
+                            # to abort past the fail-closed NOT_READY conclusion.
+                            posting_collector_reason = str(exc)
+                    gate = evaluate(
+                        config, workflow, bundle, contracts, args.now or now_text(),
+                        posting_collector_registry=posting_collector_registry,
+                    )
+                    if posting_collector_reason is not None:
+                        gate["residual_risks"].append(
+                            "Posting collector: " + posting_collector_reason
+                        )
                     output = make_request(gate, contracts, args.now or now_text()) if args.request else gate
                 elif args.command == "verify-authorization":
                     config = load(args.config)
