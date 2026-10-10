@@ -102,6 +102,14 @@
           "specialist"
         ],
         "findings": "blocking"
+      },
+      "tier3_review": {
+        "roles": [
+          "critic",
+          "specialist"
+        ],
+        "findings": "blocking",
+        "max_rounds": 3
       }
     },
     "transient_retry_limit": 2,
@@ -483,7 +491,10 @@
     "trusted_owner_ids": [
       1001
     ],
-    "high_risk_owner_quorum": 1
+    "high_risk_owner_quorum": 1,
+    "production_posting_collector_ids": [
+      "github-production-posting-collector"
+    ]
   },
   "controller": {
     "dispatch_enabled": false,

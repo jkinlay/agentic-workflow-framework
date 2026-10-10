@@ -1,7 +1,14 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:awf:1.2:operating-config",
   "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "source",
+    "streams",
+    "controller",
+    "specialist",
+    "simple_worker"
+  ],
   "properties": {
     "version": {
       "const": 1
@@ -58,6 +65,10 @@
     },
     "streams": {
       "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count"
+      ],
       "properties": {
         "count": {
           "type": "integer",
@@ -66,402 +77,403 @@
         },
         "A": {
           "type": "object",
-          "properties": {
-            "worker": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            },
-            "reviewer": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            }
-          },
+          "additionalProperties": false,
           "required": [
             "worker"
           ],
-          "additionalProperties": false
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
         },
         "B": {
           "type": "object",
-          "properties": {
-            "worker": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            },
-            "reviewer": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            }
-          },
+          "additionalProperties": false,
           "required": [
             "worker"
           ],
-          "additionalProperties": false
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
         },
         "C": {
           "type": "object",
-          "properties": {
-            "worker": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            },
-            "reviewer": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            }
-          },
+          "additionalProperties": false,
           "required": [
             "worker"
           ],
-          "additionalProperties": false
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
         },
         "D": {
           "type": "object",
-          "properties": {
-            "worker": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            },
-            "reviewer": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            }
-          },
+          "additionalProperties": false,
           "required": [
             "worker"
           ],
-          "additionalProperties": false
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
         },
         "E": {
           "type": "object",
-          "properties": {
-            "worker": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            },
-            "reviewer": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            }
-          },
+          "additionalProperties": false,
           "required": [
             "worker"
           ],
-          "additionalProperties": false
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
         },
         "F": {
           "type": "object",
-          "properties": {
-            "worker": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            },
-            "reviewer": {
-              "type": "object",
-              "properties": {
-                "model": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                },
-                "reasoning_effort": {
-                  "enum": [
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                    "ultra"
-                  ]
-                },
-                "pinned": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "model",
-                "reasoning_effort"
-              ],
-              "additionalProperties": false
-            }
-          },
+          "additionalProperties": false,
           "required": [
             "worker"
           ],
-          "additionalProperties": false
+          "properties": {
+            "worker": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "reviewer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "reasoning_effort"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reasoning_effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra"
+                  ]
+                },
+                "pinned": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
         }
-      },
-      "required": [
-        "count"
-      ],
-      "additionalProperties": false
+      }
     },
     "controller": {
       "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "reasoning_effort"
+      ],
       "properties": {
         "model": {
           "type": "string",
@@ -481,15 +493,15 @@
         "pinned": {
           "type": "boolean"
         }
-      },
-      "required": [
-        "model",
-        "reasoning_effort"
-      ],
-      "additionalProperties": false
+      }
     },
     "specialist": {
       "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "reasoning_effort"
+      ],
       "properties": {
         "model": {
           "type": "string",
@@ -509,15 +521,16 @@
         "pinned": {
           "type": "boolean"
         }
-      },
-      "required": [
-        "model",
-        "reasoning_effort"
-      ],
-      "additionalProperties": false
+      }
     },
     "simple_worker": {
       "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "reasoning_effort",
+        "enabled"
+      ],
       "properties": {
         "model": {
           "type": "string",
@@ -540,16 +553,15 @@
         "enabled": {
           "type": "boolean"
         }
-      },
-      "required": [
-        "model",
-        "reasoning_effort",
-        "enabled"
-      ],
-      "additionalProperties": false
+      }
     },
     "critic": {
       "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "reasoning_effort"
+      ],
       "properties": {
         "model": {
           "type": "string",
@@ -569,23 +581,9 @@
         "pinned": {
           "type": "boolean"
         }
-      },
-      "required": [
-        "model",
-        "reasoning_effort"
-      ],
-      "additionalProperties": false
+      }
     }
   },
-  "required": [
-    "version",
-    "source",
-    "streams",
-    "controller",
-    "specialist",
-    "simple_worker"
-  ],
-  "additionalProperties": false,
   "allOf": [
     {
       "if": {
@@ -774,5 +772,8 @@
         ]
       }
     }
-  ]
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:operating-config",
+  "title": "Agentic Workflow 1.2 \u2014 operating-config"
 }

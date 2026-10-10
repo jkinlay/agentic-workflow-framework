@@ -18,6 +18,7 @@ from agentic.interaction import (ROUTINE, decide_action, gate_handoff, loop_next
     next_step, render_markdown, status_report)
 from agentic.lifecycle import definition
 from agentic.review_loop import LoopStore
+from test_review_policy import bind_production_posting_fixture, bind_review_admission
 
 ROOT=Path(__file__).resolve().parents[2]
 NOW='2026-09-09T12:00:00Z'
@@ -190,7 +191,11 @@ class GateHandoffTests(unittest.TestCase):
     def setUp(self):
         self.contracts=Contracts(ROOT/'.agentic/schemas')
         self.config=load(ROOT/'.agentic/examples/PROJECT_CONFIG.yaml')
-        self.gate=evaluate(self.config,definition(),load(ROOT/'.agentic/examples/evidence-bundle.json'),self.contracts,NOW)
+        bundle=load(ROOT/'.agentic/examples/evidence-bundle.json')
+        bind_review_admission(bundle)
+        registry=bind_production_posting_fixture(self.config,bundle)
+        self.gate=evaluate(self.config,definition(),bundle,self.contracts,NOW,
+                           posting_collector_registry=registry)
         self.request=make_request(self.gate,self.contracts,NOW)
 
     def test_exact_existing_phrase_is_rendered_with_its_evidence_limitations(self):
