@@ -790,6 +790,43 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     # a base origin if any parent carries one.
     origin_maps = {base_sha: {path: path for path in base_tree}}
     touched_head_paths = set()
+    merge_base_cache = {}
+    historical_lines_cache = {}
+
+    def historical_lines(commit, path):
+        key = (commit, path)
+        if key in historical_lines_cache:
+            return historical_lines_cache[key]
+        tree = tree_cache.setdefault(commit, _tree(root, commit, extra_env))
+        entry = tree.get(path)
+        if entry is None:
+            lines = frozenset()
+        elif entry[1] != "blob":
+            lines = None
+        else:
+            text, reason = _blob(root, entry[2], extra_env)
+            lines = None if reason else frozenset(text.splitlines())
+        historical_lines_cache[key] = lines
+        return lines
+
+    def sync_merge_deleted_lines(parents, parent, path):
+        """Prove exact lines whose deletion arrived from the scanned base."""
+        if path is None or len(parents) < 2 or base_sha not in parents or parent == base_sha:
+            return frozenset()
+        if parent not in merge_base_cache:
+            result = _git(root, "merge-base", "--all", parent, base_sha,
+                          extra_env=extra_env, check=False)
+            candidates = result.stdout.decode("ascii", "replace").splitlines()
+            merge_base_cache[parent] = candidates[0] if result.returncode == 0 and len(candidates) == 1 else None
+        common = merge_base_cache[parent]
+        if common is None:
+            return frozenset()
+        common_lines = historical_lines(common, path)
+        current_base_lines = historical_lines(base_sha, path)
+        if common_lines is None or current_base_lines is None:
+            return frozenset()
+        return common_lines - current_base_lines
+
     for commit in commits:
         raw_commit = _git_bounded_stdout(
             root, "cat-file", "commit", commit, extra_env=extra_env,
@@ -850,12 +887,25 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                     continue
                 old_lines, new_lines = old_text.splitlines(), new_text.splitlines()
                 matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+                sync_deleted_lines = sync_merge_deleted_lines(parents, parent, before_path)
                 for opcode, a1, a2, b1, b2 in matcher.get_opcodes():
                     if opcode in {"delete", "replace"}:
-                        findings += _scan_text("\n".join(old_lines[a1:a2]), commit=commit, path=output_path,
-                                               source="patch", change="deleted", line_offset=a1,
-                                               detectors=detectors, allows=allows,
-                                               base_membership=base_membership)
+                        for line_index in range(a1, a2):
+                            line = old_lines[line_index]
+                            membership = base_membership
+                            if line in sync_deleted_lines:
+                                sync_membership = {
+                                    (detector_id, value)
+                                    for _number, detector_id, value in _matching_values(
+                                        line, path=before_path, detectors=detectors, allows=allows,
+                                        source="patch", change="deleted")
+                                }
+                                membership = base_membership | sync_membership
+                            findings += _scan_text(line, commit=commit, path=output_path,
+                                                   source="patch", change="deleted",
+                                                   line_offset=line_index,
+                                                   detectors=detectors, allows=allows,
+                                                   base_membership=membership)
                     if opcode in {"insert", "replace"}:
                         findings += _scan_text("\n".join(new_lines[b1:b2]), commit=commit, path=output_path,
                                                source="patch", change="added", line_offset=b1,
