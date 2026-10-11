@@ -34,6 +34,13 @@ def _ticket(path="tracked.txt"):
             "open_findings": 0, "jira_status": "Ready"}
 
 
+def _dispatch_payload(name="isolation", role="writer"):
+    return {"dispatch_id": name, "stream": "A", "ticket": "AWF-51",
+            "exact_tuple": "tuple", "dispatch_nonce": name + "-nonce",
+            "prepared_at": NOW, "begun_at": NOW, "paths": ["fixture.txt"],
+            "actor": role, "next_action": "verify isolation", "role": role}
+
+
 class FakeClock:
     def __init__(self, value=NOW):
         self.value = value
@@ -175,10 +182,17 @@ def _base_config(root):
     gh.write_bytes(b"gh fixture")
     worktree = root / "worktree"
     worktree.mkdir()
+    isolated_home = root / "isolated-codex-home"
+    isolated_home.mkdir(mode=0o700)
+    auth = isolated_home / "auth.json"
+    auth.write_text('{"fixture":"auth-material"}\n', encoding="utf-8")
+    if os.name != "nt":
+        auth.chmod(0o600)
     return {
         "codex": {"executable": {"path": str(codex), "sha256": sha256(codex.read_bytes())},
                   "roles": {"writer": {"model": "writer-model", "reasoning_effort": "high", "sandbox": "workspace-write"},
                              "critic": {"model": "critic-model", "reasoning_effort": "medium", "sandbox": "read-only"}},
+                   "isolated_home": str(isolated_home), "windows_sandbox": "elevated",
                   "worktree_root": str(worktree), "run_record_directory": str(root / "runs"),
                   "timeout_seconds": 20},
         "github": {"host": "https://github.com", "repository": "example/project", "repository_id": 101,
@@ -281,6 +295,131 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         argv = runner.launches[-1][0]
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertIn("critic-model", argv)
+        adapters["dispatch_ticket"](_dispatch_payload("probe-1", "probe"))
+        probe_argv = runner.launches[-1][0]
+        self.assertEqual(probe_argv[probe_argv.index("--sandbox") + 1], "read-only")
+        self.assertIn("critic-model", probe_argv)
+        self.assertIn('windows.sandbox="elevated"', probe_argv)
+
+    def test_poisoned_user_config_is_not_loaded_by_writer_or_critic(self):
+        user_home = self.root / "user-home"
+        user_codex = user_home / ".codex"
+        user_codex.mkdir(parents=True)
+        poison = """notify = [\"fixture-notify\"]
+[mcp_servers.missing]
+command = \"/missing/example.invalid/mcp-server\"
+[plugins.\"fixture@example.invalid\"]
+enabled = true
+"""
+        user_config = user_codex / "config.toml"
+        user_config.write_text(poison, encoding="utf-8")
+        runner = FakeRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        ambient = {"HOME": str(user_home), "USERPROFILE": str(user_home),
+                   "CODEX_HOME": str(user_codex)}
+        with patch.dict(os.environ, ambient, clear=False):
+            adapters["dispatch_ticket"](_dispatch_payload("poison-writer"))
+            adapters["dispatch_ticket"](_dispatch_payload("poison-critic", "critic"))
+        clean_home = self.root / "second-clean-home"
+        clean_home.mkdir()
+        with patch.dict(os.environ, {"HOME": str(clean_home), "USERPROFILE": str(clean_home),
+                                     "CODEX_HOME": str(clean_home / ".codex")}, clear=False):
+            adapters["dispatch_ticket"](_dispatch_payload("clean-writer"))
+        expected_home = str(Path(self.config["codex"]["isolated_home"]).resolve())
+        self.assertEqual([launch[2]["CODEX_HOME"] for launch in runner.launches],
+                         [expected_home, expected_home, expected_home])
+        self.assertEqual(runner.launches[0][0], runner.launches[2][0])
+        for argv, _, _ in runner.launches:
+            effective = " ".join(argv)
+            self.assertNotIn("fixture-notify", effective)
+            self.assertNotIn("mcp_servers", effective)
+            self.assertNotIn("plugins", effective)
+            self.assertNotIn("missing", effective)
+        self.assertEqual(user_config.read_text(encoding="utf-8"), poison)
+        managed = Path(expected_home) / "config.toml"
+        managed_text = managed.read_text(encoding="utf-8")
+        self.assertNotIn("notify", managed_text)
+        self.assertNotIn("mcp_servers", managed_text)
+        self.assertNotIn("plugins", managed_text)
+
+    def test_clean_user_config_does_not_create_invalid_transport(self):
+        user_home = self.root / "clean-user-home"
+        user_codex = user_home / ".codex"
+        user_codex.mkdir(parents=True)
+        (user_codex / "config.toml").write_text("model = \"user-model\"\n", encoding="utf-8")
+        runner = FakeRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        with patch.dict(os.environ, {"CODEX_HOME": str(user_codex)}, clear=False):
+            adapters["dispatch_ticket"](_dispatch_payload("clean-user"))
+        argv, _, env = runner.launches[0]
+        self.assertEqual(env["CODEX_HOME"],
+                         str(Path(self.config["codex"]["isolated_home"]).resolve()))
+        self.assertFalse(any("mcp_servers." in item for item in argv))
+        self.assertIn("writer-model", argv)
+
+    def test_auth_stays_in_isolated_home_and_never_enters_run_records(self):
+        runner = FakeRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        adapters["dispatch_ticket"](_dispatch_payload("auth-isolation"))
+        isolated_home = Path(self.config["codex"]["isolated_home"])
+        self.assertTrue((isolated_home / "auth.json").is_file())
+        self.assertEqual(runner.launches[0][2]["CODEX_HOME"], str(isolated_home.resolve()))
+        for path in (self.root / "runs").rglob("*"):
+            if path.is_file():
+                self.assertNotIn("auth-material", path.read_text(encoding="utf-8"))
+        self.assertNotIn("auth-material", repr(runner.launches))
+        self.assertNotIn("auth-material", repr(runner.prompts))
+
+    def test_missing_auth_and_non_awf_isolated_config_fail_before_launch(self):
+        runner = FakeRunner()
+        isolated_home = Path(self.config["codex"]["isolated_home"])
+        (isolated_home / "auth.json").unlink()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        with self.assertRaisesRegex(ValidationError, "auth is unavailable"):
+            adapters["dispatch_ticket"](_dispatch_payload("missing-auth"))
+        self.assertEqual(runner.launches, [])
+        (isolated_home / "auth.json").write_text('{"fixture":"restored"}\n', encoding="utf-8")
+        if os.name != "nt":
+            (isolated_home / "auth.json").chmod(0o600)
+        (isolated_home / "config.toml").write_text(
+            '[mcp_servers.fixture]\ncommand = "/missing/example.invalid/server"\n',
+            encoding="utf-8")
+        if os.name != "nt":
+            (isolated_home / "config.toml").chmod(0o600)
+        with self.assertRaisesRegex(ValidationError, "contains non-AWF settings"):
+            adapters["dispatch_ticket"](_dispatch_payload("foreign-config"))
+        self.assertEqual(runner.launches, [])
+
+    def test_windows_sandbox_setup_error_names_isolated_config_source(self):
+        class LockedUserAppRunner(FakeRunner):
+            def launch(self, *args, **kwargs):
+                raise ValidationError(
+                    "helper_unknown_error: setup refresh had errors; os error 32; "
+                    "AppData/Local/example.invalid/node_repl.exe")
+
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": LockedUserAppRunner(), "_clock": FakeClock()})
+        with self.assertRaisesRegex(ValidationError,
+                                    "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+            adapters["dispatch_ticket"](_dispatch_payload("locked-user-app"))
+
+    def test_detached_sandbox_diagnostic_names_isolated_config_source(self):
+        namespace = __import__("runpy").run_path(str(self.adapter))
+        proof = self.root / "sandbox.terminal.json"
+        proof.write_text(json.dumps({
+            "pid": 1234, "launch_nonce": "nonce", "status": "COMPLETED",
+            "returncode": 1, "terminal": True,
+            "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",
+        }), encoding="utf-8")
+        record = {"pid": 1234, "launch_nonce": "nonce",
+                  "terminal_proof_path": str(proof)}
+        with self.assertRaisesRegex(ValidationError,
+                                    "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+            namespace["_SubprocessRunner"]().observe(record, timeout=1)
 
     def test_prepared_launch_crash_is_observed_without_replay(self):
         class CrashAfterLaunch(FakeRunner):
@@ -538,6 +677,10 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertNotIn("<WORKTREE_ROOT>", section)
         self.assertNotIn("--producer-id CONTROLLER_ACTOR", section)
         self.assertNotIn("--transition-id TRANSITION_ID", section)
+        self.assertIn("$AWF_CODEX_HOME", section)
+        self.assertIn("isolated_home", section)
+        self.assertIn("windows_sandbox", section)
+        self.assertNotIn("mcp_servers.", section)
 
     def test_github_pagination_requires_provider_evidence_and_binds_page_size(self):
         class Paged(FakeRunner):
