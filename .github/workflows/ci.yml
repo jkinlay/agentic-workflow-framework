@@ -65,9 +65,45 @@ jobs:
         run: |
           "$PY" -B -m unittest discover -s global/awf-portable/tests
 
+  windows_runtime_paths:
+    name: Detect Windows installed-runtime paths
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      runtime_changed: ${{ steps.changes.outputs.runtime_changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Detect installed-runtime source or test changes
+        id: changes
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          set +e
+          git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- .agentic/lib .agentic/tests
+          diff_status=$?
+          set -e
+          case "$diff_status" in
+            0) echo "runtime_changed=false" >> "$GITHUB_OUTPUT" ;;
+            1) echo "runtime_changed=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$diff_status" ;;
+          esac
+
   installed-runtime-self-test:
     name: Windows installed-runtime self-test
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/'))
+    needs: [windows_runtime_paths]
+    if: >-
+      always() && (github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.base_ref == 'main' &&
+      (startsWith(github.head_ref, 'release/') ||
+      needs.windows_runtime_paths.result != 'success' ||
+      needs.windows_runtime_paths.outputs.runtime_changed != 'false')))
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
@@ -84,6 +120,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13.3"
