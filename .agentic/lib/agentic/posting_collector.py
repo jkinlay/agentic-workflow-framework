@@ -59,7 +59,10 @@ _HTML_LITERAL_START = re.compile(
     r"^ {0,3}<(?P<tag>pre|script|style|textarea)(?=[ \t>]|$)",
     re.IGNORECASE,
 )
-_HTML_LITERAL_END = re.compile(r"</(?:pre|script|style|textarea)>", re.IGNORECASE)
+_HTML_LITERAL_END = {
+    tag: re.compile(rf"</{tag}>", re.IGNORECASE)
+    for tag in ("pre", "script", "style", "textarea")
+}
 _HTML_BLOCK_TAG_START = re.compile(
     r"^ {0,3}</?(?P<tag>[A-Za-z][A-Za-z0-9-]*)(?P<suffix>.*)$"
 )
@@ -207,8 +210,9 @@ def _strip_html_comments(line, in_comment):
 
 def _raw_html_start(line, type_7_boundary):
     """Return a CommonMark 0.31 HTML-block end condition for ``line``."""
-    if _HTML_LITERAL_START.match(line):
-        return _HTML_LITERAL_END
+    literal = _HTML_LITERAL_START.match(line)
+    if literal is not None:
+        return _HTML_LITERAL_END[literal.group("tag").casefold()]
     if re.match(r"^ {0,3}<!--", line):
         return "-->"
     if re.match(r"^ {0,3}<\?", line):
