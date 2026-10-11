@@ -36,6 +36,35 @@ def _version_tuple(value):
     return tuple(int(part) for part in value.split("."))
 
 
+def _load_receipt_variants(entry, version):
+    raw_variants = entry.get("receipt_variants", [])
+    if not isinstance(raw_variants, list):
+        raise ValidationError("Invalid receipt variants for known version " + version)
+    fields = {"provenance", "source_manifest_sha256", "managed_manifest_sha256",
+              "managed_file_count", "receipt_schema"}
+    variants = []
+    digests = {entry["source_manifest_sha256"]}
+    for variant in raw_variants:
+        if not isinstance(variant, dict) or set(variant) != fields:
+            raise ValidationError("Invalid receipt variant for known version " + version)
+        if not isinstance(variant["provenance"], dict) or not variant["provenance"]:
+            raise ValidationError("Invalid receipt variant provenance for known version " + version)
+        for field in ("source_manifest_sha256", "managed_manifest_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", str(variant[field])):
+                raise ValidationError(f"Invalid receipt variant {field} for known version {version}")
+        if variant["source_manifest_sha256"] in digests:
+            raise ValidationError("Duplicate receipt digest for known version " + version)
+        if (not isinstance(variant["managed_file_count"], int)
+                or isinstance(variant["managed_file_count"], bool)
+                or variant["managed_file_count"] < 0):
+            raise ValidationError("Invalid receipt variant managed file count for known version " + version)
+        if variant["receipt_schema"] != CURRENT_RECEIPT_SCHEMA:
+            raise ValidationError("Unsupported receipt variant schema for known version " + version)
+        digests.add(variant["source_manifest_sha256"])
+        variants.append(MappingProxyType(dict(variant)))
+    return tuple(variants)
+
+
 def load_known_versions(raw):
     try:
         value = loads(raw.decode("utf-8"))
@@ -52,7 +81,8 @@ def load_known_versions(raw):
                     "managed_manifest_sha256",
                     "managed_file_count", "receipt_schema", "configuration_schema",
                     "operating_configuration_schema", "migration"}
-        if not isinstance(entry, dict) or set(entry) != required:
+        if (not isinstance(entry, dict)
+                or set(entry) not in (required, required | {"receipt_variants"})):
             raise ValidationError("Invalid known-versions entry")
         version = entry["version"]
         parsed = _version_tuple(version)
@@ -85,8 +115,10 @@ def load_known_versions(raw):
                 or migration["kind"] != "version-only" or _version_tuple(migration["to"]) is None
                 or not isinstance(migration["new_required_settings"], list)):
             raise ValidationError("Invalid migration step for known version " + version)
+        receipt_variants = _load_receipt_variants(entry, version)
         versions[version] = MappingProxyType({**entry, "_source_manifest_json": source_raw,
-                                               "_immutable_files": immutable})
+                                               "_immutable_files": immutable,
+                                               "_receipt_variants": receipt_variants})
         previous = parsed
     for version, entry in versions.items():
         target = entry["migration"]["to"]
@@ -112,6 +144,14 @@ def _claimed_version(receipt, config_raw):
     return claimed if _version_tuple(claimed) is not None else configured
 
 
+def _unregistered_receipt(claimed, detail):
+    return ValidationError(
+        f"Unrecognised AWF {claimed} receipt: {detail}. Back up project-owned files and state, "
+        "then perform a fresh install from a trusted distribution, or obtain an owner-approved "
+        "governed known-versions override for this exact manifest before retrying; no files changed"
+    )
+
+
 def identify_installation(tree, table, config_raw, receipt_raw):
     """Return a pinned historical identity after checking every receipt-managed byte."""
     if receipt_raw is None or config_raw is None:
@@ -128,13 +168,18 @@ def identify_installation(tree, table, config_raw, receipt_raw):
     if entry is None:
         label = claimed if claimed is not None else "unknown"
         raise ValidationError(f"Unrecognised AWF installation version {label}; provide that version's distribution; no files changed")
-    if receipt.get("source_manifest_sha256") != entry["source_manifest_sha256"]:
-        raise ValidationError(f"Unrecognised AWF {claimed} receipt: source manifest digest is not registered; provide that version's distribution; no files changed")
-    schema = entry["receipt_schema"]
+    receipt_digest = receipt.get("source_manifest_sha256")
+    identities = (entry, *entry["_receipt_variants"])
+    receipt_identity = next((item for item in identities
+                             if receipt_digest == item["source_manifest_sha256"]), None)
+    if receipt_identity is None:
+        raise _unregistered_receipt(claimed, "source manifest digest is not registered")
+    schema = receipt_identity["receipt_schema"]
     if schema == CURRENT_RECEIPT_SCHEMA:
         source_raw = receipt.get("source_manifest_json")
-        if not isinstance(source_raw, str) or sha256(source_raw.encode("utf-8")) != entry["source_manifest_sha256"]:
-            raise ValidationError(f"Unrecognised AWF {claimed} receipt: embedded source manifest is not registered; no files changed")
+        if (not isinstance(source_raw, str)
+                or sha256(source_raw.encode("utf-8")) != receipt_identity["source_manifest_sha256"]):
+            raise _unregistered_receipt(claimed, "embedded source manifest is not registered")
         source_manifest = loads(source_raw)
         if source_manifest.get("format") != "awf-manifest-1" or source_manifest.get("template_version") != claimed:
             raise ValidationError(f"Unrecognised AWF {claimed} receipt: embedded source manifest is invalid; no files changed")
@@ -147,8 +192,9 @@ def identify_installation(tree, table, config_raw, receipt_raw):
             raise ValidationError(f"Unrecognised AWF {claimed} legacy receipt: managed manifest is missing; no files changed")
     else:
         raise ValidationError("Unsupported registered receipt schema: " + str(schema))
-    if len(expected) != entry["managed_file_count"] or managed_manifest_sha256(expected) != entry["managed_manifest_sha256"]:
-        raise ValidationError(f"Unrecognised AWF {claimed} receipt: managed manifest digest is not registered; no files changed")
+    if (len(expected) != receipt_identity["managed_file_count"]
+            or managed_manifest_sha256(expected) != receipt_identity["managed_manifest_sha256"]):
+        raise _unregistered_receipt(claimed, "managed manifest digest is not registered")
     problems = []
     for path, expected_hash in sorted(expected.items()):
         info = tree.inspect(path)
@@ -170,7 +216,7 @@ def identify_installation(tree, table, config_raw, receipt_raw):
         raise ValidationError("Unrecognised AWF installation: workflow provenance is missing; no files changed")
     provenance = loads(provenance_raw.decode("utf-8"))
     if (provenance.get("template", {}).get("version") != claimed
-            or provenance.get("installation", {}).get("source_manifest_sha256") != entry["source_manifest_sha256"]):
+            or provenance.get("installation", {}).get("source_manifest_sha256") != receipt_identity["source_manifest_sha256"]):
         raise ValidationError("Unrecognised AWF installation: workflow provenance does not match the registered receipt; no files changed")
     return {"version": claimed, "entry": entry, "receipt": receipt, "immutable_files": expected,
             "install_id": provenance.get("installation", {}).get("install_id") or receipt.get("install_id")}

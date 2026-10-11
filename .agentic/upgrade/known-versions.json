@@ -55,6 +55,19 @@
     },
     {
       "version": "1.9.1",
+      "receipt_variants": [
+        {
+          "provenance": {
+            "kind": "source commit",
+            "repository": "this-repository",
+            "commit": "1f5f146352ff0a8222a6be1ef9186e4609b11033"
+          },
+          "source_manifest_sha256": "c3bed1ce03703661de65b32f5a5071005e5de27f4ce0d36f746315609d564d25",
+          "managed_manifest_sha256": "ee7e3d412140113fe69bf8feb1b022dc8c4c01cf0465efc970f297a2209cd5f6",
+          "managed_file_count": 209,
+          "receipt_schema": "awf-installed-receipt-embedded-manifest-1"
+        }
+      ],
       "provenance": {
         "kind": "source commit",
         "repository": "this-repository",

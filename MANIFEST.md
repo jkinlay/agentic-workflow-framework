@@ -1,8 +1,8 @@
 # Release manifest — 1.9.4
 
-457 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
+459 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `a5bcd6fa15d0c6fb4980e4f19ad41fb6be33ca012d51789c400375c3040fb65d`
+MANIFEST.json SHA-256: `224984b69f8cf1acb1d7238d60081bd303bc42f91ac9a7378e1a8e3d001fed63`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -52,6 +52,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `2d9442f8f7ba7b8cbfe796183078f28181c6d692fe52aafb8f11116f529acb10` |
 | `.agentic/docs/39-AWF-32-WINDOWS-SMOKE.md` | `93f4020e8e66254986ac3c3b240804614b7aed8cc83ecf12eeff84f229c3107d` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `73a25bafeaa92a93cd247a9d4e64fb9434e608dc9df583d3bfd2ce5acde47fc6` |
+| `.agentic/docs/evidence/awf28-u1-investigation.md` | `4521c3b869e7c68940d789ded091be90e358bd5c2353a123ece9694a7574bdc9` |
 | `.agentic/examples/OPERATING_CONFIG.yaml` | `f92108e68715147bb2e1b93f0bc3456f683a84ffde96d89db32870cb9893cd37` |
 | `.agentic/examples/PROJECT_CONFIG.yaml` | `c8f3b346e523415875eb866d9a36d270ab86017501d62977ebf4037cedbc7724` |
 | `.agentic/examples/controller-status-digest.json` | `b2f7e8e68fc0bbdde1f4a4e8fd1f9e8cd713025a20a1cc62820c67c25b058fd6` |
@@ -128,7 +129,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/safeio.py` | `c2b2297c364d1a886fddbef7c01eff69882de2f29a1a00531d7ae15fbdcb5af7` |
 | `.agentic/lib/agentic/store.py` | `91287fc2aa44e9db2b1343027baa6f32e0660a838db54f8dd628b1caf0336b6c` |
 | `.agentic/lib/agentic/streams.py` | `235df2c92198ce8a97e6cc5e89c969448a66f14dabdc0e21bc3a37d5e99a1535` |
-| `.agentic/lib/agentic/upgrade.py` | `d1ab051319ab5e53e28f18a273c4b147c26c8e2c5ee47054f256acd022c08432` |
+| `.agentic/lib/agentic/upgrade.py` | `d664cc7c5928c4c0beb55cae0cbf83d555047f09d3365975b4925b62b56a61e0` |
 | `.agentic/prompts/amendment.md` | `bcea716185a20e57099349458c3974304c8e2dd635fefd1270ae6389dbc2f532` |
 | `.agentic/prompts/controller.md` | `51033ee5f655e7736259177999776993436daa93a99f8e5ca8975a087eb0baab` |
 | `.agentic/prompts/critic.md` | `ba05ff2acc8d47ddf7c4cbe23cc45d42066f75ec210c6259687dd03ae958e736` |
@@ -332,9 +333,10 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_upgrade_journal.py` | `449c96d3f8a9138335bfdf1cd413d453cf2b5f35be5125d860a3726d1d260270` |
 | `.agentic/tests/test_upgrade_matrix.py` | `ae4397837a1b4c4e8b888d379a1ea1f61e403f414724ecfaf91945c00fec6675` |
 | `.agentic/tests/test_upgrade_pycache.py` | `1d09c8b67c2321a67f82e2f09ddf1191ab0e015425ee5a359e0e305343cdaadd` |
+| `.agentic/tests/test_upgrade_receipts.py` | `aae39370ba1dbe50781c9841546664b5d3b7ca03e6cbdb700273695601a86b6b` |
 | `.agentic/tests/test_windows_diagnostics.py` | `f14c58f9f4ca0232b4ff8127b440109332d59860e5ae239ef4e970481d56e6e3` |
 | `.agentic/tests/upgrade_fixtures.py` | `876f43c093c4d8969e083c772e6794081394984ff001f96683459e291cf1e470` |
-| `.agentic/upgrade/known-versions.json` | `b238e778523edfb373caa7e3a04d9f4c7fa36df42a1a355cb2b0995ce229d9ed` |
+| `.agentic/upgrade/known-versions.json` | `a7e736f7e56d361b5b42aafb3b20b6ab192b13491470cf3159f14ab33728e90e` |
 | `.agentic/validation/five-slot-adversarial-regressions.json` | `1c2f70d75f51f30426b8d1f9240653fd90729f2d01d7e2f2a8ec2a7de727ce72` |
 | `.agentic/validation/pr26-owner-accepted-finding-provenance.json` | `b9254e379df2a3bbe408fd5cd9d8a6148b660a9c3df93d97c0f1baeaf33cb6f9` |
 | `.agentic/validation/reference-tests.json` | `a47a1b470324b265f69f96299594b83ea7374e7a767039443c7b5b78bb0c7ada` |
