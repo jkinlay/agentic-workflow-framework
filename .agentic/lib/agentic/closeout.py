@@ -229,3 +229,39 @@ def render_markdown(record):
               + (f"; Jira transition: `{record['jira_transition_record_id']}`" if record["jira_transition_record_id"] else "; Jira transition: none"),
               "", "Derived from the validated closeout-record; this rendering is not an input to validation."]
     return "\n".join(lines) + "\n"
+
+
+def require_jira_reconciliation_before_counts(closeout_record, *, jira_enabled):
+    """Gate post-merge counts on the controller's observed Jira reconciliation.
+
+    This is deliberately a pure hook: it neither writes Jira nor increments a
+    count.  The controller may count the merge only after this returns PASS.
+    Disabled Jira is explicit and needs no synthetic transition record.
+    """
+    if not isinstance(jira_enabled, bool):
+        raise ValidationError("jira_enabled must be boolean")
+    if not isinstance(closeout_record, dict):
+        raise ValidationError("closeout_record must be an object")
+    for field in ("pr_number", "reviewed_head_sha", "merge_commit_sha"):
+        if field not in closeout_record:
+            raise ValidationError(f"closeout_record lacks {field}")
+    if isinstance(closeout_record["pr_number"], bool) or not isinstance(
+            closeout_record["pr_number"], int) or closeout_record["pr_number"] < 1:
+        raise ValidationError("pr_number must be a positive integer")
+    for field in ("reviewed_head_sha", "merge_commit_sha"):
+        if not isinstance(closeout_record[field], str) or not SHA.fullmatch(closeout_record[field]):
+            raise ValidationError(f"{field} must be a lowercase 40-hex Git object ID")
+    transition = closeout_record.get("jira_transition_record_id")
+    if jira_enabled and (not isinstance(transition, str) or not transition.strip()):
+        raise ValidationError("post-merge counts require observed JIRA_RECONCILED evidence")
+    if not jira_enabled and transition is not None:
+        raise ValidationError("disabled Jira cannot claim a transition record")
+    return {
+        "status": "PASS",
+        "count_allowed": True,
+        "jira_reconciled": bool(transition),
+        "pr_number": closeout_record["pr_number"],
+        "reviewed_head_sha": closeout_record["reviewed_head_sha"],
+        "merge_commit_sha": closeout_record["merge_commit_sha"],
+        "execution_authority": False,
+    }
