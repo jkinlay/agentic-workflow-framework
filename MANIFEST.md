@@ -2,7 +2,7 @@
 
 459 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `224984b69f8cf1acb1d7238d60081bd303bc42f91ac9a7378e1a8e3d001fed63`
+MANIFEST.json SHA-256: `c72019d83aa68b413a9bbca759d2327a43ef98412630c4c6a306d65c5e8fbb05`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -78,7 +78,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/child_process.py` | `db88d4cad559d8dedba578907ab756f537d5fccd17ff4fdfd02eb28f93cd8be6` |
 | `.agentic/lib/agentic/cli.py` | `28bd80ce3d9fbd150b377a50f78017b2fde132d036c6d05dce29b7e576da5230` |
 | `.agentic/lib/agentic/closeout.py` | `0920c58f0726bc9f0bd293bc63cdd3b364b4df4a7bebdcb2b51b863e912f247e` |
-| `.agentic/lib/agentic/codex_skill.py` | `c32533cbdde0e2407fdeadc216ecc6c7e7af72bb549377669f2942562c97bcfe` |
+| `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
 | `.agentic/lib/agentic/configuration.py` | `70d15ebf0fd7cbe3551db5ba9e533bfec91b5ac6a2e3c4f93df21f066acb29ac` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
 | `.agentic/lib/agentic/continuous_controller.py` | `04fb4fef31320b7a121a5a074fc8bca34f0f5033bb0e5aaff22b602cc1261059` |
@@ -280,7 +280,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_bootstrap_configuration.py` | `2a96e3b578b044417ff20deb164db75203ca9e7ccd54721974ac89ab1fcdebe2` |
 | `.agentic/tests/test_child_process.py` | `61772435c9633eb2c0681d4a7c637b81376d65166453de6cfe5d05d08df5fc80` |
 | `.agentic/tests/test_codeowners.py` | `12c0b86ed561d24d4d3c6cbe2c713be9820e62ed862455658a9b792e0fac5184` |
-| `.agentic/tests/test_codex_skill.py` | `e21b78eb6fe44c5d2ecc0b79450395dcd26f8648e3c16e49e60edc5519364f5f` |
+| `.agentic/tests/test_codex_skill.py` | `8b26aa7b811ad85236c47477d601633f8c88de4767c0e77055168fd296e7956f` |
 | `.agentic/tests/test_config_diagnostics.py` | `e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07` |
 | `.agentic/tests/test_continuation.py` | `1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633` |
 | `.agentic/tests/test_continuous_controller.py` | `6dc621d532125321b32e9d1d976de78383921bc73a1f5658359fda7af282e1c6` |
