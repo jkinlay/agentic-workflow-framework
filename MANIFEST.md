@@ -2,7 +2,7 @@
 
 463 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `939e642dd0848121a5f81e9df5287f7668b8ebfdc6df35916051afe70bfc9376`
+MANIFEST.json SHA-256: `3b7172ea402a7ec20c1ce11efdc2c0bfe8a07e6417591b05e3204a3f9b066a81`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -322,7 +322,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_review_policy.py` | `9047bd683451f462078fa3e0edffebb50d37e33a7e3c2e433f5369f8a1e5c29e` |
 | `.agentic/tests/test_review_qualification.py` | `7b22125e8bafb58f5934c8f585602f1df61e34cf7550c294b520a47f67d587b5` |
 | `.agentic/tests/test_review_tiers_194.py` | `5d6fbb5f4e45af267574bcc225e1e1dd2d4fe6e8b6e0cbe2f28b56c72417c516` |
-| `.agentic/tests/test_review_tiers_195_evidence_binding.py` | `4bffaade5c1aa18bf15acc55d296987660fbc9d55b539ce7d1273e94b5e58728` |
+| `.agentic/tests/test_review_tiers_195_evidence_binding.py` | `11eeb7f9bcb129de1722f1224730f085f58cedb4e9d9e613c32012e205b9c016` |
 | `.agentic/tests/test_review_tiers_195_final.py` | `dd95c5b1e7d093e33caf1b3c0d469f27aee6fc2368e514ad0848e4a1e7bc5b0d` |
 | `.agentic/tests/test_review_tiers_195_gates.py` | `ac36ce9df95d68e7ba22aeb8b67ef8b89dbd6e801a90e99d177dc3b4d6ea3520` |
 | `.agentic/tests/test_routine_publication.py` | `006a1f4203876510a9aae96f3be66a579d5b14cf4630f6aa3ede1b5a297d32f1` |
