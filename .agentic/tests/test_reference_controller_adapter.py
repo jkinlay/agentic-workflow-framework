@@ -114,6 +114,9 @@ class FakeRunner:
         self.observations.append(dict(record))
         return {"status": "COMPLETED", "returncode": 0, "terminal": True}
 
+    def observe_startup(self, record, *, timeout):
+        return self.observe(record, timeout=timeout)
+
 
 class FakeHttp:
     def __init__(self, *, mismatch=False):
@@ -284,6 +287,71 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertEqual(len(outbox.read_text(encoding="utf-8").splitlines()), 1)
         self.assertEqual(json.loads(outbox.read_text(encoding="utf-8").splitlines()[0])["delivery_id"],
                          result["status_delivery"]["delivery_id"])
+
+    def test_cycle_dispatches_second_stream_before_first_terminal_completion(self):
+        class ConcurrentRunner(FakeRunner):
+            def observe_startup(self, record, *, timeout):
+                self.observations.append(dict(record))
+                return {"status": "RUNNING", "terminal": False}
+
+            def observe(self, record, *, timeout):
+                raise AssertionError("terminal observation would serialize dispatch")
+
+        repository = self.root / "repository"
+        repository.mkdir()
+        for name in ("first.txt", "second.txt"):
+            (repository / name).write_text("fixture\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.email",
+                        "fixture@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.name", "Fixture"],
+                       check=True)
+        subprocess.run(["git", "-C", str(repository), "add", "first.txt", "second.txt"],
+                       check=True)
+        subprocess.run(["git", "-C", str(repository), "commit", "-qm", "fixture"], check=True)
+        first = _ticket("first.txt")
+        second = {**_ticket("second.txt"), "ticket": "AWF-33"}
+        runner = ConcurrentRunner(inventory=[first, second])
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        binding = {"project_id": "project-1", "repository_id": "101", "scope_sha256": "a" * 64}
+        head = subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+        tree = subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "HEAD^{tree}"], text=True).strip()
+        state = ContinuousControllerStore(
+            self.root / "state.sqlite3", ["A", "B"], worktree_roots=[self.root / "worktree"])
+
+        result = production_controller_cycle(
+            state, now=NOW, host_capacity=2, inventory_binding=binding,
+            repository_root=repository, repository_head_sha=head, repository_tree_sha=tree,
+            publication_config=self.config, **{name: adapters[name] for name in
+                ("observe_inventory", "dispatch_ticket", "observe_dispatch", "deliver_status",
+                 "observe_publication")})
+
+        self.assertEqual(len(result["dispatch_receipts"]), 2, result)
+        self.assertEqual(len(runner.launches), 2)
+        self.assertEqual(len(runner.observations), 2)
+
+    def test_dispatch_reports_startup_sandbox_configuration_failure(self):
+        class StartupFailureRunner(FakeRunner):
+            def observe_startup(self, record, *, timeout):
+                raise ValidationError(
+                    "helper_unknown_error: setup refresh had errors; os error 32; "
+                    "example.invalid/user-app-file")
+
+        runner = StartupFailureRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+
+        with self.assertRaisesRegex(
+                ValidationError, "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+            adapters["dispatch_ticket"](_dispatch_payload("startup-config-failure"))
+
+        record = json.loads((self.root / "runs" / "startup-config-failure.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(record["diagnostic"], "SANDBOX_SETUP_CONFIG_ERROR")
+        self.assertEqual(record["status"], "LAUNCHED")
 
     def test_inventory_uses_controller_time_and_critic_route_is_reachable(self):
         runner = FakeRunner()
