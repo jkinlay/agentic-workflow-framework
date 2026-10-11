@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -31,6 +32,34 @@ def _generator_catalog():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module.catalog()
+
+
+def _write_generated_schema(schema_dir, name, schema):
+    (schema_dir / f"{name}.schema.json").write_text(
+        json.dumps(schema, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def _assert_schema_catalog_parity(test_case, catalog, schema_dir):
+    checked_in = {
+        path.name.removesuffix(".schema.json"): path
+        for path in schema_dir.glob("*.schema.json")
+    }
+    test_case.assertEqual(
+        len(catalog),
+        len(checked_in),
+        f"AWF16-R1-009 must enumerate all {len(catalog)} generator schemas",
+    )
+    test_case.assertEqual(
+        set(catalog),
+        set(checked_in),
+        "every checked-in schema must be generated, with no generator-only entries",
+    )
+    for name, path in sorted(checked_in.items()):
+        with test_case.subTest(schema=name):
+            expected = json.dumps(catalog[name], indent=2).encode("utf-8") + b"\n"
+            actual = path.read_bytes()
+            test_case.assertEqual(
+                expected, actual, f"first differing generated schema: {name}")
 
 
 class EvidenceBindingDesignTests(Fixture):
@@ -225,31 +254,35 @@ class EvidenceBindingDesignTests(Fixture):
 
 
 class GeneratorParityTests(Fixture):
+    def test_awf62_catalog_growth_and_mismatches_use_live_catalog_count(self):
+        catalog = {"example-alpha": {"title": "Example Alpha", "type": "object"}}
+        with tempfile.TemporaryDirectory(prefix="awf-schema-parity-") as temporary:
+            schema_dir = Path(temporary)
+            _write_generated_schema(schema_dir, "example-alpha", catalog["example-alpha"])
+            _assert_schema_catalog_parity(self, catalog, schema_dir)
+
+            catalog["example-beta"] = {"title": "Example Beta", "type": "string"}
+            _write_generated_schema(schema_dir, "example-beta", catalog["example-beta"])
+            _assert_schema_catalog_parity(self, catalog, schema_dir)
+
+            with self.subTest(mismatch="schema-without-catalog-entry"):
+                _write_generated_schema(schema_dir, "example-orphan", {"type": "null"})
+                with self.assertRaises(AssertionError):
+                    _assert_schema_catalog_parity(self, catalog, schema_dir)
+                (schema_dir / "example-orphan.schema.json").unlink()
+
+            with self.subTest(mismatch="catalog-entry-without-schema"):
+                catalog["example-missing"] = {"type": "boolean"}
+                with self.assertRaises(AssertionError):
+                    _assert_schema_catalog_parity(self, catalog, schema_dir)
+
     @skip_unless_source_repo(
         "schema parity needs the source-only contract generator",
         "scripts/generate_contracts.py",
     )
     def test_awf16_r1_009_generated_schema_catalog_has_byte_parity(self):
         catalog = _generator_catalog()
-        checked_in = {
-            path.name.removesuffix(".schema.json"): path
-            for path in (ROOT / ".agentic/schemas").glob("*.schema.json")
-        }
-        self.assertEqual(
-            52,
-            len(checked_in),
-            "AWF16-R1-009 must enumerate all 52 checked-in schemas",
-        )
-        self.assertEqual(
-            set(checked_in),
-            set(catalog),
-            "every checked-in schema must be generated, with no generator-only entries",
-        )
-        for name, path in sorted(checked_in.items()):
-            with self.subTest(schema=name):
-                expected = json.dumps(catalog[name], indent=2).encode("utf-8") + b"\n"
-                actual = path.read_bytes()
-                self.assertEqual(expected, actual, f"first differing generated schema: {name}")
+        _assert_schema_catalog_parity(self, catalog, ROOT / ".agentic/schemas")
         tier3 = catalog["project-config"]["properties"]["execution"]["properties"][
             "risk_tiers"
         ]["properties"]["tier3_review"]["properties"]["max_rounds"]
