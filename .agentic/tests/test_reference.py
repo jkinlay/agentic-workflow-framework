@@ -26,11 +26,12 @@ from agentic.cli import local_semantics
 from agentic.contracts import Contracts
 from agentic.gates import critic_artifact_receipt_sha256, evaluate, expected_binding
 from agentic.installer import install, recover, rollback, verify_installed, verify_release, ensure_usable, json_bytes, JOURNAL, MARKER
-from agentic.lifecycle import definition, transition, STATES, NORMAL, INVALIDATING, CONTROL_EVENTS
+from agentic.lifecycle import definition, ready_transition_record, transition, STATES, NORMAL, INVALIDATING, CONTROL_EVENTS
 from agentic.policy import validate_config, topological_order, require_reference_capability, inside_scope
 from agentic.review_tiers import classify
 from agentic.safeio import Tree
 from agentic.store import Store
+import test_ready_authorization as ready_fixtures
 from test_review_policy import bind_production_posting_fixture, bind_review_admission
 
 NOW = "2026-09-09T12:00:00Z"
@@ -385,6 +386,15 @@ class LifecycleTests(unittest.TestCase):
         for source, event, target, guards in NORMAL:
             with self.subTest(source=source, event=event):
                 facts = {g: True for g in guards}
+                if event == "PR_READY":
+                    ready_fixture = ready_fixtures.ReadyAuthorizationTests()
+                    ready_fixture.setUp()
+                    authorization = ready_fixture.authorization()
+                    record = ready_transition_record(
+                        67, ready_fixtures.HEAD, authorization,
+                        config=ready_fixture.config, now=ready_fixtures.NOW,
+                    )
+                    facts.update(ready_fixture.ready_facts(record))
                 if event == "CAP_EXTEND_ONE_CYCLE":
                     facts["risk_tier"] = 2
                 if event == "FINAL_GATE_PASSED":

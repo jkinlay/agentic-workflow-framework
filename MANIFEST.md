@@ -2,7 +2,7 @@
 
 459 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `76de139ef3b331878b834456ea0e7fa4ed8884a3feab98a2426ee437caa72ac0`
+MANIFEST.json SHA-256: `193eee57ac3d015228cf6c0b011846039471441e6519a6742f19154c5d1623e7`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -307,7 +307,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_publication.py` | `aa82c93537cac2bb73c638337fa41040cbc67c564806a79a8b2c2e7eaf52a927` |
 | `.agentic/tests/test_publication_readiness.py` | `a8b5d88be782d636883e558d4d7cd410851201712a763533de76958f3b5657da` |
 | `.agentic/tests/test_ready_authorization.py` | `fb9051c51e2082761983da9858bd22cd379491817a2e6c22d4f61e09fa624981` |
-| `.agentic/tests/test_reference.py` | `5071836b05789de62f1325508a3e05f06f2021f0eab0f85747fa0c01df037413` |
+| `.agentic/tests/test_reference.py` | `6e97d0f2df2e735e0bbfc3fb8905aa671f308de417758a3d21e75722fb68c932` |
 | `.agentic/tests/test_reference_controller_adapter.py` | `980f2b8c6170c56b3a5c65cf1536726b0a229e209b372ba2b07e8f7dfbc01836` |
 | `.agentic/tests/test_release_trust.py` | `f067805d0fa2c097b390275910bf4e7ea5c70812ea8592350dd2caf0dee03db7` |
 | `.agentic/tests/test_repository_rules.py` | `c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68` |
