@@ -236,9 +236,9 @@ class GeneratorParityTests(Fixture):
             for path in (ROOT / ".agentic/schemas").glob("*.schema.json")
         }
         self.assertEqual(
-            51,
+            52,
             len(checked_in),
-            "AWF16-R1-009 must enumerate all 51 checked-in schemas",
+            "AWF16-R1-009 must enumerate all 52 checked-in schemas",
         )
         self.assertEqual(
             set(checked_in),
