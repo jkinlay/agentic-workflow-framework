@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 
 from . import VERSION, ValidationError
+from .path_containment import normalize_path
 
 
 FORMAT = "awf-codex-skill-selection-1"
@@ -14,7 +15,7 @@ SEMVER = re.compile(r"\d+\.\d+\.\d+")
 
 
 def _absolute(path):
-    return Path(os.path.abspath(os.path.expanduser(str(path))))
+    return normalize_path(os.path.expanduser(str(path)))
 
 
 def _profile_homes(environment):
