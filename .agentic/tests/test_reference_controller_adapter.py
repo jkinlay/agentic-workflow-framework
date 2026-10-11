@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -106,8 +107,12 @@ class FakeRunner:
         self.prompts.append(stdin)
         Path(handoff_path).write_text(json.dumps({"pid": 1234, "launch_nonce": launch_nonce,
                                                    "status": "LAUNCHED"}), encoding="utf-8")
+        terminal_path = Path(terminal_proof_path)
+        startup_path = terminal_path.with_name(
+            terminal_path.name.removesuffix(".terminal.json") + ".startup.json")
         return {"pid": 1234, "launch_nonce": launch_nonce,
                 "handoff_path": str(handoff_path),
+                "startup_proof_path": str(startup_path),
                 "terminal_proof_path": str(terminal_proof_path), "status": "LAUNCHED"}
 
     def observe(self, record, *, timeout):
@@ -352,6 +357,60 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
             encoding="utf-8"))
         self.assertEqual(record["diagnostic"], "SANDBOX_SETUP_CONFIG_ERROR")
         self.assertEqual(record["status"], "LAUNCHED")
+
+    def test_dispatch_waits_past_old_window_for_startup_configuration_failure(self):
+        class DelayedStartupFailureRunner(FakeRunner):
+            def observe_startup(self, record, *, timeout):
+                self.observations.append(dict(record))
+                if timeout <= 1:
+                    return {"status": "RUNNING", "terminal": False}
+                raise ValidationError(
+                    "helper_unknown_error: setup refresh had errors; invalid transport; "
+                    "example.invalid/delayed-user-app-file")
+
+        runner = DelayedStartupFailureRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+
+        with self.assertRaisesRegex(
+                ValidationError, "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+            adapters["dispatch_ticket"](_dispatch_payload("delayed-startup-config-failure"))
+
+        record = json.loads((self.root / "runs" / "delayed-startup-config-failure.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(record["diagnostic"], "SANDBOX_SETUP_CONFIG_ERROR")
+        self.assertEqual(len(runner.observations), 1)
+
+    def test_runner_reports_delayed_durable_startup_configuration_failure(self):
+        namespace = __import__("runpy").run_path(str(self.adapter))
+        startup_proof = self.root / "delayed.startup.json"
+        runner = namespace["_SubprocessRunner"]()
+
+        class RunningProcess:
+            def poll(self):
+                return None
+
+        runner._processes[1234] = RunningProcess()
+        record = {"pid": 1234, "launch_nonce": "delayed-nonce",
+                  "startup_proof_path": str(startup_proof),
+                  "terminal_proof_path": str(self.root / "delayed.terminal.json")}
+
+        def write_failure():
+            startup_proof.write_text(json.dumps({
+                "pid": 1234, "launch_nonce": "delayed-nonce",
+                "status": "FAILED", "terminal": False,
+                "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",
+                "config_source": "AWF isolated CODEX_HOME/config.toml",
+            }), encoding="utf-8")
+
+        timer = threading.Timer(0.05, write_failure)
+        timer.start()
+        try:
+            with self.assertRaisesRegex(
+                    ValidationError, "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+                runner.observe_startup(record, timeout=1)
+        finally:
+            timer.join()
 
     def test_inventory_uses_controller_time_and_critic_route_is_reachable(self):
         runner = FakeRunner()
