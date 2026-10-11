@@ -17,6 +17,19 @@ class InstallerTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        self.profile_home = self.root / "profile-home"
+        self.profile_home.mkdir()
+        home_patch = patch.object(Path, "home", return_value=self.profile_home)
+        environment_patch = patch.dict(
+            os.environ,
+            {"HOME": str(self.profile_home), "USERPROFILE": str(self.profile_home),
+             "CODEX_HOME": str(self.profile_home / ".codex")},
+            clear=False,
+        )
+        home_patch.start()
+        environment_patch.start()
+        self.addCleanup(environment_patch.stop)
+        self.addCleanup(home_patch.stop)
         self.source = self.root / "package" / "awf"
         self.source.mkdir(parents=True)
         (self.source / "SKILL.md").write_text("---\nname: awf\ndescription: AWF 1.6\n---\n", encoding="utf-8")
@@ -256,7 +269,41 @@ class InstallerTests(unittest.TestCase):
         (other / "SKILL.md").write_text("other", encoding="utf-8")
         result = self.run_install(project=project)
         self.assertIn(str(other), result["duplicates"])
+        self.assertIn(str(self.dest), result["duplicate_warning"])
+        self.assertIn(str(other), result["duplicate_warning"])
+        self.assertIn(str(project), result["duplicate_warning"])
+        visibility = {item["path"]: item["visible_to"]
+                      for item in result["skill_visibility"]}
+        self.assertIn(str(self.dest), visibility)
+        self.assertIn(str(other), visibility)
+        self.assertIn(str(project), visibility[str(other)])
         self.assertEqual((other / "SKILL.md").read_text(encoding="utf-8"), "other")
+
+    def test_distinct_home_copy_is_reported_when_path_home_uses_userprofile(self):
+        userprofile = self.root / "windows-profile"
+        home = self.root / "posix-home"
+        home_copy = home / ".codex" / "skills" / "awf"
+        home_copy.mkdir(parents=True)
+        (home_copy / "SKILL.md").write_text("other", encoding="utf-8")
+
+        with patch.object(Path, "home", return_value=userprofile), patch.dict(
+            os.environ,
+            {
+                "HOME": str(home),
+                "USERPROFILE": str(userprofile),
+                "CODEX_HOME": str(userprofile / ".codex"),
+            },
+            clear=False,
+        ):
+            result = self.run_install()
+
+        self.assertIn(str(home_copy), result["duplicates"])
+        visibility = {item["path"]: item["visible_to"]
+                      for item in result["skill_visibility"]}
+        self.assertIn(str(home_copy), visibility)
+        self.assertIn(f"profile home {home}", visibility[str(home_copy)])
+        self.assertIn(str(home_copy), result["duplicate_warning"])
+        self.assertIn(f"profile home {home}", result["duplicate_warning"])
 
     def test_recorded_custom_settings_survive_default_rerun_and_upgrade(self):
         self.old_skill()

@@ -149,14 +149,88 @@ def default_destination():
     return legacy if legacy.exists() else configured
 
 
+def profile_homes():
+    """Return every explicit profile root in platform precedence order."""
+    names = ("USERPROFILE", "HOME") if os.name == "nt" else ("HOME", "USERPROFILE")
+    homes = []
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            path = Path(value).absolute()
+            if path not in homes:
+                homes.append(path)
+    if not homes:
+        homes.append(Path.home().absolute())
+    return homes
+
+
 def duplicate_locations(dest, project=None):
-    candidates = {Path.home() / ".codex" / "skills" / "awf", Path.home() / ".agents" / "skills" / "awf", default_destination()}
+    candidates = {default_destination()}
+    for home in profile_homes():
+        candidates.update({home / ".codex" / "skills" / "awf",
+                           home / ".agents" / "skills" / "awf"})
     if os.environ.get("CODEX_HOME"):
         candidates.add(Path(os.environ["CODEX_HOME"]) / "skills" / "awf")
     if project:
         for ancestor in (Path(project).absolute(), *Path(project).absolute().parents):
             candidates.update({ancestor / ".agents" / "skills" / "awf", ancestor / ".codex" / "skills" / "awf"})
     return sorted(str(p) for p in candidates if p.absolute() != dest and p.is_dir())
+
+
+def skill_visibility(dest, project=None):
+    """Name which Codex/agent sessions can discover each installed copy."""
+    dest = Path(dest).absolute()
+    homes = profile_homes()
+    configured_home = Path(os.environ.get("CODEX_HOME", str(homes[0] / ".codex"))).absolute()
+    candidates = []
+
+    def add(path, visible_to, include=False):
+        path = Path(path).absolute()
+        if include or path.is_dir():
+            candidates.append((path, visible_to))
+
+    add(dest, f"sessions configured to scan the skills directory {dest.parent}", include=True)
+    add(configured_home / "skills" / "awf",
+        f"Codex sessions launched with CODEX_HOME={configured_home}")
+    for home in homes:
+        add(home / ".codex" / "skills" / "awf",
+            f"Codex sessions using the profile home {home}")
+        add(home / ".agents" / "skills" / "awf",
+            f"agent sessions using the profile home {home}")
+    if project:
+        resolved_project = Path(project).absolute()
+        for ancestor in (resolved_project, *resolved_project.parents):
+            add(ancestor / ".codex" / "skills" / "awf",
+                f"Codex sessions launched in project {resolved_project} or its descendants")
+            add(ancestor / ".agents" / "skills" / "awf",
+                f"agent sessions launched in project {resolved_project} or its descendants")
+    result = {}
+    for path, audience in candidates:
+        key = os.path.normcase(str(path))
+        item = result.setdefault(key, {"path": str(path), "audiences": []})
+        if audience not in item["audiences"]:
+            item["audiences"].append(audience)
+    return [{"path": item["path"], "visible_to": "; ".join(item["audiences"])}
+            for item in sorted(result.values(), key=lambda value: os.path.normcase(value["path"]))]
+
+
+def add_duplicate_warning(result, dest, project=None):
+    visibility = skill_visibility(dest, project)
+    result["skill_visibility"] = visibility
+    if len(visibility) > 1:
+        copies = "\n".join(
+            f"- {item['path']}: visible to {item['visible_to']}" for item in visibility
+        )
+        summary = ("this installation would leave" if result["status"].startswith("would-")
+                   else "multiple")
+        result["duplicate_warning"] = (
+            f"WARNING: {summary} discoverable AWF skill copies:\n" + copies
+            + "\nAction: align every visible copy to this AWF version, or configure each "
+              "affected session to discover only the intended skills directory before launch."
+        )
+    else:
+        result["duplicate_warning"] = None
+    return result
 
 
 def existing_version(dest):
@@ -243,8 +317,17 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
                            or digest(dest / name) != value
                            for name, value in local_inventory.items())):
                 raise InstallError("Installed receipt does not verify every preserved local file")
-            return {"status": "already-installed", "version": previous, "destination": str(dest), "duplicates": duplicate_locations(dest, project)}
-    result = {"status": "would-upgrade" if previous else "would-install", "version": manifest["version"], "previous_version": previous, "destination": str(dest), "backup_root": str(backup_root), "preserved": sorted(local & set(before or {})), "duplicates": duplicate_locations(dest, project)}
+            return add_duplicate_warning(
+                {"status": "already-installed", "version": previous,
+                 "destination": str(dest), "duplicates": duplicate_locations(dest, project)},
+                dest, project)
+    result = add_duplicate_warning(
+        {"status": "would-upgrade" if previous else "would-install",
+         "version": manifest["version"], "previous_version": previous,
+         "destination": str(dest), "backup_root": str(backup_root),
+         "preserved": sorted(local & set(before or {})),
+         "duplicates": duplicate_locations(dest, project)},
+        dest, project)
     if dry_run:
         return result
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -292,7 +375,7 @@ def install(source, expected_manifest_sha256, dest=None, backup_root=None, dry_r
                 moved = False
             raise
         result.update(status="upgraded" if previous else "installed", backup=str(backup) if moved else None)
-        return result
+        return add_duplicate_warning(result, dest, project)
     finally:
         if stage.exists():
             # Only the unique stage created by this invocation is removed.
