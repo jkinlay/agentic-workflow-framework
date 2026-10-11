@@ -2,7 +2,7 @@
 
 455 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `d96ea427d18291434819aaba30eb4e3b709c85783bd178199274a847de96f1b1`
+MANIFEST.json SHA-256: `20259c72c85ed6bb305009445659fac90650434291f964c3f0f52ba7a426d5e5`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -104,7 +104,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/owner_publication.py` | `5fb886550d67488c5e38c01f6d14dad16516fde37e0905ba0f958ce051cf76b0` |
 | `.agentic/lib/agentic/path_containment.py` | `4be54130cfcca72bf384faa56d14d39f365ba5ff4d84fc69d97d7a6816609c15` |
 | `.agentic/lib/agentic/policy.py` | `f061dda3de7def970bb595fbf8619c250227c6c985fe4b654e06cf9977f53420` |
-| `.agentic/lib/agentic/posting_collector.py` | `30acd1ed3ea8a23a86d079d5eee5d49fc4508f520e8018cb4ba4e7bff1d8d4d3` |
+| `.agentic/lib/agentic/posting_collector.py` | `045f6b5d155287471ea70cddcaeba4064177d39f9fe6a3591c04a8b5f84de94e` |
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
 | `.agentic/lib/agentic/provider_identity.py` | `d95ae1def1279357ca53b0c51151f4fe483a16ac5e8f8b843800afeb1176289c` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
@@ -302,7 +302,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_owner_publication.py` | `701b34f04ee9a04218dd17c93acce4237bafaec82375ac5d85386f73bbbaa533` |
 | `.agentic/tests/test_path_containment.py` | `bf722f7123498e92c2b5ee7d48b94645c389b189318a98c6cd7cda82c2e3abb6` |
 | `.agentic/tests/test_plan_streams.py` | `677d59f6133f6ac10f3b24e1217cf1cfdba101e70f4fdee2ceff79c17f95adad` |
-| `.agentic/tests/test_posting_collector_awf60.py` | `97956488740e62031063aa16d24132069f473b09cd57a3a8dd4fc99005e0e9d9` |
+| `.agentic/tests/test_posting_collector_awf60.py` | `7200d6b9de381c7d4245c22c9f12e080f3c425367a95f58c1fae3d67d37aa91c` |
 | `.agentic/tests/test_private_deny_binary.py` | `b6da0ffbcce95cedece5c337106bb6f642f127180ae21ba14ec606da37ac6de1` |
 | `.agentic/tests/test_provider_identity.py` | `de0ae74f23ca6594553671c8a0e86e8d5a87bcf7d2af147677ce44df36f9dfb1` |
 | `.agentic/tests/test_publication.py` | `cff02c05a3338d5f35afd4bdc3afc4d5868e64b56ca7567223220187d68c1d14` |

@@ -27,6 +27,7 @@ _HTML_FRAGMENT_ATTRIBUTE = re.compile(
 )
 _MARKDOWN_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+_BACKTICK_RUN = re.compile(r"`+")
 
 
 class PostingCollectorMismatch(ValidationError):
@@ -69,8 +70,29 @@ def _provider_response(comment_id, comment_url, comment_body, pr_body):
     })
 
 
+def _without_code_spans(markdown):
+    """Remove CommonMark backtick spans while retaining their line boundaries."""
+    visible = []
+    cursor = 0
+    while True:
+        opener = _BACKTICK_RUN.search(markdown, cursor)
+        if opener is None:
+            visible.append(markdown[cursor:])
+            break
+        closer = _BACKTICK_RUN.search(markdown, opener.end())
+        while closer is not None and len(closer.group()) != len(opener.group()):
+            closer = _BACKTICK_RUN.search(markdown, closer.end())
+        if closer is None:
+            visible.append(markdown[cursor:])
+            break
+        visible.append(markdown[cursor:opener.start()])
+        visible.append("\n" * markdown[opener.start():closer.end()].count("\n"))
+        cursor = closer.end()
+    return "".join(visible)
+
+
 def _visible_markdown(body):
-    """Exclude comments and fenced code that cannot define rendered fragments."""
+    """Exclude comments and code that cannot define rendered fragments."""
     body = _HTML_COMMENT.sub("", body)
     visible = []
     fence_character = None
@@ -87,8 +109,11 @@ def _visible_markdown(body):
                 fence_length = 0
             continue
         if fence_character is None:
-            visible.append(line)
-    return "\n".join(visible)
+            if line.startswith("\t") or line.startswith("    "):
+                visible.append("")
+            else:
+                visible.append(line)
+    return _without_code_spans("\n".join(visible))
 
 
 def _heading_fragment(heading):
@@ -158,10 +183,12 @@ def collect_posting_observation(review_host, *, candidate, verdict,
             or verdict_json not in comment["body"]):
         _mismatch("POSTING_COMMENT_MISMATCH",
                   "live immutable comment identity, URL or exact body differs")
+    base = pull.get("base") if isinstance(pull, dict) else None
+    base_repository = base.get("repo") if isinstance(base, dict) else None
     if (not isinstance(pull, dict) or pull.get("number") != candidate["pr_number"]
             or pull.get("html_url") != prefix
-            or pull.get("base", {}).get("repo", {}).get("id")
-            != candidate["repository_id"]):
+            or not isinstance(base_repository, dict)
+            or base_repository.get("id") != candidate["repository_id"]):
         _mismatch("POSTING_BODY_MISMATCH",
                   "live pull request identity differs from the candidate")
     body = pull.get("body")
