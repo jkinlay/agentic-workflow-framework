@@ -34,6 +34,7 @@ MAX_OUTPUT = 1024 * 1024
 MAX_PAGES = 20
 MAX_SECONDS = 120
 MAX_JIRA_PAGE = 100
+STARTUP_OBSERVATION_SECONDS = 1
 _CODEX_CONFIG_SOURCE = "AWF isolated CODEX_HOME/config.toml"
 _CODEX_SANDBOX_ERROR = (
     "Codex sandbox setup failed; config source: " + _CODEX_CONFIG_SOURCE
@@ -266,6 +267,28 @@ durable(proof, value)
         if value.get("returncode") != 0:
             raise ValidationError("Detached Codex run returned a non-zero exit")
         return value
+
+    def observe_startup(self, record, *, timeout):
+        """Observe only the bounded startup window, never the whole Codex run."""
+        pid = record.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            raise ValidationError("Detached run record has no process identity")
+        proof_path = record.get("terminal_proof_path")
+        _require(isinstance(proof_path, str), "Detached run has no terminal-proof path")
+        proof = Path(proof_path)
+        process = self._processes.get(pid)
+        if not proof.is_file() and process is None:
+            raise ValidationError("Detached Codex startup outcome was not proven")
+        deadline = time.monotonic() + min(timeout, STARTUP_OBSERVATION_SECONDS)
+        while not proof.is_file() and time.monotonic() <= deadline:
+            if process is not None and process.poll() is not None:
+                break
+            time.sleep(0.01)
+        if not proof.is_file():
+            if process is not None and process.poll() is not None:
+                raise ValidationError("Detached Codex startup outcome was not proven")
+            return {"status": "RUNNING", "terminal": False}
+        return self.observe(record, timeout=0)
 
 
 class _HttpTransport:
@@ -864,10 +887,12 @@ def _build(config):
                        "launched_at": _clock_text(clock)})
         _write_record(record_path, record)
         # A normal controller cycle does not call observe_dispatch after an
-        # accepted dispatch.  Therefore acceptance itself must observe the
-        # terminal proof, including any sandbox-setup diagnostic.
+        # accepted dispatch.  Observe only the bounded startup window here so
+        # a setup diagnostic is reported without serializing multi-stream work
+        # on each Codex run's eventual terminal proof.
         try:
-            result = _invoke(runner, "observe", record, timeout=timeout)
+            result = _invoke(runner, "observe_startup", record,
+                             timeout=min(timeout, STARTUP_OBSERVATION_SECONDS))
         except ValidationError as exc:
             if _sandbox_setup_failure(exc):
                 record["diagnostic"] = "SANDBOX_SETUP_CONFIG_ERROR"
@@ -876,13 +901,20 @@ def _build(config):
                 _write_record(record_path, record)
                 raise ValidationError(_CODEX_SANDBOX_ERROR) from exc
             raise
-        _require(isinstance(result, dict) and result.get("status") == "COMPLETED"
-                 and result.get("returncode") == 0 and result.get("terminal") is True,
-                 "Dispatch terminal outcome was not proven by observation")
-        record["status"] = "COMPLETED"
-        record["observed_at"] = _clock_text(clock)
+        terminal = (isinstance(result, dict) and result.get("status") == "COMPLETED"
+                    and result.get("returncode") == 0 and result.get("terminal") is True)
+        running = (isinstance(result, dict) and result.get("status") == "RUNNING"
+                   and result.get("terminal") is False)
+        if isinstance(result, dict) and result.get("terminal") is True:
+            _require(terminal, "Dispatch terminal outcome was not proven by observation")
+        else:
+            _require(running, "Dispatch startup outcome was not proven by observation")
+        record["status"] = "COMPLETED" if terminal else "LAUNCHED"
+        record["startup_observed_at"] = _clock_text(clock)
+        if terminal:
+            record["observed_at"] = record["startup_observed_at"]
         _write_record(record_path, record)
-        return _record_receipt(payload, record["observed_at"])
+        return _record_receipt(payload, record["startup_observed_at"])
 
     def observe_dispatch(payload):
         _require(isinstance(payload, dict) and isinstance(payload.get("dispatch_id"), str),
