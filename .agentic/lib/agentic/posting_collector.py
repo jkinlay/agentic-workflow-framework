@@ -45,13 +45,44 @@ _HTML_SELF_CLOSING_TAG = re.compile(
     rf"^<(?P<tag>{_HTML_NAME})(?P<attrs>.*?)/>$",
     re.IGNORECASE,
 )
-_HTML_OPEN_TAG = re.compile(
-    rf"^<(?P<tag>{_HTML_NAME})(?:[ \t]+[^<>]*)?>[ \t]*$",
+_HTML_BLOCK_TAGS = frozenset({
+    "address", "article", "aside", "base", "basefont", "blockquote", "body",
+    "caption", "center", "col", "colgroup", "dd", "details", "dialog", "dir",
+    "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+    "frame", "frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head",
+    "header", "hr", "html", "iframe", "legend", "li", "link", "main", "menu",
+    "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param",
+    "search", "section", "summary", "table", "tbody", "td", "tfoot", "th",
+    "thead", "title", "tr", "track", "ul",
+})
+_HTML_LITERAL_START = re.compile(
+    r"^ {0,3}<(?P<tag>pre|script|style|textarea)(?=[ \t>]|$)",
     re.IGNORECASE,
 )
-_HTML_CLOSE_TAG = re.compile(
-    rf"^</(?P<tag>{_HTML_NAME})[ \t]*>$",
-    re.IGNORECASE,
+_HTML_LITERAL_END = re.compile(r"</(?:pre|script|style|textarea)>", re.IGNORECASE)
+_HTML_BLOCK_TAG_START = re.compile(
+    r"^ {0,3}</?(?P<tag>[A-Za-z][A-Za-z0-9-]*)(?P<suffix>.*)$"
+)
+_COMMONMARK_TAG_NAME = r"[A-Za-z][A-Za-z0-9-]*"
+_COMMONMARK_ATTRIBUTE_NAME = r"[A-Za-z_:][A-Za-z0-9_.:-]*"
+_COMMONMARK_UNQUOTED_VALUE = r"[^ \t\n\f\r\"'=<>`]+"
+_COMMONMARK_ATTRIBUTE_VALUE = (
+    rf"(?:{_COMMONMARK_UNQUOTED_VALUE}|\"[^\"]*\"|'[^']*')"
+)
+_COMMONMARK_ATTRIBUTE = (
+    rf"(?:[ \t]+{_COMMONMARK_ATTRIBUTE_NAME}"
+    rf"(?:[ \t]*=[ \t]*{_COMMONMARK_ATTRIBUTE_VALUE})?)"
+)
+_HTML_COMPLETE_OPEN_TAG = re.compile(
+    rf"^ {{0,3}}<(?P<tag>{_COMMONMARK_TAG_NAME})"
+    rf"(?:{_COMMONMARK_ATTRIBUTE})*[ \t]*/?>[ \t]*$"
+)
+_HTML_COMPLETE_CLOSE_TAG = re.compile(
+    rf"^ {{0,3}}</(?P<tag>{_COMMONMARK_TAG_NAME})[ \t]*>[ \t]*$"
+)
+_CONTAINER_CONTENT = (
+    re.compile(r"^ {0,3}>[ \t]?(?P<content>.*)$"),
+    re.compile(r"^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])[ \t]+(?P<content>.*)$"),
 )
 
 
@@ -174,15 +205,76 @@ def _strip_html_comments(line, in_comment):
         in_comment = True
 
 
+def _raw_html_start(line, type_7_boundary):
+    """Return a CommonMark 0.31 HTML-block end condition for ``line``."""
+    if _HTML_LITERAL_START.match(line):
+        return _HTML_LITERAL_END
+    if re.match(r"^ {0,3}<!--", line):
+        return "-->"
+    if re.match(r"^ {0,3}<\?", line):
+        return "?>"
+    if re.match(r"^ {0,3}<![A-Za-z]", line):
+        return ">"
+    if re.match(r"^ {0,3}<!\[CDATA\[", line):
+        return "]]>"
+
+    block_tag = _HTML_BLOCK_TAG_START.match(line)
+    if block_tag is not None and block_tag.group("tag").casefold() in _HTML_BLOCK_TAGS:
+        suffix = block_tag.group("suffix")
+        if not suffix or suffix[0] in " \t>" or suffix.startswith("/>"):
+            return "blank"
+
+    complete = _HTML_COMPLETE_OPEN_TAG.fullmatch(line)
+    if complete is not None:
+        if complete.group("tag").casefold() in {
+            "pre", "script", "style", "textarea",
+        }:
+            return None
+    else:
+        complete = _HTML_COMPLETE_CLOSE_TAG.fullmatch(line)
+    if complete is not None:
+        if not type_7_boundary:
+            return False
+        return "blank"
+    return None
+
+
+def _raw_html_ended(line, end_condition):
+    if hasattr(end_condition, "search"):
+        return end_condition.search(line) is not None
+    return end_condition in line
+
+
+def _container_raw_html_start(line):
+    for pattern in _CONTAINER_CONTENT:
+        match = pattern.fullmatch(line)
+        if match is not None:
+            return _raw_html_start(match.group("content"), True) is not None
+    return False
+
+
 def _visible_markdown(body):
     """Return definitely visible lines, or ``None`` when syntax is ambiguous."""
     visible = []
     fence = None
     in_comment = False
+    raw_html_end = None
+    type_7_boundary = True
     for line in body.splitlines():
         if fence is not None:
             if _fence_close(line, fence):
                 fence = None
+                type_7_boundary = True
+            continue
+        if raw_html_end is not None:
+            if raw_html_end == "blank":
+                if not line.strip(" \t"):
+                    raw_html_end = None
+                    type_7_boundary = True
+                continue
+            if _raw_html_ended(line, raw_html_end):
+                raw_html_end = None
+                type_7_boundary = True
             continue
         if not in_comment:
             opened = _fence_open(line)
@@ -193,11 +285,23 @@ def _visible_markdown(body):
                 continue
             if line.startswith("\t") or line.startswith("    "):
                 visible.append("")
+                type_7_boundary = True
+                continue
+            if _container_raw_html_start(line):
+                return None
+            raw_html_end = _raw_html_start(line, type_7_boundary)
+            if raw_html_end is False:
+                return None
+            if raw_html_end is not None:
+                if raw_html_end != "blank" and _raw_html_ended(line, raw_html_end):
+                    raw_html_end = None
+                    type_7_boundary = True
                 continue
         line, in_comment, certain = _strip_html_comments(line, in_comment)
         if not certain:
             return None
         visible.append(line)
+        type_7_boundary = not line.strip(" \t")
     if fence is not None:
         return None
     # An unclosed HTML comment intentionally hides the rest of the document.
@@ -222,26 +326,13 @@ def _defines_fragment(body, fragment):
     if visible is None:
         return False
     found = False
-    raw_html_tag = None
     for line in visible.splitlines():
-        if raw_html_tag is not None:
-            closing = _HTML_CLOSE_TAG.fullmatch(line)
-            if fragment in line:
-                return False
-            if closing is not None and closing.group("tag").casefold() == raw_html_tag:
-                raw_html_tag = None
-            continue
         html = _html_fragment(line, fragment)
         if html is True:
             found = True
             continue
         if fragment in line:
             return False
-        opening = _HTML_OPEN_TAG.fullmatch(line)
-        if opening is not None:
-            raw_html_tag = opening.group("tag").casefold()
-    if raw_html_tag is not None:
-        return False
     return found
 
 
