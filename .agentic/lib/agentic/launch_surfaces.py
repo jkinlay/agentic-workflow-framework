@@ -6,6 +6,7 @@ import json
 from pathlib import Path, PurePosixPath
 
 from . import ValidationError
+from .configuration import load_project_launch_surfaces
 
 
 NON_PYTHON_SUFFIXES = frozenset({".ps1", ".sh", ".cmd", ".bat"})
@@ -138,7 +139,7 @@ def python_launch_findings(root):
     return sorted(findings, key=lambda item: (item["path"], item["line"], item["kind"]))
 
 
-def validate_repository_launch_surfaces(root, inventory_path=None):
+def validate_repository_launch_surfaces(root, inventory_path=None, project_scripts=None):
     """Validate exact non-Python inventory and all Python launch call sites."""
     root = Path(root).resolve()
     inventory_path = Path(inventory_path or root / ".agentic/launch-surfaces.json")
@@ -151,13 +152,22 @@ def validate_repository_launch_surfaces(root, inventory_path=None):
     if inventory["version"] != 1 or not isinstance(inventory["python_allowlist"], list) or not isinstance(inventory["scripts"], list):
         raise ValidationError("Launch-surface inventory fields are malformed")
 
+    if project_scripts is None:
+        project_scripts = load_project_launch_surfaces(root)
+    if not isinstance(project_scripts, list):
+        raise ValidationError("Project launch-surface scripts must be a list")
+
     script_paths, script_entries = [], {}
-    for index, entry in enumerate(inventory["scripts"]):
+    pinned_count = len(inventory["scripts"])
+    combined_scripts = [("pinned", index, entry) for index, entry in enumerate(inventory["scripts"])]
+    combined_scripts.extend(("project", index, entry) for index, entry in enumerate(project_scripts))
+    for owner, index, entry in combined_scripts:
+        label = "Launch-surface script entry" if owner == "pinned" else "Project launch-surface script entry"
         if not isinstance(entry, dict):
-            raise ValidationError(f"Launch-surface script entry {index} is malformed")
-        path = _relative_path(entry.get("path"), label=f"Launch-surface script entry {index}")
+            raise ValidationError(f"{label} {index} is malformed")
+        path = _relative_path(entry.get("path"), label=f"{label} {index}")
         if path in script_entries:
-            raise ValidationError("Launch-surface inventory contains a duplicate script path")
+            raise ValidationError("Pinned and project launch-surface lists contain a duplicate script path")
         mechanism = entry.get("mechanism")
         if mechanism not in SCRIPT_MECHANISMS:
             raise ValidationError(f"Launch-surface script {path} has an unsupported mechanism")
@@ -203,4 +213,6 @@ def validate_repository_launch_surfaces(root, inventory_path=None):
     if stale:
         raise ValidationError("Python launch allowlist contains stale entries: " + repr(stale))
     return {"python_files": len(_production_paths(root, {".py"})),
-            "python_findings_allowed": len(findings), "non_python_scripts": len(script_paths)}
+            "python_findings_allowed": len(findings), "non_python_scripts": len(script_paths),
+            "pinned_non_python_scripts": pinned_count,
+            "project_non_python_scripts": len(project_scripts)}
