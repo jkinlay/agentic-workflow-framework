@@ -15,6 +15,7 @@ from source_only import (INSTALLATION_RECEIPT, SOURCE_MARKER, SOURCE_ONLY_REASON
                          write_awf_source_fixture)  # noqa: E402
 
 from agentic import operating, operating_status, streams  # noqa: E402
+from agentic.providers import github_review_host  # noqa: E402
 from agentic.safeio import Tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +54,23 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
                 return None
         return read
 
+    @staticmethod
+    def git_runner(root, *arguments):
+        completed = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            capture_output=True, text=True, check=True,
+        )
+        return completed.stdout.strip()
+
+    def commit_tree(self, root):
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run([
+            "git", "-c", "user.name=AWF Test", "-c",
+            "user.email=awf@example.invalid", "-C", str(root),
+            "commit", "-qm", "fixture",
+        ], check=True)
+
     def test_source_tree_is_recognised(self):
         root = self.tree()
         write_awf_source_fixture(root)
@@ -83,6 +101,31 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
         write_awf_source_fixture(source)
         self.assertFalse(operating.is_awf_source_repository(self.reader(downstream)))
         self.assertTrue(operating.is_awf_source_repository(self.reader(source)))
+
+    @source_only.skip_unless_source_repo()
+    def test_revision_detector_distinguishes_installed_downstream_and_real_source(self):
+        downstream = self.installed_downstream_tree()
+        self.commit_tree(downstream)
+        self.assertFalse(github_review_host.is_source_repository(
+            downstream, git_runner=self.git_runner))
+        self.assertTrue(github_review_host.is_source_repository(
+            ROOT, git_runner=self.git_runner))
+
+    def test_revision_detector_fails_closed_without_a_readable_git_tree(self):
+        root = self.tree()
+        self.assertFalse(github_review_host.is_source_repository(root))
+        self.assertFalse(github_review_host.is_source_repository(
+            root, git_runner=mock.Mock(side_effect=OSError("git unavailable"))))
+        self.assertFalse(github_review_host.is_source_repository(
+            root, git_runner=mock.Mock(return_value=b"unreadable tree")))
+
+        def unreadable_blob(_root, *arguments):
+            if arguments[0] == "ls-tree":
+                return "MANIFEST.json\nscripts/build_release.py"
+            return object()
+
+        self.assertFalse(github_review_host.is_source_repository(
+            root, git_runner=unreadable_blob))
 
     def test_operating_lock_uses_canonical_source_predicate(self):
         downstream = self.installed_downstream_tree()
