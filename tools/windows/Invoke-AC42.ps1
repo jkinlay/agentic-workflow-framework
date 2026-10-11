@@ -33,16 +33,16 @@
 
 .NOTES
   All writes (venv, wheelhouse, pip cache, fixture repositories, evidence)
-  stay under -ScratchRoot (default C:\awf-ac42-scratch); -Work must be inside
-  it. -Cleanup deletes every work-* directory under -ScratchRoot and keeps
-  the evidence directory.
+  stay under -ScratchRoot (default: awf-ac42-scratch beneath the operating
+  system's temporary directory); -Work must be inside it. -Cleanup deletes
+  every work-* directory under -ScratchRoot and keeps the evidence directory.
 #>
 [CmdletBinding()]
 param(
     [string]$Python = "python",
     [ValidateSet("1.8.3", "1.8.9", "1.9.1", "1.9.2", "1.9.3")]
     [string]$FromVersion = "1.9.1",
-    [string]$ScratchRoot = "C:\awf-ac42-scratch",
+    [string]$ScratchRoot = (Join-Path ([System.IO.Path]::GetTempPath()) "awf-ac42-scratch"),
     [string]$Work = "",
     [string]$Evidence = "",
     [switch]$Cleanup
