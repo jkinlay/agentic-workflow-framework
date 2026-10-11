@@ -8,7 +8,7 @@ import json
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -87,6 +87,13 @@ class PostingCollectorTests(Fixture):
         bind_review_admission(self.bundle)
         bind_production_posting_fixture(self.config, self.bundle)
         self.host = TestOnlyReviewHost(self.bundle)
+        terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
+        fragment = f"review-verdict-{terminal['round']}-{terminal['record_id']}"
+        pr_suffix = f"pulls/{self.bundle['candidate']['pr_number']}"
+        self.host.responses[pr_suffix]["body"] += f'\n<a id="{fragment}"></a>\n'
+        body_sha256 = sha256(self.host.responses[pr_suffix]["body"].encode("utf-8"))
+        self.bundle["pr"]["body_sha256"] = body_sha256
+        self.bundle["publication_scan"]["pr_body_sha256"] = body_sha256
 
     def _install_runtime_observations(self):
         registrations = []
@@ -155,9 +162,13 @@ class PostingCollectorTests(Fixture):
         self._install_runtime_observations()
         pr_suffix = f"pulls/{self.bundle['candidate']['pr_number']}"
         original = self.host.responses[pr_suffix]["body"]
+        terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
+        fragment = f"review-verdict-{terminal['round']}-{terminal['record_id']}"
         cases = {
             "POSTING_BODY_MISMATCH": original + "\nchanged",
-            "POSTING_ANCHOR_MISMATCH": original.replace("review-verdict:", "wrong-anchor:"),
+            "POSTING_ANCHOR_MISMATCH": original.replace(
+                f'<a id="{fragment}"></a>\n', ""
+            ),
         }
         for reason, body in cases.items():
             with self.subTest(reason=reason):
@@ -167,6 +178,30 @@ class PostingCollectorTests(Fixture):
                         self.host, self.bundle, release_sha256=RELEASE_SHA256
                     )
         self.host.responses[pr_suffix]["body"] = original
+
+    def test_ac2_digest_marker_without_target_fragment_is_not_observed(self):
+        terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
+        fragment = f"review-verdict-{terminal['round']}-{terminal['record_id']}"
+        pr_suffix = f"pulls/{self.bundle['candidate']['pr_number']}"
+        self.host.responses[pr_suffix]["body"] = self.host.responses[pr_suffix][
+            "body"
+        ].replace(f'<a id="{fragment}"></a>\n', "")
+
+        with self.assertRaisesRegex(
+            PostingCollectorMismatch, "POSTING_ANCHOR_MISMATCH"
+        ):
+            self._install_runtime_observations()
+
+        gate = evaluate(
+            self.config,
+            definition(),
+            self.bundle,
+            self.contracts,
+            NOW,
+            posting_collector_registry={},
+        )
+        self.assertEqual("NOT_READY", gate["conclusion"])
+        self.assertEqual("FAIL", gate["gates"]["verdict_posting"]["result"])
 
     def test_ac2_digest_round_and_collector_run_mismatches_are_specific(self):
         self._install_runtime_observations()
@@ -339,6 +374,41 @@ class PostingCollectorTests(Fixture):
         self.assertEqual("NOT_READY", gate["conclusion"])
         self.assertEqual("FAIL", gate["gates"]["verdict_posting"]["result"])
         self.assertIn("POSTING_BODY_MISMATCH", gate["residual_risks"][-1])
+
+    def test_cli_rejects_malformed_bundle_before_collector_runs(self):
+        malformed = copy.deepcopy(self.bundle)
+        malformed["review_verdicts"] = [None]
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = sealed_runtime(folder)
+            bundle_path = Path(folder) / "bundle.json"
+            bundle_path.write_text(
+                json.dumps(malformed, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            config_path = Path(folder) / "project-config.json"
+            config_path.write_text(
+                json.dumps(self.config, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            host_config_path = Path(folder) / "review-host.json"
+            host_config_path.write_text("{}\n", encoding="utf-8")
+            stderr = io.StringIO()
+            with mock.patch(
+                "agentic.posting_collector.registry_from_host_config"
+            ) as collector, redirect_stderr(stderr):
+                exit_code = workflow_main([
+                    "--root", str(runtime), "evaluate", str(bundle_path),
+                    "--config", str(config_path),
+                    "--posting-collector-host-config", str(host_config_path),
+                    "--now", NOW,
+                ])
+
+        response = json.loads(stderr.getvalue())
+        self.assertEqual(2, exit_code)
+        self.assertEqual("REJECTED", response["status"])
+        self.assertFalse(response["execution_authority"])
+        self.assertIn("review_verdicts", response["reason"])
+        collector.assert_not_called()
 
 
 if __name__ == "__main__":
