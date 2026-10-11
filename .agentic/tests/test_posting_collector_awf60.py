@@ -353,7 +353,7 @@ class PostingCollectorTests(Fixture):
     def test_r6_target_fragment_after_ended_html_block_is_visible(self):
         _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
         cases = {
-            "type 1": "<script\nignored\n</pre>",
+            "type 1": "<script\nignored\n</script>",
             "type 2": "<!-- Foo\nignored\n-->",
             "type 3": "<?php\nignored\n?>",
             "type 4": "<!DOCTYPE html\nignored\n>",
@@ -369,6 +369,114 @@ class PostingCollectorTests(Fixture):
                         f"{block}\n{anchor}", fragment
                     )
                 )
+
+    def test_r7_type_1_blocks_ignore_other_literal_closing_tags(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "script": "pre",
+            "pre": "style",
+            "style": "textarea",
+            "textarea": "script",
+        }
+
+        for opener, mismatched_closer in cases.items():
+            for matching_closer in (f"</{opener}>", None):
+                with self.subTest(
+                    opener=opener,
+                    mismatched_closer=mismatched_closer,
+                    matching_closer=matching_closer,
+                ):
+                    lines = [
+                        f"<{opener}",
+                        f"</{mismatched_closer}>",
+                        anchor,
+                    ]
+                    if matching_closer is not None:
+                        lines.extend(("", matching_closer))
+                    self.assertFalse(
+                        posting_collector._defines_fragment(
+                            "\n".join(lines), fragment
+                        )
+                    )
+
+    def test_r7_types_2_to_5_ignore_mismatched_end_markers(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "type 2": ("<!-- Foo", "?>", "-->"),
+            "type 3": ("<?php", "-->", "?>"),
+            "type 4": ("<!DOCTYPE html", "]]", ">"),
+            "type 5": ("<![CDATA[", "?>", "]]>")
+        }
+
+        for label, (start, mismatched_end, matching_end) in cases.items():
+            with self.subTest(label=label):
+                self.assertFalse(
+                    posting_collector._defines_fragment(
+                        f"{start}\n{mismatched_end}\n{anchor}\n{matching_end}",
+                        fragment,
+                    )
+                )
+
+    def test_r7_types_6_and_7_end_only_at_blank_lines(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "type 6": "<table>\nignored\n</table>",
+            "type 7": "<Warning>\nignored\n</Warning>",
+        }
+
+        for label, block in cases.items():
+            with self.subTest(label=label):
+                self.assertFalse(
+                    posting_collector._defines_fragment(
+                        f"{block}\n{anchor}\n", fragment
+                    )
+                )
+
+    def test_r7_each_html_block_type_ends_at_its_own_condition(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "type 1 script": "<script\nignored\n</SCRIPT>",
+            "type 1 pre": "<pre\nignored\n</PRE>",
+            "type 1 style": "<style\nignored\n</STYLE>",
+            "type 1 textarea": "<textarea\nignored\n</TEXTAREA>",
+            "type 2": "<!-- Foo\nignored\n-->",
+            "type 3": "<?php\nignored\n?>",
+            "type 4": "<!DOCTYPE html\nignored\n>",
+            "type 5": "<![CDATA[\nignored\n]]>",
+            "type 6": "<table>\nignored\n",
+            "type 7": "<Warning>\nignored\n",
+        }
+
+        for label, block in cases.items():
+            with self.subTest(label=label):
+                self.assertTrue(
+                    posting_collector._defines_fragment(
+                        f"{block}\n{anchor}", fragment
+                    )
+                )
+
+    def test_r7_production_collector_and_gate_refuse_type_1_bypass(self):
+        pr_suffix, body, anchor, _fragment = self._terminal_fragment_fixture()
+        self.host.responses[pr_suffix]["body"] = body.replace(
+            anchor,
+            f"<script\n</pre>\n{anchor}\n\n</script>",
+        )
+
+        with self.assertRaisesRegex(
+            PostingCollectorMismatch, "POSTING_ANCHOR_MISMATCH"
+        ):
+            self._install_runtime_observations()
+
+        gate = evaluate(
+            self.config,
+            definition(),
+            self.bundle,
+            self.contracts,
+            NOW,
+            posting_collector_registry={},
+        )
+        self.assertEqual("NOT_READY", gate["conclusion"])
+        self.assertEqual("FAIL", gate["gates"]["verdict_posting"]["result"])
 
     def test_r6_html_block_starts_in_recognised_containers_fail_closed(self):
         _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
