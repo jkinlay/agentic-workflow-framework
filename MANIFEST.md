@@ -1,8 +1,8 @@
 # Release manifest — 1.9.4
 
-453 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
+454 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `f9c0a7a8af63776d5656eb98b228ff824b458ff511c0267e0dc0557dda1906ac`
+MANIFEST.json SHA-256: `95cd63f6e991db46b95c388757231055ae9d6eb148cf9b68c2dd595830392b73`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -124,7 +124,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/review_tiers.py` | `f851eb29cafff4f6a1d01ca461d2ad3412e21390d1be214d7d1e612cd6b937e6` |
 | `.agentic/lib/agentic/rules_activation.py` | `f9c5ccdfc309acc13ec998466d458ee9898298f692d19a6309bfbaf3fb76d7cb` |
 | `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
-| `.agentic/lib/agentic/safeio.py` | `63dc54a24acb667aaa5c4b7ef8bf1bcf4024c3e98792af4defc94debf1f0266e` |
+| `.agentic/lib/agentic/safeio.py` | `c2b2297c364d1a886fddbef7c01eff69882de2f29a1a00531d7ae15fbdcb5af7` |
 | `.agentic/lib/agentic/store.py` | `91287fc2aa44e9db2b1343027baa6f32e0660a838db54f8dd628b1caf0336b6c` |
 | `.agentic/lib/agentic/streams.py` | `235df2c92198ce8a97e6cc5e89c969448a66f14dabdc0e21bc3a37d5e99a1535` |
 | `.agentic/lib/agentic/upgrade.py` | `d1ab051319ab5e53e28f18a273c4b147c26c8e2c5ee47054f256acd022c08432` |
@@ -321,6 +321,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_routing_cli.py` | `3961ba8354548fb84917514011b3b788e333f2b6165b7eb63bd0e3c13715ab4f` |
 | `.agentic/tests/test_routing_integration.py` | `fa76c13c504ada646c428a0462715691d3da205aa699ee79c83f1b5c939a3696` |
 | `.agentic/tests/test_rules_activation.py` | `a80728328f2f8ec76369c1431e31270ecaf7c82055288496d65d8da0e03aeb85` |
+| `.agentic/tests/test_safeio_unlink.py` | `09206bcf5b9943b56175b877a71ea87760a6b2dfe28395749c7aedbc85f36382` |
 | `.agentic/tests/test_source_only.py` | `c7d3d835fcdbdc5c144fec2faeebe9944ffa7385d44d3a1d433288cf0bb82b5f` |
 | `.agentic/tests/test_store_regressions.py` | `2cf43379f37928ead367f3fc60e4e282a7814a84194765b6cdd759a99dc42859` |
 | `.agentic/tests/test_streams.py` | `48f359adfefd62954d36373f4791819b3e61291ba41326979dac463c8411c122` |
