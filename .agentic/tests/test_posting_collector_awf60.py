@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
+from agentic import posting_collector
 from agentic.canonical import canonical, load, sha256
 from agentic.cli import main as workflow_main
 from agentic.gates import evaluate, review_round_receipt_sha256
@@ -287,14 +288,9 @@ class PostingCollectorTests(Fixture):
             with self.subTest(label=label):
                 self._assert_fragment_markup_rejected(markup)
 
-    def test_a4_plain_atx_heading_defines_target_fragment(self):
-        pr_suffix, body, anchor, fragment = self._terminal_fragment_fixture()
-        self.host.responses[pr_suffix]["body"] = body.replace(
-            anchor, f"# {fragment}"
-        )
-        registrations, registry = self._install_runtime_observations()
-        self.assertTrue(registrations)
-        self.assertIn(COLLECTOR_ID, registry)
+    def test_r5_matching_atx_heading_does_not_define_target_fragment(self):
+        _pr_suffix, _body, _anchor, fragment = self._terminal_fragment_fixture()
+        self._assert_fragment_markup_rejected(f"# {fragment}")
 
     def test_b1_backslash_escaped_anchor_does_not_define_target_fragment(self):
         _pr_suffix, _body, anchor, _fragment = self._terminal_fragment_fixture()
@@ -316,14 +312,36 @@ class PostingCollectorTests(Fixture):
             f'<script id="{fragment}"></script>'
         )
 
-    def test_b2_ordinary_rendering_element_id_defines_target_fragment(self):
-        pr_suffix, body, anchor, fragment = self._terminal_fragment_fixture()
-        self.host.responses[pr_suffix]["body"] = body.replace(
-            anchor, f'<span id="{fragment}"></span>'
-        )
-        registrations, registry = self._install_runtime_observations()
-        self.assertTrue(registrations)
-        self.assertIn(COLLECTOR_ID, registry)
+    def test_r5_id_only_defines_fragment_on_anchor_element(self):
+        _pr_suffix, _body, _anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            element: f'<{element} id="{fragment}"></{element}>'
+            for element in (
+                "form", "div", "span", "details", "p", "h2", "img", "section"
+            )
+        }
+
+        for element, markup in cases.items():
+            with self.subTest(element=element):
+                self._assert_fragment_markup_rejected(markup)
+
+    def test_r5_anchor_attribute_allowlist_is_exact(self):
+        _pr_suffix, _body, _anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "fragment in href": f'<a href="{fragment}"></a>',
+            "extra attribute": f'<a id="{fragment}" title="verdict"></a>',
+            "both allowed attributes": (
+                f'<a id="{fragment}" name="{fragment}"></a>'
+            ),
+            "single quotes": f"<a id='{fragment}'></a>",
+            "bare value": f"<a id={fragment}></a>",
+            "uppercase": f'<A ID="{fragment}"></A>',
+            "self closing": f'<a id="{fragment}"/>',
+        }
+
+        for label, markup in cases.items():
+            with self.subTest(label=label):
+                self._assert_fragment_markup_rejected(markup)
 
     def test_r3_002_name_only_defines_fragment_on_anchor_element(self):
         _pr_suffix, _body, _anchor, fragment = self._terminal_fragment_fixture()
@@ -347,14 +365,34 @@ class PostingCollectorTests(Fixture):
         self.assertTrue(registrations)
         self.assertIn(COLLECTOR_ID, registry)
 
-    def test_r3_002_rendering_element_id_still_defines_target_fragment(self):
+    def test_r5_anchor_id_defines_target_fragment(self):
         pr_suffix, body, anchor, fragment = self._terminal_fragment_fixture()
         self.host.responses[pr_suffix]["body"] = body.replace(
-            anchor, f'<div id="{fragment}"></div>'
+            anchor, f'<a id="{fragment}"></a>'
         )
         registrations, registry = self._install_runtime_observations()
         self.assertTrue(registrations)
         self.assertIn(COLLECTOR_ID, registry)
+
+    def test_r5_docstring_pins_accepted_anchor_literal(self):
+        expected_example = '<a id="review-verdict-<round>-<record_id>"></a>'
+        examples = [
+            line.strip()
+            for line in posting_collector.__doc__.splitlines()
+            if line.strip().startswith('<a id="review-verdict-')
+        ]
+        self.assertEqual([expected_example], examples)
+
+        round_number = 7
+        record_id = "record-123"
+        fragment = f"review-verdict-{round_number}-{record_id}"
+        anchor = examples[0].replace("<round>", str(round_number)).replace(
+            "<record_id>", record_id
+        )
+        self.assertEqual(f'<a id="{fragment}"></a>', anchor)
+        self.assertTrue(
+            posting_collector._defines_fragment(f"summary\n{anchor}\n", fragment)
+        )
 
     def test_b3_entity_encoded_anchor_does_not_define_target_fragment(self):
         _pr_suffix, _body, _anchor, fragment = self._terminal_fragment_fixture()
