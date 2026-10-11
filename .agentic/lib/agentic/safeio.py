@@ -216,7 +216,10 @@ class Tree:
                 pass
 
     def unlink(self, relative):
-        parent, handle, name = self.parent(relative)
+        try:
+            parent, handle, name = self.parent(relative)
+        except FileNotFoundError:
+            return
         if os.name == "nt":
             # Upgrade archives are made read-only before the managed-after
             # journal update. Validate and delete through one handle which denies
