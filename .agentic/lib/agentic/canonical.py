@@ -108,6 +108,35 @@ def fingerprint(domain: str, value) -> str:
     return hashlib.sha256(b"AWF-C14N-1\0" + domain.encode() + b"\0" + canonical(value)).hexdigest()
 
 
+def candidate_id(candidate) -> str:
+    """Return the AWF-C14N-1 ``candidate`` fingerprint for a candidate object."""
+    if not isinstance(candidate, dict):
+        raise ValidationError("Candidate must be a JSON object")
+    return fingerprint("candidate", candidate)
+
+
+def reject_git_sha_candidate_id(value):
+    """Give the actionable diagnostic for a Git SHA used as ``candidate_id``."""
+    if isinstance(value, str) and re.fullmatch(r"[0-9A-Fa-f]{40}", value):
+        raise ValidationError("candidate_id is the AWF candidate fingerprint, not a Git SHA")
+
+
+def reject_git_sha_candidate_ids(value):
+    """Find the diagnostic case before schema validation obscures its cause."""
+    pending = [value]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if not isinstance(current, (dict, list)) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, dict):
+            reject_git_sha_candidate_id(current.get("candidate_id"))
+            pending.extend(current.values())
+        else:
+            pending.extend(current)
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
