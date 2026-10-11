@@ -288,6 +288,101 @@ class PostingCollectorTests(Fixture):
             with self.subTest(label=label):
                 self._assert_fragment_markup_rejected(markup)
 
+    def test_r6_bare_script_start_hides_target_fragment(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        self.assertFalse(
+            posting_collector._defines_fragment(
+                f"<script\n{anchor}\n</script>", fragment
+            )
+        )
+
+    def test_r6_type_1_script_start_delimiters_hide_target_fragment(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        starts = ("<script", "<script ", "<SCRIPT\t", "<script>")
+
+        for start in starts:
+            with self.subTest(start=start):
+                self.assertFalse(
+                    posting_collector._defines_fragment(
+                        f"{start}\n{anchor}\n</script>", fragment
+                    )
+                )
+
+    def test_r6_all_commonmark_html_block_starts_hide_target_fragment(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "type 1 literal tag": ("<style", "</style>"),
+            "type 2 comment": ("<!-- Foo", "   baz -->"),
+            "type 3 processing instruction": ("<?php", "?>"),
+            "type 4 declaration": ("<!DOCTYPE html", ">"),
+            "type 5 CDATA": ("<![CDATA[", "]]>"),
+            "type 6 block tag": ("<table>", ""),
+            "type 6 closing block tag": ("</table>", ""),
+            "type 7 complete tag": ("<Warning>", ""),
+            "type 7 complete closing tag": ("</ins>", ""),
+        }
+
+        for label, (start, end) in cases.items():
+            for indent in range(4):
+                with self.subTest(label=label, indent=indent):
+                    body = f"{' ' * indent}{start}\n{anchor}\n{end}"
+                    self.assertFalse(
+                        posting_collector._defines_fragment(body, fragment)
+                    )
+
+    def test_r6_unterminated_html_blocks_hide_target_fragment_to_eof(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        starts = {
+            "type 1": "<pre",
+            "type 2": "<!-- Foo",
+            "type 3": "<?php",
+            "type 4": "<!DOCTYPE html",
+            "type 5": "<![CDATA[",
+            "type 6": "<table>",
+            "type 7": "<Warning>",
+        }
+
+        for label, start in starts.items():
+            with self.subTest(label=label):
+                self.assertFalse(
+                    posting_collector._defines_fragment(
+                        f"{start}\n{anchor}", fragment
+                    )
+                )
+
+    def test_r6_target_fragment_after_ended_html_block_is_visible(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "type 1": "<script\nignored\n</pre>",
+            "type 2": "<!-- Foo\nignored\n-->",
+            "type 3": "<?php\nignored\n?>",
+            "type 4": "<!DOCTYPE html\nignored\n>",
+            "type 5": "<![CDATA[\nignored\n]]>",
+            "type 6": "<table>\nignored\n",
+            "type 7": "<Warning>\nignored\n",
+        }
+
+        for label, block in cases.items():
+            with self.subTest(label=label):
+                self.assertTrue(
+                    posting_collector._defines_fragment(
+                        f"{block}\n{anchor}", fragment
+                    )
+                )
+
+    def test_r6_html_block_starts_in_recognised_containers_fail_closed(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "blockquote": f"> <script\n> {anchor}\n> </script>",
+            "list": f"- <script\n  {anchor}\n  </script>",
+        }
+
+        for label, body in cases.items():
+            with self.subTest(label=label):
+                self.assertFalse(
+                    posting_collector._defines_fragment(body, fragment)
+                )
+
     def test_r5_matching_atx_heading_does_not_define_target_fragment(self):
         _pr_suffix, _body, _anchor, fragment = self._terminal_fragment_fixture()
         self._assert_fragment_markup_rejected(f"# {fragment}")
