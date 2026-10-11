@@ -117,6 +117,108 @@ def verify_record(record, request, gate, config, contracts, now):
 OWNER_KINDS = {"finding-disposition": "finding", "review-cap-disposition": "cap",
                "tier-reassignment": "tier", "owner-closure": "closure"}
 OWNER_ORDER = ["kind", "record", "request", "decision", "subject", "head", "contract", "project"]
+READY_AUTHORIZATION_FORMAT = "awf-pr-ready-authorization-1"
+READY_AUTHORIZATION_ROLES = {"manager", "owner"}
+READY_AUTHORIZATION_ORDER = ["record", "action", "role", "repoid", "pr", "head", "authorized"]
+
+
+def ready_authorization_fields(record):
+    """Return the exact fields signed by a ready-for-review authorization."""
+    return dict(zip(READY_AUTHORIZATION_ORDER, [record["authorization_id"], record["action"], record["role"],
+        str(record["repository_id"]), str(record["pr"]), record["head_sha"], record["authorized_at"]]))
+
+
+def render_ready_authorization(record):
+    fields = ready_authorization_fields(record)
+    if any(not isinstance(value, str) or not value or any(char.isspace() for char in value) or "=" in value
+           for value in fields.values()):
+        raise ValidationError("Ready authorization field contains unsupported whitespace/delimiter")
+    return "AWF1.2 AUTHORIZE_READY " + " ".join(f"{key}={fields[key]}" for key in READY_AUTHORIZATION_ORDER)
+
+
+def parse_ready_authorization(raw):
+    if not isinstance(raw, str) or len(raw) > 4096 or raw != raw.strip() or "\n" in raw or "\r" in raw:
+        raise ValidationError("Ready authorization must be one exact unquoted line")
+    pieces = raw.split(" ")
+    if (len(pieces) != 2 + len(READY_AUTHORIZATION_ORDER) or pieces[0] != "AWF1.2" or
+            pieces[1] != "AUTHORIZE_READY"):
+        raise ValidationError("Ready authorization grammar mismatch")
+    values = {}
+    for expected, token in zip(READY_AUTHORIZATION_ORDER, pieces[2:]):
+        key, separator, value = token.partition("=")
+        if key != expected or separator != "=" or not value or any(character.isspace() for character in value):
+            raise ValidationError("Ready authorization field order/value mismatch")
+        values[key] = value
+    return values
+
+
+def verify_ready_authorization(record, config, now, *, pr, head_sha):
+    """Verify a trusted, fresh owner/manager authorization for one PR head.
+
+    The schema/template for this new record type is generator-owned.  Until it
+    is generated, this function deliberately performs closed Python shape
+    validation as well as source, integrity, freshness and candidate checks.
+    """
+    required = {"format", "authorization_id", "role", "action", "repository_id", "pr", "head_sha",
+                "authorized_at", "owner_source"}
+    if not isinstance(record, dict) or set(record) != required:
+        raise ValidationError("Ready authorization has invalid, missing or unexpected fields")
+    if (record["format"] != READY_AUTHORIZATION_FORMAT or record["role"] not in READY_AUTHORIZATION_ROLES or
+            record["action"] != "MARK_READY"):
+        raise ValidationError("Ready authorization action or role is invalid")
+    if (not isinstance(record["authorization_id"], str) or not record["authorization_id"].strip() or
+            isinstance(record["repository_id"], bool) or not isinstance(record["repository_id"], int) or
+            record["repository_id"] < 1 or isinstance(record["pr"], bool) or not isinstance(record["pr"], int) or
+            record["pr"] < 1 or not isinstance(record["head_sha"], str) or
+            not re.fullmatch(r"[0-9a-f]{40}", record["head_sha"])):
+        raise ValidationError("Ready authorization identity or candidate shape is invalid")
+    timestamp(record["authorized_at"])
+
+    source = record["owner_source"]
+    source_fields = {"channel", "comment_id", "actor_id", "actor_login", "repository_id", "pr_number",
+                     "created_at", "updated_at", "raw_body", "raw_body_sha256"}
+    if not isinstance(source, dict) or set(source) != source_fields:
+        raise ValidationError("Ready authorization source has invalid, missing or unexpected fields")
+    if (source["channel"] != "github_pr_comment" or isinstance(source["comment_id"], bool) or
+            not isinstance(source["comment_id"], int) or source["comment_id"] < 1 or
+            isinstance(source["actor_id"], bool) or not isinstance(source["actor_id"], int) or
+            source["actor_id"] < 1 or not isinstance(source["actor_login"], str) or
+            not source["actor_login"].strip() or not isinstance(source["raw_body"], str) or
+            not isinstance(source["raw_body_sha256"], str) or
+            not re.fullmatch(r"[0-9a-f]{64}", source["raw_body_sha256"])):
+        raise ValidationError("Ready authorization source identity or integrity shape is invalid")
+    timestamp(source["created_at"])
+    timestamp(source["updated_at"])
+
+    try:
+        repository_id = config["github"]["repository_id"]
+        trusted_owner_ids = config["merge_gate"]["trusted_owner_ids"]
+        ttl = config["merge_gate"]["authorization_ttl_seconds"]
+    except (KeyError, TypeError) as exc:
+        raise ValidationError("Ready authorization requires reviewed repository and owner configuration") from exc
+    if (isinstance(repository_id, bool) or not isinstance(repository_id, int) or repository_id < 1 or
+            not isinstance(trusted_owner_ids, list) or isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 1):
+        raise ValidationError("Ready authorization configuration is invalid")
+    if source["actor_id"] not in trusted_owner_ids:
+        raise ValidationError("Ready authorization uses an untrusted numeric owner/manager identity")
+    if record["repository_id"] != repository_id or source["repository_id"] != repository_id:
+        raise ValidationError("Ready authorization came from a different repository")
+    if record["pr"] != pr or record["head_sha"] != head_sha:
+        raise ValidationError("Ready authorization references a different PR or head")
+    if source["pr_number"] != pr:
+        raise ValidationError("Ready authorization comment came from a different PR")
+    if source["created_at"] != source["updated_at"]:
+        raise ValidationError("Edited ready authorization comments are invalid; create a new authorization")
+    if record["authorized_at"] != source["created_at"]:
+        raise ValidationError("Ready authorization time differs from its source comment")
+    fresh(source["updated_at"], now, ttl)
+    if sha256(source["raw_body"].encode("utf-8")) != source["raw_body_sha256"]:
+        raise ValidationError("Ready authorization raw-body digest mismatch")
+    if parse_ready_authorization(source["raw_body"]) != ready_authorization_fields(record):
+        raise ValidationError("Raw ready authorization and recorded fields disagree")
+    return {"action": "MARK_READY", "role": record["role"], "actor_id": source["actor_id"],
+            "actor_login": source["actor_login"], "record_consistent": True,
+            "live_source_verified": False, "execution_authority": False}
 
 
 def owner_fields(record, kind, head_sha):

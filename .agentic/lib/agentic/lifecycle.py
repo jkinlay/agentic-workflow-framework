@@ -60,9 +60,7 @@ INVALIDATING = {"HEAD_CHANGED", "BASE_CHANGED", "BASE_RETARGETED", "MERGE_METHOD
 CONTROL_EVENTS = {"BLOCK", "FAIL", "RECOVER", "CANCEL", "SUPERSEDE", "MERGE_TIMEOUT", "MANUAL_MERGE_OBSERVED",
                   "REVERT_OBSERVED", "PR_CLOSED", "BRANCH_DELETED", "REVIEW_DISMISSED",
                   "OWNER_CHANGES_REQUESTED", "POST_MERGE_FINDING"}
-READY_AUTHORIZATION_FORMAT = "awf-pr-ready-authorization-1"
 READY_TRANSITION_FORMAT = "awf-pr-ready-transition-1"
-READY_AUTHORIZATION_ROLES = {"manager", "owner"}
 
 
 def _ready_candidate(pr, head_sha):
@@ -79,12 +77,12 @@ def _authorization_digest(authorization):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def ready_transition_record(pr, head_sha, authorization_record):
+def ready_transition_record(pr, head_sha, authorization_record, *, config=None, now=None):
     """Return the mandatory audit record for one draft-to-ready decision.
 
-    This reference layer validates an already observed authorization record; it
-    does not authenticate a provider actor.  A host must persist the returned
-    record before attempting any provider mutation.
+    The authorization verifier checks trusted provider identity evidence,
+    candidate binding, source integrity and freshness.  A host must persist the
+    returned record before attempting any provider mutation.
     """
     _ready_candidate(pr, head_sha)
     base = {"format": READY_TRANSITION_FORMAT, "pr": pr, "head_sha": head_sha,
@@ -99,21 +97,22 @@ def ready_transition_record(pr, head_sha, authorization_record):
 
     authorization = copy.deepcopy(authorization_record)
     digest = _authorization_digest(authorization)
-    required_text = ("authorization_id", "actor", "authorized_at")
-    if (authorization.get("format") != READY_AUTHORIZATION_FORMAT or
-            authorization.get("role") not in READY_AUTHORIZATION_ROLES or
-            authorization.get("action") != "MARK_READY" or
-            any(not isinstance(authorization.get(name), str) or
-                not authorization[name].strip() for name in required_text)):
-        return {**base, "decision": "REFUSED", "reason": "AUTHORIZATION_RECORD_INVALID",
-                "authorization": authorization, "authorization_sha256": digest}
     if authorization.get("pr") != pr or authorization.get("head_sha") != head_sha:
         return {**base, "decision": "REFUSED", "reason": "AUTHORIZATION_CANDIDATE_MISMATCH",
                 "authorization": authorization, "authorization_sha256": digest}
+    try:
+        from .authorization import verify_ready_authorization
+        verification = verify_ready_authorization(authorization, config, now, pr=pr, head_sha=head_sha)
+    except (ValidationError, KeyError, TypeError, ValueError):
+        return {**base, "decision": "REFUSED", "reason": "AUTHORIZATION_RECORD_INVALID",
+                "authorization": authorization, "authorization_sha256": digest}
+    source = authorization["owner_source"]
     return {**base, "decision": "AUTHORIZED", "reason": "EXPLICIT_OWNER_MANAGER_AUTHORIZATION",
-            "authorization_id": authorization["authorization_id"], "actor": authorization["actor"],
+            "authorization_id": authorization["authorization_id"], "actor_id": source["actor_id"],
+            "actor": source["actor_login"],
             "role": authorization["role"], "authorized_at": authorization["authorized_at"],
-            "authorization": authorization, "authorization_sha256": digest}
+            "authorization": authorization, "authorization_sha256": digest,
+            "authorization_verification": verification}
 
 
 def _require_ready_authorization(facts):
@@ -125,7 +124,13 @@ def _require_ready_authorization(facts):
         raise ValidationError("PR ready refused: explicit owner/manager authorization record is required and the refusal must be recorded")
     if record.get("decision") != "AUTHORIZED":
         raise ValidationError("PR ready refused: explicit owner/manager authorization record is required; retain the refusal record")
-    expected = ready_transition_record(pr, head_sha, record.get("authorization"))
+    expected = ready_transition_record(
+        pr,
+        head_sha,
+        record.get("authorization"),
+        config=facts.get("ready_authorization_config"),
+        now=facts.get("ready_authorization_checked_at"),
+    )
     if record != expected:
         raise ValidationError("PR ready refused: authorization decision record is invalid")
 

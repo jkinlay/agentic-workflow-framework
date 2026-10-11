@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 
 NEW_CODES = {"publish_branch", "open_draft_pr", "mark_pr_ready", "transition_jira",
              "apply_operating_change", "refuse_operating_change", "post_evidence_comment"}
-OPTIONAL_FIELDS = {"owner_closure_required": bool}
+OPTIONAL_FIELDS = {"owner_closure_required": bool, "ready_authorization_verified": bool}
 STATE_REF = "routine.state"
 OPERATING_REF = "operating.state"
 CEILING_FIELDS = {"effective_ceiling", "effective_ceiling_governance_path", "effective_ceiling_sources"}
@@ -174,6 +174,8 @@ def expected_decisions(state):
         if not state["branch_pushed"] or state["pr_state"] != "DRAFT":
             raise ValueError("Readiness requires the observed current branch and open draft PR")
         if not state["validation_current"] or not state["requirements_current"]:
+            return ["block_readiness", "continue_affected_work", "defer_reviewer_launch", *follow]
+        if not state.get("ready_authorization_verified", False):
             return ["block_readiness", "continue_affected_work", "defer_reviewer_launch", *follow]
         return ["mark_pr_ready", *follow]  # Critic waits for observed ready readback.
     if state["pr_state"] != "NONE":
