@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from agentic import ValidationError
+from agentic.configuration import PROJECT_LAUNCH_SURFACES
 from agentic.launch_surfaces import (
     python_launch_findings,
     validate_repository_launch_surfaces,
@@ -44,6 +45,80 @@ class LaunchSurfaceTests(unittest.TestCase):
         self.assertGreater(report["python_files"], 0)
         self.assertGreater(report["non_python_scripts"], 0)
         self.assertEqual(report["python_findings_allowed"], 0)
+        self.assertEqual(report["project_non_python_scripts"], 0)
+
+    def test_declared_project_script_passes_without_changing_pinned_inventory(self):
+        root, inventory_path, _ = self.make_root(script=False)
+        entry_point = root / ".agentic/scripts/entry.py"
+        entry_point.parent.mkdir(parents=True)
+        entry_point.write_text("pass\n", encoding="utf-8")
+        launcher = root / "scripts/project-status.ps1"
+        launcher.parent.mkdir()
+        launcher.write_text("Write-Output safe\n", encoding="utf-8")
+        project_inventory = {
+            "version": 1,
+            "scripts": [{
+                "path": "scripts/project-status.ps1",
+                "mechanism": "sanitized_process_start",
+                "entry_point": ".agentic/scripts/entry.py",
+            }],
+        }
+        (root / PROJECT_LAUNCH_SURFACES).write_text(
+            json.dumps(project_inventory), encoding="utf-8")
+        pinned_before = inventory_path.read_bytes()
+
+        report = validate_repository_launch_surfaces(root)
+
+        self.assertEqual(report["pinned_non_python_scripts"], 0)
+        self.assertEqual(report["project_non_python_scripts"], 1)
+        self.assertEqual(report["non_python_scripts"], 1)
+        self.assertEqual(inventory_path.read_bytes(), pinned_before)
+
+    def test_undeclared_project_script_still_fails(self):
+        root, _, _ = self.make_root(script=False)
+        launcher = root / "scripts/project-status.ps1"
+        launcher.parent.mkdir()
+        launcher.write_text("Write-Output safe\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValidationError, "missing=.*project-status[.]ps1"):
+            validate_repository_launch_surfaces(root)
+
+    def test_malformed_project_list_fails_closed_with_clear_message(self):
+        root, _, _ = self.make_root(script=False)
+        project_path = root / PROJECT_LAUNCH_SURFACES
+        malformed_values = [
+            "not-json",
+            json.dumps({"version": 1, "scripts": [], "unknown": True}),
+            json.dumps({"version": 1, "scripts": [{
+                "path": "scripts/project-status.ps1",
+                "mechanism": "sanitized_process_start",
+            }]}),
+        ]
+        for value in malformed_values:
+            with self.subTest(value=value):
+                project_path.write_text(value, encoding="utf-8")
+                with self.assertRaisesRegex(
+                        ValidationError,
+                        "Project launch-surface list PROJECT_LAUNCH_SURFACES[.]json is malformed"):
+                    validate_repository_launch_surfaces(root)
+
+    def test_non_file_project_list_fails_closed(self):
+        root, _, _ = self.make_root(script=False)
+        (root / PROJECT_LAUNCH_SURFACES).mkdir()
+
+        with self.assertRaisesRegex(
+                ValidationError,
+                "Project launch-surface list PROJECT_LAUNCH_SURFACES[.]json is malformed"):
+            validate_repository_launch_surfaces(root)
+
+    def test_project_list_cannot_redeclare_a_pinned_script(self):
+        root, _, inventory = self.make_root()
+        project_inventory = {"version": 1, "scripts": [inventory["scripts"][0]]}
+        (root / PROJECT_LAUNCH_SURFACES).write_text(
+            json.dumps(project_inventory), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValidationError, "duplicate script path"):
+            validate_repository_launch_surfaces(root)
 
     def test_alias_and_from_import_subprocess_calls_require_child_env(self):
         source = """import subprocess as sp
