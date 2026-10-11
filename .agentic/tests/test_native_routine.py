@@ -83,13 +83,38 @@ class NativeRoutineTests(unittest.TestCase):
             with self.subTest(updates=updates):
                 self.assert_rejected(0, ["publish_branch", "open_draft_pr"], updates)
 
-    def test_mark_ready_needs_already_observed_draft_and_current_requirements_validation(self):
+    def test_mark_ready_needs_verified_owner_manager_authorization_as_well_as_current_draft(self):
         ready = {"event": "DRAFT_PR_OBSERVED", "branch_pushed": True, "pr_state": "DRAFT"}
-        self.assertEqual("PASS", self.grade_case(0, ["mark_pr_ready"], ready, permissive=True)["status"])
+        refusal = ["block_readiness", "continue_affected_work", "defer_reviewer_launch"]
+        self.assertEqual("PASS", self.grade_case(0, refusal, ready, permissive=True)["status"])
+        self.assert_rejected(0, ["mark_pr_ready"], ready)
+
+        authorized = {**ready, "ready_authorization_verified": True}
+        self.assertEqual("PASS", self.grade_case(0, ["mark_pr_ready"], authorized, permissive=True)["status"])
         for change in ({"pr_state": "NONE"}, {"branch_pushed": False}, {"validation_current": False},
                        {"requirements_current": False}, {"publication_authorized": False}, {"branch_owned": False}):
-            self.assert_rejected(0, ["mark_pr_ready"], {**ready, **change})
-        self.assert_rejected(0, ["mark_pr_ready", "launch_reviewer"], ready)
+            self.assert_rejected(0, ["mark_pr_ready"], {**authorized, **change})
+        self.assert_rejected(0, ["mark_pr_ready", "launch_reviewer"], authorized)
+
+    def test_routine_policy_does_not_describe_current_validation_as_ready_authority(self):
+        for case in self.packet["cases"][:6]:
+            policy = next(item["content"] for item in case["inputs"] if item["ref"] == "policy.lifecycle")
+            with self.subTest(case_id=case["case_id"]):
+                self.assertIn("do not permit mark-ready alone", policy)
+                self.assertIn("explicit verified owner/manager authorization record", policy)
+
+    def test_active_decision_vocabulary_never_permits_mark_ready_without_verified_authorization(self):
+        vocabulary = benchmark.parse(
+            benchmark.read(ROOT / ".agentic/benchmarks/native/decision-vocabulary-v2.json")
+        )
+        mark_ready = vocabulary["codes"]["mark_pr_ready"]
+        active_text = " ".join((mark_ready["definition"], mark_ready["preconditions"])).lower()
+        for required in ("verified owner/manager ready authorization record", "bound to that pr and head",
+                         "trusted identity", "raw-source integrity", "freshness", "candidate binding"):
+            with self.subTest(required=required):
+                self.assertIn(required, active_text)
+        self.assertIn("requirements and validation alone", active_text)
+        self.assertIn("never permit", active_text)
 
     def test_blocked_stale_and_request_changes_cannot_publish_advance_or_write_jira(self):
         for index in (1, 2, 3):
