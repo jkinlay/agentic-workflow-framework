@@ -17,6 +17,19 @@ class InstallerTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        self.profile_home = self.root / "profile-home"
+        self.profile_home.mkdir()
+        home_patch = patch.object(Path, "home", return_value=self.profile_home)
+        environment_patch = patch.dict(
+            os.environ,
+            {"HOME": str(self.profile_home), "USERPROFILE": str(self.profile_home),
+             "CODEX_HOME": str(self.profile_home / ".codex")},
+            clear=False,
+        )
+        home_patch.start()
+        environment_patch.start()
+        self.addCleanup(environment_patch.stop)
+        self.addCleanup(home_patch.stop)
         self.source = self.root / "package" / "awf"
         self.source.mkdir(parents=True)
         (self.source / "SKILL.md").write_text("---\nname: awf\ndescription: AWF 1.6\n---\n", encoding="utf-8")
@@ -256,6 +269,14 @@ class InstallerTests(unittest.TestCase):
         (other / "SKILL.md").write_text("other", encoding="utf-8")
         result = self.run_install(project=project)
         self.assertIn(str(other), result["duplicates"])
+        self.assertIn(str(self.dest), result["duplicate_warning"])
+        self.assertIn(str(other), result["duplicate_warning"])
+        self.assertIn(str(project), result["duplicate_warning"])
+        visibility = {item["path"]: item["visible_to"]
+                      for item in result["skill_visibility"]}
+        self.assertIn(str(self.dest), visibility)
+        self.assertIn(str(other), visibility)
+        self.assertIn(str(project), visibility[str(other)])
         self.assertEqual((other / "SKILL.md").read_text(encoding="utf-8"), "other")
 
     def test_recorded_custom_settings_survive_default_rerun_and_upgrade(self):
