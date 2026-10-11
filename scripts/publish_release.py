@@ -31,11 +31,13 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / "scripts"))
 from agentic.child_process import child_env, isolated_git_env
 from agentic import ValidationError
+from agentic.contracts import Contracts
 from agentic.safeio import relative_parts
 import safe_materialize
 from release_modes import write_mode_manifest
 RECORD_PREFIX = "AWF-RELEASE-RECORD: "
 RAW_GIT_ARGUMENTS = ("--no-replace-objects", "-c", "core.useReplaceRefs=false")
+RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 GENERATORS = (
     ("scripts/generate_contracts.py",),
     ("scripts/generate_examples.py",),
@@ -597,15 +599,95 @@ def changelog_notes(source, version):
     return match.group(0).strip()
 
 
-def render_record(commit, manifest_sha256, assets, validations, windows_check):
+def publication_scan_base(repository, commit, version):
+    """Resolve the highest earlier SemVer release tag reachable from commit."""
+    match = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version)
+    if match is None:
+        raise ReleaseError("release VERSION is not canonical MAJOR.MINOR.PATCH SemVer")
+    current = tuple(map(int, match.groups()))
+    tags = git(repository, "tag", "--merged", commit, "--list", "v[0-9]*").splitlines()
+    candidates = []
+    for tag in tags:
+        parsed = RELEASE_TAG.fullmatch(tag)
+        if parsed is None:
+            continue
+        numeric = tuple(map(int, parsed.groups()))
+        if numeric < current:
+            candidates.append((numeric, tag))
+    if not candidates:
+        raise ReleaseError(
+            "publication scan has no earlier semantic-version release tag reachable from the release commit")
+    _numeric, tag = max(candidates)
+    base = git(repository, "rev-parse", "--verify", f"{tag}^{{commit}}").strip()
+    return tag, base
+
+
+def _publication_scan_command(command, *, cwd):
+    return subprocess.run(command, cwd=cwd, env=child_env(), capture_output=True,
+                          text=False, timeout=3600, check=False)
+
+
+def run_publication_scan(repository, scanner_source, base, head, report_path, *, command_runner=None):
+    """Run the shipped publication-scan CLI and bind its exact JSON bytes."""
+    command = [sys.executable, "-B", str(Path(scanner_source) / ".agentic/scripts/workflow.py"),
+               "--root", str(repository), "publication-scan",
+               "--base", base, "--head", head, "--json"]
+    runner = command_runner or _publication_scan_command
+    try:
+        result = runner(command, cwd=repository)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ReleaseError(
+            f"publication scan command failed before release mutation: {type(exc).__name__}") from None
+    raw = result.stdout
+    if not isinstance(raw, bytes):
+        raise ReleaseError("publication scan command returned non-byte output; release refused")
+    try:
+        report = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        if result.returncode:
+            raise ReleaseError(
+                f"publication scan command failed before release mutation with exit {result.returncode}") from None
+        raise ReleaseError("publication scan returned malformed JSON; release refused") from None
+    if not isinstance(report, dict):
+        raise ReleaseError("publication scan returned a non-object report; release refused")
+    try:
+        Contracts(Path(scanner_source) / ".agentic/schemas").validate("publication-scan", report)
+    except ValidationError:
+        raise ReleaseError("publication scan report failed contract validation; release refused") from None
+    status = report.get("status")
+    blocking = report.get("blocking_findings")
+    unscanned = report.get("unscanned_count")
+    if (status not in {"PASS", "BLOCKED"} or not isinstance(blocking, int) or isinstance(blocking, bool)
+            or blocking < 0 or not isinstance(unscanned, int) or isinstance(unscanned, bool)
+            or unscanned < 0):
+        raise ReleaseError("publication scan returned an invalid status/count report; release refused")
+    if report.get("base_sha") != base or report.get("head_sha") != head:
+        raise ReleaseError("publication scan report does not bind the selected release base and exact release commit")
+    Path(report_path).write_bytes(raw)
+    if status == "BLOCKED":
+        raise ReleaseError(
+            f"publication scan BLOCKED before release mutation: {blocking} blocking finding(s), "
+            f"{unscanned} unscanned item(s)")
+    if result.returncode:
+        raise ReleaseError(
+            f"publication scan command failed before release mutation with exit {result.returncode}")
+    if blocking or unscanned:
+        raise ReleaseError("publication scan PASS contradicts blocking or unscanned counts; release refused")
+    return {"status": status, "base_sha": base, "head_sha": head,
+            "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def render_record(commit, manifest_sha256, assets, validations, windows_check, publication_scan):
     return {"format": "awf-release-record-1", "commit": commit,
             "manifest_sha256": manifest_sha256,
             "assets": {path.name: sha256(path) for path in sorted(assets)},
-            "validations": validations, "clean_windows_check": windows_check}
+            "validations": validations, "clean_windows_check": windows_check,
+            "publication_scan": publication_scan}
 
 
 def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
-            *, dry_run=False, validation_runner=default_validations, gh="gh"):
+            *, dry_run=False, validation_runner=default_validations, gh="gh",
+            scan_command_runner=None):
     repository = Path(repository).resolve()
     output_path = Path(output_dir).resolve()
     if output_path == repository or output_path.is_relative_to(repository) or output_path.exists():
@@ -628,7 +710,12 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
         Path(env["TMP"]).mkdir()
         with validation_checkout(repository, commit, Path(raw_temp) / "validation") as checkout:
             validations = validation_runner(checkout, output, env)
-        record = render_record(commit, source_proof["manifest_sha256"], assets, validations, windows)
+        _base_tag, base = publication_scan_base(repository, commit, version)
+        publication_scan = run_publication_scan(
+            repository, source, base, commit, output / "publication-scan.json",
+            command_runner=scan_command_runner)
+        record = render_record(commit, source_proof["manifest_sha256"], assets, validations, windows,
+                               publication_scan)
         tag = "v" + version
         tag_message = f"AWF {version}\n\n{RECORD_PREFIX}{json.dumps(record, sort_keys=True, separators=(',', ':'))}\n"
         body = (changelog_notes(source, version) + "\n\n### Reproducible release record\n\n"
@@ -636,7 +723,8 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
                 + "This release is a draft. The owner publishes it after review.\n")
         result = {"status": "DRY_RUN" if dry_run else "DRAFT_CREATED", "tag": tag,
                   "record": record, "tag_message": tag_message, "release_body": body,
-                  "assets": [str(path) for path in assets], "remote_changes": not dry_run}
+                   "assets": [str(path) for path in assets], "remote_changes": not dry_run,
+                   "publication_scan": publication_scan}
         if dry_run:
             return result
         # Resolve and validate the release target before any local or remote mutation.
