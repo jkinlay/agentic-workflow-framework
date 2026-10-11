@@ -19,15 +19,59 @@ from .providers.github_review_host import HostDriver, load_config
 COLLECTOR_ID = "github-production-posting-collector"
 PROVIDER_KIND = "github"
 _DIGEST = re.compile(r"[0-9a-f]{64}")
-_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
-_HTML_TAG = re.compile(r"<[A-Za-z][^>]*>")
-_HTML_FRAGMENT_ATTRIBUTE = re.compile(
-    r"\b(?:id|name)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'=<>`]+))",
+_MARKDOWN_HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
+_TOP_LEVEL_FENCE = re.compile(r"^(?P<indent> {0,3})(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+_LIST_FENCE = re.compile(
+    r"^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])[ \t]+"
+    r"(?P<marker>`{3,}|~{3,})(?P<info>.*)$"
+)
+_BLOCKQUOTE_FENCE = re.compile(
+    r"^ {0,3}>[ \t]?(?P<marker>`{3,}|~{3,})(?P<info>.*)$"
+)
+_POSSIBLE_FENCE = re.compile(
+    r"^[ \t]*(?:(?:[-+*]|[0-9]{1,9}[.)])[ \t]+|>[ \t]?)?[`~]{3,}"
+)
+_BACKTICK_RUN = re.compile(r"`+")
+_HTML_NAME = r"[A-Za-z][A-Za-z0-9.:-]*"
+_HTML_PAIRED_TAG = re.compile(
+    rf"^<(?P<tag>{_HTML_NAME})(?P<attrs>.*?)>"
+    rf"[ \t]*</(?P=tag)[ \t]*>$",
     re.IGNORECASE,
 )
-_MARKDOWN_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
-_FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
-_BACKTICK_RUN = re.compile(r"`+")
+_HTML_SELF_CLOSING_TAG = re.compile(
+    rf"^<(?P<tag>{_HTML_NAME})(?P<attrs>.*?)/>$",
+    re.IGNORECASE,
+)
+_HTML_OPEN_TAG = re.compile(
+    rf"^<(?P<tag>{_HTML_NAME})(?:[ \t]+[^<>]*)?>[ \t]*$",
+    re.IGNORECASE,
+)
+_HTML_CLOSE_TAG = re.compile(
+    rf"^</(?P<tag>{_HTML_NAME})[ \t]*>$",
+    re.IGNORECASE,
+)
+_HTML_ATTRIBUTES = re.compile(
+    rf"(?:[ \t]+{_HTML_NAME}(?:[ \t]*=[ \t]*"
+    r"(?:\"[^\"<>]*\"|'[^'<>]*'|[^\s\"'=<>`]+))?)*[ \t]*$"
+)
+_HTML_ATTRIBUTE = re.compile(
+    rf"[ \t]+(?P<name>{_HTML_NAME})(?:[ \t]*=[ \t]*"
+    r"(?:\"(?P<double>[^\"<>]*)\"|'(?P<single>[^'<>]*)'|"
+    r"(?P<bare>[^\s\"'=<>`]+)))?"
+)
+_NON_RENDERING_HTML = {
+    "code", "pre", "script", "style", "template", "textarea", "title", "xmp",
+}
+_RENDERING_HTML = {
+    "a", "abbr", "address", "article", "aside", "b", "bdi", "bdo",
+    "blockquote", "button", "caption", "cite", "data", "dd", "del", "details",
+    "dfn", "dialog", "div", "dl", "dt", "em", "fieldset", "figcaption",
+    "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
+    "header", "hgroup", "i", "ins", "kbd", "label", "legend", "li", "main",
+    "mark", "menu", "nav", "ol", "p", "q", "s", "samp", "section", "small",
+    "span", "strong", "sub", "summary", "sup", "table", "tbody", "td", "tfoot",
+    "th", "thead", "time", "tr", "u", "ul", "var",
+}
 
 
 class PostingCollectorMismatch(ValidationError):
@@ -71,7 +115,7 @@ def _provider_response(comment_id, comment_url, comment_body, pr_body):
 
 
 def _without_code_spans(markdown):
-    """Remove CommonMark backtick spans while retaining their line boundaries."""
+    """Remove definite CommonMark backtick spans; refuse an unmatched run."""
     visible = []
     cursor = 0
     while True:
@@ -83,36 +127,99 @@ def _without_code_spans(markdown):
         while closer is not None and len(closer.group()) != len(opener.group()):
             closer = _BACKTICK_RUN.search(markdown, closer.end())
         if closer is None:
-            visible.append(markdown[cursor:])
-            break
+            return None
         visible.append(markdown[cursor:opener.start()])
         visible.append("\n" * markdown[opener.start():closer.end()].count("\n"))
         cursor = closer.end()
     return "".join(visible)
 
 
-def _visible_markdown(body):
-    """Exclude comments and code that cannot define rendered fragments."""
-    body = _HTML_COMMENT.sub("", body)
-    visible = []
-    fence_character = None
-    fence_length = 0
-    for line in body.splitlines():
-        fence = _FENCE.match(line)
-        if fence is not None:
-            marker = fence.group(1)
-            if fence_character is None:
-                fence_character = marker[0]
-                fence_length = len(marker)
-            elif marker[0] == fence_character and len(marker) >= fence_length:
-                fence_character = None
-                fence_length = 0
+def _fence_open(line):
+    """Return a conservative fence description, or ``None`` when not a fence."""
+    for kind, pattern in (
+        ("top", _TOP_LEVEL_FENCE),
+        ("list", _LIST_FENCE),
+        ("blockquote", _BLOCKQUOTE_FENCE),
+    ):
+        match = pattern.fullmatch(line)
+        if match is None:
             continue
-        if fence_character is None:
+        marker = match.group("marker")
+        info = match.group("info")
+        if marker[0] == "`" and "`" in info:
+            return False
+        return {
+            "character": marker[0],
+            "length": len(marker),
+            "kind": kind,
+            "content_indent": match.start("marker") if kind == "list" else 0,
+        }
+    if _POSSIBLE_FENCE.match(line):
+        return False
+    return None
+
+
+def _fence_close(line, fence):
+    marker = re.escape(fence["character"]) + "{" + str(fence["length"]) + ",}"
+    if fence["kind"] == "top":
+        prefix = r" {0,3}"
+    elif fence["kind"] == "blockquote":
+        prefix = r" {0,3}>[ \t]?"
+    else:
+        prefix = " " * fence["content_indent"]
+    return re.fullmatch(prefix + marker + r"[ \t]*", line) is not None
+
+
+def _strip_html_comments(line, in_comment):
+    """Strip comments, retaining an unclosed comment as an end-of-body state."""
+    visible = []
+    cursor = 0
+    while True:
+        if in_comment:
+            closer = line.find("-->", cursor)
+            if closer < 0:
+                return "".join(visible), True, True
+            cursor = closer + 3
+            in_comment = False
+        opener = line.find("<!--", cursor)
+        stray_closer = line.find("-->", cursor)
+        if stray_closer >= 0 and (opener < 0 or stray_closer < opener):
+            return "", in_comment, False
+        if opener < 0:
+            visible.append(line[cursor:])
+            return "".join(visible), in_comment, True
+        visible.append(line[cursor:opener])
+        cursor = opener + 4
+        in_comment = True
+
+
+def _visible_markdown(body):
+    """Return definitely visible lines, or ``None`` when syntax is ambiguous."""
+    visible = []
+    fence = None
+    in_comment = False
+    for line in body.splitlines():
+        if fence is not None:
+            if _fence_close(line, fence):
+                fence = None
+            continue
+        if not in_comment:
+            opened = _fence_open(line)
+            if opened is False:
+                return None
+            if opened is not None:
+                fence = opened
+                continue
             if line.startswith("\t") or line.startswith("    "):
                 visible.append("")
-            else:
-                visible.append(line)
+                continue
+        line, in_comment, certain = _strip_html_comments(line, in_comment)
+        if not certain:
+            return None
+        visible.append(line)
+    if fence is not None:
+        return None
+    # An unclosed HTML comment intentionally hides the rest of the document.
     return _without_code_spans("\n".join(visible))
 
 
@@ -120,22 +227,76 @@ def _heading_fragment(heading):
     # The required fragment is ASCII.  GitHub heading fragments lowercase the
     # text, discard punctuation, retain hyphens/underscores and map whitespace
     # to hyphens.
-    plain = _HTML_TAG.sub("", heading).casefold()
+    if any(character in heading for character in "<>&\\"):
+        return None
+    plain = heading.casefold()
     plain = re.sub(r"[^a-z0-9_\- \t]", "", plain)
     return re.sub(r"[ \t]", "-", plain.strip())
 
 
+def _html_fragment(line, fragment):
+    """Recognise only a complete, ordinary rendering element on one line."""
+    match = _HTML_PAIRED_TAG.fullmatch(line)
+    if match is None:
+        match = _HTML_SELF_CLOSING_TAG.fullmatch(line)
+    if match is None:
+        return None
+    tag = match.group("tag").casefold()
+    attributes = match.group("attrs")
+    if tag in _NON_RENDERING_HTML or tag not in _RENDERING_HTML:
+        return False
+    if _HTML_ATTRIBUTES.fullmatch(attributes) is None:
+        return None
+    values = {}
+    for attribute in _HTML_ATTRIBUTE.finditer(attributes):
+        name = attribute.group("name").casefold()
+        if name in values:
+            return None
+        value = next(
+            (item for item in (
+                attribute.group("double"), attribute.group("single"),
+                attribute.group("bare"),
+            ) if item is not None),
+            None,
+        )
+        values[name] = value
+    return any(values.get(name) == fragment for name in ("id", "name"))
+
+
 def _defines_fragment(body, fragment):
     visible = _visible_markdown(body)
-    for tag in _HTML_TAG.findall(visible):
-        for match in _HTML_FRAGMENT_ATTRIBUTE.finditer(tag):
-            if next(value for value in match.groups() if value is not None) == fragment:
-                return True
+    if visible is None:
+        return False
+    found = False
+    raw_html_tag = None
     for line in visible.splitlines():
+        if raw_html_tag is not None:
+            closing = _HTML_CLOSE_TAG.fullmatch(line)
+            if fragment in line:
+                return False
+            if closing is not None and closing.group("tag").casefold() == raw_html_tag:
+                raw_html_tag = None
+            continue
         heading = _MARKDOWN_HEADING.match(line)
-        if heading is not None and _heading_fragment(heading.group(1)) == fragment:
-            return True
-    return False
+        if heading is not None:
+            rendered = _heading_fragment(heading.group(1))
+            if rendered is None:
+                return False
+            if rendered == fragment:
+                found = True
+            continue
+        html = _html_fragment(line, fragment)
+        if html is True:
+            found = True
+            continue
+        if fragment in line:
+            return False
+        opening = _HTML_OPEN_TAG.fullmatch(line)
+        if opening is not None:
+            raw_html_tag = opening.group("tag").casefold()
+    if raw_html_tag is not None:
+        return False
+    return found
 
 
 def collect_posting_observation(review_host, *, candidate, verdict,
