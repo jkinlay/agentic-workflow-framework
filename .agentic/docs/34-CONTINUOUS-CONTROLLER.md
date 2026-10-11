@@ -1,8 +1,7 @@
 # Continuous controller contract
 
-Version 1.9.4. Continue streams until complete, owner-stopped or individually
-blocked. `ContinuousControllerStore` persists decisions without granting host,
-provider, Jira or merge authority.
+Version 1.9.4. Continue streams until complete, blocked or owner-stopped.
+`ContinuousControllerStore` persists decisions but grants no external authority.
 
 ## Production entry point
 
@@ -12,73 +11,59 @@ Use only this entry point:
 python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --stream A --stream B --stream C --worktree-root ABSOLUTE_WORKTREE --project-config PROJECT_CONFIG --adapter-module REVIEWED_ADAPTER.py --adapter-sha256 PIN --adapter-config ADAPTER_CONFIG cycle --inventory-binding INVENTORY_BINDING --repository-root ABSOLUTE_REPOSITORY --repository-head-sha FULL_HEAD --repository-tree-sha FULL_TREE --now TIME --host-capacity N
 ```
 
-`cycle` observes authenticated inventory, schedules, persists a timed,
-nonce-bound intent before dispatch, reconciles uncertainty, delivers cadence
-status and accepts only fresh exact readback. The absolute, regular,
-single-link adapter is at most 1 MiB, exposes `build_adapters(config)`, and is
-loaded from UTF-8 bytes matching its SHA-256. Shell strings, unpinned
-executables and missing operations fail closed. `jira-lifecycle` performs
-read/one mapped write/readback; `merge-observed` validates merge before Jira
-reconciliation/counting; `snapshot` is read-only.
-
-Protected state is absolute and outside worktrees. Every open checks
-permissions, SQLite integrity/identity/schema and rejects link, reparse and
-hardlink aliases.
+`cycle` observes inventory, persists nonce-bound intent, reconciles uncertainty
+and delivers status. The single-link adapter is at most
+1 MiB, exports `build_adapters(config)` and matches its SHA-256; unsafe or
+missing operations fail closed. `jira-lifecycle` is read/write/readback,
+`merge-observed` validates before counting, and `snapshot` is read-only.
+Protected state stays outside worktrees; link aliases are rejected.
 
 ## No silent idle state
 
-Streams are `WORKING`, `PAUSED_INPUT`, `BLOCKED` or `COMPLETE`; rows retain
-ticket/actor/reason/action/resume, tuple/activity/gate, counts/findings/Jira.
-`COMPLETE` means no scoped action remains.
-
-Priority then ticket identity select after dependency, budget/cap,
-independence and capacity checks. One writer owns each overlapping physical
-path; blocked streams do not pause others. A cycle pins
-one absolute Git worktree/head/tree. Index spelling is canonical; directory
-claims expand over tracked descendants, case aliases collapse, and hardlinks
-share an ownership key. Case collisions, uncertain identity/parent, Git or
-filesystem links, nested repositories, junctions and reparse points fail
-closed. Repository/worktree rebinding is refused.
-
+Streams are `WORKING`, `PAUSED_INPUT`, `BLOCKED` or `COMPLETE`; rows retain all
+ticket, action, tuple, gate, review and Jira state. `COMPLETE` means no scoped
+action remains. After dependency, budget, cap, independence and capacity
+checks, priority then ticket identity select. One writer owns overlapping
+physical paths; other streams continue. Each cycle pins one absolute Git
+worktree/head/tree. Git spelling is canonical; directory descendants, case
+aliases and hardlinks share ownership. Uncertain identity/parent, collisions,
+links, nested repositories, junctions, reparses or rebinding fail closed.
 Require `required = completed + outstanding` and `completed = acceptable +
-failed + stale`. Contradictions fail before effects. Revalidate running work;
-a completed ticket must become absent or terminal before refill.
+failed + stale`; contradictions fail before effects. Revalidate running work,
+and require completed tickets to become absent or terminal before refill.
 
 ## Dispatch and cadence
 
 Persist intents before calls. `PENDING`, `IN_FLIGHT` and `UNKNOWN` reserve the
-ticket; latter consume capacity. Preflight cancels unbegun ineligible intents.
-UNKNOWN updates only its matching stream/ticket/tuple; other streams use free
-capacity.
-
-Cadence is 600 seconds; only `--migrate-status-cadence` changes stored cadence.
-Mismatch and clock rollback fail. `--disable-periodic-status` suppresses only
-scheduled digests; blocker/failure/input/merge-ready changes remain immediate.
-Outbox readback, deadlines and delivery survive restart. Digests include every
-stream/gate and unresolved UNKNOWN identity/detached flag.
+ticket; the latter consume capacity. Preflight cancels unbegun ineligible
+intents. UNKNOWN affects only its stream/ticket/tuple. Cadence is 600 seconds;
+only `--migrate-status-cadence` changes it. Mismatch and clock rollback fail.
+`--disable-periodic-status` leaves event digests enabled. Outbox readback,
+deadlines and delivery survive restart; digests include every stream/gate and
+unresolved UNKNOWN identity/detached flag.
 
 ## Jira lifecycle and merge progress
 
 Disabled Jira performs no access. Otherwise cloud/site/project/key, actor and
-issue bind intent/receipts. Recover in-flight work as `UNKNOWN`,
-read the issue and reconcile unknown intents before planning. Deterministic IDs
-survive restart; commit `IN_FLIGHT` before mutation. Never reissue a lost
-response: target-state readback completes it, otherwise keep `UNKNOWN` and
-stop that ticket's writes. New writes require exact pre-read, receipt and
-readback; identity/time mismatch fails closed while other streams continue.
-
-After validated merge, reconcile that ticket, then page the complete scope.
-Pages share scope digest, snapshot and post-reconciliation observation time.
-Bounded counts use stable IDs/categories and exclude Epics unless requested;
-missing, stale, duplicate, partial or mismatched evidence returns `UNOBSERVED`.
+issue bind receipts. Recover `UNKNOWN` work by reading and reconciling before
+planning. IDs survive restart; persist `IN_FLIGHT` before mutation. Never
+reissue a lost response: matching readback completes it, otherwise stop that
+ticket's writes. Every write needs exact pre-read/receipt/readback; identity or
+time mismatch fails closed without stopping other streams. After validated
+merge, reconcile the ticket, then page one digest-bound scope. Stable-ID counts
+exclude Epics unless requested; incomplete or mismatched evidence is
+`UNOBSERVED`.
 
 Final submission requires the [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
 ## Reference adapter (AWF-32)
 
-From a clean release root, use PowerShell 7 and owner-approved disposable
-GitHub/Jira issues. Owner publication is omitted. Set environmental
-`AWF_JIRA_TOKEN`; it is never written.
+Use PowerShell 7 and disposable issues; owner publication is omitted. Set
+`AWF_JIRA_TOKEN` and a pre-provisioned `$AWF_CODEX_HOME` per [credential
+guidance](38-PROVIDER-IDENTITY-AND-CREDENTIALS.md). The adapter isolates all
+launches. Acceptance waits for nonce-bound terminal proof; on Windows the
+watcher PID binds handoff, run and proof. It drains stderr while retaining a
+1 MiB tail and names failures as `AWF isolated CODEX_HOME/config.toml`.
 
 ```powershell
 $SOURCE_ROOT=(Resolve-Path (git rev-parse --show-toplevel).Trim()).Path
@@ -100,6 +85,8 @@ $project=Get-Content (Join-Path $WORKTREE_ROOT ".agentic/examples/PROJECT_CONFIG
 $PYTHON=(Get-Command python.exe -CommandType Application -ErrorAction Stop).Source
 $CODEX_EXE=(Get-Command codex.exe -CommandType Application -ErrorAction Stop).Source
 $GH_EXE=(Get-Command gh.exe -CommandType Application -ErrorAction Stop).Source
+$AWF_CODEX_HOME=(Resolve-Path (Read-Host "Provisioned AWF Codex home")).Path
+if (-not (Test-Path (Join-Path $AWF_CODEX_HOME 'auth.json') -PathType Leaf)) { throw "isolated auth is missing" }
 $REPOSITORY=Read-Host "GitHub owner/name"
 $PROJECT_ID=Read-Host "Accepted AWF project UUID"
 $repo=(& $GH_EXE api "repos/$REPOSITORY" | ConvertFrom-Json)
@@ -127,6 +114,8 @@ $adapter.codex.executable.path=$CODEX_EXE
 $adapter.codex.executable.sha256=(Get-FileHash $CODEX_EXE -Algorithm SHA256).Hash.ToLower()
 $adapter.codex.roles.writer.model=$project.execution.roles.worker.model
 $adapter.codex.roles.critic.model=$project.execution.roles.critic.model
+$adapter.codex | Add-Member -NotePropertyName isolated_home -NotePropertyValue $AWF_CODEX_HOME -Force
+$adapter.codex | Add-Member -NotePropertyName windows_sandbox -NotePropertyValue 'elevated' -Force
 $adapter.codex.worktree_root=$WORKTREE_ROOT
 $adapter.codex.run_record_directory=Join-Path $STATE_DIR "controller-runs"
 $adapter.github.repository=[string]$repo.full_name
@@ -169,6 +158,9 @@ $ticket=@{ticket="$JIRA_KEY-$JIRA_ISSUE";priority=1;disposition="ELIGIBLE";actor
 & $GH_EXE issue create --repo $REPOSITORY --title "Controller example $($ticket.ticket)" --label awf-controller --body ($ticket | ConvertTo-Json -Depth 10 -Compress)
 if ($LASTEXITCODE) { throw "disposable inventory issue creation failed" }
 ```
+
+The adapter refuses non-AWF config and keeps auth and raw stderr out of runs,
+outboxes, logs and evidence; doc 38 covers provisioning and troubleshooting.
 
 Each operation reuses one UTC time in its record and command. A non-advancing
 clock fails before provider access.
@@ -222,7 +214,6 @@ $temporaryStop="$STOP_FILE.tmp"
 Move-Item -LiteralPath $temporaryStop -Destination $STOP_FILE
 ```
 
-Output includes streams, receipts, delivery, readiness, errors and
-`execution_authority: false`. Merge observation needs independent
-confirmation. Missing proof, incomplete pages, identity mismatch or non-zero
-exit fails closed.
+Output includes status, errors and `execution_authority: false`. Merge
+observation needs independent confirmation. Missing proof or identity/non-zero
+failures fail closed.
