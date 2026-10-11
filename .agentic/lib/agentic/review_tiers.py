@@ -104,9 +104,25 @@ def _assignment_cap(tier, assignment_record):
     return cap
 
 
+def runtime_assignment(config):
+    """Return the ticket assignment bound by intake to this in-memory config."""
+    runtime = (config or {}).get("_awf_runtime", {})
+    if runtime is None:
+        return None
+    if not isinstance(runtime, dict):
+        raise ValidationError("AWF runtime configuration context must be an object")
+    record = runtime.get("intake_assignment")
+    if record is not None:
+        from .intake_assignment import verify_assignment_record
+        verify_assignment_record(record)
+    return record
+
+
 def round_cap(tier, config=None, assignment_record=None):
     if tier not in ROUND_CAPS:
         raise ValidationError(f"unknown review tier: {tier}")
+    if assignment_record is None:
+        assignment_record = runtime_assignment(config)
     if assignment_record is not None:
         return _assignment_cap(tier, assignment_record)
     configured = ((config or {}).get("execution", {}).get("risk_tiers", {})

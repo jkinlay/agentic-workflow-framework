@@ -243,6 +243,9 @@ def evidence_only(contract, files_changed):
 
 def cap_status(config, cycles, cap_extensions, *, assignment_record=None):
     limit = config["execution"]["max_amendment_cycles"]
+    if assignment_record is None:
+        from .review_tiers import runtime_assignment
+        assignment_record = runtime_assignment(config)
     if assignment_record is not None:
         from .review_tiers import round_cap
         tier = assignment_record.get("tier") if isinstance(assignment_record, dict) else None
@@ -256,6 +259,9 @@ def cap_status(config, cycles, cap_extensions, *, assignment_record=None):
 def cap_disposition_plan(config, disposition, cycles, cap_extensions, open_findings, *, risk_tier=2,
                          assignment_record=None):
     """Translate an owner cap disposition into the lifecycle event and verified facts."""
+    if assignment_record is None:
+        from .review_tiers import runtime_assignment
+        assignment_record = runtime_assignment(config)
     if assignment_record is not None and assignment_record.get("tier") != risk_tier:
         raise ValidationError("Cap disposition risk tier disagrees with the current assignment record")
     status = cap_status(config, cycles, cap_extensions, assignment_record=assignment_record)

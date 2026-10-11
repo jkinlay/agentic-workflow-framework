@@ -22,6 +22,14 @@ DEFAULT_OWNER_CLOSURE_KEYWORDS = ("release", "publication", "qualification", "cu
 _TIER_LABEL = re.compile(r"^tier-[123]$")
 
 
+class TierAssignmentOutcomeError(ValidationError):
+    """A Jira assignment mutation whose final provider state is not trustworthy."""
+
+    def __init__(self, message, outcome):
+        super().__init__(message)
+        self.outcome = copy.deepcopy(outcome)
+
+
 def owner_closure_required(config, snapshot):
     """Release/publication/qualification/cutover/production items stay In Review until the owner closes."""
     keywords = [k.casefold() for k in config["jira"].get("owner_closure_keywords", DEFAULT_OWNER_CLOSURE_KEYWORDS)]
@@ -136,29 +144,53 @@ def write_tier_assignment(client, assignment, *, controller_actor_id, acting_act
     try:
         before = client.read_issue(key)
     except Exception as exc:
-        raise ValidationError("Jira tier assignment read-before-write failed") from exc
+        outcome = {"status": "UNKNOWN", "write_stage": "read_before", "writes_stopped": True,
+                   "ticket_key": key, "assignment_id": assignment.get("assignment_id"),
+                   "observed_actor": None, "observed_at": None,
+                   "reason": "Jira tier assignment read-before-write failed"}
+        raise TierAssignmentOutcomeError(outcome["reason"], outcome) from exc
     labels = before.get("labels") if isinstance(before, dict) else None
     if not isinstance(labels, list) or not all(isinstance(label, str) for label in labels):
         raise ValidationError("Jira tier assignment read did not return labels")
     target = f"tier-{assignment['tier']}"
     updated = [label for label in labels if not _TIER_LABEL.fullmatch(label)] + [target]
     comment = tier_assignment_comment(assignment)
+    stage = "labels"
     try:
         client.set_labels(key, updated, actor_id=acting_actor_id)
+        stage = "comment"
         client.add_comment(key, comment, actor_id=acting_actor_id)
+        stage = "read_back"
         after = client.read_issue(key)
     except Exception as exc:
-        raise ValidationError("Jira tier assignment write/read-back outcome is unknown; stop writes for this ticket") from exc
+        outcome = {"status": "UNKNOWN", "write_stage": stage, "writes_stopped": True,
+                   "ticket_key": key, "assignment_id": assignment.get("assignment_id"),
+                   "observed_actor": None, "observed_at": None,
+                   "before": {"labels": copy.deepcopy(labels)},
+                   "reason": "Jira tier assignment write/read-back outcome is unknown; stop writes for this ticket"}
+        raise TierAssignmentOutcomeError(outcome["reason"], outcome) from exc
     observed_labels = after.get("labels") if isinstance(after, dict) else None
     comments = after.get("comments") if isinstance(after, dict) else None
     matching = [item for item in comments or [] if isinstance(item, dict)
                 and item.get("body") == comment and item.get("author_id") == acting_actor_id]
     tier_labels = [label for label in observed_labels or [] if isinstance(label, str) and _TIER_LABEL.fullmatch(label)]
     if tier_labels != [target] or len(matching) != 1:
-        raise ValidationError("Jira tier assignment read-back mismatch; stop writes for this ticket")
+        outcome = {"status": "FAILED", "write_stage": "read_back", "writes_stopped": True,
+                   "ticket_key": key, "assignment_id": assignment.get("assignment_id"),
+                   "observed_actor": None, "observed_at": None,
+                   "before": {"labels": copy.deepcopy(labels)},
+                   "after": {"labels": copy.deepcopy(observed_labels)},
+                   "reason": "Jira tier assignment read-back mismatch; stop writes for this ticket"}
+        raise TierAssignmentOutcomeError(outcome["reason"], outcome)
     comment_id = matching[0].get("id")
     if not isinstance(comment_id, (str, int)) or str(comment_id) == "":
-        raise ValidationError("Jira tier assignment read-back omitted the comment identity; stop writes for this ticket")
+        outcome = {"status": "FAILED", "write_stage": "read_back", "writes_stopped": True,
+                   "ticket_key": key, "assignment_id": assignment.get("assignment_id"),
+                   "observed_actor": matching[0].get("author_id"), "observed_at": None,
+                   "before": {"labels": copy.deepcopy(labels)},
+                   "after": {"labels": copy.deepcopy(observed_labels)},
+                   "reason": "Jira tier assignment read-back omitted the comment identity; stop writes for this ticket"}
+        raise TierAssignmentOutcomeError(outcome["reason"], outcome)
     return {"read_back_status": "VERIFIED", "label": target,
             "comment_id": str(comment_id),
             "controller_actor_id": acting_actor_id,

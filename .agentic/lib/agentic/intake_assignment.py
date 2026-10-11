@@ -12,8 +12,8 @@ import re
 import uuid
 
 from . import ValidationError
-from .canonical import fingerprint, timestamp
-from .jira_lifecycle import write_tier_assignment
+from .canonical import fingerprint, sha256, timestamp
+from .jira_lifecycle import TierAssignmentOutcomeError, write_tier_assignment
 
 DEFAULT_CAPS = {1: 1, 2: 2, 3: 3}
 _TIER3_FLAGS = {
@@ -26,12 +26,47 @@ _TIER3_TEXT = re.compile(
     r"install(?:er|ation)?|upgrades?|packag(?:e|ing)|controller|release[_ ]+pr)\b",
     re.IGNORECASE,
 )
+_TIER3_PATHS = (
+    ".github/workflows/**",
+    ".agentic/lib/agentic/gates.py",
+    ".agentic/lib/agentic/*controller*.py",
+    ".agentic/lib/agentic/authorization.py",
+    ".agentic/lib/agentic/lifecycle.py",
+    ".agentic/lib/agentic/review_policy.py",
+    ".agentic/lib/agentic/review_tiers.py",
+    ".agentic/lib/agentic/publication.py",
+    ".agentic/lib/agentic/installer.py",
+    ".agentic/lib/agentic/upgrade.py",
+    "scripts/bootstrap_project.py",
+    "scripts/build_release.py",
+    "scripts/publish_release.py",
+)
 _PR_START = "<!-- awf-review-assignment:start -->"
 _PR_END = "<!-- awf-review-assignment:end -->"
 
 
 def _matches(path, patterns):
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+
+
+def _canonical_repo_path(value):
+    """Return one portable repository-relative spelling or reject ambiguity."""
+    if not isinstance(value, str) or not value or "\0" in value:
+        raise ValidationError("Ticket write_paths must contain non-empty repository paths")
+    path = value.replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    if (not path or path.startswith("/") or re.match(r"^[A-Za-z]:", path)
+            or any(part in {"", ".", ".."} for part in path.split("/"))):
+        raise ValidationError(f"Ticket write path is not canonical repository-relative text: {value!r}")
+    return path
+
+
+def _protected_paths(config, paths):
+    patterns = config.get("scope", {}).get("protected_paths", [])
+    if not isinstance(patterns, list) or not all(isinstance(item, str) and item for item in patterns):
+        raise ValidationError("scope.protected_paths must be a list of non-empty patterns")
+    return [path for path in paths if _matches(path, patterns)]
 
 
 def _ticket_value(ticket, name, default=None):
@@ -64,15 +99,15 @@ def classify_ticket(config, ticket):
     paths = ticket.get("write_paths")
     if not isinstance(paths, list) or not paths or not all(isinstance(path, str) and path for path in paths):
         raise ValidationError("Ticket intake requires one or more declared write_paths")
-    paths = sorted(set(paths))
+    paths = sorted({_canonical_repo_path(path) for path in paths})
     flags = ticket.get("risk_flags", [])
     if not isinstance(flags, list) or not all(isinstance(flag, str) and flag for flag in flags):
         raise ValidationError("Ticket risk_flags must be a list of non-empty strings")
     flags = sorted(set(flags))
     text = " ".join([*(str(ticket.get(name, "")) for name in ("summary", "description")), *paths])
     kind = ticket.get("change_kind")
-    protected_patterns = config.get("scope", {}).get("protected_paths", [])
-    protected = [path for path in paths if _matches(path, protected_patterns)]
+    protected = _protected_paths(config, paths)
+    tier3_paths = [path for path in paths if _matches(path, _TIER3_PATHS)]
     reasons = []
     tier3 = sorted(set(flags) & _TIER3_FLAGS)
     if tier3:
@@ -81,7 +116,10 @@ def classify_ticket(config, ticket):
         reasons.append("release PRs require Tier 3 and owner review")
     if _TIER3_TEXT.search(text):
         reasons.append("ticket text identifies security, governance, migration, packaging, controller, or release work")
-    if tier3 or kind == "release_pr" or _TIER3_TEXT.search(text):
+    if tier3_paths:
+        reasons.append("governance, controller, release, or CI-gate paths require Tier 3: "
+                       + ", ".join(tier3_paths))
+    if tier3 or tier3_paths or kind == "release_pr" or _TIER3_TEXT.search(text):
         tier = 3
     else:
         eligible = tiers.get("tier1_eligible_paths", [])
@@ -171,7 +209,7 @@ def verify_assignment_record(record):
     return record
 
 
-def _jira_receipt(config, jira_client, record, controller_actor_id):
+def _jira_receipt(config, jira_client, record, controller_actor_id, state):
     jira = config.get("jira", {})
     configured_actor = jira.get("controller_actor_id")
     if configured_actor is not None and configured_actor != controller_actor_id:
@@ -181,13 +219,36 @@ def _jira_receipt(config, jira_client, record, controller_actor_id):
                 "reason": "Jira is disabled; local provisional assignment only"}
     if jira_client is None:
         raise ValidationError("Enabled Jira tier assignment requires the controller Jira adapter")
-    return write_tier_assignment(jira_client, record, controller_actor_id=controller_actor_id,
-                                 acting_actor_id=controller_actor_id)
+    try:
+        return write_tier_assignment(jira_client, record, controller_actor_id=controller_actor_id,
+                                     acting_actor_id=controller_actor_id)
+    except TierAssignmentOutcomeError as exc:
+        state.setdefault("jira_assignment_write_stops", {})[record["ticket_key"]] = copy.deepcopy(exc.outcome)
+        raise
 
 
 def _store(state, record):
     state.setdefault("tier_assignments", {})[record["ticket_key"]] = copy.deepcopy(record)
     state.setdefault("tier_assignment_history", {}).setdefault(record["ticket_key"], []).append(copy.deepcopy(record))
+
+
+def _ensure_jira_writes_allowed(state, ticket_key):
+    stop = state.get("jira_assignment_write_stops", {}).get(ticket_key)
+    if isinstance(stop, dict) and stop.get("writes_stopped") is True:
+        raise ValidationError(
+            f"Jira tier-assignment writes are stopped for {ticket_key} after an unknown or mismatched outcome; never reissue")
+
+
+def _bind_runtime_assignment(config, record):
+    """Bind the current ticket record to the in-memory config used by live policy calls.
+
+    The ``_awf_runtime`` member is process-local context and must never be written
+    back as reviewed project configuration.
+    """
+    runtime = config.setdefault("_awf_runtime", {})
+    if not isinstance(runtime, dict):
+        raise ValidationError("AWF runtime configuration context must be an object")
+    runtime["intake_assignment"] = copy.deepcopy(record)
 
 
 def assign_intake(config, ticket, state, jira_client, *, now, controller_actor_id, source="intake"):
@@ -196,14 +257,16 @@ def assign_intake(config, ticket, state, jira_client, *, now, controller_actor_i
         raise ValidationError("AWF state must be an object")
     if not isinstance(controller_actor_id, (str, int)) or controller_actor_id == "":
         raise ValidationError("Review assignment requires the controller actor identity")
+    _ensure_jira_writes_allowed(state, ticket.get("key"))
     if ticket.get("key") in state.get("tier_assignments", {}):
         raise ValidationError("Existing review assignments change only through the trusted-owner audit path")
     classification = classify_ticket(config, ticket)
     record = _record(ticket["key"], classification, source=source,
                      assigned_by=controller_actor_id, now=now)
-    record["jira"] = _jira_receipt(config, jira_client, record, controller_actor_id)
+    record["jira"] = _jira_receipt(config, jira_client, record, controller_actor_id, state)
     sealed = _seal(record)
     _store(state, sealed)
+    _bind_runtime_assignment(config, sealed)
     return copy.deepcopy(sealed)
 
 
@@ -266,38 +329,88 @@ def _update_bound_prs(state, ticket_key, record):
             "assignment_sha256": record["assignment_sha256"], "body": body}
 
 
+def _authenticate_owner_source(config, ticket_key, current, *, requested_tier, requested_cap,
+                               reason, now, owner_source, verify_owner_source):
+    if not isinstance(owner_source, dict) or not callable(verify_owner_source):
+        raise ValidationError("Review assignment changes require a verified immutable owner-source record")
+    if (owner_source.get("channel") != "github_pr_comment"
+            or type(owner_source.get("comment_id")) is not int or owner_source["comment_id"] < 1
+            or not isinstance(owner_source.get("actor_login"), str)
+            or not owner_source["actor_login"]):
+        raise ValidationError("Owner-source record lacks an immutable provider comment identity")
+    binding = {"ticket_key": ticket_key, "current_assignment_id": current["assignment_id"]}
+    if owner_source.get("binding") != binding:
+        raise ValidationError("Owner-source binding differs from the current ticket assignment")
+    actor = owner_source.get("actor_id")
+    owners = config.get("merge_gate", {}).get("trusted_owner_ids", [])
+    if actor not in owners:
+        raise ValidationError("Review assignment changes require an authenticated trusted owner")
+    created = owner_source.get("created_at")
+    if owner_source.get("updated_at") != created:
+        raise ValidationError("Edited owner-source records are invalid; obtain a new immutable observation")
+    timestamp(created)
+    expected_body = (
+        f"AWF REVIEW ASSIGNMENT ticket={ticket_key} current={current['assignment_id']} "
+        f"tier={requested_tier} cap={requested_cap} reason_sha256={sha256(reason.strip().encode('utf-8'))}")
+    raw_body = owner_source.get("raw_body")
+    raw_digest = owner_source.get("raw_body_sha256")
+    if raw_body != expected_body or raw_digest != sha256(expected_body.encode("utf-8")):
+        raise ValidationError("Owner-source raw command does not bind the requested assignment change")
+    expected = {"binding": binding, "actor_id": actor, "raw_body_sha256": raw_digest,
+                "requested": {"tier": requested_tier, "round_cap": requested_cap}, "now": now}
+    try:
+        verified = verify_owner_source(copy.deepcopy(owner_source), copy.deepcopy(expected))
+    except Exception as exc:
+        raise ValidationError("Owner-source authentication failed") from exc
+    if (not isinstance(verified, dict) or verified.get("status") != "VERIFIED"
+            or verified.get("actor_id") != actor or verified.get("binding") != binding
+            or verified.get("raw_body_sha256") != raw_digest
+            or not isinstance(verified.get("source_id"), str) or not verified["source_id"]
+            or not isinstance(verified.get("observed_at"), str)):
+        raise ValidationError("Owner-source verifier did not authenticate the exact assignment request")
+    timestamp(verified["observed_at"])
+    return actor, verified
+
+
 def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
-                      requested_cap, requested_by, reason, now, controller_actor_id):
+                      requested_cap, owner_source, verify_owner_source, reason, now,
+                      controller_actor_id):
     """Apply a trusted-owner change and retain its old/new audit everywhere."""
     current = state.get("tier_assignments", {}).get(ticket_key)
     if not isinstance(current, dict):
         raise ValidationError(f"No current review assignment for {ticket_key}")
-    owners = config.get("merge_gate", {}).get("trusted_owner_ids", [])
-    if requested_by not in owners:
-        raise ValidationError("Review assignment changes require an authenticated trusted owner")
+    _ensure_jira_writes_allowed(state, ticket_key)
     if not isinstance(reason, str) or not reason.strip():
         raise ValidationError("Review assignment changes require a non-empty reason")
     if requested_tier not in DEFAULT_CAPS or type(requested_cap) is not int:
         raise ValidationError("Review assignment changes require tier 1, 2 or 3 and an integer cap")
-    floor = 2 if current.get("protected_paths") else 1
+    requested_by, verified_owner = _authenticate_owner_source(
+        config, ticket_key, current, requested_tier=requested_tier,
+        requested_cap=requested_cap, reason=reason, now=now,
+        owner_source=owner_source, verify_owner_source=verify_owner_source)
+    protected = _protected_paths(config, [_canonical_repo_path(path) for path in current["write_paths"]])
+    floor = 2 if protected else 1
     if requested_tier < floor:
         rejection = {"ticket_key": ticket_key, "who": requested_by, "when": now,
                      "requested": {"tier": requested_tier, "round_cap": requested_cap},
                      "reason_code": "PROTECTED_PATH_FLOOR",
-                     "reason": "protected-path floor is Tier 2 for: " + ", ".join(current.get("protected_paths", []))}
+                     "owner_source_id": verified_owner["source_id"],
+                     "reason": "protected-path floor is Tier 2 for: " + ", ".join(protected)}
         state.setdefault("assignment_rejections", []).append(rejection)
         raise ValidationError(rejection["reason"])
     allowed_cap = _configured_cap(config, requested_tier)
     if requested_cap < 1 or requested_cap > allowed_cap:
         raise ValidationError(f"Requested cap exceeds the reviewed Tier {requested_tier} cap of {allowed_cap}")
     audit = {"who": requested_by, "when": now, "why": reason.strip(),
+             "owner_source_id": verified_owner["source_id"],
+             "owner_source_sha256": verified_owner["raw_body_sha256"],
              "old": {"tier": current["tier"], "round_cap": current["round_cap"]},
              "new": {"tier": requested_tier, "round_cap": requested_cap}}
     classification = {
         "tier": requested_tier, "round_cap": requested_cap,
         "owner_review_required": requested_tier == 3,
         "protected_path_floor": floor,
-        "protected_paths": list(current.get("protected_paths", [])),
+        "protected_paths": list(protected),
         "write_paths": list(current["write_paths"]),
         "risk_flags": list(current.get("risk_flags", [])),
         "reasons": list(current.get("reasons", [])) + ["trusted-owner change: " + reason.strip()],
@@ -306,9 +419,10 @@ def change_assignment(config, ticket_key, state, jira_client, *, requested_tier,
     record = _record(ticket_key, classification, source="owner_change",
                      assigned_by=controller_actor_id, now=now,
                      previous_assignment_id=current["assignment_id"], change_audit=audit)
-    record["jira"] = _jira_receipt(config, jira_client, record, controller_actor_id)
+    record["jira"] = _jira_receipt(config, jira_client, record, controller_actor_id, state)
     sealed = _seal(record)
     _store(state, sealed)
+    _bind_runtime_assignment(config, sealed)
     _update_bound_prs(state, ticket_key, sealed)
     return copy.deepcopy(sealed)
 
