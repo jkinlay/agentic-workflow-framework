@@ -125,6 +125,22 @@ class RuleDefaults(unittest.TestCase):
                 self.assertEqual((tier, cap, owner_review),
                                  (result["tier"], result["round_cap"], result["owner_review_required"]))
 
+    def test_multi_file_tools_change_is_not_tier_one(self):
+        cfg = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+        result = classify_ticket(
+            cfg,
+            ticket(
+                summary="Moderate tool refactor",
+                write_paths=["tools/a.py", "tools/b.py"],
+            ),
+        )
+        self.assertEqual((2, 2), (result["tier"], result["round_cap"]))
+        single = classify_ticket(
+            cfg,
+            ticket(summary="Moderate tool refactor", write_paths=["tools/a.py"]),
+        )
+        self.assertEqual((2, 2), (single["tier"], single["round_cap"]))
+
 
 class IntakeRecordsAssignment(unittest.TestCase):
     def test_intake_writes_state_and_jira_then_reads_back(self):
