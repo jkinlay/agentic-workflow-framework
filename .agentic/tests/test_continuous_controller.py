@@ -675,6 +675,86 @@ class ContinuousControllerTests(unittest.TestCase):
         self.assertEqual(len(dispatch_calls), 1)
         self.assertEqual(second["dispatch_receipts"][0]["status"], "ACCEPTED")
 
+    def test_successful_unknown_reconciliation_clears_matching_blocker_before_change_digest(self):
+        store = ContinuousControllerStore(
+            Path(self.temporary.name) / "unknown-blocker-clear.sqlite3", ["A", "B"],
+            periodic_status_enabled=False)
+        unknown_ticket = ticket("EX-66", 1)
+        unrelated_reason = "independent dependency remains unavailable"
+        unrelated_ticket = ticket("EX-OTHER", 2, "BLOCKED", reason=unrelated_reason)
+        delivered = []
+        repository_binding = {
+            "repository": "example.invalid/repository", "head": "a" * 40, "tree": "b" * 40}
+        with patch.object(continuous_controller, "canonical_repository_paths",
+                          side_effect=lambda tickets, *_: (tickets, repository_binding)):
+            first = production_controller_cycle(
+                store, now=NOW, host_capacity=2, inventory_binding=INVENTORY_BINDING,
+                **REPOSITORY,
+                observe_inventory=lambda: inventory_observation(
+                    NOW, [unknown_ticket, unrelated_ticket]),
+                dispatch_ticket=lambda payload: (_ for _ in ()).throw(
+                    RuntimeError("synthetic uncertain host result")),
+                observe_dispatch=lambda payload: self.fail("first cycle cannot reconcile"),
+                deliver_status=lambda digest: delivered.append(digest) or {
+                    "delivery_id": digest["delivery_id"], "status": "DELIVERED",
+                    "observed_at": NOW})
+        self.assertEqual(first["errors"][0]["state"], "UNKNOWN")
+        unknown = delivered[-1]
+        self.assertEqual(unknown["kind"], "CHANGE")
+        self.assertEqual(len(unknown["unresolved_dispatches"]), 1)
+        blocked = next(row for row in unknown["streams"] if row["stream"] == "A")
+        self.assertEqual(blocked["state"], "BLOCKED")
+        self.assertIn("Dispatch outcome unknown", blocked["reason"])
+
+        reconciled_at = "2026-10-02T10:00:01Z"
+        with patch.object(continuous_controller, "canonical_repository_paths",
+                          side_effect=lambda tickets, *_: (tickets, repository_binding)):
+            second = production_controller_cycle(
+                store, now=reconciled_at, host_capacity=2,
+                inventory_binding=INVENTORY_BINDING, **REPOSITORY,
+                observe_inventory=lambda: inventory_observation(
+                    reconciled_at, [unknown_ticket, unrelated_ticket]),
+                dispatch_ticket=lambda payload: self.fail("unknown dispatch was reissued"),
+                observe_dispatch=lambda payload: dispatch_receipt(payload, reconciled_at),
+                deliver_status=lambda digest: delivered.append(digest) or {
+                    "delivery_id": digest["delivery_id"], "status": "DELIVERED",
+                    "observed_at": reconciled_at})
+        self.assertEqual(second["dispatch_receipts"][0]["status"], "ACCEPTED")
+        change = delivered[-1]
+        self.assertEqual(change["kind"], "CHANGE")
+        self.assertEqual(change["unresolved_dispatches"], [])
+        matching = next(row for row in change["streams"] if row["stream"] == "A")
+        self.assertEqual(matching["state"], "WORKING")
+        self.assertNotIn("Dispatch outcome unknown", matching["reason"])
+        unrelated = next(row for row in change["streams"] if row["stream"] == "B")
+        self.assertEqual((unrelated["state"], unrelated["reason"]),
+                         ("BLOCKED", unrelated_reason))
+
+    def test_unsuccessful_unknown_reconciliation_keeps_matching_blocker(self):
+        store = ContinuousControllerStore(
+            Path(self.temporary.name) / "unknown-blocker-retained.sqlite3", ["A"],
+            periodic_status_enabled=False)
+        unknown_ticket = ticket("EX-UNKNOWN", 1)
+        store.schedule([unknown_ticket], NOW, host_capacity=1)
+        intent = store.prepare_dispatches(NOW)[0]
+        store.begin_dispatch(intent["dispatch_id"], NOW)
+        unknown_at = "2026-10-02T10:00:01Z"
+        store.mark_dispatch_unknown(intent["dispatch_id"], unknown_at)
+        unknown = store.digest(unknown_at)
+        store.acknowledge_digest(unknown["delivery_id"], unknown_at)
+
+        observed_at = "2026-10-02T10:00:02Z"
+        store.schedule([unknown_ticket], observed_at, host_capacity=1)
+        store.begin_dispatch_reconciliation(intent["dispatch_id"], observed_at)
+        store.mark_dispatch_unknown(intent["dispatch_id"], observed_at)
+        change = store.digest("2026-10-02T10:00:03Z")
+
+        self.assertEqual(change["kind"], "CHANGE")
+        self.assertEqual(len(change["unresolved_dispatches"]), 1)
+        matching = change["streams"][0]
+        self.assertEqual(matching["state"], "BLOCKED")
+        self.assertIn("Dispatch outcome unknown", matching["reason"])
+
     def test_old_unknown_reconciliation_failure_cannot_clobber_reassigned_stream(self):
         store = ContinuousControllerStore(Path(self.temporary.name) / "reassigned-unknown.sqlite3",
                                           ["A", "B"])

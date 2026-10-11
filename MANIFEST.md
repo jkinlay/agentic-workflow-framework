@@ -2,7 +2,7 @@
 
 453 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `9a84708b14fd06f1e211c961a8b9e70bc1719c2f31e3154f3459485abd19a3dc`
+MANIFEST.json SHA-256: `f9c0a7a8af63776d5656eb98b228ff824b458ff511c0267e0dc0557dda1906ac`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -44,7 +44,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/32-WINDOWS-DIAGNOSTICS.md` | `2e7049857d2b88645f1a6ec92601d2e8ba0e10ac607653da03ea1b118b8a2925` |
 | `.agentic/docs/33-PARALLEL-HEAVY-VALIDATION.md` | `6efd5b17d388a7bb4f0de5d0320c15b3a7e72abef1d8a8b1f53daea02cd66d16` |
 | `.agentic/docs/33-REVIEW-COMPLETION-BARRIER.md` | `d8fed51697f646564bae3f31b9f626b3f08d59685aba46ecd61e1529bd0d3ee7` |
-| `.agentic/docs/34-CONTINUOUS-CONTROLLER.md` | `86d42df5afb5efd134803da7ba21197ffebb88393fefd3ef7452864659d41ec2` |
+| `.agentic/docs/34-CONTINUOUS-CONTROLLER.md` | `1ba3e289a7e86cc78cd325b5878244093beb4c0b7d3126bca3ae46e480ba48ef` |
 | `.agentic/docs/35-RULES-ACTIVATION.md` | `698a4f8ddce5cd6c9e3c244d3af1a3252c2a125e2779bbfe2fe09434cf035ede` |
 | `.agentic/docs/36-FIVE-SLOT-ACCELERATION.md` | `4b390505ce780985684ce4724e379104c31d0498ba4e0ee18c05bfb298113ab9` |
 | `.agentic/docs/37-PRIVATE-DENY-SCAN.md` | `54aee43783e6bed3fa25a08f4e0e1d28553fed92d7b71c9e97d8f47ab9db0e6c` |
@@ -79,7 +79,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/closeout.py` | `0920c58f0726bc9f0bd293bc63cdd3b364b4df4a7bebdcb2b51b863e912f247e` |
 | `.agentic/lib/agentic/configuration.py` | `70d15ebf0fd7cbe3551db5ba9e533bfec91b5ac6a2e3c4f93df21f066acb29ac` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `8ec3444ba33eb0f87de51ac8b0657eb5b9f68ff0a0fd1b123d4d25f34daa284a` |
+| `.agentic/lib/agentic/continuous_controller.py` | `9a9cb325150282a713e0b2225c80fe7bc28e6b6c8466fa1901070cfe3d68e8a8` |
 | `.agentic/lib/agentic/contracts.py` | `608011b68fd03da49340fe96cef754a22440363717490c613cef6c9280da356b` |
 | `.agentic/lib/agentic/controller_state.py` | `08f533e320c4a6bb4563a040fa9b6df06c7efddadb0ddb9af8155512f07047ff` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
@@ -280,7 +280,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_codeowners.py` | `12c0b86ed561d24d4d3c6cbe2c713be9820e62ed862455658a9b792e0fac5184` |
 | `.agentic/tests/test_config_diagnostics.py` | `e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07` |
 | `.agentic/tests/test_continuation.py` | `1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633` |
-| `.agentic/tests/test_continuous_controller.py` | `ade33b5b31b496623ac59f065a06563bafa7914adbcbbc08765a272ec8d8062a` |
+| `.agentic/tests/test_continuous_controller.py` | `6dc621d532125321b32e9d1d976de78383921bc73a1f5658359fda7af282e1c6` |
 | `.agentic/tests/test_five_slot_acceleration.py` | `35b3f99410481c16f91e5be438d44ccb6e61e429e1b869fd18ac184a238bbb98` |
 | `.agentic/tests/test_gittree.py` | `e0d5b302d0d7d1f5701557b094126b8fc9002916781bce8e0d94b4cf1740da0e` |
 | `.agentic/tests/test_handoff.py` | `9fa04bac40a253cac1b728705cb2d3eb228c3b42427a16b25496ba32042d4788` |
@@ -447,7 +447,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_ci_suite_coverage.py` | `e2afb082472a9c09282b06b8f4731034c6d0950b195c3da4bfb34c6c1be1e468` |
 | `scripts/tests/test_cli_failure_paths.py` | `0a0cef4139b488d1f8a048401ff6e7ef1582171a245c6d320113acf0e4c30dd1` |
 | `scripts/tests/test_fresh_bootstrap.py` | `18cb82bb6399defac5969f8e7af82a00e8657516461a386374730b0c714d9a7a` |
-| `scripts/tests/test_generate_examples_schema_refs.py` | `b35f0334da02ec3720f4dd4e39204610c08296513336ef28270dfa894f022853` |
+| `scripts/tests/test_generate_examples_schema_refs.py` | `acd329623a932ba4b7485fe1b544dc6729631ad5a5a20f73901e093571f84b17` |
 | `scripts/tests/test_installed_self_test.py` | `63937908a219b3681cb0bbee3a61714755b3bb25d276df317cb302dba68738e9` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
