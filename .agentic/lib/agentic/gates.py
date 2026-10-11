@@ -8,7 +8,8 @@ import re
 import uuid
 
 from . import ValidationError
-from .canonical import canonical, fingerprint, fresh, loads, sha256, timestamp, unique
+from .canonical import (canonical, candidate_id, fingerprint, fresh, loads,
+                        reject_git_sha_candidate_ids, sha256, timestamp, unique)
 from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_path,
                      specialist_domains, validate_config)
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
@@ -110,7 +111,7 @@ def expected_binding(config, workflow, bundle):
     return {"project_id": config["project"]["id"], "repository_id": config["github"]["repository_id"],
             "issue_id": bundle["snapshot"]["issue_id"], "requirements_hash": fingerprint("requirements", bundle["snapshot"]),
             "contract_hash": fingerprint("contract", bundle["contract"]), "policy_hash": policy_hash(config, workflow),
-            "candidate_id": fingerprint("candidate", bundle["candidate"])}
+            "candidate_id": candidate_id(bundle["candidate"])}
 
 
 def publication_receipt_consistent(publication):
@@ -194,6 +195,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         raise ValidationError("Jira is disabled; this Jira evidence evaluator requires Jira scope. Continue provisional local planning through the native host.")
     if not config["merge_gate"]["trusted_owner_ids"]:
         raise ValidationError("$.merge_gate.trusted_owner_ids: configure actual trusted owner IDs before merge authorization")
+    reject_git_sha_candidate_ids(bundle)
     contracts.validate("evidence-bundle", bundle)
     from .review_completion import validate_gate_submission
     review_submission = validate_gate_submission(
