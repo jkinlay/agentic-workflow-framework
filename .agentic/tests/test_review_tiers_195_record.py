@@ -10,11 +10,20 @@ from agentic import ValidationError
 from agentic.canonical import fingerprint
 from agentic.review_policy import cap_disposition_plan, cap_status
 from agentic.review_tiers import review_decision, round_cap, validate_round
-from agentic.intake_assignment import assign_intake
+from agentic.intake_assignment import assign_intake, assign_inventory
 from agentic.lifecycle import review_round_transition
 
 
 class AssignmentRecordCaps(unittest.TestCase):
+    def config(self):
+        return {"execution": {"max_amendment_cycles": 3, "max_cap_extensions": 2,
+                              "risk_tiers": {"tier1_eligible_paths": ["docs/**"],
+                                             "tier1_excluded_paths": [],
+                                             "tier1_review": {}, "tier2_review": {},
+                                             "tier3_review": {"max_rounds": 3}}},
+                "scope": {"protected_paths": []}, "jira": {"enabled": False},
+                "merge_gate": {"trusted_owner_ids": []}}
+
     def record(self, tier, cap, assignment_id="assignment-1"):
         record = {"assignment_id": assignment_id, "ticket_key": "AWF-48", "tier": tier,
                   "round_cap": cap, "owner_review_required": tier == 3}
@@ -71,13 +80,7 @@ class AssignmentRecordCaps(unittest.TestCase):
                                        assignment_record=self.record(2, 2)))
 
     def test_live_lifecycle_and_cap_disposition_use_intake_bound_record(self):
-        cfg = {"execution": {"max_amendment_cycles": 3, "max_cap_extensions": 2,
-                             "risk_tiers": {"tier1_eligible_paths": ["docs/**"],
-                                            "tier1_excluded_paths": [],
-                                            "tier1_review": {}, "tier2_review": {},
-                                            "tier3_review": {"max_rounds": 3}}},
-               "scope": {"protected_paths": []}, "jira": {"enabled": False},
-               "merge_gate": {"trusted_owner_ids": []}}
+        cfg = self.config()
         state = {}
         record = assign_intake(cfg, {"key": "AWF-48", "summary": "Moderate code",
                                      "description": "", "write_paths": ["src/x.py"],
@@ -87,7 +90,59 @@ class AssignmentRecordCaps(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "cap is 2"):
             review_round_transition(2, 3, verdict="PASS", config=cfg)
         self.assertEqual(record["assignment_id"],
-                         cfg["_awf_runtime"]["intake_assignment"]["assignment_id"])
+                         cfg["_awf_runtime"]["intake_assignments"]["AWF-48"]["assignment_id"])
+
+    def test_runtime_assignments_are_ticket_keyed_for_multiple_tickets(self):
+        cfg, state = self.config(), {}
+        assign_inventory(
+            cfg,
+            [{"key": "AWF-48", "summary": "Moderate code", "description": "",
+              "write_paths": ["src/x.py"], "risk_flags": []},
+             {"key": "AWF-49", "summary": "Docs", "description": "",
+              "write_paths": ["docs/x.md"], "risk_flags": []}],
+            state, None, now="2026-10-10T08:00:00Z",
+            controller_actor_id="controller",
+        )
+        self.assertEqual({"AWF-48", "AWF-49"},
+                         set(cfg["_awf_runtime"]["intake_assignments"]))
+        self.assertEqual(2, round_cap(2, cfg))
+        self.assertEqual(2, round_cap(2, cfg, ticket_key="AWF-48"))
+        self.assertEqual(1, round_cap(1, cfg, ticket_key="AWF-49"))
+
+    def test_serialized_state_reloads_selected_ticket_for_awf16_calls(self):
+        import json
+        from agentic.intake_assignment import load_runtime_assignments
+
+        cfg, state = self.config(), {}
+        cfg["execution"]["risk_tiers"]["tier2_review"]["max_rounds"] = 1
+        assign_intake(
+            cfg,
+            {"key": "AWF-48", "summary": "Moderate code", "description": "",
+             "write_paths": ["src/x.py"], "risk_flags": []},
+            state, None, now="2026-10-10T08:00:00Z",
+            controller_actor_id="controller",
+        )
+        cfg["execution"]["risk_tiers"]["tier2_review"]["max_rounds"] = 2
+        assign_intake(
+            cfg,
+            {"key": "AWF-49", "summary": "Another moderate change", "description": "",
+             "write_paths": ["src/y.py"], "risk_flags": []},
+            state, None, now="2026-10-10T08:00:01Z",
+            controller_actor_id="controller",
+        )
+        reloaded_state = json.loads(json.dumps(state))
+        fresh_config = self.config()
+        load_runtime_assignments(fresh_config, reloaded_state)
+        with self.assertRaisesRegex(ValidationError, "select a ticket key"):
+            round_cap(2, fresh_config)
+
+        load_runtime_assignments(fresh_config, reloaded_state, ticket_key="AWF-48")
+        self.assertEqual(1, round_cap(2, fresh_config))
+        with self.assertRaisesRegex(ValidationError, "cap is 1"):
+            review_round_transition(2, 2, verdict="PASS", config=fresh_config)
+
+        load_runtime_assignments(fresh_config, reloaded_state, ticket_key="AWF-49")
+        self.assertEqual(2, round_cap(2, fresh_config))
 
 
 if __name__ == "__main__":

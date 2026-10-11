@@ -398,6 +398,16 @@ class TierThreePathSignals(unittest.TestCase):
                 self.assertEqual((3, 3, True),
                                  (result["tier"], result["round_cap"], result["owner_review_required"]))
 
+    def test_ci_gate_ticket_text_is_tier_three_for_an_ordinary_path(self):
+        result = classify_ticket(
+            config(),
+            ticket(summary="Change CI gate behavior", description="",
+                   write_paths=["ci/policy.yml"], risk_flags=[]),
+        )
+        self.assertEqual((3, 3, True),
+                         (result["tier"], result["round_cap"],
+                          result["owner_review_required"]))
+
 
 class ConfigDefaultsAndOverrides(unittest.TestCase):
     def test_existing_risk_tiers_are_the_default_and_override_path(self):
