@@ -13,7 +13,7 @@ import sqlite3
 from agentic import ValidationError
 from agentic.canonical import load
 from agentic.integration_queue import (IntegrationQueueStore, WORKER_GUIDANCE,
-    delta_review_requirement, integration_status, resolve_mode, steward_policy)
+    delta_review_requirement, resolve_mode, steward_policy)
 
 
 def _document(path, label):
@@ -104,8 +104,6 @@ def main(argv=None):
     check = sub.add_parser("check")
     check.add_argument("--epic", required=True)
     check.add_argument("--pr", type=int, required=True)
-    for flag in ("review", "final-gate", "authorization", "delta"):
-        check.add_argument("--" + flag, type=Path, required=True)
 
     delta = sub.add_parser("delta")
     delta.add_argument("--reviewed-paths", type=Path, required=True)
@@ -144,11 +142,11 @@ def main(argv=None):
             if args.state is None:
                 raise ValidationError("--state is required for queue commands")
             store = IntegrationQueueStore(args.state, worktree_roots=[ROOT])
-            adapter_commands = {"admit", "rebuild", "head-change", "remove",
-                                "reorder", "skip", "stall", "retarget"}
+            adapter_commands = {"initialize", "admit", "rebuild", "head-change", "remove",
+                                "reorder", "skip", "stall", "retarget", "check"}
             if args.command in adapter_commands:
                 raise ValidationError(
-                    "standalone CLI cannot authenticate build outcomes; invoke this operation "
+                    "standalone CLI cannot authenticate provider observations; invoke this operation "
                     "through an in-process provider adapter runner")
             if args.command == "initialize":
                 result = store.initialize(args.epic, args.target_branch, args.target_sha,
@@ -198,12 +196,6 @@ def main(argv=None):
                 result = store.retarget_after_merge(args.epic, args.merged_pr, args.target_sha,
                     _document(args.patch_ids, "patch IDs"),
                     _document(args.outcome, "outcome"))
-            elif args.command == "check":
-                result = integration_status(store.snapshot(args.epic), args.pr,
-                    _document(args.review, "review"),
-                    _document(args.final_gate, "final gate"),
-                    _document(args.authorization, "authorization"),
-                    _document(args.delta, "delta"))
             else:
                 result = store.close(args.epic)
         print(json.dumps(result, indent=2, sort_keys=True))

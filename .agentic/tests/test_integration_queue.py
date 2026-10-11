@@ -1,5 +1,6 @@
 from contextlib import redirect_stdout
-from datetime import datetime, timedelta, timezone
+import copy
+from datetime import datetime, timedelta
 import importlib.util
 import io
 import json
@@ -8,13 +9,19 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 from agentic import ValidationError
-from agentic.canonical import fingerprint
+from agentic.authorization import make_request, render_request
+from agentic.canonical import fingerprint, load, sha256
+from agentic.contracts import Contracts
+from agentic.gates import evaluate
 from agentic.integration_queue import (DEFAULTS, WORKER_GUIDANCE, IntegrationQueueStore,
     build_input_id, build_record, delta_review_requirement, integration_status, post_merge_action,
-    resolve_mode, steward_policy, verify_own_commits)
+    render_owner_instruction, resolve_mode, steward_policy, verify_own_commits)
+from agentic.lifecycle import definition
+from test_review_policy import bind_production_posting_fixture, bind_review_admission
 
 
 SHA1 = "1" * 40
@@ -23,6 +30,12 @@ SHA3 = "3" * 40
 SHA4 = "4" * 40
 SHA5 = "5" * 40
 NOW = "2026-10-10T10:00:00Z"
+GATE_NOW = "2026-09-09T12:00:00Z"
+ROOT = Path(__file__).resolve().parents[2]
+PROJECT_CONFIG = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
+PROVIDER_IDENTITY = {"host": PROJECT_CONFIG["github"]["host"],
+                     "repository": PROJECT_CONFIG["github"]["repository"],
+                     "repository_id": PROJECT_CONFIG["github"]["repository_id"]}
 
 
 def entry(pr, head, *, depends=(), base="main", validated=NOW, paths=None, patch=None):
@@ -87,45 +100,105 @@ def runner(*, fail_at=None, variant="stable"):
 
 
 def instruction(action, payload, identifier="owner-1"):
-    return {"instruction_id": identifier, "owner_actor_id": "owner-actor",
-            "producer_id": "fixture-owner-collector", "source_event_id": f"event-{identifier}",
-            "action": action, "epic": "AWF-EPIC", "payload": payload, "issued_at": NOW}
+    raw = render_owner_instruction(action, "AWF-EPIC", payload, NOW)
+    value = {"owner_actor_id": PROJECT_CONFIG["merge_gate"]["trusted_owner_ids"][0],
+             "producer_id": "fixture-owner-collector",
+             "source_event_id": f"event-{identifier}",
+             "provider_identity": PROVIDER_IDENTITY,
+             "action": action, "epic": "AWF-EPIC", "payload": payload,
+             "issued_at": NOW, "raw_body": raw,
+             "raw_body_sha256": sha256(raw.encode("utf-8"))}
+    value["instruction_id"] = fingerprint("integration_owner_instruction", value)
+    return value
+
+
+def owner_observer(request):
+    record = request["record"]
+    return {"status": "AUTHENTICATED", "instruction_id": record["instruction_id"],
+            "record_sha256": request["record_sha256"],
+            "source_event_id": record["source_event_id"],
+            "owner_actor_id": record["owner_actor_id"],
+            "producer_id": record["producer_id"],
+            "provider_identity": request["expected_provider_identity"],
+            "observed_at": NOW}
+
+
+def config_observer(request):
+    provenance = request["provenance"]
+    return {"status": "ACCEPTED", "config_path": provenance["config_path"],
+            "config_sha256": provenance["config_sha256"],
+            "settings_sha256": fingerprint(
+                "integration_queue_settings", request["settings"]),
+            "review_record_id": provenance["review_record_id"],
+            "producer_id": provenance["producer_id"],
+            "provider_identity": request["expected_provider_identity"],
+            "observed_at": NOW}
 
 
 def epic_mode_record():
     return resolve_mode({"mode": "epic", "test_command": "python -B -m unittest", "provenance": {
         "source": "reviewed_config", "config_path": ".agentic/integration-queue-config.yaml",
         "config_sha256": "a" * 64, "review_record_id": "config-review-1",
-        "reviewed_at": NOW, "producer_id": "fixture-config-validator"}}, epic="AWF-EPIC")
+        "reviewed_at": NOW, "producer_id": "fixture-config-validator"}}, epic="AWF-EPIC",
+        project_config=PROJECT_CONFIG, reviewed_config_observer=config_observer)
 
 
-def readiness(head, target, *, expires="2026-10-10T11:00:00Z"):
-    exact = {"pr_number": 11, "head_sha": head, "target_sha": target}
-    review = {"kind": "review", "producer_id": "critic-1", "run_id": "critic-run-1",
-              **exact, "created_at": NOW, "conclusion": "APPROVE", "closed": True,
-              "result_digest": "a" * 64}
-    review["record_id"] = fingerprint("integration_review_record", review)
-    gate = {"kind": "final_gate", "producer_id": "gate-evaluator", "run_id": "gate-run-1",
-            **exact, "created_at": NOW, "conclusion": "READY_FOR_OWNER_AUTHORIZATION",
-            "review_record_id": review["record_id"], "expires_at": expires,
-            "execution_authority": False}
-    gate["gate_hash"] = fingerprint("integration_gate", gate)
-    gate["record_id"] = fingerprint("integration_final_gate_record", gate)
-    authorization = {"kind": "owner_authorization", "producer_id": "authorization-verifier",
-        "run_id": "authorization-run-1", **exact, "created_at": NOW,
-        "decision": "AUTHORIZE", "gate_id": gate["record_id"], "gate_hash": gate["gate_hash"],
-        "source": {"channel": "github_pr_comment", "event_id": "owner-comment-1",
-                   "actor_id": 7, "raw_body_sha256": "c" * 64, "authenticated": True},
-        "expires_at": expires, "execution_authority": False}
-    authorization["record_id"] = fingerprint("integration_owner_authorization_record", authorization)
-    return review, gate, authorization
+def trusted_readiness():
+    contracts = Contracts(ROOT / ".agentic/schemas")
+    config = copy.deepcopy(PROJECT_CONFIG)
+    bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+    bind_review_admission(bundle)
+    verifier = copy.deepcopy(bundle["runs"][0])
+    verifier.update(record_id=str(uuid.uuid4()), run_id=str(uuid.uuid4()),
+                    producer_id="fixture-authorization-verifier", role="verifier",
+                    context_id=str(uuid.uuid4()), parent_run_id=None,
+                    capabilities=["read_evidence", "verify_source_event"],
+                    resources_held=[])
+    bundle["runs"].append(verifier)
+    registry = bind_production_posting_fixture(config, bundle)
+    gate = evaluate(config, definition(), bundle, contracts, GATE_NOW,
+                    posting_collector_registry=registry)
+    request = make_request(gate, contracts, GATE_NOW)
+    raw = render_request(request)
+    authorization = {key: request[key] for key in [
+        "schema_version", "request_id", "gate_id", "gate_hash", "candidate", "binding",
+        "expires_at"]}
+    authorization.update(
+        record_id=str(uuid.uuid4()), created_at=GATE_NOW,
+        producer_id=verifier["producer_id"], run_id=verifier["run_id"],
+        source={"channel": "github_pr_comment", "event_id": str(uuid.uuid4()),
+                "comment_id": 12, "repository_id": gate["candidate"]["repository_id"],
+                "pr_number": gate["candidate"]["pr_number"], "created_at": GATE_NOW,
+                "updated_at": GATE_NOW, "raw_body": raw,
+                "raw_body_sha256": sha256(raw.encode("utf-8")), "actor_id": 1001,
+                "actor_login": "fixture-owner", "deleted": False,
+                "authentication_evidence": ["urn:awf:fixture:webhook"]},
+        decision="AUTHORIZE", parser_version="awf-auth-1", execution_authority=False)
+    candidate = gate["candidate"]
+    state = {"entries": [{"pr_number": candidate["pr_number"],
+                           "head_sha": candidate["head_sha"], "branch": "awf/task-7"}],
+             "target_sha": candidate["target_base_sha"],
+             "target_branch": candidate["target_base_branch"],
+             "integration_branch": "awf/int/fixture",
+             "current_build": {"target_sha": candidate["target_base_sha"],
+                               "entries": [[candidate["pr_number"], candidate["head_sha"]]],
+                               "green": True, "build_id": "current-build-instance"}}
+    delta = {"required": False, "satisfied": True, "head_sha": candidate["head_sha"],
+             "review_base_sha": candidate["target_base_sha"],
+             "target_sha": candidate["target_base_sha"],
+             "build_id": "current-build-instance", "intervening_digest": "a" * 64,
+             "diff_digest": None}
+    return state, bundle, gate, request, authorization, delta, config, contracts, registry
 
 
 class IntegrationQueueTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="awf-integration-queue-")
         self.addCleanup(self.temporary.cleanup)
-        self.store = IntegrationQueueStore(Path(self.temporary.name) / "queue.sqlite3")
+        self.store = IntegrationQueueStore(
+            Path(self.temporary.name) / "queue.sqlite3", project_config=PROJECT_CONFIG,
+            owner_instruction_observer=owner_observer,
+            reviewed_config_observer=config_observer)
         self.store.initialize("AWF-EPIC", "main", SHA1,
                               mode_record=epic_mode_record(),
                               observed_at=NOW)
@@ -141,7 +214,8 @@ class IntegrationQueueTests(unittest.TestCase):
         self.assertEqual([[11, SHA2]], state["current_build"]["entries"])
         rebuilt = build_record("AWF-EPIC", SHA1, state["entries"], observed_build(state),
                                "TARGET_MOVED", 99)
-        self.assertEqual(state["current_build"]["build_id"], rebuilt["build_id"])
+        self.assertNotEqual(state["current_build"]["build_id"], rebuilt["build_id"])
+        self.assertEqual(state["current_build"]["input_id"], rebuilt["input_id"])
         self.assertEqual(state["current_build"]["result_tree_sha"], rebuilt["result_tree_sha"])
 
     def test_ac1_rejects_divergent_results_for_identical_inputs(self):
@@ -200,45 +274,65 @@ class IntegrationQueueTests(unittest.TestCase):
         self.assertEqual("INTEGRATION_CONFLICT", result["status"])
         self.assertEqual([], result["queue"])
         self.assertEqual(["src/conflict.py"], result["event"]["detail"]["paths"])
+        with self.assertRaisesRegex(ValidationError, "at least one conflict path"):
+            self.store.conflict("AWF-EPIC", entry(12, SHA3), [], observed_at=NOW)
 
     def test_ac4_only_exact_front_tuple_can_succeed(self):
-        self.admit(entry(11, SHA2))
-        self.admit(entry(12, SHA3))
-        state = self.store.snapshot("AWF-EPIC")
-        review, gate, authorization = readiness(SHA2, SHA1)
-        delta = {"required": False, "satisfied": True, "head_sha": SHA2,
-                 "review_base_sha": SHA1, "target_sha": SHA1,
-                 "build_id": state["current_build"]["build_id"],
-                 "intervening_digest": "a" * 64, "diff_digest": None}
-        ready = integration_status(state, 11, review, gate, authorization, delta, now=NOW)
+        (state, bundle, gate, request, authorization, delta, config, contracts,
+         registry) = trusted_readiness()
+        ready = integration_status(
+            state, 7, bundle, gate, request, authorization, delta, config=config,
+            contracts=contracts, posting_collector_registry=registry, now=GATE_NOW)
         self.assertEqual("success", ready["status"])
-        self.assertEqual("awf/task-11", ready["merge_source_branch"])
-        self.assertEqual("awf/int/awf-epic", ready["integration_branch_evidence_only"])
-        pending = integration_status(state, 12, review, gate, authorization, delta, now=NOW)
+        self.assertEqual("awf/task-7", ready["merge_source_branch"])
+        self.assertEqual("awf/int/fixture", ready["integration_branch_evidence_only"])
+        second = {"pr_number": 8, "head_sha": SHA3, "branch": "awf/task-8"}
+        state["entries"].append(second)
+        state["current_build"]["entries"].append([8, SHA3])
+        pending = integration_status(
+            state, 8, bundle, gate, request, authorization, delta, config=config,
+            contracts=contracts, posting_collector_registry=registry, now=GATE_NOW)
         self.assertEqual("pending", pending["status"])
         self.assertIn("position 2", pending["reason"])
-        stale_review = {**review, "head_sha": SHA3}
-        stale = integration_status(state, 11, stale_review, gate, authorization, delta, now=NOW)
+        stale = copy.deepcopy(state)
+        stale["entries"][0]["head_sha"] = SHA3
+        stale["current_build"]["entries"][0] = [7, SHA3]
+        stale = integration_status(
+            stale, 7, bundle, gate, request, authorization, delta, config=config,
+            contracts=contracts, posting_collector_registry=registry, now=GATE_NOW)
         self.assertEqual("pending", stale["status"])
+        self.assertIn("front queue candidate tuple", stale["reason"])
         wrong_delta = {**delta, "required": True, "head_sha": SHA3,
                        "diff_digest": "c" * 64}
         self.assertIn("delta review", integration_status(
-            state, 11, review, gate, authorization, wrong_delta, now=NOW)["reason"])
+            state, 7, bundle, gate, request, authorization, wrong_delta, config=config,
+            contracts=contracts, posting_collector_registry=registry,
+            now=GATE_NOW)["reason"])
+        replayed_delta = {**delta, "build_id": "older-build-instance"}
+        self.assertIn("delta review", integration_status(
+            state, 7, bundle, gate, request, authorization, replayed_delta, config=config,
+            contracts=contracts, posting_collector_registry=registry,
+            now=GATE_NOW)["reason"])
 
-    def test_ac4_minimal_self_declared_evidence_and_expiry_are_rejected(self):
-        self.admit(entry(11, SHA2))
-        state = self.store.snapshot("AWF-EPIC")
+    def test_ac4_self_declared_evidence_and_unregistered_verifier_are_rejected(self):
+        (state, bundle, gate, request, authorization, delta, config, contracts,
+         registry) = trusted_readiness()
         minimal = {"valid": True, "pr_number": 11, "head_sha": SHA2, "target_sha": SHA1}
-        delta = {"required": False, "satisfied": True, "head_sha": SHA2,
-            "review_base_sha": SHA1, "target_sha": SHA1,
-            "build_id": state["current_build"]["build_id"],
-            "intervening_digest": "a" * 64, "diff_digest": None}
         self.assertEqual("pending", integration_status(
-            state, 11, minimal, minimal, minimal, delta, now=NOW)["status"])
-        review, gate, authorization = readiness(
-            SHA2, SHA1, expires="2026-10-10T09:59:59Z")
-        self.assertIn("expired", integration_status(
-            state, 11, review, gate, authorization, delta, now=NOW)["reason"])
+            state, 7, minimal, minimal, minimal, minimal, delta, config=config,
+            contracts=contracts, now=GATE_NOW)["status"])
+        unregistered = copy.deepcopy(authorization)
+        unregistered["run_id"] = str(uuid.uuid4())
+        self.assertIn("registered verifier", integration_status(
+            state, 7, bundle, gate, request, unregistered, delta, config=config,
+            contracts=contracts, posting_collector_registry=registry,
+            now=GATE_NOW)["reason"])
+        untrusted = copy.deepcopy(authorization)
+        untrusted["source"]["actor_id"] = 9999
+        self.assertIn("Untrusted numeric owner", integration_status(
+            state, 7, bundle, gate, request, untrusted, delta, config=config,
+            contracts=contracts, posting_collector_registry=registry,
+            now=GATE_NOW)["reason"])
 
     def test_ac5_target_move_invalidates_old_build_and_prefix_ejects_culprit(self):
         self.admit(entry(11, SHA2))
@@ -281,7 +375,11 @@ class IntegrationQueueTests(unittest.TestCase):
             runner(), observed_at=NOW)
         self.assertEqual([[12, SHA3]], skipped["build"]["entries"])
 
-        other = IntegrationQueueStore(Path(self.temporary.name) / "dependencies.sqlite3")
+        other = IntegrationQueueStore(
+            Path(self.temporary.name) / "dependencies.sqlite3",
+            project_config=PROJECT_CONFIG,
+            owner_instruction_observer=owner_observer,
+            reviewed_config_observer=config_observer)
         other.initialize("AWF-EPIC", "main", SHA1,
                          mode_record=epic_mode_record(), observed_at=NOW)
         other.admit("AWF-EPIC", entry(11, SHA2), [SHA2], runner(), observed_at=NOW)
@@ -378,11 +476,13 @@ class IntegrationQueueTests(unittest.TestCase):
                 "build_id": old_state["current_build"]["build_id"],
                 "intervening_digest": digest, "diff_digest": "d" * 64,
                 "code_change_required": False, "reviewed_at": NOW})
-        self.store.rebuild("AWF-EPIC", SHA4, runner(), "TARGET_MOVED", observed_at=NOW)
+        self.store.rebuild("AWF-EPIC", SHA1, runner(), "TARGET_MOVED", observed_at=NOW)
         state = self.store.snapshot("AWF-EPIC")
-        review, gate, authorization = readiness(SHA2, SHA4)
-        self.assertIn("delta review", integration_status(
-            state, 11, review, gate, authorization, delta, now=NOW)["reason"])
+        self.assertEqual(old_state["current_build"]["input_id"],
+                         state["current_build"]["input_id"])
+        self.assertNotEqual(old_state["current_build"]["build_id"],
+                            state["current_build"]["build_id"])
+        self.assertNotEqual(delta["build_id"], state["current_build"]["build_id"])
 
     def test_ac9_independent_and_stacked_diffs_are_own_commits_only(self):
         independent = entry(11, SHA2)
@@ -425,30 +525,69 @@ class IntegrationQueueTests(unittest.TestCase):
             "max_stack_depth": 2}, "enable-1")
         self.assertEqual("epic", resolve_mode(
             {"test_command": "python -B -m unittest"}, owner_instruction=owner,
-            epic="AWF-EPIC")["mode"])
+            epic="AWF-EPIC", project_config=PROJECT_CONFIG,
+            owner_instruction_observer=owner_observer)["mode"])
         config = {"mode": "epic", "test_command": "python -B -m unittest", "provenance": {
             "source": "reviewed_config", "config_path": ".agentic/integration-queue-config.yaml",
             "config_sha256": "a" * 64, "review_record_id": "review-1",
             "reviewed_at": NOW, "producer_id": "config-validator"}}
-        advisory = resolve_mode(config, owner, {"enforced": False}, epic="AWF-EPIC")
+        advisory = resolve_mode(
+            config, owner, {"enforced": False}, epic="AWF-EPIC",
+            project_config=PROJECT_CONFIG,
+            owner_instruction_observer=owner_observer)
         self.assertEqual("epic", advisory["mode"])
         with self.assertRaisesRegex(ValidationError, "App integration ID"):
             resolve_mode(config, owner, {"enforced": True,
                          "check_name": "awf-integration", "integration_id": 7,
-                         "required_from_integration_id": False}, epic="AWF-EPIC")
+                         "required_from_integration_id": False}, epic="AWF-EPIC",
+                         project_config=PROJECT_CONFIG,
+                         owner_instruction_observer=owner_observer)
         enforced = resolve_mode(config, owner, {"enforced": True,
             "check_name": "awf-integration", "integration_id": 7,
-            "required_from_integration_id": True}, epic="AWF-EPIC")
+            "required_from_integration_id": True}, epic="AWF-EPIC",
+            project_config=PROJECT_CONFIG,
+            owner_instruction_observer=owner_observer)
         self.assertEqual("epic", enforced["mode"])
 
     def test_ac12_fabricated_mode_records_are_rejected(self):
         with self.assertRaisesRegex(ValidationError, "provenance"):
             resolve_mode({"mode": "epic", "test_command": "python -B -m unittest"},
-                         epic="AWF-EPIC")
-        other = IntegrationQueueStore(Path(self.temporary.name) / "fabricated.sqlite3")
+                         epic="AWF-EPIC", project_config=PROJECT_CONFIG,
+                         reviewed_config_observer=config_observer)
+        other = IntegrationQueueStore(
+            Path(self.temporary.name) / "fabricated.sqlite3",
+            project_config=PROJECT_CONFIG,
+            owner_instruction_observer=owner_observer,
+            reviewed_config_observer=config_observer)
         with self.assertRaisesRegex(ValidationError, "closed accepted"):
             other.initialize("AWF-EPIC", "main", SHA1,
                              mode_record={"mode": "epic"}, observed_at=NOW)
+
+    def test_ac12_epic_mode_and_queue_commands_require_authenticated_provenance(self):
+        owner = instruction("ENABLE_EPIC_MODE", {
+            "test_command": "python -B -m unittest", "stall_after_hours": 24,
+            "max_stack_depth": 2}, "auth-required")
+        with self.assertRaisesRegex(ValidationError, "live authenticated provider observer"):
+            resolve_mode({"test_command": "python -B -m unittest"},
+                         owner_instruction=owner, epic="AWF-EPIC",
+                         project_config=PROJECT_CONFIG)
+        config = {"mode": "epic", "test_command": "python -B -m unittest",
+                  "provenance": {"source": "reviewed_config",
+                    "config_path": ".agentic/integration-queue-config.yaml",
+                    "config_sha256": "a" * 64, "review_record_id": "review-1",
+                    "reviewed_at": NOW, "producer_id": "config-validator"}}
+        with self.assertRaisesRegex(ValidationError, "reviewed-configuration observer"):
+            resolve_mode(config, epic="AWF-EPIC", project_config=PROJECT_CONFIG)
+
+        self.admit(entry(11, SHA2))
+        self.admit(entry(12, SHA3))
+        untrusted = instruction("REORDER", {"order": [12, 11]}, "untrusted")
+        untrusted["owner_actor_id"] = 9999
+        material = {key: item for key, item in untrusted.items() if key != "instruction_id"}
+        untrusted["instruction_id"] = fingerprint("integration_owner_instruction", material)
+        with self.assertRaisesRegex(ValidationError, "configured trusted owner"):
+            self.store.owner_reorder(
+                "AWF-EPIC", [12, 11], untrusted, runner(), observed_at=NOW)
 
     def test_worker_guidance_covers_untrusted_context_dependencies_and_target(self):
         self.assertIn("untrusted context", WORKER_GUIDANCE)

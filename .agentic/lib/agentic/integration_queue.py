@@ -18,7 +18,7 @@ import re
 import sqlite3
 
 from . import ValidationError
-from .canonical import canonical, fingerprint, now_text, timestamp
+from .canonical import canonical, fingerprint, now_text, sha256, timestamp
 
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -64,24 +64,80 @@ def _paths(values, label):
     return sorted(values)
 
 
-def _owner_instruction(value, action, epic, payload):
+def render_owner_instruction(action, epic, payload, issued_at):
+    """Render the exact owner text authenticated by the provider observer."""
+    material = {"action": action, "epic": epic, "payload": payload,
+                "issued_at": issued_at}
+    return "AWF1.2 INTEGRATION " + canonical(material).decode("utf-8")
+
+
+def _authority(project_config):
+    if project_config is None:
+        raise ValidationError("accepted PROJECT_CONFIG authority is required")
+    from .review_completion import review_authority_from_config
+    return review_authority_from_config(project_config)
+
+
+def _owner_instruction(value, action, epic, payload, *, authority, observer):
     if not isinstance(value, dict):
-        raise ValidationError(f"{action} requires a recorded owner instruction")
+        raise ValidationError(f"{action} requires an authenticated owner instruction")
     required = {"instruction_id", "owner_actor_id", "producer_id", "source_event_id",
-                "action", "epic", "payload", "issued_at"}
+                "provider_identity", "action", "epic", "payload", "issued_at",
+                "raw_body", "raw_body_sha256"}
     if set(value) != required:
         raise ValidationError("owner instruction fields differ from the closed record shape")
-    _identifier(value["instruction_id"], "instruction_id")
-    _identifier(value["owner_actor_id"], "owner_actor_id")
+    if not isinstance(authority, dict):
+        raise ValidationError("owner instruction requires accepted project authority")
+    trusted = authority.get("trusted_owner_ids")
+    provider = authority.get("provider_identity")
+    if (not isinstance(trusted, (tuple, list)) or
+            isinstance(value["owner_actor_id"], bool) or
+            not isinstance(value["owner_actor_id"], int) or
+            value["owner_actor_id"] not in trusted):
+        raise ValidationError("owner instruction actor is not a configured trusted owner")
+    if value["provider_identity"] != provider:
+        raise ValidationError("owner instruction provider differs from accepted PROJECT_CONFIG")
     _identifier(value["producer_id"], "producer_id")
     _identifier(value["source_event_id"], "source_event_id")
     timestamp(value["issued_at"])
     if value["action"] != action or value["epic"] != epic or value["payload"] != payload:
         raise ValidationError("owner instruction does not match the requested action, epic, and payload")
+    expected_raw = render_owner_instruction(action, epic, payload, value["issued_at"])
+    if (value["raw_body"] != expected_raw or
+            value["raw_body_sha256"] != sha256(expected_raw.encode("utf-8"))):
+        raise ValidationError("owner instruction raw authenticated text does not match its action")
+    material = {key: item for key, item in value.items() if key != "instruction_id"}
+    if value["instruction_id"] != fingerprint("integration_owner_instruction", material):
+        raise ValidationError("owner instruction identity does not match its closed bytes")
+    if not callable(observer):
+        raise ValidationError("owner instruction requires a live authenticated provider observer")
+    request = {"record": deepcopy(value), "record_sha256": fingerprint(
+        "integration_owner_instruction_record", value),
+        "expected_provider_identity": deepcopy(provider)}
+    before = canonical(request)
+    observation = observer(deepcopy(request))
+    if canonical(request) != before:
+        raise ValidationError("owner instruction observer mutated its request")
+    observation_fields = {"status", "instruction_id", "record_sha256", "source_event_id",
+                          "owner_actor_id", "producer_id", "provider_identity", "observed_at"}
+    if not isinstance(observation, dict) or set(observation) != observation_fields:
+        raise ValidationError("owner instruction authentication has a non-closed shape")
+    timestamp(observation["observed_at"])
+    expected_observation = {
+        "instruction_id": value["instruction_id"],
+        "record_sha256": request["record_sha256"],
+        "source_event_id": value["source_event_id"],
+        "owner_actor_id": value["owner_actor_id"],
+        "producer_id": value["producer_id"],
+        "provider_identity": provider,
+    }
+    if observation["status"] != "AUTHENTICATED" or any(
+            observation.get(key) != expected for key, expected in expected_observation.items()):
+        raise ValidationError("owner instruction was not authenticated for the exact source and owner")
     return deepcopy(value)
 
 
-def _reviewed_config_provenance(value):
+def _reviewed_config_provenance(value, settings, *, authority, observer):
     fields = {"source", "config_path", "config_sha256", "review_record_id",
               "reviewed_at", "producer_id"}
     if not isinstance(value, dict) or set(value) != fields:
@@ -95,10 +151,32 @@ def _reviewed_config_provenance(value):
     for field in ("review_record_id", "producer_id"):
         _identifier(value[field], field)
     timestamp(value["reviewed_at"])
+    if not callable(observer):
+        raise ValidationError("epic mode requires a reviewed-configuration observer")
+    provider = authority.get("provider_identity") if isinstance(authority, dict) else None
+    request = {"provenance": deepcopy(value), "settings": deepcopy(settings),
+               "expected_provider_identity": deepcopy(provider)}
+    before = canonical(request)
+    observation = observer(deepcopy(request))
+    if canonical(request) != before:
+        raise ValidationError("reviewed-configuration observer mutated its request")
+    fields = {"status", "config_path", "config_sha256", "settings_sha256",
+              "review_record_id", "producer_id", "provider_identity", "observed_at"}
+    if not isinstance(observation, dict) or set(observation) != fields:
+        raise ValidationError("reviewed-configuration observation has a non-closed shape")
+    timestamp(observation["observed_at"])
+    expected = {key: value[key] for key in (
+        "config_path", "config_sha256", "review_record_id", "producer_id")}
+    if (observation["status"] != "ACCEPTED" or
+            observation.get("provider_identity") != provider or
+            observation.get("settings_sha256") != fingerprint(
+                "integration_queue_settings", settings) or
+            any(observation.get(key) != item for key, item in expected.items())):
+        raise ValidationError("reviewed configuration provenance was not authenticated")
     return deepcopy(value)
 
 
-def _mode_record(value, epic=None):
+def _mode_record(value, epic=None, *, authority, owner_observer, config_observer):
     fields = {"mode", "test_command", "stall_after_hours", "max_stack_depth",
               "epic", "activation", "record_id"}
     if not isinstance(value, dict) or set(value) != fields or value["mode"] != "epic":
@@ -112,12 +190,17 @@ def _mode_record(value, epic=None):
             {"kind", "instruction", "app_binding"}):
         raise ValidationError("epic-mode activation provenance is invalid")
     if activation["kind"] == "reviewed_config" and "provenance" in activation:
-        _reviewed_config_provenance(activation["provenance"])
+        settings = {key: value[key] for key in (
+            "mode", "test_command", "stall_after_hours", "max_stack_depth")}
+        _reviewed_config_provenance(
+            activation["provenance"], settings, authority=authority,
+            observer=config_observer)
     elif activation["kind"] == "owner_instruction" and "instruction" in activation:
         settings = {key: value[key] for key in (
             "test_command", "stall_after_hours", "max_stack_depth")}
         _owner_instruction(
-            activation["instruction"], "ENABLE_EPIC_MODE", value["epic"], settings)
+            activation["instruction"], "ENABLE_EPIC_MODE", value["epic"], settings,
+            authority=authority, observer=owner_observer)
     else:
         raise ValidationError("epic-mode activation provenance is invalid")
     binding = activation["app_binding"]
@@ -149,7 +232,9 @@ def _mode_record(value, epic=None):
     return deepcopy(value)
 
 
-def resolve_mode(config=None, owner_instruction=None, app_binding=None, *, epic=None):
+def resolve_mode(config=None, owner_instruction=None, app_binding=None, *, epic=None,
+                 project_config=None, owner_instruction_observer=None,
+                 reviewed_config_observer=None):
     """Resolve serial/epic mode without weakening activation requirements."""
     config = {} if config is None else deepcopy(config)
     if not isinstance(config, dict) or set(config) - (set(DEFAULTS) | {"provenance"}):
@@ -166,6 +251,7 @@ def resolve_mode(config=None, owner_instruction=None, app_binding=None, *, epic=
         if isinstance(effective[key], bool) or not isinstance(effective[key], int) or effective[key] < 1:
             raise ValidationError(f"integration.{key} must be a positive integer")
     if effective["mode"] == "epic":
+        authority = _authority(project_config)
         configured = config.get("mode") == "epic"
         instructed = owner_instruction is not None
         if not configured and not instructed:
@@ -178,10 +264,14 @@ def resolve_mode(config=None, owner_instruction=None, app_binding=None, *, epic=
             settings = {key: effective[key] for key in (
                 "test_command", "stall_after_hours", "max_stack_depth")}
             activation = {"kind": "owner_instruction", "instruction":
-                          _owner_instruction(owner_instruction, "ENABLE_EPIC_MODE", epic, settings)}
+                          _owner_instruction(
+                              owner_instruction, "ENABLE_EPIC_MODE", epic, settings,
+                              authority=authority, observer=owner_instruction_observer)}
         else:
             activation = {"kind": "reviewed_config", "provenance":
-                          _reviewed_config_provenance(config.get("provenance"))}
+                          _reviewed_config_provenance(
+                              config.get("provenance"), effective,
+                              authority=authority, observer=reviewed_config_observer)}
         binding = deepcopy(app_binding or {"enforced": False})
         if not isinstance(binding, dict) or set(binding) not in (
                 {"enforced"}, {"enforced", "check_name", "integration_id",
@@ -364,7 +454,11 @@ def build_record(epic, target_sha, entries, outcome, reason, generation):
                 **deterministic_result, "observation": deepcopy(observation),
                 "test_command": outcome["test_command"],
                 "reason": reason, "generation": generation}
-    return {"build_id": expected_input, **material,
+    build_id = fingerprint("integration_build_instance", {
+        "input_id": expected_input, "result_id": result_id,
+        "observation_id": observation["observation_id"],
+        "reason": reason, "generation": generation})
+    return {"build_id": build_id, **material,
             "green": all(result["passed"] for result in normalized)}
 
 
@@ -427,65 +521,44 @@ def delta_review_requirement(reviewed_paths, intervening_merges, *, head_sha, re
             "diff_digest": None if delta_review is None else delta_review["diff_digest"]}
 
 
-def _readiness_evidence(kind, value, exact, *, now, review_id=None, gate=None):
-    common = {"kind", "record_id", "producer_id", "run_id", "pr_number", "head_sha",
-              "target_sha", "created_at"}
-    fields = {
-        "review": common | {"conclusion", "closed", "result_digest"},
-        "final_gate": common | {"conclusion", "review_record_id", "gate_hash",
-                                "expires_at", "execution_authority"},
-        "owner_authorization": common | {"decision", "gate_id", "gate_hash", "source",
-                                         "expires_at",
-                                         "execution_authority"},
-    }[kind]
-    if not isinstance(value, dict) or set(value) != fields or value.get("kind") != kind:
-        raise ValidationError(f"{kind} evidence has a non-closed or incorrect record shape")
-    for field in ("record_id", "producer_id", "run_id"):
-        _identifier(value[field], f"{kind} {field}")
-    timestamp(value["created_at"])
-    if any(value.get(key) != expected for key, expected in exact.items()):
-        raise ValidationError(f"{kind} evidence is not exact-tuple bound")
-    if kind == "review":
-        if value["conclusion"] != "APPROVE" or value["closed"] is not True:
-            raise ValidationError("review evidence is not a closed approval")
-        if not isinstance(value["result_digest"], str) or not DIGEST.fullmatch(value["result_digest"]):
-            raise ValidationError("review result_digest must be lowercase 64-hex")
-    elif kind == "final_gate":
-        if (value["conclusion"] != "READY_FOR_OWNER_AUTHORIZATION" or
-                value["execution_authority"] is not False or
-                value["review_record_id"] != review_id):
-            raise ValidationError("final gate is not closed over the accepted review")
-        gate_material = {key: item for key, item in value.items()
-                         if key not in {"record_id", "gate_hash"}}
-        if value["gate_hash"] != fingerprint("integration_gate", gate_material):
-            raise ValidationError("final gate hash does not identify the closed gate record")
-        if timestamp(value["expires_at"]) <= timestamp(now):
-            raise ValidationError("final gate evidence is expired")
-    else:
-        if (value["decision"] != "AUTHORIZE" or value["execution_authority"] is not False or
-                value["gate_id"] != gate["record_id"] or value["gate_hash"] != gate["gate_hash"]):
-            raise ValidationError("owner authorization is not bound to the accepted final gate")
-        source = value["source"]
-        source_fields = {"channel", "event_id", "actor_id", "raw_body_sha256", "authenticated"}
-        if (not isinstance(source, dict) or set(source) != source_fields or
-                source["channel"] != "github_pr_comment" or source["authenticated"] is not True or
-                isinstance(source["actor_id"], bool) or not isinstance(source["actor_id"], int) or
-                source["actor_id"] < 1):
-            raise ValidationError("owner authorization lacks authenticated source provenance")
-        _identifier(source["event_id"], "owner authorization source event_id")
-        if not isinstance(source["raw_body_sha256"], str) or not DIGEST.fullmatch(
-                source["raw_body_sha256"]):
-            raise ValidationError("owner authorization raw_body_sha256 must be lowercase 64-hex")
-        if timestamp(value["expires_at"]) <= timestamp(now):
-            raise ValidationError("owner authorization is expired")
-    identity_material = {key: item for key, item in value.items() if key != "record_id"}
-    if value["record_id"] != fingerprint(f"integration_{kind}_record", identity_material):
-        raise ValidationError(f"{kind} record identity does not match its closed bytes")
-    return value
+def _authorization_verifier(bundle, authorization):
+    """Require the owner record to come from an independent registered verifier run."""
+    runs = {run.get("run_id"): run for run in bundle.get("runs", [])
+            if isinstance(run, dict)}
+    run = runs.get(authorization.get("run_id"))
+    if (run is None or run.get("role") != "verifier" or run.get("status") != "COMPLETE" or
+            run.get("producer_id") != authorization.get("producer_id")):
+        raise ValidationError("owner authorization has no matching registered verifier run")
+    excluded_ids = set()
+    for key in ("worker", "critic"):
+        record = bundle.get(key)
+        if isinstance(record, dict):
+            excluded_ids.add(record.get("run_id"))
+    excluded_ids.update(record.get("run_id") for record in bundle.get("specialists", [])
+                        if isinstance(record, dict))
+    excluded = {item for item in excluded_ids if item in runs}
+    excluded_contexts = {runs[item].get("context_id") for item in excluded}
+    excluded_producers = {runs[item].get("producer_id") for item in excluded}
+    if (run.get("context_id") in excluded_contexts or
+            run.get("producer_id") in excluded_producers):
+        raise ValidationError("owner authorization verifier is not independent of implementation or review")
+    seen, parent = set(), run.get("parent_run_id")
+    while parent is not None and parent not in seen:
+        seen.add(parent)
+        ancestor = runs.get(parent)
+        if ancestor is None:
+            raise ValidationError("owner authorization verifier lineage names an unregistered run")
+        if (ancestor.get("context_id") in excluded_contexts or
+                ancestor.get("producer_id") in excluded_producers):
+            raise ValidationError("owner authorization verifier descends from implementation or review")
+        parent = ancestor.get("parent_run_id")
+    return run
 
 
-def integration_status(state, pr_number, review, final_gate, authorization, delta, *, now=None):
-    """Enforce front-only readiness and the exact reviewed tuple."""
+def integration_status(state, pr_number, gate_bundle, final_gate,
+                       authorization_request, authorization, delta, *, config, contracts,
+                       posting_collector_registry=None, now=None):
+    """Enforce front-only readiness using the existing gate and authorization contracts."""
     _pr(pr_number)
     entries = state.get("entries", [])
     positions = {item["pr_number"]: index for index, item in enumerate(entries)}
@@ -501,15 +574,40 @@ def integration_status(state, pr_number, review, final_gate, authorization, delt
         return {"status": "pending", "reason": "no green current-target build starts with the exact PR/head"}
     now = now or now_text()
     timestamp(now)
-    exact = {"pr_number": pr_number, "head_sha": item["head_sha"],
-             "target_sha": state["target_sha"]}
     try:
-        accepted_review = _readiness_evidence("review", review, exact, now=now)
-        accepted_gate = _readiness_evidence(
-            "final_gate", final_gate, exact, now=now, review_id=accepted_review["record_id"])
-        _readiness_evidence(
-            "owner_authorization", authorization, exact, now=now, gate=accepted_gate)
-    except ValidationError as exc:
+        from .authorization import verify_record
+        from .gates import evaluate
+        from .lifecycle import definition
+        evaluated_gate = evaluate(
+            config, definition(), deepcopy(gate_bundle), contracts, now,
+            posting_collector_registry=posting_collector_registry)
+        contracts.validate("final-gate", final_gate)
+        # ``evaluate`` assigns a new offline evaluation record/run UUID on each
+        # invocation.  Every substantive field must nevertheless match the
+        # existing gate consumed by the lifecycle and authorization request.
+        def gate_semantics(value):
+            return {key: item for key, item in value.items()
+                    if key not in {"record_id", "run_id"}}
+        if gate_semantics(final_gate) != gate_semantics(evaluated_gate):
+            raise ValidationError("existing final gate does not match current framework evaluation")
+        gate = final_gate
+        candidate = gate["candidate"]
+        expected_candidate = {
+            "pr_number": pr_number,
+            "head_sha": item["head_sha"],
+            "target_base_sha": state["target_sha"],
+            "target_base_branch": state["target_branch"],
+        }
+        if any(candidate.get(key) != value for key, value in expected_candidate.items()):
+            raise ValidationError("final gate is not bound to the front queue candidate tuple")
+        if gate.get("conclusion") != "READY_FOR_OWNER_AUTHORIZATION":
+            raise ValidationError("existing final gate is not ready for owner authorization")
+        verified = verify_record(
+            authorization, authorization_request, gate, config, contracts, now)
+        if verified.get("decision") != "AUTHORIZE":
+            raise ValidationError("owner authorization decision is not AUTHORIZE")
+        _authorization_verifier(gate_bundle, authorization)
+    except (ValidationError, KeyError, TypeError) as exc:
         return {"status": "pending", "reason": str(exc)}
     if not isinstance(delta, dict) or delta.get("satisfied") is not True:
         return {"status": "pending", "reason": "required path-overlap delta review is not satisfied"}
@@ -523,7 +621,10 @@ def integration_status(state, pr_number, review, final_gate, authorization, delt
             not isinstance(delta.get("diff_digest"), str)):
         return {"status": "pending", "reason": "delta review lacks replay-resistant context bindings"}
     return {"status": "success", "reason": "front entry has current exact-tuple evidence",
-            "build_id": build["build_id"], **exact, "merge_method": "merge",
+            "build_id": build["build_id"], "pr_number": pr_number,
+            "head_sha": item["head_sha"], "target_sha": state["target_sha"],
+            "gate_record_id": gate["record_id"],
+            "authorization_record_id": authorization["record_id"], "merge_method": "merge",
             "merge_source_branch": item["branch"],
             "integration_branch_evidence_only": state["integration_branch"]}
 
@@ -544,8 +645,12 @@ def steward_policy():
 class IntegrationQueueStore:
     """A durable queue whose SQLite write transaction is the admission lock."""
 
-    def __init__(self, path, worktree_roots=()):
+    def __init__(self, path, worktree_roots=(), *, project_config=None,
+                 owner_instruction_observer=None, reviewed_config_observer=None):
         self.path = Path(path).resolve()
+        self.authority = None if project_config is None else _authority(project_config)
+        self.owner_instruction_observer = owner_instruction_observer
+        self.reviewed_config_observer = reviewed_config_observer
         for root in worktree_roots:
             root = Path(root).resolve()
             if self.path == root or root in self.path.parents:
@@ -612,7 +717,10 @@ class IntegrationQueueStore:
         _identifier(epic, "epic")
         _identifier(target_branch, "target_branch")
         _sha(target_sha, "target_sha")
-        mode_record = _mode_record(mode_record, epic)
+        mode_record = _mode_record(
+            mode_record, epic, authority=self.authority,
+            owner_observer=self.owner_instruction_observer,
+            config_observer=self.reviewed_config_observer)
         observed_at = observed_at or now_text()
         timestamp(observed_at)
         state = {"format": "awf-integration-queue-1", "epic": epic,
@@ -705,10 +813,10 @@ class IntegrationQueueStore:
         state["generation"] += 1
         build = build_record(state["epic"], state["target_sha"], state["entries"],
                              outcome, reason, state["generation"])
-        prior_result = state["build_results"].get(build["build_id"])
+        prior_result = state["build_results"].get(build["input_id"])
         if prior_result is not None and prior_result != build["result_id"]:
             raise ValidationError("identical integration inputs produced divergent construction or test results")
-        state["build_results"][build["build_id"]] = build["result_id"]
+        state["build_results"][build["input_id"]] = build["result_id"]
         state["current_build"] = build
         event = self._event(connection, state, "BUILD_RECORDED", build, observed_at)
         return build, event
@@ -770,8 +878,11 @@ class IntegrationQueueStore:
             item = validate_entry(entry, state["entries"], state["target_branch"])
             if any(candidate["pr_number"] == item["pr_number"] for candidate in state["entries"]):
                 raise ValidationError("conflicting PR is already admitted")
+            paths = _paths(conflict_paths, "conflict_paths")
+            if not paths:
+                raise ValidationError("INTEGRATION_CONFLICT requires at least one conflict path")
             detail = {"pr_number": item["pr_number"],
-                      "paths": _paths(conflict_paths, "conflict_paths"),
+                      "paths": paths,
                       "return_to": "AMENDMENT"}
             event = self._event(connection, state, "INTEGRATION_CONFLICT", detail, observed_at)
             return {"status": "INTEGRATION_CONFLICT", "event": event,
@@ -794,7 +905,9 @@ class IntegrationQueueStore:
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
             self._require_open(state)
-            instruction = _owner_instruction(instruction, "REORDER", epic, {"order": order})
+            instruction = _owner_instruction(
+                instruction, "REORDER", epic, {"order": order},
+                authority=self.authority, observer=self.owner_instruction_observer)
             self._consume_instruction(connection, state, instruction)
             previous_front = self._front_key(state)
             state["entries"] = self._validate_order(state["entries"], order)
@@ -812,7 +925,9 @@ class IntegrationQueueStore:
         _pr(pr_number)
         with self._locked(epic) as (connection, state):
             self._require_open(state)
-            instruction = _owner_instruction(instruction, "SKIP", epic, {"pr_number": pr_number})
+            instruction = _owner_instruction(
+                instruction, "SKIP", epic, {"pr_number": pr_number},
+                authority=self.authority, observer=self.owner_instruction_observer)
             self._consume_instruction(connection, state, instruction)
             if any(pr_number in item["depends_on"] for item in state["entries"]):
                 raise ValidationError("cannot skip a PR while an admitted PR depends on it")
