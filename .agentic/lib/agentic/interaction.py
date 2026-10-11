@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from string import Formatter
 from . import ValidationError
-from .canonical import fingerprint, timestamp, now_text
+from .canonical import fingerprint, reject_git_sha_candidate_ids, timestamp, now_text
 
 
 ROUTINE = frozenset({'inspect','plan','edit','test','fix','review','rereview','delegate',
@@ -216,6 +216,8 @@ def gate_handoff(gate, request, config, contracts, now):
     from .authorization import render_request
     from .lifecycle import definition
     from .policy import validate_config
+    reject_git_sha_candidate_ids(gate)
+    reject_git_sha_candidate_ids(request)
     contracts.validate('final-gate',gate)
     from .review_completion import validate_ready_gate_completion
     validate_ready_gate_completion(gate)
