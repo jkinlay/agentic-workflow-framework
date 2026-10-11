@@ -307,7 +307,9 @@ class ContinuousControllerStore:
 
     def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS,
                  worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False):
-        self.path = protected_state_path(path, worktree_roots)
+        self.worktree_roots = tuple(Path(root).resolve(strict=False)
+                                    for root in worktree_roots)
+        self.path = protected_state_path(path, self.worktree_roots)
         _require(isinstance(stream_ids, (list, tuple)) and stream_ids and
                  len(stream_ids) == len(set(stream_ids)) and
                  all(isinstance(item, str) and item.strip() for item in stream_ids),
@@ -1194,8 +1196,11 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
         try:
             if operation["status"] == "PENDING":
                 from .codex_skill import observe_codex_awf_skills
+                launch_directory = (store.worktree_roots[0]
+                                    if store.worktree_roots else repository_root)
+                launch_environment = dict(os.environ)
                 selection = observe_codex_awf_skills(
-                    repository_root, repository_root, os.environ)
+                    launch_directory, launch_directory, launch_environment)
                 store.record_dispatch_skill_selection(dispatch_id, selection, now)
                 if selection["status"] != "PASS":
                     reason = ("Codex AWF skill selection refused: " +
@@ -1205,7 +1210,8 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                                    "state": "REFUSED", "reason": reason})
                     continue
                 payload = store.begin_dispatch(dispatch_id, now)
-                receipt = dispatch_ticket({**payload, "role": dispatch_role})
+                receipt = dispatch_ticket({**payload, "role": dispatch_role,
+                                           "worktree": str(launch_directory)})
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now))
             else:
                 payload = store.begin_dispatch_reconciliation(dispatch_id, now)

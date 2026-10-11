@@ -2,7 +2,7 @@
 
 456 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `bb70717c0eec3a26b0fba719c1d3e9f455db7cc1dbe2078d68c0179f2816c575`
+MANIFEST.json SHA-256: `57009fd431425d48111a93697643d8f75bbacce420b1e9970eb1f63017b6a014`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -80,7 +80,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/codex_skill.py` | `c32533cbdde0e2407fdeadc216ecc6c7e7af72bb549377669f2942562c97bcfe` |
 | `.agentic/lib/agentic/configuration.py` | `70d15ebf0fd7cbe3551db5ba9e533bfec91b5ac6a2e3c4f93df21f066acb29ac` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `914a0650f23e7ec433a6733f8a35b2ad079d3c7a05315756008dae462362aefa` |
+| `.agentic/lib/agentic/continuous_controller.py` | `04fb4fef31320b7a121a5a074fc8bca34f0f5033bb0e5aaff22b602cc1261059` |
 | `.agentic/lib/agentic/contracts.py` | `608011b68fd03da49340fe96cef754a22440363717490c613cef6c9280da356b` |
 | `.agentic/lib/agentic/controller_state.py` | `08f533e320c4a6bb4563a040fa9b6df06c7efddadb0ddb9af8155512f07047ff` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
@@ -279,7 +279,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_bootstrap_configuration.py` | `2a96e3b578b044417ff20deb164db75203ca9e7ccd54721974ac89ab1fcdebe2` |
 | `.agentic/tests/test_child_process.py` | `61772435c9633eb2c0681d4a7c637b81376d65166453de6cfe5d05d08df5fc80` |
 | `.agentic/tests/test_codeowners.py` | `12c0b86ed561d24d4d3c6cbe2c713be9820e62ed862455658a9b792e0fac5184` |
-| `.agentic/tests/test_codex_skill.py` | `bae310350bdd264d6957a7425cbe041f1eee7cf9fbe234b485361dbca452c3b8` |
+| `.agentic/tests/test_codex_skill.py` | `e21b78eb6fe44c5d2ecc0b79450395dcd26f8648e3c16e49e60edc5519364f5f` |
 | `.agentic/tests/test_config_diagnostics.py` | `e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07` |
 | `.agentic/tests/test_continuation.py` | `1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633` |
 | `.agentic/tests/test_continuous_controller.py` | `6dc621d532125321b32e9d1d976de78383921bc73a1f5658359fda7af282e1c6` |
@@ -404,12 +404,12 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf-portable/references/workflow.md` | `74a83fe11e9fb6446c9b22296d644f45e46b5c8195ae993c7f3f5003efdb18f9` |
 | `global/awf-portable/scripts/awf.py` | `a1c751a81507e578b1880a8034b8cfe365c3c03db69403f7c45720325749fb05` |
 | `global/awf-portable/scripts/check_updates.py` | `2290ea667a15eb97b223bbefdc692cdf7dce43db029b2aaa1cc7e754120e60bc` |
-| `global/awf-portable/scripts/install_skill.py` | `7d96d7ee109f6c14ff1d34b691554c5c13f4a8ccc1feb558e5b9c25d0e101c74` |
+| `global/awf-portable/scripts/install_skill.py` | `78f23f1f8ed69d19190e522ec89a2f42b94fcb5f8a8e503f7c05fcc32e175f4a` |
 | `global/awf-portable/scripts/prepare_release.py` | `23fb697c6ce2ac9acfb06b751a693b02fbae5081c834ea1b315c7792280ab4be` |
 | `global/awf-portable/tests/test_awf.py` | `33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077` |
 | `global/awf-portable/tests/test_discovery_codeowners.py` | `42a2245cef352322327c9d72f80d9ce0cbdf831efbce1ec4f52c5c5fef460c16` |
 | `global/awf-portable/tests/test_documentation.py` | `4674bd35eb7af664f914fc33ab4ac7932bc78d0e88cbd773d49b8e1fc291b07b` |
-| `global/awf-portable/tests/test_install_skill.py` | `bd419e19499f2ef0ed1e4d3a4b1aa4b8921a19bdb5aa03ff108f97e622409cb8` |
+| `global/awf-portable/tests/test_install_skill.py` | `a58053ca1e91118a6ac0f07049cc94f7fcdbb580c7b9fd730e14d8a7544c1586` |
 | `global/awf-portable/tests/test_prepare_release.py` | `af65552e1674775e5a66c16be7ec2603b9fc2cf1759faf8d37518aa1daf3a1ef` |
 | `global/awf-portable/tests/test_updates.py` | `f185a236ec1ff32184bb27590dfc4aa42e3c65249f4178585d9ccd570ea66686` |
 | `global/awf/SKILL.md` | `150416d829da74b378489dbaf444576fa1b79fc2aba2fc056ebdaac49d885b50` |

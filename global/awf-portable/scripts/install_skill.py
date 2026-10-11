@@ -149,8 +149,26 @@ def default_destination():
     return legacy if legacy.exists() else configured
 
 
+def profile_homes():
+    """Return every explicit profile root in platform precedence order."""
+    names = ("USERPROFILE", "HOME") if os.name == "nt" else ("HOME", "USERPROFILE")
+    homes = []
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            path = Path(value).absolute()
+            if path not in homes:
+                homes.append(path)
+    if not homes:
+        homes.append(Path.home().absolute())
+    return homes
+
+
 def duplicate_locations(dest, project=None):
-    candidates = {Path.home() / ".codex" / "skills" / "awf", Path.home() / ".agents" / "skills" / "awf", default_destination()}
+    candidates = {default_destination()}
+    for home in profile_homes():
+        candidates.update({home / ".codex" / "skills" / "awf",
+                           home / ".agents" / "skills" / "awf"})
     if os.environ.get("CODEX_HOME"):
         candidates.add(Path(os.environ["CODEX_HOME"]) / "skills" / "awf")
     if project:
@@ -162,8 +180,8 @@ def duplicate_locations(dest, project=None):
 def skill_visibility(dest, project=None):
     """Name which Codex/agent sessions can discover each installed copy."""
     dest = Path(dest).absolute()
-    home = Path.home().absolute()
-    configured_home = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).absolute()
+    homes = profile_homes()
+    configured_home = Path(os.environ.get("CODEX_HOME", str(homes[0] / ".codex"))).absolute()
     candidates = []
 
     def add(path, visible_to, include=False):
@@ -174,10 +192,11 @@ def skill_visibility(dest, project=None):
     add(dest, f"sessions configured to scan the skills directory {dest.parent}", include=True)
     add(configured_home / "skills" / "awf",
         f"Codex sessions launched with CODEX_HOME={configured_home}")
-    add(home / ".codex" / "skills" / "awf",
-        f"Codex sessions using the default profile home {home}")
-    add(home / ".agents" / "skills" / "awf",
-        f"agent sessions using the profile home {home}")
+    for home in homes:
+        add(home / ".codex" / "skills" / "awf",
+            f"Codex sessions using the profile home {home}")
+        add(home / ".agents" / "skills" / "awf",
+            f"agent sessions using the profile home {home}")
     if project:
         resolved_project = Path(project).absolute()
         for ancestor in (resolved_project, *resolved_project.parents):
