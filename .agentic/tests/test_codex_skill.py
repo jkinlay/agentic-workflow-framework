@@ -236,6 +236,7 @@ class CodexSkillTests(unittest.TestCase):
         for role in ("writer", "critic"):
             with self.subTest(role=role):
                 store = MagicMock(spec=ContinuousControllerStore)
+                store.worktree_roots = (self.checkout,)
                 store.pending_dispatches.return_value = []
                 store.schedule.return_value = [
                     {
@@ -270,6 +271,7 @@ class CodexSkillTests(unittest.TestCase):
 
                 def dispatch(launch):
                     self.assertEqual(launch["role"], role)
+                    self.assertEqual(launch["worktree"], str(self.checkout.resolve()))
                     self.assertEqual(
                         launch["codex_skill_selection"]["visible_skills"][0]["path"],
                         str(pinned.resolve()),
@@ -303,6 +305,91 @@ class CodexSkillTests(unittest.TestCase):
                     )
 
                 store.record_dispatch_skill_selection.assert_called_once()
+
+    def test_controller_refuses_stale_skill_in_distinct_dispatch_worktree(self):
+        pinned = self.codex_home / "skills" / "awf"
+        stale = self.checkout / ".agents" / "skills" / "awf"
+        self.skill(pinned, "1.9.4")
+        self.skill(stale, "1.9.3")
+        now = "2026-10-11T10:00:00Z"
+        binding = {
+            "project_id": "project",
+            "repository_id": "repository",
+            "scope_sha256": "scope",
+        }
+        ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE"}
+        observation = {
+            "source": "host_observation",
+            "observed_at": now,
+            "binding": binding,
+            "complete": True,
+            "inventory_sha256": fingerprint(
+                "controller-inventory", {"binding": binding, "tickets": [ticket]}
+            ),
+            "tickets": [ticket],
+        }
+        payload = {
+            "dispatch_id": "dispatch",
+            "stream": "A",
+            "ticket": "AWF-33",
+            "exact_tuple": "tuple",
+            "dispatch_nonce": "nonce",
+            "prepared_at": now,
+            "paths": ["src/a.py"],
+            "actor": "writer",
+            "next_action": "amend",
+        }
+        store = MagicMock(spec=ContinuousControllerStore)
+        store.worktree_roots = (self.checkout,)
+        store.pending_dispatches.return_value = []
+        store.schedule.return_value = [{
+            "stream": "A",
+            "state": "WORKING",
+            "ticket": "AWF-33",
+            "exact_tuple": "tuple",
+        }]
+        store.prepare_dispatches.return_value = [{
+            "status": "PENDING", "dispatch_id": "dispatch", "payload": payload
+        }]
+        retained = {}
+        store.record_dispatch_skill_selection.side_effect = (
+            lambda _dispatch_id, record, _now: retained.update(record)
+        )
+        store.digest.return_value = None
+        store.snapshot.return_value = []
+
+        with patch.dict(os.environ, self.environment, clear=True), patch(
+            "agentic.continuous_controller.canonical_repository_paths",
+            return_value=([ticket], {"root": str(self.project)}),
+        ), patch(
+            "agentic.publication_readiness.require_publication_readiness",
+            return_value={"status": "PASS"},
+        ):
+            result = production_controller_cycle(
+                store,
+                now=now,
+                host_capacity=1,
+                inventory_binding=binding,
+                repository_root=self.project,
+                repository_head_sha="a" * 40,
+                repository_tree_sha="b" * 40,
+                observe_inventory=lambda: observation,
+                dispatch_ticket=lambda _value: self.fail(
+                    "stale dispatch-worktree skill reached Codex dispatch"
+                ),
+                observe_dispatch=lambda value: value,
+                deliver_status=lambda value: value,
+                publication_config={"github": {"repository_id": "repository"}},
+                observe_publication=lambda value: value,
+            )
+
+        self.assertEqual(result["dispatch_receipts"], [])
+        self.assertEqual(result["errors"][0]["state"], "REFUSED")
+        self.assertIn(str(stale.resolve()), result["errors"][0]["reason"])
+        self.assertEqual(retained["status"], "REFUSED")
+        self.assertEqual(retained["project_root"], str(self.checkout.resolve()))
+        self.assertEqual(retained["launch_directory"], str(self.checkout.resolve()))
+        store.begin_dispatch.assert_not_called()
 
     def test_controller_store_persists_visible_skill_record_before_begin(self):
         pinned = self.codex_home / "skills" / "awf"
