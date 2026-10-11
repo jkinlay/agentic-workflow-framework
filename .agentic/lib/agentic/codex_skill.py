@@ -17,9 +17,19 @@ def _absolute(path):
     return Path(os.path.abspath(os.path.expanduser(str(path))))
 
 
-def _profile_home(environment):
-    value = environment.get("HOME") or environment.get("USERPROFILE")
-    return _absolute(value) if value else _absolute(Path.home())
+def _profile_homes(environment):
+    """Return every explicit profile root in the platform's precedence order."""
+    names = ("USERPROFILE", "HOME") if os.name == "nt" else ("HOME", "USERPROFILE")
+    homes = []
+    for name in names:
+        value = environment.get(name)
+        if value:
+            path = _absolute(value)
+            if path not in homes:
+                homes.append(path)
+    if not homes:
+        homes.append(_absolute(Path.home()))
+    return homes
 
 
 def _json_version(path, key):
@@ -56,8 +66,8 @@ def skill_version(skill):
 
 
 def _candidate_skills(launch_directory, environment):
-    home = _profile_home(environment)
-    codex_home = _absolute(environment.get("CODEX_HOME") or (home / ".codex"))
+    homes = _profile_homes(environment)
+    codex_home = _absolute(environment.get("CODEX_HOME") or (homes[0] / ".codex"))
     candidates = []
 
     def add(path, visible_to):
@@ -65,10 +75,11 @@ def _candidate_skills(launch_directory, environment):
 
     add(codex_home / "skills" / "awf",
         f"Codex sessions launched with CODEX_HOME={codex_home}")
-    add(home / ".codex" / "skills" / "awf",
-        f"Codex sessions using the default profile home {home}")
-    add(home / ".agents" / "skills" / "awf",
-        f"Agent sessions using the profile home {home}")
+    for home in homes:
+        add(home / ".codex" / "skills" / "awf",
+            f"Codex sessions using the profile home {home}")
+        add(home / ".agents" / "skills" / "awf",
+            f"Agent sessions using the profile home {home}")
     launch = _absolute(launch_directory)
     for ancestor in (launch, *launch.parents):
         add(ancestor / ".codex" / "skills" / "awf",
@@ -100,10 +111,6 @@ def observe_codex_awf_skills(project_root, launch_directory, environment=None):
     visible.sort(key=lambda item: os.path.normcase(item["path"]))
     problems = []
     pinned_text = str(_absolute(pinned))
-    pinned_record = next((item for item in visible if
-                          os.path.normcase(item["path"]) == os.path.normcase(pinned_text)), None)
-    if pinned_record is None:
-        problems.append(f"configured pinned AWF skill is missing: {pinned_text}")
     for item in visible:
         if item["version"] is None:
             problems.append(f"AWF skill version could not be established: {item['path']}")

@@ -2,7 +2,7 @@
 
 456 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `e575428db2102d2e49514a1cf5750ee5e51b41390e2bb708fa0d80944983b47f`
+MANIFEST.json SHA-256: `602e56528ebb49f528274241f672119177684711e12ef9629ec64dee7635e037`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -77,10 +77,10 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/child_process.py` | `db88d4cad559d8dedba578907ab756f537d5fccd17ff4fdfd02eb28f93cd8be6` |
 | `.agentic/lib/agentic/cli.py` | `28bd80ce3d9fbd150b377a50f78017b2fde132d036c6d05dce29b7e576da5230` |
 | `.agentic/lib/agentic/closeout.py` | `0920c58f0726bc9f0bd293bc63cdd3b364b4df4a7bebdcb2b51b863e912f247e` |
-| `.agentic/lib/agentic/codex_skill.py` | `a17f821d77322743ace97309623f2b309d5e0f325a1ff44c277679b93c29e03a` |
+| `.agentic/lib/agentic/codex_skill.py` | `c32533cbdde0e2407fdeadc216ecc6c7e7af72bb549377669f2942562c97bcfe` |
 | `.agentic/lib/agentic/configuration.py` | `70d15ebf0fd7cbe3551db5ba9e533bfec91b5ac6a2e3c4f93df21f066acb29ac` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `9a9cb325150282a713e0b2225c80fe7bc28e6b6c8466fa1901070cfe3d68e8a8` |
+| `.agentic/lib/agentic/continuous_controller.py` | `914a0650f23e7ec433a6733f8a35b2ad079d3c7a05315756008dae462362aefa` |
 | `.agentic/lib/agentic/contracts.py` | `608011b68fd03da49340fe96cef754a22440363717490c613cef6c9280da356b` |
 | `.agentic/lib/agentic/controller_state.py` | `08f533e320c4a6bb4563a040fa9b6df06c7efddadb0ddb9af8155512f07047ff` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
@@ -109,7 +109,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/provider_identity.py` | `d95ae1def1279357ca53b0c51151f4fe483a16ac5e8f8b843800afeb1176289c` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
 | `.agentic/lib/agentic/providers/github.py` | `0228ed2d7c57617052ef97209c6ae357b893d3151dd97df267ab2a86d4e2f12d` |
-| `.agentic/lib/agentic/providers/github_review_host.py` | `2b0e2e6fbe58c1addb5748f17f4457aad7e7f6dfa8304d4337864a43154f781a` |
+| `.agentic/lib/agentic/providers/github_review_host.py` | `b019ab6cb8bd090e0dd9196fe8a6cec73c8658b6367329d50531fdd0a3e68dbe` |
 | `.agentic/lib/agentic/providers/github_reviewer_removal.py` | `6bdbe9065e3ffe29561113e5c267b4cb033b9e01855b4597e09ec8056f3cbf8e` |
 | `.agentic/lib/agentic/providers/github_status.py` | `69820fd9191039666142014b29c1e254218608ce33020a78cc6d133e99955776` |
 | `.agentic/lib/agentic/publication.py` | `21f0fa378a2624c85db2bbc8ad9679330501796e0a5a5fa839fdf82c1beffe3b` |
@@ -279,7 +279,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_bootstrap_configuration.py` | `2a96e3b578b044417ff20deb164db75203ca9e7ccd54721974ac89ab1fcdebe2` |
 | `.agentic/tests/test_child_process.py` | `61772435c9633eb2c0681d4a7c637b81376d65166453de6cfe5d05d08df5fc80` |
 | `.agentic/tests/test_codeowners.py` | `12c0b86ed561d24d4d3c6cbe2c713be9820e62ed862455658a9b792e0fac5184` |
-| `.agentic/tests/test_codex_skill.py` | `5e9a206d0c232e2cc2335324adf6854d7ca3c6c07eeab66e0526c0425feaf8ea` |
+| `.agentic/tests/test_codex_skill.py` | `bae310350bdd264d6957a7425cbe041f1eee7cf9fbe234b485361dbca452c3b8` |
 | `.agentic/tests/test_config_diagnostics.py` | `e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07` |
 | `.agentic/tests/test_continuation.py` | `1afae4f83fe2430dfd5fd3b6e9eea2a309f3dc83c5fd383affdfbba2f0c7d633` |
 | `.agentic/tests/test_continuous_controller.py` | `6dc621d532125321b32e9d1d976de78383921bc73a1f5658359fda7af282e1c6` |

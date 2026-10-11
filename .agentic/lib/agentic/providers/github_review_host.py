@@ -210,15 +210,16 @@ class HostDriver:
         require(sha256(Path(executable['path']).read_bytes()) == executable['sha256'], 'Executable changed after configuration validation')
         require(sha256(Path(self.c['_config_path']).read_bytes()) == self.c['config_hash'], 'Host policy changed during operation')
         if name == 'codex':
-            require(log is not None, 'Codex launch requires a retained run log')
             launch_directory = cwd or self.root
             if '--cd' in args:
                 index = args.index('--cd')
                 require(index + 1 < len(args), 'Codex --cd requires a launch directory')
                 launch_directory = args[index + 1]
+            selection_path = (Path(log).with_name('skill-selection.json')
+                              if log is not None else self.state / 'skill-selection.json')
             enforce_pinned_awf_skill(
                 self.root, launch_directory, env,
-                record_path=Path(log).with_name('skill-selection.json'))
+                record_path=selection_path)
         # Neither candidate Git overrides nor paid API auth is inherited.
         for key in list(env):
             if key.upper().startswith('GIT_'):

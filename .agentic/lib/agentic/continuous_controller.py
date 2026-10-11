@@ -758,6 +758,34 @@ class ContinuousControllerStore:
                        (canonical(payload).decode(), now, dispatch_id))
             return payload
 
+    def record_dispatch_skill_selection(self, dispatch_id, record, now):
+        """Retain the exact visible AWF skills before a Codex dispatch begins."""
+        timestamp(now)
+        from . import VERSION
+        from .codex_skill import FORMAT
+        required = {"format", "expected_version", "project_root", "pinned_skill_path",
+                    "launch_directory", "visible_skills", "status", "problems"}
+        _require(isinstance(record, dict) and set(record) == required and
+                 record.get("format") == FORMAT and record.get("expected_version") == VERSION and
+                 record.get("status") in {"PASS", "REFUSED"} and
+                 isinstance(record.get("visible_skills"), list) and
+                 isinstance(record.get("problems"), list),
+                 "Codex skill-selection record is malformed")
+        encoded = loads(canonical(record).decode())
+        with self.transaction() as db:
+            row = db.execute("SELECT status,payload_json FROM controller_dispatch WHERE dispatch_id=?",
+                             (dispatch_id,)).fetchone()
+            _require(row is not None and row["status"] == "PENDING",
+                     "Codex skill selection must precede dispatch begin")
+            payload = loads(row["payload_json"])
+            prior = payload.get("codex_skill_selection")
+            _require(prior is None or prior == encoded,
+                     "Codex skill selection changed for a durable dispatch intent")
+            payload["codex_skill_selection"] = encoded
+            db.execute("UPDATE controller_dispatch SET payload_json=?,updated_at=? WHERE dispatch_id=?",
+                       (canonical(payload).decode(), now, dispatch_id))
+        return encoded
+
     def finish_dispatch(self, dispatch_id, receipt, now, *, reconcile=False):
         """Accept only exact host readback; uncertain calls are never reissued."""
         timestamp(now)
@@ -1165,6 +1193,17 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                 continue
         try:
             if operation["status"] == "PENDING":
+                from .codex_skill import observe_codex_awf_skills
+                selection = observe_codex_awf_skills(
+                    repository_root, repository_root, os.environ)
+                store.record_dispatch_skill_selection(dispatch_id, selection, now)
+                if selection["status"] != "PASS":
+                    reason = ("Codex AWF skill selection refused: " +
+                              "; ".join(selection["problems"]))
+                    store.cancel_pending_dispatch(dispatch_id, now, reason)
+                    errors.append({"operation": "dispatch", "dispatch_id": dispatch_id,
+                                   "state": "REFUSED", "reason": reason})
+                    continue
                 payload = store.begin_dispatch(dispatch_id, now)
                 receipt = dispatch_ticket({**payload, "role": dispatch_role})
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now))
