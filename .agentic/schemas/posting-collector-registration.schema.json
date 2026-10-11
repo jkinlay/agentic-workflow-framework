@@ -1,0 +1,52 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "collector_id",
+    "provider_kind",
+    "implementation_sha256",
+    "release_sha256",
+    "repository_ids",
+    "receipts"
+  ],
+  "properties": {
+    "collector_id": {
+      "const": "github-production-posting-collector"
+    },
+    "provider_kind": {
+      "const": "github"
+    },
+    "implementation_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "release_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "repository_ids": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "receipts": {
+      "type": "object",
+      "propertyNames": {
+        "format": "uuid"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "minProperties": 1
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:posting-collector-registration",
+  "title": "Agentic Workflow 1.9.5 \u2014 posting-collector-registration"
+}
