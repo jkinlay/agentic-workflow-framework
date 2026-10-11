@@ -10,6 +10,7 @@ import uuid
 from . import ValidationError
 from .canonical import (canonical, candidate_id, fingerprint, fresh, loads,
                         reject_git_sha_candidate_ids, sha256, timestamp, unique)
+from .configuration import valid_workflow_blob_sha
 from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_path,
                      specialist_domains, validate_config)
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
@@ -74,6 +75,33 @@ def local_ci_parity(config, contract, worker, ci):
         elif check["tests_executed"] != local[command]:
             mismatches.append(f"{required['name']}: CI executed {check['tests_executed']} tests, local {command!r} executed {local[command]}")
     return not mismatches, mismatches
+
+
+def ci_workflow_provenance_matches(required, observed, file_manifest):
+    """Match one CI check to a reviewed commit or workflow-content pin.
+
+    A present ``workflow_blob_sha`` selects content-bound mode.  The complete
+    PR changed-file manifest then proves either that the workflow was unchanged
+    from the reviewed base, or that its candidate blob is the reviewed object.
+    Because Git blob IDs depend only on file bytes, merge commit identity is
+    irrelevant.  Missing or malformed content pins never fall back to the
+    legacy commit pin.
+    """
+    if any(observed.get(key) != required.get(key)
+           for key in ("name", "app_id", "workflow_path")):
+        return False
+    if "workflow_blob_sha" not in required:
+        workflow_sha = required.get("workflow_sha")
+        return (valid_workflow_blob_sha(workflow_sha)
+                and observed.get("workflow_sha") == workflow_sha)
+    workflow_blob_sha = required.get("workflow_blob_sha")
+    if not valid_workflow_blob_sha(workflow_blob_sha):
+        return False
+    changed_workflow = [item for item in file_manifest
+                        if item.get("path") == required.get("workflow_path")]
+    return (not changed_workflow
+            or (len(changed_workflow) == 1
+                and changed_workflow[0].get("blob_sha") == workflow_blob_sha))
 
 
 def verified_owner_records(config, contracts, bundle, binding, runs, excluded_contexts, excluded_producers, now):
@@ -688,9 +716,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         if not check:
             ci_ok = False
             continue
-        for key in ["app_id", "workflow_path", "workflow_sha"]:
-            if check[key] != required[key]:
-                ci_ok = False
+        if not ci_workflow_provenance_matches(required, check, pr["file_manifest"]):
+            ci_ok = False
         fresh(check["completed_at"], now, config["validation"]["max_evidence_age_seconds"])
         ci_ok = ci_ok and check["conclusion"] == "success" and check["tests_executed"] >= required["min_tests_executed"]
         ci_ok = ci_ok and check["tested_tree_sha"] == candidate["integration_tree_sha"] and check["tested_commit_sha"] == candidate["tested_merge_sha"]
