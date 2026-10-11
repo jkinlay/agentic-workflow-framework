@@ -6,34 +6,46 @@ repository. Gate such tests with ``skip_unless_source_repo`` so the installed
 self-test reports a reasoned skip instead of an error.
 """
 from __future__ import annotations
+import hashlib
 import json
 from pathlib import Path
 import subprocess
 import unittest
 
+from agentic import VERSION
+from agentic.operating import (INSTALLED as INSTALLATION_RECEIPT, SOURCE_MARKER,
+                               filesystem_reader,
+                               is_awf_source_repository as _is_awf_source_repository)
+
 ROOT = Path(__file__).resolve().parents[2]
-INSTALLATION_RECEIPT = ".agentic/installed-manifest.json"
-SOURCE_MARKER = "scripts/build_release.py"
+
+
+def write_awf_source_fixture(root: Path) -> None:
+    """Build a self-contained AWF source identity in a neutral fixture tree."""
+    files = {
+        SOURCE_MARKER: b"# AWF source-only fixture\n",
+        "OPERATING_CONFIG.yaml": b"{}\n",
+    }
+    manifest = {
+        "files": {
+            name: hashlib.sha256(content).hexdigest()
+            for name, content in files.items()
+        },
+        "format": "awf-manifest-1",
+        "template_version": VERSION,
+    }
+    files["MANIFEST.json"] = (
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    for name, content in files.items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
 
 
 def is_awf_source_repository(root: Path) -> bool:
-    """True only for an AWF source tree, never for an installed project.
-
-    A root ``MANIFEST.json`` alone is not enough: adopters may own one. The AWF
-    source manifest identifies its format and inventories the source-only
-    release builder; installed projects carry the installation receipt.
-    """
-    manifest_path = root / "MANIFEST.json"
-    if ((root / INSTALLATION_RECEIPT).exists() or not manifest_path.is_file()
-            or not (root / SOURCE_MARKER).is_file()):
-        return False
-    try:
-        manifest = json.loads(manifest_path.read_bytes())
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return False
-    return (isinstance(manifest, dict) and manifest.get("format") == "awf-manifest-1"
-            and isinstance(manifest.get("files"), dict)
-            and SOURCE_MARKER in manifest["files"])
+    """Delegate source identity to the runtime library's canonical predicate."""
+    return _is_awf_source_repository(filesystem_reader(root))
 
 
 AWF_SOURCE_REPOSITORY = is_awf_source_repository(ROOT)

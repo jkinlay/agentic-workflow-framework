@@ -1,7 +1,6 @@
 """Source-repository detection must not trust an adopter-owned MANIFEST.json."""
 from __future__ import annotations
 import importlib.util
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -12,14 +11,13 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402
 from source_only import (INSTALLATION_RECEIPT, SOURCE_MARKER, SOURCE_ONLY_REASON,
-                         committed_git_tuple, is_awf_source_repository)  # noqa: E402
+                         committed_git_tuple, is_awf_source_repository,
+                         write_awf_source_fixture)  # noqa: E402
+
+from agentic import operating, operating_status, streams  # noqa: E402
+from agentic.safeio import Tree  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-AWF_MANIFEST = {
-    "files": {SOURCE_MARKER: "0" * 64},
-    "format": "awf-manifest-1",
-    "template_version": "1.9.4",
-}
 
 
 class SourceRepositoryDetectionTests(unittest.TestCase):
@@ -29,12 +27,36 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
         root = Path(raw.name)
         for path in paths:
             (root / path).parent.mkdir(parents=True, exist_ok=True)
-            content = json.dumps(AWF_MANIFEST) if path == "MANIFEST.json" else "{}"
-            (root / path).write_text(content + "\n", encoding="utf-8")
+            (root / path).write_text("{}\n", encoding="utf-8")
         return root
 
+    def installed_downstream_tree(self):
+        root = self.tree(
+            "MANIFEST.json",
+            INSTALLATION_RECEIPT,
+            ".agentic/SPECIFICATION.md",
+            ".agentic/lib/agentic/operating.py",
+        )
+        (root / "MANIFEST.json").write_text(
+            '{"format":"adopter-manifest-1","project":"downstream"}\n',
+            encoding="utf-8",
+        )
+        return root
+
+    @staticmethod
+    def reader(root):
+        def read(name):
+            path = root / name
+            try:
+                return path.read_bytes() if path.is_file() else None
+            except OSError:
+                return None
+        return read
+
     def test_source_tree_is_recognised(self):
-        self.assertTrue(is_awf_source_repository(self.tree("MANIFEST.json", SOURCE_MARKER)))
+        root = self.tree()
+        write_awf_source_fixture(root)
+        self.assertTrue(is_awf_source_repository(root))
 
     @source_only.skip_unless_source_repo()
     def test_current_awf_source_checkout_is_detected(self):
@@ -51,8 +73,75 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
         self.assertFalse(is_awf_source_repository(root))
 
     def test_installation_receipt_wins_over_source_markers(self):
-        self.assertFalse(is_awf_source_repository(
-            self.tree("MANIFEST.json", SOURCE_MARKER, INSTALLATION_RECEIPT)))
+        source = self.tree(INSTALLATION_RECEIPT)
+        write_awf_source_fixture(source)
+        self.assertFalse(is_awf_source_repository(source))
+
+    def test_canonical_library_predicate_distinguishes_source_and_installed_downstream(self):
+        downstream = self.installed_downstream_tree()
+        source = self.tree()
+        write_awf_source_fixture(source)
+        self.assertFalse(operating.is_awf_source_repository(self.reader(downstream)))
+        self.assertTrue(operating.is_awf_source_repository(self.reader(source)))
+
+    def test_operating_lock_uses_canonical_source_predicate(self):
+        downstream = self.installed_downstream_tree()
+        detector = operating.is_awf_source_repository
+        with mock.patch.object(operating, "is_awf_source_repository", wraps=detector) as shared:
+            with mock.patch.object(operating, "verify_installed"):
+                with Tree(downstream) as tree, operating._lock(tree):
+                    pass
+        shared.assert_called_once()
+
+        source = self.tree()
+        write_awf_source_fixture(source)
+        with Tree(source) as tree:
+            with self.assertRaisesRegex(operating.OperatingError, "immutable release source"):
+                with operating._lock(tree):
+                    pass
+
+    def test_operating_status_uses_canonical_source_predicate(self):
+        downstream = self.installed_downstream_tree()
+        report = {"status": "ACCEPTED", "unresolved": []}
+        inspected = {
+            "status": "ACCEPTED", "hash": "0" * 64, "source": "default",
+            "streams": 3, "last_change_id": None, "refusals": [],
+        }
+        detector = operating.is_awf_source_repository
+        with mock.patch.object(operating_status, "is_awf_source_repository", wraps=detector) as shared:
+            with mock.patch.object(operating_status, "inspect_operating", return_value=inspected):
+                result = operating_status.with_operating(downstream, {}, report)
+        shared.assert_called_once()
+        self.assertEqual(inspected, result["operating"])
+
+        source = self.tree()
+        write_awf_source_fixture(source)
+        snapshot = mock.Mock(operating_hash="1" * 64, source="default", count=3)
+        with mock.patch.object(operating_status, "validate_operating", return_value=snapshot):
+            with mock.patch.object(operating_status, "operating_ceiling", return_value={}):
+                result = operating_status.with_operating(source, {}, report)
+        self.assertEqual("source_template", result["operating"]["provenance"])
+
+    def test_stream_publication_uses_canonical_source_predicate(self):
+        downstream = self.installed_downstream_tree()
+        project = downstream / "project"
+        project.mkdir()
+        raw = (ROOT / ".agentic/examples/stream-input.json").read_bytes()
+        result = streams.write_project_plan(
+            project, raw, streams.sha256(raw), "2026-09-11T10:00:00Z",
+            downstream, allow_synthetic=True,
+        )
+        self.assertEqual("PLANNED", result["status"])
+
+        source = self.tree()
+        write_awf_source_fixture(source)
+        project = source / "project"
+        project.mkdir()
+        with self.assertRaisesRegex(operating.ValidationError, "immutable release source"):
+            streams.write_project_plan(
+                project, raw, streams.sha256(raw), "2026-09-11T10:00:00Z",
+                source, allow_synthetic=True,
+            )
 
     def test_skip_decorator_uses_source_detection_and_reports_reason(self):
         downstream = self.tree("MANIFEST.json")
@@ -61,7 +150,8 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
         self.assertTrue(decorated.__unittest_skip__)
         self.assertEqual(SOURCE_ONLY_REASON, decorated.__unittest_skip_why__)
 
-        source = self.tree("MANIFEST.json", SOURCE_MARKER)
+        source = self.tree()
+        write_awf_source_fixture(source)
         with mock.patch.object(source_only, "ROOT", source):
             decorated = source_only.skip_unless_source_repo()(lambda: None)
         self.assertFalse(getattr(decorated, "__unittest_skip__", False))
@@ -70,9 +160,9 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location(
             "awf_self_test_source_detection", ROOT / ".agentic/scripts/self_test.py")
         module = importlib.util.module_from_spec(spec)
-        with mock.patch("source_only.is_awf_source_repository", return_value=False) as detector:
+        with mock.patch("agentic.operating.is_awf_source_repository", return_value=False) as detector:
             spec.loader.exec_module(module)
-        detector.assert_called_once_with(ROOT)
+        detector.assert_called_once()
         self.assertFalse(module.SOURCE_REPOSITORY)
 
     def test_commitless_git_repository_has_no_tuple(self):
@@ -92,7 +182,8 @@ class SourceRepositoryDetectionTests(unittest.TestCase):
         self.assertIn(len(tree), (40, 64))
 
     def test_source_checkout_git_failure_is_not_a_commitless_skip(self):
-        root = self.tree("MANIFEST.json", SOURCE_MARKER)
+        root = self.tree()
+        write_awf_source_fixture(root)
         self.assertTrue(is_awf_source_repository(root))
         failed = subprocess.CompletedProcess(
             ["git"], 128, stdout="", stderr="fatal: detected dubious ownership")

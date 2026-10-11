@@ -21,10 +21,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 sys.path.insert(0, str(ROOT / '.agentic/tests'))
 from agentic import VERSION
-from source_only import is_awf_source_repository
+from agentic.operating import filesystem_reader, is_awf_source_repository
 
 HEARTBEAT_SECONDS = 15.0
-SOURCE_REPOSITORY = is_awf_source_repository(ROOT)
+SOURCE_REPOSITORY = is_awf_source_repository(filesystem_reader(ROOT))
 PHASES = ('discovery', 'syntax', 'documentation', 'release_hygiene', 'test_suite')
 NONDETERMINISTIC_REPORT_FIELDS = ('created_at', 'elapsed_seconds', 'phase_timings_seconds')
 
