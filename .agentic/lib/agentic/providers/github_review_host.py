@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from ..canonical import loads, sha256
 from ..child_process import child_env, isolated_git_env
+from ..codex_skill import enforce_pinned_awf_skill
 from ..path_containment import is_within, relative_within
 from ..review_loop import ValidationError, require
 from .. import review_qualification
@@ -208,6 +209,17 @@ class HostDriver:
         executable = self.c['executables'][name]
         require(sha256(Path(executable['path']).read_bytes()) == executable['sha256'], 'Executable changed after configuration validation')
         require(sha256(Path(self.c['_config_path']).read_bytes()) == self.c['config_hash'], 'Host policy changed during operation')
+        if name == 'codex':
+            launch_directory = cwd or self.root
+            if '--cd' in args:
+                index = args.index('--cd')
+                require(index + 1 < len(args), 'Codex --cd requires a launch directory')
+                launch_directory = args[index + 1]
+            selection_path = (Path(log).with_name('skill-selection.json')
+                              if log is not None else self.state / 'skill-selection.json')
+            enforce_pinned_awf_skill(
+                self.root, launch_directory, env,
+                record_path=selection_path)
         # Neither candidate Git overrides nor paid API auth is inherited.
         for key in list(env):
             if key.upper().startswith('GIT_'):
