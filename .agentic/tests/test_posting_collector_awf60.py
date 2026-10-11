@@ -325,6 +325,37 @@ class PostingCollectorTests(Fixture):
         self.assertTrue(registrations)
         self.assertIn(COLLECTOR_ID, registry)
 
+    def test_r3_002_name_only_defines_fragment_on_anchor_element(self):
+        _pr_suffix, _body, _anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "div": f'<div name="{fragment}"></div>',
+            "span": f'<span name="{fragment}"></span>',
+            "p": f'<p name="{fragment}"></p>',
+            "img": f'<img name="{fragment}"/>',
+        }
+
+        for element, markup in cases.items():
+            with self.subTest(element=element):
+                self._assert_fragment_markup_rejected(markup)
+
+    def test_r3_002_anchor_name_still_defines_target_fragment(self):
+        pr_suffix, body, anchor, fragment = self._terminal_fragment_fixture()
+        self.host.responses[pr_suffix]["body"] = body.replace(
+            anchor, f'<a name="{fragment}"></a>'
+        )
+        registrations, registry = self._install_runtime_observations()
+        self.assertTrue(registrations)
+        self.assertIn(COLLECTOR_ID, registry)
+
+    def test_r3_002_rendering_element_id_still_defines_target_fragment(self):
+        pr_suffix, body, anchor, fragment = self._terminal_fragment_fixture()
+        self.host.responses[pr_suffix]["body"] = body.replace(
+            anchor, f'<div id="{fragment}"></div>'
+        )
+        registrations, registry = self._install_runtime_observations()
+        self.assertTrue(registrations)
+        self.assertIn(COLLECTOR_ID, registry)
+
     def test_b3_entity_encoded_anchor_does_not_define_target_fragment(self):
         _pr_suffix, _body, _anchor, fragment = self._terminal_fragment_fixture()
         self._assert_fragment_markup_rejected(
