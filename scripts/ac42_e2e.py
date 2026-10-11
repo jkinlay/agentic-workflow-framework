@@ -44,7 +44,7 @@ REQUIRED = ("fixture", "upgrade", "verify_installation", "validate_config", "sel
             "project_values_preserved", "external_data_unchanged", "autocrlf_fresh_clone",
             "history_sensitive_value_blocked", "capability_matrix",
             "read_only_external_resource_admission")
-SENSITIVE = "C:\\Users\\synthetic-ac42\\raw_estate\\positions.csv"
+SENSITIVE_PLACEHOLDER = "<external-estate>/positions.csv"
 
 
 STATUS_FIXTURE_SITE = r'''"""AC42-only provider fixture for the installed status subprocess."""
@@ -422,14 +422,19 @@ def main(argv=None):
         gate.record("autocrlf_fresh_clone", step["exit_code"] == 0, step)
 
         git(project, "checkout", "-q", "-b", "awf/ac43-history")
-        (project / "notes-ac43.md").write_text("estate: " + SENSITIVE + "\n", encoding="utf-8")
+        (project / "notes-ac43.md").write_text(
+            "estate: " + SENSITIVE_PLACEHOLDER + "\n", encoding="utf-8")
         git(project, "add", "notes-ac43.md")
         git(project, "commit", "-q", "-m", "Add estate note")
         (project / "notes-ac43.md").unlink()
         git(project, "add", "-A")
         git(project, "commit", "-q", "-m", "Remove estate note")
+        mapping = work / "publication-mapping.json"
+        mapping.write_text(json.dumps({"version": 1, "aliases": {},
+            "deny_literals": [SENSITIVE_PLACEHOLDER], "deny_regexes": [],
+            "internal_hostnames": [], "builtin_allow": []}), encoding="utf-8")
         step = run([python, "-B", workflow, "--root", project, "publication-scan", "--base", branch,
-                    "--head", "awf/ac43-history", "--json"], project)
+                    "--head", "awf/ac43-history", "--mapping", mapping, "--json"], project)
         gate.record("history_sensitive_value_blocked", step["exit_code"] != 0 and "notes-ac43.md" in step["stdout_tail"], step)
         gate.record("read_only_external_resource_admission", False,
                     "AC48-AC51 per-stream admission of a declared read-only resource is not exercised by this harness",
