@@ -6,6 +6,7 @@ repository. Gate such tests with ``skip_unless_source_repo`` so the installed
 self-test reports a reasoned skip instead of an error.
 """
 from __future__ import annotations
+import json
 from pathlib import Path
 import subprocess
 import unittest
@@ -18,12 +19,21 @@ SOURCE_MARKER = "scripts/build_release.py"
 def is_awf_source_repository(root: Path) -> bool:
     """True only for an AWF source tree, never for an installed project.
 
-    A root ``MANIFEST.json`` alone is not enough: adopters may own one. Installed
-    projects carry the installation receipt and lack the source-only release
-    builder.
+    A root ``MANIFEST.json`` alone is not enough: adopters may own one. The AWF
+    source manifest identifies its format and inventories the source-only
+    release builder; installed projects carry the installation receipt.
     """
-    return ((root / "MANIFEST.json").is_file() and (root / SOURCE_MARKER).is_file()
-            and not (root / INSTALLATION_RECEIPT).exists())
+    manifest_path = root / "MANIFEST.json"
+    if ((root / INSTALLATION_RECEIPT).exists() or not manifest_path.is_file()
+            or not (root / SOURCE_MARKER).is_file()):
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_bytes())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return (isinstance(manifest, dict) and manifest.get("format") == "awf-manifest-1"
+            and isinstance(manifest.get("files"), dict)
+            and SOURCE_MARKER in manifest["files"])
 
 
 AWF_SOURCE_REPOSITORY = is_awf_source_repository(ROOT)
@@ -36,7 +46,7 @@ COMMITTED_GIT_REASON = (
 
 def skip_unless_source_repo(reason: str = SOURCE_ONLY_REASON, *paths: str):
     """Skip unless this is the AWF source repository and every named path exists."""
-    present = AWF_SOURCE_REPOSITORY and all((ROOT / path).exists() for path in paths)
+    present = is_awf_source_repository(ROOT) and all((ROOT / path).exists() for path in paths)
     return unittest.skipUnless(present, reason)
 
 
