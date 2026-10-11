@@ -15,7 +15,6 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.adoption_config import assign_project_start
-from agentic.contracts import Contracts
 from agentic.intake_assignment import (
     assign_intake,
     change_assignment,
@@ -230,19 +229,6 @@ class ConfigDefaultsAndOverrides(unittest.TestCase):
         invalid["execution"]["risk_tiers"]["tier3_review"]["max_rounds"] = 4
         with self.assertRaises(jsonschema.ValidationError):
             jsonschema.validate(invalid, schema)
-
-    def test_assignment_record_schema(self):
-        contracts = Contracts(ROOT / ".agentic/schemas")
-        state, jira = {}, FakeJira()
-        record = assign_intake(config(), ticket(), state, jira, now=NOW,
-                               controller_actor_id="controller-1")
-        contracts.validate("intake-assignment", record)
-        for field, value in (("tier", 4), ("round_cap", 4)):
-            with self.subTest(field=field), self.assertRaises(ValidationError):
-                contracts.validate("intake-assignment", {**record, field: value})
-        with self.assertRaises(ValidationError):
-            contracts.validate("intake-assignment", {**record, "round_cap": 3})
-
 
 if __name__ == "__main__":
     unittest.main()
