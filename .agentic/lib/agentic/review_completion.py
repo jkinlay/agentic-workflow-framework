@@ -17,7 +17,8 @@ import uuid
 from urllib.parse import urlsplit
 
 from . import ValidationError
-from .canonical import canonical, fingerprint, fresh, loads, now_text, sha256, timestamp
+from .canonical import (candidate_id, canonical, fingerprint, fresh, loads, now_text,
+                        reject_git_sha_candidate_ids, sha256, timestamp)
 from .controller_state import configure_database, protected_state_path, restrict_state_permissions
 
 
@@ -978,7 +979,7 @@ def gate_review_aggregate(candidate, critic, specialists):
     _require(len(reviewers) == len(set(reviewers)),
              "Final-gate reviewers must have unique producer identities")
     return {
-        "candidate_id": fingerprint("candidate", candidate),
+        "candidate_id": candidate_id(candidate),
         "critic_record_id": critic["record_id"],
         "critic_sha256": fingerprint("critic-review", critic),
         "specialist_record_ids": sorted(row["record_id"] for row in specialists),
@@ -1001,6 +1002,7 @@ def gate_review_tuple(candidate, contract, aggregate):
 
 def validate_gate_submission(value, candidate, contract, critic, specialists):
     """Validate an atomic completion admission against final-gate inputs."""
+    reject_git_sha_candidate_ids(value)
     validate_submission_semantics(value)
     aggregate = gate_review_aggregate(candidate, critic, specialists)
     _require(value.get("aggregate") == aggregate,
