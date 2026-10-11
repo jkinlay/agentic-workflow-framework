@@ -4,6 +4,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -69,7 +71,7 @@ class CiSuiteCoverageTests(unittest.TestCase):
             if expected & discovered_suites({"steps": [step]}):
                 self.assertFalse(step.get("continue-on-error", False), step.get("name"))
 
-    def test_windows_installed_runtime_job_is_single_and_release_gated(self):
+    def test_windows_installed_runtime_job_is_single_and_path_gated(self):
         document = workflow()
         triggers = document.get("on", document.get(True))
         self.assertEqual(["main"], triggers["push"]["branches"])
@@ -90,10 +92,14 @@ class CiSuiteCoverageTests(unittest.TestCase):
             for step in job["steps"]
             if step.get("uses") == "actions/setup-python@v5"
         )))
+        self.assertEqual(["windows_runtime_paths"], job["needs"])
         self.assertEqual(
-            "github.event_name == 'push' || "
-            "(github.event_name == 'pull_request' && github.base_ref == 'main' && "
-            "startsWith(github.head_ref, 'release/'))",
+            "always() && (github.event_name == 'push' || "
+            "(github.event_name == 'pull_request' && "
+            "(needs.windows_runtime_paths.result != 'success' || "
+            "needs.windows_runtime_paths.outputs.runtime_changed != 'false' || "
+            "(github.base_ref == 'main' && "
+            "startsWith(github.head_ref, 'release/')))))",
             job["if"],
         )
         job_environment = "\n".join(str(value) for value in job.get("env", {}).values())
@@ -102,6 +108,12 @@ class CiSuiteCoverageTests(unittest.TestCase):
         actions = [step.get("uses") for step in job["steps"] if "uses" in step]
         self.assertIn("actions/checkout@v4", actions)
         self.assertIn("actions/setup-python@v5", actions)
+        checkout = next(step for step in job["steps"] if step.get("uses") == "actions/checkout@v4")
+        self.assertEqual(
+            "${{ github.event_name == 'pull_request' && "
+            "github.event.pull_request.head.sha || github.sha }}",
+            checkout["with"]["ref"],
+        )
         self.assertEqual("Initialize installed-runtime evidence paths", job["steps"][0]["name"])
         self.assertIn("$env:RUNNER_TEMP", job["steps"][0]["run"])
         self.assertIn("AWF_ARTIFACT_DIR=$artifactDir", job["steps"][0]["run"])
@@ -160,13 +172,161 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertIn("if (-not (Test-Path -LiteralPath $reportPath))", fallback_step["run"])
         self.assertIn("Set-Content -Encoding utf8 -LiteralPath $reportPath", fallback_step["run"])
 
-    def test_windows_installed_runtime_trigger_excludes_feature_pull_requests(self):
-        job = workflow()["jobs"]["installed-runtime-self-test"]
+    def test_windows_installed_runtime_path_detection_is_robust_and_fail_closed(self):
+        jobs = workflow()["jobs"]
+        detector = jobs["windows_runtime_paths"]
+        self.assertEqual("github.event_name == 'pull_request'", detector["if"])
+        self.assertEqual(
+            "${{ steps.changes.outputs.runtime_changed }}",
+            detector["outputs"]["runtime_changed"],
+        )
+        checkout = next(
+            step for step in detector["steps"]
+            if step.get("uses") == "actions/checkout@v4"
+        )
+        self.assertEqual("${{ github.event.pull_request.head.sha }}", checkout["with"]["ref"])
+        self.assertEqual(0, checkout["with"]["fetch-depth"])
+
+        changes = next(step for step in detector["steps"] if step.get("id") == "changes")
+        self.assertEqual("${{ github.event.pull_request.base.sha }}", changes["env"]["BASE_SHA"])
+        self.assertEqual("${{ github.event.pull_request.head.sha }}", changes["env"]["HEAD_SHA"])
+        script = changes["run"]
+        self.assertIn("set -euo pipefail", script)
+        self.assertIn(
+            'git diff --quiet "$BASE_SHA...$HEAD_SHA" -- .agentic/lib .agentic/tests',
+            script,
+        )
+        self.assertIn("diff_status=$?", script)
+        self.assertIn("0) echo \"runtime_changed=false\" >> \"$GITHUB_OUTPUT\"", script)
+        self.assertIn("1) echo \"runtime_changed=true\" >> \"$GITHUB_OUTPUT\"", script)
+        self.assertIn('*) exit "$diff_status"', script)
+
+        job = jobs["installed-runtime-self-test"]
         condition = job["if"]
         self.assertIn("github.event_name == 'push'", condition)
-        self.assertIn("github.base_ref == 'main'", condition)
-        self.assertIn("startsWith(github.head_ref, 'release/')", condition)
-        self.assertNotIn("github.event_name == 'pull_request' ||", condition)
+        self.assertIn(
+            "(github.base_ref == 'main' && startsWith(github.head_ref, 'release/'))",
+            condition,
+        )
+        self.assertNotIn(
+            "github.event_name == 'pull_request' && github.base_ref == 'main'",
+            condition,
+        )
+        self.assertIn("needs.windows_runtime_paths.result != 'success'", condition)
+        self.assertIn(
+            "needs.windows_runtime_paths.outputs.runtime_changed != 'false'",
+            condition,
+        )
+
+    def test_windows_installed_runtime_git_diff_statuses(self):
+        def git(root, *arguments, check=True):
+            return subprocess.run(
+                ["git", *arguments],
+                cwd=root,
+                check=check,
+                capture_output=True,
+                text=True,
+            )
+
+        def commit(root, path, content, message):
+            target = root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            git(root, "add", "--", path.as_posix())
+            git(
+                root,
+                "-c", "user.name=CI fixture",
+                "-c", "user.email=ci-fixture@example.invalid",
+                "commit", "-q", "-m", message,
+            )
+            return git(root, "rev-parse", "HEAD").stdout.strip()
+
+        def watched_diff_status(root, base, head):
+            return git(
+                root,
+                "diff",
+                "--quiet",
+                f"{base}...{head}",
+                "--",
+                ".agentic/lib",
+                ".agentic/tests",
+                check=False,
+            ).returncode
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            git(root, "init", "-q")
+            base = commit(root, Path("README.md"), "base\n", "base")
+            docs = commit(root, Path("docs/guide.md"), "docs\n", "docs")
+            library = commit(root, Path(".agentic/lib/runtime.py"), "VALUE = 1\n", "lib")
+            tests = commit(root, Path(".agentic/tests/test_runtime.py"), "pass\n", "tests")
+
+            self.assertEqual(0, watched_diff_status(root, base, docs))
+            self.assertEqual(1, watched_diff_status(root, docs, library))
+            self.assertEqual(1, watched_diff_status(root, library, tests))
+            self.assertGreater(watched_diff_status(root, "not-a-commit", tests), 1)
+
+    def test_windows_installed_runtime_diff_ignores_base_only_divergence(self):
+        def git(root, *arguments, check=True):
+            return subprocess.run(
+                ["git", *arguments],
+                cwd=root,
+                check=check,
+                capture_output=True,
+                text=True,
+            )
+
+        def commit(root, path, content, message):
+            target = root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            git(root, "add", "--", path.as_posix())
+            git(
+                root,
+                "-c", "user.name=CI fixture",
+                "-c", "user.email=ci-fixture@example.invalid",
+                "commit", "-q", "-m", message,
+            )
+            return git(root, "rev-parse", "HEAD").stdout.strip()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            git(root, "init", "-q")
+            common = commit(root, Path("README.md"), "base\n", "base")
+            git(root, "switch", "-q", "-c", "feature")
+            feature = commit(root, Path("docs/guide.md"), "docs\n", "docs")
+            git(root, "switch", "-q", "-c", "target", common)
+            target = commit(
+                root,
+                Path(".agentic/lib/runtime.py"),
+                "VALUE = 1\n",
+                "base-only lib change",
+            )
+
+            endpoint_status = git(
+                root,
+                "diff",
+                "--quiet",
+                target,
+                feature,
+                "--",
+                ".agentic/lib",
+                ".agentic/tests",
+                check=False,
+            ).returncode
+            pull_request_status = git(
+                root,
+                "diff",
+                "--quiet",
+                f"{target}...{feature}",
+                "--",
+                ".agentic/lib",
+                ".agentic/tests",
+                check=False,
+            ).returncode
+
+            self.assertEqual(1, endpoint_status)
+            self.assertEqual(0, pull_request_status)
 
 
 if __name__ == "__main__":
