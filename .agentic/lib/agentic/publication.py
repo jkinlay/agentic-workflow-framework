@@ -960,6 +960,42 @@ def _is_ancestor(root, older, newer):
     raise ValidationError("Git reachability lookup failed; rewrite refused without changes")
 
 
+def _repository_commit_identity(root):
+    """Return an explicit repository-local identity for ``commit-tree``.
+
+    Publication Git children intentionally cannot read the caller's global
+    configuration.  Resolve both identity fields from local configuration,
+    validate them with Git itself, and pass them explicitly so ``commit-tree``
+    cannot fall through to an inherited identity source or a raw identity
+    error.
+    """
+    values = {}
+    for key, environment_name in (("user.name", "GIT_AUTHOR_NAME"),
+                                  ("user.email", "GIT_AUTHOR_EMAIL")):
+        result = _git(root, "config", "--local", "--get", key, check=False)
+        if result.returncode not in {0, 1}:
+            raise ValidationError("Repository-local commit identity could not be read")
+        try:
+            value = result.stdout.decode("utf-8").rstrip("\n") if result.returncode == 0 else ""
+        except UnicodeDecodeError as exc:
+            raise ValidationError(
+                "IDENTITY_REQUIRED: repository-local user.name and user.email must be UTF-8") from exc
+        if (not value.strip() or "\x00" in value or "\r" in value or "\n" in value):
+            raise ValidationError(
+                "IDENTITY_REQUIRED: repository-local user.name and user.email are required; "
+                "global Git configuration is intentionally not inherited")
+        values[environment_name] = value
+    values["GIT_COMMITTER_NAME"] = values["GIT_AUTHOR_NAME"]
+    values["GIT_COMMITTER_EMAIL"] = values["GIT_AUTHOR_EMAIL"]
+    for variable in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
+        probe = _git(root, "var", variable, extra_env=values, check=False)
+        if probe.returncode:
+            raise ValidationError(
+                "IDENTITY_REQUIRED: repository-local user.name and user.email do not form "
+                "a valid explicit commit identity")
+    return values
+
+
 _PSEUDOREFS = ("ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD",
                "REVERT_HEAD", "REBASE_HEAD", "AUTO_MERGE", "BISECT_HEAD")
 
@@ -1062,6 +1098,45 @@ def _worktree_state(root):
         result[path] = {"head": head, "symbolic": symbol, "status": status,
                         "pseudos": pseudos, "pseudo_files": pseudo_files}
     return result
+
+
+def _rewrite_reachability_state(root):
+    """Capture the same ref, pseudoref, and worktree-HEAD tips used after CAS."""
+    return {"refs": dict(_ref_tips(root)), "worktrees": _worktree_state(root)}
+
+
+def _rewrite_reachability_tips(state, target_ref):
+    """Yield labelled claimants, excluding only the target ref and its HEAD."""
+    for name, oid in sorted(state["refs"].items()):
+        if name != target_ref:
+            yield name, oid
+    for _path, worktree in sorted(state["worktrees"].items()):
+        if worktree["symbolic"] != target_ref:
+            yield "linked-worktree HEAD", worktree["head"]
+        for name, values in sorted(worktree["pseudos"].items()):
+            for oid in values:
+                yield name, oid
+
+
+def _old_commit_claimant(root, state, target_ref, old_commits):
+    """Return the first labelled tip retaining an old commit, if any."""
+    for label, tip in _rewrite_reachability_tips(state, target_ref):
+        peeled = _git(root, "rev-parse", "--verify", "--quiet", tip + "^{commit}", check=False)
+        if peeled.returncode in {1, 128}:
+            continue
+        if peeled.returncode != 0:
+            raise ValidationError("Claimant type lookup failed; rewrite refused without changes")
+        commit_tip = peeled.stdout.decode("ascii").strip()
+        if any(_is_ancestor(root, old_commit, commit_tip) for old_commit in old_commits):
+            return label
+    return None
+
+
+def _stale_tip_detail(label):
+    category = ("; old branch commits are reachable from another local or remote-tracking ref"
+                if label.startswith("refs/") else "")
+    return (f"{label} points at an old commit{category}; inspect and clear that stale tip, "
+            "then re-run publication-rewrite")
 
 
 def _object_ids(root):
@@ -1790,10 +1865,15 @@ def _recovery_message(code, records, old_head, new_head, detail):
         elif state.get("ambiguous"):
             ambiguous[str(state["path"])] = evidence
     command = (("git cat-file -t " + retained.split(",")[0] + " && ") if retained else "") + "git fsck --full --no-reflogs"
+    recovery_steps = ""
+    if code.startswith("POST_CAS_STALE_TIP_"):
+        recovery_steps = ("; recovery_steps=verify the target branch equals old_head; inspect and clear "
+                          "the named stale tip only if disposable; run the non-destructive recovery "
+                          "check; re-run publication-rewrite")
     return (f"{code}: old_head={old_head}; new_head={new_head}; retained_objects={retained or 'none'}; "
             f"retained_fanouts={','.join(fanouts.values()) or 'none'}; "
             f"ambiguous_fanouts={','.join(ambiguous.values()) or 'none'}; "
-            f"detail={detail}; non_destructive_recovery={command}")
+            f"detail={detail}; non_destructive_recovery={command}{recovery_steps}")
 
 
 def _failure_state_matches(root, snapshot):
@@ -1830,6 +1910,9 @@ def _expected_post_cas_fanouts(snapshot, records):
 
 def _post_cas_proof(root, snapshot, ref, created, old_commits, records, closure_evidence):
     current = _rewrite_snapshot(root)
+    claimant = _old_commit_claimant(root, current, ref, old_commits)
+    if claimant is not None:
+        return False, "STALE_TIP: " + _stale_tip_detail(claimant)
     expected_refs = dict(snapshot["refs"])
     expected_refs[ref] = created
     if current["refs"] != expected_refs:
@@ -1884,15 +1967,6 @@ def _post_cas_proof(root, snapshot, ref, created, old_commits, records, closure_
                 return False, "installed loose object fanout changed during proof"
         except (OSError, KeyError, TypeError, ValueError, ValidationError):
             return False, "installed loose object identity could not be proved"
-    other_tips = set(current["refs"].values()) - {created}
-    for path, state in current["worktrees"].items():
-        if state["symbolic"] != ref:
-            other_tips.add(state["head"])
-        for values in state["pseudos"].values():
-            other_tips.update(values)
-    for old in old_commits:
-        if any(_is_ancestor(root, old, tip) for tip in other_tips):
-            return False, "old commit became reachable"
     closure_proved, closure_detail = _replacement_closure_matches(
         root, created, snapshot, records, closure_evidence)
     if not closure_proved:
@@ -1941,6 +2015,7 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
         raise ValidationError("Only --commits 1 is supported; another count is refused, never approximated")
     if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", branch or "") or ".." in branch or "@{" in branch:
         raise ValidationError("Unsafe branch name")
+    commit_identity = _repository_commit_identity(root)
     ref = "refs/heads/" + branch
     old_head = _git(root, "rev-parse", "--verify", ref + "^{commit}").stdout.decode("ascii").strip()
     if _git(root, "symbolic-ref", "-q", "HEAD").stdout.decode("utf-8").strip() != ref:
@@ -1975,11 +2050,10 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
                 raise ValidationError("Published-history rewrite refused: branch exists on a configured remote URL; owner decision is out of scope")
             if local_present is not False:
                 raise ValidationError("Remote publication state could not be verified; rewrite refused without changes")
-    for other_ref, tip in _ref_tips(root):
-        if other_ref == ref:
-            continue
-        if any(_is_ancestor(root, commit, tip) for commit in old_commits):
-            raise ValidationError("Old branch commits are reachable from another local or remote-tracking ref; rewrite refused")
+    claimant = _old_commit_claimant(
+        root, _rewrite_reachability_state(root), ref, old_commits)
+    if claimant is not None:
+        raise ValidationError("PRE_CAS_STALE_TIP: " + _stale_tip_detail(claimant))
     message = _bounded_regular_file(
         message_file, MAX_REWRITE_PROOF_OBJECT_BYTES, "Rewrite message")
     if not message or b"\0" in message:
@@ -1995,7 +2069,8 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
         temp_objects.mkdir()
         object_dir = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-path", "objects").stdout.decode("utf-8").strip())
         alternate = str(object_dir)
-        extra = {"GIT_OBJECT_DIRECTORY": str(temp_objects), "GIT_ALTERNATE_OBJECT_DIRECTORIES": alternate}
+        extra = {"GIT_OBJECT_DIRECTORY": str(temp_objects),
+                 "GIT_ALTERNATE_OBJECT_DIRECTORIES": alternate, **commit_identity}
         created = _git(root, "commit-tree", old_tree, "-p", base_sha, input_bytes=message, extra_env=extra).stdout.decode("ascii").strip()
         replacement_tree = _git(root, "rev-parse", created + "^{tree}", extra_env=extra).stdout.decode("ascii").strip()
         if replacement_tree != old_tree:
@@ -2015,9 +2090,9 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
             snapshot = _rewrite_snapshot(root)
             if snapshot["refs"].get(ref) != old_head:
                 raise ValidationError("Target ref changed before installation; rewrite refused without changes")
-            for other_ref, tip in snapshot["refs"].items():
-                if other_ref != ref and any(_is_ancestor(root, commit, tip) for commit in old_commits):
-                    raise ValidationError("Old commits became reachable before installation; rewrite refused without changes")
+            claimant = _old_commit_claimant(root, snapshot, ref, old_commits)
+            if claimant is not None:
+                raise ValidationError("PRE_CAS_STALE_TIP: " + _stale_tip_detail(claimant))
             closure_evidence = _replacement_closure_evidence(
                 root, created, snapshot, records, extra)
             try:
@@ -2104,6 +2179,11 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
                 detail = ("post-CAS proof exception " + type(proof_error).__name__ +
                           ": " + (str(proof_error) or "no detail")).replace("\r", " ").replace("\n", " ")
             if not proved:
+                stale_tip = detail.startswith("STALE_TIP: ")
+                recovery_code = ("POST_CAS_STALE_TIP_RECOVERY_REQUIRED" if stale_tip
+                                 else "POST_CAS_RECOVERY_REQUIRED")
+                recovered_code = ("POST_CAS_STALE_TIP_PROOF_FAILED_RECOVERED" if stale_tip
+                                  else "POST_CAS_PROOF_FAILED_RECOVERED")
                 try:
                     rollback = _git(root, "update-ref", ref, old_head, created, check=False)
                 except Exception as rollback_error:
@@ -2111,11 +2191,11 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
                                        "; rollback exception " + type(rollback_error).__name__ +
                                        ": " + (str(rollback_error) or "no detail"))
                     raise ValidationError(_recovery_message(
-                        "POST_CAS_RECOVERY_REQUIRED", records, old_head, created,
+                        recovery_code, records, old_head, created,
                         rollback_detail.replace("\r", " ").replace("\n", " "))) from rollback_error
                 if rollback.returncode:
                     raise ValidationError(_recovery_message(
-                        "POST_CAS_RECOVERY_REQUIRED", records, old_head, created,
+                        recovery_code, records, old_head, created,
                         "exact-CAS rollback failed after " + detail))
                 try:
                     _restore_rewrite_reflogs(root, snapshot, ref)
@@ -2128,11 +2208,11 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
                         raise ValidationError("repository snapshot was not restored")
                 except Exception as exc:
                     raise ValidationError(_recovery_message(
-                        "POST_CAS_RECOVERY_REQUIRED", records, old_head, created,
+                        recovery_code, records, old_head, created,
                         ("after " + detail + "; recovery exception " + type(exc).__name__ +
                          ": " + (str(exc) or "no detail")).replace("\r", " ").replace("\n", " "))) from exc
                 raise ValidationError(_recovery_message(
-                    "POST_CAS_PROOF_FAILED_RECOVERED", records, old_head, created,
+                    recovered_code, records, old_head, created,
                     "exact-CAS rollback restored the pre-operation snapshot after " + detail))
     return {"status": "PASS", "branch": branch, "base_sha": base_sha, "old_head": old_head,
             "head_sha": created, "head_tree": old_tree, "commits": 1, "publication_scan": scan,
