@@ -203,6 +203,49 @@ class PostingCollectorTests(Fixture):
         self.assertEqual("NOT_READY", gate["conclusion"])
         self.assertEqual("FAIL", gate["gates"]["verdict_posting"]["result"])
 
+    def test_ac2_code_examples_do_not_define_target_fragment(self):
+        terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
+        fragment = f"review-verdict-{terminal['round']}-{terminal['record_id']}"
+        pr_suffix = f"pulls/{self.bundle['candidate']['pr_number']}"
+        original = self.host.responses[pr_suffix]["body"]
+        anchor = f'<a id="{fragment}"></a>'
+        cases = {
+            "inline code": f"`{anchor}`",
+            "indented code": f"    {anchor}",
+        }
+
+        for label, replacement in cases.items():
+            with self.subTest(label=label):
+                self.host.responses[pr_suffix]["body"] = original.replace(
+                    anchor, replacement
+                )
+                with self.assertRaisesRegex(
+                    PostingCollectorMismatch, "POSTING_ANCHOR_MISMATCH"
+                ):
+                    self._install_runtime_observations()
+
+        self.host.responses[pr_suffix]["body"] = original
+
+    def test_malformed_nested_pull_response_is_structured_mismatch(self):
+        pr_suffix = f"pulls/{self.bundle['candidate']['pr_number']}"
+        original = self.host.responses[pr_suffix]
+        malformed_shapes = (
+            {**original, "base": None},
+            {**original, "base": []},
+            {**original, "base": {"repo": None}},
+            {**original, "base": {"repo": []}},
+        )
+
+        for pull in malformed_shapes:
+            with self.subTest(base=pull["base"]):
+                self.host.responses[pr_suffix] = pull
+                with self.assertRaisesRegex(
+                    PostingCollectorMismatch, "POSTING_BODY_MISMATCH"
+                ):
+                    self._install_runtime_observations()
+
+        self.host.responses[pr_suffix] = original
+
     def test_ac2_digest_round_and_collector_run_mismatches_are_specific(self):
         self._install_runtime_observations()
         terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
