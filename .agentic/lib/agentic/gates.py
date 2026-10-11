@@ -80,12 +80,12 @@ def local_ci_parity(config, contract, worker, ci):
 def ci_workflow_provenance_matches(required, observed, file_manifest):
     """Match one CI check to a reviewed commit or workflow-content pin.
 
-    A present ``workflow_blob_sha`` selects content-bound mode.  The complete
-    PR changed-file manifest then proves either that the workflow was unchanged
-    from the reviewed base, or that its candidate blob is the reviewed object.
-    Because Git blob IDs depend only on file bytes, merge commit identity is
-    irrelevant.  Missing or malformed content pins never fall back to the
-    legacy commit pin.
+    A present ``workflow_blob_sha`` selects content-bound mode.  The PR file
+    manifest must contain the candidate workflow blob so it can be compared
+    directly with the reviewed object.  Absence is not evidence of unchanged
+    content and therefore fails closed.  Because Git blob IDs depend only on
+    file bytes, merge commit identity is irrelevant.  Missing or malformed
+    content pins never fall back to the legacy commit pin.
     """
     if any(observed.get(key) != required.get(key)
            for key in ("name", "app_id", "workflow_path")):
@@ -99,9 +99,8 @@ def ci_workflow_provenance_matches(required, observed, file_manifest):
         return False
     changed_workflow = [item for item in file_manifest
                         if item.get("path") == required.get("workflow_path")]
-    return (not changed_workflow
-            or (len(changed_workflow) == 1
-                and changed_workflow[0].get("blob_sha") == workflow_blob_sha))
+    return (len(changed_workflow) == 1
+            and changed_workflow[0].get("blob_sha") == workflow_blob_sha)
 
 
 def verified_owner_records(config, contracts, bundle, binding, runs, excluded_contexts, excluded_producers, now):
