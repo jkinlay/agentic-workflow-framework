@@ -2,7 +2,7 @@
 
 456 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `91755baa09f6481293cfd6d6c3f8e84116b793da5e5ee04b4e318a53b91f21c3`
+MANIFEST.json SHA-256: `7dc4f6c7be6d4a40bf09438a76f681a646ec5d202af6a14244759d3026f0b448`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -420,7 +420,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `global/awf/tests/test_awf.py` | `33e6bf8f630701c2db7bd8010a026ff5c51c220aa68d06cf991cc9714a9f7077` |
 | `global/awf/tests/test_discovery_codeowners.py` | `42a2245cef352322327c9d72f80d9ce0cbdf831efbce1ec4f52c5c5fef460c16` |
 | `requirements.txt` | `42f89dd8f1c14da4d2cf3ef52ac3513592bc0b21efa709eead6cf138ba4bd92d` |
-| `scripts/ac42_e2e.py` | `94b7bf403ba9f450c15caf082bba62aba79b2846fef32a43bab926aee84bd34c` |
+| `scripts/ac42_e2e.py` | `c5b830097b5010326213be749b26883ebdc9118403b142540d1c9f82d6c518c9` |
 | `scripts/bootstrap_project.py` | `34a6480ce63d44fe4966a151e5dc90d30cd18947b023f0893a00c631480f5eb9` |
 | `scripts/build_release.py` | `f26ecb1b162391b14a1bfd05f6b18f7e9131ab29d2a58261646b220dd3dfb49b` |
 | `scripts/build_skill_distribution.py` | `744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8` |
@@ -443,7 +443,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/run_publication_pre_controller.py` | `1ad6f7c6c06c59aef73bf90ab072c1a62c3e4d2eca4f33cbb52bff7a82de562c` |
 | `scripts/safe_materialize.py` | `a84f61708ae40b03d917320582e2e34c4b54f8b94e783504f0cf11850eddba4a` |
 | `scripts/self_test.py` | `b7f1385556fc00cc4ee2d0e78053825a94dd2cb0e193a42a62e5a06df5879496` |
-| `scripts/tests/test_ac42_e2e.py` | `ccd3f6a3b7bef0319eb5a0a24b84ff5a4cc396c7eca47b866bddd08b798677ba` |
+| `scripts/tests/test_ac42_e2e.py` | `ea8b2909cf3c928e8c21f49afcb85000bb7d9f78269069f877926965784e4548` |
 | `scripts/tests/test_adoptable_source.py` | `4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745` |
 | `scripts/tests/test_autocrlf_scope.py` | `d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `378f4e8844ef552be777e92503be4c20ed44678747353798636c643bf4f1b9be` |
@@ -463,4 +463,4 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_validate_git_checkout.py` | `8bbee15f75e133da5703667679db073614a060eab2dd50fe4b43485d42e2d900` |
 | `scripts/validate_archive.py` | `b1f61c85c73be1bf3fa4f598b78c0930e31bc11d6b87b12d9250cf24c6f7ae6e` |
 | `scripts/validate_git_checkout.py` | `da31f52ab345e19cf580171bef96404958795217d88535c112c4e36278bea174` |
-| `tools/windows/Invoke-AC42.ps1` | `93bac284198092033287cf94aebb73350fd0445f3a88292760beb9e1ff631ce1` |
+| `tools/windows/Invoke-AC42.ps1` | `f466b43973c26d2d9b4e74efbc7371c1be2bbae27780160dfe909e10eb0b1e3b` |
