@@ -831,6 +831,29 @@ def catalog():
     for name, schema in schemas.items():
         schema.update({"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": f"urn:awf:1.2:{name}",
                        "title": f"Agentic Workflow 1.2 — {name}"})
+    schemas["posting-collector-registration"] = obj({
+        "collector_id": const("github-production-posting-collector"),
+        "provider_kind": const("github"),
+        "implementation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "release_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "repository_ids": {
+            "type": "array",
+            "items": integer(1),
+            "minItems": 1,
+            "uniqueItems": True,
+        },
+        "receipts": {
+            "type": "object",
+            "propertyNames": {"format": "uuid"},
+            "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "minProperties": 1,
+        },
+    })
+    schemas["posting-collector-registration"].update({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "urn:awf:1.2:posting-collector-registration",
+        "title": "Agentic Workflow 1.9.5 — posting-collector-registration",
+    })
     return schemas
 
 
