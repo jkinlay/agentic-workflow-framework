@@ -60,10 +60,17 @@ class WorkflowContentBindingTests(unittest.TestCase):
                 self.assertFalse(ci_workflow_provenance_matches(
                     required, self.observed(required["workflow_sha"]), []))
 
-    def test_unchanged_workflow_uses_reviewed_content_binding(self):
-        self.assertTrue(ci_workflow_provenance_matches(
-            self.required(), self.observed("b" * 40),
-            [{"path": "src/example.py", "blob_sha": "3" * 40}]))
+    def test_absent_workflow_blob_evidence_fails_closed(self):
+        manifest = [{"path": "src/example.py", "blob_sha": "3" * 40}]
+
+        # A changed-file manifest says nothing about the candidate workflow
+        # when that path is absent.  Neither a correct-looking nor an
+        # incorrect configured binding may pass without the actual blob ID.
+        for configured_blob in (self.reviewed_blob, "2" * 40):
+            with self.subTest(configured_blob=configured_blob):
+                self.assertFalse(ci_workflow_provenance_matches(
+                    self.required(workflow_blob_sha=configured_blob),
+                    self.observed("b" * 40), manifest))
 
     def test_legacy_exact_workflow_sha_comparison_remains_valid(self):
         required = self.required()
