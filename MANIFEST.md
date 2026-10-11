@@ -1,8 +1,8 @@
 # Release manifest — 1.9.4
 
-455 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
+456 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
-MANIFEST.json SHA-256: `b85c37d11dd8f4f902b64b36790fa7c2cfd8b0497d0bded1451ed46a5c5a2f58`
+MANIFEST.json SHA-256: `9310bea27aea70613c4fc1f01fac647625223ffd49199299a55c11d6e090be0a`
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -52,6 +52,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `2d9442f8f7ba7b8cbfe796183078f28181c6d692fe52aafb8f11116f529acb10` |
 | `.agentic/docs/39-AWF-32-WINDOWS-SMOKE.md` | `93f4020e8e66254986ac3c3b240804614b7aed8cc83ecf12eeff84f229c3107d` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `73a25bafeaa92a93cd247a9d4e64fb9434e608dc9df583d3bfd2ce5acde47fc6` |
+| `.agentic/docs/evidence/awf28-u1-investigation.md` | `4521c3b869e7c68940d789ded091be90e358bd5c2353a123ece9694a7574bdc9` |
 | `.agentic/examples/OPERATING_CONFIG.yaml` | `f92108e68715147bb2e1b93f0bc3456f683a84ffde96d89db32870cb9893cd37` |
 | `.agentic/examples/PROJECT_CONFIG.yaml` | `c8f3b346e523415875eb866d9a36d270ab86017501d62977ebf4037cedbc7724` |
 | `.agentic/examples/controller-status-digest.json` | `b2f7e8e68fc0bbdde1f4a4e8fd1f9e8cd713025a20a1cc62820c67c25b058fd6` |
