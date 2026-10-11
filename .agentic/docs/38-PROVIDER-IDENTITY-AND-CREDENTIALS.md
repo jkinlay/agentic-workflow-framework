@@ -89,10 +89,12 @@ If a launch reports `helper_unknown_error`, `setup refresh had errors`, Windows
 error 32, a file-in-use error or `invalid transport`, use the diagnostic's
 named config source. The reference adapter reports `AWF isolated
 CODEX_HOME/config.toml`; it does not echo raw stderr because provider output can
-contain credentials. Stop dispatch for that lane and inspect only the isolated
-home's path, ACLs and exact managed config. A path under a desktop application,
-user plugin or user MCP installation is evidence that the host bypassed the
-adapter's environment and must be repaired before retry. Do not stop or signal
-the desktop application or any process the controller did not start. Do not add
-per-plugin or per-MCP overrides. Re-provision a clean dedicated home, confirm
-its auth and permissions, then run an owner-approved disposable probe.
+contain credentials. Acceptance waits for nonce-bound terminal proof. On
+Windows the handoff, run and proof share the watcher PID even when a venv
+launcher differs. Stderr is drained while only a 1 MiB tail is retained.
+
+Stop that lane. Inspect the isolated home's path, ACLs and managed config. A
+desktop, plugin or user-MCP path means the host bypassed the adapter. Do not
+stop or signal a process the controller did not start, or add per-name
+overrides. Re-provision the dedicated home, confirm auth and permissions, then
+run an owner-approved disposable probe.

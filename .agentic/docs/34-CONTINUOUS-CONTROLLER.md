@@ -11,14 +11,12 @@ Use only this entry point:
 python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --stream A --stream B --stream C --worktree-root ABSOLUTE_WORKTREE --project-config PROJECT_CONFIG --adapter-module REVIEWED_ADAPTER.py --adapter-sha256 PIN --adapter-config ADAPTER_CONFIG cycle --inventory-binding INVENTORY_BINDING --repository-root ABSOLUTE_REPOSITORY --repository-head-sha FULL_HEAD --repository-tree-sha FULL_TREE --now TIME --host-capacity N
 ```
 
-`cycle` observes inventory, persists a timed nonce-bound intent before dispatch,
-reconciles uncertainty, delivers status and requires fresh exact readback. The
-absolute regular single-link adapter is at most 1 MiB, exports
-`build_adapters(config)` and matches its UTF-8 SHA-256; unsafe commands or
+`cycle` observes inventory, persists nonce-bound intent, reconciles uncertainty
+and delivers status. The single-link adapter is at most
+1 MiB, exports `build_adapters(config)` and matches its SHA-256; unsafe or
 missing operations fail closed. `jira-lifecycle` is read/write/readback,
-`merge-observed` validates before reconciliation/counting, and `snapshot` is
-read-only. Protected state is absolute, outside worktrees, permission-checked
-and SQLite-validated; link, reparse and hardlink aliases are rejected.
+`merge-observed` validates before counting, and `snapshot` is read-only.
+Protected state stays outside worktrees; link aliases are rejected.
 
 ## No silent idle state
 
@@ -60,11 +58,12 @@ Final submission requires the [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
 ## Reference adapter (AWF-32)
 
-From a release root, use PowerShell 7 and disposable issues.
-Owner publication is omitted. Set `AWF_JIRA_TOKEN` and a pre-provisioned
-`$AWF_CODEX_HOME` per [credential guidance](38-PROVIDER-IDENTITY-AND-CREDENTIALS.md).
-The adapter isolates writer, critic and probe launches; it never uses per-name
-desktop-config overrides or writes credentials.
+Use PowerShell 7 and disposable issues; owner publication is omitted. Set
+`AWF_JIRA_TOKEN` and a pre-provisioned `$AWF_CODEX_HOME` per [credential
+guidance](38-PROVIDER-IDENTITY-AND-CREDENTIALS.md). The adapter isolates all
+launches. Acceptance waits for nonce-bound terminal proof; on Windows the
+watcher PID binds handoff, run and proof. It drains stderr while retaining a
+1 MiB tail and names failures as `AWF isolated CODEX_HOME/config.toml`.
 
 ```powershell
 $SOURCE_ROOT=(Resolve-Path (git rev-parse --show-toplevel).Trim()).Path
@@ -160,8 +159,8 @@ $ticket=@{ticket="$JIRA_KEY-$JIRA_ISSUE";priority=1;disposition="ELIGIBLE";actor
 if ($LASTEXITCODE) { throw "disposable inventory issue creation failed" }
 ```
 
-The adapter refuses non-AWF config and keeps auth out of runs, outboxes, logs
-and evidence; doc 38 defines provisioning, permissions and troubleshooting.
+The adapter refuses non-AWF config and keeps auth and raw stderr out of runs,
+outboxes, logs and evidence; doc 38 covers provisioning and troubleshooting.
 
 Each operation reuses one UTC time in its record and command. A non-advancing
 clock fails before provider access.

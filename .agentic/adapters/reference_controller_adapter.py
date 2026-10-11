@@ -84,6 +84,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 spec_path = sys.argv[1]
@@ -118,10 +119,31 @@ try:
     child = subprocess.Popen(spec["argv"], cwd=spec["cwd"], env=spec["env"],
                              shell=False, stdin=subprocess.PIPE,
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    stderr_tail = bytearray()
+    stderr_limit = spec["max_stderr_bytes"]
+
+    def drain_stderr():
+        while True:
+            chunk = child.stderr.read(8192)
+            if not chunk:
+                return
+            stderr_tail.extend(chunk)
+            if len(stderr_tail) > stderr_limit:
+                del stderr_tail[:-stderr_limit]
+
+    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stderr_thread.start()
     try:
-        _, stderr = child.communicate(spec["stdin"].encode("utf-8"), timeout=spec["timeout"])
+        try:
+            child.stdin.write(spec["stdin"].encode("utf-8"))
+        except BrokenPipeError:
+            pass
+        finally:
+            child.stdin.close()
+        child.wait(timeout=spec["timeout"])
         code = child.returncode
-        lowered = stderr.decode("utf-8", "replace").casefold()
+        stderr_thread.join()
+        lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()
         markers = ("setup refresh had errors", "helper_unknown_error", "os error 32",
                    "winerror 32", "invalid transport", "being used by another process")
         if code and any(marker in lowered for marker in markers):
@@ -129,13 +151,15 @@ try:
     except subprocess.TimeoutExpired:
         status = "TIMED_OUT"
         child.kill()
-        child.communicate()
+        child.wait()
+        stderr_thread.join()
 except Exception:
     status = "FAILED"
 value = {"pid": pid, "launch_nonce": nonce, "status": status,
          "returncode": code, "terminal": True}
 if diagnostic is not None:
     value["diagnostic"] = diagnostic
+    value["config_source"] = spec["config_source"]
 durable(proof, value)
 '''
 
@@ -164,6 +188,8 @@ durable(proof, value)
         spec_path = Path(handoff_path).with_suffix(".launch.json")
         _write_record(spec_path, {"argv": list(argv), "cwd": str(cwd), "env": dict(env),
                                   "stdin": stdin, "timeout": timeout,
+                                  "max_stderr_bytes": MAX_OUTPUT,
+                                  "config_source": _CODEX_CONFIG_SOURCE,
                                   "launch_nonce": launch_nonce, "handoff_path": str(handoff_path),
                                   "terminal_proof_path": str(terminal_proof_path)})
         try:
@@ -175,13 +201,25 @@ durable(proof, value)
                                        start_new_session=True)
         except OSError as exc:
             raise ValidationError("Codex detached launch failed") from exc
-        self._processes[process.pid] = process
-        handoff = {"pid": process.pid, "launch_nonce": launch_nonce, "status": "LAUNCHED"}
-        try:
-            _write_record(Path(handoff_path), handoff)
-        except OSError as exc:
-            raise ValidationError("Codex durable launch handoff failed") from exc
-        return {"pid": process.pid, "launch_nonce": launch_nonce,
+        # A Windows venv launcher may create the real interpreter under a
+        # different PID.  Only the watcher can durably name that identity, so
+        # wait for its nonce-bound handoff instead of recording Popen.pid.
+        deadline = time.monotonic() + min(timeout, 10)
+        handoff = None
+        while time.monotonic() <= deadline:
+            try:
+                candidate = _read_record(Path(handoff_path))
+            except ValidationError:
+                candidate = None
+            if (isinstance(candidate, dict) and candidate.get("status") == "LAUNCHED"
+                    and candidate.get("launch_nonce") == launch_nonce
+                    and type(candidate.get("pid")) is int and candidate["pid"] > 0):
+                handoff = candidate
+                break
+            time.sleep(0.01)
+        _require(handoff is not None, "Codex detached watcher did not produce a durable launch handoff")
+        self._processes[handoff["pid"]] = process
+        return {"pid": handoff["pid"], "launch_nonce": launch_nonce,
                 "handoff_path": str(handoff_path),
                 "terminal_proof_path": str(terminal_proof_path), "status": "LAUNCHED"}
 
@@ -192,27 +230,30 @@ durable(proof, value)
         proof_path = record.get("terminal_proof_path")
         _require(isinstance(proof_path, str), "Detached run has no terminal-proof path")
         proof = Path(proof_path)
-        if proof.is_file():
-            value = _read_record(proof)
-            _require(value.get("pid") == pid and value.get("launch_nonce") == record.get("launch_nonce"),
-                     "Detached terminal proof is bound to a different process")
-            if value.get("diagnostic") == "SANDBOX_SETUP_CONFIG_ERROR":
-                raise ValidationError(_CODEX_SANDBOX_ERROR)
-            _require(value.get("status") == "COMPLETED" and value.get("terminal") is True,
-                     "Detached Codex terminal outcome was not proven")
-            return value
-        process = self._processes.get(pid)
-        if process is None:
+        if not proof.is_file() and self._processes.get(pid) is None:
             # A vanished PID is not proof of a successful terminal outcome.
-            # After a host restart only the durable watcher proof is accepted.
+            # After a host restart only an existing durable proof is accepted.
             raise ValidationError("Detached Codex terminal outcome was not proven")
-        try:
-            code = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            raise ValidationError("Detached Codex run timed out") from exc
-        finally:
-            self._processes.pop(pid, None)
-        _require(proof.is_file(), "Detached Codex terminal outcome was not durably recorded")
+        deadline = time.monotonic() + timeout + 2
+        while not proof.is_file() and time.monotonic() <= deadline:
+            process = self._processes.get(pid)
+            if process is not None:
+                process.poll()
+            time.sleep(0.01)
+        if not proof.is_file():
+            if self._processes.get(pid) is None:
+                # A vanished PID is not proof of a successful terminal outcome.
+                # After a host restart only the durable watcher proof is accepted.
+                raise ValidationError("Detached Codex terminal outcome was not proven")
+            raise ValidationError("Detached Codex run timed out before durable terminal proof")
+        process = self._processes.pop(pid, None)
+        if process is not None:
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                # Terminal proof is authoritative; do not signal a process
+                # merely because a platform launcher has not reaped yet.
+                pass
         value = _read_record(proof)
         _require(value.get("pid") == pid and value.get("launch_nonce") == record.get("launch_nonce"),
                  "Detached terminal proof is bound to a different process")
@@ -397,6 +438,7 @@ def _sandbox_setup_failure(value):
     return any(marker in lowered for marker in (
         "setup refresh had errors", "helper_unknown_error", "os error 32",
         "winerror 32", "invalid transport", "being used by another process",
+        "codex sandbox setup failed",
     ))
 
 
@@ -821,7 +863,26 @@ def _build(config):
         record.update({"status": "LAUNCHED", "pid": launched["pid"],
                        "launched_at": _clock_text(clock)})
         _write_record(record_path, record)
-        return _record_receipt(payload, record["launched_at"])
+        # A normal controller cycle does not call observe_dispatch after an
+        # accepted dispatch.  Therefore acceptance itself must observe the
+        # terminal proof, including any sandbox-setup diagnostic.
+        try:
+            result = _invoke(runner, "observe", record, timeout=timeout)
+        except ValidationError as exc:
+            if _sandbox_setup_failure(exc):
+                record["diagnostic"] = "SANDBOX_SETUP_CONFIG_ERROR"
+                record["config_source"] = _CODEX_CONFIG_SOURCE
+                record["observed_at"] = _clock_text(clock)
+                _write_record(record_path, record)
+                raise ValidationError(_CODEX_SANDBOX_ERROR) from exc
+            raise
+        _require(isinstance(result, dict) and result.get("status") == "COMPLETED"
+                 and result.get("returncode") == 0 and result.get("terminal") is True,
+                 "Dispatch terminal outcome was not proven by observation")
+        record["status"] = "COMPLETED"
+        record["observed_at"] = _clock_text(clock)
+        _write_record(record_path, record)
+        return _record_receipt(payload, record["observed_at"])
 
     def observe_dispatch(payload):
         _require(isinstance(payload, dict) and isinstance(payload.get("dispatch_id"), str),
