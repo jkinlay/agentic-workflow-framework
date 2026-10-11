@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 import jsonschema
 
@@ -15,6 +20,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.adoption_config import assign_project_start
+from agentic.canonical import sha256
 from agentic.intake_assignment import (
     assign_intake,
     change_assignment,
@@ -67,6 +73,35 @@ class FakeJira:
         if not self.mismatch:
             self.issues[key]["comments"].append({"id": str(len(self.issues[key]["comments"]) + 1),
                                                   "body": body, "author_id": actor_id})
+
+
+class FailingCommentJira(FakeJira):
+    def __init__(self):
+        super().__init__()
+        self.fail_comment = True
+
+    def add_comment(self, key, body, *, actor_id):
+        self.calls.append(("comment", key, actor_id))
+        if self.fail_comment:
+            raise RuntimeError("provider timeout")
+        self.issues[key]["comments"].append({"id": "1", "body": body, "author_id": actor_id})
+
+
+def owner_source(ticket_key, current_assignment_id, tier, cap, reason, actor_id=1001):
+    binding = {"ticket_key": ticket_key, "current_assignment_id": current_assignment_id}
+    body = (f"AWF REVIEW ASSIGNMENT ticket={ticket_key} current={current_assignment_id} "
+            f"tier={tier} cap={cap} reason_sha256={sha256(reason.strip().encode('utf-8'))}")
+    return {"channel": "github_pr_comment", "comment_id": 17, "actor_id": actor_id,
+            "actor_login": "owner", "created_at": NOW, "updated_at": NOW,
+            "raw_body": body, "raw_body_sha256": sha256(body.encode("utf-8")),
+            "binding": binding}
+
+
+def verify_owner_source(source, expected):
+    return {"status": "VERIFIED", "actor_id": source["actor_id"],
+            "source_id": f"github_pr_comment:{source['comment_id']}",
+            "observed_at": expected["now"], "binding": copy.deepcopy(source["binding"]),
+            "raw_body_sha256": source["raw_body_sha256"]}
 
 
 class RuleDefaults(unittest.TestCase):
@@ -125,6 +160,21 @@ class IntakeRecordsAssignment(unittest.TestCase):
         self.assertEqual("DISABLED", record["jira"]["read_back_status"])
         self.assertEqual(record, state["tier_assignments"]["AWF-100"])
 
+    def test_unknown_partial_write_is_durable_and_never_reissued(self):
+        state, jira = {}, FailingCommentJira()
+        with self.assertRaisesRegex(ValidationError, "outcome is unknown"):
+            assign_intake(config(), ticket(), state, jira, now=NOW,
+                          controller_actor_id="controller-1")
+        stop = state["jira_assignment_write_stops"]["AWF-100"]
+        self.assertEqual("UNKNOWN", stop["status"])
+        self.assertTrue(stop["writes_stopped"])
+        calls = list(jira.calls)
+        jira.fail_comment = False
+        with self.assertRaisesRegex(ValidationError, "writes are stopped"):
+            assign_intake(config(), ticket(), state, jira, now=NOW,
+                          controller_actor_id="controller-1")
+        self.assertEqual(calls, jira.calls)
+
 
 class ProjectStartAssignsAll(unittest.TestCase):
     def test_adoption_and_bootstrap_hook_assign_every_inventory_ticket(self):
@@ -141,6 +191,83 @@ class ProjectStartAssignsAll(unittest.TestCase):
         hooked = module.assign_startup_inventory(config(), inventory, second_state, second_jira,
                                                  now=NOW, controller_actor_id="controller-1")
         self.assertEqual({"AWF-100", "AWF-101"}, set(hooked))
+
+    def test_bootstrap_main_and_ticket_intake_main_persist_assignment_state(self):
+        spec = importlib.util.spec_from_file_location("bootstrap_project_main", ROOT / "scripts/bootstrap_project.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            dest = root / "target"
+            (dest / ".agentic").mkdir(parents=True)
+            cfg = config()
+            cfg["jira"]["enabled"] = False
+            (dest / ".agentic/PROJECT_CONFIG.yaml").write_text(json.dumps(cfg), encoding="utf-8")
+            inventory_path = root / "inventory.json"
+            inventory_path.write_text(json.dumps([ticket("AWF-100")]), encoding="utf-8")
+            state_path = root / "controller-state.json"
+            common = ["--dest", str(dest), "--expected-manifest-sha256", "manifest",
+                      "--runtime-wheelhouse", str(root / "wheels"),
+                      "--assignment-state", str(state_path), "--assignment-now", NOW,
+                      "--controller-actor-id", "controller-1"]
+            installed = {"status": "CONFIGURED", "source_manifest_sha256": "manifest",
+                         "_runtime_transaction_id": "transaction"}
+            patches = [
+                mock.patch.object(module, "prevalidate_runtime_wheelhouse",
+                                  return_value=SimpleNamespace(source_manifest_sha256="manifest")),
+                mock.patch.object(module, "install", return_value=installed),
+                mock.patch.object(module, "complete_runtime_transaction", return_value={}),
+                mock.patch.object(module, "post_install_checks", return_value={}),
+            ]
+            with contextlib.ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(0, module.main(common + ["--project-start-inventory", str(inventory_path)]))
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertIn("AWF-100", state["tier_assignments"])
+
+            ticket_path = root / "ticket.json"
+            ticket_path.write_text(json.dumps(ticket("AWF-101", summary="Docs",
+                                                    write_paths=["docs/a.md"], pr_number=48,
+                                                    pr_body="## Summary\nDocs.")), encoding="utf-8")
+            installed = {"status": "CONFIGURED", "source_manifest_sha256": "manifest",
+                         "_runtime_transaction_id": "transaction-2"}
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(module, "prevalidate_runtime_wheelhouse",
+                                                       return_value=SimpleNamespace(source_manifest_sha256="manifest")))
+                stack.enter_context(mock.patch.object(module, "install", return_value=installed))
+                stack.enter_context(mock.patch.object(module, "complete_runtime_transaction", return_value={}))
+                stack.enter_context(mock.patch.object(module, "post_install_checks", return_value={}))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(0, module.main(common + ["--ticket-intake", str(ticket_path)]))
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual({"AWF-100", "AWF-101"}, set(state["tier_assignments"]))
+            self.assertEqual("AWF-101", state["pr_assignments"]["48"]["ticket_key"])
+            self.assertIn("## AWF review assignment", state["pr_assignments"]["48"]["body"])
+
+            current = state["tier_assignments"]["AWF-101"]
+            change_path = root / "change.json"
+            change_path.write_text(json.dumps({
+                "ticket_key": "AWF-101", "requested_tier": 3, "requested_cap": 3,
+                "reason": "Scope now changes governance",
+                "owner_source": owner_source("AWF-101", current["assignment_id"], 3, 3,
+                                             "Scope now changes governance"),
+            }), encoding="utf-8")
+            installed = {"status": "CONFIGURED", "source_manifest_sha256": "manifest",
+                         "_runtime_transaction_id": "transaction-3"}
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(module, "prevalidate_runtime_wheelhouse",
+                                                       return_value=SimpleNamespace(source_manifest_sha256="manifest")))
+                stack.enter_context(mock.patch.object(module, "install", return_value=installed))
+                stack.enter_context(mock.patch.object(module, "complete_runtime_transaction", return_value={}))
+                stack.enter_context(mock.patch.object(module, "post_install_checks", return_value={}))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(0, module.main(common + ["--assignment-change", str(change_path)],
+                                                    owner_source_verifier=verify_owner_source))
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(3, state["tier_assignments"]["AWF-101"]["tier"])
+            self.assertIn("Tier: 3", state["pr_assignments"]["48"]["body"])
 
 
 class PrInheritsAssignment(unittest.TestCase):
@@ -163,8 +290,13 @@ class OwnerChangeAudited(unittest.TestCase):
         old = assign_intake(config(), ticket(), state, jira, now=NOW,
                             controller_actor_id="controller-1")
         inherit_pr_assignment(state, "AWF-100", 48, "## Summary\nChange widget.\n")
-        changed = change_assignment(config(), "AWF-100", state, jira, requested_tier=3,
-                                    requested_cap=3, requested_by=1001, reason="Scope now changes governance",
+        cfg = config()
+        source = owner_source("AWF-100", old["assignment_id"], 3, 3,
+                              "Scope now changes governance")
+        changed = change_assignment(cfg, "AWF-100", state, jira, requested_tier=3,
+                                    requested_cap=3, owner_source=source,
+                                    verify_owner_source=verify_owner_source,
+                                    reason="Scope now changes governance",
                                     now="2026-10-10T09:00:00Z", controller_actor_id="controller-1")
         audit = changed["change_audit"]
         self.assertEqual({"tier": 2, "round_cap": 2}, audit["old"])
@@ -186,11 +318,30 @@ class NonOwnerChangeRejected(unittest.TestCase):
         before_state, before_issues, calls = copy.deepcopy(state), copy.deepcopy(jira.issues), len(jira.calls)
         with self.assertRaisesRegex(ValidationError, "trusted owner"):
             change_assignment(config(), "AWF-100", state, jira, requested_tier=3,
-                              requested_cap=3, requested_by=9999, reason="not authorized",
+                              requested_cap=3,
+                              owner_source=owner_source("AWF-100",
+                                  state["tier_assignments"]["AWF-100"]["assignment_id"],
+                                  3, 3, "not authorized", actor_id=9999),
+                              verify_owner_source=verify_owner_source, reason="not authorized",
                               now=NOW, controller_actor_id="controller-1")
         self.assertEqual(before_state, state)
         self.assertEqual(before_issues, jira.issues)
         self.assertEqual(calls, len(jira.calls))
+
+    def test_bare_owner_id_and_mismatched_source_binding_are_rejected(self):
+        state, jira = {}, FakeJira()
+        current = assign_intake(config(), ticket(), state, jira, now=NOW,
+                                controller_actor_id="controller-1")
+        with self.assertRaisesRegex(TypeError, "requested_by"):
+            change_assignment(config(), "AWF-100", state, jira, requested_tier=3,
+                              requested_cap=3, requested_by=1001, reason="claimed id",
+                              now=NOW, controller_actor_id="controller-1")
+        source = owner_source("AWF-999", current["assignment_id"], 3, 3, "wrong binding")
+        with self.assertRaisesRegex(ValidationError, "binding"):
+            change_assignment(config(), "AWF-100", state, jira, requested_tier=3,
+                              requested_cap=3, owner_source=source,
+                              verify_owner_source=verify_owner_source, reason="wrong binding",
+                              now=NOW, controller_actor_id="controller-1")
 
 
 class ProtectedPathFloor(unittest.TestCase):
@@ -201,13 +352,46 @@ class ProtectedPathFloor(unittest.TestCase):
         self.assertEqual((2, 2), (result["tier"], result["protected_path_floor"]))
         state, jira = {}, FakeJira()
         assign_intake(config(), item, state, jira, now=NOW, controller_actor_id="controller-1")
+        source = owner_source("AWF-100", state["tier_assignments"]["AWF-100"]["assignment_id"],
+                              1, 1, "small")
         with self.assertRaisesRegex(ValidationError, "protected-path floor"):
             change_assignment(config(), "AWF-100", state, jira, requested_tier=1,
-                              requested_cap=1, requested_by=1001, reason="small",
+                              requested_cap=1, owner_source=source,
+                              verify_owner_source=verify_owner_source, reason="small",
                               now=NOW, controller_actor_id="controller-1")
         rejection = state["assignment_rejections"][-1]
         self.assertEqual("PROTECTED_PATH_FLOOR", rejection["reason_code"])
         self.assertIn(".agentic/labels.json", rejection["reason"])
+
+    def test_equivalent_paths_cannot_evade_floor_and_owner_change_rechecks_current_config(self):
+        for path in ("./.agentic/x.py", ".agentic\\x.py"):
+            with self.subTest(path=path):
+                result = classify_ticket(config(), ticket(summary="Small config", write_paths=[path],
+                                                           change_kind="small_config"))
+                self.assertEqual((2, [".agentic/x.py"]),
+                                 (result["protected_path_floor"], result["protected_paths"]))
+        cfg, state, jira = config(), {}, FakeJira()
+        current = assign_intake(cfg, ticket(summary="Small config", write_paths=["config/labels.json"],
+                                             change_kind="small_config"), state, jira, now=NOW,
+                                controller_actor_id="controller-1")
+        cfg["scope"]["protected_paths"].append("config/**")
+        source = owner_source("AWF-100", current["assignment_id"], 1, 1, "lower after policy change")
+        with self.assertRaisesRegex(ValidationError, "protected-path floor"):
+            change_assignment(cfg, "AWF-100", state, jira, requested_tier=1, requested_cap=1,
+                              owner_source=source, verify_owner_source=verify_owner_source,
+                              reason="lower after policy change", now=NOW,
+                              controller_actor_id="controller-1")
+
+
+class TierThreePathSignals(unittest.TestCase):
+    def test_governance_and_ci_gate_paths_are_tier_three_without_prose_flags(self):
+        for path in (".agentic/lib/agentic/gates.py", ".github/workflows/ci.yml"):
+            with self.subTest(path=path):
+                result = classify_ticket(config(), ticket(summary="Small config", description="",
+                                                           write_paths=[path], risk_flags=[],
+                                                           change_kind="small_config"))
+                self.assertEqual((3, 3, True),
+                                 (result["tier"], result["round_cap"], result["owner_review_required"]))
 
 
 class ConfigDefaultsAndOverrides(unittest.TestCase):

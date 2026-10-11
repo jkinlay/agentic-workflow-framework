@@ -10,6 +10,8 @@ from agentic import ValidationError
 from agentic.canonical import fingerprint
 from agentic.review_policy import cap_disposition_plan, cap_status
 from agentic.review_tiers import review_decision, round_cap, validate_round
+from agentic.intake_assignment import assign_intake
+from agentic.lifecycle import review_round_transition
 
 
 class AssignmentRecordCaps(unittest.TestCase):
@@ -67,6 +69,25 @@ class AssignmentRecordCaps(unittest.TestCase):
         }
         self.assertTrue(validate_round(2, 3, owner_cap_disposition=disposition,
                                        assignment_record=self.record(2, 2)))
+
+    def test_live_lifecycle_and_cap_disposition_use_intake_bound_record(self):
+        cfg = {"execution": {"max_amendment_cycles": 3, "max_cap_extensions": 2,
+                             "risk_tiers": {"tier1_eligible_paths": ["docs/**"],
+                                            "tier1_excluded_paths": [],
+                                            "tier1_review": {}, "tier2_review": {},
+                                            "tier3_review": {"max_rounds": 3}}},
+               "scope": {"protected_paths": []}, "jira": {"enabled": False},
+               "merge_gate": {"trusted_owner_ids": []}}
+        state = {}
+        record = assign_intake(cfg, {"key": "AWF-48", "summary": "Moderate code",
+                                     "description": "", "write_paths": ["src/x.py"],
+                                     "risk_flags": []}, state, None,
+                               now="2026-10-10T08:00:00Z", controller_actor_id="controller")
+        self.assertEqual(2, round_cap(2, cfg))
+        with self.assertRaisesRegex(ValidationError, "cap is 2"):
+            review_round_transition(2, 3, verdict="PASS", config=cfg)
+        self.assertEqual(record["assignment_id"],
+                         cfg["_awf_runtime"]["intake_assignment"]["assignment_id"])
 
 
 if __name__ == "__main__":

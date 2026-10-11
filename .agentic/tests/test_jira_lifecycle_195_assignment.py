@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
-from agentic.jira_lifecycle import write_tier_assignment
+from agentic.jira_lifecycle import TierAssignmentOutcomeError, write_tier_assignment
 
 
 class FakeJira:
@@ -49,6 +49,19 @@ class JiraAssignmentWrites(unittest.TestCase):
             write_tier_assignment(jira, self.assignment(), controller_actor_id="controller",
                                   acting_actor_id="worker")
         self.assertEqual([], jira.calls)
+
+    def test_partial_write_returns_durable_unknown_outcome_details(self):
+        jira = FakeJira()
+        def fail_comment(key, body, *, actor_id):
+            jira.calls.append("comment")
+            raise RuntimeError("timeout")
+        jira.add_comment = fail_comment
+        with self.assertRaises(TierAssignmentOutcomeError) as raised:
+            write_tier_assignment(jira, self.assignment(), controller_actor_id="controller",
+                                  acting_actor_id="controller")
+        self.assertEqual("UNKNOWN", raised.exception.outcome["status"])
+        self.assertEqual("comment", raised.exception.outcome["write_stage"])
+        self.assertTrue(raised.exception.outcome["writes_stopped"])
 
 
 if __name__ == "__main__":
