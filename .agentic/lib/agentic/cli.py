@@ -377,6 +377,7 @@ def main(argv=None, default_root=None):
                 elif args.command == "evaluate":
                     config = load(args.config or root / ".agentic/PROJECT_CONFIG.yaml")
                     bundle = load(args.bundle)
+                    contracts.validate("evidence-bundle", bundle)
                     posting_collector_registry = {}
                     posting_collector_reason = None
                     if args.posting_collector_host_config is not None:

@@ -19,6 +19,14 @@ from .providers.github_review_host import HostDriver, load_config
 COLLECTOR_ID = "github-production-posting-collector"
 PROVIDER_KIND = "github"
 _DIGEST = re.compile(r"[0-9a-f]{64}")
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_HTML_TAG = re.compile(r"<[A-Za-z][^>]*>")
+_HTML_FRAGMENT_ATTRIBUTE = re.compile(
+    r"\b(?:id|name)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'=<>`]+))",
+    re.IGNORECASE,
+)
+_MARKDOWN_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
+_FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 
 
 class PostingCollectorMismatch(ValidationError):
@@ -59,6 +67,50 @@ def _provider_response(comment_id, comment_url, comment_body, pr_body):
         "comment_body": comment_body,
         "pr_body": pr_body,
     })
+
+
+def _visible_markdown(body):
+    """Exclude comments and fenced code that cannot define rendered fragments."""
+    body = _HTML_COMMENT.sub("", body)
+    visible = []
+    fence_character = None
+    fence_length = 0
+    for line in body.splitlines():
+        fence = _FENCE.match(line)
+        if fence is not None:
+            marker = fence.group(1)
+            if fence_character is None:
+                fence_character = marker[0]
+                fence_length = len(marker)
+            elif marker[0] == fence_character and len(marker) >= fence_length:
+                fence_character = None
+                fence_length = 0
+            continue
+        if fence_character is None:
+            visible.append(line)
+    return "\n".join(visible)
+
+
+def _heading_fragment(heading):
+    # The required fragment is ASCII.  GitHub heading fragments lowercase the
+    # text, discard punctuation, retain hyphens/underscores and map whitespace
+    # to hyphens.
+    plain = _HTML_TAG.sub("", heading).casefold()
+    plain = re.sub(r"[^a-z0-9_\- \t]", "", plain)
+    return re.sub(r"[ \t]", "-", plain.strip())
+
+
+def _defines_fragment(body, fragment):
+    visible = _visible_markdown(body)
+    for tag in _HTML_TAG.findall(visible):
+        for match in _HTML_FRAGMENT_ATTRIBUTE.finditer(tag):
+            if next(value for value in match.groups() if value is not None) == fragment:
+                return True
+    for line in visible.splitlines():
+        heading = _MARKDOWN_HEADING.match(line)
+        if heading is not None and _heading_fragment(heading.group(1)) == fragment:
+            return True
+    return False
 
 
 def collect_posting_observation(review_host, *, candidate, verdict,
@@ -115,6 +167,10 @@ def collect_posting_observation(review_host, *, candidate, verdict,
     body = pull.get("body")
     if not isinstance(body, str):
         _mismatch("POSTING_BODY_MISMATCH", "live pull request body is not text")
+    fragment = f"review-verdict-{verdict['round']}-{verdict['record_id']}"
+    if not _defines_fragment(body, fragment):
+        _mismatch("POSTING_ANCHOR_MISMATCH",
+                  "live pull request body does not define the linked verdict fragment")
     anchor = f"review-verdict:{verdict['round']}:{verdict['record_id']}:{verdict_sha256}"
     if anchor not in body:
         _mismatch("POSTING_ANCHOR_MISMATCH",
