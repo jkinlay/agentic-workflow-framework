@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -78,6 +79,55 @@ class CodexSkillTests(unittest.TestCase):
             if item["path"] == str(project_skill.resolve())
         )
         self.assertIn(str(self.project.resolve()), project_record["visible_to"])
+
+    def test_aliased_skill_is_resolved_deduplicated_and_named_in_refusal(self):
+        canonical_home = self.root / "canonical-home"
+        canonical_checkout = canonical_home / "checkout"
+        canonical_checkout.mkdir(parents=True)
+        alias_home = self.root / "aliased-home"
+        try:
+            alias_home.symlink_to(canonical_home, target_is_directory=True)
+        except (NotImplementedError, OSError) as error:
+            if os.name != "nt":
+                self.skipTest(f"directory symlinks unavailable: {error}")
+            junction = subprocess.run(
+                ["cmd", "/d", "/c", "mklink", "/j", alias_home, canonical_home],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if junction.returncode:
+                self.skipTest(
+                    "directory aliases unavailable: "
+                    f"symlink failed ({error}); junction failed ({junction.stderr.strip()})"
+                )
+        stale = canonical_home / ".agents" / "skills" / "awf"
+        self.skill(stale, "1.9.3")
+        environment = {
+            "HOME": str(canonical_home),
+            "USERPROFILE": str(canonical_home),
+            "CODEX_HOME": str(self.codex_home),
+        }
+        record = self.root / "run" / "skill-selection.json"
+
+        with self.assertRaises(ValidationError) as raised:
+            enforce_pinned_awf_skill(
+                self.project,
+                alias_home / canonical_checkout.name,
+                environment,
+                record_path=record,
+            )
+
+        resolved = str(stale.resolve())
+        logged = json.loads(record.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [item["path"] for item in logged["visible_skills"]], [resolved]
+        )
+        self.assertEqual(
+            logged["problems"],
+            [f"AWF skill {resolved} has version 1.9.3; expected 1.9.4"],
+        )
+        self.assertIn(resolved, str(raised.exception))
 
     def test_no_discoverable_skill_passes_but_unversioned_copy_refuses(self):
         observed = enforce_pinned_awf_skill(
