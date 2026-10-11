@@ -9,6 +9,10 @@ Git command uses isolated configuration, an empty hooks/template directory and
 local-file-only transport. Git checkout bytes are never repaired or rehashed to
 make a failed release pass. A negative fixture overrides LF attributes solely in
 its disposable .git/info/attributes, leaving the original tracked payload intact.
+
+Windows and POSIX run the same real-Git cases. ``core.autocrlf=true`` is passed
+with ``git -c`` to disposable fixture commands only; the source repository and
+the user's repository/global configuration are never written.
 """
 from __future__ import annotations
 
@@ -128,6 +132,31 @@ def _locations(source, workdir, report=None):
     return source, workdir, report
 
 
+def isolated_git_invocation(git, empty, hooks, base_environment=None):
+    """Return isolated environment and command-scoped fixture Git arguments."""
+    environment = os.environ if base_environment is None else base_environment
+    env = {key: value for key, value in environment.items()
+           if not key.upper().startswith("GIT_") and key.upper() not in {"PYTHONPATH", "PYTHONHOME"}}
+    env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": str(empty),
+                "GIT_CONFIG_GLOBAL": str(empty), "GIT_ATTR_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0", "GIT_NO_REPLACE_OBJECTS": "1",
+                "GIT_AUTHOR_DATE": "2026-09-11T12:00:00+00:00",
+                "GIT_COMMITTER_DATE": "2026-09-11T12:00:00+00:00",
+                "PYTHONDONTWRITEBYTECODE": "1"})
+    configuration = {
+        "core.autocrlf": "true", "core.safecrlf": "false", "core.hooksPath": str(hooks),
+        "core.attributesFile": str(empty), "core.excludesFile": str(empty), "core.fsmonitor": "false",
+        "init.templateDir": str(hooks), "init.defaultBranch": "main", "commit.gpgsign": "false",
+        "tag.gpgsign": "false", "user.name": "AWF local Git regression", "user.email": "fixture@example.invalid",
+        "protocol.allow": "never", "protocol.file.allow": "always", "submodule.recurse": "false",
+        "fetch.recurseSubmodules": "false", "credential.helper": "", "core.askPass": "",
+    }
+    git_prefix = [str(git), "--no-replace-objects", "--no-pager", "-c", "core.useReplaceRefs=false"]
+    for key, value in configuration.items():
+        git_prefix.extend(["-c", f"{key}={value}"])
+    return env, git_prefix
+
+
 def run_validation(source, expected_manifest_sha256, workdir, python_executable=None, runtime_wheelhouse=None):
     """Return PASS evidence or raise GitCheckoutValidationError with partial evidence."""
     report = {
@@ -190,23 +219,7 @@ def run_validation(source, expected_manifest_sha256, workdir, python_executable=
         hooks.mkdir()
         logs = run / "logs"
         logs.mkdir()
-        env = {key: value for key, value in os.environ.items()
-               if not key.upper().startswith("GIT_") and key.upper() not in {"PYTHONPATH", "PYTHONHOME"}}
-        env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": str(empty), "GIT_CONFIG_GLOBAL": str(empty),
-                    "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_NO_REPLACE_OBJECTS": "1",
-                    "GIT_AUTHOR_DATE": "2026-09-11T12:00:00+00:00", "GIT_COMMITTER_DATE": "2026-09-11T12:00:00+00:00",
-                    "PYTHONDONTWRITEBYTECODE": "1"})
-        configuration = {
-            "core.autocrlf": "true", "core.safecrlf": "false", "core.hooksPath": str(hooks),
-            "core.attributesFile": str(empty), "core.excludesFile": str(empty), "core.fsmonitor": "false",
-            "init.templateDir": str(hooks), "init.defaultBranch": "main", "commit.gpgsign": "false",
-            "tag.gpgsign": "false", "user.name": "AWF local Git regression", "user.email": "fixture@example.invalid",
-            "protocol.allow": "never", "protocol.file.allow": "always", "submodule.recurse": "false",
-            "fetch.recurseSubmodules": "false", "credential.helper": "", "core.askPass": "",
-        }
-        git_prefix = [git, "--no-replace-objects", "--no-pager", "-c", "core.useReplaceRefs=false"]
-        for key, value in configuration.items():
-            git_prefix.extend(["-c", f"{key}={value}"])
+        env, git_prefix = isolated_git_invocation(git, empty, hooks)
 
         def command(name, arguments, cwd=run, expected=0):
             started = time.monotonic()
