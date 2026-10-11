@@ -86,7 +86,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- .agentic/lib .agentic/tests
+          git diff --quiet "$BASE_SHA...$HEAD_SHA" -- .agentic/lib .agentic/tests
           diff_status=$?
           set -e
           case "$diff_status" in
@@ -100,10 +100,11 @@ jobs:
     needs: [windows_runtime_paths]
     if: >-
       always() && (github.event_name == 'push' ||
-      (github.event_name == 'pull_request' && github.base_ref == 'main' &&
-      (startsWith(github.head_ref, 'release/') ||
-      needs.windows_runtime_paths.result != 'success' ||
-      needs.windows_runtime_paths.outputs.runtime_changed != 'false')))
+      (github.event_name == 'pull_request' &&
+      (needs.windows_runtime_paths.result != 'success' ||
+      needs.windows_runtime_paths.outputs.runtime_changed != 'false' ||
+      (github.base_ref == 'main' &&
+      startsWith(github.head_ref, 'release/')))))
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
