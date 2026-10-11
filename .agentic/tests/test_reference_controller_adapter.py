@@ -71,6 +71,7 @@ class FakeRunner:
         self.calls = []
         self.launches = []
         self.prompts = []
+        self.observations = []
 
     def run(self, argv, *, cwd, env, timeout, max_bytes):
         self.calls.append((list(argv), Path(cwd), dict(env)))
@@ -110,6 +111,7 @@ class FakeRunner:
                 "terminal_proof_path": str(terminal_proof_path), "status": "LAUNCHED"}
 
     def observe(self, record, *, timeout):
+        self.observations.append(dict(record))
         return {"status": "COMPLETED", "returncode": 0, "terminal": True}
 
 
@@ -270,6 +272,8 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertEqual(result["status_delivery"]["status"], "DELIVERED")
         self.assertEqual(len(result["dispatch_receipts"]), 1, result)
         self.assertTrue(runner.launches)
+        self.assertEqual(len(runner.observations), 1)
+        self.assertEqual(runner.observations[0]["status"], "LAUNCHED")
         child_env = runner.launches[0][2]
         for name in ("GH_TOKEN", "GITHUB_TOKEN", "AWF_JIRA_TOKEN",
                      "ATLASSIAN_API_TOKEN", "JIRA_API_KEY", "EXAMPLE_CLIENT_SECRET"):
@@ -421,6 +425,41 @@ enabled = true
                                     "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
             namespace["_SubprocessRunner"]().observe(record, timeout=1)
 
+    @unittest.skipUnless(os.name == "nt", "Windows venv process identity regression")
+    def test_real_runner_windows_venv_reports_terminal_sandbox_diagnostic(self):
+        # Running this suite through the pinned venv exercises the Windows
+        # launcher-stub PID split seen in production.  Python treats the first
+        # Codex argument ("exec") as this neutral temporary script.
+        script = Path(self.config["codex"]["worktree_root"]) / "exec"
+        script.write_text(
+            "import sys\n"
+            "sys.stderr.buffer.write(b'x' * (1024 * 1024 + 4096))\n"
+            "sys.stderr.write('helper_unknown_error: setup refresh had errors; winerror 32\\n')\n"
+            "raise SystemExit(1)\n",
+            encoding="utf-8")
+        config = json.loads(json.dumps(self.config))
+        executable = Path(sys.executable)
+        config["codex"]["executable"] = {
+            "path": str(executable), "sha256": sha256(executable.read_bytes())}
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](config)
+
+        with self.assertRaisesRegex(
+                ValidationError, "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+            adapters["dispatch_ticket"](_dispatch_payload("windows-venv-sandbox"))
+
+        record = json.loads((self.root / "runs" / "windows-venv-sandbox.json").read_text(
+            encoding="utf-8"))
+        handoff = json.loads(Path(record["handoff_path"]).read_text(encoding="utf-8"))
+        proof = json.loads(Path(record["terminal_proof_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(record["pid"], handoff["pid"])
+        self.assertEqual(record["pid"], proof["pid"])
+        self.assertEqual(proof["diagnostic"], "SANDBOX_SETUP_CONFIG_ERROR")
+        self.assertEqual(proof["config_source"], "AWF isolated CODEX_HOME/config.toml")
+        self.assertEqual(record["config_source"], "AWF isolated CODEX_HOME/config.toml")
+        launch_spec = json.loads(Path(record["handoff_path"]).with_suffix(
+            ".launch.json").read_text(encoding="utf-8"))
+        self.assertEqual(launch_spec["max_stderr_bytes"], 1024 * 1024)
+
     def test_prepared_launch_crash_is_observed_without_replay(self):
         class CrashAfterLaunch(FakeRunner):
             def launch(self, argv, *, cwd, env, timeout, stdin, handoff_path, terminal_proof_path,
@@ -463,10 +502,8 @@ enabled = true
                    "exact_tuple": "tuple", "dispatch_nonce": "bad-nonce",
                    "prepared_at": NOW, "begun_at": NOW, "paths": ["a.py"],
                    "actor": "writer", "next_action": "continue"}
-        adapters["dispatch_ticket"](payload)
         with self.assertRaisesRegex(ValidationError, "terminal"):
-            adapters["observe_dispatch"]({**payload, "reconcile_nonce": "r",
-                                            "reconcile_at": NOW})
+            adapters["dispatch_ticket"](payload)
 
     def test_restart_observer_reads_durable_terminal_proof_without_replay(self):
         runner = FakeRunner()
@@ -515,11 +552,16 @@ enabled = true
             pid = 4321
             stdin = StdinProbe()
 
-            def wait(self, timeout=None):
-                return 0
+            def poll(self):
+                return None
 
         def fake_popen(argv, **kwargs):
             observed.append(handoff.exists())
+            launch_spec = json.loads(handoff.with_suffix(".launch.json").read_text(
+                encoding="utf-8"))
+            handoff.write_text(json.dumps({"pid": 9876,
+                "launch_nonce": launch_spec["launch_nonce"], "status": "LAUNCHED"}),
+                encoding="utf-8")
             return Process()
 
         with patch.dict(os.environ, {"ATLASSIAN_API_TOKEN": "secret-atlassian",
@@ -531,7 +573,7 @@ enabled = true
                 env=child_env, timeout=5, stdin="task", handoff_path=str(handoff),
                 terminal_proof_path=str(proof), launch_nonce="nonce")
         self.assertEqual(observed, [True])
-        self.assertEqual(result["pid"], 4321)
+        self.assertEqual(result["pid"], 9876)
         launch_spec = json.loads(handoff.with_suffix(".launch.json").read_text(encoding="utf-8"))
         for name in ("ATLASSIAN_API_TOKEN", "JIRA_API_KEY", "EXAMPLE_CLIENT_SECRET"):
             self.assertNotIn(name, launch_spec["env"].keys())
