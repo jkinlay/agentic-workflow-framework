@@ -41,6 +41,7 @@ _TIER3_PATHS = (
     "scripts/build_release.py",
     "scripts/publish_release.py",
 )
+_DOCS_TESTS_PATHS = ("docs/**", "tests/**")
 _PR_START = "<!-- awf-review-assignment:start -->"
 _PR_END = "<!-- awf-review-assignment:end -->"
 
@@ -127,8 +128,10 @@ def classify_ticket(config, ticket):
         eligible = tiers.get("tier1_eligible_paths", [])
         excluded = tiers.get("tier1_excluded_paths", [])
         configured_tier1 = all(_matches(path, eligible) and not _matches(path, excluded) for path in paths)
-        bounded_small = (kind in {"single_file_fix", "small_config", "labels_only"} and len(paths) == 1)
-        if (configured_tier1 or bounded_small) and not protected and not flags:
+        docs_tests_only = configured_tier1 and all(_matches(path, _DOCS_TESTS_PATHS) for path in paths)
+        bounded_small = (kind in {"single_file_fix", "small_config", "labels_only"}
+                         and len(paths) == 1 and not _matches(paths[0], excluded))
+        if (docs_tests_only or bounded_small) and not protected and not flags:
             tier = 1
             reasons.append("docs/tests-only or bounded small single-file change without excluded effects")
         else:
