@@ -260,7 +260,8 @@ def _html_fragment(line, fragment):
             None,
         )
         values[name] = value
-    return any(values.get(name) == fragment for name in ("id", "name"))
+    return (values.get("id") == fragment
+            or (tag == "a" and values.get("name") == fragment))
 
 
 def _defines_fragment(body, fragment):
