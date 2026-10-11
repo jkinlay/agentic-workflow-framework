@@ -791,6 +791,7 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     origin_maps = {base_sha: {path: path for path in base_tree}}
     touched_head_paths = set()
     merge_base_cache = {}
+    sync_parent_reachability_cache = {}
     historical_lines_cache = {}
 
     def historical_lines(commit, path):
@@ -810,22 +811,34 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
         return lines
 
     def sync_merge_deleted_lines(parents, parent, path):
-        """Prove exact lines whose deletion arrived from the scanned base."""
-        if path is None or len(parents) < 2 or base_sha not in parents or parent == base_sha:
+        """Prove exact lines deleted by a merge's base-reachable second parent."""
+        if path is None or len(parents) < 2 or parent != parents[0]:
             return frozenset()
-        if parent not in merge_base_cache:
-            result = _git(root, "merge-base", "--all", parent, base_sha,
+        main_parent = parents[1]
+        if main_parent not in sync_parent_reachability_cache:
+            result = _git(root, "merge-base", "--is-ancestor", main_parent, base_sha,
+                          extra_env=extra_env, check=False)
+            if result.returncode not in {0, 1}:
+                raise ValidationError("Sync merge second-parent reachability could not be verified")
+            sync_parent_reachability_cache[main_parent] = result.returncode == 0
+        if not sync_parent_reachability_cache[main_parent]:
+            return frozenset()
+        merge_key = (parent, main_parent)
+        if merge_key not in merge_base_cache:
+            result = _git(root, "merge-base", "--all", parent, main_parent,
                           extra_env=extra_env, check=False)
             candidates = result.stdout.decode("ascii", "replace").splitlines()
-            merge_base_cache[parent] = candidates[0] if result.returncode == 0 and len(candidates) == 1 else None
-        common = merge_base_cache[parent]
+            merge_base_cache[merge_key] = (
+                candidates[0] if result.returncode == 0 and len(candidates) == 1 else None
+            )
+        common = merge_base_cache[merge_key]
         if common is None:
             return frozenset()
         common_lines = historical_lines(common, path)
-        current_base_lines = historical_lines(base_sha, path)
-        if common_lines is None or current_base_lines is None:
+        main_parent_lines = historical_lines(main_parent, path)
+        if common_lines is None or main_parent_lines is None:
             return frozenset()
-        return common_lines - current_base_lines
+        return common_lines - main_parent_lines
 
     for commit in commits:
         raw_commit = _git_bounded_stdout(
