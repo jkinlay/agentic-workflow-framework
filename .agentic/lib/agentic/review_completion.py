@@ -1023,6 +1023,7 @@ def validate_ready_gate_completion(gate):
     authorization code that does not own a schema registry.  Full gate
     construction performs the stronger cross-record check above.
     """
+    reject_git_sha_candidate_ids(gate)
     _require(isinstance(gate, dict) and gate.get("conclusion") == "READY_FOR_OWNER_AUTHORIZATION",
              "Final gate is not ready for owner authorization")
     submission = gate.get("review_submission")

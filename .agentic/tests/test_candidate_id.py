@@ -1,3 +1,4 @@
+import copy
 import json
 from pathlib import Path
 import subprocess
@@ -7,9 +8,12 @@ import unittest
 from unittest.mock import patch
 
 from agentic import ValidationError
-from agentic.canonical import candidate_id, reject_git_sha_candidate_ids, sha256
+from agentic.canonical import candidate_id, load, reject_git_sha_candidate_ids, sha256
+from agentic.contracts import Contracts
 from agentic import gates, interaction, review_completion
+from agentic.lifecycle import definition, transition
 from agentic.providers.github_review_host import HostDriver
+from test_review_policy import bind_production_posting_fixture, bind_review_admission
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,6 +84,34 @@ class CandidateIdTests(unittest.TestCase):
             review_completion.validate_gate_submission(bad, {}, {}, {}, [])
         with self.assertRaisesRegex(ValidationError, GIT_SHA_MESSAGE):
             reject_git_sha_candidate_ids({"nested": [bad]})
+
+    def test_git_sha_diagnostic_is_used_by_ready_gate_and_lifecycle(self):
+        contracts = Contracts(ROOT / ".agentic/schemas")
+        config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
+        bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+        bind_review_admission(bundle)
+        registry = bind_production_posting_fixture(config, bundle)
+        gate = gates.evaluate(
+            config,
+            definition(),
+            bundle,
+            contracts,
+            "2026-09-09T12:00:00Z",
+            posting_collector_registry=registry,
+        )
+        bad_gate = copy.deepcopy(gate)
+        bad_gate["binding"]["candidate_id"] = "0" * 40
+
+        with self.assertRaisesRegex(ValidationError, GIT_SHA_MESSAGE):
+            review_completion.validate_ready_gate_completion(bad_gate)
+        facts = {
+            "derived_gate_ready": True,
+            "requirements_current": True,
+            "final_gate_current": True,
+            "final_gate": bad_gate,
+        }
+        with self.assertRaisesRegex(ValidationError, GIT_SHA_MESSAGE):
+            transition("FINAL_REVIEW", "FINAL_GATE_PASSED", facts)
 
     def test_controller_supplies_candidate_fingerprint_and_critic_instruction(self):
         candidate = {
