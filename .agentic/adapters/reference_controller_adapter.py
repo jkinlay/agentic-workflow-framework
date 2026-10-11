@@ -111,28 +111,67 @@ pid = os.getpid()
 nonce = spec["launch_nonce"]
 handoff = spec["handoff_path"]
 proof = spec["terminal_proof_path"]
+startup_proof = spec["startup_proof_path"]
 durable(handoff, {"pid": pid, "launch_nonce": nonce, "status": "LAUNCHED"})
+startup_lock = threading.Lock()
+startup_recorded = False
+
+def publish_startup(value):
+    global startup_recorded
+    with startup_lock:
+        if startup_recorded:
+            return
+        durable(startup_proof, value)
+        startup_recorded = True
+
 code = None
 status = "COMPLETED"
 diagnostic = None
 try:
     child = subprocess.Popen(spec["argv"], cwd=spec["cwd"], env=spec["env"],
                              shell=False, stdin=subprocess.PIPE,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stderr_tail = bytearray()
     stderr_limit = spec["max_stderr_bytes"]
+    markers = ("setup refresh had errors", "helper_unknown_error", "os error 32",
+               "winerror 32", "invalid transport", "being used by another process")
 
     def drain_stderr():
         while True:
-            chunk = child.stderr.read(8192)
+            chunk = child.stderr.read1(8192)
             if not chunk:
                 return
             stderr_tail.extend(chunk)
             if len(stderr_tail) > stderr_limit:
                 del stderr_tail[:-stderr_limit]
+            lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()
+            if any(marker in lowered for marker in markers):
+                publish_startup({"pid": pid, "launch_nonce": nonce,
+                                 "status": "FAILED", "terminal": False,
+                                 "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",
+                                 "config_source": spec["config_source"]})
+
+    def drain_stdout():
+        while True:
+            line = child.stdout.readline(spec["max_output_bytes"] + 1)
+            if not line:
+                return
+            if len(line) > spec["max_output_bytes"]:
+                continue
+            try:
+                event = json.loads(line.decode("utf-8", "strict"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            # Codex JSON mode emits this only after isolated configuration has
+            # been accepted and the execution thread has been initialized.
+            if isinstance(event, dict) and event.get("type") == "thread.started":
+                publish_startup({"pid": pid, "launch_nonce": nonce,
+                                 "status": "STARTED", "terminal": False})
 
     stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stdout_thread = threading.Thread(target=drain_stdout, daemon=True)
     stderr_thread.start()
+    stdout_thread.start()
     try:
         try:
             child.stdin.write(spec["stdin"].encode("utf-8"))
@@ -143,9 +182,8 @@ try:
         child.wait(timeout=spec["timeout"])
         code = child.returncode
         stderr_thread.join()
+        stdout_thread.join()
         lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()
-        markers = ("setup refresh had errors", "helper_unknown_error", "os error 32",
-                   "winerror 32", "invalid transport", "being used by another process")
         if code and any(marker in lowered for marker in markers):
             diagnostic = "SANDBOX_SETUP_CONFIG_ERROR"
     except subprocess.TimeoutExpired:
@@ -153,6 +191,7 @@ try:
         child.kill()
         child.wait()
         stderr_thread.join()
+        stdout_thread.join()
 except Exception:
     status = "FAILED"
 value = {"pid": pid, "launch_nonce": nonce, "status": status,
@@ -161,6 +200,7 @@ if diagnostic is not None:
     value["diagnostic"] = diagnostic
     value["config_source"] = spec["config_source"]
 durable(proof, value)
+publish_startup(value)
 '''
 
     def run(self, argv, *, cwd, env, timeout, max_bytes):
@@ -186,11 +226,16 @@ durable(proof, value)
         # creates the child, then writes terminal proof on every supported OS.
         _write_record(Path(handoff_path), {"launch_nonce": launch_nonce, "status": "STARTING"})
         spec_path = Path(handoff_path).with_suffix(".launch.json")
+        terminal_path = Path(terminal_proof_path)
+        startup_path = terminal_path.with_name(
+            terminal_path.name.removesuffix(".terminal.json") + ".startup.json")
         _write_record(spec_path, {"argv": list(argv), "cwd": str(cwd), "env": dict(env),
                                   "stdin": stdin, "timeout": timeout,
+                                  "max_output_bytes": MAX_OUTPUT,
                                   "max_stderr_bytes": MAX_OUTPUT,
                                   "config_source": _CODEX_CONFIG_SOURCE,
                                   "launch_nonce": launch_nonce, "handoff_path": str(handoff_path),
+                                  "startup_proof_path": str(startup_path),
                                   "terminal_proof_path": str(terminal_proof_path)})
         try:
             process = subprocess.Popen([sys.executable, "-B", "-c", self._WATCHER,
@@ -221,6 +266,7 @@ durable(proof, value)
         self._processes[handoff["pid"]] = process
         return {"pid": handoff["pid"], "launch_nonce": launch_nonce,
                 "handoff_path": str(handoff_path),
+                "startup_proof_path": str(startup_path),
                 "terminal_proof_path": str(terminal_proof_path), "status": "LAUNCHED"}
 
     def observe(self, record, *, timeout):
@@ -266,6 +312,42 @@ durable(proof, value)
         if value.get("returncode") != 0:
             raise ValidationError("Detached Codex run returned a non-zero exit")
         return value
+
+    def observe_startup(self, record, *, timeout):
+        """Wait for definitive startup proof, never for normal run completion."""
+        pid = record.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            raise ValidationError("Detached run record has no process identity")
+        proof_path = record.get("startup_proof_path")
+        _require(isinstance(proof_path, str), "Detached run has no startup-proof path")
+        proof = Path(proof_path)
+        process = self._processes.get(pid)
+        if not proof.is_file() and process is None:
+            raise ValidationError("Detached Codex startup outcome was not proven")
+        deadline = time.monotonic() + timeout + 2
+        while not proof.is_file() and time.monotonic() <= deadline:
+            if process is not None:
+                process.poll()
+            time.sleep(0.01)
+        if not proof.is_file():
+            raise ValidationError("Detached Codex startup outcome was not proven")
+        value = _read_record(proof)
+        _require(value.get("pid") == pid and value.get("launch_nonce") == record.get("launch_nonce"),
+                 "Detached startup proof is bound to a different process")
+        if value.get("diagnostic") == "SANDBOX_SETUP_CONFIG_ERROR":
+            if process is not None and hasattr(process, "wait"):
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+                else:
+                    self._processes.pop(pid, None)
+            raise ValidationError(_CODEX_SANDBOX_ERROR)
+        if value.get("status") == "STARTED" and value.get("terminal") is False:
+            return {"status": "RUNNING", "terminal": False}
+        if value.get("terminal") is True:
+            return self.observe(record, timeout=0)
+        raise ValidationError("Detached Codex startup outcome was not proven")
 
 
 class _HttpTransport:
@@ -826,6 +908,7 @@ def _build(config):
         launch_nonce = str(uuid.uuid5(uuid.NAMESPACE_URL,
                                       "awf:codex-launch:" + payload["dispatch_nonce"]))
         handoff_path = record_path.with_suffix(".handoff.json")
+        startup_proof_path = record_path.with_suffix(".startup.json")
         terminal_proof_path = record_path.with_suffix(".terminal.json")
         record = {"format": "awf-reference-dispatch-1", "dispatch_id": payload["dispatch_id"],
                   "dispatch_nonce": payload["dispatch_nonce"], "stream": payload["stream"],
@@ -834,6 +917,7 @@ def _build(config):
                   "worktree": str(worktree), "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                   "argv_sha256": hashlib.sha256(canonical(argv)).hexdigest(),
                   "launch_nonce": launch_nonce, "handoff_path": str(handoff_path),
+                  "startup_proof_path": str(startup_proof_path),
                   "terminal_proof_path": str(terminal_proof_path),
                   "status": "PREPARED", "created_at": _clock_text(clock)}
         _write_record(record_path, record)
@@ -858,16 +942,18 @@ def _build(config):
         _require(launched.get("launch_nonce") == launch_nonce,
                  "Codex launch identity is not nonce-bound")
         _require(launched.get("handoff_path") == str(handoff_path) and
+                 launched.get("startup_proof_path") == str(startup_proof_path) and
                  launched.get("terminal_proof_path") == str(terminal_proof_path),
                  "Codex launch did not return durable proof paths")
         record.update({"status": "LAUNCHED", "pid": launched["pid"],
                        "launched_at": _clock_text(clock)})
         _write_record(record_path, record)
         # A normal controller cycle does not call observe_dispatch after an
-        # accepted dispatch.  Therefore acceptance itself must observe the
-        # terminal proof, including any sandbox-setup diagnostic.
+        # accepted dispatch.  Require the watcher's definitive startup proof so
+        # a setup diagnostic is reported without waiting for each Codex run's
+        # eventual terminal proof.
         try:
-            result = _invoke(runner, "observe", record, timeout=timeout)
+            result = _invoke(runner, "observe_startup", record, timeout=timeout)
         except ValidationError as exc:
             if _sandbox_setup_failure(exc):
                 record["diagnostic"] = "SANDBOX_SETUP_CONFIG_ERROR"
@@ -876,13 +962,20 @@ def _build(config):
                 _write_record(record_path, record)
                 raise ValidationError(_CODEX_SANDBOX_ERROR) from exc
             raise
-        _require(isinstance(result, dict) and result.get("status") == "COMPLETED"
-                 and result.get("returncode") == 0 and result.get("terminal") is True,
-                 "Dispatch terminal outcome was not proven by observation")
-        record["status"] = "COMPLETED"
-        record["observed_at"] = _clock_text(clock)
+        terminal = (isinstance(result, dict) and result.get("status") == "COMPLETED"
+                    and result.get("returncode") == 0 and result.get("terminal") is True)
+        running = (isinstance(result, dict) and result.get("status") == "RUNNING"
+                   and result.get("terminal") is False)
+        if isinstance(result, dict) and result.get("terminal") is True:
+            _require(terminal, "Dispatch terminal outcome was not proven by observation")
+        else:
+            _require(running, "Dispatch startup outcome was not proven by observation")
+        record["status"] = "COMPLETED" if terminal else "LAUNCHED"
+        record["startup_observed_at"] = _clock_text(clock)
+        if terminal:
+            record["observed_at"] = record["startup_observed_at"]
         _write_record(record_path, record)
-        return _record_receipt(payload, record["observed_at"])
+        return _record_receipt(payload, record["startup_observed_at"])
 
     def observe_dispatch(payload):
         _require(isinstance(payload, dict) and isinstance(payload.get("dispatch_id"), str),
