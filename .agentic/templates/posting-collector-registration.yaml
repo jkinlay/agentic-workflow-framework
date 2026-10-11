@@ -1,0 +1,15 @@
+{
+  "template_for": "posting-collector-registration",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "collector_id": "github-production-posting-collector",
+    "provider_kind": "github",
+    "implementation_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "release_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "repository_ids": [
+      1
+    ],
+    "receipts": {}
+  }
+}

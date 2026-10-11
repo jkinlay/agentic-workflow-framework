@@ -9,6 +9,7 @@
     "kind": "REGULAR",
     "cadence_seconds": 1,
     "all_complete": false,
+    "unresolved_dispatches": [],
     "streams": [
       {
         "stream": "UNFILLED",

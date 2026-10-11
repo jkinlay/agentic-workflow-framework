@@ -1,0 +1,78 @@
+{
+  "type": "object",
+  "properties": {
+    "role": {
+      "enum": [
+        "critic",
+        "worker"
+      ]
+    },
+    "checkout_write": {
+      "enum": [
+        "SUCCEEDED",
+        "DENIED",
+        "ERROR"
+      ]
+    },
+    "outside_write": {
+      "enum": [
+        "SUCCEEDED",
+        "DENIED",
+        "ERROR"
+      ]
+    },
+    "network": {
+      "enum": [
+        "SUCCEEDED",
+        "DENIED",
+        "ERROR"
+      ]
+    },
+    "credential_environment_names": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "uniqueItems": true
+    },
+    "agent_auth_files": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "enum": [
+              "~/.codex/auth.json",
+              "$CODEX_HOME/auth.json"
+            ]
+          },
+          "status": {
+            "enum": [
+              "ABSENT",
+              "DENIED",
+              "READABLE",
+              "ERROR"
+            ]
+          }
+        },
+        "required": [
+          "location",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "role",
+    "checkout_write",
+    "outside_write",
+    "network",
+    "credential_environment_names",
+    "agent_auth_files"
+  ],
+  "additionalProperties": false
+}

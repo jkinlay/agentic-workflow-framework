@@ -6,7 +6,7 @@ For [adoption](../docs/20-NEW-PROJECT-SETUP.md), prepare draft PR/preflight. Pre
 
 At CONFIGURED, show `operating show`; apply choices through `operating set` (`--epic EPIC-ID` when scoped). Caps need a PR. Pins block optional escalation; mandatory floors prevail. Use `effective_ceiling`; `host_broker.*` binds only when enabled. Follow [native streams](../docs/24-STREAM-STARTUP.md) and [routing](../docs/27-MODEL-ROUTING.md). Preserve owners, capacity, dependencies, budgets, caps, reviewer independence, and one writer/path. Changes affect later dispatch; surplus drains.
 
-Progress every stream until scoped completion or owner-stop. Refill completed runs; otherwise record `WORKING`, `PAUSED_INPUT`, `BLOCKED`, or `COMPLETE` with ticket, actor, reason, next action, and resume trigger. Continue independent streams. Emit exact-tuple status at `controller.status_cadence_seconds` and on change through the acknowledged outbox.
+Progress every stream until scoped completion or owner-stop. Refill completed runs; otherwise record `WORKING`, `PAUSED_INPUT`, `BLOCKED`, or `COMPLETE` with ticket, actor, reason, next action, and resume trigger. Continue independent streams. Default cadence: 600s. `--disable-periodic-status` keeps immediate notifications.
 
 After worker COMPLETE, publish a scanned draft PR; observe `branch_pushed`, `pr_exists`, validation, and `draft_cleared` before review. Freeze reviewers against repository, base, head, tree, contract, and review input. Missing, running, failed, timed-out, malformed, duplicate, or mismatched results block submission. Movement restarts review; late results cannot alter submission. Owner-ready needs critics, specialists, final gate, and human authority.
 

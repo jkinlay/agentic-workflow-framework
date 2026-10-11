@@ -1,48 +1,53 @@
 # Scheduled review-loop runbook
 
-[SPECIFICATION](../SPECIFICATION.md) defines authority and acceptance. This reference adapter supports Codex CLI and GitHub.com same-repository PRs; `github_host` rejects other hosts. Installation does not enroll a PR or create a scheduler. Native-agent guidance is separate from this loop.
+[SPECIFICATION](../SPECIFICATION.md) defines authority. This adapter supports Codex CLI and same-repository GitHub.com PRs only. Installation neither enrolls a PR nor creates a scheduler.
 
-These host/rules/qualification requirements apply to live loop enablement, not installation or adoption. Record missing rules as warnings; live enrollment still needs observed rules, configured CI and trusted merge owners. Follow [adoption](20-NEW-PROJECT-SETUP.md) for owner application and secret-repository restrictions.
+These requirements apply to live enablement, not adoption. Missing rules warn; enrollment still needs observed rules, configured CI and trusted merge owners. See [adoption](20-NEW-PROJECT-SETUP.md).
 
 ## Prepare the host
 
 Use an approved release and locked Python environment outside candidate checkouts. Prepare four physically separate directories: trusted runtime, protected state, clean worker clone and independent critic clone. Both clones need exact origin `https://github.com/OWNER/REPO.git`; the worker must already match the owned PR branch/head. Transfer existing writer ownership before enrollment.
 
-Copy [host-config.example.json](../review-loop/host-config.example.json) into the state directory. Complete its placeholders: repository/PR/branches, executable SHA-256 pins for native Git/gh/Codex, runtime manifest pin, frozen contract path/hash, worker/critic models, exact allowed files, initial finding ledger, CI App/workflow pins, limits and qualification record. Changed requirements, binaries or configuration require reviewed replacement enrollment; never silently update pins. `reasoning_effort` is optional. When `approved_model_effort_pairs` is empty or absent, reasoning-effort validation falls back to the reviewed policy read from the candidate's immutable base commit's `.agentic/PROJECT_CONFIG.yaml`; otherwise, each role's effort is checked against that role model's entry in `approved_model_effort_pairs`. `codex_config_overrides` is an explicit key allowlist (currently `windows.sandbox`).
+Copy [host-config.example.json](../review-loop/host-config.example.json) into the state directory. Complete its repository/PR/branch, executable, runtime, contract, model, scope, finding, CI, limit and qualification fields. Changed requirements, binaries or configuration need reviewed replacement enrollment. Optional `reasoning_effort` uses `approved_model_effort_pairs`, or the candidate's immutable-base routing policy when that map is empty. `codex_config_overrides` only allows `windows.sandbox`.
 
-The AWF source repository may opt into protected source paths only when the enrolled candidate checkout contains the root `MANIFEST.json` plus the named AWF source markers, and the reviewed config declares both `risk_tier: "Tier 3"` and an exact `governed_source_paths` allowlist (for example `[".agentic/**"]`). The trusted runtime is not evidence that a candidate is the AWF source repository; downstream repositories retain protected-path refusal.
+The AWF source repository may opt into protected paths only when the candidate contains root `MANIFEST.json` and source markers, while reviewed config declares Tier 3 and an exact `governed_source_paths` allowlist. Runtime markers do not qualify a candidate; downstream repositories retain refusal.
 
-Qualify sandbox restrictions, credential separation, exclusive branch ownership, quotas and one canonical host database using a disposable PR. Record observed evidence before setting qualification booleans true; those flags prove nothing themselves. Keep state, configuration, contract and credentials inaccessible to workers.
+Qualification uses a disposable same-repository PR and the configured separate checkouts. Set the named operator and evidence path, leave all four flags false, then run:
 
-[HostDriver](../lib/agentic/review_host.py) requests ephemeral contexts, read-only critic/workspace-write worker, no approval escalation and no sandbox network. It strips API-key variables and agent GitHub-token variables. Saved credentials, project tools and process descendants still need demonstrated host isolation. Token/dollar/resource quotas require external enforcement. Protected paths, Git configuration checks and separate clones supplement that boundary.
+```text
+python -B .agentic/scripts/review_loop.py --config <state-dir>/config.json qualify --confirm-disposable-pr
+```
+
+The command launches read-only critic and workspace-write worker probes with network disabled. It checks denied critic writes/network, a worker write confined to its checkout, credential-like environment names, explicit `~/.codex/auth.json` and `$CODEX_HOME/auth.json` readability, the exclusive branch-owner constraint and canonical database/lock. Readable or unevaluable agent auth is a blocking finding, never credential-isolation evidence. The record names operator, disposable candidate, host binding and observations, and pins the retained role artifacts. The command retains that record plus `qualification-runs/<record-id>/<role>/{input.json,effective-config.json,codex.jsonl,result.json}`; it initializes or opens the canonical database and lock, creates `empty-hooks`, and prepares the critic checkout. It reports the record SHA-256 but never edits host configuration or sets qualification flags.
+
+The evidence path must be a direct state-directory file distinct from the host configuration, pinned contract, canonical database/lock and other protected host state. Path and physical-file aliases are refused before any probe runs.
+
+After inspecting a `PASS`, the operator pins `evidence_sha256` and sets all flags true. Normal commands require exact bytes, matching operator/host binding and evidence no older than `max_age_seconds`, capped at 604800 seconds (seven days). Reset flags and rerun after expiry or a bound runtime, executable, checkout, database, model or sandbox-policy change. Legacy `{operator,evidence,<booleans>}` configuration is refused: migrate to `evidence_path`, `evidence_sha256`, `max_age_seconds` and a live `qualify` record. Offline fixtures do not qualify a host. Keep state, config, contract and credentials inaccessible to workers.
+
+[HostDriver](../lib/agentic/review_host.py) uses ephemeral contexts, role-specific sandboxes, no approval escalation/network, and strips API/GitHub-token variables. Saved credentials and descendants still need the probe; quotas need external enforcement.
 
 ## Create the first draft, then enroll
 
-An explicitly configured `first_draft` host may start with `pr: 0`. Before
-launch, the trusted runtime requires empty tracked, staged, untracked and
-ignored inventories, charges the worker and binds effort fallback to the
-observed base. It reserves the original local Git configuration, origin routes
-and hooks; later mismatch blocks credentials, commits and pushes. The worker
-stays on the configured head branch at that base. The publisher makes one
-child commit, validates the tested tree and `ignored_untracked`, durably
-records the receipt, publisher plan and base/head/body before scanning, pushes,
-creates one draft PR and enrolls only a matching head/base observation.
+An explicit `first_draft` host may start with `pr: 0`. It requires empty
+tracked/staged/untracked/ignored inventories, charges the worker, binds effort
+to the observed base, and freezes local Git config, origins and hooks. The
+publisher validates the tested tree and `ignored_untracked`, records receipt,
+plan and base/head/body, makes one child commit, scans, pushes, creates a draft
+and enrolls only a matching observation. Control drift blocks publication.
 
 ```text
 python -B .agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json first-draft --title "AWF: implement ticket"
 ```
 
-The body records reviewed Tier 1, 2 or 3. Every worker launch consumes one
-`max_agent_runs` unit and zero amendment cycles; prepared-publication recovery
-neither replays nor charges it. The provider PR number is persisted before its
-snapshot. Failure retains the UUID and charge. Inspect local/remote effects,
-then run `resume --reconciled-run UUID`; replay keeps that UUID and adds a charge
-only if no validated receipt survived. Scan denial or record failure resumes
-the exact local child without worker replay. With `pr: 0`, recovery looks up
-the exact head across all PR states without calling PR snapshot. A closed match
-blocks replacement. With no PR it reconciles the exact remote ref: a match
-avoids another push; proven absence retries only the frozen head and scan.
-Re-run `first-draft` with the original title. No second PR is created blindly.
+The body records Tier 1, 2 or 3. A worker launch consumes one agent run but no
+amendment; prepared-publication recovery consumes neither. The provider number
+is persisted before snapshot. Failure retains the UUID/charge. Inspect effects,
+then `resume --reconciled-run UUID`; replay adds a charge only without a valid
+receipt. Scan/record recovery resumes the exact local child. For `pr: 0`, the
+host searches all PR states by exact head, then reconciles the remote ref; it
+never snapshots zero, replaces a closed match, blindly creates a second PR or
+replays a worker when the frozen publication survives. Retry `first-draft` with
+the original title.
 
 ## Check, enroll and run
 
@@ -55,7 +60,13 @@ python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json tick
 python -B .agentic/scripts/review_loop.py --config C:/awf-state/config.json status
 ```
 
-For the operator live check against a disposable AWF PR on the 4090, run these exact commands from the trusted runtime after preparing separate pinned runtime/state/worker/critic directories (the writer does not perform this live check):
+For Jonathan's later live check against a disposable AWF PR on the 4090, prepare separate pinned runtime/state/worker/critic directories and run from the trusted runtime (the writer does not run this):
+
+```text
+ABSOLUTE_RUNTIME/.agentic/.venv/Scripts/python.exe -B ABSOLUTE_RUNTIME/.agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json qualify --confirm-disposable-pr
+```
+
+After Jonathan inspects `PASS`, pins the reported digest and sets the four flags:
 
 ```text
 ABSOLUTE_RUNTIME/.agentic/.venv/Scripts/python.exe -B ABSOLUTE_RUNTIME/.agentic/scripts/review_loop.py --config ABSOLUTE_STATE_DIR/config.json check
@@ -71,7 +82,7 @@ Example config fragment:
 
 `check` reads GitHub and prepares the critic clone; it does not qualify models/isolation. `enroll` records ownership. `tick` may launch a model and publish a normal, non-force amendment push. Each invocation performs one review, amendment or CI observation. One shared database serializes all enrolled ticks; concurrent native writers must not own enrolled branches.
 
-Immediately before its amendment push, the host scans every patch and message in the complete base-to-new-head range plus the current PR body. Host Git commands disable replacement objects through command flags, configuration and environment so local replacement refs cannot alter amendment identities or pinned workflow bytes. A finding or binary/oversize changed content refuses the push. The operator-local deny mapping belongs in the external review state directory as `publication-deny.json`; it is never copied into the checkout.
+Before amendment push, the host scans every patch/message in the full range and the PR body. Git disables replacement objects; a finding or unscanned binary/oversize content refuses push. Keep `publication-deny.json` only in external state.
 
 Defaults allow three amendment attempts (plus at most `max_cap_extensions` owner extensions, default two), ten agent runs and 24 CI waits. Attempts remain consumed after failure/resume; amendments touching only `evidence_paths` consume none. At the cap the loop pauses with `REVIEW_CAP_REACHED` and resumes only with `--disposition` (an owner's MERGE_WITH_NOTES, PARK, RESCOPE or EXTEND_ONE_CYCLE). Critics retain finding identities and bases and review every changed file. CI requires current head, pinned App identity, Actions workflow path/content and successful conclusion; null App identity or unsupported provenance pauses.
 
