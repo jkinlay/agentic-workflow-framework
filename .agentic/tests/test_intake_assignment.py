@@ -27,6 +27,7 @@ from agentic.intake_assignment import (
     classify_ticket,
     inherit_pr_assignment,
 )
+from source_only import skip_unless_source_repo
 
 NOW = "2026-10-10T08:00:00Z"
 
@@ -176,6 +177,10 @@ class IntakeRecordsAssignment(unittest.TestCase):
         self.assertEqual(calls, jira.calls)
 
 
+@skip_unless_source_repo(
+    "Source bootstrap entry point is not shipped in installed runtimes",
+    "scripts/bootstrap_project.py",
+)
 class ProjectStartAssignsAll(unittest.TestCase):
     def test_adoption_and_bootstrap_hook_assign_every_inventory_ticket(self):
         inventory = [ticket("AWF-100"), ticket("AWF-101", summary="Docs", write_paths=["docs/a.md"])]
