@@ -3,6 +3,10 @@
 Configuration may narrow ``COLLECTOR_ID`` but cannot create this registry.
 Membership is produced only after this installed module re-reads the comment
 and pull-request body through the enrolled review-host provider.
+
+The pull-request body must carry this literal line outside code and comments:
+<a id="review-verdict-<round>-<record_id>"></a>
+The only other accepted form is ``<a name="review-verdict-<round>-<record_id>"></a>``.
 """
 from __future__ import annotations
 
@@ -19,7 +23,6 @@ from .providers.github_review_host import HostDriver, load_config
 COLLECTOR_ID = "github-production-posting-collector"
 PROVIDER_KIND = "github"
 _DIGEST = re.compile(r"[0-9a-f]{64}")
-_MARKDOWN_HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _TOP_LEVEL_FENCE = re.compile(r"^(?P<indent> {0,3})(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 _LIST_FENCE = re.compile(
     r"^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])[ \t]+"
@@ -50,28 +53,6 @@ _HTML_CLOSE_TAG = re.compile(
     rf"^</(?P<tag>{_HTML_NAME})[ \t]*>$",
     re.IGNORECASE,
 )
-_HTML_ATTRIBUTES = re.compile(
-    rf"(?:[ \t]+{_HTML_NAME}(?:[ \t]*=[ \t]*"
-    r"(?:\"[^\"<>]*\"|'[^'<>]*'|[^\s\"'=<>`]+))?)*[ \t]*$"
-)
-_HTML_ATTRIBUTE = re.compile(
-    rf"[ \t]+(?P<name>{_HTML_NAME})(?:[ \t]*=[ \t]*"
-    r"(?:\"(?P<double>[^\"<>]*)\"|'(?P<single>[^'<>]*)'|"
-    r"(?P<bare>[^\s\"'=<>`]+)))?"
-)
-_NON_RENDERING_HTML = {
-    "code", "pre", "script", "style", "template", "textarea", "title", "xmp",
-}
-_RENDERING_HTML = {
-    "a", "abbr", "address", "article", "aside", "b", "bdi", "bdo",
-    "blockquote", "button", "caption", "cite", "data", "dd", "del", "details",
-    "dfn", "dialog", "div", "dl", "dt", "em", "fieldset", "figcaption",
-    "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
-    "header", "hgroup", "i", "ins", "kbd", "label", "legend", "li", "main",
-    "mark", "menu", "nav", "ol", "p", "q", "s", "samp", "section", "small",
-    "span", "strong", "sub", "summary", "sup", "table", "tbody", "td", "tfoot",
-    "th", "thead", "time", "tr", "u", "ul", "var",
-}
 
 
 class PostingCollectorMismatch(ValidationError):
@@ -223,45 +204,17 @@ def _visible_markdown(body):
     return _without_code_spans("\n".join(visible))
 
 
-def _heading_fragment(heading):
-    # The required fragment is ASCII.  GitHub heading fragments lowercase the
-    # text, discard punctuation, retain hyphens/underscores and map whitespace
-    # to hyphens.
-    if any(character in heading for character in "<>&\\"):
-        return None
-    plain = heading.casefold()
-    plain = re.sub(r"[^a-z0-9_\- \t]", "", plain)
-    return re.sub(r"[ \t]", "-", plain.strip())
-
-
 def _html_fragment(line, fragment):
-    """Recognise only a complete, ordinary rendering element on one line."""
+    """Recognise only a complete ``a`` with one fragment attribute."""
     match = _HTML_PAIRED_TAG.fullmatch(line)
     if match is None:
         match = _HTML_SELF_CLOSING_TAG.fullmatch(line)
     if match is None:
         return None
-    tag = match.group("tag").casefold()
-    attributes = match.group("attrs")
-    if tag in _NON_RENDERING_HTML or tag not in _RENDERING_HTML:
-        return False
-    if _HTML_ATTRIBUTES.fullmatch(attributes) is None:
-        return None
-    values = {}
-    for attribute in _HTML_ATTRIBUTE.finditer(attributes):
-        name = attribute.group("name").casefold()
-        if name in values:
-            return None
-        value = next(
-            (item for item in (
-                attribute.group("double"), attribute.group("single"),
-                attribute.group("bare"),
-            ) if item is not None),
-            None,
-        )
-        values[name] = value
-    return (values.get("id") == fragment
-            or (tag == "a" and values.get("name") == fragment))
+    return line in {
+        f'<a id="{fragment}"></a>',
+        f'<a name="{fragment}"></a>',
+    }
 
 
 def _defines_fragment(body, fragment):
@@ -277,14 +230,6 @@ def _defines_fragment(body, fragment):
                 return False
             if closing is not None and closing.group("tag").casefold() == raw_html_tag:
                 raw_html_tag = None
-            continue
-        heading = _MARKDOWN_HEADING.match(line)
-        if heading is not None:
-            rendered = _heading_fragment(heading.group(1))
-            if rendered is None:
-                return False
-            if rendered == fragment:
-                found = True
             continue
         html = _html_fragment(line, fragment)
         if html is True:
