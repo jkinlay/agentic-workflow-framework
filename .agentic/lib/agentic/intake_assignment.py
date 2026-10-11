@@ -22,7 +22,7 @@ _TIER3_FLAGS = {
     "install", "upgrade", "packaging", "controller",
 }
 _TIER3_TEXT = re.compile(
-    r"\b(?:security|credentials?|governance|merge[_ -]?gates?|migrations?|"
+    r"\b(?:security|credentials?|governance|(?:ci|merge)[_ -]?gates?|migrations?|"
     r"install(?:er|ation)?|upgrades?|packag(?:e|ing)|controller|release[_ ]+pr)\b",
     re.IGNORECASE,
 )
@@ -115,7 +115,9 @@ def classify_ticket(config, ticket):
     if kind == "release_pr":
         reasons.append("release PRs require Tier 3 and owner review")
     if _TIER3_TEXT.search(text):
-        reasons.append("ticket text identifies security, governance, migration, packaging, controller, or release work")
+        reasons.append(
+            "ticket text identifies security, governance, CI/merge-gate, migration, "
+            "packaging, controller, or release work")
     if tier3_paths:
         reasons.append("governance, controller, release, or CI-gate paths require Tier 3: "
                        + ", ".join(tier3_paths))
@@ -240,7 +242,7 @@ def _ensure_jira_writes_allowed(state, ticket_key):
 
 
 def _bind_runtime_assignment(config, record):
-    """Bind the current ticket record to the in-memory config used by live policy calls.
+    """Add one ticket record to the in-memory map used by live policy calls.
 
     The ``_awf_runtime`` member is process-local context and must never be written
     back as reviewed project configuration.
@@ -248,7 +250,43 @@ def _bind_runtime_assignment(config, record):
     runtime = config.setdefault("_awf_runtime", {})
     if not isinstance(runtime, dict):
         raise ValidationError("AWF runtime configuration context must be an object")
-    runtime["intake_assignment"] = copy.deepcopy(record)
+    assignments = runtime.setdefault("intake_assignments", {})
+    if not isinstance(assignments, dict):
+        raise ValidationError("AWF runtime intake assignments must be an object keyed by ticket")
+    verify_assignment_record(record)
+    assignments[record["ticket_key"]] = copy.deepcopy(record)
+
+
+def load_runtime_assignments(config, state, *, ticket_key=None):
+    """Reload durable ticket assignments and optionally select one gate context.
+
+    Controllers call this after loading their external state.  Selecting a
+    ticket lets existing AWF-16 gate calls consume the persisted assignment
+    without accepting a caller-supplied record or reverting to legacy caps.
+    """
+    if not isinstance(state, dict):
+        raise ValidationError("AWF state must be an object")
+    assignments = state.get("tier_assignments", {})
+    if not isinstance(assignments, dict):
+        raise ValidationError("AWF state tier_assignments must be an object keyed by ticket")
+    loaded = {}
+    for key, record in assignments.items():
+        if not isinstance(key, str) or not key or not isinstance(record, dict):
+            raise ValidationError("AWF state tier_assignments must contain ticket-keyed records")
+        verify_assignment_record(record)
+        if record.get("ticket_key") != key:
+            raise ValidationError("AWF state tier assignment key disagrees with its record")
+        loaded[key] = copy.deepcopy(record)
+    runtime = config.setdefault("_awf_runtime", {})
+    if not isinstance(runtime, dict):
+        raise ValidationError("AWF runtime configuration context must be an object")
+    runtime["intake_assignments"] = loaded
+    runtime.pop("active_ticket_key", None)
+    if ticket_key is not None:
+        if not isinstance(ticket_key, str) or ticket_key not in loaded:
+            raise ValidationError(f"No persisted review assignment for {ticket_key}")
+        runtime["active_ticket_key"] = ticket_key
+    return copy.deepcopy(loaded)
 
 
 def assign_intake(config, ticket, state, jira_client, *, now, controller_actor_id, source="intake"):

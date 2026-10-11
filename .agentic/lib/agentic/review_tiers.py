@@ -104,25 +104,46 @@ def _assignment_cap(tier, assignment_record):
     return cap
 
 
-def runtime_assignment(config):
-    """Return the ticket assignment bound by intake to this in-memory config."""
+def runtime_assignment(config, *, ticket_key=None, tier=None):
+    """Return one validated ticket assignment from the runtime ticket map."""
     runtime = (config or {}).get("_awf_runtime", {})
     if runtime is None:
         return None
     if not isinstance(runtime, dict):
         raise ValidationError("AWF runtime configuration context must be an object")
-    record = runtime.get("intake_assignment")
-    if record is not None:
-        from .intake_assignment import verify_assignment_record
+    assignments = runtime.get("intake_assignments")
+    if assignments is None:
+        return None
+    if not isinstance(assignments, dict):
+        raise ValidationError("AWF runtime intake assignments must be an object keyed by ticket")
+    from .intake_assignment import verify_assignment_record
+    for key, record in assignments.items():
+        if not isinstance(key, str) or not isinstance(record, dict):
+            raise ValidationError("AWF runtime intake assignments must contain ticket-keyed records")
         verify_assignment_record(record)
-    return record
+        if record.get("ticket_key") != key:
+            raise ValidationError("AWF runtime assignment key disagrees with its record")
+    selected_key = ticket_key if ticket_key is not None else runtime.get("active_ticket_key")
+    if selected_key is not None:
+        if not isinstance(selected_key, str) or selected_key not in assignments:
+            raise ValidationError(f"No runtime review assignment for {selected_key}")
+        return assignments[selected_key]
+    candidates = [record for record in assignments.values()
+                  if tier is None or record.get("tier") == tier]
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        raise ValidationError("Multiple runtime review assignments match; select a ticket key")
+    if assignments:
+        raise ValidationError(f"No runtime review assignment matches Tier {tier}")
+    return None
 
 
-def round_cap(tier, config=None, assignment_record=None):
+def round_cap(tier, config=None, assignment_record=None, *, ticket_key=None):
     if tier not in ROUND_CAPS:
         raise ValidationError(f"unknown review tier: {tier}")
     if assignment_record is None:
-        assignment_record = runtime_assignment(config)
+        assignment_record = runtime_assignment(config, ticket_key=ticket_key, tier=tier)
     if assignment_record is not None:
         return _assignment_cap(tier, assignment_record)
     configured = ((config or {}).get("execution", {}).get("risk_tiers", {})

@@ -78,6 +78,8 @@ def _run_assignment_path(args, jira_client, owner_source_verifier):
     state = _load_json(state_path, "Assignment state") if state_path.exists() else {}
     if not isinstance(state, dict):
         raise ValidationError("Assignment state must be an object")
+    from agentic.intake_assignment import load_runtime_assignments
+    load_runtime_assignments(config, state)
     assigned_at = args.assignment_now or now_text()
     try:
         if args.project_start_inventory is not None:
