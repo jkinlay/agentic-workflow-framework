@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Build, draft-publish, or verify a reproducible AWF release."""
+"""Build, draft-publish, or verify a reproducible AWF release.
+
+Release payloads come from raw Git blobs and are byte-identical on Windows and
+POSIX.  Git-dependent validation uses ``core.autocrlf=false`` only for the
+command that creates its temporary worktree; repository and global Git
+configuration are read-only and retain any explicit ``false`` or ``input``
+setting.
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -23,11 +31,13 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / "scripts"))
 from agentic.child_process import child_env, isolated_git_env
 from agentic import ValidationError
+from agentic.contracts import Contracts
 from agentic.safeio import relative_parts
 import safe_materialize
 from release_modes import write_mode_manifest
 RECORD_PREFIX = "AWF-RELEASE-RECORD: "
 RAW_GIT_ARGUMENTS = ("--no-replace-objects", "-c", "core.useReplaceRefs=false")
+RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 GENERATORS = (
     ("scripts/generate_contracts.py",),
     ("scripts/generate_examples.py",),
@@ -48,14 +58,22 @@ class TreeEntry(NamedTuple):
     oid: str
 
 
+class ReleaseTagPushPlan(NamedTuple):
+    arguments: tuple[str, ...]
+    recovery: str
+    environment: dict[str, str]
+
+
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def run(command, *, cwd, env=None, text=True, input_data=None):
+def run(command, *, cwd, env=None, text=True, input_data=None, failure_message=None):
     result = subprocess.run(command, cwd=cwd, env=child_env(env), input=input_data, capture_output=True,
                             text=text, timeout=3600, check=False)
     if result.returncode:
+        if failure_message is not None:
+            raise ReleaseError(failure_message)
         stdout = result.stdout if text else result.stdout.decode(errors="replace")
         stderr = result.stderr if text else result.stderr.decode(errors="replace")
         raise ReleaseError(f"Command failed ({result.returncode}): {' '.join(map(str, command))}\n{stdout}{stderr}")
@@ -98,14 +116,183 @@ def origin_repository(repository):
     return push
 
 
+def origin_push_url(repository):
+    """Return the single effective URL used by ``git push origin``."""
+    push_urls = [line.strip() for line in
+                 git(repository, "remote", "get-url", "--push", "--all", "origin").splitlines()
+                 if line.strip()]
+    if len(push_urls) != 1:
+        raise ReleaseError("origin must have exactly one push URL; refusing to select credentials")
+    return push_urls[0]
+
+
 def git(root, *args, text=True):
     return git_run(root, *args, text=text).stdout
 
 
-def git_run(root, *args, text=True, input_data=None):
+def git_run(root, *args, text=True, input_data=None, failure_message=None, environment=None):
     """Run Git with replacement objects disabled for release identity and bytes."""
-    return run(["git", *RAW_GIT_ARGUMENTS, *args], cwd=root, env=isolated_git_env(), text=text,
-               input_data=input_data)
+    options = {"cwd": root, "env": isolated_git_env() if environment is None else environment,
+               "text": text, "input_data": input_data}
+    if failure_message is not None:
+        options["failure_message"] = failure_message
+    return run(["git", *RAW_GIT_ARGUMENTS, *args], **options)
+
+
+def _https_credential_scope(origin_url):
+    """Return an exact HTTPS credential scope without embedded user information."""
+    if not _ORIGIN_PATTERNS[0].match(origin_url):
+        return None
+    authority_and_path = origin_url.removeprefix("https://")
+    authority = authority_and_path.split("/", 1)[0]
+    if "@" in authority:
+        authority_and_path = authority_and_path.split("@", 1)[1]
+    return "https://" + authority_and_path
+
+
+def _repository_http_extra_header_keys(repository, *, environment=None):
+    """Return repository-local HTTP extra-header keys without reading their values."""
+    names = git_run(
+        repository, "config", "--local", "--includes", "--null", "--name-only", "--list",
+        environment=environment,
+        failure_message=("Unable to inspect repository-local HTTP extraHeader key names; "
+                         "fix `git config --local --includes --name-only --list` and retry."),
+    ).stdout
+    keys = []
+    for name in names.split("\0"):
+        folded = name.casefold()
+        if not name or not (folded == "http.extraheader"
+                            or folded.startswith("http.") and folded.endswith(".extraheader")):
+            continue
+        # These names are repeated in the redacted recovery command. Refuse a
+        # name that could carry user information or make that command ambiguous;
+        # never inspect or report the corresponding value.
+        if not re.fullmatch(r"http(?:\.https://[A-Za-z0-9.-]+(?::[0-9]+)?/"
+                            r"[A-Za-z0-9._~!$&'()*+,;=:%/-]+)?\.extraheader",
+                            name, re.I):
+            raise ReleaseError(
+                "A repository-local HTTP extraHeader key cannot be safely isolated. "
+                "Inspect `git config --local --includes --name-only --list`, remove every repository-local "
+                "`http.*.extraHeader` entry, and retry the release.")
+        if name not in keys:
+            keys.append(name)
+    return keys
+
+
+def _push_credential_arguments(origin_url, gh, *, local_header_keys=()):
+    helper = f"!{shlex.quote(str(gh))} auth git-credential"
+    arguments = ["-c", "credential.helper="]
+    scope = _https_credential_scope(origin_url)
+    if scope is None:
+        arguments.extend(("-c", f"credential.helper={helper}"))
+    else:
+        header_key = f"http.{scope}.extraHeader"
+        key = f"credential.{scope}.helper"
+        arguments.extend(("-c", "remote.origin.pushurl=", "-c", f"remote.origin.pushurl={scope}"))
+        reset_keys = ["http.extraHeader", header_key]
+        reset_key_names = {item.casefold() for item in reset_keys}
+        for item in local_header_keys:
+            if item.casefold() not in reset_key_names:
+                reset_keys.append(item)
+                reset_key_names.add(item.casefold())
+        for reset_key in reset_keys:
+            arguments.extend(("-c", f"{reset_key}="))
+        arguments.extend(("-c", f"{key}=", "-c", f"{key}={helper}"))
+    return arguments, scope
+
+
+def _refuse_any_http_extra_header(repository, environment):
+    """Refuse every HTTP extra-header key visible to the release push."""
+    command = ["git", *RAW_GIT_ARGUMENTS, "config", "--show-origin", "--show-scope",
+               "--includes", "--name-only", "--get-regexp",
+               r"^http\.(extraheader|.*\.extraheader)$"]
+    try:
+        result = subprocess.run(
+            command, cwd=repository, env=child_env(environment), capture_output=True,
+            timeout=300, check=False)
+    except (subprocess.SubprocessError, OSError):
+        raise ReleaseError(
+            "Unable to inspect Git configuration for HTTP extraHeader keys. Remove every "
+            "`http.extraHeader` and `http.*.extraHeader` key, fix the Git configuration "
+            "error, and retry; no release tag was created.") from None
+    if result.returncode == 1 and not result.stdout and not result.stderr:
+        return
+    if result.returncode == 0 and result.stdout and not result.stderr:
+        entries = []
+        for raw_line in result.stdout.splitlines():
+            fields = raw_line.split(b"\t", 2)
+            if len(fields) != 3:
+                break
+            scope, origin, key = (field.decode("utf-8", errors="backslashreplace")
+                                  for field in fields)
+            folded = key.casefold()
+            if folded != "http.extraheader" and not (
+                    folded.startswith("http.") and folded.endswith(".extraheader")):
+                break
+            entries.append((key, scope, origin))
+        else:
+            details = "\n".join(
+                f"- key={json.dumps(key)} scope={json.dumps(scope)} origin={json.dumps(origin)}"
+                for key, scope, origin in entries)
+            if entries:
+                raise ReleaseError(
+                    "Git configuration contains `http.extraHeader` keys forbidden during "
+                    f"release publication:\n{details}\nRemove every listed key from its "
+                    "reported scope/origin and retry the release; no release tag was created.")
+    raise ReleaseError(
+        "Git could not prove that every HTTP extraHeader key is absent. Remove every "
+        "`http.extraHeader` and `http.*.extraHeader` key, fix the Git configuration "
+        "error, and retry; no release tag was created.")
+
+
+def _tag_push_transport_plan(repository, tag, *, gh, origin_url, environment=None):
+    """Build the isolated transport/recovery plan for an existing release tag."""
+    if environment is None:
+        environment = isolated_git_env()
+    local_header_keys = _repository_http_extra_header_keys(repository, environment=environment)
+    credential_arguments, scope = _push_credential_arguments(
+        origin_url, gh, local_header_keys=local_header_keys)
+    remote_url = scope or origin_url
+    recovery_arguments, _ = _push_credential_arguments(
+        remote_url, "gh", local_header_keys=local_header_keys)
+    recovery = shlex.join(["git", *recovery_arguments, "push", "origin", f"refs/tags/{tag}"])
+    return ReleaseTagPushPlan(tuple(credential_arguments), recovery, environment)
+
+
+def _release_tag_push_plan(repository, tag, *, gh, origin_url):
+    """Validate and freeze the credential-isolated push before tag creation."""
+    environment = isolated_git_env()
+    _refuse_any_http_extra_header(repository, environment)
+    return _tag_push_transport_plan(
+        repository, tag, gh=gh, origin_url=origin_url, environment=environment)
+
+
+def push_release_tag(repository, tag, *, gh, origin_url, plan=None):
+    """Push one release tag with the GitHub CLI credential helper only.
+
+    Release Git commands normally cannot see a user's Git configuration.  Keep
+    that isolation for the push too, but explicitly provide the same ``gh``
+    credential route used by the draft-release command.  For HTTPS, the empty
+    helper and requested helper are also bound to the exact, user-free origin
+    URL, and the command resets origin's push URL to that validated endpoint.
+    Generic, exact-URL and every repository-local HTTP extra-header key are
+    emptied on the command line, including request-path-specific keys.  The
+    exact helper scope also excludes matching repository-configured URL helpers
+    (including username-specific variants) as well as generic helpers.
+    """
+    if plan is None:
+        # This path transports an already-created tag (including recovery). The
+        # publication path supplies its pre-tag, blanket-validated frozen plan.
+        plan = _tag_push_transport_plan(repository, tag, gh=gh, origin_url=origin_url)
+    try:
+        git_run(repository, *plan.arguments, "push", "origin", f"refs/tags/{tag}",
+                environment=plan.environment)
+    except (ReleaseError, subprocess.SubprocessError, OSError):
+        raise ReleaseError(
+            f"Release tag push failed for refs/tags/{tag}. The local annotated tag remains at "
+            f"refs/tags/{tag}; the remote tag status is unknown and no GitHub release was created. "
+            "Run `gh auth status`; after fixing authentication, retry exactly:\n"
+            f"{plan.recovery}") from None
 
 
 def _tree_entries(repository, commit):
@@ -234,7 +421,9 @@ def validation_checkout(repository, commit, destination):
     Self-test cases inspect Git (HEAD, attributes, the raw tree), so they cannot
     run in the Git-less release projection.  The worktree shares the release
     repository's objects, must match the raw tree byte for byte with a clean
-    status, and is always removed afterwards.
+    status, and is always removed afterwards.  Windows and POSIX use the same
+    command-scoped ``core.autocrlf=false`` checkout; this does not write the
+    release repository, its linked-worktree config, or global Git config.
     """
     repository, destination = Path(repository), Path(destination)
     if destination.exists():
@@ -410,15 +599,95 @@ def changelog_notes(source, version):
     return match.group(0).strip()
 
 
-def render_record(commit, manifest_sha256, assets, validations, windows_check):
+def publication_scan_base(repository, commit, version):
+    """Resolve the highest earlier SemVer release tag reachable from commit."""
+    match = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version)
+    if match is None:
+        raise ReleaseError("release VERSION is not canonical MAJOR.MINOR.PATCH SemVer")
+    current = tuple(map(int, match.groups()))
+    tags = git(repository, "tag", "--merged", commit, "--list", "v[0-9]*").splitlines()
+    candidates = []
+    for tag in tags:
+        parsed = RELEASE_TAG.fullmatch(tag)
+        if parsed is None:
+            continue
+        numeric = tuple(map(int, parsed.groups()))
+        if numeric < current:
+            candidates.append((numeric, tag))
+    if not candidates:
+        raise ReleaseError(
+            "publication scan has no earlier semantic-version release tag reachable from the release commit")
+    _numeric, tag = max(candidates)
+    base = git(repository, "rev-parse", "--verify", f"{tag}^{{commit}}").strip()
+    return tag, base
+
+
+def _publication_scan_command(command, *, cwd):
+    return subprocess.run(command, cwd=cwd, env=child_env(), capture_output=True,
+                          text=False, timeout=3600, check=False)
+
+
+def run_publication_scan(repository, scanner_source, base, head, report_path, *, command_runner=None):
+    """Run the shipped publication-scan CLI and bind its exact JSON bytes."""
+    command = [sys.executable, "-B", str(Path(scanner_source) / ".agentic/scripts/workflow.py"),
+               "--root", str(repository), "publication-scan",
+               "--base", base, "--head", head, "--json"]
+    runner = command_runner or _publication_scan_command
+    try:
+        result = runner(command, cwd=repository)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ReleaseError(
+            f"publication scan command failed before release mutation: {type(exc).__name__}") from None
+    raw = result.stdout
+    if not isinstance(raw, bytes):
+        raise ReleaseError("publication scan command returned non-byte output; release refused")
+    try:
+        report = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        if result.returncode:
+            raise ReleaseError(
+                f"publication scan command failed before release mutation with exit {result.returncode}") from None
+        raise ReleaseError("publication scan returned malformed JSON; release refused") from None
+    if not isinstance(report, dict):
+        raise ReleaseError("publication scan returned a non-object report; release refused")
+    try:
+        Contracts(Path(scanner_source) / ".agentic/schemas").validate("publication-scan", report)
+    except ValidationError:
+        raise ReleaseError("publication scan report failed contract validation; release refused") from None
+    status = report.get("status")
+    blocking = report.get("blocking_findings")
+    unscanned = report.get("unscanned_count")
+    if (status not in {"PASS", "BLOCKED"} or not isinstance(blocking, int) or isinstance(blocking, bool)
+            or blocking < 0 or not isinstance(unscanned, int) or isinstance(unscanned, bool)
+            or unscanned < 0):
+        raise ReleaseError("publication scan returned an invalid status/count report; release refused")
+    if report.get("base_sha") != base or report.get("head_sha") != head:
+        raise ReleaseError("publication scan report does not bind the selected release base and exact release commit")
+    Path(report_path).write_bytes(raw)
+    if status == "BLOCKED":
+        raise ReleaseError(
+            f"publication scan BLOCKED before release mutation: {blocking} blocking finding(s), "
+            f"{unscanned} unscanned item(s)")
+    if result.returncode:
+        raise ReleaseError(
+            f"publication scan command failed before release mutation with exit {result.returncode}")
+    if blocking or unscanned:
+        raise ReleaseError("publication scan PASS contradicts blocking or unscanned counts; release refused")
+    return {"status": status, "base_sha": base, "head_sha": head,
+            "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def render_record(commit, manifest_sha256, assets, validations, windows_check, publication_scan):
     return {"format": "awf-release-record-1", "commit": commit,
             "manifest_sha256": manifest_sha256,
             "assets": {path.name: sha256(path) for path in sorted(assets)},
-            "validations": validations, "clean_windows_check": windows_check}
+            "validations": validations, "clean_windows_check": windows_check,
+            "publication_scan": publication_scan}
 
 
 def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
-            *, dry_run=False, validation_runner=default_validations, gh="gh"):
+            *, dry_run=False, validation_runner=default_validations, gh="gh",
+            scan_command_runner=None):
     repository = Path(repository).resolve()
     output_path = Path(output_dir).resolve()
     if output_path == repository or output_path.is_relative_to(repository) or output_path.exists():
@@ -441,7 +710,12 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
         Path(env["TMP"]).mkdir()
         with validation_checkout(repository, commit, Path(raw_temp) / "validation") as checkout:
             validations = validation_runner(checkout, output, env)
-        record = render_record(commit, source_proof["manifest_sha256"], assets, validations, windows)
+        _base_tag, base = publication_scan_base(repository, commit, version)
+        publication_scan = run_publication_scan(
+            repository, source, base, commit, output / "publication-scan.json",
+            command_runner=scan_command_runner)
+        record = render_record(commit, source_proof["manifest_sha256"], assets, validations, windows,
+                               publication_scan)
         tag = "v" + version
         tag_message = f"AWF {version}\n\n{RECORD_PREFIX}{json.dumps(record, sort_keys=True, separators=(',', ':'))}\n"
         body = (changelog_notes(source, version) + "\n\n### Reproducible release record\n\n"
@@ -449,18 +723,23 @@ def publish(repository, commit, output_dir, windows_check, windows_check_sha256,
                 + "This release is a draft. The owner publishes it after review.\n")
         result = {"status": "DRY_RUN" if dry_run else "DRAFT_CREATED", "tag": tag,
                   "record": record, "tag_message": tag_message, "release_body": body,
-                  "assets": [str(path) for path in assets], "remote_changes": not dry_run}
+                   "assets": [str(path) for path in assets], "remote_changes": not dry_run,
+                   "publication_scan": publication_scan}
         if dry_run:
             return result
         # Resolve and validate the release target before any local or remote mutation.
         release_repo = origin_repository(repository)
+        push_url = origin_push_url(repository)
+        if _parse_repository_url(push_url) != release_repo:
+            raise ReleaseError("origin push URL changed while resolving the release target; refusing to publish")
+        push_plan = _release_tag_push_plan(repository, tag, gh=gh, origin_url=push_url)
         tag_file = output / "tag-message.txt"
         body_file = output / "release-body.md"
         tag_file.write_text(tag_message, encoding="utf-8", newline="\n")
         body_file.write_text(body, encoding="utf-8", newline="\n")
         git_run(repository, "-c", "tag.gpgSign=false", "tag", "-a", tag, commit,
                 "-F", str(tag_file))
-        git_run(repository, "push", "origin", f"refs/tags/{tag}")
+        push_release_tag(repository, tag, gh=gh, origin_url=push_url, plan=push_plan)
         run([gh, "release", "create", tag, *map(str, assets), "--repo", release_repo, "--draft", "--verify-tag",
              "--title", f"AWF {version}", "--notes-file", str(body_file)], cwd=repository)
         return result

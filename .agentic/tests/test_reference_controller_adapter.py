@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -32,6 +33,13 @@ def _ticket(path="tracked.txt"):
             "reviewer_completion": {"required": 1, "completed": 0, "acceptable": 0,
                                      "failed": 0, "stale": 0, "outstanding": 1},
             "open_findings": 0, "jira_status": "Ready"}
+
+
+def _dispatch_payload(name="isolation", role="writer"):
+    return {"dispatch_id": name, "stream": "A", "ticket": "AWF-51",
+            "exact_tuple": "tuple", "dispatch_nonce": name + "-nonce",
+            "prepared_at": NOW, "begun_at": NOW, "paths": ["fixture.txt"],
+            "actor": role, "next_action": "verify isolation", "role": role}
 
 
 class FakeClock:
@@ -64,6 +72,7 @@ class FakeRunner:
         self.calls = []
         self.launches = []
         self.prompts = []
+        self.observations = []
 
     def run(self, argv, *, cwd, env, timeout, max_bytes):
         self.calls.append((list(argv), Path(cwd), dict(env)))
@@ -98,12 +107,20 @@ class FakeRunner:
         self.prompts.append(stdin)
         Path(handoff_path).write_text(json.dumps({"pid": 1234, "launch_nonce": launch_nonce,
                                                    "status": "LAUNCHED"}), encoding="utf-8")
+        terminal_path = Path(terminal_proof_path)
+        startup_path = terminal_path.with_name(
+            terminal_path.name.removesuffix(".terminal.json") + ".startup.json")
         return {"pid": 1234, "launch_nonce": launch_nonce,
                 "handoff_path": str(handoff_path),
+                "startup_proof_path": str(startup_path),
                 "terminal_proof_path": str(terminal_proof_path), "status": "LAUNCHED"}
 
     def observe(self, record, *, timeout):
+        self.observations.append(dict(record))
         return {"status": "COMPLETED", "returncode": 0, "terminal": True}
+
+    def observe_startup(self, record, *, timeout):
+        return self.observe(record, timeout=timeout)
 
 
 class FakeHttp:
@@ -175,10 +192,17 @@ def _base_config(root):
     gh.write_bytes(b"gh fixture")
     worktree = root / "worktree"
     worktree.mkdir()
+    isolated_home = root / "isolated-codex-home"
+    isolated_home.mkdir(mode=0o700)
+    auth = isolated_home / "auth.json"
+    auth.write_text('{"fixture":"auth-material"}\n', encoding="utf-8")
+    if os.name != "nt":
+        auth.chmod(0o600)
     return {
         "codex": {"executable": {"path": str(codex), "sha256": sha256(codex.read_bytes())},
                   "roles": {"writer": {"model": "writer-model", "reasoning_effort": "high", "sandbox": "workspace-write"},
                              "critic": {"model": "critic-model", "reasoning_effort": "medium", "sandbox": "read-only"}},
+                   "isolated_home": str(isolated_home), "windows_sandbox": "elevated",
                   "worktree_root": str(worktree), "run_record_directory": str(root / "runs"),
                   "timeout_seconds": 20},
         "github": {"host": "https://github.com", "repository": "example/project", "repository_id": 101,
@@ -256,6 +280,8 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertEqual(result["status_delivery"]["status"], "DELIVERED")
         self.assertEqual(len(result["dispatch_receipts"]), 1, result)
         self.assertTrue(runner.launches)
+        self.assertEqual(len(runner.observations), 1)
+        self.assertEqual(runner.observations[0]["status"], "LAUNCHED")
         child_env = runner.launches[0][2]
         for name in ("GH_TOKEN", "GITHUB_TOKEN", "AWF_JIRA_TOKEN",
                      "ATLASSIAN_API_TOKEN", "JIRA_API_KEY", "EXAMPLE_CLIENT_SECRET"):
@@ -266,6 +292,125 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertEqual(len(outbox.read_text(encoding="utf-8").splitlines()), 1)
         self.assertEqual(json.loads(outbox.read_text(encoding="utf-8").splitlines()[0])["delivery_id"],
                          result["status_delivery"]["delivery_id"])
+
+    def test_cycle_dispatches_second_stream_before_first_terminal_completion(self):
+        class ConcurrentRunner(FakeRunner):
+            def observe_startup(self, record, *, timeout):
+                self.observations.append(dict(record))
+                return {"status": "RUNNING", "terminal": False}
+
+            def observe(self, record, *, timeout):
+                raise AssertionError("terminal observation would serialize dispatch")
+
+        repository = self.root / "repository"
+        repository.mkdir()
+        for name in ("first.txt", "second.txt"):
+            (repository / name).write_text("fixture\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.email",
+                        "fixture@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.name", "Fixture"],
+                       check=True)
+        subprocess.run(["git", "-C", str(repository), "add", "first.txt", "second.txt"],
+                       check=True)
+        subprocess.run(["git", "-C", str(repository), "commit", "-qm", "fixture"], check=True)
+        first = _ticket("first.txt")
+        second = {**_ticket("second.txt"), "ticket": "AWF-33"}
+        runner = ConcurrentRunner(inventory=[first, second])
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        binding = {"project_id": "project-1", "repository_id": "101", "scope_sha256": "a" * 64}
+        head = subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+        tree = subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "HEAD^{tree}"], text=True).strip()
+        state = ContinuousControllerStore(
+            self.root / "state.sqlite3", ["A", "B"], worktree_roots=[self.root / "worktree"])
+
+        result = production_controller_cycle(
+            state, now=NOW, host_capacity=2, inventory_binding=binding,
+            repository_root=repository, repository_head_sha=head, repository_tree_sha=tree,
+            publication_config=self.config, **{name: adapters[name] for name in
+                ("observe_inventory", "dispatch_ticket", "observe_dispatch", "deliver_status",
+                 "observe_publication")})
+
+        self.assertEqual(len(result["dispatch_receipts"]), 2, result)
+        self.assertEqual(len(runner.launches), 2)
+        self.assertEqual(len(runner.observations), 2)
+
+    def test_dispatch_reports_startup_sandbox_configuration_failure(self):
+        class StartupFailureRunner(FakeRunner):
+            def observe_startup(self, record, *, timeout):
+                raise ValidationError(
+                    "helper_unknown_error: setup refresh had errors; os error 32; "
+                    "example.invalid/user-app-file")
+
+        runner = StartupFailureRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+
+        with self.assertRaisesRegex(
+                ValidationError, "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+            adapters["dispatch_ticket"](_dispatch_payload("startup-config-failure"))
+
+        record = json.loads((self.root / "runs" / "startup-config-failure.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(record["diagnostic"], "SANDBOX_SETUP_CONFIG_ERROR")
+        self.assertEqual(record["status"], "LAUNCHED")
+
+    def test_dispatch_waits_past_old_window_for_startup_configuration_failure(self):
+        class DelayedStartupFailureRunner(FakeRunner):
+            def observe_startup(self, record, *, timeout):
+                self.observations.append(dict(record))
+                if timeout <= 1:
+                    return {"status": "RUNNING", "terminal": False}
+                raise ValidationError(
+                    "helper_unknown_error: setup refresh had errors; invalid transport; "
+                    "example.invalid/delayed-user-app-file")
+
+        runner = DelayedStartupFailureRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+
+        with self.assertRaisesRegex(
+                ValidationError, "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+            adapters["dispatch_ticket"](_dispatch_payload("delayed-startup-config-failure"))
+
+        record = json.loads((self.root / "runs" / "delayed-startup-config-failure.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(record["diagnostic"], "SANDBOX_SETUP_CONFIG_ERROR")
+        self.assertEqual(len(runner.observations), 1)
+
+    def test_runner_reports_delayed_durable_startup_configuration_failure(self):
+        namespace = __import__("runpy").run_path(str(self.adapter))
+        startup_proof = self.root / "delayed.startup.json"
+        runner = namespace["_SubprocessRunner"]()
+
+        class RunningProcess:
+            def poll(self):
+                return None
+
+        runner._processes[1234] = RunningProcess()
+        record = {"pid": 1234, "launch_nonce": "delayed-nonce",
+                  "startup_proof_path": str(startup_proof),
+                  "terminal_proof_path": str(self.root / "delayed.terminal.json")}
+
+        def write_failure():
+            startup_proof.write_text(json.dumps({
+                "pid": 1234, "launch_nonce": "delayed-nonce",
+                "status": "FAILED", "terminal": False,
+                "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",
+                "config_source": "AWF isolated CODEX_HOME/config.toml",
+            }), encoding="utf-8")
+
+        timer = threading.Timer(0.05, write_failure)
+        timer.start()
+        try:
+            with self.assertRaisesRegex(
+                    ValidationError, "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+                runner.observe_startup(record, timeout=1)
+        finally:
+            timer.join()
 
     def test_inventory_uses_controller_time_and_critic_route_is_reachable(self):
         runner = FakeRunner()
@@ -281,6 +426,166 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         argv = runner.launches[-1][0]
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertIn("critic-model", argv)
+        adapters["dispatch_ticket"](_dispatch_payload("probe-1", "probe"))
+        probe_argv = runner.launches[-1][0]
+        self.assertEqual(probe_argv[probe_argv.index("--sandbox") + 1], "read-only")
+        self.assertIn("critic-model", probe_argv)
+        self.assertIn('windows.sandbox="elevated"', probe_argv)
+
+    def test_poisoned_user_config_is_not_loaded_by_writer_or_critic(self):
+        user_home = self.root / "user-home"
+        user_codex = user_home / ".codex"
+        user_codex.mkdir(parents=True)
+        poison = """notify = [\"fixture-notify\"]
+[mcp_servers.missing]
+command = \"/missing/example.invalid/mcp-server\"
+[plugins.\"fixture@example.invalid\"]
+enabled = true
+"""
+        user_config = user_codex / "config.toml"
+        user_config.write_text(poison, encoding="utf-8")
+        runner = FakeRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        ambient = {"HOME": str(user_home), "USERPROFILE": str(user_home),
+                   "CODEX_HOME": str(user_codex)}
+        with patch.dict(os.environ, ambient, clear=False):
+            adapters["dispatch_ticket"](_dispatch_payload("poison-writer"))
+            adapters["dispatch_ticket"](_dispatch_payload("poison-critic", "critic"))
+        clean_home = self.root / "second-clean-home"
+        clean_home.mkdir()
+        with patch.dict(os.environ, {"HOME": str(clean_home), "USERPROFILE": str(clean_home),
+                                     "CODEX_HOME": str(clean_home / ".codex")}, clear=False):
+            adapters["dispatch_ticket"](_dispatch_payload("clean-writer"))
+        expected_home = str(Path(self.config["codex"]["isolated_home"]).resolve())
+        self.assertEqual([launch[2]["CODEX_HOME"] for launch in runner.launches],
+                         [expected_home, expected_home, expected_home])
+        self.assertEqual(runner.launches[0][0], runner.launches[2][0])
+        for argv, _, _ in runner.launches:
+            effective = " ".join(argv)
+            self.assertNotIn("fixture-notify", effective)
+            self.assertNotIn("mcp_servers", effective)
+            self.assertNotIn("plugins", effective)
+            self.assertNotIn("missing", effective)
+        self.assertEqual(user_config.read_text(encoding="utf-8"), poison)
+        managed = Path(expected_home) / "config.toml"
+        managed_text = managed.read_text(encoding="utf-8")
+        self.assertNotIn("notify", managed_text)
+        self.assertNotIn("mcp_servers", managed_text)
+        self.assertNotIn("plugins", managed_text)
+
+    def test_clean_user_config_does_not_create_invalid_transport(self):
+        user_home = self.root / "clean-user-home"
+        user_codex = user_home / ".codex"
+        user_codex.mkdir(parents=True)
+        (user_codex / "config.toml").write_text("model = \"user-model\"\n", encoding="utf-8")
+        runner = FakeRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        with patch.dict(os.environ, {"CODEX_HOME": str(user_codex)}, clear=False):
+            adapters["dispatch_ticket"](_dispatch_payload("clean-user"))
+        argv, _, env = runner.launches[0]
+        self.assertEqual(env["CODEX_HOME"],
+                         str(Path(self.config["codex"]["isolated_home"]).resolve()))
+        self.assertFalse(any("mcp_servers." in item for item in argv))
+        self.assertIn("writer-model", argv)
+
+    def test_auth_stays_in_isolated_home_and_never_enters_run_records(self):
+        runner = FakeRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        adapters["dispatch_ticket"](_dispatch_payload("auth-isolation"))
+        isolated_home = Path(self.config["codex"]["isolated_home"])
+        self.assertTrue((isolated_home / "auth.json").is_file())
+        self.assertEqual(runner.launches[0][2]["CODEX_HOME"], str(isolated_home.resolve()))
+        for path in (self.root / "runs").rglob("*"):
+            if path.is_file():
+                self.assertNotIn("auth-material", path.read_text(encoding="utf-8"))
+        self.assertNotIn("auth-material", repr(runner.launches))
+        self.assertNotIn("auth-material", repr(runner.prompts))
+
+    def test_missing_auth_and_non_awf_isolated_config_fail_before_launch(self):
+        runner = FakeRunner()
+        isolated_home = Path(self.config["codex"]["isolated_home"])
+        (isolated_home / "auth.json").unlink()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        with self.assertRaisesRegex(ValidationError, "auth is unavailable"):
+            adapters["dispatch_ticket"](_dispatch_payload("missing-auth"))
+        self.assertEqual(runner.launches, [])
+        (isolated_home / "auth.json").write_text('{"fixture":"restored"}\n', encoding="utf-8")
+        if os.name != "nt":
+            (isolated_home / "auth.json").chmod(0o600)
+        (isolated_home / "config.toml").write_text(
+            '[mcp_servers.fixture]\ncommand = "/missing/example.invalid/server"\n',
+            encoding="utf-8")
+        if os.name != "nt":
+            (isolated_home / "config.toml").chmod(0o600)
+        with self.assertRaisesRegex(ValidationError, "contains non-AWF settings"):
+            adapters["dispatch_ticket"](_dispatch_payload("foreign-config"))
+        self.assertEqual(runner.launches, [])
+
+    def test_windows_sandbox_setup_error_names_isolated_config_source(self):
+        class LockedUserAppRunner(FakeRunner):
+            def launch(self, *args, **kwargs):
+                raise ValidationError(
+                    "helper_unknown_error: setup refresh had errors; os error 32; "
+                    "AppData/Local/example.invalid/node_repl.exe")
+
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": LockedUserAppRunner(), "_clock": FakeClock()})
+        with self.assertRaisesRegex(ValidationError,
+                                    "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+            adapters["dispatch_ticket"](_dispatch_payload("locked-user-app"))
+
+    def test_detached_sandbox_diagnostic_names_isolated_config_source(self):
+        namespace = __import__("runpy").run_path(str(self.adapter))
+        proof = self.root / "sandbox.terminal.json"
+        proof.write_text(json.dumps({
+            "pid": 1234, "launch_nonce": "nonce", "status": "COMPLETED",
+            "returncode": 1, "terminal": True,
+            "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",
+        }), encoding="utf-8")
+        record = {"pid": 1234, "launch_nonce": "nonce",
+                  "terminal_proof_path": str(proof)}
+        with self.assertRaisesRegex(ValidationError,
+                                    "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+            namespace["_SubprocessRunner"]().observe(record, timeout=1)
+
+    @unittest.skipUnless(os.name == "nt", "Windows venv process identity regression")
+    def test_real_runner_windows_venv_reports_terminal_sandbox_diagnostic(self):
+        # Running this suite through the pinned venv exercises the Windows
+        # launcher-stub PID split seen in production.  Python treats the first
+        # Codex argument ("exec") as this neutral temporary script.
+        script = Path(self.config["codex"]["worktree_root"]) / "exec"
+        script.write_text(
+            "import sys\n"
+            "sys.stderr.buffer.write(b'x' * (1024 * 1024 + 4096))\n"
+            "sys.stderr.write('helper_unknown_error: setup refresh had errors; winerror 32\\n')\n"
+            "raise SystemExit(1)\n",
+            encoding="utf-8")
+        config = json.loads(json.dumps(self.config))
+        executable = Path(sys.executable)
+        config["codex"]["executable"] = {
+            "path": str(executable), "sha256": sha256(executable.read_bytes())}
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](config)
+
+        with self.assertRaisesRegex(
+                ValidationError, "sandbox setup.*AWF isolated CODEX_HOME/config.toml"):
+            adapters["dispatch_ticket"](_dispatch_payload("windows-venv-sandbox"))
+
+        record = json.loads((self.root / "runs" / "windows-venv-sandbox.json").read_text(
+            encoding="utf-8"))
+        handoff = json.loads(Path(record["handoff_path"]).read_text(encoding="utf-8"))
+        proof = json.loads(Path(record["terminal_proof_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(record["pid"], handoff["pid"])
+        self.assertEqual(record["pid"], proof["pid"])
+        self.assertEqual(proof["diagnostic"], "SANDBOX_SETUP_CONFIG_ERROR")
+        self.assertEqual(proof["config_source"], "AWF isolated CODEX_HOME/config.toml")
+        self.assertEqual(record["config_source"], "AWF isolated CODEX_HOME/config.toml")
+        launch_spec = json.loads(Path(record["handoff_path"]).with_suffix(
+            ".launch.json").read_text(encoding="utf-8"))
+        self.assertEqual(launch_spec["max_stderr_bytes"], 1024 * 1024)
 
     def test_prepared_launch_crash_is_observed_without_replay(self):
         class CrashAfterLaunch(FakeRunner):
@@ -324,10 +629,8 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
                    "exact_tuple": "tuple", "dispatch_nonce": "bad-nonce",
                    "prepared_at": NOW, "begun_at": NOW, "paths": ["a.py"],
                    "actor": "writer", "next_action": "continue"}
-        adapters["dispatch_ticket"](payload)
         with self.assertRaisesRegex(ValidationError, "terminal"):
-            adapters["observe_dispatch"]({**payload, "reconcile_nonce": "r",
-                                            "reconcile_at": NOW})
+            adapters["dispatch_ticket"](payload)
 
     def test_restart_observer_reads_durable_terminal_proof_without_replay(self):
         runner = FakeRunner()
@@ -376,11 +679,16 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
             pid = 4321
             stdin = StdinProbe()
 
-            def wait(self, timeout=None):
-                return 0
+            def poll(self):
+                return None
 
         def fake_popen(argv, **kwargs):
             observed.append(handoff.exists())
+            launch_spec = json.loads(handoff.with_suffix(".launch.json").read_text(
+                encoding="utf-8"))
+            handoff.write_text(json.dumps({"pid": 9876,
+                "launch_nonce": launch_spec["launch_nonce"], "status": "LAUNCHED"}),
+                encoding="utf-8")
             return Process()
 
         with patch.dict(os.environ, {"ATLASSIAN_API_TOKEN": "secret-atlassian",
@@ -392,7 +700,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
                 env=child_env, timeout=5, stdin="task", handoff_path=str(handoff),
                 terminal_proof_path=str(proof), launch_nonce="nonce")
         self.assertEqual(observed, [True])
-        self.assertEqual(result["pid"], 4321)
+        self.assertEqual(result["pid"], 9876)
         launch_spec = json.loads(handoff.with_suffix(".launch.json").read_text(encoding="utf-8"))
         for name in ("ATLASSIAN_API_TOKEN", "JIRA_API_KEY", "EXAMPLE_CLIENT_SECRET"):
             self.assertNotIn(name, launch_spec["env"].keys())
@@ -538,6 +846,10 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertNotIn("<WORKTREE_ROOT>", section)
         self.assertNotIn("--producer-id CONTROLLER_ACTOR", section)
         self.assertNotIn("--transition-id TRANSITION_ID", section)
+        self.assertIn("$AWF_CODEX_HOME", section)
+        self.assertIn("isolated_home", section)
+        self.assertIn("windows_sandbox", section)
+        self.assertNotIn("mcp_servers.", section)
 
     def test_github_pagination_requires_provider_evidence_and_binds_page_size(self):
         class Paged(FakeRunner):

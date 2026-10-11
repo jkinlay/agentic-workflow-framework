@@ -13,13 +13,71 @@ from unittest.mock import patch
 from jsonschema import Draft202012Validator
 
 from agentic import ValidationError
-from agentic.canonical import sha256
+from agentic.canonical import now_text, sha256
+from agentic.review_qualification import FORMAT as QUALIFICATION_FORMAT, host_binding_sha256
 from agentic.review_loop import LoopStore, enroll, pause, resume, tick, validate_review
 from agentic.providers.github_review_host import HostDriver, is_source_repository, load_config, protected, reviewed_model_effort_pairs, safe_path
 
 ROOT = Path(__file__).resolve().parents[2]
 CANDIDATE = {'repository_id':12,'pr':7,'head':'a'*40,'base':'b'*40,'head_ref':'codex/test','base_ref':'main'}
 FINDING = {'id':'F1','severity':'MAJOR','status':'OPEN','file':'src/a.py','message':'Missing error handling','evidence':'','basis':'criterion:AC1'}
+
+
+def pin_passing_qualification(value):
+    qualification = value['qualification']
+    qualification.update(sandbox_verified=True, credentials_isolated=True,
+                         branch_owned=True, single_host_database=True)
+    agent = lambda role: {
+        'status': 'OBSERVED',
+        'result': {
+            'role': role,
+            'checkout_write': 'DENIED' if role == 'critic' else 'SUCCEEDED',
+            'outside_write': 'DENIED', 'network': 'DENIED',
+            'credential_environment_names': [],
+            'agent_auth_files': [
+                {'location': '~/.codex/auth.json', 'status': 'DENIED'},
+                {'location': '$CODEX_HOME/auth.json', 'status': 'ABSENT'},
+            ],
+        },
+        'artifacts': {name: 'f' * 64 for name in
+                      ('input_sha256', 'effective_config_sha256',
+                       'codex_log_sha256', 'result_sha256')},
+        'error': None,
+        'host_observation': {
+            'checkout_marker': 'ABSENT' if role == 'critic' else 'EXACT',
+            'outside_marker': 'ABSENT', 'checkout_clean_after_cleanup': True,
+        },
+    }
+    record = {
+        'format': QUALIFICATION_FORMAT,
+        'record_id': '00000000-0000-0000-0000-000000000001',
+        'observed_at': now_text(), 'operator': qualification['operator'],
+        'host_binding_sha256': host_binding_sha256(value),
+        'disposable_pr_confirmed': True,
+        'candidate': {'repository_id': value['repository_id'], 'pr': 999,
+                      'head': 'a' * 40, 'base': 'b' * 40,
+                      'head_ref': 'codex/disposable',
+                      'base_ref': value['base_branch']},
+        'probes': {
+            'critic': agent('critic'), 'worker': agent('worker'),
+            'branch_lease': {'unowned_before_probe': True,
+                             'unique_owner_constraint': True,
+                             'temporary_lease_rolled_back': True},
+            'canonical_database': {'relative_path': 'review-loop.sqlite3',
+                                   'resolved_path_sha256': 'c' * 64,
+                                   'integrity_check': 'ok',
+                                   'writer_lock_exclusive': True},
+        },
+        'findings': [],
+        'qualification': {name: True for name in
+                          ('sandbox_verified', 'credentials_isolated',
+                           'branch_owned', 'single_host_database')},
+        'result': 'PASS', 'execution_authority': False,
+    }
+    raw = (json.dumps(record, indent=2, sort_keys=True) + '\n').encode()
+    evidence = Path(qualification['evidence_path'])
+    evidence.write_bytes(raw)
+    qualification['evidence_sha256'] = sha256(raw)
 
 
 class FakeDriver:
@@ -240,11 +298,17 @@ class HostTests(unittest.TestCase):
             contract_path=str(contract),contract_sha256=sha256(contract.read_bytes()),runtime_manifest_sha256='f'*64,
             models={'worker':'fixture-worker','critic':'fixture-critic'},allowed_paths=['src/a.py'],
             required_checks=[{'name':'test','app_id':1,'workflow_path':'.github/workflows/ci.yml','workflow_sha256':sha256(b'workflow\n')}],
-            qualification={'operator':'fixture','evidence':'Synthetic only','sandbox_verified':True,'credentials_isolated':True,'branch_owned':True,'single_host_database':True})
+            qualification={'operator':'fixture',
+                           'evidence_path':str(self.base/'state/qualification.json'),
+                           'evidence_sha256':'CHANGE_ME','max_age_seconds':604800,
+                           'sandbox_verified':False,'credentials_isolated':False,
+                           'branch_owned':False,'single_host_database':False})
         executable = {'path':sys.executable,'sha256':sha256(Path(sys.executable).read_bytes())}
         self.value['executables'] = {x:deepcopy(executable) for x in ['git','gh','codex']}
 
-    def config(self):
+    def config(self, *, pin=True):
+        if pin:
+            pin_passing_qualification(self.value)
         self.path.write_text(json.dumps(self.value))
         return load_config(self.path,self.base/'runtime')
 
@@ -419,8 +483,33 @@ class HostTests(unittest.TestCase):
         for key,value in cases:
             self.value = deepcopy(original); self.value[key] = value
             with self.subTest(key=key,value=value),self.assertRaises(ValidationError): self.config()
-        self.value = deepcopy(original); self.value['qualification']['sandbox_verified']=False
-        with self.assertRaises(ValidationError): self.config()
+        self.value = deepcopy(original)
+        self.value['qualification']['sandbox_verified'] = False
+        with self.assertRaisesRegex(ValidationError, 'incomplete'):
+            self.config(pin=False)
+        self.value['qualification'] = {
+            'operator': 'fixture', 'evidence': 'legacy free text',
+            'sandbox_verified': True, 'credentials_isolated': True,
+            'branch_owned': True, 'single_host_database': True,
+        }
+        with self.assertRaisesRegex(ValidationError, 'Legacy bare'):
+            self.config(pin=False)
+
+    def test_load_config_requires_matching_fresh_qualification_record(self):
+        config = self.config()
+        evidence = Path(config['qualification']['evidence_path'])
+        evidence.write_text('{}', encoding='utf-8')
+        with self.assertRaisesRegex(ValidationError, 'SHA-256 mismatch'):
+            load_config(self.path, self.base / 'runtime')
+        pin_passing_qualification(self.value)
+        record = json.loads(evidence.read_text(encoding='utf-8'))
+        record['observed_at'] = '2000-01-01T00:00:00Z'
+        raw = (json.dumps(record, indent=2, sort_keys=True) + '\n').encode()
+        evidence.write_bytes(raw)
+        self.value['qualification']['evidence_sha256'] = sha256(raw)
+        self.path.write_text(json.dumps(self.value))
+        with self.assertRaisesRegex(ValidationError, 'stale'):
+            load_config(self.path, self.base / 'runtime')
 
     def test_source_allowlist_is_bound_to_candidate_checkout(self):
         candidate = self.base/'worker'
@@ -440,6 +529,7 @@ class HostTests(unittest.TestCase):
         command('-C', str(candidate), 'add', '.')
         command('-C', str(candidate), 'commit', '-m', 'source markers')
         self.value.update(allowed_paths=['.agentic/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
+        pin_passing_qualification(self.value)
         self.path.write_text(json.dumps(self.value))
         self.assertEqual(load_config(self.path, self.base/'runtime')['allowed_paths'], ['.agentic/a.py'])
         self.assertTrue(is_source_repository(candidate, git_runner=HostDriver(load_config(self.path, self.base/'runtime'), ROOT).git))
@@ -452,6 +542,7 @@ class HostTests(unittest.TestCase):
 
     def test_downstream_candidate_refuses_runtime_source_markers(self):
         self.value.update(allowed_paths=['.agentic/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
+        pin_passing_qualification(self.value)
         self.path.write_text(json.dumps(self.value))
         with self.assertRaisesRegex(ValidationError, 'protected'):
             load_config(self.path, self.base/'runtime')
@@ -575,6 +666,46 @@ class HostTests(unittest.TestCase):
             '-c','model_reasoning_effort=ultra','-c','windows.sandbox="elevated"','--model','fixture-worker',
             '--cd',str(self.base/'worker'),'--output-schema',str(ROOT/'.agentic/review-loop/worker-result.schema.json'),
             '--output-last-message',str(self.base/'state/runs/fixture-worker/result.json'),'--json','-'])
+
+    def test_qualification_agents_use_production_sandboxes_and_no_network(self):
+        self.value['codex_config_overrides'] = {'windows.sandbox':'elevated'}
+        driver = HostDriver(self.config(), ROOT)
+        captured = []
+        def run(name, args, **kwargs):
+            captured.append(args)
+            role = 'critic' if args[args.index('--sandbox') + 1] == 'read-only' else 'worker'
+            output = Path(args[args.index('--output-last-message') + 1])
+            output.write_text(json.dumps({
+                'role': role,
+                'checkout_write': 'DENIED' if role == 'critic' else 'SUCCEEDED',
+                'outside_write': 'DENIED', 'network': 'DENIED',
+                'credential_environment_names': [],
+                'agent_auth_files': [
+                    {'location': '~/.codex/auth.json', 'status': 'DENIED'},
+                    {'location': '$CODEX_HOME/auth.json', 'status': 'ABSENT'},
+                ],
+            }))
+            Path(kwargs['log']).write_text('{"type":"fixture"}\n')
+            return ''
+        driver.run = run
+        probe = {'checkout_marker': '<fixture>/inside',
+                 'outside_marker': '<fixture>/outside',
+                 'marker_text': 'marker', 'network_url': 'https://api.github.com/meta',
+                 'credential_environment_name_pattern': '(?i)(TOKEN|API_KEY)',
+                 'agent_auth_locations': ['~/.codex/auth.json', '$CODEX_HOME/auth.json']}
+        record_id = '00000000-0000-0000-0000-000000000321'
+        critic = driver.qualification_agent('critic', record_id, probe)
+        worker = driver.qualification_agent('worker', record_id, probe)
+        self.assertEqual(set(critic['artifacts']),
+                         {'input_sha256', 'effective_config_sha256',
+                          'codex_log_sha256', 'result_sha256'})
+        self.assertEqual(set(worker['artifacts']), set(critic['artifacts']))
+        self.assertEqual([args[args.index('--sandbox') + 1] for args in captured],
+                         ['read-only', 'workspace-write'])
+        for args in captured:
+            self.assertIn('sandbox_workspace_write.network_access=false', args)
+            self.assertIn('approval_policy="never"', args)
+            self.assertIn('windows.sandbox="elevated"', args)
 
     def test_reasoning_effort_must_be_an_approved_pair_and_unknown_override_is_refused(self):
         policy = self.base/'worker/.agentic'; policy.mkdir()

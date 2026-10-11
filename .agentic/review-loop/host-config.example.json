@@ -59,7 +59,9 @@
   "max_review_age_seconds": 3600,
   "qualification": {
     "operator": "CHANGE_ME",
-    "evidence": "CHANGE_ME",
+    "evidence_path": "<state-dir>/review-host-qualification.json",
+    "evidence_sha256": "CHANGE_ME",
+    "max_age_seconds": 604800,
     "sandbox_verified": false,
     "credentials_isolated": false,
     "branch_owned": false,

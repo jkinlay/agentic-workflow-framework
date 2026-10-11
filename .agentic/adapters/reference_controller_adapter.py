@@ -34,6 +34,12 @@ MAX_OUTPUT = 1024 * 1024
 MAX_PAGES = 20
 MAX_SECONDS = 120
 MAX_JIRA_PAGE = 100
+_CODEX_CONFIG_SOURCE = "AWF isolated CODEX_HOME/config.toml"
+_CODEX_SANDBOX_ERROR = (
+    "Codex sandbox setup failed; config source: " + _CODEX_CONFIG_SOURCE
+    + ". The user desktop-app config is not inherited; inspect the isolated "
+    "home and Codex diagnostics for an unexpected user-app file reference."
+)
 _CREDENTIAL_NAME_MARKERS = (
     "TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY", "APIKEY",
     "ACCESS_KEY", "PRIVATE_KEY", "CREDENTIAL",
@@ -78,6 +84,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 spec_path = sys.argv[1]
@@ -104,25 +111,96 @@ pid = os.getpid()
 nonce = spec["launch_nonce"]
 handoff = spec["handoff_path"]
 proof = spec["terminal_proof_path"]
+startup_proof = spec["startup_proof_path"]
 durable(handoff, {"pid": pid, "launch_nonce": nonce, "status": "LAUNCHED"})
+startup_lock = threading.Lock()
+startup_recorded = False
+
+def publish_startup(value):
+    global startup_recorded
+    with startup_lock:
+        if startup_recorded:
+            return
+        durable(startup_proof, value)
+        startup_recorded = True
+
 code = None
 status = "COMPLETED"
+diagnostic = None
 try:
     child = subprocess.Popen(spec["argv"], cwd=spec["cwd"], env=spec["env"],
                              shell=False, stdin=subprocess.PIPE,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stderr_tail = bytearray()
+    stderr_limit = spec["max_stderr_bytes"]
+    markers = ("setup refresh had errors", "helper_unknown_error", "os error 32",
+               "winerror 32", "invalid transport", "being used by another process")
+
+    def drain_stderr():
+        while True:
+            chunk = child.stderr.read1(8192)
+            if not chunk:
+                return
+            stderr_tail.extend(chunk)
+            if len(stderr_tail) > stderr_limit:
+                del stderr_tail[:-stderr_limit]
+            lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()
+            if any(marker in lowered for marker in markers):
+                publish_startup({"pid": pid, "launch_nonce": nonce,
+                                 "status": "FAILED", "terminal": False,
+                                 "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",
+                                 "config_source": spec["config_source"]})
+
+    def drain_stdout():
+        while True:
+            line = child.stdout.readline(spec["max_output_bytes"] + 1)
+            if not line:
+                return
+            if len(line) > spec["max_output_bytes"]:
+                continue
+            try:
+                event = json.loads(line.decode("utf-8", "strict"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            # Codex JSON mode emits this only after isolated configuration has
+            # been accepted and the execution thread has been initialized.
+            if isinstance(event, dict) and event.get("type") == "thread.started":
+                publish_startup({"pid": pid, "launch_nonce": nonce,
+                                 "status": "STARTED", "terminal": False})
+
+    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stdout_thread = threading.Thread(target=drain_stdout, daemon=True)
+    stderr_thread.start()
+    stdout_thread.start()
     try:
-        child.communicate(spec["stdin"].encode("utf-8"), timeout=spec["timeout"])
+        try:
+            child.stdin.write(spec["stdin"].encode("utf-8"))
+        except BrokenPipeError:
+            pass
+        finally:
+            child.stdin.close()
+        child.wait(timeout=spec["timeout"])
         code = child.returncode
+        stderr_thread.join()
+        stdout_thread.join()
+        lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()
+        if code and any(marker in lowered for marker in markers):
+            diagnostic = "SANDBOX_SETUP_CONFIG_ERROR"
     except subprocess.TimeoutExpired:
         status = "TIMED_OUT"
         child.kill()
-        child.communicate()
+        child.wait()
+        stderr_thread.join()
+        stdout_thread.join()
 except Exception:
     status = "FAILED"
 value = {"pid": pid, "launch_nonce": nonce, "status": status,
          "returncode": code, "terminal": True}
+if diagnostic is not None:
+    value["diagnostic"] = diagnostic
+    value["config_source"] = spec["config_source"]
 durable(proof, value)
+publish_startup(value)
 '''
 
     def run(self, argv, *, cwd, env, timeout, max_bytes):
@@ -148,9 +226,16 @@ durable(proof, value)
         # creates the child, then writes terminal proof on every supported OS.
         _write_record(Path(handoff_path), {"launch_nonce": launch_nonce, "status": "STARTING"})
         spec_path = Path(handoff_path).with_suffix(".launch.json")
+        terminal_path = Path(terminal_proof_path)
+        startup_path = terminal_path.with_name(
+            terminal_path.name.removesuffix(".terminal.json") + ".startup.json")
         _write_record(spec_path, {"argv": list(argv), "cwd": str(cwd), "env": dict(env),
                                   "stdin": stdin, "timeout": timeout,
+                                  "max_output_bytes": MAX_OUTPUT,
+                                  "max_stderr_bytes": MAX_OUTPUT,
+                                  "config_source": _CODEX_CONFIG_SOURCE,
                                   "launch_nonce": launch_nonce, "handoff_path": str(handoff_path),
+                                  "startup_proof_path": str(startup_path),
                                   "terminal_proof_path": str(terminal_proof_path)})
         try:
             process = subprocess.Popen([sys.executable, "-B", "-c", self._WATCHER,
@@ -161,14 +246,27 @@ durable(proof, value)
                                        start_new_session=True)
         except OSError as exc:
             raise ValidationError("Codex detached launch failed") from exc
-        self._processes[process.pid] = process
-        handoff = {"pid": process.pid, "launch_nonce": launch_nonce, "status": "LAUNCHED"}
-        try:
-            _write_record(Path(handoff_path), handoff)
-        except OSError as exc:
-            raise ValidationError("Codex durable launch handoff failed") from exc
-        return {"pid": process.pid, "launch_nonce": launch_nonce,
+        # A Windows venv launcher may create the real interpreter under a
+        # different PID.  Only the watcher can durably name that identity, so
+        # wait for its nonce-bound handoff instead of recording Popen.pid.
+        deadline = time.monotonic() + min(timeout, 10)
+        handoff = None
+        while time.monotonic() <= deadline:
+            try:
+                candidate = _read_record(Path(handoff_path))
+            except ValidationError:
+                candidate = None
+            if (isinstance(candidate, dict) and candidate.get("status") == "LAUNCHED"
+                    and candidate.get("launch_nonce") == launch_nonce
+                    and type(candidate.get("pid")) is int and candidate["pid"] > 0):
+                handoff = candidate
+                break
+            time.sleep(0.01)
+        _require(handoff is not None, "Codex detached watcher did not produce a durable launch handoff")
+        self._processes[handoff["pid"]] = process
+        return {"pid": handoff["pid"], "launch_nonce": launch_nonce,
                 "handoff_path": str(handoff_path),
+                "startup_proof_path": str(startup_path),
                 "terminal_proof_path": str(terminal_proof_path), "status": "LAUNCHED"}
 
     def observe(self, record, *, timeout):
@@ -178,28 +276,35 @@ durable(proof, value)
         proof_path = record.get("terminal_proof_path")
         _require(isinstance(proof_path, str), "Detached run has no terminal-proof path")
         proof = Path(proof_path)
-        if proof.is_file():
-            value = _read_record(proof)
-            _require(value.get("pid") == pid and value.get("launch_nonce") == record.get("launch_nonce"),
-                     "Detached terminal proof is bound to a different process")
-            _require(value.get("status") == "COMPLETED" and value.get("terminal") is True,
-                     "Detached Codex terminal outcome was not proven")
-            return value
-        process = self._processes.get(pid)
-        if process is None:
+        if not proof.is_file() and self._processes.get(pid) is None:
             # A vanished PID is not proof of a successful terminal outcome.
-            # After a host restart only the durable watcher proof is accepted.
+            # After a host restart only an existing durable proof is accepted.
             raise ValidationError("Detached Codex terminal outcome was not proven")
-        try:
-            code = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            raise ValidationError("Detached Codex run timed out") from exc
-        finally:
-            self._processes.pop(pid, None)
-        _require(proof.is_file(), "Detached Codex terminal outcome was not durably recorded")
+        deadline = time.monotonic() + timeout + 2
+        while not proof.is_file() and time.monotonic() <= deadline:
+            process = self._processes.get(pid)
+            if process is not None:
+                process.poll()
+            time.sleep(0.01)
+        if not proof.is_file():
+            if self._processes.get(pid) is None:
+                # A vanished PID is not proof of a successful terminal outcome.
+                # After a host restart only the durable watcher proof is accepted.
+                raise ValidationError("Detached Codex terminal outcome was not proven")
+            raise ValidationError("Detached Codex run timed out before durable terminal proof")
+        process = self._processes.pop(pid, None)
+        if process is not None:
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                # Terminal proof is authoritative; do not signal a process
+                # merely because a platform launcher has not reaped yet.
+                pass
         value = _read_record(proof)
         _require(value.get("pid") == pid and value.get("launch_nonce") == record.get("launch_nonce"),
                  "Detached terminal proof is bound to a different process")
+        if value.get("diagnostic") == "SANDBOX_SETUP_CONFIG_ERROR":
+            raise ValidationError(_CODEX_SANDBOX_ERROR)
         if value.get("status") == "TIMED_OUT":
             raise ValidationError("Detached Codex run timed out")
         _require(value.get("status") == "COMPLETED" and value.get("terminal") is True,
@@ -207,6 +312,42 @@ durable(proof, value)
         if value.get("returncode") != 0:
             raise ValidationError("Detached Codex run returned a non-zero exit")
         return value
+
+    def observe_startup(self, record, *, timeout):
+        """Wait for definitive startup proof, never for normal run completion."""
+        pid = record.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            raise ValidationError("Detached run record has no process identity")
+        proof_path = record.get("startup_proof_path")
+        _require(isinstance(proof_path, str), "Detached run has no startup-proof path")
+        proof = Path(proof_path)
+        process = self._processes.get(pid)
+        if not proof.is_file() and process is None:
+            raise ValidationError("Detached Codex startup outcome was not proven")
+        deadline = time.monotonic() + timeout + 2
+        while not proof.is_file() and time.monotonic() <= deadline:
+            if process is not None:
+                process.poll()
+            time.sleep(0.01)
+        if not proof.is_file():
+            raise ValidationError("Detached Codex startup outcome was not proven")
+        value = _read_record(proof)
+        _require(value.get("pid") == pid and value.get("launch_nonce") == record.get("launch_nonce"),
+                 "Detached startup proof is bound to a different process")
+        if value.get("diagnostic") == "SANDBOX_SETUP_CONFIG_ERROR":
+            if process is not None and hasattr(process, "wait"):
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+                else:
+                    self._processes.pop(pid, None)
+            raise ValidationError(_CODEX_SANDBOX_ERROR)
+        if value.get("status") == "STARTED" and value.get("terminal") is False:
+            return {"status": "RUNNING", "terminal": False}
+        if value.get("terminal") is True:
+            return self.observe(record, timeout=0)
+        raise ValidationError("Detached Codex startup outcome was not proven")
 
 
 class _HttpTransport:
@@ -287,6 +428,100 @@ def _safe_env(jira_token_env=None):
     result["GH_PROMPT_DISABLED"] = "1"
     result["GIT_TERMINAL_PROMPT"] = "0"
     return result
+
+
+def _disjoint(first, second):
+    first = first.resolve()
+    second = second.resolve()
+    return first != second and first not in second.parents and second not in first.parents
+
+
+def _private_mode(path, name, maximum):
+    if os.name == "nt":
+        return
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError as exc:
+        raise ValidationError(name + " permissions are unavailable") from exc
+    _require(mode & ~maximum == 0, name + " permissions are too broad")
+
+
+def _single_link(path, name):
+    try:
+        links = path.stat().st_nlink
+    except OSError as exc:
+        raise ValidationError(name + " identity is unavailable") from exc
+    _require(links == 1, name + " must not be hard-linked")
+
+
+def _managed_codex_config(windows_sandbox):
+    return ("approval_policy = \"never\"\n"
+            "\n[sandbox_workspace_write]\n"
+            "network_access = false\n"
+            "\n[windows]\n"
+            "sandbox = \"" + windows_sandbox + "\"\n").encode("utf-8")
+
+
+def _write_private(path, data):
+    temporary = path.with_name("." + path.name + "." + uuid.uuid4().hex + ".tmp")
+    descriptor = None
+    try:
+        descriptor = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = None
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise ValidationError("AWF isolated Codex config could not be made durable") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+
+
+def _prepare_codex_home(home, windows_sandbox):
+    _require(home.is_dir() and not home.is_symlink(),
+             "codex.isolated_home must be an existing dedicated directory")
+    _private_mode(home, "codex.isolated_home", 0o700)
+    auth = home / "auth.json"
+    _require(auth.is_file() and not auth.is_symlink(),
+             "Codex auth is unavailable in codex.isolated_home/auth.json")
+    _single_link(auth, "Codex isolated auth")
+    _private_mode(auth, "Codex isolated auth", 0o600)
+    try:
+        with auth.open("rb") as stream:
+            _require(bool(stream.read(1)), "Codex isolated auth is empty")
+    except OSError as exc:
+        raise ValidationError("Codex isolated auth is unreadable") from exc
+    expected = _managed_codex_config(windows_sandbox)
+    config_path = home / "config.toml"
+    if config_path.exists():
+        _require(config_path.is_file() and not config_path.is_symlink(),
+                 "AWF isolated Codex config source is not a regular file")
+        _single_link(config_path, "AWF isolated Codex config source")
+        try:
+            actual = config_path.read_bytes()
+        except OSError as exc:
+            raise ValidationError("AWF isolated Codex config source is unreadable") from exc
+        _require(actual == expected,
+                 "AWF isolated Codex config source contains non-AWF settings")
+    else:
+        _write_private(config_path, expected)
+    _private_mode(config_path, "AWF isolated Codex config", 0o600)
+
+
+def _sandbox_setup_failure(value):
+    lowered = str(value).casefold()
+    return any(marker in lowered for marker in (
+        "setup refresh had errors", "helper_unknown_error", "os error 32",
+        "winerror 32", "invalid transport", "being used by another process",
+        "codex sandbox setup failed",
+    ))
 
 
 def _sha256_file(path):
@@ -399,13 +634,23 @@ def _build(config):
     for key in ("codex", "github", "jira", "outbox"):
         _require(isinstance(config.get(key), dict), "Reference adapter configuration is missing " + key)
     codex = config["codex"]
-    _require(set(codex) >= {"executable", "roles", "worktree_root", "run_record_directory"},
+    _require(set(codex) >= {"executable", "roles", "isolated_home", "windows_sandbox",
+                            "worktree_root", "run_record_directory"},
              "Codex adapter configuration is incomplete")
     codex_executable = _executable(codex["executable"], "codex.executable")
     worktree_root = _absolute(codex["worktree_root"], "codex.worktree_root")
     record_dir = _absolute(codex["run_record_directory"], "codex.run_record_directory")
+    isolated_home = _absolute(codex["isolated_home"], "codex.isolated_home").resolve()
+    windows_sandbox = _text(codex["windows_sandbox"], "codex.windows_sandbox")
+    _require(windows_sandbox in {"elevated", "unelevated"},
+             "codex.windows_sandbox is forbidden")
     _require(record_dir != worktree_root and worktree_root not in record_dir.parents,
              "codex.run_record_directory must be outside codex.worktree_root")
+    _require(_disjoint(isolated_home, worktree_root)
+             and _disjoint(isolated_home, record_dir),
+             "codex.isolated_home must be outside worktrees and run records")
+    _require(isolated_home != (Path.home() / ".codex").resolve(),
+             "codex.isolated_home must not be the user Codex home")
     roles = codex["roles"]
     _require(isinstance(roles, dict) and set(roles) == {"writer", "critic"},
              "Codex roles must define writer and critic")
@@ -463,6 +708,8 @@ def _build(config):
     outbox_dir = _absolute(outbox["directory"], "outbox.directory")
     _require(outbox_dir != worktree_root and worktree_root not in outbox_dir.parents,
              "outbox.directory must be outside codex.worktree_root")
+    _require(_disjoint(isolated_home, outbox_dir),
+             "codex.isolated_home must be outside the outbox")
 
     runner = config.get("_runner") or _SubprocessRunner()
     http = config.get("_http_transport") or _HttpTransport()
@@ -638,14 +885,15 @@ def _build(config):
                     "prepared_at", "begun_at", "paths", "actor", "next_action"}
         _require(required <= set(payload), "Dispatch payload is incomplete")
         role = payload.get("role", "writer")
-        _require(role in role_config, "Dispatch role is not configured")
+        _require(role in role_config or role == "probe", "Dispatch role is not configured")
         worktree = _worktree(worktree_root, payload.get("worktree"))
+        _prepare_codex_home(isolated_home, windows_sandbox)
         record_dir.mkdir(parents=True, exist_ok=True)
         record_path = record_dir / (payload["dispatch_id"] + ".json")
         if record_path.exists():
             raise ValidationError("Dispatch already has a durable run record; reconcile by observation")
-        selected = role_config[role]
-        sandbox = "read-only" if role == "critic" else selected["sandbox"]
+        selected = role_config["critic" if role == "probe" else role]
+        sandbox = "read-only" if role in {"critic", "probe"} else selected["sandbox"]
         prompt = ("AWF continuous-controller role=" + role + "\nTicket: " + payload["ticket"]
                   + "\nAction: " + payload["next_action"] + "\nPaths: "
                   + ",".join(payload["paths"]))
@@ -653,11 +901,14 @@ def _build(config):
                  "Codex task prompt exceeded its byte bound")
         argv = ["exec", "--ephemeral", "--ignore-user-config", "--sandbox", sandbox,
                 "-c", 'approval_policy="never"', "-c",
-                "model_reasoning_effort=" + selected["reasoning_effort"], "--model", selected["model"],
+                 "sandbox_workspace_write.network_access=false", "-c",
+                 'windows.sandbox="' + windows_sandbox + '"', "-c",
+                 "model_reasoning_effort=" + selected["reasoning_effort"], "--model", selected["model"],
                 "--cd", str(worktree), "--json", "-"]
         launch_nonce = str(uuid.uuid5(uuid.NAMESPACE_URL,
                                       "awf:codex-launch:" + payload["dispatch_nonce"]))
         handoff_path = record_path.with_suffix(".handoff.json")
+        startup_proof_path = record_path.with_suffix(".startup.json")
         terminal_proof_path = record_path.with_suffix(".terminal.json")
         record = {"format": "awf-reference-dispatch-1", "dispatch_id": payload["dispatch_id"],
                   "dispatch_nonce": payload["dispatch_nonce"], "stream": payload["stream"],
@@ -666,17 +917,24 @@ def _build(config):
                   "worktree": str(worktree), "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                   "argv_sha256": hashlib.sha256(canonical(argv)).hexdigest(),
                   "launch_nonce": launch_nonce, "handoff_path": str(handoff_path),
+                  "startup_proof_path": str(startup_proof_path),
                   "terminal_proof_path": str(terminal_proof_path),
                   "status": "PREPARED", "created_at": _clock_text(clock)}
         _write_record(record_path, record)
         _verify_executable(codex_executable)
         launch_env = _safe_env(token_env)
+        launch_env["CODEX_HOME"] = str(isolated_home)
         launch_env["AWF_DISPATCH_NONCE"] = launch_nonce
-        launched = _invoke(runner, "launch", [str(codex_executable["path"]), *argv],
-                           cwd=worktree, env=launch_env, timeout=timeout,
-                           stdin=prompt, handoff_path=str(handoff_path),
-                           terminal_proof_path=str(terminal_proof_path),
-                           launch_nonce=launch_nonce)
+        try:
+            launched = _invoke(runner, "launch", [str(codex_executable["path"]), *argv],
+                               cwd=worktree, env=launch_env, timeout=timeout,
+                               stdin=prompt, handoff_path=str(handoff_path),
+                               terminal_proof_path=str(terminal_proof_path),
+                               launch_nonce=launch_nonce)
+        except ValidationError as exc:
+            if _sandbox_setup_failure(exc):
+                raise ValidationError(_CODEX_SANDBOX_ERROR) from exc
+            raise
         _require(isinstance(launched, dict), "Codex launch returned an invalid result")
         _require(launched.get("status") == "LAUNCHED" and
                  type(launched.get("pid")) is int and launched["pid"] > 0,
@@ -684,12 +942,40 @@ def _build(config):
         _require(launched.get("launch_nonce") == launch_nonce,
                  "Codex launch identity is not nonce-bound")
         _require(launched.get("handoff_path") == str(handoff_path) and
+                 launched.get("startup_proof_path") == str(startup_proof_path) and
                  launched.get("terminal_proof_path") == str(terminal_proof_path),
                  "Codex launch did not return durable proof paths")
         record.update({"status": "LAUNCHED", "pid": launched["pid"],
                        "launched_at": _clock_text(clock)})
         _write_record(record_path, record)
-        return _record_receipt(payload, record["launched_at"])
+        # A normal controller cycle does not call observe_dispatch after an
+        # accepted dispatch.  Require the watcher's definitive startup proof so
+        # a setup diagnostic is reported without waiting for each Codex run's
+        # eventual terminal proof.
+        try:
+            result = _invoke(runner, "observe_startup", record, timeout=timeout)
+        except ValidationError as exc:
+            if _sandbox_setup_failure(exc):
+                record["diagnostic"] = "SANDBOX_SETUP_CONFIG_ERROR"
+                record["config_source"] = _CODEX_CONFIG_SOURCE
+                record["observed_at"] = _clock_text(clock)
+                _write_record(record_path, record)
+                raise ValidationError(_CODEX_SANDBOX_ERROR) from exc
+            raise
+        terminal = (isinstance(result, dict) and result.get("status") == "COMPLETED"
+                    and result.get("returncode") == 0 and result.get("terminal") is True)
+        running = (isinstance(result, dict) and result.get("status") == "RUNNING"
+                   and result.get("terminal") is False)
+        if isinstance(result, dict) and result.get("terminal") is True:
+            _require(terminal, "Dispatch terminal outcome was not proven by observation")
+        else:
+            _require(running, "Dispatch startup outcome was not proven by observation")
+        record["status"] = "COMPLETED" if terminal else "LAUNCHED"
+        record["startup_observed_at"] = _clock_text(clock)
+        if terminal:
+            record["observed_at"] = record["startup_observed_at"]
+        _write_record(record_path, record)
+        return _record_receipt(payload, record["startup_observed_at"])
 
     def observe_dispatch(payload):
         _require(isinstance(payload, dict) and isinstance(payload.get("dispatch_id"), str),
@@ -712,7 +998,12 @@ def _build(config):
                          "Interrupted dispatch has no durable launch handoff")
                 record.update({"pid": handoff["pid"], "status": "LAUNCHED"})
                 _write_record(path, record)
-            result = _invoke(runner, "observe", record, timeout=timeout)
+            try:
+                result = _invoke(runner, "observe", record, timeout=timeout)
+            except ValidationError as exc:
+                if _sandbox_setup_failure(exc):
+                    raise ValidationError(_CODEX_SANDBOX_ERROR) from exc
+                raise
             _require(isinstance(result, dict) and result.get("status") == "COMPLETED"
                      and result.get("returncode") == 0 and result.get("terminal") is True,
                      "Interrupted dispatch terminal outcome was not proven by observation")
