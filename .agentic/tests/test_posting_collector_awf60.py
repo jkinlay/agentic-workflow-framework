@@ -129,6 +129,26 @@ class PostingCollectorTests(Fixture):
         )
         return registrations, registry
 
+    def _terminal_fragment_fixture(self):
+        terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
+        fragment = f"review-verdict-{terminal['round']}-{terminal['record_id']}"
+        pr_suffix = f"pulls/{self.bundle['candidate']['pr_number']}"
+        body = self.host.responses[pr_suffix]["body"]
+        anchor = f'<a id="{fragment}"></a>'
+        self.assertIn(anchor, body)
+        return pr_suffix, body, anchor, fragment
+
+    def _assert_fragment_markup_rejected(self, markup):
+        pr_suffix, body, anchor, _fragment = self._terminal_fragment_fixture()
+        self.host.responses[pr_suffix]["body"] = body.replace(anchor, markup)
+        try:
+            with self.assertRaisesRegex(
+                PostingCollectorMismatch, "POSTING_ANCHOR_MISMATCH"
+            ):
+                self._install_runtime_observations()
+        finally:
+            self.host.responses[pr_suffix]["body"] = body
+
     def test_ac1_live_observation_and_runtime_registry_reach_owner_authorization(self):
         registrations, registry = self._install_runtime_observations()
         gate = evaluate(
@@ -225,6 +245,91 @@ class PostingCollectorTests(Fixture):
                     self._install_runtime_observations()
 
         self.host.responses[pr_suffix]["body"] = original
+
+    def test_a1_backtick_and_tilde_fences_do_not_define_target_fragment(self):
+        _pr_suffix, _body, anchor, _fragment = self._terminal_fragment_fixture()
+        cases = {
+            "top-level backticks": f"```html\n{anchor}\n```",
+            "top-level tildes": f"~~~html\n{anchor}\n~~~",
+            "list-item backticks": f"- ```html\n  {anchor}\n  ```",
+            "list-item tildes": f"- ~~~html\n  {anchor}\n  ~~~",
+            "blockquote backticks": f"> ```html\n> {anchor}\n> ```",
+            "blockquote tildes": f"> ~~~html\n> {anchor}\n> ~~~",
+        }
+
+        for label, markup in cases.items():
+            with self.subTest(label=label):
+                self._assert_fragment_markup_rejected(markup)
+
+    def test_a2_closed_html_comment_does_not_define_target_fragment(self):
+        _pr_suffix, _body, anchor, _fragment = self._terminal_fragment_fixture()
+        self._assert_fragment_markup_rejected(f"<!--\n{anchor}\n-->")
+
+    def test_a3_unclosed_html_comment_hides_everything_after_it(self):
+        _pr_suffix, _body, anchor, _fragment = self._terminal_fragment_fixture()
+        self._assert_fragment_markup_rejected(f"<!-- unclosed\n{anchor}")
+
+    def test_a4_ambiguous_markdown_and_html_fail_closed(self):
+        _pr_suffix, _body, anchor, fragment = self._terminal_fragment_fixture()
+        cases = {
+            "list item": f"- {anchor}",
+            "blockquote": f"> {anchor}",
+            "raw HTML block": f"<div>\n{anchor}\n</div>",
+            "quoted greater-than": (
+                f'<a id="{fragment}" title="ambiguous > delimiter"></a>'
+            ),
+            "unclosed fence after anchor": f"{anchor}\n```html\nunclosed",
+            "short fence closer after anchor": f"{anchor}\n````html\ncode\n```",
+            "mismatched fence after anchor": f"{anchor}\n```html\ncode\n~~~",
+        }
+
+        for label, markup in cases.items():
+            with self.subTest(label=label):
+                self._assert_fragment_markup_rejected(markup)
+
+    def test_a4_plain_atx_heading_defines_target_fragment(self):
+        pr_suffix, body, anchor, fragment = self._terminal_fragment_fixture()
+        self.host.responses[pr_suffix]["body"] = body.replace(
+            anchor, f"# {fragment}"
+        )
+        registrations, registry = self._install_runtime_observations()
+        self.assertTrue(registrations)
+        self.assertIn(COLLECTOR_ID, registry)
+
+    def test_b1_backslash_escaped_anchor_does_not_define_target_fragment(self):
+        _pr_suffix, _body, anchor, _fragment = self._terminal_fragment_fixture()
+        self._assert_fragment_markup_rejected("\\" + anchor)
+
+    def test_b2_non_rendering_element_contents_do_not_define_target_fragment(self):
+        _pr_suffix, _body, anchor, _fragment = self._terminal_fragment_fixture()
+        for element in (
+            "script", "style", "textarea", "template", "title", "xmp", "pre", "code"
+        ):
+            with self.subTest(element=element):
+                self._assert_fragment_markup_rejected(
+                    f"<{element}>{anchor}</{element}>"
+                )
+
+    def test_b2_non_rendering_tag_id_does_not_define_target_fragment(self):
+        _pr_suffix, _body, _anchor, fragment = self._terminal_fragment_fixture()
+        self._assert_fragment_markup_rejected(
+            f'<script id="{fragment}"></script>'
+        )
+
+    def test_b2_ordinary_rendering_element_id_defines_target_fragment(self):
+        pr_suffix, body, anchor, fragment = self._terminal_fragment_fixture()
+        self.host.responses[pr_suffix]["body"] = body.replace(
+            anchor, f'<span id="{fragment}"></span>'
+        )
+        registrations, registry = self._install_runtime_observations()
+        self.assertTrue(registrations)
+        self.assertIn(COLLECTOR_ID, registry)
+
+    def test_b3_entity_encoded_anchor_does_not_define_target_fragment(self):
+        _pr_suffix, _body, _anchor, fragment = self._terminal_fragment_fixture()
+        self._assert_fragment_markup_rejected(
+            f'&lt;a id=&quot;{fragment}&quot;&gt;&lt;/a&gt;'
+        )
 
     def test_malformed_nested_pull_response_is_structured_mismatch(self):
         pr_suffix = f"pulls/{self.bundle['candidate']['pr_number']}"
