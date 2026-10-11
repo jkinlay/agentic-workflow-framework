@@ -11,6 +11,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.child_process import child_env  # noqa: E402
+from agentic.publication import scan_repository  # noqa: E402
 
 FIXTURES = ROOT / ".agentic/tests/fixtures/upgrades/versions.json"
 
@@ -140,6 +141,52 @@ class AutocrlfScopeTests(unittest.TestCase):
                                         cwd=clone, check=False)
                 self.assertEqual(1, clone_setting.returncode)
                 self.assertEqual(global_before, global_config.read_bytes())
+
+
+class WindowsLauncherPublicationTests(unittest.TestCase):
+    def test_scratch_root_default_is_derived_from_system_temp(self):
+        script = (ROOT / "tools/windows/Invoke-AC42.ps1").read_text(encoding="utf-8")
+        param_block = script.split("param(", 1)[1].split("\n)", 1)[0]
+        scratch_parameters = [line.strip() for line in param_block.splitlines()
+                              if "$ScratchRoot" in line]
+        self.assertEqual(scratch_parameters, [
+            '[string]$ScratchRoot = (Join-Path ([System.IO.Path]::GetTempPath()) '
+            '"awf-ac42-scratch"),'
+        ])
+
+    def test_merged_tree_ac42_files_have_no_publication_findings(self):
+        paths = ("scripts/ac42_e2e.py", "tools/windows/Invoke-AC42.ps1")
+
+        def git(repository, *arguments):
+            return subprocess.run(
+                ["git", "-c", "core.autocrlf=false", "-c", "user.name=fixture",
+                 "-c", "user.email=fixture@example.invalid", "-C", str(repository), *arguments],
+                check=True, capture_output=True, env=child_env(os.environ),
+            ).stdout
+
+        with tempfile.TemporaryDirectory(prefix="awf-ac42-publication-") as raw:
+            repository = Path(raw) / "repository"
+            repository.mkdir()
+            git(repository, "init", "-q", "-b", "main")
+            for relative in paths:
+                destination = repository / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text("neutral fixture\n", encoding="utf-8", newline="\n")
+            git(repository, "add", "--", *paths)
+            git(repository, "commit", "-q", "-m", "base")
+            base = git(repository, "rev-parse", "HEAD").decode("ascii").strip()
+
+            # Scan the exact source blobs in this checkout's merged tree. Deleted
+            # base-side diff lines are intentionally absent from these blobs.
+            for relative in paths:
+                (repository / relative).write_bytes(git(ROOT, "show", f"HEAD:{relative}"))
+            git(repository, "add", "--", *paths)
+            git(repository, "commit", "-q", "-m", "candidate")
+
+            result = scan_repository(repository, base, "HEAD")
+            self.assertEqual(result["status"], "PASS", result)
+            self.assertEqual(result["unscanned_count"], 0, result)
+            self.assertEqual(result["findings"], [], result)
 
 
 if __name__ == "__main__":
