@@ -23,6 +23,7 @@ from .canonical import canonical, fingerprint, now_text, timestamp
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 PATCH_ID = re.compile(r"^[0-9a-f]{40,64}$")
+DIGEST = re.compile(r"^[0-9a-f]{64}$")
 INTEGRATION_PREFIX = "awf/int/"
 DEFAULTS = {"mode": "serial", "test_command": None,
             "stall_after_hours": 24, "max_stack_depth": 2}
@@ -63,26 +64,97 @@ def _paths(values, label):
     return sorted(values)
 
 
-def _owner_instruction(value, action, epic):
+def _owner_instruction(value, action, epic, payload):
     if not isinstance(value, dict):
         raise ValidationError(f"{action} requires a recorded owner instruction")
-    required = {"instruction_id", "owner_actor_id", "action", "epic", "issued_at"}
+    required = {"instruction_id", "owner_actor_id", "producer_id", "source_event_id",
+                "action", "epic", "payload", "issued_at"}
     if set(value) != required:
         raise ValidationError("owner instruction fields differ from the closed record shape")
     _identifier(value["instruction_id"], "instruction_id")
     _identifier(value["owner_actor_id"], "owner_actor_id")
+    _identifier(value["producer_id"], "producer_id")
+    _identifier(value["source_event_id"], "source_event_id")
     timestamp(value["issued_at"])
-    if value["action"] != action or value["epic"] != epic:
-        raise ValidationError("owner instruction does not match the requested action and epic")
+    if value["action"] != action or value["epic"] != epic or value["payload"] != payload:
+        raise ValidationError("owner instruction does not match the requested action, epic, and payload")
     return deepcopy(value)
 
 
-def resolve_mode(config=None, owner_instruction=None, app_binding=None):
+def _reviewed_config_provenance(value):
+    fields = {"source", "config_path", "config_sha256", "review_record_id",
+              "reviewed_at", "producer_id"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValidationError("reviewed configuration provenance has a non-closed shape")
+    if value["source"] != "reviewed_config":
+        raise ValidationError("epic mode configuration must have reviewed_config provenance")
+    if value["config_path"] != ".agentic/integration-queue-config.yaml":
+        raise ValidationError("epic mode provenance names the wrong configuration path")
+    if not isinstance(value["config_sha256"], str) or not DIGEST.fullmatch(value["config_sha256"]):
+        raise ValidationError("config_sha256 must be lowercase 64-hex")
+    for field in ("review_record_id", "producer_id"):
+        _identifier(value[field], field)
+    timestamp(value["reviewed_at"])
+    return deepcopy(value)
+
+
+def _mode_record(value, epic=None):
+    fields = {"mode", "test_command", "stall_after_hours", "max_stack_depth",
+              "epic", "activation", "record_id"}
+    if not isinstance(value, dict) or set(value) != fields or value["mode"] != "epic":
+        raise ValidationError("queue initialization requires a closed accepted epic-mode record")
+    if epic is not None and value["epic"] != epic:
+        raise ValidationError("epic-mode record is bound to another epic")
+    _identifier(value["epic"], "epic")
+    activation = value["activation"]
+    if not isinstance(activation, dict) or set(activation) not in (
+            {"kind", "provenance", "app_binding"},
+            {"kind", "instruction", "app_binding"}):
+        raise ValidationError("epic-mode activation provenance is invalid")
+    if activation["kind"] == "reviewed_config" and "provenance" in activation:
+        _reviewed_config_provenance(activation["provenance"])
+    elif activation["kind"] == "owner_instruction" and "instruction" in activation:
+        settings = {key: value[key] for key in (
+            "test_command", "stall_after_hours", "max_stack_depth")}
+        _owner_instruction(
+            activation["instruction"], "ENABLE_EPIC_MODE", value["epic"], settings)
+    else:
+        raise ValidationError("epic-mode activation provenance is invalid")
+    binding = activation["app_binding"]
+    if not isinstance(binding, dict) or set(binding) not in (
+            {"enforced"}, {"enforced", "check_name", "integration_id",
+                           "required_from_integration_id"}):
+        raise ValidationError("App binding observation has a non-closed shape")
+    if not isinstance(binding["enforced"], bool):
+        raise ValidationError("App binding observation is invalid")
+    if binding["enforced"] and not (
+            binding.get("check_name") == "awf-integration" and
+            isinstance(binding.get("integration_id"), int) and
+            not isinstance(binding.get("integration_id"), bool) and
+            binding["integration_id"] > 0 and
+            binding.get("required_from_integration_id") is True):
+        raise ValidationError("enforced epic mode requires awf-integration from the App integration ID")
+    if value["test_command"] is not None and (
+            not isinstance(value["test_command"], str) or not value["test_command"].strip()):
+        raise ValidationError("integration.test_command must be null or a nonempty string")
+    if value["test_command"] is None:
+        raise ValidationError("epic mode requires a reviewed test_command")
+    for key in ("stall_after_hours", "max_stack_depth"):
+        if isinstance(value[key], bool) or not isinstance(value[key], int) or value[key] < 1:
+            raise ValidationError(f"integration.{key} must be a positive integer")
+    material = {key: value[key] for key in fields - {"record_id"}}
+    expected = fingerprint("integration_mode", material)
+    if value["record_id"] != expected:
+        raise ValidationError("epic-mode record identity does not match its accepted bytes")
+    return deepcopy(value)
+
+
+def resolve_mode(config=None, owner_instruction=None, app_binding=None, *, epic=None):
     """Resolve serial/epic mode without weakening activation requirements."""
     config = {} if config is None else deepcopy(config)
-    if not isinstance(config, dict) or set(config) - set(DEFAULTS):
+    if not isinstance(config, dict) or set(config) - (set(DEFAULTS) | {"provenance"}):
         raise ValidationError("integration configuration has unknown fields")
-    effective = {**DEFAULTS, **config}
+    effective = {**DEFAULTS, **{key: value for key, value in config.items() if key in DEFAULTS}}
     if owner_instruction is not None:
         effective["mode"] = "epic"
     if effective["mode"] not in {"serial", "epic"}:
@@ -98,21 +170,35 @@ def resolve_mode(config=None, owner_instruction=None, app_binding=None):
         instructed = owner_instruction is not None
         if not configured and not instructed:
             raise ValidationError("epic mode requires reviewed configuration or an owner instruction")
+        if not isinstance(epic, str) or not epic:
+            raise ValidationError("epic mode resolution requires the target epic")
+        if effective["test_command"] is None:
+            raise ValidationError("epic mode requires a reviewed or owner-directed test_command")
         if instructed:
-            if not isinstance(owner_instruction, dict) or owner_instruction.get("action") != "ENABLE_EPIC_MODE":
-                raise ValidationError("epic-mode owner instruction is invalid")
-            for field in ("instruction_id", "owner_actor_id", "epic", "issued_at"):
-                if field not in owner_instruction:
-                    raise ValidationError(f"epic-mode owner instruction lacks {field}")
-            timestamp(owner_instruction["issued_at"])
-        binding = app_binding or {"enforced": False}
-        if not isinstance(binding, dict) or not isinstance(binding.get("enforced"), bool):
+            settings = {key: effective[key] for key in (
+                "test_command", "stall_after_hours", "max_stack_depth")}
+            activation = {"kind": "owner_instruction", "instruction":
+                          _owner_instruction(owner_instruction, "ENABLE_EPIC_MODE", epic, settings)}
+        else:
+            activation = {"kind": "reviewed_config", "provenance":
+                          _reviewed_config_provenance(config.get("provenance"))}
+        binding = deepcopy(app_binding or {"enforced": False})
+        if not isinstance(binding, dict) or set(binding) not in (
+                {"enforced"}, {"enforced", "check_name", "integration_id",
+                               "required_from_integration_id"}):
+            raise ValidationError("App binding observation has a non-closed shape")
+        if not isinstance(binding.get("enforced"), bool):
             raise ValidationError("App binding observation is invalid")
         if binding["enforced"] and not (
                 binding.get("check_name") == "awf-integration" and
-                isinstance(binding.get("integration_id"), int) and binding["integration_id"] > 0 and
+                isinstance(binding.get("integration_id"), int) and
+                not isinstance(binding.get("integration_id"), bool) and
+                binding["integration_id"] > 0 and
                 binding.get("required_from_integration_id") is True):
             raise ValidationError("enforced epic mode requires awf-integration from the App integration ID")
+        activation["app_binding"] = binding
+        material = {**effective, "epic": epic, "activation": activation}
+        return {**material, "record_id": fingerprint("integration_mode", material)}
     return effective
 
 
@@ -121,7 +207,7 @@ def entry_identity(epic, entry):
         "epic": epic, "pr_number": entry["pr_number"], "head_sha": entry["head_sha"]})
 
 
-def validate_entry(entry, existing=()):
+def validate_entry(entry, existing=(), target_branch=None):
     required = {"pr_number", "ticket", "head_sha", "branch", "base_branch", "depends_on",
                 "validated_at", "reviewed_paths", "own_commits", "patch_id"}
     if not isinstance(entry, dict) or set(entry) != required:
@@ -157,6 +243,8 @@ def validate_entry(entry, existing=()):
                        if candidate["pr_number"] == item["depends_on"][-1])
         if item["base_branch"] != primary["branch"]:
             raise ValidationError("a stacked PR must target its last dependency's branch")
+    elif target_branch is not None and item["base_branch"] != target_branch:
+        raise ValidationError("an independent PR must target the epic target branch")
     return item
 
 
@@ -176,6 +264,13 @@ def verify_own_commits(entry, observed_diff_commits, other_entries=()):
     return {"status": "PASS", "pr_number": entry["pr_number"], "commits": list(expected)}
 
 
+def build_input_id(epic, target_sha, entries, test_command):
+    return fingerprint("integration_build_input", {
+        "epic": epic, "target_sha": target_sha,
+        "entries": [[item["pr_number"], item["head_sha"]] for item in entries],
+        "test_command": test_command})
+
+
 def build_record(epic, target_sha, entries, outcome, reason, generation):
     """Create the immutable record for one provider-executed deterministic build."""
     _identifier(epic, "epic")
@@ -183,40 +278,113 @@ def build_record(epic, target_sha, entries, outcome, reason, generation):
     if not isinstance(generation, int) or generation < 1:
         raise ValidationError("generation must be a positive integer")
     _identifier(reason, "build reason")
-    required = {"result_commit_sha", "result_tree_sha", "test_command", "prefix_results"}
+    required = {"input_id", "result_commit_sha", "result_tree_sha", "test_command",
+                "construction", "prefix_results", "observation"}
     if not isinstance(outcome, dict) or set(outcome) != required:
         raise ValidationError("build outcome fields differ from the closed record shape")
     _sha(outcome["result_commit_sha"], "result_commit_sha")
     _sha(outcome["result_tree_sha"], "result_tree_sha")
     _identifier(outcome["test_command"], "test_command")
+    expected_input = build_input_id(epic, target_sha, entries, outcome["test_command"])
+    if outcome["input_id"] != expected_input:
+        raise ValidationError("build observation is not bound to the target, ordered heads, and test command")
+    observation = outcome["observation"]
+    observation_fields = {"observation_id", "producer_id", "observed_at", "input_id",
+                          "result_id"}
+    if not isinstance(observation, dict) or set(observation) != observation_fields:
+        raise ValidationError("build observation provenance has a non-closed shape")
+    for field in ("observation_id", "producer_id"):
+        _identifier(observation[field], field)
+    timestamp(observation["observed_at"])
+    if observation["input_id"] != expected_input:
+        raise ValidationError("build producer observed a different input")
+    construction = outcome["construction"]
+    if not isinstance(construction, list) or len(construction) != len(entries):
+        raise ValidationError("build construction must resolve every ordered head")
+    prior = target_sha
+    construction_normalized = []
+    for index, (step, item) in enumerate(zip(construction, entries), 1):
+        fields = {"length", "base_commit_sha", "head_sha", "parents",
+                  "result_commit_sha", "result_tree_sha"}
+        if not isinstance(step, dict) or set(step) != fields or step["length"] != index:
+            raise ValidationError("build construction steps are not closed and ordered")
+        for field in ("base_commit_sha", "head_sha", "result_commit_sha", "result_tree_sha"):
+            _sha(step[field], field)
+        if step["base_commit_sha"] != prior or step["head_sha"] != item["head_sha"]:
+            raise ValidationError("build construction does not apply ordered heads from the target")
+        if step["parents"] != [prior, item["head_sha"]]:
+            raise ValidationError("constructed merge commit parents do not match base then ordered head")
+        prior = step["result_commit_sha"]
+        construction_normalized.append(deepcopy(step))
+    expected_commit = prior
+    if outcome["result_commit_sha"] != expected_commit:
+        raise ValidationError("result_commit_sha is not the resolved ordered construction result")
+    if construction and outcome["result_tree_sha"] != construction[-1]["result_tree_sha"]:
+        raise ValidationError("result_tree_sha is not the resolved ordered construction tree")
+    if not construction and outcome["result_commit_sha"] != target_sha:
+        raise ValidationError("an empty queue build must resolve to the target commit")
     prefixes = outcome["prefix_results"]
     if not isinstance(prefixes, list) or len(prefixes) != len(entries):
         raise ValidationError("a build must record one ordered test result per queue prefix")
     normalized = []
     failed = False
     for index, result in enumerate(prefixes, 1):
-        if not isinstance(result, dict) or set(result) != {"length", "passed", "result_digest"}:
+        result_fields = {"length", "commit_sha", "tree_sha", "passed", "result_digest"}
+        if not isinstance(result, dict) or set(result) != result_fields:
             raise ValidationError("prefix result fields differ from the closed record shape")
         if result["length"] != index or not isinstance(result["passed"], bool):
             raise ValidationError("prefix results must be complete and ordered")
         _identifier(result["result_digest"], "result_digest")
+        _sha(result["commit_sha"], "prefix commit_sha")
+        _sha(result["tree_sha"], "prefix tree_sha")
+        step = construction[index - 1]
+        if (result["commit_sha"] != step["result_commit_sha"] or
+                result["tree_sha"] != step["result_tree_sha"]):
+            raise ValidationError("prefix test result is not bound to its constructed commit and tree")
         if failed and result["passed"]:
             raise ValidationError("a later prefix cannot pass after the first failing prefix")
         failed = failed or not result["passed"]
         normalized.append(deepcopy(result))
     pairs = [[item["pr_number"], item["head_sha"]] for item in entries]
-    material = {"epic": epic, "target_sha": target_sha, "entries": pairs,
+    deterministic_result = {"input_id": expected_input,
                 "result_commit_sha": outcome["result_commit_sha"],
                 "result_tree_sha": outcome["result_tree_sha"],
-                "test_command": outcome["test_command"], "prefix_results": normalized,
+                "construction": construction_normalized, "prefix_results": normalized}
+    result_id = fingerprint("integration_build_result", deterministic_result)
+    if observation["result_id"] != result_id:
+        raise ValidationError("build observation is not bound to the deterministic result")
+    observation_material = {key: item for key, item in observation.items()
+                            if key != "observation_id"}
+    if observation["observation_id"] != fingerprint(
+            "integration_build_observation", observation_material):
+        raise ValidationError("build observation identity does not match its closed bytes")
+    material = {"epic": epic, "target_sha": target_sha, "entries": pairs,
+                "input_id": expected_input,
+                "result_id": result_id,
+                **deterministic_result, "observation": deepcopy(observation),
+                "test_command": outcome["test_command"],
                 "reason": reason, "generation": generation}
-    return {"build_id": fingerprint("integration_build", material), **material,
+    return {"build_id": expected_input, **material,
             "green": all(result["passed"] for result in normalized)}
 
 
-def delta_review_requirement(reviewed_paths, intervening_paths, *, delta_review=None):
+def delta_review_requirement(reviewed_paths, intervening_merges, *, head_sha, review_base_sha,
+                             target_sha, build_id, delta_review=None):
     reviewed = set(_paths(reviewed_paths, "reviewed_paths"))
-    intervening = set(_paths(intervening_paths, "intervening_paths"))
+    for value, label in ((head_sha, "head_sha"), (review_base_sha, "review_base_sha"),
+                         (target_sha, "target_sha")):
+        _sha(value, label)
+    _identifier(build_id, "build_id")
+    if not isinstance(intervening_merges, list):
+        raise ValidationError("intervening_merges must be a list")
+    normalized_merges, intervening = [], set()
+    for merge in intervening_merges:
+        if not isinstance(merge, dict) or set(merge) != {"merge_commit_sha", "paths"}:
+            raise ValidationError("intervening merge fields differ from the closed shape")
+        _sha(merge["merge_commit_sha"], "intervening merge_commit_sha")
+        paths = _paths(merge["paths"], "intervening paths")
+        normalized_merges.append({"merge_commit_sha": merge["merge_commit_sha"], "paths": paths})
+        intervening.update(paths)
     overlap = sorted(reviewed & intervening)
     required = bool(overlap)
     satisfied = not required
@@ -224,23 +392,99 @@ def delta_review_requirement(reviewed_paths, intervening_paths, *, delta_review=
     if delta_review is not None:
         if not required:
             raise ValidationError("delta review supplied without path overlap")
-        fields = {"status", "run_id", "head_sha", "code_change_required"}
+        fields = {"status", "run_id", "producer_id", "head_sha", "review_base_sha",
+                  "target_sha", "build_id", "intervening_digest", "diff_digest",
+                  "code_change_required", "reviewed_at"}
         if not isinstance(delta_review, dict) or set(delta_review) != fields:
             raise ValidationError("delta review fields differ from the closed record shape")
         if delta_review["status"] not in {"PASS", "FINDING"}:
             raise ValidationError("delta review status must be PASS or FINDING")
         _identifier(delta_review["run_id"], "delta review run_id")
+        _identifier(delta_review["producer_id"], "delta review producer_id")
         _sha(delta_review["head_sha"], "delta review head_sha")
+        _sha(delta_review["review_base_sha"], "delta review review_base_sha")
+        _sha(delta_review["target_sha"], "delta review target_sha")
+        _identifier(delta_review["build_id"], "delta review build_id")
+        for field in ("intervening_digest", "diff_digest"):
+            if not isinstance(delta_review[field], str) or not DIGEST.fullmatch(delta_review[field]):
+                raise ValidationError(f"delta review {field} must be lowercase 64-hex")
+        timestamp(delta_review["reviewed_at"])
         if not isinstance(delta_review["code_change_required"], bool):
             raise ValidationError("code_change_required must be boolean")
-        satisfied = delta_review["status"] == "PASS" and not delta_review["code_change_required"]
+        expected_intervening = fingerprint("integration_intervening", normalized_merges)
+        context_matches = (delta_review["head_sha"] == head_sha and
+            delta_review["review_base_sha"] == review_base_sha and
+            delta_review["target_sha"] == target_sha and delta_review["build_id"] == build_id and
+            delta_review["intervening_digest"] == expected_intervening)
+        satisfied = (context_matches and delta_review["status"] == "PASS" and
+                     not delta_review["code_change_required"])
         uses_round = delta_review["code_change_required"]
     return {"required": required, "overlap_paths": overlap, "satisfied": satisfied,
             "consumes_run": required, "consumes_round": uses_round,
-            "head_sha": None if delta_review is None else delta_review["head_sha"]}
+            "head_sha": head_sha, "review_base_sha": review_base_sha, "target_sha": target_sha,
+            "build_id": build_id,
+            "intervening_digest": fingerprint("integration_intervening", normalized_merges),
+            "diff_digest": None if delta_review is None else delta_review["diff_digest"]}
 
 
-def integration_status(state, pr_number, review, final_gate, authorization, delta):
+def _readiness_evidence(kind, value, exact, *, now, review_id=None, gate=None):
+    common = {"kind", "record_id", "producer_id", "run_id", "pr_number", "head_sha",
+              "target_sha", "created_at"}
+    fields = {
+        "review": common | {"conclusion", "closed", "result_digest"},
+        "final_gate": common | {"conclusion", "review_record_id", "gate_hash",
+                                "expires_at", "execution_authority"},
+        "owner_authorization": common | {"decision", "gate_id", "gate_hash", "source",
+                                         "expires_at",
+                                         "execution_authority"},
+    }[kind]
+    if not isinstance(value, dict) or set(value) != fields or value.get("kind") != kind:
+        raise ValidationError(f"{kind} evidence has a non-closed or incorrect record shape")
+    for field in ("record_id", "producer_id", "run_id"):
+        _identifier(value[field], f"{kind} {field}")
+    timestamp(value["created_at"])
+    if any(value.get(key) != expected for key, expected in exact.items()):
+        raise ValidationError(f"{kind} evidence is not exact-tuple bound")
+    if kind == "review":
+        if value["conclusion"] != "APPROVE" or value["closed"] is not True:
+            raise ValidationError("review evidence is not a closed approval")
+        if not isinstance(value["result_digest"], str) or not DIGEST.fullmatch(value["result_digest"]):
+            raise ValidationError("review result_digest must be lowercase 64-hex")
+    elif kind == "final_gate":
+        if (value["conclusion"] != "READY_FOR_OWNER_AUTHORIZATION" or
+                value["execution_authority"] is not False or
+                value["review_record_id"] != review_id):
+            raise ValidationError("final gate is not closed over the accepted review")
+        gate_material = {key: item for key, item in value.items()
+                         if key not in {"record_id", "gate_hash"}}
+        if value["gate_hash"] != fingerprint("integration_gate", gate_material):
+            raise ValidationError("final gate hash does not identify the closed gate record")
+        if timestamp(value["expires_at"]) <= timestamp(now):
+            raise ValidationError("final gate evidence is expired")
+    else:
+        if (value["decision"] != "AUTHORIZE" or value["execution_authority"] is not False or
+                value["gate_id"] != gate["record_id"] or value["gate_hash"] != gate["gate_hash"]):
+            raise ValidationError("owner authorization is not bound to the accepted final gate")
+        source = value["source"]
+        source_fields = {"channel", "event_id", "actor_id", "raw_body_sha256", "authenticated"}
+        if (not isinstance(source, dict) or set(source) != source_fields or
+                source["channel"] != "github_pr_comment" or source["authenticated"] is not True or
+                isinstance(source["actor_id"], bool) or not isinstance(source["actor_id"], int) or
+                source["actor_id"] < 1):
+            raise ValidationError("owner authorization lacks authenticated source provenance")
+        _identifier(source["event_id"], "owner authorization source event_id")
+        if not isinstance(source["raw_body_sha256"], str) or not DIGEST.fullmatch(
+                source["raw_body_sha256"]):
+            raise ValidationError("owner authorization raw_body_sha256 must be lowercase 64-hex")
+        if timestamp(value["expires_at"]) <= timestamp(now):
+            raise ValidationError("owner authorization is expired")
+    identity_material = {key: item for key, item in value.items() if key != "record_id"}
+    if value["record_id"] != fingerprint(f"integration_{kind}_record", identity_material):
+        raise ValidationError(f"{kind} record identity does not match its closed bytes")
+    return value
+
+
+def integration_status(state, pr_number, review, final_gate, authorization, delta, *, now=None):
     """Enforce front-only readiness and the exact reviewed tuple."""
     _pr(pr_number)
     entries = state.get("entries", [])
@@ -255,17 +499,29 @@ def integration_status(state, pr_number, review, final_gate, authorization, delt
     if (not isinstance(build, dict) or build.get("target_sha") != state.get("target_sha") or
             build.get("entries", [None])[0] != [pr_number, item["head_sha"]] or not build.get("green")):
         return {"status": "pending", "reason": "no green current-target build starts with the exact PR/head"}
+    now = now or now_text()
+    timestamp(now)
     exact = {"pr_number": pr_number, "head_sha": item["head_sha"],
              "target_sha": state["target_sha"]}
-    for label, evidence in (("review", review), ("final gate", final_gate),
-                            ("owner authorization", authorization)):
-        if not isinstance(evidence, dict) or evidence.get("valid") is not True or any(
-                evidence.get(key) != value for key, value in exact.items()):
-            return {"status": "pending", "reason": f"{label} is absent, invalid, or not exact-tuple bound"}
+    try:
+        accepted_review = _readiness_evidence("review", review, exact, now=now)
+        accepted_gate = _readiness_evidence(
+            "final_gate", final_gate, exact, now=now, review_id=accepted_review["record_id"])
+        _readiness_evidence(
+            "owner_authorization", authorization, exact, now=now, gate=accepted_gate)
+    except ValidationError as exc:
+        return {"status": "pending", "reason": str(exc)}
     if not isinstance(delta, dict) or delta.get("satisfied") is not True:
         return {"status": "pending", "reason": "required path-overlap delta review is not satisfied"}
-    if delta.get("required") is True and delta.get("head_sha") != item["head_sha"]:
-        return {"status": "pending", "reason": "delta review is not bound to the exact reviewed head"}
+    delta_exact = {"head_sha": item["head_sha"], "target_sha": state["target_sha"],
+                   "build_id": build["build_id"]}
+    if any(delta.get(key) != value for key, value in delta_exact.items()):
+        return {"status": "pending", "reason": "delta review is not bound to the current head, target, and build"}
+    if delta.get("required") is True and (
+            not isinstance(delta.get("review_base_sha"), str) or
+            not isinstance(delta.get("intervening_digest"), str) or
+            not isinstance(delta.get("diff_digest"), str)):
+        return {"status": "pending", "reason": "delta review lacks replay-resistant context bindings"}
     return {"status": "success", "reason": "front entry has current exact-tuple evidence",
             "build_id": build["build_id"], **exact, "merge_method": "merge",
             "merge_source_branch": item["branch"],
@@ -305,6 +561,10 @@ class IntegrationQueueStore:
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     epic TEXT NOT NULL,
                     event_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS consumed_instructions (
+                    instruction_id TEXT PRIMARY KEY,
+                    epic TEXT NOT NULL
                 );
             """)
 
@@ -352,15 +612,16 @@ class IntegrationQueueStore:
         _identifier(epic, "epic")
         _identifier(target_branch, "target_branch")
         _sha(target_sha, "target_sha")
-        if not isinstance(mode_record, dict) or mode_record.get("mode") != "epic":
-            raise ValidationError("queue initialization requires an accepted epic-mode record")
+        mode_record = _mode_record(mode_record, epic)
         observed_at = observed_at or now_text()
         timestamp(observed_at)
         state = {"format": "awf-integration-queue-1", "epic": epic,
                  "target_branch": target_branch, "target_sha": target_sha,
                  "integration_branch": INTEGRATION_PREFIX + epic.lower(), "entries": [],
                  "current_build": None, "generation": 0, "revision": 0,
-                 "closed": False, "mode_record": deepcopy(mode_record), "last_event_id": None}
+                 "closed": False, "mode_record": mode_record, "last_event_id": None,
+                 "front_since": None, "consumed_instruction_ids": [],
+                 "observed_commits": {}, "build_results": {}}
         with closing(self._connect()) as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
@@ -395,10 +656,59 @@ class IntegrationQueueStore:
         if state["closed"]:
             raise ValidationError("integration epic is closed")
 
+    @staticmethod
+    def _front_key(state):
+        return None if not state["entries"] else [state["entries"][0]["pr_number"],
+                                                   state["entries"][0]["head_sha"]]
+
+    @classmethod
+    def _refresh_front_since(cls, state, previous_front, observed_at):
+        current = cls._front_key(state)
+        if current is None:
+            state["front_since"] = None
+        elif current != previous_front:
+            timestamp(observed_at)
+            state["front_since"] = observed_at
+
+    @staticmethod
+    def _consume_instruction(connection, state, instruction):
+        identifier = instruction["instruction_id"]
+        if identifier in state["consumed_instruction_ids"]:
+            raise ValidationError("owner instruction has already been consumed")
+        try:
+            connection.execute(
+                "INSERT INTO consumed_instructions(instruction_id,epic) VALUES (?,?)",
+                (identifier, state["epic"]))
+        except sqlite3.IntegrityError as exc:
+            raise ValidationError("owner instruction has already been consumed") from exc
+        state["consumed_instruction_ids"].append(identifier)
+
+    @staticmethod
+    def _record_observed_commits(state, item, observed_diff_commits):
+        verify_own_commits(item, observed_diff_commits)
+        for commit in observed_diff_commits:
+            holder = state["observed_commits"].get(commit)
+            if holder is not None and holder != item["pr_number"]:
+                raise ValidationError("a task commit was already observed on another ticket branch")
+        for commit in observed_diff_commits:
+            state["observed_commits"][commit] = item["pr_number"]
+
     def _install_build(self, connection, state, outcome, reason, observed_at):
+        if not callable(outcome):
+            raise ValidationError(
+                "integration builds require an in-process provider adapter runner; "
+                "caller-supplied outcome documents are not trusted")
+        outcome = outcome(deepcopy(state))
+        if (not isinstance(outcome, dict) or
+                outcome.get("test_command") != state["mode_record"]["test_command"]):
+            raise ValidationError("build observation did not execute the accepted epic test command")
         state["generation"] += 1
         build = build_record(state["epic"], state["target_sha"], state["entries"],
                              outcome, reason, state["generation"])
+        prior_result = state["build_results"].get(build["build_id"])
+        if prior_result is not None and prior_result != build["result_id"]:
+            raise ValidationError("identical integration inputs produced divergent construction or test results")
+        state["build_results"][build["build_id"]] = build["result_id"]
         state["current_build"] = build
         event = self._event(connection, state, "BUILD_RECORDED", build, observed_at)
         return build, event
@@ -408,31 +718,31 @@ class IntegrationQueueStore:
             return None
         failing = next(result["length"] for result in build["prefix_results"]
                        if not result["passed"])
+        previous_front = self._front_key(state)
         ejected = state["entries"].pop(failing - 1)
+        self._refresh_front_since(state, previous_front, observed_at)
         state["current_build"] = None
         self._event(connection, state, "INTEGRATION_FAILED",
                     {"pr_number": ejected["pr_number"], "build_id": build["build_id"],
                      "first_failing_prefix": failing, "return_to": "AMENDMENT"}, observed_at)
         return ejected
 
-    def admit(self, epic, entry, outcome, *, observed_at=None):
+    def admit(self, epic, entry, observed_diff_commits, outcome, *, observed_at=None):
         """Admit and test one head while holding the queue lock."""
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
             self._require_open(state)
-            item = validate_entry(entry, state["entries"])
+            item = validate_entry(entry, state["entries"], state["target_branch"])
             for candidate in state["entries"]:
                 if candidate["pr_number"] == item["pr_number"]:
                     raise ValidationError("PR is already admitted")
                 if candidate["ticket"] == item["ticket"] or candidate["branch"] == item["branch"]:
                     raise ValidationError("ticket and task branch identities must be unique in an epic")
-            verify_own_commits(item, item["own_commits"], state["entries"])
+            self._record_observed_commits(state, item, observed_diff_commits)
             item["entry_id"] = entry_identity(epic, item)
+            previous_front = self._front_key(state)
             state["entries"].append(item)
-            if callable(outcome):
-                # The provider runner receives an immutable snapshot only.  It
-                # executes while BEGIN IMMEDIATE owns the one-at-a-time lock.
-                outcome = outcome(deepcopy(state))
+            self._refresh_front_since(state, previous_front, observed_at)
             build, _ = self._install_build(connection, state, outcome, "ADMISSION", observed_at)
             if build["green"]:
                 kind = "ADMITTED"
@@ -444,6 +754,7 @@ class IntegrationQueueStore:
                 if failure != len(state["entries"]):
                     raise ValidationError("admission build attributes failure before the newly admitted head")
                 state["entries"].pop()
+                self._refresh_front_since(state, previous_front, observed_at)
                 state["current_build"] = None
                 kind = "INTEGRATION_FAILED"
                 detail = {"pr_number": item["pr_number"], "build_id": build["build_id"],
@@ -456,7 +767,7 @@ class IntegrationQueueStore:
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
             self._require_open(state)
-            item = validate_entry(entry, state["entries"])
+            item = validate_entry(entry, state["entries"], state["target_branch"])
             if any(candidate["pr_number"] == item["pr_number"] for candidate in state["entries"]):
                 raise ValidationError("conflicting PR is already admitted")
             detail = {"pr_number": item["pr_number"],
@@ -483,8 +794,11 @@ class IntegrationQueueStore:
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
             self._require_open(state)
-            instruction = _owner_instruction(instruction, "REORDER", epic)
+            instruction = _owner_instruction(instruction, "REORDER", epic, {"order": order})
+            self._consume_instruction(connection, state, instruction)
+            previous_front = self._front_key(state)
             state["entries"] = self._validate_order(state["entries"], order)
+            self._refresh_front_since(state, previous_front, observed_at)
             self._event(connection, state, "OWNER_REORDER", {"instruction": instruction,
                         "order": order}, observed_at)
             build, event = self._install_build(connection, state, outcome, "OWNER_REORDER", observed_at)
@@ -498,13 +812,16 @@ class IntegrationQueueStore:
         _pr(pr_number)
         with self._locked(epic) as (connection, state):
             self._require_open(state)
-            instruction = _owner_instruction(instruction, "SKIP", epic)
+            instruction = _owner_instruction(instruction, "SKIP", epic, {"pr_number": pr_number})
+            self._consume_instruction(connection, state, instruction)
             if any(pr_number in item["depends_on"] for item in state["entries"]):
                 raise ValidationError("cannot skip a PR while an admitted PR depends on it")
             before = len(state["entries"])
+            previous_front = self._front_key(state)
             state["entries"] = [item for item in state["entries"] if item["pr_number"] != pr_number]
             if len(state["entries"]) == before:
                 raise ValidationError("skipped PR is not admitted")
+            self._refresh_front_since(state, previous_front, observed_at)
             self._event(connection, state, "OWNER_SKIP", {"instruction": instruction,
                         "pr_number": pr_number}, observed_at)
             build, event = self._install_build(connection, state, outcome, "OWNER_SKIP", observed_at)
@@ -523,7 +840,9 @@ class IntegrationQueueStore:
             if len(state["entries"]) < 2:
                 raise ValidationError("a stalled front has no independent successor")
             front = state["entries"][0]
-            if current_time - timestamp(front["validated_at"]) <= timedelta(hours=stall_after_hours):
+            if state.get("front_since") is None:
+                raise ValidationError("front entry has no observed front-start time")
+            if current_time - timestamp(state["front_since"]) <= timedelta(hours=stall_after_hours):
                 raise ValidationError("front entry has not reached the stall threshold")
             dependency_closure = {front["pr_number"]}
             for item in state["entries"][1:]:
@@ -535,6 +854,7 @@ class IntegrationQueueStore:
                 raise ValidationError("no independent PR can move ahead of the stalled front")
             candidate = state["entries"].pop(candidate_index)
             state["entries"].insert(0, candidate)
+            state["front_since"] = now
             self._validate_order(state["entries"], [item["pr_number"] for item in state["entries"]])
             notice = {"owner_notification_required": True,
                       "stalled_pr": front["pr_number"], "new_front": candidate["pr_number"]}
@@ -560,7 +880,7 @@ class IntegrationQueueStore:
                     "event": event, "build": build,
                     "ejected_pr": None if ejected is None else ejected["pr_number"]}
 
-    def head_changed(self, epic, replacement, outcome, *, observed_at=None):
+    def head_changed(self, epic, replacement, observed_diff_commits, outcome, *, observed_at=None):
         """Replace one validated head, invalidate old evidence, and rebuild."""
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
@@ -573,14 +893,17 @@ class IntegrationQueueStore:
             if index is None:
                 raise ValidationError("changed PR is not admitted")
             old = state["entries"].pop(index)
-            item = validate_entry(replacement, state["entries"])
+            item = validate_entry(replacement, state["entries"], state["target_branch"])
             if item["head_sha"] == old["head_sha"]:
                 raise ValidationError("head change must supply a new head_sha")
-            if item["depends_on"] != old["depends_on"]:
-                raise ValidationError("a head change cannot silently change dependencies")
-            verify_own_commits(item, item["own_commits"], state["entries"])
+            stable = ("pr_number", "ticket", "branch", "base_branch", "depends_on")
+            if any(item[field] != old[field] for field in stable):
+                raise ValidationError("a head change cannot replace stable ticket, branch, base, or dependency identity")
+            self._record_observed_commits(state, item, observed_diff_commits)
             item["entry_id"] = entry_identity(epic, item)
             state["entries"].insert(index, item)
+            if index == 0:
+                state["front_since"] = observed_at
             self._validate_order(state["entries"],
                                  [candidate["pr_number"] for candidate in state["entries"]])
             self._event(connection, state, "HEAD_CHANGED",
@@ -606,7 +929,9 @@ class IntegrationQueueStore:
                          if item["pr_number"] == pr_number), None)
             if item is None:
                 raise ValidationError("removed PR is not admitted")
+            previous_front = self._front_key(state)
             state["entries"].remove(item)
+            self._refresh_front_since(state, previous_front, observed_at)
             self._event(connection, state, "ENTRY_REMOVED",
                         {"pr_number": pr_number, "reason": reason,
                          "return_to": "AMENDMENT"}, observed_at)
@@ -628,7 +953,9 @@ class IntegrationQueueStore:
             merged = next((item for item in state["entries"] if item["pr_number"] == merged_pr), None)
             if merged is None:
                 raise ValidationError("merged PR is not admitted")
+            previous_front = self._front_key(state)
             state["entries"].remove(merged)
+            self._refresh_front_since(state, previous_front, observed_at)
             decisions = []
             for item in state["entries"]:
                 if merged_pr not in item["depends_on"]:

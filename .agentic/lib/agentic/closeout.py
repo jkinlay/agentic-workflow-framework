@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 
 from . import ValidationError
+from .canonical import fingerprint, timestamp
 from .child_process import child_env, isolated_git_env
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -231,7 +232,8 @@ def render_markdown(record):
     return "\n".join(lines) + "\n"
 
 
-def require_jira_reconciliation_before_counts(closeout_record, *, jira_enabled):
+def require_jira_reconciliation_before_counts(closeout_record, *, jira_enabled,
+                                               jira_reconciliation_record=None):
     """Gate post-merge counts on the controller's observed Jira reconciliation.
 
     This is deliberately a pure hook: it neither writes Jira nor increments a
@@ -242,7 +244,7 @@ def require_jira_reconciliation_before_counts(closeout_record, *, jira_enabled):
         raise ValidationError("jira_enabled must be boolean")
     if not isinstance(closeout_record, dict):
         raise ValidationError("closeout_record must be an object")
-    for field in ("pr_number", "reviewed_head_sha", "merge_commit_sha"):
+    for field in ("ticket", "pr_number", "reviewed_head_sha", "merge_commit_sha"):
         if field not in closeout_record:
             raise ValidationError(f"closeout_record lacks {field}")
     if isinstance(closeout_record["pr_number"], bool) or not isinstance(
@@ -251,10 +253,42 @@ def require_jira_reconciliation_before_counts(closeout_record, *, jira_enabled):
     for field in ("reviewed_head_sha", "merge_commit_sha"):
         if not isinstance(closeout_record[field], str) or not SHA.fullmatch(closeout_record[field]):
             raise ValidationError(f"{field} must be a lowercase 40-hex Git object ID")
+    if not isinstance(closeout_record["ticket"], str) or not closeout_record["ticket"].strip():
+        raise ValidationError("ticket must be a nonempty identifier")
     transition = closeout_record.get("jira_transition_record_id")
-    if jira_enabled and (not isinstance(transition, str) or not transition.strip()):
-        raise ValidationError("post-merge counts require observed JIRA_RECONCILED evidence")
-    if not jira_enabled and transition is not None:
+    if jira_enabled:
+        fields = {"record_id", "event", "ticket", "pr_number", "reviewed_head_sha",
+                  "merge_commit_sha", "transition_status", "read_back", "producer_id",
+                  "observed_at"}
+        if not isinstance(jira_reconciliation_record, dict) or set(jira_reconciliation_record) != fields:
+            raise ValidationError("post-merge counts require a closed JIRA_RECONCILED record")
+        record = jira_reconciliation_record
+        if (not isinstance(transition, str) or not transition.strip() or
+                record["record_id"] != transition):
+            raise ValidationError("closeout does not resolve its JIRA_RECONCILED record")
+        for field in ("record_id", "producer_id"):
+            if not isinstance(record[field], str) or not record[field].strip():
+                raise ValidationError(f"JIRA_RECONCILED {field} must be a nonempty identifier")
+        identity_material = {key: value for key, value in record.items() if key != "record_id"}
+        if record["record_id"] != fingerprint("jira_reconciled", identity_material):
+            raise ValidationError("JIRA_RECONCILED record identity does not match its closed bytes")
+        timestamp(record["observed_at"])
+        exact = {"ticket": closeout_record["ticket"], "pr_number": closeout_record["pr_number"],
+                 "reviewed_head_sha": closeout_record["reviewed_head_sha"],
+                 "merge_commit_sha": closeout_record["merge_commit_sha"]}
+        if record["event"] != "JIRA_RECONCILED" or any(
+                record.get(key) != value for key, value in exact.items()):
+            raise ValidationError("JIRA_RECONCILED record is not bound to the closeout tuple")
+        if record["transition_status"] != "SUCCEEDED":
+            raise ValidationError("JIRA_RECONCILED transition did not succeed")
+        read_back = record["read_back"]
+        if (not isinstance(read_back, dict) or set(read_back) != {
+                "status", "actor_id", "observed_at"} or read_back["status"] != "Done" or
+                not isinstance(read_back["actor_id"], str) or
+                read_back["actor_id"] != record["producer_id"]):
+            raise ValidationError("JIRA_RECONCILED record lacks a successful Done readback")
+        timestamp(read_back["observed_at"])
+    elif transition is not None or jira_reconciliation_record is not None:
         raise ValidationError("disabled Jira cannot claim a transition record")
     return {
         "status": "PASS",

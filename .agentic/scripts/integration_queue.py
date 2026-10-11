@@ -35,6 +35,7 @@ def main(argv=None):
     mode.add_argument("--config", type=Path)
     mode.add_argument("--owner-instruction", type=Path)
     mode.add_argument("--app-binding", type=Path)
+    mode.add_argument("--epic")
 
     for name in ("status", "audit", "close"):
         command = sub.add_parser(name)
@@ -52,6 +53,7 @@ def main(argv=None):
         command.add_argument("--entry", type=Path, required=True)
         if name == "admit":
             command.add_argument("--outcome", type=Path, required=True)
+            command.add_argument("--observed-diff-commits", type=Path, required=True)
         else:
             command.add_argument("--paths", type=Path, required=True)
 
@@ -66,6 +68,7 @@ def main(argv=None):
     head_change.add_argument("--epic", required=True)
     head_change.add_argument("--entry", type=Path, required=True)
     head_change.add_argument("--outcome", type=Path, required=True)
+    head_change.add_argument("--observed-diff-commits", type=Path, required=True)
 
     remove = sub.add_parser("remove")
     remove.add_argument("--epic", required=True)
@@ -106,7 +109,11 @@ def main(argv=None):
 
     delta = sub.add_parser("delta")
     delta.add_argument("--reviewed-paths", type=Path, required=True)
-    delta.add_argument("--intervening-paths", type=Path, required=True)
+    delta.add_argument("--intervening-merges", type=Path, required=True)
+    delta.add_argument("--head-sha", required=True)
+    delta.add_argument("--review-base-sha", required=True)
+    delta.add_argument("--target-sha", required=True)
+    delta.add_argument("--build-id", required=True)
     delta.add_argument("--review", type=Path)
 
     sub.add_parser("steward-policy")
@@ -118,22 +125,31 @@ def main(argv=None):
             result = resolve_mode(
                 load(args.config) if args.config else None,
                 load(args.owner_instruction) if args.owner_instruction else None,
-                load(args.app_binding) if args.app_binding else None)
+                load(args.app_binding) if args.app_binding else None, epic=args.epic)
         elif args.command == "steward-policy":
             result = steward_policy()
         elif args.command == "worker-guidance":
             result = {"guidance": WORKER_GUIDANCE}
         elif args.command == "delta":
             reviewed = load(args.reviewed_paths)
-            intervening = load(args.intervening_paths)
+            intervening = load(args.intervening_merges)
             if not isinstance(reviewed, list) or not isinstance(intervening, list):
                 raise ValidationError("path documents must contain lists")
             result = delta_review_requirement(
-                reviewed, intervening, delta_review=load(args.review) if args.review else None)
+                reviewed, intervening, head_sha=args.head_sha,
+                review_base_sha=args.review_base_sha, target_sha=args.target_sha,
+                build_id=args.build_id,
+                delta_review=load(args.review) if args.review else None)
         else:
             if args.state is None:
                 raise ValidationError("--state is required for queue commands")
             store = IntegrationQueueStore(args.state, worktree_roots=[ROOT])
+            adapter_commands = {"admit", "rebuild", "head-change", "remove",
+                                "reorder", "skip", "stall", "retarget"}
+            if args.command in adapter_commands:
+                raise ValidationError(
+                    "standalone CLI cannot authenticate build outcomes; invoke this operation "
+                    "through an in-process provider adapter runner")
             if args.command == "initialize":
                 result = store.initialize(args.epic, args.target_branch, args.target_sha,
                                           mode_record=_document(args.mode_record, "mode record"))
@@ -142,8 +158,11 @@ def main(argv=None):
             elif args.command == "audit":
                 result = {"events": store.audit(args.epic)}
             elif args.command == "admit":
+                commits = load(args.observed_diff_commits)
+                if not isinstance(commits, list):
+                    raise ValidationError("observed diff commits must contain a list")
                 result = store.admit(args.epic, _document(args.entry, "entry"),
-                                     _document(args.outcome, "outcome"))
+                                     commits, _document(args.outcome, "outcome"))
             elif args.command == "conflict":
                 paths = load(args.paths)
                 if not isinstance(paths, list):
@@ -153,8 +172,11 @@ def main(argv=None):
                 result = store.rebuild(args.epic, args.target_sha,
                                        _document(args.outcome, "outcome"), args.reason)
             elif args.command == "head-change":
+                commits = load(args.observed_diff_commits)
+                if not isinstance(commits, list):
+                    raise ValidationError("observed diff commits must contain a list")
                 result = store.head_changed(args.epic, _document(args.entry, "entry"),
-                                            _document(args.outcome, "outcome"))
+                                            commits, _document(args.outcome, "outcome"))
             elif args.command == "remove":
                 result = store.remove(args.epic, args.pr,
                                       _document(args.outcome, "outcome"), reason=args.reason)
