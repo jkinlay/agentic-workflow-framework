@@ -58,6 +58,15 @@ pushed candidate and exact body. Counts bind their arrays. `PASS` permits only
 `PRE_EXISTING` findings; blocking/unscanned content, inconsistency, or tuple/body
 change invalidates it. Scan prospective comments with `--comment FILE`.
 
+## Draft-to-ready authorization
+
+A publication-scan PASS, current validation or green CI never authorizes a
+draft-state change. Mark-ready requires an explicit owner/manager authorization
+record bound to the exact PR and head. Persist the lifecycle's authorized transition
+record before the provider mutation and observe `draft_cleared` afterward. If
+the authorization is absent, invalid or mismatched, persist the refusal record,
+leave the PR draft and do not dispatch review.
+
 `PRE_EXISTING` applies only here. Private deny baseline acceptance is the
 separate [`37-PRIVATE-DENY-SCAN.md`](37-PRIVATE-DENY-SCAN.md) gate; neither
 receipt waives the other.

@@ -10,7 +10,7 @@ Follow the [lifecycle](../docs/23-TICKET-LIFECYCLE.md): publish branch/draft PR 
 
 Use logical aliases in tracked output. Before either publication route, render the PR body and require `publication-scan` on the exact base/head/body before push or PR creation. It scans every message and each commit's added/deleted lines. `diff --check` is whitespace-only.
 
-After validation, mark ready and observe `draft_cleared` before READY_FOR_CRITIC. Review targets the observed PR head. Owner-ready follows critic, specialists and final gate; never merge from review-ready. Only the controller writes Jira.
+After validation, do not mark ready from validation or green CI alone. Require an explicit owner/manager authorization record bound to the PR and head; log the authorized transition before mutation, or log refusal and preserve draft state if the record is absent, invalid or mismatched. Observe `draft_cleared` only after authorized mutation and before READY_FOR_CRITIC. Review targets the observed PR head. Owner-ready follows critic, specialists and final gate; never merge from review-ready. Only the controller writes Jira.
 
 Use assigned [routing](../docs/27-MODEL-ROUTING.md), floors and budget; the controller owns capacity. Escalation needs an approved route. Preserve uncertain remote operation identity and stop dependent retries pending reconciliation. Mutation or lost ownership pauses affected work.
 
