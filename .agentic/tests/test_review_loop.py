@@ -12,12 +12,14 @@ import unittest
 from unittest.mock import patch
 from jsonschema import Draft202012Validator
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import write_awf_source_fixture  # noqa: E402
+
 from agentic import ValidationError
 from agentic.canonical import now_text, sha256
 from agentic.review_qualification import FORMAT as QUALIFICATION_FORMAT, host_binding_sha256
 from agentic.review_loop import LoopStore, enroll, pause, resume, tick, validate_review
 from agentic.providers.github_review_host import HostDriver, is_source_repository, load_config, protected, reviewed_model_effort_pairs, safe_path
-from source_only import write_awf_source_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 CANDIDATE = {'repository_id':12,'pr':7,'head':'a'*40,'base':'b'*40,'head_ref':'codex/test','base_ref':'main'}
