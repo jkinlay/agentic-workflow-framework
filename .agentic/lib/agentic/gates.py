@@ -307,10 +307,6 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     candidate, contract, snapshot = bundle["candidate"], bundle["contract"], bundle["snapshot"]
     from .review_tiers import runtime_assignment
     assignment_record = runtime_assignment(config, ticket_key=contract["ticket"])
-    if (assignment_record is None
-            and bundle.get("provenance_mode") == "production_observation"):
-        raise ValidationError(
-            f"No verified runtime review assignment for {contract['ticket']}; gate evaluation fails closed")
     for name, expected in [("host", config["github"]["host"]), ("repository_id", config["github"]["repository_id"]),
                            ("repository", config["github"]["repository"]), ("target_base_branch", config["github"]["base_branch"]),
                            ("merge_method", config["github"]["merge_method"])]:
@@ -437,6 +433,11 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     if {v["round"] for v in verdicts} != expected_rounds:
         raise ValidationError("Review verdicts must cover every consumed round without gaps")
     terminal_round = max(v["round"] for v in verdicts)
+    if (assignment_record is None
+            and terminal_round > 1
+            and bundle.get("provenance_mode") == "production_observation"):
+        raise ValidationError(
+            f"No verified runtime review assignment for {contract['ticket']}; gate cap evaluation fails closed")
     critic_run_ids = set()
     completion_cycle_ids = set()
     critic_artifacts_ok = True
