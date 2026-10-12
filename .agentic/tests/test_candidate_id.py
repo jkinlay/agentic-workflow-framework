@@ -7,6 +7,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
+
 from agentic import ValidationError
 from agentic.canonical import candidate_id, load, reject_git_sha_candidate_ids, sha256
 from agentic.contracts import Contracts
