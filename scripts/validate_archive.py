@@ -111,6 +111,34 @@ def installed_stage_python(destination):
     return installed_paths(destination)[1]
 
 
+def evaluation_command(workflow, bundle, config, assignment_state, now):
+    """Build an evaluator invocation with its mandatory persisted assignment."""
+    return [workflow, 'evaluate', bundle, '--config', config,
+            '--assignment-state', assignment_state, '--now', now]
+
+
+def write_evaluation_assignment_state(source, destination, now):
+    """Create the local provisional Tier 2 assignment used by archive evaluation."""
+    from agentic.intake_assignment import assign_intake
+
+    config = json.loads((source / '.agentic/examples/PROJECT_CONFIG.yaml').read_text(encoding='utf-8'))
+    bundle = json.loads((source / '.agentic/examples/evidence-bundle.json').read_text(encoding='utf-8'))
+    config['jira'] = dict(config['jira'])
+    config['jira']['enabled'] = False
+    state = {}
+    assign_intake(
+        config,
+        {'key': bundle['contract']['ticket'], 'summary': 'Moderate archive validation fixture',
+         'description': '', 'write_paths': ['src/archive_validation.py'], 'risk_flags': []},
+        state,
+        None,
+        now=now,
+        controller_actor_id=config['jira']['controller_actor_id'],
+        source='archive-validation',
+    )
+    destination.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+
+
 def assert_bootstrap_checks(report, destination, manifest, *, configured):
     """Inspect evidence from both real installed CLI invocations, not copy status."""
     assert report['status'] == ('CONFIGURED' if configured else 'INSTALLED_UNCONFIGURED')
@@ -303,9 +331,17 @@ def validate(argv=None):
     command([workflow,'verify-installation'],name='Source integrity CLI')
     command([workflow,'validate-config'],code=2,name='Unconfigured project is rejected')
     command([workflow,'validate-config','--config','.agentic/examples/PROJECT_CONFIG.yaml'],name='Fixture configuration CLI')
-    gate = json.loads(command([workflow,'evaluate','.agentic/examples/evidence-bundle.json','--config','.agentic/examples/PROJECT_CONFIG.yaml','--now','2026-09-09T12:00:00Z'],name='Offline evaluator CLI'))
+    evaluation_state = RUN / 'evaluation-assignment-state.json'
+    write_evaluation_assignment_state(SOURCE, evaluation_state, '2026-09-09T11:00:00Z')
+    gate = json.loads(command(evaluation_command(
+        workflow, '.agentic/examples/evidence-bundle.json',
+        '.agentic/examples/PROJECT_CONFIG.yaml', evaluation_state,
+        '2026-09-09T12:00:00Z'), name='Offline evaluator CLI'))
     assert gate['conclusion']=='READY_FOR_OWNER_AUTHORIZATION' and gate['execution_authority'] is False
-    command([workflow,'evaluate','.agentic/examples/evidence-bundle.json','--config','.agentic/examples/PROJECT_CONFIG.yaml','--now','2031-01-01T00:00:00Z'],code=2,name='Stale fixture is rejected')
+    command(evaluation_command(
+        workflow, '.agentic/examples/evidence-bundle.json',
+        '.agentic/examples/PROJECT_CONFIG.yaml', evaluation_state,
+        '2031-01-01T00:00:00Z'), code=2, name='Stale fixture is rejected')
     DEST = RUN / 'project'
     DEST.mkdir()
     (DEST/'README.md').write_bytes(b'Existing project readme\n')
