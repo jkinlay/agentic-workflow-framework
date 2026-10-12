@@ -231,7 +231,7 @@ def _replace_scalar(raw, key, previous, current, *, question):
     if value != previous:
         raise ValidationError(f"Migration is not deterministic. Owner question: {question}")
     token = rb'(?P<quote>["\']?)' + re.escape(previous.encode("ascii")) + rb'(?P=quote)'
-    pattern = re.compile(rb'(?m)^(?P<prefix>[ \t]*(?:["\']?' + re.escape(key.encode("ascii")) + rb'["\']?)[ \t]*:[ \t]*)' + token
+    pattern = re.compile(rb'(?:\A|(?<=[\r\n]))(?P<prefix>[ \t]*(?:["\']?' + re.escape(key.encode("ascii")) + rb'["\']?)[ \t]*:[ \t]*)' + token
                          + rb'(?P<suffix>[ \t]*(?:,[ \t]*)?(?:#[^\r\n]*)?(?:\r\n|\n|\r|$))')
     matches = list(pattern.finditer(raw))
     if len(matches) != 1:
@@ -650,12 +650,17 @@ def _yaml_mapping_value(node, key, yaml):
                  if isinstance(candidate, yaml.ScalarNode) and candidate.value == key), None)
 
 
+def _yaml_line_start(text, index):
+    """Return the start of the CRLF-, LF-, or CR-delimited source line."""
+    return max(text.rfind("\n", 0, index), text.rfind("\r", 0, index)) + 1
+
+
 def _yaml_block_indent(text, node):
     """Return the source indentation of a block mapping's existing entries."""
     if not node.value:
         return node.start_mark.column
     key = node.value[0][0]
-    line_start = text.rfind("\n", 0, key.start_mark.index) + 1
+    line_start = _yaml_line_start(text, key.start_mark.index)
     line = text[line_start:key.start_mark.index]
     return len(line) - len(line.lstrip(" "))
 
@@ -673,7 +678,7 @@ def _yaml_insert_mapping_entry(text, node, flow_entry, block_lines, newline):
 
     indent = _yaml_block_indent(text, node)
     insertion = node.end_mark.index
-    line_start = text.rfind("\n", 0, insertion) + 1
+    line_start = _yaml_line_start(text, insertion)
     if insertion < len(text) and not text[line_start:insertion].strip(" \t"):
         # PyYAML locates the end of a nested block mapping at the first key of
         # its following sibling, after that sibling's indentation.  Insert at
@@ -749,7 +754,7 @@ def review_tier_defaults(config):
     # Re-emitting parsed YAML as JSON loses comments, quoting and scalar style.
     if had_tier3:
         return verified_yaml_output(bytes(config))
-    newline = "\r\n" if "\r\n" in original_text else "\n"
+    newline = "\r\n" if "\r\n" in original_text else "\r" if "\r" in original_text else "\n"
     import yaml
     try:
         root = yaml.compose(original_text)
