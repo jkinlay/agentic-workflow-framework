@@ -626,6 +626,24 @@ class OperatingFileTests(unittest.TestCase):
         self.assertEqual(2, result.count)
         self.assertEqual(raw, (self.root / op.GOVERNANCE).read_bytes())
 
+    def test_lowered_max_lanes_prunes_only_unrepresentable_routes_with_audit(self):
+        expanded = deepcopy(self.gov)
+        expanded["execution"].update(max_parallel_tickets=12, max_lanes=10)
+        (self.root / op.GOVERNANCE).write_bytes(op._json(expanded))
+        high = op.set_operating(self.root, expanded, "use eight streams", ["streams.count=8"])
+        self.assertEqual(tuple("ABCDEFGH"), tuple(key for key in high.config["streams"] if key != "count"))
+
+        reduced = deepcopy(expanded)
+        reduced["execution"]["max_lanes"] = 6
+        (self.root / op.GOVERNANCE).write_bytes(op._json(reduced))
+        repaired = op.set_operating(self.root, reduced, "migrate to the new six-lane ceiling", ["streams.count=6"])
+        self.assertEqual(6, repaired.count)
+        self.assertEqual(set("ABCDEF"), set(repaired.config["streams"]) - {"count"})
+        event = next(item for item in self.events() if item["id"] == repaired.last_change_id)
+        removals = {change["path"]: change for change in event["changes"] if change["after"] is None}
+        self.assertEqual({"streams.G", "streams.H"}, set(removals))
+        self.assertTrue(all(change["before"] == op._stream() for change in removals.values()))
+
     def test_initializing_existing_valid_choices_preserves_raw_bytes(self):
         with tempfile.TemporaryDirectory(prefix="awf-op-existing-") as directory:
             root = Path(directory)

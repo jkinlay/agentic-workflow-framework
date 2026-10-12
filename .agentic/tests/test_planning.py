@@ -87,6 +87,13 @@ class GraphTests(unittest.TestCase):
                 ticket("AWF-2", "b.py", generated_outputs=["out.py"]),
             ], config())
 
+    def test_case_aliased_file_identities_refuse_before_overlap_detection(self):
+        with self.assertRaisesRegex(ValidationError, "case-aliased"):
+            planning.build_backlog_graph([
+                ticket("AWF-1", "src/Foo.py"),
+                ticket("AWF-2", "src/two.py", open_pr_files=["src/foo.py"]),
+            ], config())
+
 
 class LaneTests(unittest.TestCase):
     def test_ready_lanes_are_conflict_free_block_dependents_and_rank_critical_path(self):
@@ -123,6 +130,21 @@ class LaneTests(unittest.TestCase):
         self.assertEqual(10, result["estimate"]["independent_lane_count"])
         self.assertEqual(["cpu", "model_rate"], result["estimate"]["binding_constraints"])
         self.assertEqual(resources["headroom"], result["estimate"]["headroom"])
+
+    def test_estimate_reports_each_governance_constraint_at_its_configured_value(self):
+        cfg = config(max_lanes=10)
+        cfg["execution"]["max_parallel_tickets"] = 12
+        cfg["execution"]["host_broker"] = {"enabled": True, "max_workers": 4}
+        tickets = [ticket(f"AWF-{i}", f"src/{i}.py") for i in range(1, 11)]
+        result = planning.plan_lanes(planning.build_backlog_graph(tickets, cfg), cfg)
+        self.assertEqual({
+            "dependency_graph/file_overlap": 10,
+            "configured_ceiling": 10,
+            "max_parallel_tickets": 12,
+            "host_broker": 4,
+        }, result["estimate"]["constraints"])
+        self.assertEqual(["host_broker"], result["estimate"]["binding_constraints"])
+        self.assertEqual(["$.execution.host_broker.max_workers"], result["estimate"]["governance_sources"])
 
 
 class OwnerOverrideTests(unittest.TestCase):
