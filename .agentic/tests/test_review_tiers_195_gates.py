@@ -330,17 +330,16 @@ class ReviewTiers195GateTests(Fixture):
         with self.assertRaisesRegex(ValidationError, "runtime review assignment"):
             self.gate()
 
-    def test_awf74_first_round_without_assignment_skips_cap_evaluation(self):
+    def test_awf74_first_round_without_assignment_fails_closed(self):
         self.config = copy.deepcopy(self.config0)
         bind_review_admission(self.bundle)
         registry = bind_production_posting_fixture(self.config, self.bundle)
 
-        gate = evaluate(
-            self.config, definition(), self.bundle, self.contracts, NOW,
-            posting_collector_registry=registry,
-        )
-
-        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", gate["conclusion"])
+        with self.assertRaisesRegex(ValidationError, "runtime review assignment"):
+            evaluate(
+                self.config, definition(), self.bundle, self.contracts, NOW,
+                posting_collector_registry=registry,
+            )
 
     def test_awf74_gate_fails_closed_without_runtime_context(self):
         self.config = copy.deepcopy(self.config0)
