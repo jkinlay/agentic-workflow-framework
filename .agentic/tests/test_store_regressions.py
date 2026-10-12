@@ -1,10 +1,14 @@
 """Real SQLite regression coverage for ticket CAS and lease release semantics."""
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 import uuid
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic.canonical import loads

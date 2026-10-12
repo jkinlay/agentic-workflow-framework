@@ -1,6 +1,11 @@
 """Publication preflight fixtures; no network, push, PR, or lifecycle calls."""
 import copy
+from pathlib import Path
+import sys
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic.publication_readiness import (

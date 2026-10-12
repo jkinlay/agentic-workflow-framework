@@ -14,6 +14,9 @@ import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
+
 from agentic import VERSION
 from agentic.canonical import now_text, sha256
 from agentic.review_qualification import host_binding_sha256

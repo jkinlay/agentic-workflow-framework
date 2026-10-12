@@ -1,7 +1,11 @@
 """Configuration errors identify actionable fields without disclosing values."""
 from copy import deepcopy
 from pathlib import Path
+import sys
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic.canonical import load
