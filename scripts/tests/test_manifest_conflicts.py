@@ -100,6 +100,18 @@ class ManifestConflictTests(unittest.TestCase):
             timeout=30,
         )
 
+    def run_checkout_python(self, root, relative, *arguments):
+        environment = self.unconfigured_git_environment()
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        return subprocess.run(
+            [sys.executable, "-B", str(root / relative), *arguments],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+
     def commit(self, root, message):
         self.git(root, "add", ".")
         self.git(root, "commit", "-m", message)
@@ -270,6 +282,98 @@ class ManifestConflictTests(unittest.TestCase):
         ).stdout.decode().splitlines()
         self.assertEqual(["alpha.txt"], unresolved)
 
+    def test_manifest_check_sequence_leaves_no_bytecode_and_rejects_ignored_residue(self):
+        root = self.base / "manifest-check"
+        shutil.copytree(
+            ROOT,
+            root,
+            ignore=shutil.ignore_patterns(
+                ".git", "__pycache__", "*.pyc", ".tmp", "tmp", ".tmp-tests"
+            ),
+        )
+        self.git(root, "init", "-b", "main")
+        self.git(root, "config", "user.name", "Manifest Fixture")
+        self.git(root, "config", "user.email", "manifest@example.invalid")
+        generated = self.run_checkout_python(
+            root, "scripts/build_release.py", "--manifest-only"
+        )
+        self.assertEqual(
+            0,
+            generated.returncode,
+            generated.stdout.decode(errors="replace")
+            + generated.stderr.decode(errors="replace"),
+        )
+        base = self.commit(root, "base")
+
+        self.git(root, "checkout", "-b", "pr", base)
+        (root / "pr-marker.txt").write_text(
+            "added by PR\n", encoding="utf-8", newline="\n"
+        )
+        generated = self.run_checkout_python(
+            root, "scripts/build_release.py", "--manifest-only"
+        )
+        self.assertEqual(
+            0, generated.returncode, generated.stderr.decode(errors="replace")
+        )
+        self.commit(root, "advance PR")
+
+        self.git(root, "checkout", "main")
+        (root / "main-marker.txt").write_text(
+            "added by main\n", encoding="utf-8", newline="\n"
+        )
+        generated = self.run_checkout_python(
+            root, "scripts/build_release.py", "--manifest-only"
+        )
+        self.assertEqual(
+            0, generated.returncode, generated.stderr.decode(errors="replace")
+        )
+        main = self.commit(root, "advance main")
+        self.git(root, "checkout", "pr")
+        self.remove_repository_identity(root)
+
+        merged = self.run_checkout_python(
+            root, "scripts/manifest_merge_driver.py", "--merge-ref", main
+        )
+        self.assertEqual(
+            0,
+            merged.returncode,
+            merged.stdout.decode(errors="replace")
+            + merged.stderr.decode(errors="replace"),
+        )
+        checked = self.run_checkout_python(
+            root, "scripts/build_release.py", "--check-manifest"
+        )
+        self.assertEqual(
+            0,
+            checked.returncode,
+            checked.stdout.decode(errors="replace")
+            + checked.stderr.decode(errors="replace"),
+        )
+        residue = [
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.name == "__pycache__" or path.suffix == ".pyc"
+        ]
+        self.assertEqual([], residue)
+
+        ignored = root / "scripts/__pycache__/ignored.pyc"
+        ignored.parent.mkdir()
+        ignored.write_bytes(b"ignored bytecode residue\n")
+        self.assertEqual(
+            0,
+            self.git(
+                root, "check-ignore", "-q", ignored.relative_to(root).as_posix()
+            ).returncode,
+        )
+        rejected = self.run_checkout_python(
+            root, "scripts/build_release.py", "--check-manifest"
+        )
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn(
+            "Source contains runtime/build residue",
+            rejected.stderr.decode(errors="replace"),
+        )
+
     def test_production_sync_merges_and_pushes_without_repository_config(self):
         root, files, base = self.make_repository(
             "production-sync", configure_driver=False
@@ -346,6 +450,15 @@ class ManifestConflictTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("--push-branch", workflow)
+
+    def test_workflow_disables_bytecode_for_every_python_step(self):
+        workflow = (ROOT / ".github/workflows/manifest-check.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            workflow,
+            r'(?m)^env:\n  PYTHONDONTWRITEBYTECODE: ["\']1["\']$',
+        )
 
     def test_workflow_scopes_matrix_concurrency_to_manifest_job(self):
         workflow = (ROOT / ".github/workflows/manifest-check.yml").read_text(
