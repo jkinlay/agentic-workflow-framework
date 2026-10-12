@@ -47,15 +47,11 @@ def main(argv=None):
     initialize.add_argument("--target-sha", required=True)
     initialize.add_argument("--mode-record", type=Path, required=True)
 
-    for name in ("admit", "conflict"):
-        command = sub.add_parser(name)
-        command.add_argument("--epic", required=True)
-        command.add_argument("--entry", type=Path, required=True)
-        if name == "admit":
-            command.add_argument("--outcome", type=Path, required=True)
-            command.add_argument("--observed-diff-commits", type=Path, required=True)
-        else:
-            command.add_argument("--paths", type=Path, required=True)
+    admit = sub.add_parser("admit")
+    admit.add_argument("--epic", required=True)
+    admit.add_argument("--entry", type=Path, required=True)
+    admit.add_argument("--outcome", type=Path, required=True)
+    admit.add_argument("--observed-diff-commits", type=Path, required=True)
 
     rebuild = sub.add_parser("rebuild")
     rebuild.add_argument("--epic", required=True)
@@ -91,7 +87,6 @@ def main(argv=None):
 
     stall = sub.add_parser("stall")
     stall.add_argument("--epic", required=True)
-    stall.add_argument("--hours", type=int, default=24)
     stall.add_argument("--outcome", type=Path, required=True)
 
     retarget = sub.add_parser("retarget")
@@ -112,6 +107,9 @@ def main(argv=None):
     delta.add_argument("--review-base-sha", required=True)
     delta.add_argument("--target-sha", required=True)
     delta.add_argument("--build-id", required=True)
+    delta.add_argument("--result-tree-sha", required=True)
+    delta.add_argument("--reviewed-diff", type=Path, required=True)
+    delta.add_argument("--effective-diff", type=Path, required=True)
     delta.add_argument("--review", type=Path)
 
     sub.add_parser("steward-policy")
@@ -136,7 +134,9 @@ def main(argv=None):
             result = delta_review_requirement(
                 reviewed, intervening, head_sha=args.head_sha,
                 review_base_sha=args.review_base_sha, target_sha=args.target_sha,
-                build_id=args.build_id,
+                build_id=args.build_id, result_tree_sha=args.result_tree_sha,
+                reviewed_diff=load(args.reviewed_diff),
+                effective_diff=load(args.effective_diff),
                 delta_review=load(args.review) if args.review else None)
         else:
             if args.state is None:
@@ -161,11 +161,6 @@ def main(argv=None):
                     raise ValidationError("observed diff commits must contain a list")
                 result = store.admit(args.epic, _document(args.entry, "entry"),
                                      commits, _document(args.outcome, "outcome"))
-            elif args.command == "conflict":
-                paths = load(args.paths)
-                if not isinstance(paths, list):
-                    raise ValidationError("paths must contain a list")
-                result = store.conflict(args.epic, _document(args.entry, "entry"), paths)
             elif args.command == "rebuild":
                 result = store.rebuild(args.epic, args.target_sha,
                                        _document(args.outcome, "outcome"), args.reason)
@@ -190,8 +185,8 @@ def main(argv=None):
                     _document(args.instruction, "instruction"),
                     _document(args.outcome, "outcome"))
             elif args.command == "stall":
-                result = store.move_stalled_front(args.epic,
-                    _document(args.outcome, "outcome"), stall_after_hours=args.hours)
+                result = store.move_stalled_front(
+                    args.epic, _document(args.outcome, "outcome"))
             elif args.command == "retarget":
                 result = store.retarget_after_merge(args.epic, args.merged_pr, args.target_sha,
                     _document(args.patch_ids, "patch IDs"),
