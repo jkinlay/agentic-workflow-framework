@@ -6,15 +6,18 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import write_awf_source_fixture  # noqa: E402
 
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, loads, sha256
 from agentic.safeio import Tree
 from agentic.streams import DEFAULT_NATIVE_EXECUTION, JOURNAL, MARKDOWN, PLAN, plan_inventory, recommendation_groups, render_markdown, write_project_plan
-from source_only import write_awf_source_fixture
 from test_operating_integration import configuration as operating_configuration, governance as operating_governance
 
 ROOT = Path(__file__).resolve().parents[2]
