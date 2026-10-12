@@ -63,6 +63,55 @@ class ManifestConflictTests(unittest.TestCase):
             )
         return completed
 
+    def unconfigured_git_environment(self):
+        home = self.base / "isolated-home"
+        home.mkdir(exist_ok=True)
+        environment = {
+            **os.environ,
+            "HOME": str(home),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(self.base / "isolated-gitconfig"),
+        }
+        for name in (
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ):
+            environment.pop(name, None)
+        return environment
+
+    def remove_repository_identity(self, root):
+        self.git(root, "config", "--unset-all", "user.name")
+        self.git(root, "config", "--unset-all", "user.email")
+
+    def run_driver(self, root, *arguments):
+        return subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(ROOT / "scripts/manifest_merge_driver.py"),
+                *arguments,
+            ],
+            cwd=root,
+            env=self.unconfigured_git_environment(),
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
+    def run_checkout_python(self, root, relative, *arguments):
+        environment = self.unconfigured_git_environment()
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        return subprocess.run(
+            [sys.executable, "-B", str(root / relative), *arguments],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+
     def commit(self, root, message):
         self.git(root, "add", ".")
         self.git(root, "commit", "-m", message)
@@ -156,6 +205,175 @@ class ManifestConflictTests(unittest.TestCase):
         right = self.branch_delete(root, base, "pr-b", files, "middle.txt")
         self.assert_merges_in_either_order(root, left, right)
 
+    def test_merge_ref_uses_invocation_identity_when_pr_is_behind_main(self):
+        root, files, base = self.make_repository(
+            "behind-main", configure_driver=False
+        )
+        self.branch_change(
+            root, base, "pr", files, "aardvark.txt", b"added by PR\n"
+        )
+        self.git(root, "checkout", "main")
+        main_files = dict(files)
+        main_files["zebra.txt"] = b"added by main\n"
+        (root / "zebra.txt").write_bytes(main_files["zebra.txt"])
+        self.write_manifests(root, main_files)
+        main = self.commit(root, "advance main")
+        self.git(root, "checkout", "pr")
+        self.remove_repository_identity(root)
+
+        merged = self.run_driver(root, "--merge-ref", main)
+
+        self.assertEqual(
+            0,
+            merged.returncode,
+            merged.stdout.decode(errors="replace")
+            + merged.stderr.decode(errors="replace"),
+        )
+        unresolved = self.git(
+            root, "diff", "--name-only", "--diff-filter=U"
+        ).stdout.decode().splitlines()
+        self.assertEqual([], unresolved)
+        self.assert_current(root)
+
+    def test_merge_ref_leaves_up_to_date_pr_unchanged_without_identity(self):
+        root, files, base = self.make_repository(
+            "up-to-date", configure_driver=False
+        )
+        pr = self.branch_change(
+            root, base, "pr", files, "aardvark.txt", b"added by PR\n"
+        )
+        self.remove_repository_identity(root)
+
+        merged = self.run_driver(root, "--merge-ref", base)
+
+        self.assertEqual(
+            0,
+            merged.returncode,
+            merged.stdout.decode(errors="replace")
+            + merged.stderr.decode(errors="replace"),
+        )
+        head = self.git(root, "rev-parse", "HEAD").stdout.decode().strip()
+        self.assertEqual(pr, head)
+        status = self.git(root, "status", "--porcelain").stdout.decode()
+        self.assertEqual("", status)
+        self.assert_current(root)
+
+    def test_merge_ref_still_fails_on_non_manifest_conflict(self):
+        root, files, base = self.make_repository(
+            "content-conflict", configure_driver=False
+        )
+        self.branch_change(
+            root, base, "pr", files, "alpha.txt", b"alpha from PR\n"
+        )
+        self.git(root, "checkout", "main")
+        main_files = dict(files)
+        main_files["alpha.txt"] = b"alpha from main\n"
+        (root / "alpha.txt").write_bytes(main_files["alpha.txt"])
+        self.write_manifests(root, main_files)
+        main = self.commit(root, "conflicting main change")
+        self.git(root, "checkout", "pr")
+        self.remove_repository_identity(root)
+
+        merged = self.run_driver(root, "--merge-ref", main)
+
+        self.assertNotEqual(0, merged.returncode)
+        unresolved = self.git(
+            root, "diff", "--name-only", "--diff-filter=U"
+        ).stdout.decode().splitlines()
+        self.assertEqual(["alpha.txt"], unresolved)
+
+    def test_manifest_check_sequence_leaves_no_bytecode_and_rejects_ignored_residue(self):
+        root = self.base / "manifest-check"
+        shutil.copytree(
+            ROOT,
+            root,
+            ignore=shutil.ignore_patterns(
+                ".git", "__pycache__", "*.pyc", ".tmp", "tmp", ".tmp-tests"
+            ),
+        )
+        self.git(root, "init", "-b", "main")
+        self.git(root, "config", "user.name", "Manifest Fixture")
+        self.git(root, "config", "user.email", "manifest@example.invalid")
+        generated = self.run_checkout_python(
+            root, "scripts/build_release.py", "--manifest-only"
+        )
+        self.assertEqual(
+            0,
+            generated.returncode,
+            generated.stdout.decode(errors="replace")
+            + generated.stderr.decode(errors="replace"),
+        )
+        base = self.commit(root, "base")
+
+        self.git(root, "checkout", "-b", "pr", base)
+        (root / "pr-marker.txt").write_text(
+            "added by PR\n", encoding="utf-8", newline="\n"
+        )
+        generated = self.run_checkout_python(
+            root, "scripts/build_release.py", "--manifest-only"
+        )
+        self.assertEqual(
+            0, generated.returncode, generated.stderr.decode(errors="replace")
+        )
+        self.commit(root, "advance PR")
+
+        self.git(root, "checkout", "main")
+        (root / "main-marker.txt").write_text(
+            "added by main\n", encoding="utf-8", newline="\n"
+        )
+        generated = self.run_checkout_python(
+            root, "scripts/build_release.py", "--manifest-only"
+        )
+        self.assertEqual(
+            0, generated.returncode, generated.stderr.decode(errors="replace")
+        )
+        main = self.commit(root, "advance main")
+        self.git(root, "checkout", "pr")
+        self.remove_repository_identity(root)
+
+        merged = self.run_checkout_python(
+            root, "scripts/manifest_merge_driver.py", "--merge-ref", main
+        )
+        self.assertEqual(
+            0,
+            merged.returncode,
+            merged.stdout.decode(errors="replace")
+            + merged.stderr.decode(errors="replace"),
+        )
+        checked = self.run_checkout_python(
+            root, "scripts/build_release.py", "--check-manifest"
+        )
+        self.assertEqual(
+            0,
+            checked.returncode,
+            checked.stdout.decode(errors="replace")
+            + checked.stderr.decode(errors="replace"),
+        )
+        residue = [
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.name == "__pycache__" or path.suffix == ".pyc"
+        ]
+        self.assertEqual([], residue)
+
+        ignored = root / "scripts/__pycache__/ignored.pyc"
+        ignored.parent.mkdir()
+        ignored.write_bytes(b"ignored bytecode residue\n")
+        self.assertEqual(
+            0,
+            self.git(
+                root, "check-ignore", "-q", ignored.relative_to(root).as_posix()
+            ).returncode,
+        )
+        rejected = self.run_checkout_python(
+            root, "scripts/build_release.py", "--check-manifest"
+        )
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertIn(
+            "Source contains runtime/build residue",
+            rejected.stderr.decode(errors="replace"),
+        )
+
     def test_production_sync_merges_and_pushes_without_repository_config(self):
         root, files, base = self.make_repository(
             "production-sync", configure_driver=False
@@ -171,31 +389,18 @@ class ManifestConflictTests(unittest.TestCase):
         self.git(root, "remote", "add", "origin", str(remote))
         self.git(root, "push", "origin", f"{left}:refs/heads/pr-a")
         self.git(root, "checkout", "-B", "pr-a", left)
+        self.remove_repository_identity(root)
 
         configured = self.git(
             root, "config", "--get", "merge.awf-manifest.driver", check=False
         )
         self.assertNotEqual(0, configured.returncode)
-        environment = {
-            **os.environ,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-        }
-        merged = subprocess.run(
-            [
-                sys.executable,
-                "-B",
-                str(ROOT / "scripts/manifest_merge_driver.py"),
-                "--sync-ref",
-                right,
-                "--push-branch",
-                "pr-a",
-            ],
-            cwd=root,
-            env=environment,
-            capture_output=True,
-            check=False,
-            timeout=30,
+        merged = self.run_driver(
+            root,
+            "--sync-ref",
+            right,
+            "--push-branch",
+            "pr-a",
         )
         self.assertEqual(
             0,
@@ -245,6 +450,15 @@ class ManifestConflictTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("--push-branch", workflow)
+
+    def test_workflow_disables_bytecode_for_every_python_step(self):
+        workflow = (ROOT / ".github/workflows/manifest-check.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            workflow,
+            r'(?m)^env:\n  PYTHONDONTWRITEBYTECODE: ["\']1["\']$',
+        )
 
     def test_workflow_scopes_matrix_concurrency_to_manifest_job(self):
         workflow = (ROOT / ".github/workflows/manifest-check.yml").read_text(
