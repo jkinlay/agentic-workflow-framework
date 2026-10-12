@@ -395,6 +395,7 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
             "Existing stream assignment root is malformed")
     prior = root_id
     owner_events = {}
+    consumed_owner_source_ids = set()
     for event in history:
         fields(event, "ticket_id who when why old new kind previous_assignment_id source_id assignment_id",
                "stream assignment audit",
@@ -433,6 +434,9 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
                     and isinstance(event.get("owner_source_sha256"), str)
                     and re.fullmatch(r"[0-9a-f]{64}", event["owner_source_sha256"]),
                     "Owner stream reassignment lacks its authenticated source")
+            require(event["source_id"] not in consumed_owner_source_ids,
+                    "Owner stream reassignment source identity was already consumed")
+            consumed_owner_source_ids.add(event["source_id"])
             owner_events[event["assignment_id"]] = event
         prior = event["assignment_id"]
     require(not history or chain_id == prior,
@@ -462,12 +466,14 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
                 "Owner stream reassignment old/new values do not match the current assignment")
         ticket = tickets[ticket_id]
         require(ticket["status"] not in {"in_progress", *FINAL}
-                and not (ticket["ownership"] and ticket["ownership"]["state"] in {"active", "paused"}),
+                and ticket["ownership"] is None,
                 "Started or completed work cannot be reassigned to another stream")
         intake_assignment_id, verified, authenticated_when = _authenticate_owner_reassignment(
             governance, ticket_id, intake_assignments, directive, verifier, now)
         require(changed_at == timestamp(authenticated_when),
                 "Owner stream reassignment time must match the authenticated owner-source creation time")
+        require(verified["source_id"] not in consumed_owner_source_ids,
+                "Owner stream reassignment source identity was already consumed")
         event = _assignment_event(
             chain_id, ticket_id=ticket_id, who=directive["who"],
             when=authenticated_when, why=directive["why"], old=directive["old"],
@@ -480,6 +486,7 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
         chain_id = event["assignment_id"]
         pins[ticket_id] = {"stream": directive["new"], "assignment_id": chain_id}
         owner_events[chain_id] = event
+        consumed_owner_source_ids.add(verified["source_id"])
     for ticket_id, pin in pins.items():
         event = owner_events.get(pin["assignment_id"])
         require(event is not None and event["ticket_id"] == ticket_id
@@ -1022,6 +1029,9 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
         assigned[group] = label
         loads[label] += weight(group)
     assignment = {ticket_id: assigned[root(ticket_id)] if tickets[ticket_id]["dispatch_scope"] == "in_scope" else None for ticket_id in tickets}
+    for ticket_id, pin in owner_pins.items():
+        require(assignment[ticket_id] == pin["stream"],
+                "Resulting ticket stream differs from its owner pin")
     if previous is not None:
         reason = _automatic_move_reason(previous, tickets)
         for ticket_id in sorted(set(previous["tickets"]) & set(tickets)):
