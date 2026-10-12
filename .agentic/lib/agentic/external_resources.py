@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-from pathlib import PurePath
+import os
+from pathlib import Path, PurePath
 import re
+import shutil
 from typing import Callable
 
 from . import ValidationError
@@ -155,6 +157,24 @@ def _mapping_identity(locator):
     return sha256(normalized.encode("utf-8"))
 
 
+def _powershell_executable():
+    """Resolve PowerShell before the child receives its sanitized environment."""
+    if os.name != "nt":
+        return "powershell"
+    core = shutil.which("pwsh.exe")
+    if core is not None:
+        return str(Path(core).resolve())
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if system_root:
+        windows_powershell = (
+            Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        )
+        if windows_powershell.is_file():
+            return str(windows_powershell.resolve())
+    legacy = shutil.which("powershell.exe")
+    return str(Path(legacy).resolve()) if legacy is not None else "powershell.exe"
+
+
 def _command_payload(declaration, mapping):
     """Build the private, exact command. Callers must never persist its argv."""
     probe = declaration["probe"]
@@ -197,7 +217,7 @@ try {
                  probe["listing_limit"], mapping["mapping_kind"],
                  mapping["canonical_locator"])
     invocation = "& {\n" + script + "\n} " + " ".join(literal(value) for value in arguments)
-    return ("powershell", "-NoProfile", "-NonInteractive", "-Command", invocation)
+    return (_powershell_executable(), "-NoProfile", "-NonInteractive", "-Command", invocation)
 
 
 def command_sha256(command):

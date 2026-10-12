@@ -973,7 +973,7 @@ def render_catalog():
             for name, schema in catalog().items()}
 
 
-def main(argv=None):
+def main(argv=()):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true",
                         help="verify generated schema bytes without changing files")
@@ -1000,4 +1000,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
