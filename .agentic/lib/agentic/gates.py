@@ -35,6 +35,42 @@ def decode_base64_bytes(value, field):
     return raw
 
 
+def owner_approval_evidence_matches(owner, terminal_verdict, candidate):
+    """Require the owner record to carry the terminal registered GitHub approval."""
+    if not isinstance(owner, dict) or not isinstance(terminal_verdict, dict):
+        return False
+    observation = owner.get("posting_observation")
+    if observation != terminal_verdict.get("posting_observation"):
+        return False
+    try:
+        raw = decode_base64_bytes(
+            observation.get("provider_response_bytes"), "provider_response_bytes"
+        )
+        provider = loads(raw.decode("utf-8"))
+    except (AttributeError, UnicodeError, ValidationError):
+        return False
+    if canonical(provider) != raw:
+        return False
+    approval = provider.get("owner_approval") if isinstance(provider, dict) else None
+    if (not isinstance(approval, dict)
+            or set(approval) != {
+                "id", "html_url", "state", "commit_id", "user", "candidate"
+            }
+            or type(approval.get("id")) is not int or approval["id"] <= 0
+            or approval.get("state") != "APPROVED"
+            or approval.get("commit_id") != candidate.get("head_sha")
+            or approval.get("user") != {"id": owner.get("owner_id")}
+            or approval.get("candidate") != owner.get("candidate_binding")):
+        return False
+    prefix = (
+        f"{candidate.get('host')}/{candidate.get('repository')}/pull/"
+        f"{candidate.get('pr_number')}"
+    )
+    expected_url = f"{prefix}#pullrequestreview-{approval['id']}"
+    return (approval.get("html_url") == expected_url
+            and owner.get("pr_comment_url") == expected_url)
+
+
 def resource_overlaps(runs, limits):
     """Concurrent COMPLETE runs from different contexts exceeding a named resource's slots.
 
@@ -735,6 +771,9 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     # REQUEST_CHANGES result forward.
     lenient = (cap_disposition is not None
                and cap_disposition["decision"] == "MERGE_WITH_NOTES")
+    critic_verdicts = [v for v in verdicts if not v["owner_review"]]
+    terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
+    terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
     owner = bundle.get("owner_review")
     owner_run = runs.get(owner.get("run_id")) if owner is not None else None
     owner_review_ok = tier != 3 or (owner is not None
@@ -751,10 +790,10 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                                         "pr_number": candidate["pr_number"],
                                         "base_sha": candidate["target_base_sha"],
                                          "head_sha": candidate["head_sha"]}
-                                     and owner.get("record_id") in {v.get("record_id") for v in records})
-    critic_verdicts = [v for v in verdicts if not v["owner_review"]]
-    terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
-    terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
+                                     and owner.get("record_id") in {v.get("record_id") for v in records}
+                                     and posting_evidence_ok
+                                     and owner_approval_evidence_matches(
+                                         owner, terminal_verdict, candidate))
     terminal_verdict_ok = (terminal_verdict["verdict"] in {"PASS", "REQUEST_CHANGES"}
                            if lenient else terminal_verdict["verdict"] == "PASS")
     critic_ok = (no_blockers and p2_ticketing_ok and critic_artifacts_ok
