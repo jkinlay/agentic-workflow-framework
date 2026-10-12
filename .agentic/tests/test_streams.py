@@ -390,7 +390,13 @@ class PlannerTests(unittest.TestCase):
             ticket["dependencies"] = [accepted("DEMO-11")]
         second = self.plan(previous=first)
         self.assertEqual({p["ticket_id"] for p in second["dispatch_packets"]}, {"DEMO-12", "DEMO-21", "DEMO-31"})
-        self.assertEqual({k: t["stream"] for k, t in first["tickets"].items()}, {k: t["stream"] for k, t in second["tickets"].items()})
+        self.assertEqual(first["tickets"]["DEMO-11"]["stream"],
+                         second["tickets"]["DEMO-11"]["stream"])
+        moved = [ticket_id for ticket_id in first["tickets"]
+                 if first["tickets"][ticket_id]["stream"]
+                 != second["tickets"][ticket_id]["stream"]]
+        self.assertTrue(all(second["tickets"][ticket_id]["status"] == "todo"
+                            for ticket_id in moved))
 
     def test_completed_scope_reports_completion_instead_of_permanent_blocking(self):
         for ticket in self.value["tickets"]:
@@ -458,6 +464,23 @@ class PlannerTests(unittest.TestCase):
                 self.assertEqual(("awf", "C", "B"),
                                  (move["who"], move["old"], move["new"]))
                 self.assertIn(terminal, move["why"])
+
+    def test_ticket_becoming_terminal_keeps_its_stream_without_move_audit(self):
+        for terminal in ("done", "cancelled"):
+            with self.subTest(terminal=terminal):
+                value = deepcopy(self.value)
+                before = self.plan(value)
+                self.assertEqual("C", before["tickets"]["DEMO-31"]["stream"])
+                value["tickets"][3].update(
+                    status=terminal, history=[history(terminal)])
+
+                after = self.plan(value, before)
+
+                self.assertEqual("C", after["tickets"]["DEMO-31"]["stream"])
+                self.assertFalse(any(
+                    item["ticket_id"] == "DEMO-31"
+                    for item in after["stream_assignment_history"]
+                ))
 
     def test_started_ticket_never_moves_during_rebalancing(self):
         before = self.plan()
