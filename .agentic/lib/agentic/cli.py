@@ -62,6 +62,31 @@ def local_semantics(name, value):
     return value
 
 
+class _ReviewedConfigWithRuntime(dict):
+    """Expose process-local assignment context without changing reviewed bytes."""
+
+    def __init__(self, reviewed_config, runtime):
+        super().__init__(reviewed_config)
+        self._runtime = runtime
+
+    def get(self, key, default=None):
+        if key == "_awf_runtime":
+            return self._runtime
+        return super().get(key, default)
+
+
+def _load_cli_intake_assignment(config, state_path, ticket_key):
+    """Load and select one verified controller-owned persisted assignment."""
+    from .intake_assignment import load_runtime_assignments
+    from .review_tiers import runtime_assignment
+
+    working = dict(config)
+    load_runtime_assignments(working, load(state_path), ticket_key=ticket_key)
+    runtime = working.pop("_awf_runtime")
+    runtime_config = _ReviewedConfigWithRuntime(config, runtime)
+    return runtime_config, runtime_assignment(runtime_config, ticket_key=ticket_key)
+
+
 def main(argv=None, default_root=None):
     configure_streams()
     parser = argparse.ArgumentParser(description=f"Agentic Workflow {VERSION} offline evidence tools; native streams use the host's delegation tools and PR automation uses review_loop.py")
@@ -91,6 +116,10 @@ def main(argv=None, default_root=None):
     gate_parser = sub.add_parser("evaluate")
     gate_parser.add_argument("bundle", type=Path)
     gate_parser.add_argument("--config", type=Path)
+    gate_parser.add_argument(
+        "--assignment-state", type=Path, required=True,
+        help="Controller-owned persisted intake-assignment state",
+    )
     gate_parser.add_argument("--now", default=None)
     gate_parser.add_argument("--request", action="store_true")
     gate_parser.add_argument(
@@ -118,6 +147,11 @@ def main(argv=None, default_root=None):
     cap_parser.add_argument("--extensions", type=int, default=0)
     cap_parser.add_argument("--head", required=True, help="Candidate head SHA the owner signed against")
     cap_parser.add_argument("--config", type=Path)
+    cap_parser.add_argument(
+        "--assignment-state", type=Path, required=True,
+        help="Controller-owned persisted intake-assignment state",
+    )
+    cap_parser.add_argument("--ticket", required=True, help="Ticket key selecting the persisted assignment")
     preflight_parser = sub.add_parser("preflight", help="Host preflight rows (PASS/WARN/SKIP/N_A); never blocks INSTALLED")
     preflight_parser.add_argument("--config", type=Path)
     preflight_parser.add_argument("--github-identity", type=Path,
@@ -367,17 +401,26 @@ def main(argv=None, default_root=None):
                 elif args.command == "cap-plan":
                     from .review_policy import cap_disposition_plan
                     config = load(args.config or root / ".agentic/PROJECT_CONFIG.yaml")
+                    config, assignment = _load_cli_intake_assignment(
+                        config, args.assignment_state, args.ticket
+                    )
                     disposition = load(args.disposition)
                     from .authorization import verify_owner_record
                     verify_owner_record(disposition, "review-cap-disposition", config, contracts, now_text(), head_sha=args.head,
                                         binding=disposition["binding"])
                     findings = [f for f in load(args.findings) if f["status"] != "RESOLVED" and f["severity"] in set(config["critic"]["blocking_severities"])]
-                    output = cap_disposition_plan(config, disposition, args.cycles, args.extensions, findings)
+                    output = cap_disposition_plan(
+                        config, disposition, args.cycles, args.extensions, findings,
+                        risk_tier=assignment["tier"], assignment_record=assignment,
+                    )
                     output["execution_authority"] = False
                 elif args.command == "evaluate":
                     config = load(args.config or root / ".agentic/PROJECT_CONFIG.yaml")
                     bundle = load(args.bundle)
                     contracts.validate("evidence-bundle", bundle)
+                    config, _assignment = _load_cli_intake_assignment(
+                        config, args.assignment_state, bundle["contract"]["ticket"]
+                    )
                     posting_collector_registry = {}
                     posting_collector_reason = None
                     if args.posting_collector_host_config is not None:
