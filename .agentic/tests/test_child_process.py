@@ -10,6 +10,9 @@ import tempfile
 import unittest
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo  # noqa: E402
+
 from agentic.child_process import (
     ISOLATED_GIT_ENV,
     ChildEnvironmentError,
@@ -25,8 +28,6 @@ from agentic.child_process import (
 ROOT = Path(__file__).resolve().parents[2]
 # Only the AWF source repository ships a root MANIFEST.json and owns scripts/;
 # in an adopting project, scripts/ is project-owned code (self_test.py uses the same test).
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from source_only import AWF_SOURCE_REPOSITORY, skip_unless_source_repo  # noqa: E402
 LAUNCH_METHODS = {"run", "Popen", "check_output", "check_call"}
 
 
