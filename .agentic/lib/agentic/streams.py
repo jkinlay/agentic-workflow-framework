@@ -276,9 +276,15 @@ def _preserve(previous, value, tickets, owner_pins, redacted_worktree_tickets=()
                     "Existing ownership cannot be silently reassigned")
         require(ticket_id not in fixed or fixed[ticket_id] == old["stream"] or ticket_id in owner_pins,
                 "Inventory contradicts the established stream assignment")
-        # Retain historical placement and every started/owned ticket. Unstarted
-        # work is deliberately eligible for deterministic re-balancing.
-        started = old["status"] in {"in_progress", *FINAL} or old["ownership"] is not None
+        # Retain historical placement whenever either snapshot establishes
+        # started, terminal, or owned work. Only work that is unstarted in both
+        # snapshots is eligible for deterministic re-balancing.
+        started = (
+            old["status"] in {"in_progress", *FINAL}
+            or new["status"] in {"in_progress", *FINAL}
+            or old["ownership"] is not None
+            or new["ownership"] is not None
+        )
         if old["stream"] is not None and started:
             fixed[ticket_id] = old["stream"]
     return fixed
@@ -1043,7 +1049,10 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
                 # for this change and its pin controls all later re-balancing.
                 continue
             old = previous["tickets"][ticket_id]
-            require(old["status"] not in {"in_progress", *FINAL} and old["ownership"] is None,
+            new = tickets[ticket_id]
+            require(old["status"] not in {"in_progress", *FINAL}
+                    and new["status"] not in {"in_progress", *FINAL}
+                    and old["ownership"] is None and new["ownership"] is None,
                     "Automatic re-balancing attempted to move started work")
             event = _assignment_event(
                 assignment_chain_id, ticket_id=ticket_id, who="awf", when=now,

@@ -133,7 +133,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
 | `.agentic/lib/agentic/safeio.py` | `c2b2297c364d1a886fddbef7c01eff69882de2f29a1a00531d7ae15fbdcb5af7` |
 | `.agentic/lib/agentic/store.py` | `91287fc2aa44e9db2b1343027baa6f32e0660a838db54f8dd628b1caf0336b6c` |
-| `.agentic/lib/agentic/streams.py` | `291f5fc0a3d40d01cde245d7fe9e679d077eaea7cdbd7fa4fd8eb2ac2f29ea6b` |
+| `.agentic/lib/agentic/streams.py` | `e30cc2b0a58d0ff86d2ece527cd2d4df337ebbe354c7ff1116f87587d8f2f64c` |
 | `.agentic/lib/agentic/upgrade.py` | `d664cc7c5928c4c0beb55cae0cbf83d555047f09d3365975b4925b62b56a61e0` |
 | `.agentic/prompts/amendment.md` | `bcea716185a20e57099349458c3974304c8e2dd635fefd1270ae6389dbc2f532` |
 | `.agentic/prompts/controller.md` | `51033ee5f655e7736259177999776993436daa93a99f8e5ca8975a087eb0baab` |
@@ -368,7 +368,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_safeio_unlink.py` | `86d91b38a4e930fc1af316caf359b04cf8748dc53958465a141aeab200c1457f` |
 | `.agentic/tests/test_source_only.py` | `ff834d09650472ae5522aeaf6cad4dad7caf205e80ee73e03e7bcb3ac17208e3` |
 | `.agentic/tests/test_store_regressions.py` | `340df570120f78d77ef33c3e9c8f315ec72b0a3e49bd7e053a5a5ef24679111f` |
-| `.agentic/tests/test_streams.py` | `4af484d9a0cb06e8dc2fc91afa3b2c0e0a9fc6821860c585c0609c003461e1e3` |
+| `.agentic/tests/test_streams.py` | `12f28b018c24b63d362e441bae318aff47a6bb576967758c654b16d0034eedb1` |
 | `.agentic/tests/test_upgrade_194.py` | `9a830eb7bb65ef835c9de24c205d656db78d3edcf902c4463c31c73a2216ef53` |
 | `.agentic/tests/test_upgrade_journal.py` | `449c96d3f8a9138335bfdf1cd413d453cf2b5f35be5125d860a3726d1d260270` |
 | `.agentic/tests/test_upgrade_matrix.py` | `ae4397837a1b4c4e8b888d379a1ea1f61e403f414724ecfaf91945c00fec6675` |
