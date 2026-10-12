@@ -107,6 +107,46 @@ class ValidationTests(unittest.TestCase):
         self.refuse(current, "$.streams.count", "$.execution.host_broker.max_workers")
         self.assertEqual(3, op.operating_ceiling(self.gov)["effective_ceiling"])
 
+    def test_lower_structural_ceiling_rejects_every_retained_higher_label(self):
+        self.gov["execution"]["max_lanes"] = 3
+        value = op.default_operating()
+        value["streams"]["F"] = {"worker": op._pair("definitely-unapproved", "medium")}
+        with self.assertRaises(op.OperatingError) as caught:
+            op.validate_operating(value, self.gov)
+        self.assertTrue(any(item["path"] == "$.streams" and "F" in item["reason"]
+                            for item in caught.exception.refusals), caught.exception.refusals)
+
+    def test_configured_ceiling_above_six_is_honoured_end_to_end(self):
+        self.gov["execution"].update(max_parallel_tickets=12, max_lanes=10)
+        value = op.default_operating()
+        value["streams"]["count"] = 8
+        for label in op.stream_labels(8):
+            value["streams"].setdefault(label, op._stream())
+        snapshot = op.validate_operating(value, self.gov)
+        self.assertEqual(8, snapshot.count)
+        self.assertEqual(tuple("ABCDEFGH"), op.stream_labels(8))
+        epics = [epic(i, [f"component{i}/"]) for i in range(1, 9)]
+        scopes = {item["id"]: op._scope(item["scope"], item["id"]) for item in epics}
+        groups, _ = op._epic_groups(epics, op.operating_ceiling(self.gov)["effective_ceiling"], scopes)
+        self.assertEqual(8, len(groups))
+        self.assertEqual("H", groups[-1]["label"])
+
+    def test_missing_max_lanes_defaults_to_six_and_labels_scale(self):
+        self.gov["execution"]["max_parallel_tickets"] = 12
+        self.gov["execution"].pop("max_lanes", None)
+        self.assertEqual(6, op.operating_ceiling(self.gov)["effective_ceiling"])
+        self.assertEqual(("Z", "AA", "AB"), op.stream_labels(28)[-3:])
+
+    def test_lower_broker_still_binds_configured_ceiling(self):
+        self.gov["execution"].update(max_parallel_tickets=12, max_lanes=10,
+                                     host_broker={"enabled": True, "max_workers": 7})
+        capacity = op.operating_ceiling(self.gov)
+        self.assertEqual(7, capacity["effective_ceiling"])
+        self.assertEqual("$.execution.host_broker.max_workers", capacity["effective_ceiling_governance_path"])
+        value = op.default_operating()
+        value["streams"]["J"] = op._stream()
+        self.assertIn("J", op.validate_operating(value, self.gov).config["streams"])
+
     def test_ceiling_ties_structure_and_malformed_shapes_are_explicit(self):
         self.gov["execution"].update(max_parallel_tickets=3, host_broker={"enabled": True, "max_workers": 3})
         capacity = op.operating_ceiling(self.gov)
@@ -142,9 +182,13 @@ class ValidationTests(unittest.TestCase):
         value = op.default_operating()
         value["streams"]["count"] = 4
         self.refuse(value, "$.streams.D", None)
-        for path in ("epics.FIX-1.worker", "execution.max_parallel_tickets", "streams.G.worker"):
+        for path in ("epics.FIX-1.worker", "execution.max_parallel_tickets"):
             with self.subTest(path=path), self.assertRaises(op.OperatingError):
                 op._path(path)
+        self.assertEqual("streams.G.worker", op._path("streams.G.worker"))
+        value = op.default_operating()
+        value["streams"]["G"] = op._stream()
+        self.refuse(value, "$.streams", None)
 
     def test_malformed_operating_structures_are_typed_refusals(self):
         for value in (None, [], {"streams": None}, {**op.default_operating(), "streams": []}):
@@ -591,6 +635,40 @@ class OperatingFileTests(unittest.TestCase):
         self.assertEqual(2, result.count)
         self.assertEqual(raw, (self.root / op.GOVERNANCE).read_bytes())
 
+    def test_lowered_max_lanes_prunes_only_unrepresentable_routes_with_audit(self):
+        expanded = deepcopy(self.gov)
+        expanded["execution"].update(max_parallel_tickets=12, max_lanes=10)
+        (self.root / op.GOVERNANCE).write_bytes(op._json(expanded))
+        high = op.set_operating(self.root, expanded, "use eight streams", ["streams.count=8"])
+        self.assertEqual(tuple("ABCDEFGH"), tuple(key for key in high.config["streams"] if key != "count"))
+
+        reduced = deepcopy(expanded)
+        reduced["execution"]["max_lanes"] = 6
+        (self.root / op.GOVERNANCE).write_bytes(op._json(reduced))
+        repaired = op.set_operating(self.root, reduced, "migrate to the new six-lane ceiling", ["streams.count=6"])
+        self.assertEqual(6, repaired.count)
+        self.assertEqual(set("ABCDEF"), set(repaired.config["streams"]) - {"count"})
+        event = next(item for item in self.events() if item["id"] == repaired.last_change_id)
+        removals = {change["path"]: change for change in event["changes"] if change["after"] is None}
+        self.assertEqual({"streams.G", "streams.H"}, set(removals))
+        self.assertTrue(all(change["before"] == op._stream() for change in removals.values()))
+
+    def test_lowered_max_lanes_prunes_retained_routes_on_any_audited_change(self):
+        op.set_operating(self.root, self.gov, "use all six streams", ["streams.count=6"])
+        retained = op.set_operating(self.root, self.gov, "drain to three", ["streams.count=3"])
+        self.assertEqual(set("ABCDEF"), set(retained.config["streams"]) - {"count"})
+
+        reduced = deepcopy(self.gov)
+        reduced["execution"]["max_lanes"] = 3
+        (self.root / op.GOVERNANCE).write_bytes(op._json(reduced))
+        repaired = op.set_operating(
+            self.root, reduced, "pin A and migrate retained labels",
+            ["A.worker=gpt-5.6-sol/high"])
+        self.assertEqual(set("ABC"), set(repaired.config["streams"]) - {"count"})
+        event = next(item for item in self.events() if item["id"] == repaired.last_change_id)
+        removals = {change["path"] for change in event["changes"] if change["after"] is None}
+        self.assertEqual({"streams.D", "streams.E", "streams.F"}, removals)
+
     def test_initializing_existing_valid_choices_preserves_raw_bytes(self):
         with tempfile.TemporaryDirectory(prefix="awf-op-existing-") as directory:
             root = Path(directory)
@@ -783,9 +861,9 @@ class OperatingFileTests(unittest.TestCase):
     def test_large_valid_scoped_configuration_refuses_before_publication(self):
         before, events = (self.root / op.CONFIG).read_bytes(), self.events()
         value = self.initial.config
-        value["epic_overrides"] = {"FIX-" + str(i): {"streams": {label: op._stream() for label in op.LABELS}}
+        value["epic_overrides"] = {"FIX-" + str(i): {"streams": {label: op._stream() for label in op.stream_labels(6)}}
                                    for i in range(1, 1001)}
-        value["epic_overrides"] = {f"FIX-{i}": {"streams": {label: {"worker": op._pair("gpt-6-astra", "xhigh"), "reviewer": op._pair("gpt-6-astra", "xhigh")} for label in op.LABELS}} for i in range(1,1001)}
+        value["epic_overrides"] = {f"FIX-{i}": {"streams": {label: {"worker": op._pair("gpt-6-astra", "xhigh"), "reviewer": op._pair("gpt-6-astra", "xhigh")} for label in op.stream_labels(6)}} for i in range(1,1001)}
         self.assertGreater(len(op._json(value)), op.MAX_BYTES)
         with op.Tree(self.root) as tree, op._lock(tree), self.assertRaises(op.OperatingError) as caught:
             op._commit(tree, self.gov, before, value, "Synthetic oversized scoped fixture", [], "chat")
