@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate the versioned schema catalog. No runtime schema downloads."""
 from __future__ import annotations
+import argparse
 import copy
 import json
 from pathlib import Path
@@ -824,6 +825,113 @@ def catalog():
         "deny_literals": arr(text(), uniqueItems=True),
         "deny_regexes": arr(obj({"id": text(pattern="^[a-z][a-z0-9_]*$"), "pattern": text(format="regex")}), uniqueItems=True),
         "internal_hostnames": arr(text(pattern="^[A-Za-z0-9][A-Za-z0-9.-]*$"), uniqueItems=True)})
+    resource_alias = {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}
+    resource_digest = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    resource_state = enum(
+        "UNOBSERVED", "SANDBOX_BLOCKED", "PROCESS_START_FAILED", "COMMAND_NONZERO",
+        "MAPPING_MISSING", "PATH_NOT_FOUND", "ACCESS_DENIED", "INVALID_OUTPUT",
+        "READ_VERIFIED", "STALE", "MAPPING_CHANGED")
+    schemas["external-resource-claim"] = obj({
+        "format": const("awf-external-resource-claim-1"),
+        "status": enum("CLAIM_ACCEPTED", "CLAIM_REJECTED"),
+        "resource_alias": resource_alias,
+        "kind": enum("accessibility", "data_validity", "completeness", "absence"),
+        "value": enum("CONFIRMED", "UNCONFIRMED"),
+        "reason": nullable(text()),
+        "execution_authority": FALSE,
+    })
+    schemas["external-resource-evidence"] = obj({
+        "format": const("awf-external-resource-evidence-1"),
+        "resource_alias": resource_alias,
+        "observed_at": {"type": "string", "format": "date-time"},
+        "result": resource_state,
+        "execution_authority": FALSE,
+    })
+    schemas["external-resource-mapping"] = obj({
+        "format": const("awf-external-resource-mapping-1"),
+        "resources": {
+            "type": "object",
+            "propertyNames": {"pattern": "^[a-z][a-z0-9_]{0,63}$"},
+            "additionalProperties": obj({
+                "local_path": text(),
+                "canonical_locator": text(),
+                "mapping_kind": enum("local", "mapped_drive", "unc"),
+            }),
+        },
+    })
+    schemas["external-resource-receipt"] = obj({
+        "format": const("awf-external-resource-receipt-1"),
+        "visibility": const("operator_local"),
+        "receipt_id": resource_digest,
+        "resource_alias": resource_alias,
+        "task_id": text(),
+        "principal": text(),
+        "session_id": text(),
+        "observed_at": {"type": "string", "format": "date-time"},
+        "permission": obj({
+            "access": const("read_only"),
+            "scope": enum("one_command", "task", "application_session", "project"),
+            "expires_at": nullable({"type": "string", "format": "date-time"}),
+            "source": enum("existing_grant", "narrow_approval"),
+        }),
+        "state": resource_state,
+        "error_layer": text(),
+        "command_sha256": resource_digest,
+        "attempts": arr(obj({
+            "attempted_at": {"type": "string", "format": "date-time"},
+            "command_sha256": resource_digest,
+            "state": resource_state,
+            "error_layer": text(),
+            "exit_code": nullable({"type": "integer"}),
+        }), 1, maxItems=2),
+        "evidence": obj({
+            "listing_limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+            "listing_count": nullable({"type": "integer", "minimum": 0}),
+            "sample_metadata_observed": BOOL,
+            "bytes_read": {"type": "integer", "minimum": 0, "maximum": 1},
+            "accessibility": enum("CONFIRMED", "UNCONFIRMED"),
+            "data_validity": const("UNCONFIRMED"),
+        }),
+        "private_mapping_fingerprint": resource_digest,
+        "execution_authority": FALSE,
+    })
+    schemas["external-resource-registry"] = obj({
+        "format": const("awf-external-resource-registry-1"),
+        "resources": {
+            "type": "object",
+            "propertyNames": {"pattern": "^[a-z][a-z0-9_]{0,63}$"},
+            "additionalProperties": obj({
+                "access": enum("read", "read_only", "write"),
+                "required_by": {
+                    "type": "array", "uniqueItems": True,
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "host_mapping": const("operator_local"),
+                "sensitivity": enum("public", "internal", "restricted", "confidential"),
+                "probe": obj({
+                    "sample_relative_path": text(),
+                    "listing_limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 30},
+                }),
+            }),
+        },
+    })
+    schemas["external-resource-scan"] = obj({
+        "format": const("awf-external-resource-scan-1"),
+        "status": const("BOUNDED_SCAN_ACCEPTED"),
+        "resource_alias": resource_alias,
+        "bounds": obj({
+            "recursive": BOOL,
+            "max_depth": {"type": "integer", "minimum": 0, "maximum": 32},
+            "file_limit": {"type": "integer", "minimum": 1, "maximum": 100000},
+            "date_range": obj({
+                "start": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+                "end": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+            }),
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        }),
+        "execution_authority": FALSE,
+    })
     # Additive evidence: new producers bind their separately observed operating
     # snapshot; historical records can remain absent/null, never relabelled.
     for name in ("work-dispatch", "specialist-dispatch"):
@@ -831,6 +939,9 @@ def catalog():
     for name, schema in schemas.items():
         schema.update({"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": f"urn:awf:1.2:{name}",
                        "title": f"Agentic Workflow 1.2 — {name}"})
+    schemas["external-resource-evidence"]["title"] += " (tracked view)"
+    schemas["external-resource-mapping"]["title"] += " (operator local)"
+    schemas["external-resource-receipt"]["title"] += " (operator local)"
     schemas["posting-collector-registration"] = obj({
         "collector_id": const("github-production-posting-collector"),
         "provider_kind": const("github"),
@@ -857,13 +968,36 @@ def catalog():
     return schemas
 
 
-def main():
+def render_catalog():
+    return {name: (json.dumps(schema, indent=2) + "\n").encode("utf-8")
+            for name, schema in catalog().items()}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true",
+                        help="verify generated schema bytes without changing files")
+    args = parser.parse_args(argv)
     path = ROOT / ".agentic/schemas"
+    rendered = render_catalog()
+    if args.check:
+        generated_names = {item.name.removesuffix(".schema.json")
+                           for item in path.glob("*.schema.json")}
+        mismatches = [name for name, data in rendered.items()
+                      if not (path / f"{name}.schema.json").is_file()
+                      or (path / f"{name}.schema.json").read_bytes() != data]
+        mismatches.extend(sorted(generated_names - set(rendered)))
+        if mismatches:
+            print("Generated schema mismatch: " + ", ".join(mismatches), file=sys.stderr)
+            return 1
+        print(f"Checked {len(rendered)} generated schemas")
+        return 0
     path.mkdir(parents=True, exist_ok=True)
-    for name, schema in catalog().items():
-        (path / f"{name}.schema.json").write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8", newline="\n")
-    print(f"Generated {len(catalog())} schemas")
+    for name, data in rendered.items():
+        (path / f"{name}.schema.json").write_bytes(data)
+    print(f"Generated {len(rendered)} schemas")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

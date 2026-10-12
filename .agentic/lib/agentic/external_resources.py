@@ -559,6 +559,14 @@ def require_admissions(required_aliases, receipts, *, task_id, principal, sessio
         raise ValidationError("required resources must be an array of aliases")
     if not isinstance(expected_receipt_digests, dict):
         raise ValidationError("trusted receipt digests must be supplied by resource alias")
+    registry = validate_registry(registry)
+    derived_aliases = [
+        alias for alias, declaration in registry["resources"].items()
+        if task_id in declaration["required_by"]
+    ]
+    required_aliases = required_aliases + [
+        alias for alias in derived_aliases if alias not in required_aliases
+    ]
     by_alias = {item.get("resource_alias"): item for item in receipts if isinstance(item, dict)}
     decisions = []
     for alias in required_aliases:
