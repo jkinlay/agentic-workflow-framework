@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 
 from . import ValidationError
-from .canonical import now_text, timestamp
+from .canonical import fingerprint, now_text, timestamp
 from .child_process import child_env, isolated_git_env
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -236,6 +236,7 @@ def render_markdown(record):
 def require_jira_reconciliation_before_counts(
         closeout_record, *, repository, project_config, contracts,
         project_config_selector=None, project_config_observer_registry=None,
+        closeout_selector=None, closeout_observer_registry=None,
         jira_reconciliation_selector=None, jira_observer_registry=None, now=None):
     """Gate post-merge counts on the controller's observed Jira reconciliation.
 
@@ -258,6 +259,52 @@ def require_jira_reconciliation_before_counts(
         project_config, project_config_selector,
         project_config_observer_registry, now=now, return_attestation=True)
     validate_config(project_config, definition(), contracts)
+    contracts.validate("closeout-record", closeout_record)
+    if (not isinstance(closeout_selector, dict) or
+            set(closeout_selector) != {"producer_id"} or
+            closeout_selector["producer_id"] != closeout_record["producer_id"]):
+        raise ValidationError("closeout producer must be selected by its exact registered identity")
+    github = project_config["github"]
+    project = project_config["project"]
+    accepted_policy_sha256 = project_config_observation["policy_sha256"]
+    binding = closeout_record["binding"]
+    if (binding["project_id"] != project["id"] or
+            binding["repository_id"] != github["repository_id"] or
+            binding["policy_hash"] != accepted_policy_sha256):
+        raise ValidationError(
+            "closeout binding differs from accepted project, repository, or policy authority")
+    closeout_request = {
+        "operation": "CLOSEOUT_RECORD",
+        "provider_identity": {"host": github["host"].rstrip("/"),
+                              "repository": github["repository"],
+                              "repository_id": github["repository_id"]},
+        "repository_identity": {"repository": github["repository"],
+                                "repository_id": github["repository_id"]},
+        "source_identity": "protected_controller_closeout",
+        "accepted_policy_sha256": accepted_policy_sha256,
+        "record_id": closeout_record["record_id"],
+        "record_sha256": fingerprint("closeout_record", closeout_record),
+        "binding": deepcopy(binding),
+        "pr_number": closeout_record["pr_number"],
+        "reviewed_head_sha": closeout_record["reviewed_head_sha"],
+        "merge_commit_sha": closeout_record["merge_commit_sha"],
+        "gate_record_id": closeout_record["gate_record_id"],
+        "review_record_ids": deepcopy(closeout_record["review_record_ids"]),
+    }
+    closeout_observed, closeout_observation = _registered_provider_observation(
+        closeout_observer_registry, closeout_selector["producer_id"],
+        closeout_request, "closeout producer", now=now,
+        max_age=_evidence_max_age(project_config), return_attestation=True)
+    if (not isinstance(closeout_observed, dict) or
+            set(closeout_observed) != {"record", "merge_result_id", "merge_observed_at"} or
+            closeout_observed["record"] != closeout_record):
+        raise ValidationError("closeout producer did not authenticate the exact record bytes")
+    merge_result_id = closeout_observed["merge_result_id"]
+    if not isinstance(merge_result_id, str) or not merge_result_id:
+        raise ValidationError("closeout producer did not authenticate a merge result identity")
+    merge_observed_at = closeout_observed["merge_observed_at"]
+    if timestamp(merge_observed_at) > timestamp(closeout_record["created_at"]):
+        raise ValidationError("closeout record predates its authenticated merge observation")
     closeout_validation = validate_closeout(closeout_record, repository, contracts)
     jira = project_config["jira"]
     jira_enabled = jira["enabled"]
@@ -315,12 +362,23 @@ def require_jira_reconciliation_before_counts(
                 record["jira_provider"] != expected_provider):
             raise ValidationError(
                 "JIRA_RECONCILED record does not prove the configured Done transition")
+        if (record["producer_id"] != jira["controller_actor_id"] or
+                record["merge_result_id"] != merge_result_id):
+            raise ValidationError(
+                "JIRA_RECONCILED record is not the controller transition for this merge result")
+        transition_time = timestamp(record["created_at"])
+        if transition_time < timestamp(merge_observed_at):
+            raise ValidationError("JIRA_RECONCILED transition predates the authenticated merge")
         read_back = record["read_back"]
         if (read_back["observed_status"] != expected_done or
                 read_back["observed_actor"] != jira["controller_actor_id"] or
                 read_back["observed_at"] is None):
             raise ValidationError("JIRA_RECONCILED record lacks a successful target-status readback")
-        timestamp(read_back["observed_at"])
+        readback_time = timestamp(read_back["observed_at"])
+        if readback_time < transition_time:
+            raise ValidationError("Jira terminal readback predates its reconciliation transition")
+        if timestamp(jira_observation["observed_at"]) < readback_time:
+            raise ValidationError("Jira observation receipt predates the terminal readback")
     elif transition is not None or jira_reconciliation_selector is not None:
         raise ValidationError("disabled Jira cannot claim a transition record")
     return {
@@ -332,6 +390,7 @@ def require_jira_reconciliation_before_counts(
         "reviewed_head_sha": closeout_record["reviewed_head_sha"],
         "merge_commit_sha": closeout_record["merge_commit_sha"],
         "closeout_validation": closeout_validation,
+        "closeout_observation": closeout_observation,
         "project_config_observation": project_config_observation,
         "jira_observation": jira_observation,
         "execution_authority": False,
