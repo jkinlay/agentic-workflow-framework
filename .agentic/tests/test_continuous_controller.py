@@ -18,7 +18,7 @@ from agentic.continuous_controller import (
     production_controller_cycle as real_production_controller_cycle,
     production_jira_lifecycle,
     production_merge_observed,
-    production_post_merge_progress,
+    post_merge_jira_progress,
 )
 from agentic import continuous_controller
 from agentic.contracts import Contracts, schema_inventory
@@ -895,6 +895,11 @@ class JiraProgressTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.store = ContinuousControllerStore(
             Path(self.temporary.name) / "controller.sqlite3", ["A", "B", "C"])
+        gate = patch("agentic.closeout.require_jira_reconciliation_before_counts",
+                     return_value={"status": "PASS", "count_allowed": True,
+                                   "ticket": "EX-1"})
+        gate.start()
+        self.addCleanup(gate.stop)
 
     def receipt(self, ticket="EX-1", **overrides):
         value = {"ticket": ticket, "issue_id": "10001", **BINDING, "status": "RECONCILED",
@@ -912,11 +917,11 @@ class JiraProgressTests(unittest.TestCase):
 
     def call(self, reconcile=None, fetch=None, **overrides):
         args = dict(jira_enabled=True, merged_ticket="EX-1", scope=self.scope, observed_at=NOW,
-                    jira_binding=BINDING,
+                    jira_binding=BINDING, count_gate={},
                     reconcile_merged_ticket=reconcile or (lambda ticket: self.receipt(ticket)),
                     fetch_scope_page=fetch or (lambda scope, cursor: self.page([])))
         args.update(overrides)
-        return production_post_merge_progress(**args)
+        return post_merge_jira_progress(**args)
 
     def test_reconciliation_precedes_complete_paginated_stable_identity_counts(self):
         calls = []
@@ -939,14 +944,18 @@ class JiraProgressTests(unittest.TestCase):
         calls = []
         args = dict(jira_enabled=True, merged_ticket="EX-1", scope=self.scope, observed_at=NOW,
                     jira_binding=BINDING,
+                    count_gate={},
                     reconcile_merged_ticket=lambda ticket: calls.append(("reconcile", ticket)) or
                         self.receipt(ticket),
                     fetch_scope_page=lambda scope, cursor: calls.append(("count", cursor)) or
                         self.page([]))
-        result = production_merge_observed(
-            lifecycle_state="MERGING",
-            lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
-            jira_progress=args)
+        with patch("agentic.closeout.require_jira_reconciliation_before_counts",
+                   return_value={"status": "PASS", "count_allowed": True,
+                                 "ticket": "EX-1"}):
+            result = production_merge_observed(
+                lifecycle_state="MERGING",
+                lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
+                jira_progress=args)
         self.assertEqual(calls, [("reconcile", "EX-1"), ("count", None)])
         self.assertEqual((result["state"], result["jira_progress"]["jira_state"],
                           result["execution_authority"]), ("MERGED", "COUNTED", False))
@@ -955,6 +964,24 @@ class JiraProgressTests(unittest.TestCase):
             production_merge_observed(lifecycle_state="MERGING", lifecycle_facts={},
                                       jira_progress=args)
         self.assertEqual(calls, [])
+
+    def test_awf76_production_merge_count_requires_validated_closeout_gate(self):
+        calls = []
+        args = dict(jira_enabled=True, merged_ticket="EX-1", scope=self.scope,
+                    observed_at=NOW, jira_binding=BINDING,
+                    reconcile_merged_ticket=lambda ticket:
+                        calls.append(("reconcile", ticket)) or self.receipt(ticket),
+                    fetch_scope_page=lambda scope, cursor:
+                        calls.append(("count", cursor)) or self.page([]))
+        with self.assertRaisesRegex(ValidationError, "closeout"):
+            production_merge_observed(
+                lifecycle_state="MERGING",
+                lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
+                jira_progress=args)
+        self.assertEqual([], calls)
+        with self.assertRaisesRegex(ValidationError, "closeout"):
+            post_merge_jira_progress(**args, count_gate=None)
+        self.assertEqual([], calls)
 
     def test_disabled_jira_performs_no_reads_or_writes(self):
         calls = []
@@ -1376,10 +1403,8 @@ class JiraProgressTests(unittest.TestCase):
                 "merge_confirmed": True, "candidate_matched": True})),
             "--jira-progress", str(dump("progress.json", progress))],
             cwd=ROOT, text=True, capture_output=True, timeout=30)
-        self.assertEqual(merge.returncode, 0, merge.stderr)
-        merge_output = json.loads(merge.stdout)
-        self.assertEqual((merge_output["state"], merge_output["jira_progress"]["jira_state"],
-                          merge_output["jira_progress"]["closed"]), ("MERGED", "COUNTED", 1))
+        self.assertNotEqual(merge.returncode, 0)
+        self.assertIn("validated closeout gate inputs", merge.stderr)
 
         wrong_pin = subprocess.run([*common[:common.index("--adapter-sha256") + 1], "0" * 64,
                                     "--adapter-config", str(adapter_config_path), "cycle",
