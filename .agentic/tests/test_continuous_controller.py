@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import sqlite3
@@ -24,6 +25,8 @@ from agentic import continuous_controller
 from agentic.contracts import Contracts, schema_inventory
 from agentic import ValidationError
 from agentic.canonical import fingerprint, sha256
+from agentic.lifecycle import definition
+from agentic.policy import policy_hash
 from test_publication_readiness import publication_config, publication_observation
 from agentic.cli import local_semantics
 
@@ -1301,24 +1304,110 @@ class JiraProgressTests(unittest.TestCase):
         state_path = root / "controller.sqlite3"
         worktree = root / "worker"
         worktree.mkdir()
+        subprocess.run(["git", "-C", str(worktree), "init", "-q", "--initial-branch=main"],
+                       check=True)
+        subprocess.run(["git", "-C", str(worktree), "config", "user.email",
+                        "fixture@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(worktree), "config", "user.name", "fixture"],
+                       check=True)
+        fixture_path = worktree / ".agentic/tests/fixtures/ex-42.txt"
+        fixture_path.parent.mkdir(parents=True)
+        fixture_path.write_text("controller fixture\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(worktree), "add", fixture_path.relative_to(worktree)],
+                       check=True)
+        subprocess.run(["git", "-C", str(worktree), "commit", "-q", "-m", "fixture"],
+                       check=True)
         inventory = [ticket("EX-42", 1)]
         scope = "project=QA AND fixVersion=1.9.3"
+        jira_binding = {"cloud_id": "fixture-cloud", "project_id": "fixture-project",
+                        "actor_id": "fixture-controller"}
         scope_sha256 = fingerprint("jira-progress-scope", {
-            "scope": scope, "binding": BINDING, "include_epics": False})
+            "scope": scope, "binding": jira_binding, "include_epics": False})
         bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text())
+        project_config_path = ROOT / ".agentic/examples/PROJECT_CONFIG.yaml"
+        project_config = json.loads(project_config_path.read_text())
+        project_config_bytes = project_config_path.read_bytes()
+
+        def git(*arguments, binary=False):
+            completed = subprocess.run(
+                ["git", "-C", str(worktree), *arguments], check=True,
+                capture_output=True, text=not binary)
+            return completed.stdout if binary else completed.stdout.strip()
+
+        merged_head = git("rev-parse", "HEAD")
+        merged_tree = git("rev-parse", "HEAD^{tree}")
+        bound_path = ".agentic/tests/fixtures/ex-42.txt"
+        bound_blob = git("rev-parse", f"HEAD:{bound_path}")
+        bound_bytes = git("cat-file", "blob", bound_blob, binary=True)
+        merge_result_id = str(uuid.UUID(int=24))
+        transition_id = str(uuid.UUID(int=25))
+        closeout = {
+            "schema_version": 3, "record_id": str(uuid.UUID(int=20)),
+            "created_at": NOW, "producer_id": "fixture-controller",
+            "run_id": str(uuid.UUID(int=21)),
+            "binding": {
+                "project_id": project_config["project"]["id"],
+                "repository_id": project_config["github"]["repository_id"],
+                "issue_id": "QA-CLI", "requirements_hash": "a" * 64,
+                "contract_hash": "b" * 64,
+                "policy_hash": policy_hash(project_config, definition()),
+                "candidate_id": "c" * 64,
+            },
+            "pr_number": 42, "reviewed_head_sha": merged_head,
+            "base_sha": merged_head, "merge_commit_sha": merged_head,
+            "merge_tree_sha": merged_tree,
+            "bound_files": [{"path": bound_path, "blob_sha": bound_blob,
+                              "sha256": sha256(bound_bytes)}],
+            "gate_record_id": str(uuid.UUID(int=22)),
+            "review_record_ids": [str(uuid.UUID(int=23))],
+            "jira_transition_record_id": transition_id,
+            "evidence": ["urn:awf:fixture:cli-closeout"],
+        }
+        transition = {
+            "schema_version": 3, "record_id": transition_id, "created_at": NOW,
+            "producer_id": "fixture-controller", "run_id": str(uuid.UUID(int=26)),
+            "binding": closeout["binding"], "operation_id": str(uuid.UUID(int=27)),
+            "merge_result_id": merge_result_id,
+            "jira_provider": {
+                "cloud_id": "fixture-cloud", "site": "https://jira.example.invalid",
+                "project_id": "fixture-project", "project_key": "EX",
+                "controller_actor_id": "fixture-controller",
+            },
+            "lifecycle_event": "JIRA_RECONCILED", "from_status_id": "In Review",
+            "to_status_id": "Done", "transition_id": "31", "status": "SUCCEEDED",
+            "evidence": ["urn:awf:fixture:cli-jira-transition"],
+            "read_back": {"observed_status": "Done",
+                          "observed_actor": "fixture-controller", "observed_at": NOW},
+        }
         adapter_config = {
             "inventory": inventory_observation(NOW, inventory),
             "publication": publication_observation("EX-42", NOW),
             "jira_now": NOW,
             "jira_before": "Ready",
             "jira_after": "In Progress",
-            "reconcile_receipt": {"ticket": "QA-CLI", "issue_id": "10001", **BINDING,
+            "reconcile_receipt": {"ticket": "QA-CLI", "issue_id": "10001", **jira_binding,
                 "status": "RECONCILED", "operation_id": str(uuid.UUID(int=9)),
                 "before_status_id": "3", "after_status_id": "10002", "observed_at": NOW},
             "jira_page": {"items": [{"id": "10001", "issue_type": "TASK",
                                       "status_category": "TERMINAL"}],
                 "next_cursor": None, "complete": True, "snapshot_id": "snapshot-cli",
                 "scope_sha256": scope_sha256, "observed_at": NOW},
+            "project_config_observation": {
+                "raw_bytes_base64": base64.b64encode(project_config_bytes).decode("ascii"),
+                "config_sha256": sha256(project_config_bytes),
+                "policy_sha256": policy_hash(project_config, definition()),
+                "path": ".agentic/PROJECT_CONFIG.yaml",
+                "repository": project_config["github"]["repository"],
+                "repository_id": project_config["github"]["repository_id"],
+                "ref": "refs/heads/" + project_config["github"]["base_branch"],
+                "blob_sha": "e" * 40,
+                "acceptance": {"status": "ACCEPTED", "receipt_id": "cli-acceptance",
+                               "workflow_version": project_config["template"]["expected_workflow_version"]},
+            },
+            "closeout_observation": {"record": closeout,
+                                     "merge_result_id": merge_result_id,
+                                     "merge_observed_at": NOW},
+            "jira_reconciliation_observation": {"record": transition},
         }
         adapter_source = '''def build_adapters(config):
     now = config["jira_now"]
@@ -1351,6 +1440,12 @@ class JiraProgressTests(unittest.TestCase):
         return value
     def fetch_scope_page(scope, cursor):
         return config["jira_page"]
+    def observe_accepted_project_config(request):
+        return {"observed_at": now, "result": config["project_config_observation"]}
+    def observe_closeout_record(request):
+        return {"observed_at": now, "result": config["closeout_observation"]}
+    def observe_jira_reconciliation(request):
+        return {"observed_at": now, "result": config["jira_reconciliation_observation"]}
     return {name: value for name, value in locals().items() if callable(value) and name != "build_adapters"}
 '''
         adapter_path = root / "reviewed_adapter.py"
@@ -1368,9 +1463,9 @@ class JiraProgressTests(unittest.TestCase):
                   "--adapter-module", str(adapter_path),
                   "--adapter-sha256", pin, "--adapter-config", str(adapter_config_path)]
         cycle = subprocess.run([*common, "cycle", "--inventory-binding", str(binding_path),
-                                "--repository-root", str(ROOT),
-                                "--repository-head-sha", REPOSITORY["repository_head_sha"],
-                                "--repository-tree-sha", REPOSITORY["repository_tree_sha"],
+                                "--repository-root", str(worktree),
+                                "--repository-head-sha", merged_head,
+                                "--repository-tree-sha", merged_tree,
                                 "--now", NOW, "--host-capacity", "1"],
                                cwd=ROOT, text=True, capture_output=True, timeout=30)
         self.assertEqual(cycle.returncode, 0, cycle.stderr)
@@ -1397,14 +1492,18 @@ class JiraProgressTests(unittest.TestCase):
         self.assertEqual(lifecycle_output["current_observation"]["status_id"], "Ready")
 
         progress = {"jira_enabled": True, "merged_ticket": "QA-CLI", "scope": scope,
-                    "observed_at": NOW, "jira_binding": BINDING}
+                    "observed_at": NOW, "jira_binding": jira_binding,
+                    "count_gate": {"closeout_record": closeout}}
         merge = subprocess.run([*common, "merge-observed", "--lifecycle-state", "MERGING",
             "--lifecycle-facts", str(dump("merge-facts.json", {
                 "merge_confirmed": True, "candidate_matched": True})),
-            "--jira-progress", str(dump("progress.json", progress))],
+            "--jira-progress", str(dump("progress.json", progress)),
+            "--repository-root", str(worktree)],
             cwd=ROOT, text=True, capture_output=True, timeout=30)
-        self.assertNotEqual(merge.returncode, 0)
-        self.assertIn("validated closeout gate inputs", merge.stderr)
+        self.assertEqual(merge.returncode, 0, merge.stderr)
+        merge_output = json.loads(merge.stdout)
+        self.assertEqual((merge_output["state"], merge_output["jira_progress"]["jira_state"]),
+                         ("MERGED", "COUNTED"))
 
         wrong_pin = subprocess.run([*common[:common.index("--adapter-sha256") + 1], "0" * 64,
                                     "--adapter-config", str(adapter_config_path), "cycle",

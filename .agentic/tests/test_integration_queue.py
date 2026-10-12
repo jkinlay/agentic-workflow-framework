@@ -175,15 +175,20 @@ def same_tree_different_commit_runner():
 def register_integration_observer(producer_id, callback, registry,
                                   *, observed_at=NOW, capabilities=None,
                                   provider_identity=None, repository_identity=None):
+    receipts = registry.get(producer_id, {}).get("receipts", {})
+
     def observer(request):
+        observation_time = observed_at(request) if callable(observed_at) else observed_at
         result = callback(request)
+        if request.get("operation") == "QUEUE_TIME":
+            result = {"observed_at": observation_time}
         request_sha256 = fingerprint("integration_provider_request", request)
-        material = {"producer_id": producer_id, "observed_at": observed_at,
+        material = {"producer_id": producer_id, "observed_at": observation_time,
                     "request_sha256": request_sha256, "result": result}
         observation = {
             "status": "OBSERVED", "producer_id": producer_id,
             "observation_id": fingerprint("integration_provider_observation", material),
-            "observed_at": observed_at, "request_sha256": request_sha256,
+            "observed_at": observation_time, "request_sha256": request_sha256,
             "result": result,
         }
         registration = registry[producer_id]
@@ -210,7 +215,7 @@ def register_integration_observer(producer_id, callback, registry,
             if repository_identity is None else repository_identity),
         "receipt_namespace": "awf-integration-observer-v1",
         "observer": observer,
-        "receipts": {},
+        "receipts": receipts,
     }
     return producer_id
 
@@ -1038,6 +1043,81 @@ class IntegrationQueueTests(unittest.TestCase):
         """The stall decision clock is a receipted runtime observation, not an argument."""
         parameters = inspect.signature(self.store.move_stalled_front).parameters
         self.assertEqual(["epic", "outcome"], list(parameters))
+
+    def test_awf76_r2_authority_refresh_rejects_expired_observations(self):
+        later = "2026-10-10T12:00:00Z"
+        register_integration_observer(
+            "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=NOW)
+        register_integration_observer(
+            "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=later)
+        before = (canonical(self.store.snapshot("AWF-EPIC")),
+                  canonical(self.store.audit("AWF-EPIC")))
+        with self.assertRaisesRegex(ValidationError, "stale"):
+            self.store.admit(
+                "AWF-EPIC", entry(11, SHA2, validated=later),
+                "fixture-git-provider", runner(observed_at=later), observed_at=later)
+        self.assertEqual(before, (canonical(self.store.snapshot("AWF-EPIC")),
+                                  canonical(self.store.audit("AWF-EPIC"))))
+
+    def test_awf76_r2_app_binding_refresh_rejects_expired_observation(self):
+        later = "2026-10-10T12:00:00Z"
+        register_integration_observer(
+            "fixture-mode-provider", observed_mode, MODE_REGISTRY,
+            observed_at=lambda request: NOW if request["operation"] == "APP_BINDING" else later)
+        register_integration_observer(
+            "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=later)
+        before = (canonical(self.store.snapshot("AWF-EPIC")),
+                  canonical(self.store.audit("AWF-EPIC")))
+        with self.assertRaisesRegex(ValidationError, "stale"):
+            self.store.admit(
+                "AWF-EPIC", entry(11, SHA2, validated=later),
+                "fixture-git-provider", runner(observed_at=later), observed_at=later)
+        self.assertEqual(before, (canonical(self.store.snapshot("AWF-EPIC")),
+                                  canonical(self.store.audit("AWF-EPIC"))))
+
+    def test_awf76_r2_new_front_uses_fresh_queue_time_not_authority_time(self):
+        later = "2026-10-10T12:00:00Z"
+        config = copy.deepcopy(PROJECT_CONFIG)
+        config["validation"]["max_evidence_age_seconds"] = 3 * 60 * 60
+
+        def mode_observer(request):
+            if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+                return accepted_config_result(config)
+            if request["operation"] == "QUEUE_TIME":
+                return {"observed_at": later}
+            return observed_mode(request)
+
+        register_integration_observer(
+            "fixture-mode-provider", mode_observer, MODE_REGISTRY,
+            observed_at=lambda request: later if request["operation"] == "QUEUE_TIME" else NOW)
+        register_integration_observer(
+            "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=later)
+        store = IntegrationQueueStore(
+            Path(self.temporary.name) / "fresh-front-time.sqlite3",
+            project_config=config, mode_observer_registry=MODE_REGISTRY,
+            build_producer_registry=BUILD_REGISTRY, git_observer_registry=GIT_REGISTRY)
+        mode = resolve_mode(
+            {"mode": "epic", "test_command": "python -B -m unittest",
+             "stall_after_hours": 1,
+             "provenance": {"source": "reviewed_config",
+                 "config_path": ".agentic/integration-queue-config.yaml",
+                 "config_sha256": "a" * 64, "review_record_id": "fresh-front-time",
+                 "reviewed_at": NOW, "producer_id": "fixture-mode-provider"}},
+            epic="AWF-EPIC", project_config=config,
+            app_binding={"producer_id": "fixture-mode-provider"},
+            mode_observer_registry=MODE_REGISTRY, now=NOW)
+        store.initialize("AWF-EPIC", "main", SHA1,
+                         target_observer_id="fixture-git-provider",
+                         mode_record=mode, observed_at=later)
+        for item in (entry(11, SHA2, validated=later), entry(12, SHA3, validated=later)):
+            store.admit("AWF-EPIC", item, "fixture-git-provider",
+                        runner(observed_at=later), observed_at=later)
+        self.assertEqual(later, store.snapshot("AWF-EPIC")["front_since"])
+        before = (canonical(store.snapshot("AWF-EPIC")), canonical(store.audit("AWF-EPIC")))
+        with self.assertRaisesRegex(ValidationError, "stall threshold"):
+            store.move_stalled_front("AWF-EPIC", runner(observed_at=later))
+        self.assertEqual(before, (canonical(store.snapshot("AWF-EPIC")),
+                                  canonical(store.audit("AWF-EPIC"))))
 
     def test_ac7_stacked_retarget_retains_only_unchanged_patch_evidence(self):
         self.admit(entry(11, SHA2))
