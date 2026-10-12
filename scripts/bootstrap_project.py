@@ -40,11 +40,22 @@ def _load_json(path, description):
     return value
 
 
-def _write_assignment_state(path, state, dest):
+def _prepare_assignment_state_path(path, dest):
     path = Path(path).expanduser().resolve()
+    dest = Path(dest).expanduser().resolve()
     if path == dest or path.is_relative_to(dest):
         raise ValidationError("Assignment state must remain outside the adopted repository/worktree")
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.parent.is_dir():
+        raise ValidationError("Assignment state parent must be a writable directory")
+    descriptor, probe = tempfile.mkstemp(prefix=path.name + ".", suffix=".probe", dir=path.parent)
+    os.close(descriptor)
+    os.unlink(probe)
+    return path
+
+
+def _write_assignment_state(path, state, dest):
+    path = _prepare_assignment_state_path(path, dest)
     descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
@@ -74,7 +85,9 @@ def _run_assignment_path(args, jira_client, owner_source_verifier):
         raise ValidationError("Installed project configuration is unavailable for assignment") from exc
     if not isinstance(config, dict):
         raise ValidationError("Installed project configuration must be an object")
-    state_path = args.assignment_state.expanduser().resolve()
+    # Refuse invalid or unwritable controller-state destinations before an
+    # assignment can perform any Jira read-modify-write operation.
+    state_path = _prepare_assignment_state_path(args.assignment_state, args.dest)
     state = _load_json(state_path, "Assignment state") if state_path.exists() else {}
     if not isinstance(state, dict):
         raise ValidationError("Assignment state must be an object")

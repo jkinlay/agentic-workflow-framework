@@ -217,11 +217,11 @@ def verify_assignment_record(record):
 def _jira_receipt(config, jira_client, record, controller_actor_id, state):
     jira = config.get("jira", {})
     configured_actor = jira.get("controller_actor_id")
-    if configured_actor is not None and configured_actor != controller_actor_id:
-        raise ValidationError("Tier assignment Jira writes require the configured controller identity")
     if jira.get("enabled", True) is False:
         return {"read_back_status": "DISABLED", "label": None, "comment_id": None,
                 "reason": "Jira is disabled; local provisional assignment only"}
+    if configured_actor is None or configured_actor != controller_actor_id:
+        raise ValidationError("Tier assignment Jira writes require the configured controller identity")
     if jira_client is None:
         raise ValidationError("Enabled Jira tier assignment requires the controller Jira adapter")
     try:
