@@ -63,6 +63,43 @@ class ManifestConflictTests(unittest.TestCase):
             )
         return completed
 
+    def unconfigured_git_environment(self):
+        home = self.base / "isolated-home"
+        home.mkdir(exist_ok=True)
+        environment = {
+            **os.environ,
+            "HOME": str(home),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(self.base / "isolated-gitconfig"),
+        }
+        for name in (
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ):
+            environment.pop(name, None)
+        return environment
+
+    def remove_repository_identity(self, root):
+        self.git(root, "config", "--unset-all", "user.name")
+        self.git(root, "config", "--unset-all", "user.email")
+
+    def run_driver(self, root, *arguments):
+        return subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(ROOT / "scripts/manifest_merge_driver.py"),
+                *arguments,
+            ],
+            cwd=root,
+            env=self.unconfigured_git_environment(),
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
     def commit(self, root, message):
         self.git(root, "add", ".")
         self.git(root, "commit", "-m", message)
@@ -156,6 +193,83 @@ class ManifestConflictTests(unittest.TestCase):
         right = self.branch_delete(root, base, "pr-b", files, "middle.txt")
         self.assert_merges_in_either_order(root, left, right)
 
+    def test_merge_ref_uses_invocation_identity_when_pr_is_behind_main(self):
+        root, files, base = self.make_repository(
+            "behind-main", configure_driver=False
+        )
+        self.branch_change(
+            root, base, "pr", files, "aardvark.txt", b"added by PR\n"
+        )
+        self.git(root, "checkout", "main")
+        main_files = dict(files)
+        main_files["zebra.txt"] = b"added by main\n"
+        (root / "zebra.txt").write_bytes(main_files["zebra.txt"])
+        self.write_manifests(root, main_files)
+        main = self.commit(root, "advance main")
+        self.git(root, "checkout", "pr")
+        self.remove_repository_identity(root)
+
+        merged = self.run_driver(root, "--merge-ref", main)
+
+        self.assertEqual(
+            0,
+            merged.returncode,
+            merged.stdout.decode(errors="replace")
+            + merged.stderr.decode(errors="replace"),
+        )
+        unresolved = self.git(
+            root, "diff", "--name-only", "--diff-filter=U"
+        ).stdout.decode().splitlines()
+        self.assertEqual([], unresolved)
+        self.assert_current(root)
+
+    def test_merge_ref_leaves_up_to_date_pr_unchanged_without_identity(self):
+        root, files, base = self.make_repository(
+            "up-to-date", configure_driver=False
+        )
+        pr = self.branch_change(
+            root, base, "pr", files, "aardvark.txt", b"added by PR\n"
+        )
+        self.remove_repository_identity(root)
+
+        merged = self.run_driver(root, "--merge-ref", base)
+
+        self.assertEqual(
+            0,
+            merged.returncode,
+            merged.stdout.decode(errors="replace")
+            + merged.stderr.decode(errors="replace"),
+        )
+        head = self.git(root, "rev-parse", "HEAD").stdout.decode().strip()
+        self.assertEqual(pr, head)
+        status = self.git(root, "status", "--porcelain").stdout.decode()
+        self.assertEqual("", status)
+        self.assert_current(root)
+
+    def test_merge_ref_still_fails_on_non_manifest_conflict(self):
+        root, files, base = self.make_repository(
+            "content-conflict", configure_driver=False
+        )
+        self.branch_change(
+            root, base, "pr", files, "alpha.txt", b"alpha from PR\n"
+        )
+        self.git(root, "checkout", "main")
+        main_files = dict(files)
+        main_files["alpha.txt"] = b"alpha from main\n"
+        (root / "alpha.txt").write_bytes(main_files["alpha.txt"])
+        self.write_manifests(root, main_files)
+        main = self.commit(root, "conflicting main change")
+        self.git(root, "checkout", "pr")
+        self.remove_repository_identity(root)
+
+        merged = self.run_driver(root, "--merge-ref", main)
+
+        self.assertNotEqual(0, merged.returncode)
+        unresolved = self.git(
+            root, "diff", "--name-only", "--diff-filter=U"
+        ).stdout.decode().splitlines()
+        self.assertEqual(["alpha.txt"], unresolved)
+
     def test_production_sync_merges_and_pushes_without_repository_config(self):
         root, files, base = self.make_repository(
             "production-sync", configure_driver=False
@@ -171,31 +285,18 @@ class ManifestConflictTests(unittest.TestCase):
         self.git(root, "remote", "add", "origin", str(remote))
         self.git(root, "push", "origin", f"{left}:refs/heads/pr-a")
         self.git(root, "checkout", "-B", "pr-a", left)
+        self.remove_repository_identity(root)
 
         configured = self.git(
             root, "config", "--get", "merge.awf-manifest.driver", check=False
         )
         self.assertNotEqual(0, configured.returncode)
-        environment = {
-            **os.environ,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-        }
-        merged = subprocess.run(
-            [
-                sys.executable,
-                "-B",
-                str(ROOT / "scripts/manifest_merge_driver.py"),
-                "--sync-ref",
-                right,
-                "--push-branch",
-                "pr-a",
-            ],
-            cwd=root,
-            env=environment,
-            capture_output=True,
-            check=False,
-            timeout=30,
+        merged = self.run_driver(
+            root,
+            "--sync-ref",
+            right,
+            "--push-branch",
+            "pr-a",
         )
         self.assertEqual(
             0,
