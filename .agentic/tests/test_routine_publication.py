@@ -5,8 +5,12 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import sys
 import unittest
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic.interaction import decide_action as action_decision, publication_classification as classify

@@ -9,6 +9,9 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
+
 from agentic import ValidationError
 from agentic.authorization import make_request
 from agentic.canonical import load, fingerprint

@@ -1,4 +1,4 @@
-"""Each AWF-75 test module must bootstrap its imports in a fresh interpreter."""
+"""Each test module must bootstrap its imports in a fresh interpreter."""
 from __future__ import annotations
 
 import os
@@ -10,13 +10,9 @@ import unittest
 
 
 TESTS = Path(__file__).resolve().parent
-MODULES = (
-    "test_child_process",
-    "test_continuous_controller",
-    "test_review_first_draft194",
-    "test_review_loop",
-    "test_review_qualification",
-    "test_streams",
+MODULES = tuple(
+    ".".join(path.relative_to(TESTS).with_suffix("").parts)
+    for path in sorted(TESTS.rglob("test_*.py"))
 )
 IMPORT_MODULE = (
     "import importlib, sys; "
