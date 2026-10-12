@@ -238,12 +238,10 @@ def _ready_keys(graph, blockers):
         status = node["status"]
         unmet = sorted(blocker for blocker in blockers.get(key, ())
                        if blocker not in nodes or nodes[blocker]["status"] not in CLOSED_STATUSES)
-        if status in ACTIVE_STATUSES:
-            ready.append(key)
-        elif status in READY_STATUSES and not unmet:
-            ready.append(key)
-        elif status not in CLOSED_STATUSES and unmet:
+        if status not in CLOSED_STATUSES and unmet:
             blocked[key] = unmet
+        elif status in ACTIVE_STATUSES or status in READY_STATUSES:
+            ready.append(key)
     return ready, blocked
 
 
@@ -290,7 +288,8 @@ def _resource_constraints(resources):
     return checked, copy.deepcopy(headroom)
 
 
-def verify_override_record(record):
+def _authenticated_override(record, config, previous, verify_owner_source):
+    """Validate and re-authenticate one complete owner decision in its chain."""
     if not isinstance(record, dict):
         raise ValidationError("Planning override record must be an object")
     digest = record.get("override_sha256")
@@ -300,7 +299,115 @@ def verify_override_record(record):
     if record.get("mode") not in {"fixed", "max"} or type(record.get("value")) is not int or record["value"] < 1:
         raise ValidationError("Planning override must be a positive fixed or max value")
     timestamp(record.get("created_at"))
+    if record.get("schema_version") != 1 or not isinstance(record.get("override_id"), str) or not record["override_id"]:
+        raise ValidationError("Planning override record identity is incomplete")
+
+    previous_id = previous.get("override_id") if previous else None
+    if record.get("previous_override_id") != previous_id:
+        raise ValidationError("Planning override audit chain is incomplete or out of order")
+    audit = record.get("change_audit")
+    source = record.get("owner_source")
+    verified = record.get("owner_verification")
+    if not isinstance(audit, dict) or not isinstance(source, dict) or not isinstance(verified, dict):
+        raise ValidationError("Planning override requires the complete owner-source and audit chain")
+
+    actor = source.get("actor_id")
+    owners = set(config.get("merge_gate", {}).get("trusted_owner_ids", []))
+    project_owner = config.get("github", {}).get("expected_actor_id")
+    if project_owner is not None:
+        owners.add(project_owner)
+    if actor not in owners or audit.get("who") != actor:
+        raise ValidationError("Planning override audit does not identify an authenticated owner or trusted owner")
+    reason = audit.get("why")
+    if not isinstance(reason, str) or not reason.strip() or reason != reason.strip():
+        raise ValidationError("Planning override audit needs the exact non-empty owner reason")
+    old = {"mode": previous.get("mode"), "value": previous.get("value")} if previous else {"mode": None, "value": None}
+    if (audit.get("when") != record["created_at"] or audit.get("old") != old
+            or audit.get("new") != {"mode": record["mode"], "value": record["value"]}):
+        raise ValidationError("Planning override audit old/new values or timestamp do not bind the chain")
+
+    binding = {"current_override_id": previous_id}
+    command = owner_override_command(previous_id, record["mode"], record["value"], reason)
+    command_hash = sha256(command.encode("utf-8"))
+    if (source.get("channel") != "github_pr_comment"
+            or type(source.get("comment_id")) is not int or source["comment_id"] < 1
+            or source.get("binding") != binding
+            or source.get("created_at") != source.get("updated_at")
+            or source.get("raw_body") != command
+            or source.get("raw_body_sha256") != command_hash):
+        raise ValidationError("Planning override owner-source does not immutably bind the audited request")
+    timestamp(source.get("created_at"))
+    if (audit.get("owner_source_id") != verified.get("source_id")
+            or audit.get("owner_source_sha256") != command_hash
+            or (source.get("source_id") is not None and source.get("source_id") != verified.get("source_id"))
+            or verified.get("status") != "VERIFIED"
+            or verified.get("actor_id") != actor
+            or verified.get("binding") != binding
+            or verified.get("raw_body_sha256") != command_hash
+            or not isinstance(verified.get("source_id"), str) or not verified["source_id"]
+            or not isinstance(verified.get("observed_at"), str)):
+        raise ValidationError("Planning override owner-source verification does not bind the audit")
+    timestamp(verified["observed_at"])
+    seed = {"created_at": record["created_at"], "actor_id": actor,
+            "mode": record["mode"], "value": record["value"],
+            "previous_override_id": previous_id,
+            "owner_source_id": verified["source_id"]}
+    expected_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL, "awf-planning-override:" + fingerprint("planning_override", seed)))
+    if record["override_id"] != expected_id:
+        raise ValidationError("Planning override identity does not bind its owner-source audit")
+    if not callable(verify_owner_source):
+        raise ValidationError("Planning override scheduling requires owner-source re-authentication")
+    verification_request = {
+        "binding": binding, "actor_id": actor, "raw_body_sha256": command_hash,
+        "requested": {"mode": record["mode"], "value": record["value"]},
+        "now": record["created_at"],
+    }
+    try:
+        observed = verify_owner_source(copy.deepcopy(source), copy.deepcopy(verification_request))
+    except Exception as exc:
+        raise ValidationError("Planning override owner-source authentication failed") from exc
+    for field in ("status", "actor_id", "binding", "raw_body_sha256", "source_id"):
+        if not isinstance(observed, dict) or observed.get(field) != verified.get(field):
+            raise ValidationError("Planning override owner-source re-authentication differs from its controller record")
+    if not isinstance(observed.get("observed_at"), str):
+        raise ValidationError("Planning override re-authentication lacks an observation timestamp")
+    timestamp(observed["observed_at"])
     return True
+
+
+def verify_override_record(record, config=None, previous=None, verify_owner_source=None):
+    """Verify one override only with its governance and owner authenticator."""
+    if config is None or not callable(verify_owner_source):
+        raise ValidationError("Planning override verification requires authenticated controller context")
+    return _authenticated_override(record, config, previous, verify_owner_source)
+
+
+def verify_override_state(config, state, verify_owner_source):
+    """Return the current override only from a complete controller-owned chain."""
+    if not isinstance(state, dict):
+        raise ValidationError("Planning overrides require controller-owned AWF state")
+    current = state.get("planning_override")
+    history = state.get("planning_override_history", [])
+    if current is None:
+        if history:
+            raise ValidationError("Planning override audit history has no current controller record")
+        return None
+    if not isinstance(history, list) or not history:
+        raise ValidationError("Planning override requires a complete controller-owned audit history")
+    previous = None
+    identities = set()
+    sources = set()
+    for record in history:
+        _authenticated_override(record, config, previous, verify_owner_source)
+        if record["override_id"] in identities or record["owner_verification"]["source_id"] in sources:
+            raise ValidationError("Planning override audit chain reuses an override or owner-source identity")
+        identities.add(record["override_id"])
+        sources.add(record["owner_verification"]["source_id"])
+        previous = record
+    if current != previous:
+        raise ValidationError("Planning override current value is not the authenticated audit-chain tip")
+    return copy.deepcopy(current)
 
 
 def _estimate(graph, config, independent_count, resources):
@@ -337,7 +444,8 @@ def _estimate(graph, config, independent_count, resources):
     }
 
 
-def plan_lanes(graph, config, *, resources=None, override=None):
+def plan_lanes(graph, config, *, resources=None, controller_state=None,
+               verify_owner_source=None, override=None):
     """Return conflict-free ready lanes ranked by downstream critical path."""
     if not isinstance(graph, dict) or not isinstance(graph.get("tickets"), dict):
         raise ValidationError("Planning requires a backlog graph")
@@ -363,19 +471,22 @@ def plan_lanes(graph, config, *, resources=None, override=None):
     decision = {"kind": "accepted_default", "value": lane_count}
     warnings = []
     if override is not None:
-        verify_override_record(override)
+        raise ValidationError("Planning overrides must come from authenticated controller-owned state")
+    selected_override = (verify_override_state(config, controller_state, verify_owner_source)
+                         if controller_state is not None else None)
+    if selected_override is not None:
         ceiling = operating_ceiling(config)["effective_ceiling"]
-        if override["value"] > ceiling:
+        if selected_override["value"] > ceiling:
             raise ValidationError(f"Planning override exceeds the governed lane ceiling of {ceiling}")
-        if override["mode"] == "fixed":
-            lane_count = override["value"]
+        if selected_override["mode"] == "fixed":
+            lane_count = selected_override["value"]
         else:
-            lane_count = min(lane_count, override["value"])
-        decision = {"kind": "owner_override", "mode": override["mode"],
-                    "value": override["value"], "override_id": override["override_id"]}
-        if override["value"] > estimate["safe_lane_count"]:
+            lane_count = min(lane_count, selected_override["value"])
+        decision = {"kind": "owner_override", "mode": selected_override["mode"],
+                    "value": selected_override["value"], "override_id": selected_override["override_id"]}
+        if selected_override["value"] > estimate["safe_lane_count"]:
             warnings.append(
-                f"Owner {override['mode']} override {override['value']} is above the safe estimate "
+                f"Owner {selected_override['mode']} override {selected_override['value']} is above the safe estimate "
                 f"{estimate['safe_lane_count']}; the value is retained and applies within the governed ceiling")
     return {"lanes": lanes, "blocked": blocked, "critical_path_minutes": scores,
             "estimate": estimate, "owner_decision": decision,
@@ -400,9 +511,7 @@ def change_owner_override(config, state, *, mode, value, reason, now,
     ceiling = operating_ceiling(config)["effective_ceiling"]
     if value > ceiling:
         raise ValidationError(f"Lane override exceeds the governed lane ceiling of {ceiling}")
-    current = state.get("planning_override")
-    if current is not None:
-        verify_override_record(current)
+    current = verify_override_state(config, state, verify_owner_source)
     current_id = current.get("override_id") if current else None
     if not isinstance(owner_source, dict) or not callable(verify_owner_source):
         raise ValidationError("Lane overrides require a verified immutable owner-source record")
@@ -450,7 +559,9 @@ def change_owner_override(config, state, *, mode, value, reason, now,
               "override_id": str(uuid.uuid5(uuid.NAMESPACE_URL,
                                              "awf-planning-override:" + fingerprint("planning_override", seed))),
               "override_sha256": "", "created_at": now, "mode": mode, "value": value,
-              "previous_override_id": current_id, "change_audit": audit}
+              "previous_override_id": current_id, "change_audit": audit,
+              "owner_source": copy.deepcopy(owner_source),
+              "owner_verification": copy.deepcopy(verified)}
     record["override_sha256"] = fingerprint(
         "planning_override_record", {k: v for k, v in record.items() if k != "override_sha256"})
     state["planning_override"] = copy.deepcopy(record)
@@ -483,12 +594,14 @@ def append_plan_record(state, record):
 
 
 def recompute_plan(tickets, config, state, *, now, trigger, resources=None,
-                   round_active=False, override=None):
+                   round_active=False, verify_owner_source=None, override=None):
     """Re-plan at named boundaries, deferring any in-round reassignment."""
     if trigger not in RECOMPUTE_TRIGGERS:
         raise ValidationError("Unknown planning recompute trigger")
     if not isinstance(state, dict):
         raise ValidationError("AWF state must be an object")
+    if override is not None:
+        raise ValidationError("Planning overrides must come from authenticated controller-owned state")
     timestamp(now)
     if round_active:
         pending = state.setdefault("pending_planning_triggers", [])
@@ -496,9 +609,9 @@ def recompute_plan(tickets, config, state, *, now, trigger, resources=None,
             pending.append(trigger)
         return {"status": "DEFERRED_UNTIL_ROUND_END", "trigger": trigger,
                 "reason": "In-flight work is never reassigned mid-round"}
-    selected_override = override if override is not None else state.get("planning_override")
     graph = build_backlog_graph(tickets, config)
-    result = plan_lanes(graph, config, resources=resources, override=selected_override)
+    result = plan_lanes(graph, config, resources=resources, controller_state=state,
+                        verify_owner_source=verify_owner_source)
     body = {"schema_version": 1, "created_at": now, "trigger": trigger,
             "inputs": {"jira_snapshot_sha256": fingerprint("planning_ticket_snapshot", tickets),
                        "tickets": copy.deepcopy(graph["tickets"]),

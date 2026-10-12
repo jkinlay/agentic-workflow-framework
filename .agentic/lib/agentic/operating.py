@@ -197,6 +197,9 @@ def _schema(name, value, *, stream_ceiling=None):
         route = deepcopy(streams["properties"]["A"])
         streams["properties"]["count"]["maximum"] = stream_ceiling
         labels = stream_labels(stream_ceiling)
+        for label in list(streams["properties"]):
+            if re.fullmatch(r"[A-Z]+", label) and label not in labels:
+                del streams["properties"][label]
         for label in labels:
             streams["properties"].setdefault(label, deepcopy(route))
         scoped = schema["properties"]["epic_overrides"]["patternProperties"]
@@ -276,8 +279,9 @@ def validate_operating(value, governance):
     if isinstance(value, dict):
         pairs.append(("$.simple_worker", "worker", value.get("simple_worker")))
     if isinstance(streams, dict):
-        for label in stream_labels(structural_ceiling):
-            entry = streams.get(label)
+        for label, entry in streams.items():
+            if label == "count" or not re.fullmatch(r"[A-Z]+", label):
+                continue
             if isinstance(entry, dict):
                 pairs.extend(("$.streams." + label + "." + key, role, entry.get(key))
                              for key, role in (("worker", "worker"), ("reviewer", "critic")))
@@ -832,16 +836,14 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         if type(count) is int and 1 <= count <= ceiling:
             for label in stream_labels(count):
                 value["streams"].setdefault(label, _stream())
+        structural_ceiling = governance["execution"].get("max_lanes", DEFAULT_MAX_LANES)
+        migration_paths = _prune_unrepresentable_routes(value, structural_ceiling)
         for path, choice in selected.items():
             if path.startswith("epic_overrides.") and path.endswith(".pinned") and _get(value, path.rsplit(".", 1)[0]) is None:
                 fail("$." + path, "Choose a complete scoped route before changing its pin")
             if path == "simple_worker" and isinstance(choice, dict):
                 choice.setdefault("enabled", value["simple_worker"]["enabled"])
             _put(value, path, choice)
-        migration_paths = []
-        if "streams.count" in selected and type(count) is int and 1 <= count <= ceiling:
-            structural_ceiling = governance["execution"].get("max_lanes", DEFAULT_MAX_LANES)
-            migration_paths = _prune_unrepresentable_routes(value, structural_ceiling)
         value["source"] = source
         validate_operating(value, governance)
         paths = sorted(set(selected) | set(migration_paths) | {"source"} | {"streams." + s for s in stream_labels(ceiling) if s in value["streams"] and s not in snapshot.config["streams"]})
