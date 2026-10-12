@@ -36,6 +36,48 @@ EPIC_ID = r"[A-Z][A-Z0-9_]*-[1-9][0-9]*"
 STAGING_NAME = r"\.awf-operating-[0-9a-f]{32}\.tmp"
 MAX_BYTES = 1024 * 1024
 SCHEMAS = Path(__file__).resolve().parents[2] / "schemas"
+SOURCE_MANIFEST = "MANIFEST.json"
+SOURCE_MARKER = "scripts/build_release.py"
+
+
+def filesystem_reader(root):
+    """Return a bounded repository-relative byte reader for a filesystem root."""
+    root = Path(root)
+
+    def read(name):
+        path = root / name
+        try:
+            if not path.is_file() or path.stat().st_size > MAX_BYTES:
+                return None
+            return path.read_bytes()
+        except OSError:
+            return None
+
+    return read
+
+
+def tree_reader(tree):
+    """Adapt a checked filesystem tree to the source-identity byte reader."""
+    def read(name):
+        return tree.read(name, maximum=MAX_BYTES) if tree.inspect(name) is not None else None
+
+    return read
+
+
+def is_awf_source_repository(read):
+    """Recognize an uninstalled AWF source tree from repository-relative bytes."""
+    try:
+        if read(INSTALLED) is not None or read(SOURCE_MARKER) is None:
+            return False
+        raw = read(SOURCE_MANIFEST)
+        if raw is None:
+            return False
+        manifest = loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return False
+    return (isinstance(manifest, dict) and manifest.get("format") == "awf-manifest-1"
+            and isinstance(manifest.get("files"), dict)
+            and SOURCE_MARKER in manifest["files"])
 
 
 class OperatingError(ValidationError):
@@ -253,9 +295,9 @@ def validate_snapshot(snapshot, governance):
 
 @contextmanager
 def _lock(tree):
-    if tree.inspect("MANIFEST.json") is not None:
-        if tree.inspect(INSTALLED) is None:
-            fail("$", "Use an installed project outside the immutable release source for operating state")
+    if is_awf_source_repository(tree_reader(tree)):
+        fail("$", "Use an installed project outside the immutable release source for operating state")
+    if tree.inspect(SOURCE_MANIFEST) is not None and tree.inspect(INSTALLED) is not None:
         # An adopted source checkout legitimately retains the release build
         # manifests.  Its receipt must verify before those manifests may stop
         # identifying the checkout as an immutable, uninstalled release source.
