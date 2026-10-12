@@ -68,7 +68,7 @@ class ManifestConflictTests(unittest.TestCase):
         self.git(root, "commit", "-m", message)
         return self.git(root, "rev-parse", "HEAD").stdout.decode().strip()
 
-    def make_repository(self, name):
+    def make_repository(self, name, configure_driver=True):
         root = self.base / name
         root.mkdir()
         files = {
@@ -87,11 +87,12 @@ class ManifestConflictTests(unittest.TestCase):
         self.git(root, "init", "-b", "main")
         self.git(root, "config", "user.name", "Manifest Fixture")
         self.git(root, "config", "user.email", "manifest@example.invalid")
-        command = (
-            f'"{sys.executable}" -B "{root / "manifest_merge_driver.py"}" '
-            "%O %A %B %P"
-        )
-        self.git(root, "config", "merge.awf-manifest.driver", command)
+        if configure_driver:
+            command = (
+                f'"{sys.executable}" -B "{root / "manifest_merge_driver.py"}" '
+                "%O %A %B %P"
+            )
+            self.git(root, "config", "merge.awf-manifest.driver", command)
         base = self.commit(root, "base")
         return root, files, base
 
@@ -158,6 +159,74 @@ class ManifestConflictTests(unittest.TestCase):
         left = self.branch_delete(root, base, "pr-a", files, "alpha.txt")
         right = self.branch_delete(root, base, "pr-b", files, "middle.txt")
         self.assert_merges_in_either_order(root, left, right)
+
+    def test_production_sync_registers_driver_without_repository_config(self):
+        root, files, base = self.make_repository(
+            "production-sync", configure_driver=False
+        )
+        left = self.branch_change(
+            root, base, "pr-a", files, "aardvark-a.txt", b"added by A\n"
+        )
+        right = self.branch_change(
+            root, base, "pr-b", files, "aardvark-b.txt", b"added by B\n"
+        )
+        self.git(root, "checkout", "-b", "sync", left)
+
+        configured = self.git(
+            root, "config", "--get", "merge.awf-manifest.driver", check=False
+        )
+        self.assertNotEqual(0, configured.returncode)
+        environment = {
+            **os.environ,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+        }
+        merged = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(ROOT / "scripts/manifest_merge_driver.py"),
+                "--merge-ref",
+                right,
+            ],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(
+            0,
+            merged.returncode,
+            merged.stdout.decode(errors="replace")
+            + merged.stderr.decode(errors="replace"),
+        )
+        self.assertNotEqual(
+            0,
+            self.git(
+                root,
+                "config",
+                "--get",
+                "merge.awf-manifest.driver",
+                check=False,
+            ).returncode,
+        )
+        unresolved = self.git(
+            root, "diff", "--name-only", "--diff-filter=U"
+        ).stdout.decode().splitlines()
+        self.assertEqual([], unresolved)
+        self.assert_current(root)
+
+    def test_workflow_invokes_production_manifest_sync(self):
+        workflow = (ROOT / ".github/workflows/manifest-check.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("fetch-depth: 0", workflow)
+        self.assertIn("github.event.pull_request.head.sha || github.sha", workflow)
+        self.assertIn(
+            "python -B scripts/manifest_merge_driver.py --merge-ref",
+            workflow,
+        )
 
     def test_workflow_scopes_matrix_concurrency_to_manifest_job(self):
         workflow = (ROOT / ".github/workflows/manifest-check.yml").read_text(
