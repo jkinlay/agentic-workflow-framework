@@ -16,6 +16,7 @@ from source_only import write_awf_source_fixture  # noqa: E402
 
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, loads, sha256
+from agentic.intake_assignment import assign_intake
 from agentic.safeio import Tree
 from agentic.streams import DEFAULT_NATIVE_EXECUTION, JOURNAL, MARKDOWN, PLAN, plan_inventory, recommendation_groups, render_markdown, write_project_plan
 from test_operating_integration import configuration as operating_configuration, governance as operating_governance
@@ -53,6 +54,45 @@ def history(summary="Synthetic work completed"):
 
 def owner(stream="A", agent="synthetic-agent-A", state="active"):
     return {"stream": stream, "agent_id": agent, "worktree": f"synthetic/worktrees/{agent}", "state": state, "evidence": "synthetic:writer-lease"}
+
+
+def reassignment_governance():
+    value = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+    value["merge_gate"]["trusted_owner_ids"] = [1001]
+    return value
+
+
+def intake_assignment(ticket_id="DEMO-31"):
+    state = {}
+    return assign_intake(
+        reassignment_governance(),
+        {"key": ticket_id, "summary": "Synthetic stream work", "description": "",
+         "write_paths": ["src/component.py"], "risk_flags": []},
+        state, None, now=NOW, controller_actor_id="controller-1",
+    )
+
+
+def stream_owner_source(ticket_id, assignment_id, old, new, reason, actor_id=1001):
+    binding = {"ticket_key": ticket_id, "current_assignment_id": assignment_id}
+    body = (
+        f"AWF STREAM REASSIGNMENT ticket={ticket_id} current={assignment_id} "
+        f"old={old} new={new} reason_sha256={sha256(reason.strip().encode('utf-8'))}"
+    )
+    return {
+        "channel": "github_pr_comment", "comment_id": 48, "actor_id": actor_id,
+        "actor_login": "synthetic-owner", "created_at": NOW, "updated_at": NOW,
+        "raw_body": body, "raw_body_sha256": sha256(body.encode("utf-8")),
+        "binding": binding,
+    }
+
+
+def verify_stream_owner_source(source, expected):
+    return {
+        "status": "VERIFIED", "actor_id": source["actor_id"],
+        "source_id": f"github_pr_comment:{source['comment_id']}",
+        "observed_at": expected["now"], "binding": deepcopy(source["binding"]),
+        "raw_body_sha256": source["raw_body_sha256"],
+    }
 
 
 class PlannerTests(unittest.TestCase):
@@ -453,28 +493,42 @@ class PlannerTests(unittest.TestCase):
 
     def test_verified_owner_reassignment_is_chained_and_pinned_across_rebalancing(self):
         before = self.plan()
+        assignment = intake_assignment()
+        reason = "AWF-48 owner lane decision"
         directive = {
-            "ticket_id": "DEMO-31", "who": "owner-1", "when": NOW,
-            "why": "AWF-48 owner lane decision", "old": "C", "new": "B",
-            "owner_source": {"comment_id": 48},
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason),
         }
 
         def verify(source, expected):
-            self.assertEqual({"comment_id": 48}, source)
-            self.assertEqual("DEMO-31", expected["ticket_id"])
-            return {"status": "VERIFIED", "actor_id": "owner-1",
-                    "source_id": "github-comment:48"}
+            self.assertEqual(48, source["comment_id"])
+            self.assertEqual(
+                {"ticket_key": "DEMO-31",
+                 "current_assignment_id": assignment["assignment_id"]},
+                expected["binding"],
+            )
+            self.assertEqual({"old": "C", "new": "B"}, expected["requested"])
+            return verify_stream_owner_source(source, expected)
 
         raw = canonical(self.value)
         changed = plan_inventory(
             raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
             owner_reassignments=[directive], verify_owner_reassignment=verify,
+            governance=reassignment_governance(),
+            intake_assignments={"DEMO-31": assignment},
         )
         audit = next(item for item in changed["stream_assignment_history"]
                      if item["kind"] == "owner_reassignment")
-        self.assertEqual(("owner-1", NOW, "AWF-48 owner lane decision", "C", "B"),
+        self.assertEqual((1001, NOW, reason, "C", "B"),
                          tuple(audit[name] for name in ("who", "when", "why", "old", "new")))
-        self.assertEqual(before["stream_assignment_chain_id"], audit["previous_assignment_id"])
+        self.assertEqual(assignment["assignment_id"], audit["intake_assignment_id"])
+        self.assertEqual(assignment["assignment_id"], audit["previous_assignment_id"])
+        self.assertEqual(before["stream_assignment_chain_id"],
+                         audit["previous_stream_assignment_id"])
+        self.assertEqual(directive["owner_source"]["raw_body_sha256"],
+                         audit["owner_source_sha256"])
         following = [item for item in changed["stream_assignment_history"]
                      if item["previous_assignment_id"] == audit["assignment_id"]]
         self.assertTrue(following or changed["stream_assignment_chain_id"] == audit["assignment_id"])
@@ -503,23 +557,95 @@ class PlannerTests(unittest.TestCase):
             plan_inventory(raw, sha256(raw), NOW, allow_synthetic=True,
                            previous=before)
 
-    def test_owner_reassignment_rejects_non_owner_or_unverified_source_without_mutation(self):
+    def test_owner_reassignment_rejects_non_owner_even_if_callback_claims_verified(self):
         before = self.plan()
+        assignment = intake_assignment()
+        reason = "claim"
         directive = {
-            "ticket_id": "DEMO-31", "who": "not-owner", "when": NOW,
-            "why": "claim", "old": "C", "new": "B", "owner_source": {},
+            "ticket_id": "DEMO-31", "who": 9999, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason,
+                actor_id=9999),
         }
         raw = canonical(self.value)
         with self.assertRaisesRegex(ValidationError, "trusted owner"):
             plan_inventory(
                 raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
                 owner_reassignments=[directive],
-                verify_owner_reassignment=lambda source, expected: {
-                    "status": "REJECTED", "actor_id": "not-owner",
-                    "source_id": "github-comment:49",
-                },
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(),
+                intake_assignments={"DEMO-31": assignment},
             )
         self.assertEqual("C", before["tickets"]["DEMO-31"]["stream"])
+
+    def test_owner_reassignment_rejects_missing_intake_chain_and_mutable_source(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        reason = "owner move"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason),
+        }
+        raw = canonical(self.value)
+        with self.assertRaisesRegex(ValidationError, "intake assignment"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+                owner_reassignments=[directive],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(), intake_assignments={},
+            )
+        directive["owner_source"]["updated_at"] = "2026-09-11T10:00:01Z"
+        with self.assertRaisesRegex(ValidationError, "Edited owner-source"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+                owner_reassignments=[directive],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(),
+                intake_assignments={"DEMO-31": assignment},
+            )
+
+    def test_owner_reassignment_rejects_wrong_intake_binding_and_verifier_receipt(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        reason = "owner move"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", "wrong-assignment", "C", "B", reason),
+        }
+        raw = canonical(self.value)
+        arguments = dict(
+            allow_synthetic=True, previous=before,
+            owner_reassignments=[directive], governance=reassignment_governance(),
+            intake_assignments={"DEMO-31": assignment},
+        )
+        with self.assertRaisesRegex(ValidationError, "binding"):
+            plan_inventory(
+                raw, sha256(raw), NOW,
+                verify_owner_reassignment=verify_stream_owner_source, **arguments)
+        directive["owner_source"] = stream_owner_source(
+            "DEMO-31", assignment["assignment_id"], "C", "B", reason)
+        directive["owner_source"]["raw_body"] += " altered"
+        with self.assertRaisesRegex(ValidationError, "raw command"):
+            plan_inventory(
+                raw, sha256(raw), NOW,
+                verify_owner_reassignment=verify_stream_owner_source, **arguments)
+        directive["owner_source"] = stream_owner_source(
+            "DEMO-31", assignment["assignment_id"], "C", "B", reason)
+
+        def mismatched_receipt(source, expected):
+            receipt = verify_stream_owner_source(source, expected)
+            receipt["raw_body_sha256"] = "0" * 64
+            return receipt
+
+        with self.assertRaisesRegex(ValidationError, "exact stream reassignment"):
+            plan_inventory(
+                raw, sha256(raw), NOW,
+                verify_owner_reassignment=mismatched_receipt, **arguments)
 
 
 class NativeCapacityTests(unittest.TestCase):
