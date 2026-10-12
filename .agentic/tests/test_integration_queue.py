@@ -205,6 +205,16 @@ def observed_git(request):
              "patch_id": "a" * 40}
             for item in request["retargets"]
         ]}
+    if request["operation"] == "PULL_REQUEST_MERGE":
+        return {"status": "MERGED", "pr_number": request["pr_number"],
+                "reviewed_head_sha": request["reviewed_head_sha"],
+                "target_branch": request["target_branch"],
+                "old_target_sha": request["old_target_sha"],
+                "new_target_sha": request["expected_new_target_sha"]}
+    if request["operation"] == "RETARGET_RETENTION":
+        return {"pr_number": request["pr_number"], "head_sha": request["head_sha"],
+                "target_sha": request["target_sha"],
+                "patch_id": request["reviewed_patch_id"]}
     if request["operation"] == "MERGE_CONFLICT":
         return {"status": "CONFLICT", "target_sha": request["target_sha"],
                 "candidate_head_sha": request["head_sha"],
@@ -296,6 +306,18 @@ def epic_mode_record():
 def trusted_readiness():
     contracts = Contracts(ROOT / ".agentic/schemas")
     config = copy.deepcopy(PROJECT_CONFIG)
+    mode_registry = {}
+    register_integration_observer(
+        "fixture-mode-provider", observed_mode, mode_registry, observed_at=GATE_NOW)
+    mode_record = resolve_mode(
+        {"mode": "epic", "test_command": "python -B -m unittest",
+         "provenance": {"source": "reviewed_config",
+             "config_path": ".agentic/integration-queue-config.yaml",
+             "config_sha256": "a" * 64, "review_record_id": "config-review-1",
+             "reviewed_at": NOW, "producer_id": "fixture-mode-provider"}},
+        epic="AWF-EPIC", project_config=config,
+        app_binding={"producer_id": "fixture-mode-provider"},
+        mode_observer_registry=mode_registry, now=GATE_NOW)
     bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
     bind_review_admission(bundle)
     verifier = copy.deepcopy(bundle["runs"][0])
@@ -333,7 +355,9 @@ def trusted_readiness():
     candidate = gate["candidate"]
     state = {"entries": [{"pr_number": candidate["pr_number"],
                            "head_sha": candidate["head_sha"], "branch": "awf/task-7",
-                           "reviewed_paths": ["src/task-7.py"], "depends_on": []}],
+                           "reviewed_paths": ["src/task-7.py"], "depends_on": [],
+                           "patch_id": candidate["head_sha"]}],
+             "epic": "AWF-EPIC", "mode_record": mode_record,
              "target_sha": candidate["target_base_sha"],
              "target_branch": candidate["target_base_branch"],
              "integration_branch": "awf/int/fixture",
@@ -354,7 +378,7 @@ def trusted_readiness():
         delta_registry, observed_at=GATE_NOW)
     delta = {"producer_id": delta_critic["producer_id"]}
     return (state, bundle, gate, request, authorization, delta, config, contracts,
-            registry, delta_registry)
+            registry, delta_registry, mode_registry)
 
 
 class IntegrationQueueTests(unittest.TestCase):
@@ -542,11 +566,12 @@ class IntegrationQueueTests(unittest.TestCase):
 
     def test_ac4_only_exact_front_tuple_can_succeed(self):
         (state, bundle, gate, request, authorization, delta, config, contracts,
-         registry, delta_registry) = trusted_readiness()
+         registry, delta_registry, mode_registry) = trusted_readiness()
         ready = integration_status(
             state, 7, bundle, gate, request, authorization, delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
-            delta_review_observer_registry=delta_registry, now=GATE_NOW)
+            delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry, now=GATE_NOW)
         self.assertEqual("success", ready["status"])
 
         self.assertEqual("awf/task-7", ready["merge_source_branch"])
@@ -557,7 +582,8 @@ class IntegrationQueueTests(unittest.TestCase):
         pending = integration_status(
             state, 8, bundle, gate, request, authorization, delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
-            delta_review_observer_registry=delta_registry, now=GATE_NOW)
+            delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry, now=GATE_NOW)
         self.assertEqual("pending", pending["status"])
         self.assertIn("position 2", pending["reason"])
         stale = copy.deepcopy(state)
@@ -566,7 +592,8 @@ class IntegrationQueueTests(unittest.TestCase):
         stale = integration_status(
             stale, 7, bundle, gate, request, authorization, delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
-            delta_review_observer_registry=delta_registry, now=GATE_NOW)
+            delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry, now=GATE_NOW)
         self.assertEqual("pending", stale["status"])
         self.assertIn("front queue candidate tuple", stale["reason"])
         wrong_delta = {**delta, "unexpected_summary": True}
@@ -574,6 +601,7 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, authorization, wrong_delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)["reason"])
         replayed_delta = {"required": False, "satisfied": True,
                           "head_sha": state["entries"][0]["head_sha"],
@@ -583,21 +611,24 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, authorization, replayed_delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)["reason"])
 
     def test_ac4_self_declared_evidence_and_unregistered_verifier_are_rejected(self):
         (state, bundle, gate, request, authorization, delta, config, contracts,
-         registry, delta_registry) = trusted_readiness()
+         registry, delta_registry, mode_registry) = trusted_readiness()
         minimal = {"valid": True, "pr_number": 11, "head_sha": SHA2, "target_sha": SHA1}
         self.assertEqual("pending", integration_status(
             state, 7, minimal, minimal, minimal, minimal, delta, config=config,
-            contracts=contracts, now=GATE_NOW)["status"])
+            contracts=contracts, mode_observer_registry=mode_registry,
+            now=GATE_NOW)["status"])
         unregistered = copy.deepcopy(authorization)
         unregistered["run_id"] = str(uuid.uuid4())
         self.assertIn("registered verifier", integration_status(
             state, 7, bundle, gate, request, unregistered, delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)["reason"])
         untrusted = copy.deepcopy(authorization)
         untrusted["source"]["actor_id"] = 9999
@@ -605,11 +636,12 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, untrusted, delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)["reason"])
 
     def test_ac8_readiness_refuses_caller_summary_and_authenticates_raw_critic_evidence(self):
         (state, bundle, gate, request, authorization, _delta, config, contracts,
-         registry, delta_registry) = trusted_readiness()
+         registry, delta_registry, mode_registry) = trusted_readiness()
         state["entries"][0]["reviewed_paths"] = ["src/task-7.py"]
         caller_summary = {
             "required": True, "satisfied": True,
@@ -623,6 +655,7 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, authorization, caller_summary,
             config=config, contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)
         self.assertEqual("pending", refused["status"])
 
@@ -654,6 +687,7 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, authorization, selector,
             config=config, contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=evidence_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)
         self.assertEqual("success", ready["status"])
 
@@ -665,6 +699,7 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, foreign_bundle, gate, request, authorization, selector,
             config=config, contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=evidence_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)["reason"].lower())
 
         forged_digest = copy.deepcopy(evidence)
@@ -677,6 +712,7 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, authorization, selector,
             config=config, contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=forged_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)["reason"])
 
         unregistered = copy.deepcopy(evidence)
@@ -693,6 +729,7 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, authorization, selector,
             config=config, contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=unregistered_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)["reason"])
         stale = copy.deepcopy(evidence)
         stale["review"]["reviewed_at"] = "2026-09-09T10:00:00Z"
@@ -708,11 +745,12 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, authorization, selector,
             config=config, contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=stale_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)["reason"].lower())
 
     def test_ac8_matching_critic_identifiers_cannot_authenticate_caller_delta_evidence(self):
         (state, bundle, gate, request, authorization, _delta, config, contracts,
-         registry, delta_registry) = trusted_readiness()
+         registry, delta_registry, mode_registry) = trusted_readiness()
         merges = [{"merge_commit_sha": SHA3, "paths": ["src/task-7.py"]}]
         reviewed_diff = [{"path": "src/task-7.py",
                           "base_blob_sha": SHA1, "head_blob_sha": SHA2}]
@@ -740,6 +778,7 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, authorization, borrowed,
             config=config, contracts=contracts, posting_collector_registry=registry,
             delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry,
             now=GATE_NOW)
         self.assertEqual("pending", result["status"])
         self.assertIn("authenticated producer", result["reason"])
@@ -775,12 +814,13 @@ class IntegrationQueueTests(unittest.TestCase):
 
     def test_ac4_readiness_refuses_missing_or_later_dependency(self):
         (state, bundle, gate, request, authorization, delta, config, contracts,
-         registry, delta_registry) = trusted_readiness()
+         registry, delta_registry, mode_registry) = trusted_readiness()
         state["entries"][0]["depends_on"] = [99]
         result = integration_status(
             state, 7, bundle, gate, request, authorization, delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
-            delta_review_observer_registry=delta_registry, now=GATE_NOW)
+            delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry, now=GATE_NOW)
         self.assertEqual("pending", result["status"])
         self.assertIn("dependency", result["reason"])
 
@@ -837,6 +877,8 @@ class IntegrationQueueTests(unittest.TestCase):
                timedelta(hours=25)).isoformat().replace("+00:00", "Z")
         register_integration_observer(
             "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=old)
+        register_integration_observer(
+            "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=old)
         first = entry(11, SHA2, validated=old)
         self.store.admit("AWF-EPIC", first, "fixture-git-provider", runner(observed_at=old),
                          observed_at=old)
@@ -845,6 +887,8 @@ class IntegrationQueueTests(unittest.TestCase):
             "fixture-git-provider", runner(observed_at=old), observed_at=old)
         self.store.admit("AWF-EPIC", entry(13, SHA4, validated=old),
             "fixture-git-provider", runner(observed_at=old), observed_at=old)
+        register_integration_observer(
+            "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=NOW)
         result = self.store.move_stalled_front(
             "AWF-EPIC", runner(), now=NOW)
         self.assertEqual(13, result["notice"]["new_front"])
@@ -867,6 +911,8 @@ class IntegrationQueueTests(unittest.TestCase):
                timedelta(hours=25)).isoformat().replace("+00:00", "Z")
         register_integration_observer(
             "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=old)
+        register_integration_observer(
+            "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=old)
         first = entry(11, SHA2, validated=old)
         second = entry(12, SHA3, validated=old)
         self.store.admit("AWF-EPIC", first, "fixture-git-provider", runner(observed_at=old),
@@ -875,6 +921,8 @@ class IntegrationQueueTests(unittest.TestCase):
                          observed_at=old)
         register_integration_observer(
             "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=NOW)
+        register_integration_observer(
+            "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=NOW)
         self.store.remove("AWF-EPIC", 11, runner(), observed_at=NOW)
         self.admit(entry(13, SHA4))
         with self.assertRaisesRegex(ValidationError, "stall threshold"):
@@ -903,7 +951,7 @@ class IntegrationQueueTests(unittest.TestCase):
 
     def test_ac7_authenticated_changed_retarget_diff_drops_review(self):
         def changed_retarget(request):
-            if request["operation"] == "TARGET_TIP":
+            if request["operation"] in {"TARGET_TIP", "PULL_REQUEST_MERGE"}:
                 return observed_git(request)
             return {"target_branch": request["target_branch"],
                     "target_sha": request["new_target_sha"], "patch_ids": [

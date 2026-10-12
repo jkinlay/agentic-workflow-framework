@@ -122,12 +122,13 @@ class Round6TrustRegressions(unittest.TestCase):
 
     def test_r5_004_readiness_rejects_absent_dependency(self):
         (state, bundle, gate, request, authorization, delta, config, contracts,
-         registry, delta_registry) = trusted_readiness()
+         registry, delta_registry, mode_registry) = trusted_readiness()
         state["entries"][0]["depends_on"] = [99]
         result = integration_status(
             state, 7, bundle, gate, request, authorization, delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
-            delta_review_observer_registry=delta_registry, now=GATE_NOW)
+            delta_review_observer_registry=delta_registry,
+            mode_observer_registry=mode_registry, now=GATE_NOW)
         self.assertEqual("pending", result["status"])
         self.assertIn("dependency", result["reason"])
 

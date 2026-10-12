@@ -6,32 +6,30 @@ disposable evidence. Serial mode is the default.
 
 ## Authority and state
 
-Enable epic mode only through a closed, identity-checked record produced from
-reviewed queue-configuration provenance or an owner instruction bound to the
-epic. A runtime-registered, receipted, fresh in-process observer must
-authenticate the reviewed configuration
-bytes or the exact raw owner text, provider/repository identity, immutable
-numeric owner ID, and source event against accepted `PROJECT_CONFIG`. The same
-owner observation is required again for reorder or skip; a digest or actor
-assertion is not authority. Enforced mode
-requires a separately observed repository-rule binding for `awf-integration`
-from the configured App integration ID. Advisory
-mode still refuses pending entries. Epic mode permits merge commits only.
+Epic mode needs a closed record from reviewed queue configuration or an
+epic-bound owner instruction. A fresh, receipted, runtime-registered observer
+authenticates those bytes, provider/repository identity, owner and source
+against accepted `PROJECT_CONFIG`; reorder and skip re-observe their owner
+instructions. Enforced mode separately observes that `awf-integration` comes
+from the configured App integration ID. Advisory mode still refuses pending
+entries. The queue retains observation times and producer/release receipts, and
+re-observes activation authority and App binding before every authority use,
+including admission and readiness. Stored evidence is never perpetual
+authority. Epic mode permits merge commits only.
 
 The steward has no model route or tokens, cannot edit task branches, and never
 pushes or merges the target. Provider work stays behind adapters. Its SQLite
 ledger lives outside worktrees; a write transaction holds the admission lock.
 
-Schemas and templates remain a marked generator-turn follow-up; this pure logic
-does not require contracts absent from the release head.
+Schemas and templates remain a generator-turn follow-up; this logic needs no
+contracts absent from the release head.
 
 ## Entries and builds
 
-An entry binds its PR, ticket, reviewed head, branches, dependencies, validation,
-reviewed paths, ordered commits, and stable patch ID. Independent PRs target the
-epic target; dependent entries target their last dependency branch. Admission
-and head replacement require observed diff commits. Extra, reordered, shared,
-or previously used commits are rejected, including after removal.
+An entry binds PR, ticket, reviewed head, branches, dependencies, validation,
+paths, ordered commits and patch ID. Independent PRs target the epic target;
+dependent entries target their last dependency. Admission and head replacement
+observe diff commits; extra, reordered, shared or reused commits are rejected.
 
 Initialization and target rebuilds first observe the exact repository target
 tip through a registered provider. Admissions run alone under the lock. The
@@ -46,19 +44,22 @@ ownership remains reserved. A red admission removes only the new entry. A red
 rebuild ejects the first failing prefix entry and quarantines its dependent
 closure for ordered revalidation. No failure edits another branch.
 
-Each trigger records a distinct build instance with its generation, result,
-tests, and provider observation. Delta/readiness evidence names that instance,
-preventing replay after rebuild. Target movement, head change, removal,
-reordering, skipping, and post-merge processing require a build.
+Each trigger records a distinct build generation, result, tests and provider
+observation. Delta/readiness evidence names it, preventing replay. Target move,
+head change, removal, reorder, skip and post-merge processing rebuild.
 
 ## Ordering and merge readiness
 
-Owner reorder and skip use one-use instructions bound to the exact payload,
-then rebuild. Dependencies stay first and cannot be skipped while needed. The
-stall clock starts when a PR/head becomes front; after the authenticated mode
-record's `stall_after_hours` threshold, the next
-independent entry may move first with owner notice. Merged dependencies are
-removed and dependents retargeted. Only unchanged patch IDs retain review.
+Owner reorder and skip use one-use, payload-bound instructions, then rebuild.
+Dependencies stay first and cannot be skipped while needed. After the mode
+record's `stall_after_hours` from observed front time, the next independent
+entry may move first with owner notice. Merged dependencies are
+removed only after a fresh receipted merge observation binds the exact front
+PR, reviewed head, old target, and resulting target tip. A caller-named PR or
+unrelated target movement cannot remove an entry. Dependents are retargeted.
+Only an observed unchanged patch ID retains review and authorization; readiness
+re-observes that patch equivalence for the head and target. A changed
+patch clears retention and returns to ordinary amendment and review.
 
 Only position one can receive `awf-integration: success`. Every declared
 dependency must still be present earlier in the queue. The front needs a green
@@ -82,8 +83,10 @@ still supplies exact R and R-prime evidence.
 After an observed merge, rebuild from the newly observed target before
 admitting the next front. A fresh receipted observation of post-merge target CI decides recovery;
 failure requests a revert PR and never authorizes a
-target push. Post-merge counts require validated closeout and observed Jira
-reconciliation when Jira is enabled; disabled Jira invents no transition.
+target push. Post-merge counts revalidate closeout from Git objects. Jira
+enablement, provider identity, and the exact Done status come only from accepted
+`PROJECT_CONFIG`; enabled Jira also requires a fresh registered observation of
+the matching successful transition and readback. Disabled Jira invents no transition.
 Empty-queue closure records integration-branch deletion without execution
 authority.
 

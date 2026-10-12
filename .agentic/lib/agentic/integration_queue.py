@@ -94,7 +94,8 @@ def _evidence_max_age(project_config):
     return value
 
 
-def _owner_instruction(value, action, epic, payload, *, authority, registry, now, max_age):
+def _owner_instruction(value, action, epic, payload, *, authority, registry, now, max_age,
+                       return_attestation=False):
     if not isinstance(value, dict):
         raise ValidationError(f"{action} requires an authenticated owner instruction")
     required = {"instruction_id", "owner_actor_id", "producer_id", "source_event_id",
@@ -136,13 +137,16 @@ def _owner_instruction(value, action, epic, payload, *, authority, registry, now
                    "integration_owner_instruction_record", value)}
     observation = _registered_provider_observation(
         registry, value["producer_id"], request, "owner instruction",
-        now=now, max_age=max_age)
-    if observation != {"instruction": value}:
+        now=now, max_age=max_age, return_attestation=return_attestation)
+    result, attestation = (observation if return_attestation else (observation, None))
+    if result != {"instruction": value}:
         raise ValidationError("owner instruction was not authenticated for the exact source and owner")
-    return deepcopy(value)
+    record = deepcopy(value)
+    return (record, attestation) if return_attestation else record
 
 
-def _reviewed_config_provenance(value, settings, *, authority, registry, now, max_age):
+def _reviewed_config_provenance(value, settings, *, authority, registry, now, max_age,
+                                return_attestation=False):
     fields = {"source", "config_path", "config_sha256", "review_record_id",
               "reviewed_at", "producer_id"}
     if not isinstance(value, dict) or set(value) != fields:
@@ -166,22 +170,26 @@ def _reviewed_config_provenance(value, settings, *, authority, registry, now, ma
                "provenance": deepcopy(value), "settings": deepcopy(settings)}
     observation = _registered_provider_observation(
         registry, value["producer_id"], request, "reviewed configuration",
-        now=now, max_age=max_age)
-    if observation != {"provenance": value, "settings": settings}:
+        now=now, max_age=max_age, return_attestation=return_attestation)
+    result, attestation = (observation if return_attestation else (observation, None))
+    if result != {"provenance": value, "settings": settings}:
         raise ValidationError("reviewed configuration provenance was not authenticated")
-    return deepcopy(value)
+    provenance = deepcopy(value)
+    return (provenance, attestation) if return_attestation else provenance
 
 
-def _observed_app_binding(selector, *, authority, registry, epic, now, max_age):
+def _observed_app_binding(selector, *, authority, registry, epic, now, max_age,
+                          return_attestation=False):
     if not isinstance(selector, dict) or set(selector) != {"producer_id"}:
         raise ValidationError("App binding requires an authenticated producer selection")
     provider = authority.get("provider_identity") if isinstance(authority, dict) else None
     request = {"operation": "APP_BINDING", "provider_identity": deepcopy(provider),
                "repository_identity": _repository_identity(provider),
                "source_identity": "repository_branch_rules", "epic": epic}
-    binding = _registered_provider_observation(
+    observation = _registered_provider_observation(
         registry, selector["producer_id"], request, "App binding",
-        now=now, max_age=max_age)
+        now=now, max_age=max_age, return_attestation=return_attestation)
+    binding, attestation = (observation if return_attestation else (observation, None))
     base = {"producer_id", "provider_identity", "repository_identity",
             "source_identity", "enforced"}
     enforced = base | {"check_name", "integration_id", "required_from_integration_id"}
@@ -200,10 +208,12 @@ def _observed_app_binding(selector, *, authority, registry, epic, now, max_age):
             binding["integration_id"] > 0 and
             binding.get("required_from_integration_id") is True):
         raise ValidationError("enforced epic mode requires awf-integration from the App integration ID")
-    return deepcopy(binding)
+    binding = deepcopy(binding)
+    return (binding, attestation) if return_attestation else binding
 
 
-def _mode_record(value, epic=None, *, authority, observer_registry, now, max_age):
+def _mode_record(value, epic=None, *, authority, observer_registry, now, max_age,
+                 return_trust=False):
     fields = {"mode", "test_command", "stall_after_hours", "max_stack_depth",
               "epic", "activation", "record_id"}
     if not isinstance(value, dict) or set(value) != fields or value["mode"] != "epic":
@@ -219,21 +229,29 @@ def _mode_record(value, epic=None, *, authority, observer_registry, now, max_age
     if activation["kind"] == "reviewed_config" and "provenance" in activation:
         settings = {key: value[key] for key in (
             "mode", "test_command", "stall_after_hours", "max_stack_depth")}
-        _reviewed_config_provenance(
+        activation_result = _reviewed_config_provenance(
             activation["provenance"], settings, authority=authority,
-            registry=observer_registry, now=now, max_age=max_age)
+            registry=observer_registry, now=now, max_age=max_age,
+            return_attestation=return_trust)
     elif activation["kind"] == "owner_instruction" and "instruction" in activation:
         settings = {key: value[key] for key in (
             "test_command", "stall_after_hours", "max_stack_depth")}
-        _owner_instruction(
+        activation_result = _owner_instruction(
             activation["instruction"], "ENABLE_EPIC_MODE", value["epic"], settings,
-            authority=authority, registry=observer_registry, now=now, max_age=max_age)
+            authority=authority, registry=observer_registry, now=now, max_age=max_age,
+            return_attestation=return_trust)
     else:
         raise ValidationError("epic-mode activation provenance is invalid")
     binding = activation["app_binding"]
-    observed_binding = _observed_app_binding(
+    binding_result = _observed_app_binding(
         {"producer_id": binding.get("producer_id")}, authority=authority,
-        registry=observer_registry, epic=value["epic"], now=now, max_age=max_age)
+        registry=observer_registry, epic=value["epic"], now=now, max_age=max_age,
+        return_attestation=return_trust)
+    if return_trust:
+        _, activation_attestation = activation_result
+        observed_binding, app_attestation = binding_result
+    else:
+        observed_binding = binding_result
     if observed_binding != binding:
         raise ValidationError("App binding changed since epic-mode resolution")
     if value["test_command"] is not None and (
@@ -248,7 +266,11 @@ def _mode_record(value, epic=None, *, authority, observer_registry, now, max_age
     expected = fingerprint("integration_mode", material)
     if value["record_id"] != expected:
         raise ValidationError("epic-mode record identity does not match its accepted bytes")
-    return deepcopy(value)
+    record = deepcopy(value)
+    if return_trust:
+        return record, {"activation": activation_attestation,
+                        "app_binding": app_attestation}
+    return record
 
 
 def resolve_mode(config=None, owner_instruction=None, app_binding=None, *, epic=None,
@@ -395,7 +417,8 @@ def provider_observation_receipt_sha256(registration, request, observation):
     })
 
 
-def _registered_provider_observation(registry, producer_id, request, purpose, *, now, max_age):
+def _registered_provider_observation(registry, producer_id, request, purpose, *, now, max_age,
+                                     return_attestation=False):
     """Invoke, authenticate, and receipt one registered observer synchronously."""
     _identifier(producer_id, f"authenticated {purpose} observer_id")
     registration = registry.get(producer_id) if isinstance(registry, dict) else None
@@ -426,7 +449,19 @@ def _registered_provider_observation(registry, producer_id, request, purpose, *,
         registration, request, observation)
     if registration["receipts"].get(observation["observation_id"]) != expected_receipt:
         raise ValidationError(f"{purpose} observer has no matching authenticated output receipt")
-    return deepcopy(observation["result"])
+    result = deepcopy(observation["result"])
+    if not return_attestation:
+        return result
+    attestation = {
+        "producer_id": producer_id,
+        "observation_id": observation["observation_id"],
+        "observed_at": observation["observed_at"],
+        "request_sha256": observation["request_sha256"],
+        "receipt_sha256": expected_receipt,
+        "implementation_sha256": registration["implementation_sha256"],
+        "release_sha256": registration["release_sha256"],
+    }
+    return result, attestation
 
 
 def build_input_id(epic, target_sha, entries, test_command):
@@ -737,12 +772,73 @@ def _authorization_verifier(bundle, authorization):
     return run
 
 
+def _verify_retained_evidence(item, state, *, config, registry, now):
+    retained = item.get("retained_evidence")
+    fields = {"review_target_sha", "prior_target_sha", "target_sha", "head_sha",
+              "patch_id", "producer_id", "observation"}
+    if not isinstance(retained, dict) or set(retained) != fields:
+        raise ValidationError(
+            "changed target requires authenticated unchanged-patch retention evidence")
+    for field in ("review_target_sha", "prior_target_sha", "target_sha", "head_sha"):
+        _sha(retained[field], field)
+    if (retained["target_sha"] != state["target_sha"] or
+            retained["head_sha"] != item["head_sha"] or
+            retained["patch_id"] != item["patch_id"]):
+        raise ValidationError("unchanged-patch retention is not bound to the current queue entry")
+    stored_observation = retained["observation"]
+    attestation_fields = {"producer_id", "observation_id", "observed_at",
+                          "request_sha256", "receipt_sha256",
+                          "implementation_sha256", "release_sha256"}
+    if (not isinstance(stored_observation, dict) or
+            set(stored_observation) != attestation_fields):
+        raise ValidationError("stored retarget observation has a non-closed shape")
+    for field in ("request_sha256", "receipt_sha256", "implementation_sha256",
+                  "release_sha256"):
+        if not isinstance(stored_observation[field], str) or not DIGEST.fullmatch(
+                stored_observation[field]):
+            raise ValidationError("stored retarget observation has an invalid receipt digest")
+    request = {
+        "operation": "RETARGET_RETENTION",
+        "provider_identity": deepcopy(_authority(config)["provider_identity"]),
+        "repository_identity": _repository_identity(
+            _authority(config)["provider_identity"]),
+        "source_identity": "repository_retarget_diff",
+        "epic": state["epic"],
+        "pr_number": item["pr_number"],
+        "head_sha": item["head_sha"],
+        "review_target_sha": retained["review_target_sha"],
+        "prior_target_sha": retained["prior_target_sha"],
+        "target_sha": state["target_sha"],
+        "reviewed_patch_id": item["patch_id"],
+    }
+    result, attestation = _registered_provider_observation(
+        registry, retained["producer_id"], request, "unchanged-patch retention",
+        now=now, max_age=_evidence_max_age(config), return_attestation=True)
+    expected = {"pr_number": item["pr_number"], "head_sha": item["head_sha"],
+                "target_sha": state["target_sha"], "patch_id": item["patch_id"]}
+    if result != expected:
+        raise ValidationError(
+            "retarget retention observation does not prove the unchanged current patch")
+    return retained["review_target_sha"], attestation
+
+
 def integration_status(state, pr_number, gate_bundle, final_gate,
                        authorization_request, authorization, delta, *, config, contracts,
                        posting_collector_registry=None,
-                       delta_review_observer_registry=None, now=None):
+                       delta_review_observer_registry=None,
+                       mode_observer_registry=None, retarget_observer_registry=None,
+                       now=None):
     """Enforce front-only readiness using the existing gate and authorization contracts."""
     _pr(pr_number)
+    now = now or now_text()
+    timestamp(now)
+    try:
+        _, mode_trust = _mode_record(
+            state.get("mode_record"), state.get("epic"), authority=_authority(config),
+            observer_registry=mode_observer_registry, now=now,
+            max_age=_evidence_max_age(config), return_trust=True)
+    except (ValidationError, KeyError, TypeError) as exc:
+        return {"status": "pending", "reason": str(exc)}
     entries = state.get("entries", [])
     positions = {item["pr_number"]: index for index, item in enumerate(entries)}
     for item in entries:
@@ -762,8 +858,7 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
     if (not isinstance(build, dict) or build.get("target_sha") != state.get("target_sha") or
             build.get("entries", [None])[0] != [pr_number, item["head_sha"]] or not build.get("green")):
         return {"status": "pending", "reason": "no green current-target build starts with the exact PR/head"}
-    now = now or now_text()
-    timestamp(now)
+    retention_observation = None
     try:
         from .authorization import verify_record
         from .gates import evaluate
@@ -782,10 +877,15 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
             raise ValidationError("existing final gate does not match current framework evaluation")
         gate = final_gate
         candidate = gate["candidate"]
+        expected_target_sha = state["target_sha"]
+        if candidate.get("target_base_sha") != expected_target_sha:
+            expected_target_sha, retention_observation = _verify_retained_evidence(
+                item, state, config=config, registry=retarget_observer_registry,
+                now=now)
         expected_candidate = {
             "pr_number": pr_number,
             "head_sha": item["head_sha"],
-            "target_base_sha": state["target_sha"],
+            "target_base_sha": expected_target_sha,
             "target_base_branch": state["target_branch"],
         }
         if any(candidate.get(key) != value for key, value in expected_candidate.items()):
@@ -854,7 +954,9 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
             "gate_record_id": gate["record_id"],
             "authorization_record_id": authorization["record_id"], "merge_method": "merge",
             "merge_source_branch": item["branch"],
-            "integration_branch_evidence_only": state["integration_branch"]}
+             "integration_branch_evidence_only": state["integration_branch"],
+             "mode_trust": mode_trust,
+             "retarget_retention": retention_observation}
 
 
 def post_merge_action(selector, *, provider_observer_registry, project_config,
@@ -897,9 +999,10 @@ class IntegrationQueueStore:
                  mode_observer_registry=None,
                  build_producer_registry=None, git_observer_registry=None):
         self.path = Path(path).resolve()
-        self.authority = None if project_config is None else _authority(project_config)
+        self.project_config = None if project_config is None else deepcopy(project_config)
+        self.authority = None if project_config is None else _authority(self.project_config)
         self.max_evidence_age_seconds = (None if project_config is None else
-                                         _evidence_max_age(project_config))
+                                         _evidence_max_age(self.project_config))
         self.mode_observer_registry = ({} if mode_observer_registry is None else
                                        mode_observer_registry)
         self.build_producer_registry = ({} if build_producer_registry is None else
@@ -957,6 +1060,48 @@ class IntegrationQueueStore:
                 result.get("target_sha") != target_sha):
             raise ValidationError("target-tip observation differs from the exact requested target")
 
+    def _refresh_mode_trust(self, state, observed_at):
+        """Re-observe durable epic-mode authority and App enforcement before use."""
+        self.authority = _authority(self.project_config)
+        record, trust = _mode_record(
+            state.get("mode_record"), state.get("epic"), authority=self.authority,
+            observer_registry=self.mode_observer_registry, now=observed_at,
+            max_age=self.max_evidence_age_seconds, return_trust=True)
+        state["mode_record"] = record
+        state["mode_trust"] = trust
+        return trust
+
+    def _observe_front_merge(self, state, merged, new_target_sha, observer_id, observed_at):
+        request = {
+            "operation": "PULL_REQUEST_MERGE",
+            "provider_identity": deepcopy(self.authority["provider_identity"]),
+            "repository_identity": _repository_identity(
+                self.authority["provider_identity"]),
+            "source_identity": "repository_pull_request_merge",
+            "epic": state["epic"],
+            "pr_number": merged["pr_number"],
+            "reviewed_head_sha": merged["head_sha"],
+            "target_branch": state["target_branch"],
+            "old_target_sha": state["target_sha"],
+            "expected_new_target_sha": new_target_sha,
+        }
+        result, attestation = _registered_provider_observation(
+            self.git_observer_registry, observer_id, request, "front PR merge",
+            now=observed_at, max_age=self.max_evidence_age_seconds,
+            return_attestation=True)
+        expected = {
+            "status": "MERGED",
+            "pr_number": merged["pr_number"],
+            "reviewed_head_sha": merged["head_sha"],
+            "target_branch": state["target_branch"],
+            "old_target_sha": state["target_sha"],
+            "new_target_sha": new_target_sha,
+        }
+        if result != expected:
+            raise ValidationError(
+                "merge observation is not bound to the exact front PR/head and target result")
+        return attestation
+
     @contextmanager
     def _locked(self, epic):
         _identifier(epic, "epic")
@@ -1000,15 +1145,16 @@ class IntegrationQueueStore:
         timestamp(observed_at)
         self._observe_target_tip(
             epic, target_branch, target_sha, target_observer_id, observed_at)
-        mode_record = _mode_record(
+        mode_record, mode_trust = _mode_record(
             mode_record, epic, authority=self.authority,
             observer_registry=self.mode_observer_registry, now=observed_at,
-            max_age=self.max_evidence_age_seconds)
+            max_age=self.max_evidence_age_seconds, return_trust=True)
         state = {"format": "awf-integration-queue-1", "epic": epic,
                  "target_branch": target_branch, "target_sha": target_sha,
                  "integration_branch": INTEGRATION_PREFIX + epic.lower(), "entries": [],
                  "current_build": None, "generation": 0, "revision": 0,
-                 "closed": False, "mode_record": mode_record, "last_event_id": None,
+                 "closed": False, "mode_record": mode_record, "mode_trust": mode_trust,
+                 "last_event_id": None,
                  "front_since": None, "consumed_instruction_ids": [],
                  "observed_commits": {}, "build_results": {}, "build_run_ids": [],
                  "quarantined_entries": []}
@@ -1186,6 +1332,7 @@ class IntegrationQueueStore:
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
             self._require_open(state)
+            self._refresh_mode_trust(state, observed_at)
             item = validate_entry(entry, state["entries"], state["target_branch"])
             for candidate in state["entries"]:
                 if candidate["pr_number"] == item["pr_number"]:
@@ -1234,6 +1381,7 @@ class IntegrationQueueStore:
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
             self._require_open(state)
+            self._refresh_mode_trust(state, observed_at)
             item = validate_entry(entry, state["entries"], state["target_branch"])
             if any(candidate["pr_number"] == item["pr_number"] for candidate in state["entries"]):
                 raise ValidationError("conflicting PR is already admitted")
@@ -1304,6 +1452,7 @@ class IntegrationQueueStore:
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
             self._require_open(state)
+            self._refresh_mode_trust(state, observed_at)
             instruction = _owner_instruction(
                 instruction, "REORDER", epic, {"order": order},
                 authority=self.authority, registry=self.mode_observer_registry,
@@ -1325,6 +1474,7 @@ class IntegrationQueueStore:
         _pr(pr_number)
         with self._locked(epic) as (connection, state):
             self._require_open(state)
+            self._refresh_mode_trust(state, observed_at)
             instruction = _owner_instruction(
                 instruction, "SKIP", epic, {"pr_number": pr_number},
                 authority=self.authority, registry=self.mode_observer_registry,
@@ -1351,6 +1501,7 @@ class IntegrationQueueStore:
         current_time = timestamp(now)
         with self._locked(epic) as (connection, state):
             self._require_open(state)
+            self._refresh_mode_trust(state, now)
             stall_after_hours = state["mode_record"].get("stall_after_hours")
             if (isinstance(stall_after_hours, bool) or
                     not isinstance(stall_after_hours, int) or stall_after_hours < 1):
@@ -1393,6 +1544,7 @@ class IntegrationQueueStore:
             raise ValidationError("unsupported rebuild trigger")
         with self._locked(epic) as (connection, state):
             self._require_open(state)
+            self._refresh_mode_trust(state, observed_at)
             self._observe_target_tip(
                 epic, state["target_branch"], target_sha, target_observer_id, observed_at)
             state["target_sha"] = target_sha
@@ -1407,6 +1559,7 @@ class IntegrationQueueStore:
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
             self._require_open(state)
+            self._refresh_mode_trust(state, observed_at)
             if not isinstance(replacement, dict) or "pr_number" not in replacement:
                 raise ValidationError("replacement must be a queue entry")
             number = _pr(replacement["pr_number"])
@@ -1445,6 +1598,7 @@ class IntegrationQueueStore:
             raise ValidationError("unsupported removal reason")
         with self._locked(epic) as (connection, state):
             self._require_open(state)
+            self._refresh_mode_trust(state, observed_at)
             if any(pr_number in item["depends_on"] for item in state["entries"]):
                 raise ValidationError("cannot remove a PR while an admitted PR depends on it")
             item = next((item for item in state["entries"]
@@ -1473,9 +1627,14 @@ class IntegrationQueueStore:
                 "authenticated retarget evidence requires a registered Git/provider observer")
         with self._locked(epic) as (connection, state):
             self._require_open(state)
+            self._refresh_mode_trust(state, observed_at)
+            if not state["entries"] or state["entries"][0]["pr_number"] != merged_pr:
+                raise ValidationError("only the exact front PR may be retargeted after merge")
             merged = next((item for item in state["entries"] if item["pr_number"] == merged_pr), None)
             if merged is None:
                 raise ValidationError("merged PR is not admitted")
+            merge_observation = self._observe_front_merge(
+                state, merged, new_target_sha, retarget_observer_id, observed_at)
             previous_front = self._front_key(state)
             state["entries"].remove(merged)
             self._refresh_front_since(state, previous_front, observed_at)
@@ -1521,10 +1680,10 @@ class IntegrationQueueStore:
                     "target_branch": state["target_branch"],
                     "retargets": deepcopy(retargets),
                 }
-                result = _registered_provider_observation(
+                result, retarget_attestation = _registered_provider_observation(
                     self.git_observer_registry, retarget_observer_id, request,
                     "authenticated retarget evidence", now=observed_at,
-                    max_age=self.max_evidence_age_seconds)
+                    max_age=self.max_evidence_age_seconds, return_attestation=True)
                 if (not isinstance(result, dict) or
                         set(result) != {"target_branch", "target_sha", "patch_ids"} or
                         result.get("target_branch") != state["target_branch"] or
@@ -1555,15 +1714,33 @@ class IntegrationQueueStore:
                     continue
                 observed = observed_patch_ids[item["pr_number"]]
                 unchanged = observed == item["patch_id"]
+                prior_retention = item.get("retained_evidence")
                 item["depends_on"].remove(merged_pr)
                 item["base_branch"] = (state["target_branch"] if not item["depends_on"] else
                     next(candidate["branch"] for candidate in state["entries"]
                          if candidate["pr_number"] == item["depends_on"][-1]))
+                if unchanged:
+                    review_target_sha = (prior_retention["review_target_sha"]
+                                         if isinstance(prior_retention, dict)
+                                         else state["target_sha"])
+                    item["retained_evidence"] = {
+                        "review_target_sha": review_target_sha,
+                        "prior_target_sha": state["target_sha"],
+                        "target_sha": new_target_sha,
+                        "head_sha": item["head_sha"],
+                        "patch_id": item["patch_id"],
+                        "producer_id": retarget_observer_id,
+                        "observation": deepcopy(retarget_attestation),
+                    }
+                else:
+                    item.pop("retained_evidence", None)
                 decisions.append({"pr_number": item["pr_number"], "retarget_to": item["base_branch"],
                                   "evidence_retained": unchanged, "review_required": not unchanged})
             state["target_sha"] = new_target_sha
             self._event(connection, state, "MERGE_RETARGETED",
-                        {"merged_pr": merged_pr, "decisions": decisions}, observed_at)
+                        {"merged_pr": merged_pr,
+                         "merge_observation": merge_observation,
+                         "decisions": decisions}, observed_at)
             build, event = self._install_build(connection, state, outcome, "POST_MERGE", observed_at)
             ejected = self._eject_first_failure(connection, state, build, observed_at)
             return {"status": "REBUILT" if build["green"] else "INTEGRATION_FAILED",
@@ -1574,6 +1751,7 @@ class IntegrationQueueStore:
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
             self._require_open(state)
+            self._refresh_mode_trust(state, observed_at)
             if state["entries"]:
                 raise ValidationError("epic cannot close while queue entries remain")
             state["closed"] = True
