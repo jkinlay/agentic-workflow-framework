@@ -1,8 +1,6 @@
 # Release manifest — 1.9.4
 
-480 content files are SHA-256 listed in MANIFEST.json. The ZIP additionally contains MANIFEST.json and this advisory inventory.
-
-MANIFEST.json SHA-256: `27b5d4f95f79c6a8f5fdb42127128b603a5506331667f79552e223282bd46961`
+Each content file is SHA-256 listed on its own line in MANIFEST.json and below. The ZIP additionally contains MANIFEST.json and this advisory inventory.
 
 The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.
 
@@ -363,10 +361,11 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/validation/reference-tests.json` | `a47a1b470324b265f69f96299594b83ea7374e7a767039443c7b5b78bb0c7ada` |
 | `.agentic/workflow-version.yaml` | `bf134ab0e4196340a23fc87c5cbf1ea177b9da6d0a4cff543319c6e1f854b0c2` |
 | `.agentic/workflow.yaml` | `bf5004d62c6a97748587bb5e4f448f7fe1e97fb8e164ff11d9505e957e6c3ced` |
-| `.gitattributes` | `94c0646012f362c5ef9d09273f994d4de0513066e6cf2b8966308238b897d43b` |
+| `.gitattributes` | `8d550a32a0754956bef789a454ce284e9ad34e0e7a77fdbf6e90c3350e702f31` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
 | `.github/workflows/ci.yml` | `152895b64476156cb96cb1725be65d24283704250d16a6255f3ea790ff3b1ec8` |
+| `.github/workflows/manifest-check.yml` | `e8d91e097da429fdcd5c59b4d078a140c3ab8b89e9a57b3d0fe0e08303b27869` |
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `AGENTS.md` | `dc2a7603f45f01fdfc9505a51af7747527582434b3daaa964d26464fd6293a75` |
 | `ARCHITECTURE.md` | `761781e0581d5d2a75013bf5f131ff06f18180805f485c1e50dfbc0a9680042c` |
@@ -446,7 +445,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `requirements.txt` | `42f89dd8f1c14da4d2cf3ef52ac3513592bc0b21efa709eead6cf138ba4bd92d` |
 | `scripts/ac42_e2e.py` | `c5b830097b5010326213be749b26883ebdc9118403b142540d1c9f82d6c518c9` |
 | `scripts/bootstrap_project.py` | `d072d1a02183eba4eb967a90f65ae3bdcb67396f685e11fc72623a1bf006ce56` |
-| `scripts/build_release.py` | `f26ecb1b162391b14a1bfd05f6b18f7e9131ab29d2a58261646b220dd3dfb49b` |
+| `scripts/build_release.py` | `7ed7b62eba23223bfd1d3673bf1d581813c5324bf59920c4398ed6a1ed37a5cc` |
 | `scripts/build_skill_distribution.py` | `744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8` |
 | `scripts/generate_contracts.py` | `fc104597290b3538720ead76596d997bcde3c1f119076e6b2d12566061edd548` |
 | `scripts/generate_examples.py` | `59e899ca8f4b5f480e759fa7c375997cb5cee1fac6241a7e6939ec5808ae6c69` |
@@ -454,6 +453,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
 | `scripts/generate_review_loop.py` | `7aee730fc511c631675c8c44d20a1c0fb87d5eabd8f294975b26fc74cb4e99f4` |
 | `scripts/generate_rules_activation.py` | `e9f72016edcb898ac1ddc480c4d12181fb889118de776b8e536d090757edcaaa` |
+| `scripts/manifest_merge_driver.py` | `5657350b4294eac7dbf6e105fa3994babcb90e2452153fc33deebd6835a2c08e` |
 | `scripts/prompt_templates/amendment.md` | `99fdf23206b59af9dc6cfcc4386afba5f2576263836878281f9aa4b7918fbec3` |
 | `scripts/prompt_templates/controller.md` | `474093c2abf7a51933ccfc1523e437d0720b2778948f82e5e610540cdf1f2427` |
 | `scripts/prompt_templates/critic.md` | `1ee8905a78bd23d64bb405da275ebf4cd366541e72d7ce55b335f82911fd8f78` |
@@ -476,6 +476,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_fresh_bootstrap.py` | `18cb82bb6399defac5969f8e7af82a00e8657516461a386374730b0c714d9a7a` |
 | `scripts/tests/test_generate_examples_schema_refs.py` | `acd329623a932ba4b7485fe1b544dc6729631ad5a5a20f73901e093571f84b17` |
 | `scripts/tests/test_installed_self_test.py` | `63937908a219b3681cb0bbee3a61714755b3bb25d276df317cb302dba68738e9` |
+| `scripts/tests/test_manifest_conflicts.py` | `997b66ea0d1a92f017c016c5dbd284c9bb118c7d1b858a7812dc442292a5585d` |
 | `scripts/tests/test_pre_controller_registry.py` | `0599696190605486c8080b849cd5792d5d594e7894d8ce992fa66ea56cf5f4af` |
 | `scripts/tests/test_publish_catalog.py` | `a14379786ee4f514e06ebe7f13eccf3fb6a1818e701ffd9c97223cc6bf62d37b` |
 | `scripts/tests/test_publish_release.py` | `825a820892db919acc1eac3d03196b81f8dad129f45de141a7e1a78f41c3608d` |
