@@ -5,6 +5,7 @@ from the validated record and is never an input. Every object is resolved
 through Git plumbing; an absent object fails closed and is named.
 """
 from __future__ import annotations
+from copy import deepcopy
 import hashlib
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import subprocess
 import tempfile
 
 from . import ValidationError
+from .canonical import now_text, timestamp
 from .child_process import child_env, isolated_git_env
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -229,3 +231,108 @@ def render_markdown(record):
               + (f"; Jira transition: `{record['jira_transition_record_id']}`" if record["jira_transition_record_id"] else "; Jira transition: none"),
               "", "Derived from the validated closeout-record; this rendering is not an input to validation."]
     return "\n".join(lines) + "\n"
+
+
+def require_jira_reconciliation_before_counts(
+        closeout_record, *, repository, project_config, contracts,
+        project_config_selector=None, project_config_observer_registry=None,
+        jira_reconciliation_selector=None, jira_observer_registry=None, now=None):
+    """Gate post-merge counts on the controller's observed Jira reconciliation.
+
+    This is deliberately a pure hook: it neither writes Jira nor increments a
+    count.  The controller may count the merge only after this returns PASS.
+    Jira policy comes only from accepted PROJECT_CONFIG.  Enabled Jira is
+    re-observed through a registered producer for the exact closeout binding;
+    disabled Jira needs no synthetic transition record.
+    """
+    if contracts is None:
+        raise ValidationError("post-merge counting requires the framework contract registry")
+    from .integration_queue import (
+        _accepted_project_config, _evidence_max_age,
+        _registered_provider_observation)
+    from .lifecycle import definition
+    from .policy import validate_config
+    now = now or now_text()
+    timestamp(now)
+    project_config, project_config_observation = _accepted_project_config(
+        project_config, project_config_selector,
+        project_config_observer_registry, now=now, return_attestation=True)
+    validate_config(project_config, definition(), contracts)
+    closeout_validation = validate_closeout(closeout_record, repository, contracts)
+    jira = project_config["jira"]
+    jira_enabled = jira["enabled"]
+    if not isinstance(jira_enabled, bool):
+        raise ValidationError("accepted configuration has invalid Jira enablement")
+    ticket = closeout_record["binding"]["issue_id"]
+    transition = closeout_record.get("jira_transition_record_id")
+    jira_observation = None
+    if jira_enabled:
+        if jira.get("lifecycle_writes", {}).get("done") is not True:
+            raise ValidationError(
+                "accepted configuration disables the Done lifecycle write; post-merge counts remain blocked")
+        expected_done = jira["status_map"]["done"]
+        if (not isinstance(expected_done, str) or not expected_done.strip() or
+                not isinstance(jira_reconciliation_selector, dict) or
+                set(jira_reconciliation_selector) != {"producer_id"}):
+            raise ValidationError(
+                "Jira-enabled post-merge count requires a jira-transition observer selection")
+        if not isinstance(transition, str) or not transition.strip():
+            raise ValidationError("closeout does not resolve its JIRA_RECONCILED record")
+        expected_provider = {
+            "cloud_id": jira["cloud_id"],
+            "site": jira["site"],
+            "project_id": jira["provider_project_id"],
+            "project_key": jira["project_key"],
+            "controller_actor_id": jira["controller_actor_id"],
+        }
+        request = {
+            "operation": "JIRA_RECONCILIATION",
+            "provider_identity": deepcopy(expected_provider),
+            "source_identity": "jira_issue_transition_and_readback",
+            "binding": deepcopy(closeout_record["binding"]),
+            "issue_id": ticket,
+            "transition_record_id": transition,
+            "expected_status_id": expected_done,
+        }
+        observed, jira_observation = _registered_provider_observation(
+            jira_observer_registry, jira_reconciliation_selector["producer_id"],
+            request, "Jira reconciliation", now=now,
+            max_age=_evidence_max_age(project_config), return_attestation=True)
+        if not isinstance(observed, dict) or set(observed) != {"record"}:
+            raise ValidationError("Jira reconciliation observation has a non-closed shape")
+        record = observed["record"]
+        contracts.validate("jira-transition", record)
+        if (not isinstance(transition, str) or not transition.strip() or
+                record["record_id"] != transition):
+            raise ValidationError("closeout does not resolve its JIRA_RECONCILED record")
+        if record["binding"] != closeout_record["binding"]:
+            raise ValidationError("JIRA_RECONCILED record is not bound to the closeout candidate")
+        if record["lifecycle_event"] != "JIRA_RECONCILED":
+            raise ValidationError("closeout transition is not the JIRA_RECONCILED lifecycle event")
+        if record["status"] != "SUCCEEDED":
+            raise ValidationError("JIRA_RECONCILED transition did not succeed")
+        if (record["to_status_id"] != expected_done or
+                record["jira_provider"] != expected_provider):
+            raise ValidationError(
+                "JIRA_RECONCILED record does not prove the configured Done transition")
+        read_back = record["read_back"]
+        if (read_back["observed_status"] != expected_done or
+                read_back["observed_actor"] != jira["controller_actor_id"] or
+                read_back["observed_at"] is None):
+            raise ValidationError("JIRA_RECONCILED record lacks a successful target-status readback")
+        timestamp(read_back["observed_at"])
+    elif transition is not None or jira_reconciliation_selector is not None:
+        raise ValidationError("disabled Jira cannot claim a transition record")
+    return {
+        "status": "PASS",
+        "count_allowed": True,
+        "jira_reconciled": bool(transition),
+        "ticket": ticket,
+        "pr_number": closeout_record["pr_number"],
+        "reviewed_head_sha": closeout_record["reviewed_head_sha"],
+        "merge_commit_sha": closeout_record["merge_commit_sha"],
+        "closeout_validation": closeout_validation,
+        "project_config_observation": project_config_observation,
+        "jira_observation": jira_observation,
+        "execution_authority": False,
+    }
