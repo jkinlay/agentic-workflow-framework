@@ -297,6 +297,26 @@ class ReviewTiers195GateTests(Fixture):
                 assignment_record=assignment)
         self.assertIs(cap, verified)
 
+    def test_awf74_cap_disposition_refuses_global_cap_fallback(self):
+        cap = {
+            "critic_artifact_binding": {"run_id": str(uuid.uuid4()),
+                                         "result_sha256": "a" * 64,
+                                         "head_sha": "b" * 40, "round": 2},
+            "review_verdict_record_id": str(uuid.uuid4()),
+            "review_verdict_sha256": "c" * 64,
+            "cycles": 2,
+            "cap_extensions": 0,
+            "owner_source": {"comment_id": 99},
+        }
+        cap["record_id"] = cap_disposition_record_id(cap)
+        bundle = {"candidate": {"head_sha": "b" * 40},
+                  "finding_dispositions": [], "cap_disposition": cap}
+        with mock.patch("agentic.authorization.verify_owner_record"), \
+                self.assertRaisesRegex(ValidationError, "verified per-ticket"):
+            verified_owner_records(
+                self.config, self.contracts, bundle, {}, {}, set(), set(), NOW
+            )
+
     def test_awf74_recorded_tier_two_cap_two_refuses_round_three(self):
         assignment = self._assignment(2, 2)
         self.config = self._runtime_config({"EX-1": assignment})
@@ -306,6 +326,12 @@ class ReviewTiers195GateTests(Fixture):
 
     def test_awf74_gate_fails_closed_without_runtime_assignment(self):
         self.config = self._runtime_config({})
+        with self.assertRaisesRegex(ValidationError, "runtime review assignment"):
+            self.gate()
+
+    def test_awf74_gate_fails_closed_without_runtime_context(self):
+        self.config = copy.deepcopy(self.config0)
+        self._review_history(3)
         with self.assertRaisesRegex(ValidationError, "runtime review assignment"):
             self.gate()
 
@@ -483,7 +509,7 @@ class ReviewTiers195GateTests(Fixture):
         self.assertEqual("NOT_READY", self.gate()["conclusion"])
 
     def test_awf16_195_r3_001_at_cap_requires_retained_ticket_mapping(self):
-        self._review_history(3)
+        self._review_history(2)
         self._minor_finding()
         self.assertEqual("NOT_READY", self.gate()["conclusion"])
         self.bundle["ticketed_p2_records"] = [
