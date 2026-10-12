@@ -289,16 +289,89 @@ def _assignment_root(previous, expected_sha256):
 
 
 def _assignment_event(chain_id, *, ticket_id, who, when, why, old, new, kind,
-                      source_id=None):
+                      source_id=None, intake_assignment_id=None,
+                      owner_source_sha256=None):
     event = {"ticket_id": ticket_id, "who": who, "when": when, "why": why,
              "old": old, "new": new, "kind": kind,
              "previous_assignment_id": chain_id, "source_id": source_id}
+    if intake_assignment_id is not None:
+        event["intake_assignment_id"] = intake_assignment_id
+        event["previous_assignment_id"] = intake_assignment_id
+        event["previous_stream_assignment_id"] = chain_id
+        event["owner_source_sha256"] = owner_source_sha256
     event["assignment_id"] = fingerprint("stream_assignment_event", event)
     return event
 
 
+def _authenticate_owner_reassignment(governance, ticket_id, intake_assignments,
+                                     directive, verifier, now):
+    """Bind a stream move to the sealed intake chain and immutable owner source."""
+    require(isinstance(governance, dict),
+            "Owner stream reassignment requires accepted governance configuration")
+    owners = governance.get("merge_gate", {}).get("trusted_owner_ids", [])
+    require(isinstance(owners, list) and directive["who"] in owners,
+            "Owner stream reassignment requires an authenticated trusted owner")
+    require(isinstance(intake_assignments, dict)
+            and isinstance(intake_assignments.get(ticket_id), dict),
+            "Owner stream reassignment requires the current intake assignment")
+    from .intake_assignment import verify_assignment_record
+    current = verify_assignment_record(deepcopy(intake_assignments[ticket_id]))
+    require(current.get("ticket_key") == ticket_id,
+            "Current intake assignment belongs to a different ticket")
+    current_id = current["assignment_id"]
+
+    source = directive["owner_source"]
+    require(isinstance(source, dict) and callable(verifier),
+            "Owner stream reassignment requires a verified immutable owner-source record")
+    require(source.get("channel") == "github_pr_comment"
+            and type(source.get("comment_id")) is int and source["comment_id"] >= 1
+            and isinstance(source.get("actor_login"), str)
+            and source["actor_login"],
+            "Owner-source record lacks an immutable provider comment identity")
+    binding = {"ticket_key": ticket_id, "current_assignment_id": current_id}
+    require(source.get("binding") == binding,
+            "Owner-source binding differs from the current intake assignment")
+    require(source.get("actor_id") == directive["who"],
+            "Owner-source actor differs from the requested owner reassignment")
+    created = source.get("created_at")
+    require(source.get("updated_at") == created,
+            "Edited owner-source records are invalid; obtain a new immutable observation")
+    require(timestamp(created) <= timestamp(now), "Owner-source record is future-dated")
+    expected_body = (
+        f"AWF STREAM REASSIGNMENT ticket={ticket_id} current={current_id} "
+        f"old={directive['old']} new={directive['new']} "
+        f"reason_sha256={sha256(directive['why'].strip().encode('utf-8'))}"
+    )
+    raw_body = source.get("raw_body")
+    raw_digest = source.get("raw_body_sha256")
+    require(raw_body == expected_body
+            and raw_digest == sha256(expected_body.encode("utf-8")),
+            "Owner-source raw command does not bind the requested stream reassignment")
+    expected = {
+        "binding": binding, "actor_id": directive["who"],
+        "raw_body_sha256": raw_digest,
+        "requested": {"old": directive["old"], "new": directive["new"]},
+        "now": now,
+    }
+    try:
+        verified = verifier(deepcopy(source), deepcopy(expected))
+    except Exception as exc:
+        raise ValidationError(
+            "Owner stream reassignment trusted owner verification failed") from exc
+    require(isinstance(verified, dict) and verified.get("status") == "VERIFIED"
+            and verified.get("actor_id") == directive["who"]
+            and verified.get("binding") == binding
+            and verified.get("raw_body_sha256") == raw_digest
+            and isinstance(verified.get("source_id"), str) and verified["source_id"]
+            and isinstance(verified.get("observed_at"), str),
+            "Owner-source verifier did not authenticate the exact stream reassignment")
+    require(timestamp(verified["observed_at"]) <= timestamp(now),
+            "Owner-source verification is future-dated")
+    return current_id, verified
+
+
 def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
-                expected_sha256):
+                expected_sha256, governance=None, intake_assignments=None):
     pins = deepcopy(previous.get("owner_stream_pins", {})) if previous is not None else {}
     require(isinstance(pins, dict), "Existing owner stream pins must be an object")
     for ticket_id, pin in pins.items():
@@ -317,7 +390,8 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
     owner_events = {}
     for event in history:
         fields(event, "ticket_id who when why old new kind previous_assignment_id source_id assignment_id",
-               "stream assignment audit")
+               "stream assignment audit",
+               "intake_assignment_id previous_stream_assignment_id owner_source_sha256")
         key(event["ticket_id"], "stream assignment ticket ID")
         require(event["ticket_id"] in tickets,
                 "Stream assignment audit references work outside the retained inventory")
@@ -327,19 +401,30 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
                 "Stream assignment audit is future-dated")
         require(event["old"] in LABELS and event["new"] in LABELS and event["old"] != event["new"],
                 "Stream assignment audit has invalid old/new streams")
+        previous_stream_id = event.get(
+            "previous_stream_assignment_id", event["previous_assignment_id"])
         require(event["kind"] in {"automatic_rebalance", "owner_reassignment"}
-                and event["previous_assignment_id"] == prior,
+                and previous_stream_id == prior,
                 "Stream assignment audit chain is discontinuous")
         expected_event = {name: deepcopy(value) for name, value in event.items()
                           if name != "assignment_id"}
         require(event["assignment_id"] == fingerprint("stream_assignment_event", expected_event),
                 "Stream assignment audit digest is stale")
         if event["kind"] == "automatic_rebalance":
-            require(event["who"] == "awf" and event["source_id"] is None,
+            require(event["who"] == "awf" and event["source_id"] is None
+                    and "intake_assignment_id" not in event
+                    and "previous_stream_assignment_id" not in event
+                    and "owner_source_sha256" not in event,
                     "Automatic stream moves must be attributed only to awf")
         else:
             require(event["who"] != "awf" and isinstance(event["source_id"], str)
-                    and event["source_id"],
+                    and event["source_id"]
+                    and isinstance(event.get("intake_assignment_id"), str)
+                    and event["intake_assignment_id"]
+                    and event["previous_assignment_id"] == event["intake_assignment_id"]
+                    and isinstance(event.get("previous_stream_assignment_id"), str)
+                    and isinstance(event.get("owner_source_sha256"), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", event["owner_source_sha256"]),
                     "Owner stream reassignment lacks its authenticated source")
             owner_events[event["assignment_id"]] = event
         prior = event["assignment_id"]
@@ -372,23 +457,15 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
         require(ticket["status"] not in {"in_progress", *FINAL}
                 and not (ticket["ownership"] and ticket["ownership"]["state"] in {"active", "paused"}),
                 "Started or completed work cannot be reassigned to another stream")
-        expected = {"ticket_id": ticket_id, "current_assignment_id": chain_id,
-                    "old": directive["old"], "new": directive["new"],
-                    "who": directive["who"], "when": directive["when"],
-                    "why": directive["why"]}
-        try:
-            verified = verifier(deepcopy(directive["owner_source"]), deepcopy(expected))
-        except Exception as exc:
-            raise ValidationError("Owner stream reassignment trusted owner verification failed") from exc
-        require(isinstance(verified, dict) and verified.get("status") == "VERIFIED"
-                and verified.get("actor_id") == directive["who"]
-                and isinstance(verified.get("source_id"), str) and verified["source_id"],
-                "Owner stream reassignment requires a verified trusted owner")
+        intake_assignment_id, verified = _authenticate_owner_reassignment(
+            governance, ticket_id, intake_assignments, directive, verifier, now)
         event = _assignment_event(
             chain_id, ticket_id=ticket_id, who=directive["who"],
             when=directive["when"], why=directive["why"], old=directive["old"],
             new=directive["new"], kind="owner_reassignment",
             source_id=verified["source_id"],
+            intake_assignment_id=intake_assignment_id,
+            owner_source_sha256=verified["raw_body_sha256"],
         )
         history.append(event)
         chain_id = event["assignment_id"]
@@ -781,6 +858,7 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
                    execution=None, host_writer_capacity=None, coordinator_spawn_depth=0, execution_provenance=None,
                    coordinator_agent_id=None, operating=None, governance=None, redact_ownership_worktrees=False,
                    owner_reassignments=None, verify_owner_reassignment=None,
+                   intake_assignments=None,
                    _recommendation=False):
     """Return a stable plan from one caller-pinned snapshot; never dispatch work."""
     policy = native_execution_policy(execution)
@@ -807,7 +885,7 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
                       "inventory_pin": "original-verified-bytes"}
     owner_pins, assignment_history, assignment_chain_id, assignment_root_id = _owner_pins(
         previous, tickets, owner_reassignments, verify_owner_reassignment, now,
-        operating_count, expected_sha256)
+        operating_count, expected_sha256, governance, intake_assignments)
     fixed = _preserve(previous, value, tickets, owner_pins,
                       path_redaction["applied_ticket_ids"])
     roots = {ticket_id: ticket_id for ticket_id in tickets}
@@ -1278,7 +1356,7 @@ def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
                        host_writer_capacity=None, coordinator_spawn_depth=0, execution_provenance=None,
                        coordinator_agent_id=None, operating=None, governance=None,
                        redact_ownership_worktrees=False, owner_reassignments=None,
-                       verify_owner_reassignment=None):
+                       verify_owner_reassignment=None, intake_assignments=None):
     """CAS-update a project plan under a native lock with a recoverable journal."""
     project_root, runtime_root = Path(project_root).absolute(), Path(runtime_root).absolute()
     require(project_root.is_dir(), "Project root must already exist")
@@ -1307,7 +1385,8 @@ def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
                               operating=operating, governance=governance,
                                redact_ownership_worktrees=redact_ownership_worktrees,
                                owner_reassignments=owner_reassignments,
-                               verify_owner_reassignment=verify_owner_reassignment)
+                               verify_owner_reassignment=verify_owner_reassignment,
+                               intake_assignments=intake_assignments)
         markdown = render_markdown(plan)
         plan["markdown_sha256"] = sha256(markdown)
         new_plan = (json.dumps(plan, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
