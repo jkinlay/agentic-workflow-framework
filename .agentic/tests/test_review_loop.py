@@ -12,6 +12,9 @@ import unittest
 from unittest.mock import patch
 from jsonschema import Draft202012Validator
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import write_awf_source_fixture  # noqa: E402
+
 from agentic import ValidationError
 from agentic.canonical import now_text, sha256
 from agentic.review_qualification import FORMAT as QUALIFICATION_FORMAT, host_binding_sha256
@@ -513,7 +516,7 @@ class HostTests(unittest.TestCase):
 
     def test_source_allowlist_is_bound_to_candidate_checkout(self):
         candidate = self.base/'worker'
-        (candidate/'MANIFEST.json').write_text('{}')
+        write_awf_source_fixture(candidate)
         (candidate/'.agentic/lib/agentic').mkdir(parents=True)
         (candidate/'.agentic/lib/agentic/__init__.py').write_text('')
         (candidate/'.agentic/SPECIFICATION.md').write_text('source marker')
@@ -786,7 +789,7 @@ class HostTests(unittest.TestCase):
         (driver.worker/'.agentic/lib/agentic').mkdir(parents=True)
         (driver.worker/'.agentic').mkdir(exist_ok=True)
         (driver.worker/'.agentic/lib/agentic/__init__.py').write_text('')
-        (driver.worker/'MANIFEST.json').write_text('{}')
+        write_awf_source_fixture(driver.worker)
         (driver.worker/'.agentic/SPECIFICATION.md').write_text('source marker')
         (driver.worker/'.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(
             {'execution': {'model_routing': {'models': {

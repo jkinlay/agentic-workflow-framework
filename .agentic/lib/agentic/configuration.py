@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import stat
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
@@ -16,6 +18,56 @@ FLAGS = {
     '$.github.base_branch': '--default-branch', '$.jira.site': '--jira-site',
     '$.jira.project_key': '--jira-key', '$.validation.commands': '--test-command',
 }
+
+PROJECT_LAUNCH_SURFACES = "PROJECT_LAUNCH_SURFACES.json"
+_PROJECT_LAUNCH_SURFACES_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["version", "scripts"],
+    "properties": {
+        "version": {"const": 1},
+        "scripts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "mechanism"],
+                "properties": {
+                    "path": {"type": "string", "minLength": 1},
+                    "mechanism": {
+                        "enum": [
+                            "sanitized_process_start",
+                            "scrubbed_python_entrypoint",
+                            "delegated_launcher",
+                        ]
+                    },
+                    "entry_point": {"type": "string", "minLength": 1},
+                    "delegate": {"type": "string", "minLength": 1},
+                },
+                "allOf": [
+                    {
+                        "if": {"properties": {"mechanism": {"const": "delegated_launcher"}}},
+                        "then": {"required": ["delegate"], "not": {"required": ["entry_point"]}},
+                        "else": {"required": ["entry_point"], "not": {"required": ["delegate"]}},
+                    }
+                ],
+            },
+        },
+    },
+}
+
+
+def valid_workflow_blob_sha(value):
+    """Return whether *value* is a usable SHA-1 Git blob object ID.
+
+    The project-config schema learns this optional field in the shared
+    generator phase.  Keeping the primitive validation here lets the gate
+    consume in-memory reviewed configurations defensively during that staged
+    rollout, without treating a malformed content pin as a legacy config.
+    """
+    return (isinstance(value, str) and len(value) == 40
+            and value != "0" * 40
+            and all(character in "0123456789abcdef" for character in value))
 
 
 def json_path(parts):
@@ -53,6 +105,42 @@ def placeholder_issues(value, parts=()):
         if reason:
             found.append(issue(path, reason))
     return found
+
+
+def load_project_launch_surfaces(root):
+    """Load the optional project-owned launch list through its closed schema."""
+    path = Path(root) / PROJECT_LAUNCH_SURFACES
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise ValidationError(
+            f"Project launch-surface list {PROJECT_LAUNCH_SURFACES} is unavailable: {exc}"
+        ) from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValidationError(
+            f"Project launch-surface list {PROJECT_LAUNCH_SURFACES} is malformed: "
+            "expected a regular JSON file"
+        )
+    try:
+        from .canonical import load
+        value = load(path)
+    except (OSError, UnicodeError, ValidationError) as exc:
+        raise ValidationError(
+            f"Project launch-surface list {PROJECT_LAUNCH_SURFACES} is malformed: {exc}"
+        ) from exc
+    errors = sorted(
+        Draft202012Validator(_PROJECT_LAUNCH_SURFACES_SCHEMA).iter_errors(value),
+        key=lambda error: str(list(error.absolute_path)),
+    )
+    if errors:
+        error = errors[0]
+        raise ValidationError(
+            f"Project launch-surface list {PROJECT_LAUNCH_SURFACES} is malformed at "
+            f"{json_path(error.absolute_path)}: {error.message}"
+        )
+    return value["scripts"]
 
 
 def inspect_config(config, workflow, contracts, project_instructions=None):

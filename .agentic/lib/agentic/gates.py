@@ -4,11 +4,15 @@ import base64
 import binascii
 from datetime import timedelta
 import fnmatch
+from pathlib import Path
 import re
 import uuid
 
 from . import ValidationError
-from .canonical import canonical, fingerprint, fresh, loads, sha256, timestamp, unique
+from .canonical import (canonical, candidate_id, fingerprint, fresh, loads,
+                        reject_git_sha_candidate_ids, sha256, timestamp, unique)
+from .closeout import git
+from .configuration import valid_workflow_blob_sha
 from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_path,
                      specialist_domains, validate_config)
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
@@ -75,6 +79,61 @@ def local_ci_parity(config, contract, worker, ci):
     return not mismatches, mismatches
 
 
+def candidate_workflow_blob_sha(repository, integration_tree_sha, workflow_path):
+    """Resolve one regular file blob from the recorded candidate tree.
+
+    The PR manifest deliberately contains only changed files, so it cannot
+    establish an unchanged workflow's content.  Resolve the path from the
+    integration tree itself with read-only Git plumbing.  Any missing object,
+    malformed output, non-blob entry, or unsafe path returns no evidence.
+    """
+    if not valid_workflow_blob_sha(integration_tree_sha):
+        return None
+    try:
+        safe_path(workflow_path)
+        raw = git(repository, "ls-tree", "-z", "--full-tree",
+                  integration_tree_sha, "--", workflow_path, binary=True)
+    except (OSError, TypeError, UnicodeError, ValueError, ValidationError):
+        return None
+    records = raw.split(b"\0")
+    if len(records) != 2 or records[1] or b"\t" not in records[0]:
+        return None
+    metadata, raw_path = records[0].split(b"\t", 1)
+    try:
+        mode, kind, blob_sha = metadata.decode("ascii").split(" ")
+        path = raw_path.decode("utf-8")
+    except (UnicodeError, ValueError):
+        return None
+    if (mode not in {"100644", "100755"} or kind != "blob"
+            or path != workflow_path or not valid_workflow_blob_sha(blob_sha)):
+        return None
+    return blob_sha
+
+
+def ci_workflow_provenance_matches(required, observed, candidate_blob_sha):
+    """Match one CI check to a reviewed commit or workflow-content pin.
+
+    A present ``workflow_blob_sha`` selects content-bound mode.  The PR file
+    is resolved independently from the recorded candidate integration tree and
+    compared directly with the reviewed object.  Because Git blob IDs depend
+    only on file bytes, merge commit identity is irrelevant.  Missing or
+    malformed tree evidence and content pins never fall back to the legacy
+    commit pin.
+    """
+    if any(observed.get(key) != required.get(key)
+           for key in ("name", "app_id", "workflow_path")):
+        return False
+    if "workflow_blob_sha" not in required:
+        workflow_sha = required.get("workflow_sha")
+        return (valid_workflow_blob_sha(workflow_sha)
+                and observed.get("workflow_sha") == workflow_sha)
+    workflow_blob_sha = required.get("workflow_blob_sha")
+    if not valid_workflow_blob_sha(workflow_blob_sha):
+        return False
+    return (valid_workflow_blob_sha(candidate_blob_sha)
+            and candidate_blob_sha == workflow_blob_sha)
+
+
 def verified_owner_records(config, contracts, bundle, binding, runs, excluded_contexts, excluded_producers, now):
     """Validate owner dispositions before any of them can change a gate."""
     from .authorization import verify_owner_record
@@ -110,7 +169,7 @@ def expected_binding(config, workflow, bundle):
     return {"project_id": config["project"]["id"], "repository_id": config["github"]["repository_id"],
             "issue_id": bundle["snapshot"]["issue_id"], "requirements_hash": fingerprint("requirements", bundle["snapshot"]),
             "contract_hash": fingerprint("contract", bundle["contract"]), "policy_hash": policy_hash(config, workflow),
-            "candidate_id": fingerprint("candidate", bundle["candidate"])}
+            "candidate_id": candidate_id(bundle["candidate"])}
 
 
 def publication_receipt_consistent(publication):
@@ -184,7 +243,8 @@ def cap_disposition_record_id(record):
     })
 
 
-def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_registry=None):
+def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_registry=None,
+             repository=None):
     # Production intentionally has no built-in collector registration.  Only a
     # runtime adapter may pass a registry.  Configuration and environment data
     # can narrow that registry but can never create membership.
@@ -194,6 +254,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         raise ValidationError("Jira is disabled; this Jira evidence evaluator requires Jira scope. Continue provisional local planning through the native host.")
     if not config["merge_gate"]["trusted_owner_ids"]:
         raise ValidationError("$.merge_gate.trusted_owner_ids: configure actual trusted owner IDs before merge authorization")
+    reject_git_sha_candidate_ids(bundle)
     contracts.validate("evidence-bundle", bundle)
     from .review_completion import validate_gate_submission
     review_submission = validate_gate_submission(
@@ -681,14 +742,17 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     unique(ci["checks"], "name", "CI check name")
     checks = {check["name"]: check for check in ci["checks"]}
     ci_ok = bool(config["validation"]["required_ci_checks"]) and ci["retrieval_complete"] and candidate["tested_merge_sha"] is not None
+    repository = repository or Path(__file__).resolve().parents[3]
     for required in config["validation"]["required_ci_checks"]:
         check = checks.get(required["name"])
         if not check:
             ci_ok = False
             continue
-        for key in ["app_id", "workflow_path", "workflow_sha"]:
-            if check[key] != required[key]:
-                ci_ok = False
+        candidate_blob_sha = (candidate_workflow_blob_sha(
+            repository, candidate["integration_tree_sha"], required.get("workflow_path"))
+            if "workflow_blob_sha" in required else None)
+        if not ci_workflow_provenance_matches(required, check, candidate_blob_sha):
+            ci_ok = False
         fresh(check["completed_at"], now, config["validation"]["max_evidence_age_seconds"])
         ci_ok = ci_ok and check["conclusion"] == "success" and check["tests_executed"] >= required["min_tests_executed"]
         ci_ok = ci_ok and check["tested_tree_sha"] == candidate["integration_tree_sha"] and check["tested_commit_sha"] == candidate["tested_merge_sha"]

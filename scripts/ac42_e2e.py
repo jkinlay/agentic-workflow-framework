@@ -10,6 +10,11 @@ fixture built from the local Git objects; nothing contacts a provider, writes
 outside --work, or uses credentials. Exit 0 only when every required row
 passes. The real gate run is on Windows via tools/windows/Invoke-AC42.ps1;
 on other hosts the same harness is a smoke test.
+
+On Windows and POSIX, the synthetic project stores ``core.autocrlf=true`` only
+in that throwaway repository.  The fresh-clone regression applies the setting
+with ``git -c`` to the clone command, so neither a caller repository nor global
+Git configuration is changed.
 """
 from __future__ import annotations
 import argparse
@@ -39,7 +44,7 @@ REQUIRED = ("fixture", "upgrade", "verify_installation", "validate_config", "sel
             "project_values_preserved", "external_data_unchanged", "autocrlf_fresh_clone",
             "history_sensitive_value_blocked", "capability_matrix",
             "read_only_external_resource_admission")
-SENSITIVE = "C:\\Users\\synthetic-ac42\\raw_estate\\positions.csv"
+SENSITIVE_PLACEHOLDER = "<external-estate>/positions.csv"
 
 
 STATUS_FIXTURE_SITE = r'''"""AC42-only provider fixture for the installed status subprocess."""
@@ -182,6 +187,12 @@ def git(repo, *arguments):
     return done["stdout_tail"].strip()
 
 
+def clone_with_autocrlf(repository, destination, cwd, *, extra=None):
+    """Clone with Windows conversion command-scoped to the disposable clone."""
+    return run(["git", "-c", "core.autocrlf=true", "clone", "-q",
+                repository, destination], cwd, extra=extra)
+
+
 def provider_fixture(project, head, upgrade_commit, receipt, installed_files, full_name, repository_id, branch):
     """Recorded GitHub answers for a merged adoption PR #7 whose merge commit is head."""
     from agentic.installer import CONFIG, INSTALLED, PROVENANCE
@@ -258,7 +269,7 @@ def installed_active_status(python, workflow, project, release, pin, fixture, wo
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--from-version", default="1.9.1", choices=("1.8.3", "1.8.9", "1.9.1", "1.9.2", "1.9.3"))
     parser.add_argument("--work", type=Path, help="Empty scratch directory outside this repository (default: new temp dir)")
     parser.add_argument("--evidence", type=Path, required=True, help="Evidence JSON to create; never overwritten")
@@ -302,7 +313,10 @@ def main(argv=None):
         full_name, repository_id, branch = github["repository"], github["repository_id"], github["base_branch"]
         git(project, "init", "-q", "-b", branch)
         git(project, "remote", "add", "origin", f"https://github.com/{full_name}.git")
-        git(project, "config", "core.autocrlf", "true")
+        # This repository was just created under --work and is wholly
+        # disposable.  Be explicit about the local scope: never select a
+        # global/system write target or mutate the AWF source repository.
+        git(project, "config", "--local", "core.autocrlf", "true")
         git(project, "add", "-A")
         git(project, "commit", "-q", "-m", f"AWF {args.from_version} installation with operating history")
         base_commit = git(project, "rev-parse", "HEAD")
@@ -403,19 +417,24 @@ def main(argv=None):
         gate.record("external_data_unchanged", tree_digest(external) == external_before, external_before)
 
         clone = work / "fresh-clone"
-        run(["git", "-c", "core.autocrlf=true", "clone", "-q", project, clone], work)
+        clone_with_autocrlf(project, clone, work)
         step = run([python, "-B", clone / ".agentic/scripts/workflow.py", "--root", clone, "verify-installation"], clone)
         gate.record("autocrlf_fresh_clone", step["exit_code"] == 0, step)
 
         git(project, "checkout", "-q", "-b", "awf/ac43-history")
-        (project / "notes-ac43.md").write_text("estate: " + SENSITIVE + "\n", encoding="utf-8")
+        (project / "notes-ac43.md").write_text(
+            "estate: " + SENSITIVE_PLACEHOLDER + "\n", encoding="utf-8")
         git(project, "add", "notes-ac43.md")
         git(project, "commit", "-q", "-m", "Add estate note")
         (project / "notes-ac43.md").unlink()
         git(project, "add", "-A")
         git(project, "commit", "-q", "-m", "Remove estate note")
+        mapping = work / "publication-mapping.json"
+        mapping.write_text(json.dumps({"version": 1, "aliases": {},
+            "deny_literals": [SENSITIVE_PLACEHOLDER], "deny_regexes": [],
+            "internal_hostnames": [], "builtin_allow": []}), encoding="utf-8")
         step = run([python, "-B", workflow, "--root", project, "publication-scan", "--base", branch,
-                    "--head", "awf/ac43-history", "--json"], project)
+                    "--head", "awf/ac43-history", "--mapping", mapping, "--json"], project)
         gate.record("history_sensitive_value_blocked", step["exit_code"] != 0 and "notes-ac43.md" in step["stdout_tail"], step)
         gate.record("read_only_external_resource_admission", False,
                     "AC48-AC51 per-stream admission of a declared read-only resource is not exercised by this harness",

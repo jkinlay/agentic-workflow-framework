@@ -7,10 +7,14 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 import zlib
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic import publication
@@ -797,6 +801,79 @@ class PublicationRewriteTests(unittest.TestCase):
             rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                 mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_awf52_stale_pseudorefs_refuse_before_cas(self):
+        old_commit, _ = self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+        git_dir = Path(git(self.repo.path, "rev-parse", "--absolute-git-dir"))
+        real_git = publication._git
+
+        for name, content in (
+                ("ORIG_HEAD", old_commit + "\n"),
+                ("FETCH_HEAD", old_commit + "\t\tbranch 'old' of example.invalid\n")):
+            with self.subTest(name=name):
+                (git_dir / name).write_text(content, encoding="ascii", newline="\n")
+                cas_calls = []
+
+                def record_cas(root, *args, **kwargs):
+                    if args[:2] == ("update-ref", "refs/heads/awf/EX-6-publication"):
+                        cas_calls.append(args)
+                    return real_git(root, *args, **kwargs)
+
+                with mock.patch.object(publication, "_git", side_effect=record_cas):
+                    with self.assertRaisesRegex(
+                            ValidationError,
+                            rf"PRE_CAS_STALE_TIP: {name} points at an old commit"):
+                        rewrite_unpublished(
+                            self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                            message, mapping_path=self.mapping)
+                self.assertEqual([], cas_calls)
+                self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+                (git_dir / name).unlink()
+
+    def test_awf52_linked_worktree_head_is_in_the_pre_cas_census(self):
+        old_commit, _ = self.contaminate_then_remove()
+        linked = Path(self.temp.name) / "linked-old-head"
+        git(self.repo.path, "worktree", "add", "--detach", str(linked), old_commit)
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+
+        with self.assertRaisesRegex(
+                ValidationError,
+                r"PRE_CAS_STALE_TIP: linked-worktree HEAD points at an old commit"):
+            rewrite_unpublished(
+                self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                message, mapping_path=self.mapping)
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_awf52_global_only_identity_refuses_before_snapshot_work(self):
+        self.contaminate_then_remove()
+        git(self.repo.path, "config", "--unset-all", "user.name")
+        git(self.repo.path, "config", "--unset-all", "user.email")
+        global_config = Path(self.temp.name) / "global.gitconfig"
+        subprocess.run(
+            ["git", "config", "--file", str(global_config), "user.name", "Global Fixture"],
+            check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "--file", str(global_config), "user.email",
+             "global@example.invalid"], check=True, capture_output=True)
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("clean squash\n", encoding="utf-8")
+        old_head = git(self.repo.path, "rev-parse", "HEAD")
+
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(global_config)}), \
+                mock.patch.object(publication, "_rewrite_snapshot") as snapshot:
+            with self.assertRaisesRegex(
+                    ValidationError,
+                    r"IDENTITY_REQUIRED: repository-local user.name and user.email"):
+                rewrite_unpublished(
+                    self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                    message, mapping_path=self.mapping)
+        snapshot.assert_not_called()
+        self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))
 
     def test_ac44_reachability_lookup_error_refuses_before_mutation(self):
         self.contaminate_then_remove()
@@ -2093,7 +2170,9 @@ class PublicationRewriteTests(unittest.TestCase):
             return real_git(root, *args, **kwargs)
 
         with mock.patch.object(publication, "_git", side_effect=add_ref_after_cas):
-            with self.assertRaisesRegex(ValidationError, "POST_CAS_RECOVERY_REQUIRED"):
+            with self.assertRaisesRegex(
+                    ValidationError,
+                    r"POST_CAS_STALE_TIP_RECOVERY_REQUIRED:.*refs/tags/post-cas-race points at an old commit"):
                 rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                     mapping_path=self.mapping)
         self.assertEqual(old_head, git(self.repo.path, "rev-parse", "HEAD"))

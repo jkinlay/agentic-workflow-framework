@@ -52,6 +52,7 @@ class PublishReleaseTests(unittest.TestCase):
         command(["git", "-c", "commit.gpgsign=false", "commit", "-m", "Synthetic release fixture"],
                 cls.repository, cls.git_env)
         cls.commit = command(["git", "rev-parse", "HEAD"], cls.repository, cls.git_env)
+        command(["git", "tag", "v1.9.3", cls.commit], cls.repository, cls.git_env)
         cls.epoch = int(command(["git", "show", "-s", "--format=%ct", cls.commit], cls.repository, cls.git_env))
         cls.windows_check = cls.base / "windows-check.json"
         cls.windows_check.write_text(json.dumps({
@@ -70,6 +71,34 @@ class PublishReleaseTests(unittest.TestCase):
         return {"self_test": {"run": 1, "failures": 0, "errors": 0},
                 "release_hygiene": {"status": "PASS"},
                 "portable_suites": {"portable_core": 1, "portable_host": 1}}
+
+    @staticmethod
+    def scan_report(base, head, *, status="PASS", findings=None, unscanned=None):
+        findings = [] if findings is None else findings
+        unscanned = [] if unscanned is None else unscanned
+        blocking = sum(item["classification"] == "BLOCKING" for item in findings)
+        pre_existing = sum(item["classification"] == "PRE_EXISTING" for item in findings)
+        return {"schema_version": 3, "status": status, "base_sha": base, "head_sha": head,
+                "pr_body_sha256": None, "additional_pr_body_sha256": [], "comment_sha256": [],
+                "mapping_sha256": None, "project_config_sha256": None, "mapping_loaded": False,
+                "mapping_location": ".agentic-state/publication-deny.json", "commits_scanned": [],
+                "findings": findings, "total_findings": len(findings),
+                "blocking_findings": blocking, "pre_existing_findings": pre_existing,
+                "unscanned": unscanned, "unscanned_count": len(unscanned),
+                "coverage": {"current_files": True, "commit_messages": True,
+                             "every_patch": True,
+                             "generated_reports": "when committed or passed as provider text",
+                             "captured_command_output": "when committed or passed as provider text",
+                             "strict_utf8": True, "pr_bodies": False, "pr_comments": False},
+                "execution_authority": False}
+
+    @classmethod
+    def fake_scan_command(cls, command_line, *, cwd):
+        base = command_line[command_line.index("--base") + 1]
+        head = command_line[command_line.index("--head") + 1]
+        report = cls.scan_report(base, head)
+        raw = (json.dumps(report, sort_keys=True) + "\n").encode("utf-8")
+        return SimpleNamespace(returncode=0, stdout=raw, stderr=b"")
 
     def build(self, name):
         source = self.base / (name + "-source")
@@ -130,14 +159,67 @@ class PublishReleaseTests(unittest.TestCase):
     def test_dry_run_records_hashes_and_makes_no_remote_change(self):
         result = publisher.publish(self.repository, self.commit, self.base / "dry-run-output",
                                    self.windows_check, self.windows_pin, dry_run=True,
-                                   validation_runner=self.fake_validation)
+                                   validation_runner=self.fake_validation,
+                                   scan_command_runner=self.fake_scan_command)
         self.assertEqual("DRY_RUN", result["status"])
         for name, digest in result["record"]["assets"].items():
             self.assertIn(name, result["tag_message"])
             self.assertIn(digest, result["tag_message"])
             self.assertIn(digest, result["release_body"])
         self.assertFalse(result["remote_changes"])
+        scan = result["publication_scan"]
+        self.assertEqual({"status": "PASS", "base_sha": self.commit,
+                          "head_sha": self.commit,
+                          "sha256": result["record"]["publication_scan"]["sha256"]}, scan)
+        self.assertEqual(scan, result["record"]["publication_scan"])
+        report_path = self.base / "dry-run-output" / "publication-scan.json"
+        self.assertEqual(scan["sha256"], hashlib.sha256(report_path.read_bytes()).hexdigest())
+        self.assertIn(scan["sha256"], result["tag_message"])
+        self.assertIn(scan["sha256"], result["release_body"])
         self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"], self.repository))
+
+    def test_blocked_publication_scan_stops_before_release_mutation(self):
+        calls = []
+
+        def blocked(command_line, *, cwd):
+            calls.append(command_line)
+            base = command_line[command_line.index("--base") + 1]
+            head = command_line[command_line.index("--head") + 1]
+            finding = {"commit": head, "path": "message", "line": 1, "source": "message",
+                       "change": None, "detector_id": "builtin.synthetic",
+                       "classification": "BLOCKING",
+                       "redacted_excerpt": "sha256:" + "0" * 64}
+            report = self.scan_report(base, head, status="BLOCKED", findings=[finding])
+            return SimpleNamespace(returncode=2,
+                                   stdout=(json.dumps(report) + "\n").encode("utf-8"), stderr=b"")
+
+        with patch.object(publisher, "origin_repository") as origin, \
+                self.assertRaisesRegex(publisher.ReleaseError,
+                                            "publication scan BLOCKED.*1 blocking"):
+            publisher.publish(self.repository, self.commit, self.base / "blocked-scan-output",
+                              self.windows_check, self.windows_pin,
+                              validation_runner=self.fake_validation,
+                              scan_command_runner=blocked)
+        self.assertEqual(1, len(calls))
+        origin.assert_not_called()
+        self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"], self.repository))
+
+    def test_publication_scan_error_stops_before_release_mutation(self):
+        tags_before = command(["git", "tag", "--list", "v1.9.4"], self.repository)
+
+        def failed(_command_line, *, cwd):
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"synthetic scan failure")
+
+        with patch.object(publisher, "origin_repository") as origin, \
+                self.assertRaisesRegex(publisher.ReleaseError,
+                                            "publication scan command failed.*exit 1"):
+            publisher.publish(self.repository, self.commit, self.base / "failed-scan-output",
+                              self.windows_check, self.windows_pin,
+                              validation_runner=self.fake_validation,
+                              scan_command_runner=failed)
+        origin.assert_not_called()
+        self.assertEqual(tags_before,
+                         command(["git", "tag", "--list", "v1.9.4"], self.repository))
 
     def test_tag_push_uses_only_the_explicit_gh_credential_helper(self):
         isolated = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
@@ -290,7 +372,8 @@ class PublishReleaseTests(unittest.TestCase):
             publisher.publish(
                 self.repository, self.commit, self.base / "rejected-header-preflight",
                 self.windows_check, self.windows_pin,
-                validation_runner=self.fake_validation, gh="gh")
+                validation_runner=self.fake_validation, gh="gh",
+                scan_command_runner=self.fake_scan_command)
 
         self.assertEqual("", command(["git", "tag", "--list", "v1.9.4"],
                                      self.repository, self.git_env))
@@ -597,7 +680,8 @@ class PublishReleaseTests(unittest.TestCase):
                 self.assertRaises(publisher.ReleaseError) as raised:
             publisher.publish(self.repository, self.commit, self.base / "awf26-failed-publish",
                               self.windows_check, self.windows_pin,
-                              validation_runner=self.fake_validation, gh=fake_gh)
+                              validation_runner=self.fake_validation, gh=fake_gh,
+                              scan_command_runner=self.fake_scan_command)
 
         git_calls = [(line, env) for line, env in calls if line[0] == "git"]
         push_calls = [(line, env) for line, env in git_calls if "push" in line]
@@ -673,7 +757,8 @@ class PublishReleaseTests(unittest.TestCase):
 
         result = publisher.publish(self.repository, self.commit, self.base / "git-validation-output",
                                    self.windows_check, self.windows_pin, dry_run=True,
-                                   validation_runner=real_git_validation)
+                                   validation_runner=real_git_validation,
+                                   scan_command_runner=self.fake_scan_command)
         self.assertEqual("DRY_RUN", result["status"])
         self.assertEqual(self.commit, seen["head"])
         self.assertEqual("", seen["status"])
@@ -687,9 +772,38 @@ class PublishReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(publisher.ReleaseError, "synthetic validation failure"):
             publisher.publish(self.repository, self.commit, self.base / "git-validation-failure-output",
                               self.windows_check, self.windows_pin, dry_run=True,
-                              validation_runner=failing_validation)
+                              validation_runner=failing_validation,
+                              scan_command_runner=self.fake_scan_command)
         self.assertFalse(seen["failed_source"].exists())
         self.assertEqual(before, self.worktree_paths())
+
+    def test_validation_checkout_preserves_local_and_global_autocrlf(self):
+        home = self.base / "autocrlf-home"
+        home.mkdir(exist_ok=True)
+        global_config = home / "global.gitconfig"
+        global_config.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8", newline="\n")
+        global_before = global_config.read_bytes()
+        try:
+            for value in ("false", "input"):
+                with self.subTest(value=value):
+                    command(["git", "config", "--local", "core.autocrlf", value],
+                            self.repository, self.git_env)
+                    destination = self.base / f"autocrlf-{value}-validation"
+                    with patch.dict(os.environ, {"HOME": str(home),
+                                                 "GIT_CONFIG_GLOBAL": str(global_config)}):
+                        with publisher.validation_checkout(self.repository, self.commit, destination):
+                            self.assertEqual(self.commit, command(["git", "rev-parse", "HEAD"], destination,
+                                                                  self.git_env))
+                            expected = publisher.git_run(
+                                self.repository, "show", f"{self.commit}:MANIFEST.json", text=False).stdout
+                            self.assertEqual(expected, (destination / "MANIFEST.json").read_bytes())
+                    self.assertFalse(destination.exists())
+                    self.assertEqual(value, command(["git", "config", "--local", "--get",
+                                                     "core.autocrlf"], self.repository, self.git_env))
+                    self.assertEqual(global_before, global_config.read_bytes())
+        finally:
+            command(["git", "config", "--local", "core.autocrlf", "false"],
+                    self.repository, self.git_env)
 
     def test_k6_reports_untracked_tracked_and_version_disagreement_together(self):
         readme = self.repository / "README.md"
@@ -975,7 +1089,8 @@ print('password=repository-secret')
         try:
             result = publisher.publish(self.repository, self.commit, self.base / "published-output",
                                        self.windows_check, self.windows_pin,
-                                       validation_runner=self.fake_validation, gh=str(executable))
+                                       validation_runner=self.fake_validation, gh=str(executable),
+                                       scan_command_runner=self.fake_scan_command)
             self.assertEqual("DRAFT_CREATED", result["status"])
             verified = publisher.verify_tag(self.repository, "v1.9.4", self.base / "verify-output",
                                             gh=str(executable))
@@ -1058,7 +1173,8 @@ print('password=repository-secret')
                 with self.assertRaisesRegex(publisher.ReleaseError, message):
                     publisher.publish(self.repository, self.commit, self.base / f"reject-{len(pushes)}",
                                       self.windows_check, self.windows_pin,
-                                      validation_runner=self.fake_validation, gh=str(executable))
+                                      validation_runner=self.fake_validation, gh=str(executable),
+                                      scan_command_runner=self.fake_scan_command)
                 self.assertEqual(before, tag_list())
         self.assertFalse(log.exists() and log.read_text(encoding="utf-8").strip())
 

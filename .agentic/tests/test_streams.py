@@ -6,9 +6,13 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import write_awf_source_fixture  # noqa: E402
 
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, loads, sha256
@@ -846,7 +850,7 @@ class PlanPublicationTests(unittest.TestCase):
         self.project.mkdir()
         self.runtime = self.base / "runtime"
         self.runtime.mkdir()
-        (self.runtime / "MANIFEST.json").write_text("{}")
+        write_awf_source_fixture(self.runtime)
         self.raw = FIXTURE.read_bytes()
 
     def publish(self, expected=None, *, raw=None, redact_ownership_worktrees=False):

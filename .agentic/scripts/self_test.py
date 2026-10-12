@@ -19,13 +19,12 @@ from urllib.parse import unquote
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
+sys.path.insert(0, str(ROOT / '.agentic/tests'))
 from agentic import VERSION
+from agentic.operating import filesystem_reader, is_awf_source_repository
 
 HEARTBEAT_SECONDS = 15.0
-# An adopter may own a root MANIFEST.json; only the AWF source tree has the
-# release builder, and only installed projects carry the installation receipt.
-SOURCE_REPOSITORY = ((ROOT / 'MANIFEST.json').is_file() and (ROOT / 'scripts/build_release.py').is_file()
-                     and not (ROOT / '.agentic/installed-manifest.json').exists())
+SOURCE_REPOSITORY = is_awf_source_repository(filesystem_reader(ROOT))
 PHASES = ('discovery', 'syntax', 'documentation', 'release_hygiene', 'test_suite')
 NONDETERMINISTIC_REPORT_FIELDS = ('created_at', 'elapsed_seconds', 'phase_timings_seconds')
 
@@ -357,8 +356,11 @@ def main(argv=None):
         for path in code:
             compile(path.read_bytes(), str(path), 'exec')
         report['checks']['python_syntax_files'] = len(code)
+        from agentic.configuration import load_project_launch_surfaces
         from agentic.launch_surfaces import validate_repository_launch_surfaces
-        report['checks']['launch_surfaces'] = validate_repository_launch_surfaces(ROOT)
+        project_scripts = load_project_launch_surfaces(ROOT)
+        report['checks']['launch_surfaces'] = validate_repository_launch_surfaces(
+            ROOT, project_scripts=project_scripts)
         report['code_sha256'] = {p.relative_to(ROOT).as_posix(): sha256(p.read_bytes()) for p in code}
         progress.complete_phase('syntax')
 

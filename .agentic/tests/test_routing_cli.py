@@ -10,6 +10,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
+
 from agentic.model_routing import MODELS, default_policy
 from agentic.canonical import canonical
 from agentic.operating import set_operating
