@@ -5,10 +5,14 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic.child_process import child_env
 from agentic.canonical import load
