@@ -86,6 +86,27 @@ class CriticBindingTests(unittest.TestCase):
                 {"run_id": RUN_A, "head_sha": "a" * 40}, reviewed_head="b" * 40
             )
 
+    def test_awf49a_r3_001_candidate_binding_cannot_name_another_head(self):
+        head = "b" * 40
+        verdict = {
+            "run_id": RUN_A,
+            "head_sha": head,
+            "candidate_binding": {
+                "repository_id": 1,
+                "pr_number": 49,
+                "base_sha": "a" * 40,
+                "head_sha": "f" * 40,
+            },
+            "critic_artifact_binding": {
+                "critic_run_id": RUN_A,
+                "head_sha": head,
+            },
+            "critic_review": {"run_id": RUN_A, "head_sha": head},
+        }
+
+        with self.assertRaisesRegex(ValidationError, "Candidate binding.*reviewed head"):
+            validate_critic_run_binding(verdict, reviewed_head=head)
+
 
 class OwnerOverrideTests(unittest.TestCase):
     def test_override_is_recorded_sealed_and_renderable_for_the_pr(self):
