@@ -57,6 +57,19 @@ _PROJECT_LAUNCH_SURFACES_SCHEMA = {
 }
 
 
+def valid_workflow_blob_sha(value):
+    """Return whether *value* is a usable SHA-1 Git blob object ID.
+
+    The project-config schema learns this optional field in the shared
+    generator phase.  Keeping the primitive validation here lets the gate
+    consume in-memory reviewed configurations defensively during that staged
+    rollout, without treating a malformed content pin as a legacy config.
+    """
+    return (isinstance(value, str) and len(value) == 40
+            and value != "0" * 40
+            and all(character in "0123456789abcdef" for character in value))
+
+
 def json_path(parts):
     result = '$'
     for part in parts:
