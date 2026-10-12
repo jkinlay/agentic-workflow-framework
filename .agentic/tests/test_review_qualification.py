@@ -11,6 +11,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import skip_unless_source_repo  # noqa: E402
+
 from agentic import ValidationError
 from agentic import review_qualification
 from agentic.canonical import sha256
@@ -19,7 +22,6 @@ from agentic.review_qualification import (collect_qualification,
     host_binding_sha256, validate_config_qualification)
 from agentic.providers import github_review_host
 from agentic.providers.github_review_host import HostDriver
-from source_only import skip_unless_source_repo
 
 
 ROOT = Path(__file__).resolve().parents[2]

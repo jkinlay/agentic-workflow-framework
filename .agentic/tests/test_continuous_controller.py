@@ -9,6 +9,9 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_only import COMMITTED_GIT_REASON, committed_git_tuple  # noqa: E402
+
 from agentic.continuous_controller import (
     ContinuousControllerStore,
     canonical_repository_paths,
@@ -25,8 +28,6 @@ from test_publication_readiness import publication_config, publication_observati
 from agentic.cli import local_semantics
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from source_only import COMMITTED_GIT_REASON, committed_git_tuple  # noqa: E402
 
 NOW = "2026-10-02T10:00:00Z"
 BINDING = {"cloud_id": "cloud-1", "project_id": "project-1", "actor_id": "actor-1"}
