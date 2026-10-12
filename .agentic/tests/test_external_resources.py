@@ -154,6 +154,66 @@ class ExternalResourceTests(unittest.TestCase):
         admitted = self.decide(receipt)
         self.assertEqual(admitted["status"], "ADMITTED")
 
+    def test_awf8_r3_023_001_empty_caller_list_cannot_omit_registry_requirement(self):
+        dispatch = require_admissions(
+            [], [], task_id="EX-6", principal="worker-A", session_id="session-1",
+            now=NOW, expected_receipt_digests={}, registry=self.registry,
+            mappings=self.mappings)
+
+        self.assertEqual(dispatch["status"], "REFUSED")
+        self.assertTrue(dispatch["before_work_started"])
+        self.assertEqual(dispatch["resources"][0]["resource_alias"], "raw_estate")
+
+    def test_awf8_r3_023_001_partial_caller_list_names_missing_registry_alias(self):
+        registry = deepcopy(self.registry)
+        registry["resources"]["raw_archive"] = deepcopy(
+            registry["resources"]["raw_estate"])
+        mappings = deepcopy(self.mappings)
+        mappings["resources"]["raw_archive"] = {
+            "local_path": self.raw_local_path,
+            "canonical_locator": "urn:awf:synthetic:raw-archive",
+            "mapping_kind": "local",
+        }
+        receipt = admit_resource(
+            registry, mappings, "raw_estate", task_id="EX-6", principal="worker-A",
+            session_id="session-1", execute=lambda command, cwd=None: self.success(),
+            now=NOW)
+
+        dispatch = require_admissions(
+            ["raw_estate"], [receipt], task_id="EX-6", principal="worker-A",
+            session_id="session-1", now=NOW,
+            expected_receipt_digests={"raw_estate": receipt["receipt_id"]},
+            registry=registry, mappings=mappings)
+
+        self.assertEqual(dispatch["status"], "REFUSED")
+        missing = [item for item in dispatch["resources"]
+                   if item["resource_alias"] == "raw_archive"]
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]["state"], "UNOBSERVED")
+
+    def test_awf8_r3_023_001_registry_requirement_without_receipt_refuses(self):
+        dispatch = require_admissions(
+            ["raw_estate"], [], task_id="EX-6", principal="worker-A",
+            session_id="session-1", now=NOW, expected_receipt_digests={},
+            registry=self.registry, mappings=self.mappings)
+
+        self.assertEqual(dispatch["status"], "REFUSED")
+        self.assertTrue(dispatch["resources"][0]["before_work_started"])
+        self.assertEqual(dispatch["resources"][0]["state"], "UNOBSERVED")
+
+    def test_awf8_r3_023_001_all_registry_requirements_admitted(self):
+        receipt = self.admit(task_id="EX-6")
+
+        dispatch = require_admissions(
+            [], [receipt], task_id="EX-6", principal="worker-A",
+            session_id="session-1", now=NOW,
+            expected_receipt_digests={"raw_estate": receipt["receipt_id"]},
+            registry=self.registry, mappings=self.mappings)
+
+        self.assertEqual(dispatch["status"], "ADMITTED")
+        self.assertEqual([item["resource_alias"] for item in dispatch["resources"]],
+                         ["raw_estate"])
+
     def test_ac50_malformed_receipt_never_admits_work(self):
         malformed = {
             "format": "awf-external-resource-receipt-1", "resource_alias": "raw_estate",
