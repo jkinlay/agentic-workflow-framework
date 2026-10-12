@@ -1,17 +1,22 @@
 import copy
 from datetime import datetime, timedelta
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+
 from agentic import ValidationError
-from agentic.integration_queue import IntegrationQueueStore
+from agentic.integration_queue import (
+    IntegrationQueueStore, _registered_provider_observation, build_record)
 from test_integration_queue import (
     BUILD_REGISTRY, GIT_REGISTRY, MODE_REGISTRY, NOW, PROJECT_CONFIG,
     GATE_NOW, SHA1, SHA2, SHA3, SHA4, SHA5, entry, epic_mode_record, observed_build,
     observed_git, observed_mode, register_build_runner,
-    register_integration_observer, runner, trusted_readiness)
-from agentic.integration_queue import integration_status
+    register_integration_observer, runner, trusted_readiness,
+    integration_status)
 
 
 def observed_git_with_merge(request):
@@ -108,7 +113,7 @@ class Round7TrustRegressions(unittest.TestCase):
         MODE_REGISTRY.clear()
         fresh_build = register_build_runner(
             lambda state: observed_build(state, observed_at=later))
-        with self.assertRaisesRegex(ValidationError, "reviewed configuration"):
+        with self.assertRaisesRegex(ValidationError, "accepted project configuration"):
             self.admit(entry(11, SHA2), fresh_build, observed_at=later)
         self.assertEqual([], self.store.snapshot("AWF-EPIC")["entries"])
 
@@ -136,7 +141,7 @@ class Round7TrustRegressions(unittest.TestCase):
             delta_review_observer_registry=delta_registry,
             mode_observer_registry=mode_registry, now=GATE_NOW)
         self.assertEqual("pending", pending["status"])
-        self.assertIn("reviewed configuration", pending["reason"])
+        self.assertIn("accepted project configuration", pending["reason"])
 
     def test_r6_004_unchanged_patch_retention_is_stored_for_readiness(self):
         self.admit(entry(11, SHA2))
@@ -169,7 +174,14 @@ class Round7TrustRegressions(unittest.TestCase):
          posting_registry, delta_registry, mode_registry) = trusted_readiness()
         review_target = state["target_sha"]
         state["target_sha"] = SHA5
-        state["current_build"]["target_sha"] = SHA5
+        current_runner = runner(observed_at=GATE_NOW)
+        current_outcome = current_runner(copy.deepcopy(state))
+        current_build = build_record(
+            state["epic"], state["target_sha"], state["entries"],
+            current_outcome, "POST_MERGE", 2)
+        state["current_build"] = current_build
+        state["build_run_ids"].append(current_build["observation"]["run_id"])
+        state["build_results"][current_build["input_id"]] = current_build["result_tree_sha"]
         producer = "fixture-retention-provider"
         state["entries"][0]["retained_evidence"] = {
             "review_target_sha": review_target,
@@ -190,6 +202,20 @@ class Round7TrustRegressions(unittest.TestCase):
         register_integration_observer(
             producer, observed_git_with_merge, retention_registry,
             observed_at=GATE_NOW)
+        patch_request = {
+            "operation": "TASK_COMMIT_RANGE",
+            "pr_number": state["entries"][0]["pr_number"],
+            "head_sha": state["entries"][0]["head_sha"],
+            "claimed_patch_id": state["entries"][0]["patch_id"],
+        }
+        patch_result, patch_attestation = _registered_provider_observation(
+            retention_registry, producer, patch_request,
+            "admission patch observation", now=GATE_NOW, max_age=1800,
+            return_attestation=True)
+        state["entries"][0]["admission_patch"] = {
+            "request": patch_request, "result": patch_result,
+            "observation": patch_attestation,
+        }
         ready = integration_status(
             state, state["entries"][0]["pr_number"], bundle, gate, request,
             authorization, delta, config=config, contracts=contracts,
@@ -211,7 +237,7 @@ class Round7TrustRegressions(unittest.TestCase):
             mode_observer_registry=mode_registry,
             retarget_observer_registry=retention_registry, now=GATE_NOW)
         self.assertEqual("pending", pending["status"])
-        self.assertIn("retention", pending["reason"])
+        self.assertIn("patch observation", pending["reason"])
 
 
 if __name__ == "__main__":

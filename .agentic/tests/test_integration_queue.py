@@ -12,15 +12,19 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.authorization import make_request, render_request
-from agentic.canonical import fingerprint, load, sha256
+from agentic.canonical import canonical, fingerprint, load, sha256
 from agentic.contracts import Contracts
 from agentic.gates import evaluate
 from agentic.integration_queue import (DEFAULTS, WORKER_GUIDANCE, IntegrationQueueStore,
     build_execution_receipt_sha256, build_input_id, build_record,
-    delta_review_requirement, integration_status, post_merge_action,
+    delta_review_requirement, integration_status as _integration_status, post_merge_action,
     provider_observation_receipt_sha256, render_owner_instruction, resolve_mode,
     steward_policy, verify_own_commits)
 from agentic.lifecycle import definition
@@ -34,7 +38,6 @@ SHA4 = "4" * 40
 SHA5 = "5" * 40
 NOW = "2026-10-10T10:00:00Z"
 GATE_NOW = "2026-09-09T12:00:00Z"
-ROOT = Path(__file__).resolve().parents[2]
 PROJECT_CONFIG = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
 PROVIDER_IDENTITY = {"host": PROJECT_CONFIG["github"]["host"],
                      "repository": PROJECT_CONFIG["github"]["repository"],
@@ -42,6 +45,11 @@ PROVIDER_IDENTITY = {"host": PROJECT_CONFIG["github"]["host"],
 BUILD_REGISTRY = {}
 GIT_REGISTRY = {}
 MODE_REGISTRY = {}
+
+
+def integration_status(*args, **kwargs):
+    kwargs.setdefault("build_producer_registry", BUILD_REGISTRY)
+    return _integration_status(*args, **kwargs)
 
 
 def entry(pr, head, *, depends=(), base="main", validated=NOW, paths=None, patch=None):
@@ -190,7 +198,16 @@ def register_integration_observer(producer_id, callback, registry,
 
 def observed_git(request):
     if request["operation"] == "TASK_COMMIT_RANGE":
-        return {"commits": [request["head_sha"]]}
+        return {"commits": [request["head_sha"]],
+                "patch_id": request["claimed_patch_id"]}
+    if request["operation"] == "CANDIDATE_VALIDATION":
+        return {"status": "PASSED", "pr_number": request["pr_number"],
+                "head_sha": request["head_sha"],
+                "validated_at": request["claimed_validated_at"],
+                "requirements_hash": "e" * 64,
+                "policy_hash": request["policy_sha256"],
+                "executions": [{"command": "python -B -m unittest",
+                                "exit_code": 0, "result_digest": "f" * 64}]}
     if request["operation"] == "TARGET_TIP":
         return {"target_branch": request["target_branch"],
                 "target_sha": request["expected_target_sha"]}
@@ -219,7 +236,17 @@ def observed_git(request):
         return {"status": "CONFLICT", "target_sha": request["target_sha"],
                 "candidate_head_sha": request["head_sha"],
                 "conflict_paths": ["src/conflict.py"],
-                "commits": [request["head_sha"]]}
+                "commits": [request["head_sha"]],
+                "integration_build_id": request["integration_build_id"],
+                "ordered_prefix": copy.deepcopy(request["ordered_prefix"]),
+                "integration_result_commit_sha": request["integration_result_commit_sha"],
+                "integration_result_tree_sha": request["integration_result_tree_sha"]}
+    if request["operation"] == "REMOVAL_TRIGGER":
+        return {"status": "AUTHENTICATED", "reason": request["reason"],
+                "pr_number": request["pr_number"], "head_sha": request["head_sha"],
+                "evidence_kind": ("critic_review" if request["reason"] == "REVIEW_FAILED"
+                                  else "lifecycle_amendment"),
+                "evidence_id": "fixture-removal-evidence"}
     raise AssertionError("unexpected Git observation operation")
 
 
@@ -260,6 +287,9 @@ def config_observer(request):
 
 
 def observed_mode(request):
+    if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+        return {"project_config": copy.deepcopy(PROJECT_CONFIG),
+                "config_sha256": sha256(canonical(PROJECT_CONFIG))}
     if request["operation"] == "OWNER_INSTRUCTION":
         return {"instruction": copy.deepcopy(request["instruction"])}
     if request["operation"] == "REVIEWED_CONFIG":
@@ -361,10 +391,15 @@ def trusted_readiness():
              "target_sha": candidate["target_base_sha"],
              "target_branch": candidate["target_base_branch"],
              "integration_branch": "awf/int/fixture",
-             "current_build": {"target_sha": candidate["target_base_sha"],
-                               "entries": [[candidate["pr_number"], candidate["head_sha"]]],
-                                "green": True, "build_id": "current-build-instance",
-                                "result_commit_sha": SHA3, "result_tree_sha": SHA4}}
+              "build_run_ids": [], "build_results": {}}
+    readiness_runner = runner(observed_at=GATE_NOW)
+    build_outcome = readiness_runner(copy.deepcopy(state))
+    current_build = build_record(
+        state["epic"], state["target_sha"], state["entries"],
+        build_outcome, "READINESS", 1)
+    state["current_build"] = current_build
+    state["build_run_ids"].append(current_build["observation"]["run_id"])
+    state["build_results"][current_build["input_id"]] = current_build["result_tree_sha"]
     raw_delta = {"review_base_sha": candidate["target_base_sha"],
                  "intervening_merges": [],
                  "reviewed_diff": [{"path": "src/task-7.py",
@@ -578,7 +613,6 @@ class IntegrationQueueTests(unittest.TestCase):
         self.assertEqual("awf/int/fixture", ready["integration_branch_evidence_only"])
         second = {"pr_number": 8, "head_sha": SHA3, "branch": "awf/task-8"}
         state["entries"].append(second)
-        state["current_build"]["entries"].append([8, SHA3])
         pending = integration_status(
             state, 8, bundle, gate, request, authorization, delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
@@ -586,6 +620,7 @@ class IntegrationQueueTests(unittest.TestCase):
             mode_observer_registry=mode_registry, now=GATE_NOW)
         self.assertEqual("pending", pending["status"])
         self.assertIn("position 2", pending["reason"])
+        state["entries"].pop()
         stale = copy.deepcopy(state)
         stale["entries"][0]["head_sha"] = SHA3
         stale["current_build"]["entries"][0] = [7, SHA3]
@@ -595,7 +630,7 @@ class IntegrationQueueTests(unittest.TestCase):
             delta_review_observer_registry=delta_registry,
             mode_observer_registry=mode_registry, now=GATE_NOW)
         self.assertEqual("pending", stale["status"])
-        self.assertIn("front queue candidate tuple", stale["reason"])
+        self.assertIn("authenticated build", stale["reason"])
         wrong_delta = {**delta, "unexpected_summary": True}
         self.assertIn("delta review", integration_status(
             state, 7, bundle, gate, request, authorization, wrong_delta, config=config,
@@ -831,7 +866,9 @@ class IntegrationQueueTests(unittest.TestCase):
             observed_at=NOW)
         self.assertEqual([[11, SHA3]], changed["build"]["entries"])
         self.assertEqual("HEAD_CHANGED", changed["build"]["reason"])
-        removed = self.store.remove("AWF-EPIC", 11, runner(), observed_at=NOW)
+        removed = self.store.remove(
+            "AWF-EPIC", 11, runner(), reason="AMENDMENT",
+            trigger={"producer_id": "fixture-git-provider"}, observed_at=NOW)
         self.assertEqual([], removed["build"]["entries"])
         self.assertEqual("REMOVAL", removed["build"]["reason"])
 
@@ -923,7 +960,9 @@ class IntegrationQueueTests(unittest.TestCase):
             "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=NOW)
         register_integration_observer(
             "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=NOW)
-        self.store.remove("AWF-EPIC", 11, runner(), observed_at=NOW)
+        self.store.remove(
+            "AWF-EPIC", 11, runner(), reason="AMENDMENT",
+            trigger={"producer_id": "fixture-git-provider"}, observed_at=NOW)
         self.admit(entry(13, SHA4))
         with self.assertRaisesRegex(ValidationError, "stall threshold"):
             self.store.move_stalled_front("AWF-EPIC", runner(), now=NOW)
@@ -1059,12 +1098,16 @@ class IntegrationQueueTests(unittest.TestCase):
     def test_ac9_admission_requires_observed_diff_and_retains_removed_commits(self):
         register_integration_observer(
             "fixture-foreign-range",
-            lambda request: {"commits": [SHA2, SHA3]}, GIT_REGISTRY)
+            lambda request: {"commits": [SHA2, SHA3],
+                             "patch_id": request["claimed_patch_id"]},
+            GIT_REGISTRY)
         with self.assertRaisesRegex(ValidationError, "exactly its own commits"):
             self.store.admit("AWF-EPIC", entry(11, SHA2), "fixture-foreign-range",
                              runner(), observed_at=NOW)
         self.admit(entry(11, SHA2))
-        self.store.remove("AWF-EPIC", 11, runner(), observed_at=NOW)
+        self.store.remove(
+            "AWF-EPIC", 11, runner(), reason="AMENDMENT",
+            trigger={"producer_id": "fixture-git-provider"}, observed_at=NOW)
         reused = entry(12, SHA2)
         with self.assertRaisesRegex(ValidationError, "already observed"):
             self.store.admit("AWF-EPIC", reused, "fixture-git-provider",
@@ -1090,7 +1133,10 @@ class IntegrationQueueTests(unittest.TestCase):
         self.assertEqual("OPEN_REVERT_PR", post_merge_action(
             {"producer_id": "fixture-git-provider"},
             provider_observer_registry=GIT_REGISTRY,
-            project_config=PROJECT_CONFIG, target_branch="main", target_sha=SHA1,
+            project_config=PROJECT_CONFIG,
+            project_config_selector={"producer_id": "fixture-mode-provider"},
+            project_config_observer_registry=MODE_REGISTRY,
+            target_branch="main", target_sha=SHA1,
             now=NOW)["action"])
         closed = self.store.close("AWF-EPIC", observed_at=NOW)
         self.assertEqual("awf/int/awf-epic", closed["delete_branch"])
@@ -1173,6 +1219,7 @@ class IntegrationQueueTests(unittest.TestCase):
         other = IntegrationQueueStore(
             Path(self.temporary.name) / "fabricated.sqlite3",
             project_config=PROJECT_CONFIG,
+            project_config_selector={"producer_id": "fixture-mode-provider"},
             mode_observer_registry=MODE_REGISTRY,
             git_observer_registry=GIT_REGISTRY)
         with self.assertRaisesRegex(ValidationError, "closed accepted"):

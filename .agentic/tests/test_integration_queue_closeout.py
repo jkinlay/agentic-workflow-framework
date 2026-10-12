@@ -3,17 +3,20 @@ import hashlib
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+
 from agentic import ValidationError
-from agentic.canonical import load
+from agentic.canonical import canonical, load, sha256
 from agentic.closeout import require_jira_reconciliation_before_counts
 from agentic.contracts import Contracts
 from test_integration_queue import register_integration_observer
 
 
-ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-10-10T10:01:00Z"
 PROJECT_CONFIG = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
 TRANSITION_ID = "10000000-0000-0000-0000-000000000001"
@@ -99,9 +102,19 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
         value.update(changes)
         return value
 
-    def gate(self, closeout, reconciliation=None, *, config=None):
+    def gate(self, closeout, reconciliation=None, *, config=None,
+             accepted_config=None):
         config = copy.deepcopy(PROJECT_CONFIG if config is None else config)
+        accepted_config = copy.deepcopy(
+            PROJECT_CONFIG if accepted_config is None else accepted_config)
         registry = {}
+        config_registry = {}
+        register_integration_observer(
+            "fixture-project-config",
+            lambda _request: {
+                "project_config": copy.deepcopy(accepted_config),
+                "config_sha256": sha256(canonical(accepted_config)),
+            }, config_registry, observed_at=NOW)
         selector = None
         if reconciliation is not None:
             selector = {"producer_id": reconciliation["producer_id"]}
@@ -111,6 +124,8 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
                 registry, observed_at=NOW)
         return require_jira_reconciliation_before_counts(
             closeout, repository=self.repo, project_config=config, contracts=self.contracts,
+            project_config_selector={"producer_id": "fixture-project-config"},
+            project_config_observer_registry=config_registry,
             jira_reconciliation_selector=selector,
             jira_observer_registry=registry, now=NOW)
 
@@ -164,11 +179,23 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
         for key in ("cloud_id", "site", "provider_project_id", "project_key",
                     "controller_actor_id"):
             disabled["jira"][key] = None
-        result = self.gate(self.record(None), config=disabled)
+        result = self.gate(
+            self.record(None), config=disabled, accepted_config=disabled)
         self.assertTrue(result["count_allowed"])
         self.assertFalse(result["jira_reconciled"])
         with self.assertRaisesRegex(ValidationError, "cannot claim"):
-            self.gate(self.record(), self.reconciliation(), config=disabled)
+            self.gate(
+                self.record(), self.reconciliation(), config=disabled,
+                accepted_config=disabled)
+
+    def test_r7_003_caller_disabled_configuration_is_not_accepted_authority(self):
+        forged = copy.deepcopy(PROJECT_CONFIG)
+        forged["jira"]["enabled"] = False
+        for key in ("cloud_id", "site", "provider_project_id", "project_key",
+                    "controller_actor_id"):
+            forged["jira"][key] = None
+        with self.assertRaisesRegex(ValidationError, "accepted project configuration"):
+            self.gate(self.record(None), config=forged)
 
     def test_r6_002_configured_done_status_is_exact(self):
         in_review = self.reconciliation(
@@ -180,11 +207,20 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
             self.gate(self.record(), in_review)
 
     def test_r6_002_reconciliation_must_be_freshly_observed(self):
+        config_registry = {}
+        register_integration_observer(
+            "fixture-project-config",
+            lambda _request: {
+                "project_config": copy.deepcopy(PROJECT_CONFIG),
+                "config_sha256": sha256(canonical(PROJECT_CONFIG)),
+            }, config_registry, observed_at=NOW)
         with self.assertRaisesRegex(ValidationError, "registered Git/provider observer"):
             require_jira_reconciliation_before_counts(
                 self.record(), project_config=PROJECT_CONFIG,
                 repository=self.repo,
                 contracts=self.contracts,
+                project_config_selector={"producer_id": "fixture-project-config"},
+                project_config_observer_registry=config_registry,
                 jira_reconciliation_selector={"producer_id": "controller-1"},
                 jira_observer_registry={}, now=NOW)
 

@@ -235,6 +235,7 @@ def render_markdown(record):
 
 def require_jira_reconciliation_before_counts(
         closeout_record, *, repository, project_config, contracts,
+        project_config_selector=None, project_config_observer_registry=None,
         jira_reconciliation_selector=None, jira_observer_registry=None, now=None):
     """Gate post-merge counts on the controller's observed Jira reconciliation.
 
@@ -246,9 +247,16 @@ def require_jira_reconciliation_before_counts(
     """
     if contracts is None:
         raise ValidationError("post-merge counting requires the framework contract registry")
-    from .integration_queue import _evidence_max_age, _registered_provider_observation
+    from .integration_queue import (
+        _accepted_project_config, _evidence_max_age,
+        _registered_provider_observation)
     from .lifecycle import definition
     from .policy import validate_config
+    now = now or now_text()
+    timestamp(now)
+    project_config, project_config_observation = _accepted_project_config(
+        project_config, project_config_selector,
+        project_config_observer_registry, now=now, return_attestation=True)
     validate_config(project_config, definition(), contracts)
     closeout_validation = validate_closeout(closeout_record, repository, contracts)
     jira = project_config["jira"]
@@ -277,8 +285,6 @@ def require_jira_reconciliation_before_counts(
             "project_key": jira["project_key"],
             "controller_actor_id": jira["controller_actor_id"],
         }
-        now = now or now_text()
-        timestamp(now)
         request = {
             "operation": "JIRA_RECONCILIATION",
             "provider_identity": deepcopy(expected_provider),
@@ -326,6 +332,7 @@ def require_jira_reconciliation_before_counts(
         "reviewed_head_sha": closeout_record["reviewed_head_sha"],
         "merge_commit_sha": closeout_record["merge_commit_sha"],
         "closeout_validation": closeout_validation,
+        "project_config_observation": project_config_observation,
         "jira_observation": jira_observation,
         "execution_authority": False,
     }

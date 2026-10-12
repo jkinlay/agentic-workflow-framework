@@ -3,19 +3,24 @@ from datetime import datetime, timedelta
 import hashlib
 import inspect
 from pathlib import Path
+import sys
 import tempfile
 import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic.canonical import fingerprint
 from agentic.integration_queue import (
     IntegrationQueueStore, build_input_id, delta_review_requirement,
-    integration_status, post_merge_action, resolve_mode)
+    post_merge_action, resolve_mode)
 from test_integration_queue import (
     BUILD_REGISTRY, GATE_NOW, GIT_REGISTRY, MODE_REGISTRY, NOW, PROJECT_CONFIG,
     SHA1, SHA2, SHA3, entry, config_observer, observed_build, observed_git,
     observed_mode, owner_observer, register_build_runner,
-    register_integration_observer, runner, trusted_readiness)
+    register_integration_observer, runner, trusted_readiness,
+    integration_status)
 
 
 def _legacy_or_current_mode_record():
@@ -168,7 +173,10 @@ class Round6TrustRegressions(unittest.TestCase):
         action = post_merge_action(
             {"producer_id": "fixture-git-provider"},
             provider_observer_registry=GIT_REGISTRY,
-            project_config=PROJECT_CONFIG, target_branch="main", target_sha=SHA1,
+            project_config=PROJECT_CONFIG,
+            project_config_selector={"producer_id": "fixture-mode-provider"},
+            project_config_observer_registry=MODE_REGISTRY,
+            target_branch="main", target_sha=SHA1,
             now=NOW)
         self.assertEqual("OPEN_REVERT_PR", action["action"])
 
