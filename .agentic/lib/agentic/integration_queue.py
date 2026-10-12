@@ -354,6 +354,69 @@ def verify_own_commits(entry, observed_diff_commits, other_entries=()):
     return {"status": "PASS", "pr_number": entry["pr_number"], "commits": list(expected)}
 
 
+def _validate_provider_registration(registration):
+    fields = {"producer_kind", "implementation_sha256", "release_sha256",
+              "observer", "receipts"}
+    if not isinstance(registration, dict) or set(registration) != fields:
+        raise ValidationError("integration observer registration has a non-closed shape")
+    if registration["producer_kind"] != "integration_observer":
+        raise ValidationError("registered producer is not an integration observer")
+    for field in ("implementation_sha256", "release_sha256"):
+        if (not isinstance(registration[field], str) or
+                not DIGEST.fullmatch(registration[field])):
+            raise ValidationError(f"integration observer {field} must be lowercase 64-hex")
+    if not callable(registration["observer"]) or not isinstance(registration["receipts"], dict):
+        raise ValidationError("integration observer registration is invalid")
+
+
+def provider_observation_receipt_sha256(registration, request, observation):
+    """Bind a registered Git/provider observer to its exact request and output."""
+    _validate_provider_registration(registration)
+    return fingerprint("integration_provider_observation_receipt", {
+        "producer_id": observation["producer_id"],
+        "observation_id": observation["observation_id"],
+        "observed_at": observation["observed_at"],
+        "request_sha256": observation["request_sha256"],
+        "result_sha256": fingerprint("integration_provider_result", observation["result"]),
+        "operation": request["operation"],
+        "implementation_sha256": registration["implementation_sha256"],
+        "release_sha256": registration["release_sha256"],
+    })
+
+
+def _registered_provider_observation(registry, producer_id, request, purpose):
+    """Invoke, authenticate, and receipt one registered observer synchronously."""
+    _identifier(producer_id, f"authenticated {purpose} observer_id")
+    registration = registry.get(producer_id) if isinstance(registry, dict) else None
+    if not isinstance(registration, dict):
+        raise ValidationError(f"{purpose} requires a registered Git/provider observer")
+    _validate_provider_registration(registration)
+    observer = registration["observer"]
+    before = canonical(request)
+    observation = observer(deepcopy(request))
+    if canonical(request) != before:
+        raise ValidationError(f"{purpose} observer mutated its request")
+    fields = {"status", "producer_id", "observation_id", "observed_at",
+              "request_sha256", "result"}
+    if not isinstance(observation, dict) or set(observation) != fields:
+        raise ValidationError(f"{purpose} observation has a non-closed shape")
+    timestamp(observation["observed_at"])
+    expected_request = fingerprint("integration_provider_request", request)
+    material = {"producer_id": producer_id, "observed_at": observation["observed_at"],
+                "request_sha256": expected_request, "result": observation["result"]}
+    expected_observation = fingerprint("integration_provider_observation", material)
+    if (observation["status"] != "OBSERVED" or
+            observation["producer_id"] != producer_id or
+            observation["request_sha256"] != expected_request or
+            observation["observation_id"] != expected_observation):
+        raise ValidationError(f"{purpose} observation is not bound to the exact request")
+    expected_receipt = provider_observation_receipt_sha256(
+        registration, request, observation)
+    if registration["receipts"].get(observation["observation_id"]) != expected_receipt:
+        raise ValidationError(f"{purpose} observer has no matching authenticated output receipt")
+    return deepcopy(observation["result"])
+
+
 def build_input_id(epic, target_sha, entries, test_command):
     return fingerprint("integration_build_input", {
         "epic": epic, "target_sha": target_sha,
@@ -584,7 +647,7 @@ def delta_review_requirement(reviewed_paths, intervening_merges, *, head_sha, re
             "diff_digest": fingerprint("integration_reviewed_diff", normalized_diff)}
 
 
-def _authenticated_delta_critic_run(bundle, review, *, config, now):
+def _authenticated_delta_critic_run(bundle, review, *, config, now, expected_binding):
     runs = {run.get("run_id"): run for run in bundle.get("runs", [])
             if isinstance(run, dict)}
     run = runs.get(review.get("run_id"))
@@ -593,7 +656,8 @@ def _authenticated_delta_critic_run(bundle, review, *, config, now):
         raise ValidationError("delta review requires a valid evidence freshness limit")
     fresh(review["reviewed_at"], now, max_age)
     if (run is None or run.get("role") != "critic" or run.get("status") != "COMPLETE" or
-            run.get("producer_id") != review.get("producer_id")):
+            run.get("producer_id") != review.get("producer_id") or
+            run.get("binding") != expected_binding):
         raise ValidationError("delta review has no matching registered fresh critic run")
     if run.get("run_id") == bundle.get("critic", {}).get("run_id"):
         raise ValidationError("delta review requires a distinct registered fresh critic run")
@@ -645,7 +709,8 @@ def _authorization_verifier(bundle, authorization):
 
 def integration_status(state, pr_number, gate_bundle, final_gate,
                        authorization_request, authorization, delta, *, config, contracts,
-                       posting_collector_registry=None, now=None):
+                       posting_collector_registry=None,
+                       delta_review_observer_registry=None, now=None):
     """Enforce front-only readiness using the existing gate and authorization contracts."""
     _pr(pr_number)
     entries = state.get("entries", [])
@@ -698,19 +763,42 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
     except (ValidationError, KeyError, TypeError) as exc:
         return {"status": "pending", "reason": str(exc)}
     try:
+        selector_fields = {"producer_id"}
+        if not isinstance(delta, dict) or set(delta) != selector_fields:
+            raise ValidationError(
+                "delta review requires an authenticated producer selection")
+        delta_request = {
+            "operation": "DELTA_REVIEW",
+            "provider_identity": deepcopy(_authority(config)["provider_identity"]),
+            "candidate_binding": deepcopy(gate["binding"]),
+            "pr_number": pr_number,
+            "head_sha": item["head_sha"],
+            "reviewed_paths": deepcopy(item["reviewed_paths"]),
+            "target_sha": state["target_sha"],
+            "target_branch": state["target_branch"],
+            "build_id": build["build_id"],
+        }
+        observed_delta = _registered_provider_observation(
+            delta_review_observer_registry, delta["producer_id"], delta_request,
+            "delta review")
         fields = {"review_base_sha", "intervening_merges", "reviewed_diff", "review"}
-        if not isinstance(delta, dict) or set(delta) != fields:
+        if not isinstance(observed_delta, dict) or set(observed_delta) != fields:
             raise ValidationError("delta review evidence fields differ from the closed raw-evidence shape")
         requirement = delta_review_requirement(
-            item["reviewed_paths"], delta["intervening_merges"],
-            head_sha=item["head_sha"], review_base_sha=delta["review_base_sha"],
+            item["reviewed_paths"], observed_delta["intervening_merges"],
+            head_sha=item["head_sha"], review_base_sha=observed_delta["review_base_sha"],
             target_sha=state["target_sha"], build_id=build["build_id"],
-            reviewed_diff=delta["reviewed_diff"], delta_review=delta["review"])
+            reviewed_diff=observed_delta["reviewed_diff"],
+            delta_review=observed_delta["review"])
         if requirement["required"]:
-            if delta["review"] is None:
+            if observed_delta["review"] is None:
                 raise ValidationError("required path-overlap delta review is not satisfied")
+            if observed_delta["review"].get("producer_id") != delta["producer_id"]:
+                raise ValidationError(
+                    "delta review PASS was not produced by its registered critic")
             _authenticated_delta_critic_run(
-                gate_bundle, delta["review"], config=config, now=now)
+                gate_bundle, observed_delta["review"], config=config, now=now,
+                expected_binding=gate["binding"])
         if requirement["satisfied"] is not True:
             raise ValidationError("required path-overlap delta review is not satisfied")
     except (ValidationError, KeyError, TypeError) as exc:
@@ -742,13 +830,15 @@ class IntegrationQueueStore:
 
     def __init__(self, path, worktree_roots=(), *, project_config=None,
                  owner_instruction_observer=None, reviewed_config_observer=None,
-                 build_producer_registry=None):
+                 build_producer_registry=None, git_observer_registry=None):
         self.path = Path(path).resolve()
         self.authority = None if project_config is None else _authority(project_config)
         self.owner_instruction_observer = owner_instruction_observer
         self.reviewed_config_observer = reviewed_config_observer
         self.build_producer_registry = ({} if build_producer_registry is None else
                                         build_producer_registry)
+        self.git_observer_registry = ({} if git_observer_registry is None else
+                                      git_observer_registry)
         for root in worktree_roots:
             root = Path(root).resolve()
             if self.path == root or root in self.path.parents:
@@ -894,9 +984,34 @@ class IntegrationQueueStore:
             raise ValidationError("owner instruction has already been consumed") from exc
         state["consumed_instruction_ids"].append(identifier)
 
-    @staticmethod
-    def _record_observed_commits(state, item, observed_diff_commits):
-        verify_own_commits(item, observed_diff_commits)
+    def _record_observed_commits(self, state, item, observer_id):
+        if not isinstance(observer_id, str):
+            raise ValidationError(
+                "task commit range requires a registered Git/provider observer")
+        if item["depends_on"]:
+            base_sha = next(candidate["head_sha"] for candidate in state["entries"]
+                            if candidate["pr_number"] == item["depends_on"][-1])
+        else:
+            base_sha = state["target_sha"]
+        request = {
+            "operation": "TASK_COMMIT_RANGE",
+            "provider_identity": deepcopy(self.authority["provider_identity"]),
+            "epic": state["epic"],
+            "target_branch": state["target_branch"],
+            "target_sha": state["target_sha"],
+            "pr_number": item["pr_number"],
+            "ticket": item["ticket"],
+            "branch": item["branch"],
+            "base_branch": item["base_branch"],
+            "base_sha": base_sha,
+            "head_sha": item["head_sha"],
+        }
+        result = _registered_provider_observation(
+            self.git_observer_registry, observer_id, request, "task commit range")
+        if not isinstance(result, dict) or set(result) != {"commits"}:
+            raise ValidationError("task commit-range observation has a non-closed shape")
+        observed_diff_commits = result["commits"]
+        verify_own_commits(item, observed_diff_commits, state["entries"])
         for commit in observed_diff_commits:
             holder = state["observed_commits"].get(commit)
             if holder is not None and holder != item["pr_number"]:
@@ -959,7 +1074,7 @@ class IntegrationQueueStore:
                      "first_failing_prefix": failing, "return_to": "AMENDMENT"}, observed_at)
         return ejected
 
-    def admit(self, epic, entry, observed_diff_commits, outcome, *, observed_at=None):
+    def admit(self, epic, entry, commit_observer_id, outcome, *, observed_at=None):
         """Admit and test one head while holding the queue lock."""
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
@@ -970,7 +1085,7 @@ class IntegrationQueueStore:
                     raise ValidationError("PR is already admitted")
                 if candidate["ticket"] == item["ticket"] or candidate["branch"] == item["branch"]:
                     raise ValidationError("ticket and task branch identities must be unique in an epic")
-            self._record_observed_commits(state, item, observed_diff_commits)
+            self._record_observed_commits(state, item, commit_observer_id)
             item["entry_id"] = entry_identity(epic, item)
             previous_front = self._front_key(state)
             state["entries"].append(item)
@@ -1119,7 +1234,7 @@ class IntegrationQueueStore:
                     "event": event, "build": build,
                     "ejected_pr": None if ejected is None else ejected["pr_number"]}
 
-    def head_changed(self, epic, replacement, observed_diff_commits, outcome, *, observed_at=None):
+    def head_changed(self, epic, replacement, commit_observer_id, outcome, *, observed_at=None):
         """Replace one validated head, invalidate old evidence, and rebuild."""
         observed_at = observed_at or now_text()
         with self._locked(epic) as (connection, state):
@@ -1138,7 +1253,7 @@ class IntegrationQueueStore:
             stable = ("pr_number", "ticket", "branch", "base_branch", "depends_on")
             if any(item[field] != old[field] for field in stable):
                 raise ValidationError("a head change cannot replace stable ticket, branch, base, or dependency identity")
-            self._record_observed_commits(state, item, observed_diff_commits)
+            self._record_observed_commits(state, item, commit_observer_id)
             item["entry_id"] = entry_identity(epic, item)
             state["entries"].insert(index, item)
             if index == 0:
@@ -1180,13 +1295,11 @@ class IntegrationQueueStore:
                     "event": event, "build": build,
                     "ejected_pr": None if ejected is None else ejected["pr_number"]}
 
-    def retarget_after_merge(self, epic, merged_pr, new_target_sha, patch_ids, outcome,
+    def retarget_after_merge(self, epic, merged_pr, new_target_sha, retarget_observer_id, outcome,
                              *, observed_at=None):
         observed_at = observed_at or now_text()
         _pr(merged_pr, "merged_pr")
         _sha(new_target_sha, "new_target_sha")
-        if not isinstance(patch_ids, dict):
-            raise ValidationError("patch_ids must map dependent PR numbers to observed patch IDs")
         with self._locked(epic) as (connection, state):
             self._require_open(state)
             merged = next((item for item in state["entries"] if item["pr_number"] == merged_pr), None)
@@ -1195,13 +1308,70 @@ class IntegrationQueueStore:
             previous_front = self._front_key(state)
             state["entries"].remove(merged)
             self._refresh_front_since(state, previous_front, observed_at)
+            retargets = []
+            for item in state["entries"]:
+                if merged_pr not in item["depends_on"]:
+                    continue
+                remaining = [number for number in item["depends_on"] if number != merged_pr]
+                if remaining:
+                    base = next(candidate for candidate in state["entries"]
+                                if candidate["pr_number"] == remaining[-1])
+                    new_base_branch, new_base_sha = base["branch"], base["head_sha"]
+                else:
+                    new_base_branch, new_base_sha = state["target_branch"], new_target_sha
+                retargets.append({
+                    "pr_number": item["pr_number"], "ticket": item["ticket"],
+                    "entry_id": item["entry_id"], "branch": item["branch"],
+                    "head_sha": item["head_sha"],
+                    "old_base_branch": item["base_branch"],
+                    "new_base_branch": new_base_branch, "new_base_sha": new_base_sha,
+                    "own_commits": deepcopy(item["own_commits"]),
+                    "reviewed_patch_id": item["patch_id"],
+                })
+            observed_patch_ids = {}
+            if retargets:
+                if not isinstance(retarget_observer_id, str):
+                    raise ValidationError(
+                        "authenticated retarget evidence requires a registered Git/provider observer")
+                request = {
+                    "operation": "RETARGET_DIFF",
+                    "provider_identity": deepcopy(self.authority["provider_identity"]),
+                    "epic": state["epic"],
+                    "merged_pr": merged_pr,
+                    "merged_head_sha": merged["head_sha"],
+                    "old_target_sha": state["target_sha"],
+                    "new_target_sha": new_target_sha,
+                    "target_branch": state["target_branch"],
+                    "retargets": deepcopy(retargets),
+                }
+                result = _registered_provider_observation(
+                    self.git_observer_registry, retarget_observer_id, request,
+                    "authenticated retarget evidence")
+                if not isinstance(result, dict) or set(result) != {"patch_ids"} or not isinstance(
+                        result["patch_ids"], list):
+                    raise ValidationError("retarget-diff observation has a non-closed shape")
+                if len(result["patch_ids"]) != len(retargets):
+                    raise ValidationError("retarget-diff observation does not cover every dependent")
+                for expected, observed in zip(retargets, result["patch_ids"]):
+                    fields = {"pr_number", "head_sha", "base_branch", "base_sha", "patch_id"}
+                    if not isinstance(observed, dict) or set(observed) != fields:
+                        raise ValidationError("retarget-diff item has a non-closed shape")
+                    exact = {"pr_number": expected["pr_number"],
+                             "head_sha": expected["head_sha"],
+                             "base_branch": expected["new_base_branch"],
+                             "base_sha": expected["new_base_sha"]}
+                    if any(observed.get(key) != value for key, value in exact.items()):
+                        raise ValidationError(
+                            "retarget-diff observation is not bound to the exact retargeted PR")
+                    if (not isinstance(observed["patch_id"], str) or
+                            not PATCH_ID.fullmatch(observed["patch_id"])):
+                        raise ValidationError("retarget-diff patch_id must be lowercase hexadecimal")
+                    observed_patch_ids[expected["pr_number"]] = observed["patch_id"]
             decisions = []
             for item in state["entries"]:
                 if merged_pr not in item["depends_on"]:
                     continue
-                observed = patch_ids.get(str(item["pr_number"]), patch_ids.get(item["pr_number"]))
-                if not isinstance(observed, str) or not PATCH_ID.fullmatch(observed):
-                    raise ValidationError("every retargeted dependent requires an observed stable patch ID")
+                observed = observed_patch_ids[item["pr_number"]]
                 unchanged = observed == item["patch_id"]
                 item["depends_on"].remove(merged_pr)
                 item["base_branch"] = (state["target_branch"] if not item["depends_on"] else
