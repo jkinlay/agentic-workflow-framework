@@ -192,6 +192,30 @@ class IntakeRecordsAssignment(unittest.TestCase):
                           controller_actor_id="controller-1")
         self.assertEqual(calls, jira.calls)
 
+    def test_enabled_jira_requires_bound_matching_controller_identity(self):
+        unbound = config()
+        unbound["jira"]["controller_actor_id"] = None
+        unbound_state, unbound_jira = {}, FakeJira()
+        with self.assertRaisesRegex(ValidationError, "configured controller identity"):
+            assign_intake(unbound, ticket(), unbound_state, unbound_jira, now=NOW,
+                          controller_actor_id="self-asserted-worker")
+        self.assertEqual({}, unbound_state)
+        self.assertEqual([], unbound_jira.calls)
+
+        mismatched_state, mismatched_jira = {}, FakeJira()
+        with self.assertRaisesRegex(ValidationError, "configured controller identity"):
+            assign_intake(config(), ticket(), mismatched_state, mismatched_jira, now=NOW,
+                          controller_actor_id="other-controller")
+        self.assertEqual({}, mismatched_state)
+        self.assertEqual([], mismatched_jira.calls)
+
+        matching_state, matching_jira = {}, FakeJira()
+        record = assign_intake(config(), ticket(), matching_state, matching_jira, now=NOW,
+                               controller_actor_id="controller-1")
+        self.assertEqual("VERIFIED", record["jira"]["read_back_status"])
+        self.assertEqual(["read", "labels", "comment", "read"],
+                         [call[0] for call in matching_jira.calls])
+
 
 @skip_unless_source_repo(
     "Source bootstrap entry point is not shipped in installed runtimes",
@@ -289,6 +313,37 @@ class ProjectStartAssignsAll(unittest.TestCase):
             state = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(3, state["tier_assignments"]["AWF-101"]["tier"])
             self.assertIn("Tier: 3", state["pr_assignments"]["48"]["body"])
+
+    def test_invalid_assignment_state_path_refuses_before_any_jira_access(self):
+        spec = importlib.util.spec_from_file_location(
+            "bootstrap_project_invalid_state", ROOT / "scripts/bootstrap_project.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            dest = root / "target"
+            (dest / ".agentic").mkdir(parents=True)
+            (dest / ".agentic/PROJECT_CONFIG.yaml").write_text(
+                json.dumps(config()), encoding="utf-8")
+            intake = root / "ticket.json"
+            intake.write_text(json.dumps(ticket()), encoding="utf-8")
+            state_path = dest / ".agentic/controller-state.json"
+            args = SimpleNamespace(
+                project_start_inventory=None,
+                ticket_intake=intake,
+                assignment_change=None,
+                assignment_state=state_path,
+                controller_actor_id="controller-1",
+                assignment_now=NOW,
+                dest=dest,
+                recover=False,
+                dry_run=False,
+            )
+            jira = FakeJira()
+            with self.assertRaisesRegex(ValidationError, "outside the adopted repository"):
+                module._run_assignment_path(args, jira, None)
+            self.assertEqual([], jira.calls)
+            self.assertFalse(state_path.exists())
 
 
 class PrInheritsAssignment(unittest.TestCase):

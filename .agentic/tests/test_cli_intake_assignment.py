@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import importlib.util
 import io
 import json
 from pathlib import Path
@@ -13,6 +14,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 from agentic.cli import main as workflow_main
 from agentic.intake_assignment import assign_intake, change_assignment
@@ -154,6 +156,43 @@ class CliIntakeAssignmentTests(unittest.TestCase):
         self.assertIn("before the amendment cap was reached", rejected["reason"])
         self.assertEqual(0, final_code)
         self.assertEqual("CAP_PARK", final["event"])
+
+    def test_archive_evaluate_command_supplies_assignment_state_and_reaches_evaluation(self):
+        spec = importlib.util.spec_from_file_location(
+            "validate_archive_assignment", ROOT / "scripts/validate_archive.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = sealed_runtime(folder)
+            state_path = Path(folder) / "controller-state.json"
+            config_path = ROOT / ".agentic/examples/PROJECT_CONFIG.yaml"
+            bundle_path = ROOT / ".agentic/examples/evidence-bundle.json"
+            module.write_evaluation_assignment_state(ROOT, state_path, NOW)
+            command = module.evaluation_command(
+                ".agentic/scripts/workflow.py", bundle_path, config_path, state_path, NOW)
+            reached = []
+
+            def capture(*args, **kwargs):
+                reached.append(True)
+                return {"conclusion": "READY_FOR_OWNER_AUTHORIZATION",
+                        "execution_authority": False}
+
+            with mock.patch("agentic.cli.evaluate", side_effect=capture), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                code = workflow_main(["--root", str(runtime), *map(str, command[1:])])
+        self.assertEqual(0, code)
+        self.assertEqual([True], reached)
+        self.assertEqual(str(state_path), str(command[command.index("--assignment-state") + 1]))
+
+    def test_evaluate_without_assignment_state_still_fails_argument_parsing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime, config_path, bundle_path, _, _, _, _ = self._fixture(folder)
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                workflow_main([
+                    "--root", str(runtime), "evaluate", str(bundle_path),
+                    "--config", str(config_path), "--now", NOW,
+                ])
+        self.assertEqual(2, raised.exception.code)
 
 
 if __name__ == "__main__":
