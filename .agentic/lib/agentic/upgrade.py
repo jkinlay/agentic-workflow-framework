@@ -230,15 +230,23 @@ def _replace_scalar(raw, key, previous, current, *, question):
         value = parsed.get(key) if isinstance(parsed, dict) else None
     if value != previous:
         raise ValidationError(f"Migration is not deterministic. Owner question: {question}")
-    token = rb'(?P<quote>["\']?)' + re.escape(previous.encode("ascii")) + rb'(?P=quote)'
-    pattern = re.compile(rb'(?:\A|(?<=[\r\n]))(?P<prefix>[ \t]*(?:["\']?' + re.escape(key.encode("ascii")) + rb'["\']?)[ \t]*:[ \t]*)' + token
-                         + rb'(?P<suffix>[ \t]*(?:,[ \t]*)?(?:#[^\r\n]*)?(?:\r\n|\n|\r|$))')
-    matches = list(pattern.finditer(raw))
+    import yaml
+    text = bytes(raw).decode("utf-8")
+    root = yaml.compose(text)
+    container = (_yaml_mapping_value(root, "template", yaml)
+                 if key == "expected_workflow_version" else root)
+    scalar = _yaml_mapping_value(container, key, yaml)
+    if not isinstance(scalar, yaml.ScalarNode) or scalar.value != previous:
+        raise ValidationError(f"Migration is not deterministic. Owner question: {question}")
+    start, end = scalar.start_mark.index, scalar.end_mark.index
+    source_scalar = text[start:end]
+    matches = list(re.finditer(re.escape(previous), source_scalar))
     if len(matches) != 1:
         raise ValidationError(f"Migration is not deterministic. Owner question: {question}")
     match = matches[0]
-    start = match.start() + len(match.group("prefix")) + len(match.group("quote"))
-    migrated = raw[:start] + current.encode("ascii") + raw[start + len(previous):]
+    migrated_text = (text[:start + match.start()] + current
+                     + text[start + match.end():])
+    migrated = migrated_text.encode("utf-8")
     expected = json.loads(json.dumps(parsed))
     if key == "expected_workflow_version":
         expected["template"][key] = current
