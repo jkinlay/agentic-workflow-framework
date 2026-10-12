@@ -18,7 +18,8 @@ from agentic.canonical import fingerprint, load, sha256
 from agentic.contracts import Contracts
 from agentic.gates import evaluate
 from agentic.integration_queue import (DEFAULTS, WORKER_GUIDANCE, IntegrationQueueStore,
-    build_input_id, build_record, delta_review_requirement, integration_status, post_merge_action,
+    build_execution_receipt_sha256, build_input_id, build_record,
+    delta_review_requirement, integration_status, post_merge_action,
     render_owner_instruction, resolve_mode, steward_policy, verify_own_commits)
 from agentic.lifecycle import definition
 from test_review_policy import bind_production_posting_fixture, bind_review_admission
@@ -36,6 +37,7 @@ PROJECT_CONFIG = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
 PROVIDER_IDENTITY = {"host": PROJECT_CONFIG["github"]["host"],
                      "repository": PROJECT_CONFIG["github"]["repository"],
                      "repository_id": PROJECT_CONFIG["github"]["repository_id"]}
+BUILD_REGISTRY = {}
 
 
 def entry(pr, head, *, depends=(), base="main", validated=NOW, paths=None, patch=None):
@@ -53,7 +55,7 @@ def entry(pr, head, *, depends=(), base="main", validated=NOW, paths=None, patch
     }
 
 
-def observed_build(state, *, fail_at=None, variant="stable"):
+def observed_build(state, *, fail_at=None, variant="stable", run_id=None):
     target = state["target_sha"]
     entries = state["entries"]
     command = "python -B -m unittest"
@@ -81,7 +83,8 @@ def observed_build(state, *, fail_at=None, variant="stable"):
                             "result_tree_sha": tree, "construction": construction,
                             "prefix_results": prefixes}
     result_id = fingerprint("integration_build_result", deterministic_result)
-    observation = {"producer_id": "fixture-build-adapter", "observed_at": NOW,
+    observation = {"producer_id": "fixture-build-adapter",
+                   "run_id": run_id or str(uuid.uuid4()), "observed_at": NOW,
                    "input_id": input_id, "result_id": result_id}
     observation["observation_id"] = fingerprint("integration_build_observation", observation)
     return {
@@ -95,8 +98,29 @@ def observed_build(state, *, fail_at=None, variant="stable"):
     }
 
 
+def register_build_runner(callback, registry=BUILD_REGISTRY):
+    def adapter(state):
+        outcome = callback(state)
+        observation = outcome["observation"]
+        registration = registry[observation["producer_id"]]
+        registration["receipts"][observation["run_id"]] = (
+            build_execution_receipt_sha256(
+                registration, outcome, state["integration_branch"]))
+        return outcome
+
+    registry["fixture-build-adapter"] = {
+        "producer_kind": "integration_build",
+        "implementation_sha256": "a" * 64,
+        "release_sha256": "b" * 64,
+        "runner": adapter,
+        "receipts": {},
+    }
+    return adapter
+
+
 def runner(*, fail_at=None, variant="stable"):
-    return lambda state: observed_build(state, fail_at=fail_at, variant=variant)
+    return register_build_runner(
+        lambda state: observed_build(state, fail_at=fail_at, variant=variant))
 
 
 def instruction(action, payload, identifier="owner-1"):
@@ -155,6 +179,12 @@ def trusted_readiness():
                     capabilities=["read_evidence", "verify_source_event"],
                     resources_held=[])
     bundle["runs"].append(verifier)
+    delta_critic = copy.deepcopy(next(
+        run for run in bundle["runs"] if run["role"] == "critic"))
+    delta_critic.update(record_id=str(uuid.uuid4()), run_id=str(uuid.uuid4()),
+                        producer_id="fixture-delta-critic",
+                        context_id=str(uuid.uuid4()), parent_run_id=None)
+    bundle["runs"].append(delta_critic)
     registry = bind_production_posting_fixture(config, bundle)
     gate = evaluate(config, definition(), bundle, contracts, GATE_NOW,
                     posting_collector_registry=registry)
@@ -176,18 +206,19 @@ def trusted_readiness():
         decision="AUTHORIZE", parser_version="awf-auth-1", execution_authority=False)
     candidate = gate["candidate"]
     state = {"entries": [{"pr_number": candidate["pr_number"],
-                           "head_sha": candidate["head_sha"], "branch": "awf/task-7"}],
+                           "head_sha": candidate["head_sha"], "branch": "awf/task-7",
+                           "reviewed_paths": ["src/task-7.py"]}],
              "target_sha": candidate["target_base_sha"],
              "target_branch": candidate["target_base_branch"],
              "integration_branch": "awf/int/fixture",
              "current_build": {"target_sha": candidate["target_base_sha"],
                                "entries": [[candidate["pr_number"], candidate["head_sha"]]],
                                "green": True, "build_id": "current-build-instance"}}
-    delta = {"required": False, "satisfied": True, "head_sha": candidate["head_sha"],
-             "review_base_sha": candidate["target_base_sha"],
-             "target_sha": candidate["target_base_sha"],
-             "build_id": "current-build-instance", "intervening_digest": "a" * 64,
-             "diff_digest": None}
+    delta = {"review_base_sha": candidate["target_base_sha"],
+             "intervening_merges": [],
+             "reviewed_diff": [{"path": "src/task-7.py",
+                                "base_blob_sha": SHA1, "head_blob_sha": SHA2}],
+             "review": None}
     return state, bundle, gate, request, authorization, delta, config, contracts, registry
 
 
@@ -195,10 +226,12 @@ class IntegrationQueueTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="awf-integration-queue-")
         self.addCleanup(self.temporary.cleanup)
+        BUILD_REGISTRY.clear()
         self.store = IntegrationQueueStore(
             Path(self.temporary.name) / "queue.sqlite3", project_config=PROJECT_CONFIG,
             owner_instruction_observer=owner_observer,
-            reviewed_config_observer=config_observer)
+            reviewed_config_observer=config_observer,
+            build_producer_registry=BUILD_REGISTRY)
         self.store.initialize("AWF-EPIC", "main", SHA1,
                               mode_record=epic_mode_record(),
                               observed_at=NOW)
@@ -232,6 +265,76 @@ class IntegrationQueueTests(unittest.TestCase):
             self.store.admit("AWF-EPIC", item, [SHA2], observed_build(proposed_state),
                              observed_at=NOW)
 
+    def test_ac1_unregistered_callable_cannot_self_report_a_passing_build(self):
+        item = entry(11, SHA2)
+        with self.assertRaisesRegex(ValidationError, "registered integration-build producer"):
+            self.store.admit(
+                "AWF-EPIC", item, [SHA2],
+                lambda state: observed_build(state), observed_at=NOW)
+
+    def test_ac1_registered_build_receipt_binds_branch_commit_tree_and_test_run(self):
+        registry = {}
+
+        def registered_runner(state):
+            outcome = observed_build(state)
+            observation = outcome["observation"]
+            observation["run_id"] = "registered-build-run-1"
+            observation["observation_id"] = fingerprint(
+                "integration_build_observation",
+                {key: value for key, value in observation.items()
+                 if key != "observation_id"})
+            registration = registry[observation["producer_id"]]
+            test_execution_sha256 = fingerprint("integration_build_test_execution", {
+                "test_command": outcome["test_command"],
+                "prefix_results": outcome["prefix_results"],
+            })
+            receipt = fingerprint("integration_build_execution_receipt", {
+                "producer_id": observation["producer_id"],
+                "run_id": observation["run_id"],
+                "observation_id": observation["observation_id"],
+                "observed_at": observation["observed_at"],
+                "input_id": observation["input_id"],
+                "result_id": observation["result_id"],
+                "integration_branch": state["integration_branch"],
+                "result_commit_sha": outcome["result_commit_sha"],
+                "result_tree_sha": outcome["result_tree_sha"],
+                "test_execution_sha256": test_execution_sha256,
+                "implementation_sha256": registration["implementation_sha256"],
+                "release_sha256": registration["release_sha256"],
+            })
+            registration["receipts"][observation["run_id"]] = receipt
+            return outcome
+
+        registry["fixture-build-adapter"] = {
+            "producer_kind": "integration_build",
+            "implementation_sha256": "a" * 64,
+            "release_sha256": "b" * 64,
+            "runner": registered_runner,
+            "receipts": {},
+        }
+        self.store.build_producer_registry = registry
+        admitted = self.admit(entry(11, SHA2), registered_runner)
+        self.assertEqual("ADMITTED", admitted["status"])
+        self.assertEqual("registered-build-run-1",
+                         admitted["build"]["observation"]["run_id"])
+
+    def test_ac1_registered_producer_without_matching_receipt_is_refused(self):
+        registry = {}
+
+        def registered_but_unobserved(state):
+            return observed_build(state, run_id="unobserved-build-run")
+
+        registry["fixture-build-adapter"] = {
+            "producer_kind": "integration_build",
+            "implementation_sha256": "a" * 64,
+            "release_sha256": "b" * 64,
+            "runner": registered_but_unobserved,
+            "receipts": {},
+        }
+        self.store.build_producer_registry = registry
+        with self.assertRaisesRegex(ValidationError, "matching observation receipt"):
+            self.admit(entry(11, SHA2), registered_but_unobserved)
+
     def test_ac2_admission_lock_serializes_concurrent_runners(self):
         activity = {"active": 0, "maximum": 0}
         activity_lock = threading.Lock()
@@ -245,6 +348,8 @@ class IntegrationQueueTests(unittest.TestCase):
             with activity_lock:
                 activity["active"] -= 1
             return observed_build(snapshot)
+
+        admission_runner = register_build_runner(admission_runner)
 
         def admit_item(item):
             results.append(self.store.admit(
@@ -284,6 +389,7 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, authorization, delta, config=config,
             contracts=contracts, posting_collector_registry=registry, now=GATE_NOW)
         self.assertEqual("success", ready["status"])
+
         self.assertEqual("awf/task-7", ready["merge_source_branch"])
         self.assertEqual("awf/int/fixture", ready["integration_branch_evidence_only"])
         second = {"pr_number": 8, "head_sha": SHA3, "branch": "awf/task-8"}
@@ -302,13 +408,15 @@ class IntegrationQueueTests(unittest.TestCase):
             contracts=contracts, posting_collector_registry=registry, now=GATE_NOW)
         self.assertEqual("pending", stale["status"])
         self.assertIn("front queue candidate tuple", stale["reason"])
-        wrong_delta = {**delta, "required": True, "head_sha": SHA3,
-                       "diff_digest": "c" * 64}
+        wrong_delta = {**delta, "unexpected_summary": True}
         self.assertIn("delta review", integration_status(
             state, 7, bundle, gate, request, authorization, wrong_delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
             now=GATE_NOW)["reason"])
-        replayed_delta = {**delta, "build_id": "older-build-instance"}
+        replayed_delta = {"required": False, "satisfied": True,
+                          "head_sha": state["entries"][0]["head_sha"],
+                          "target_sha": state["target_sha"],
+                          "build_id": "older-build-instance"}
         self.assertIn("delta review", integration_status(
             state, 7, bundle, gate, request, authorization, replayed_delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
@@ -333,6 +441,70 @@ class IntegrationQueueTests(unittest.TestCase):
             state, 7, bundle, gate, request, untrusted, delta, config=config,
             contracts=contracts, posting_collector_registry=registry,
             now=GATE_NOW)["reason"])
+
+    def test_ac8_readiness_refuses_caller_summary_and_authenticates_raw_critic_evidence(self):
+        (state, bundle, gate, request, authorization, _delta, config, contracts,
+         registry) = trusted_readiness()
+        state["entries"][0]["reviewed_paths"] = ["src/task-7.py"]
+        caller_summary = {
+            "required": True, "satisfied": True,
+            "head_sha": state["entries"][0]["head_sha"],
+            "review_base_sha": state["target_sha"],
+            "target_sha": state["target_sha"],
+            "build_id": state["current_build"]["build_id"],
+            "intervening_digest": "a" * 64, "diff_digest": "b" * 64,
+        }
+        refused = integration_status(
+            state, 7, bundle, gate, request, authorization, caller_summary,
+            config=config, contracts=contracts, posting_collector_registry=registry,
+            now=GATE_NOW)
+        self.assertEqual("pending", refused["status"])
+
+        merges = [{"merge_commit_sha": SHA3, "paths": ["src/task-7.py"]}]
+        critic_run = next(run for run in bundle["runs"]
+                          if run["producer_id"] == "fixture-delta-critic")
+        reviewed_diff = [{"path": "src/task-7.py",
+                          "base_blob_sha": SHA1, "head_blob_sha": SHA2}]
+        review = {
+            "status": "PASS", "run_id": critic_run["run_id"],
+            "producer_id": critic_run["producer_id"],
+            "head_sha": state["entries"][0]["head_sha"],
+            "review_base_sha": state["target_sha"],
+            "target_sha": state["target_sha"],
+            "build_id": state["current_build"]["build_id"],
+            "intervening_digest": fingerprint("integration_intervening", merges),
+            "diff_digest": fingerprint(
+                "integration_reviewed_diff", reviewed_diff),
+            "code_change_required": False, "reviewed_at": GATE_NOW,
+        }
+        evidence = {"review_base_sha": state["target_sha"],
+                    "intervening_merges": merges, "reviewed_diff": reviewed_diff,
+                    "review": review}
+        ready = integration_status(
+            state, 7, bundle, gate, request, authorization, evidence,
+            config=config, contracts=contracts, posting_collector_registry=registry,
+            now=GATE_NOW)
+        self.assertEqual("success", ready["status"])
+
+        forged_digest = copy.deepcopy(evidence)
+        forged_digest["review"]["diff_digest"] = "f" * 64
+        self.assertIn("not satisfied", integration_status(
+            state, 7, bundle, gate, request, authorization, forged_digest,
+            config=config, contracts=contracts, posting_collector_registry=registry,
+            now=GATE_NOW)["reason"])
+
+        unregistered = copy.deepcopy(evidence)
+        unregistered["review"]["run_id"] = "unregistered-delta-run"
+        self.assertIn("registered fresh critic run", integration_status(
+            state, 7, bundle, gate, request, authorization, unregistered,
+            config=config, contracts=contracts, posting_collector_registry=registry,
+            now=GATE_NOW)["reason"])
+        stale = copy.deepcopy(evidence)
+        stale["review"]["reviewed_at"] = "2026-09-09T10:00:00Z"
+        self.assertIn("stale", integration_status(
+            state, 7, bundle, gate, request, authorization, stale,
+            config=config, contracts=contracts, posting_collector_registry=registry,
+            now=GATE_NOW)["reason"].lower())
 
     def test_ac5_target_move_invalidates_old_build_and_prefix_ejects_culprit(self):
         self.admit(entry(11, SHA2))
@@ -379,7 +551,8 @@ class IntegrationQueueTests(unittest.TestCase):
             Path(self.temporary.name) / "dependencies.sqlite3",
             project_config=PROJECT_CONFIG,
             owner_instruction_observer=owner_observer,
-            reviewed_config_observer=config_observer)
+            reviewed_config_observer=config_observer,
+            build_producer_registry=BUILD_REGISTRY)
         other.initialize("AWF-EPIC", "main", SHA1,
                          mode_record=epic_mode_record(), observed_at=NOW)
         other.admit("AWF-EPIC", entry(11, SHA2), [SHA2], runner(), observed_at=NOW)
@@ -443,22 +616,28 @@ class IntegrationQueueTests(unittest.TestCase):
         self.assertFalse(none["required"])
         merges = [{"merge_commit_sha": SHA3, "paths": ["src/a.py"]}]
         intervening_digest = fingerprint("integration_intervening", merges)
+        reviewed_diff = [{"path": "src/a.py", "base_blob_sha": SHA1,
+                          "head_blob_sha": SHA2}]
         required = delta_review_requirement(
             ["src/a.py"], merges, head_sha=SHA2, review_base_sha=SHA1,
-            target_sha=SHA3, build_id="build-1", delta_review={"status": "FINDING",
+            target_sha=SHA3, build_id="build-1", reviewed_diff=reviewed_diff,
+            delta_review={"status": "FINDING",
              "run_id": "delta-1", "producer_id": "critic-1", "head_sha": SHA2,
              "review_base_sha": SHA1, "target_sha": SHA3, "build_id": "build-1",
-             "intervening_digest": intervening_digest, "diff_digest": "d" * 64,
+             "intervening_digest": intervening_digest,
+             "diff_digest": fingerprint("integration_reviewed_diff", reviewed_diff),
              "reviewed_at": NOW, "code_change_required": True})
         self.assertTrue(required["consumes_run"])
         self.assertTrue(required["consumes_round"])
         self.assertFalse(required["satisfied"])
         passed = delta_review_requirement(
             ["src/a.py"], merges, head_sha=SHA2, review_base_sha=SHA1,
-            target_sha=SHA3, build_id="build-1", delta_review={"status": "PASS",
+            target_sha=SHA3, build_id="build-1", reviewed_diff=reviewed_diff,
+            delta_review={"status": "PASS",
              "run_id": "delta-2", "producer_id": "critic-1", "head_sha": SHA2,
              "review_base_sha": SHA1, "target_sha": SHA3, "build_id": "build-1",
-             "intervening_digest": intervening_digest, "diff_digest": "e" * 64,
+             "intervening_digest": intervening_digest,
+             "diff_digest": fingerprint("integration_reviewed_diff", reviewed_diff),
              "reviewed_at": NOW, "code_change_required": False})
         self.assertTrue(passed["satisfied"])
         self.assertFalse(passed["consumes_round"])
@@ -468,13 +647,18 @@ class IntegrationQueueTests(unittest.TestCase):
         old_state = self.store.snapshot("AWF-EPIC")
         merges = [{"merge_commit_sha": SHA3, "paths": ["src/task-11.py"]}]
         digest = fingerprint("integration_intervening", merges)
+        reviewed_diff = [{"path": "src/task-11.py", "base_blob_sha": SHA1,
+                          "head_blob_sha": SHA2}]
         delta = delta_review_requirement(["src/task-11.py"], merges, head_sha=SHA2,
             review_base_sha=SHA1, target_sha=SHA1,
-            build_id=old_state["current_build"]["build_id"], delta_review={
+            build_id=old_state["current_build"]["build_id"],
+            reviewed_diff=reviewed_diff, delta_review={
                 "status": "PASS", "run_id": "delta-old", "producer_id": "critic-1",
                 "head_sha": SHA2, "review_base_sha": SHA1, "target_sha": SHA1,
                 "build_id": old_state["current_build"]["build_id"],
-                "intervening_digest": digest, "diff_digest": "d" * 64,
+                "intervening_digest": digest,
+                "diff_digest": fingerprint(
+                    "integration_reviewed_diff", reviewed_diff),
                 "code_change_required": False, "reviewed_at": NOW})
         self.store.rebuild("AWF-EPIC", SHA1, runner(), "TARGET_MOVED", observed_at=NOW)
         state = self.store.snapshot("AWF-EPIC")

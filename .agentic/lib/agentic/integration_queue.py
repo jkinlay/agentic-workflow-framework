@@ -18,7 +18,7 @@ import re
 import sqlite3
 
 from . import ValidationError
-from .canonical import canonical, fingerprint, now_text, sha256, timestamp
+from .canonical import canonical, fingerprint, fresh, now_text, sha256, timestamp
 
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -361,6 +361,42 @@ def build_input_id(epic, target_sha, entries, test_command):
         "test_command": test_command})
 
 
+def build_execution_receipt_sha256(registration, build, integration_branch):
+    """Bind a registered producer receipt to construction and executed tests."""
+    fields = {"producer_kind", "implementation_sha256", "release_sha256",
+              "runner", "receipts"}
+    if not isinstance(registration, dict) or set(registration) != fields:
+        raise ValidationError("integration-build producer registration has a non-closed shape")
+    if registration["producer_kind"] != "integration_build":
+        raise ValidationError("registered producer is not an integration-build producer")
+    for field in ("implementation_sha256", "release_sha256"):
+        if (not isinstance(registration[field], str) or
+                not DIGEST.fullmatch(registration[field])):
+            raise ValidationError(f"integration-build producer {field} must be lowercase 64-hex")
+    if not callable(registration["runner"]) or not isinstance(registration["receipts"], dict):
+        raise ValidationError("integration-build producer registration is invalid")
+    _identifier(integration_branch, "integration_branch")
+    observation = build["observation"]
+    test_execution_sha256 = fingerprint("integration_build_test_execution", {
+        "test_command": build["test_command"],
+        "prefix_results": build["prefix_results"],
+    })
+    return fingerprint("integration_build_execution_receipt", {
+        "producer_id": observation["producer_id"],
+        "run_id": observation["run_id"],
+        "observation_id": observation["observation_id"],
+        "observed_at": observation["observed_at"],
+        "input_id": observation["input_id"],
+        "result_id": observation["result_id"],
+        "integration_branch": integration_branch,
+        "result_commit_sha": build["result_commit_sha"],
+        "result_tree_sha": build["result_tree_sha"],
+        "test_execution_sha256": test_execution_sha256,
+        "implementation_sha256": registration["implementation_sha256"],
+        "release_sha256": registration["release_sha256"],
+    })
+
+
 def build_record(epic, target_sha, entries, outcome, reason, generation):
     """Create the immutable record for one provider-executed deterministic build."""
     _identifier(epic, "epic")
@@ -379,11 +415,11 @@ def build_record(epic, target_sha, entries, outcome, reason, generation):
     if outcome["input_id"] != expected_input:
         raise ValidationError("build observation is not bound to the target, ordered heads, and test command")
     observation = outcome["observation"]
-    observation_fields = {"observation_id", "producer_id", "observed_at", "input_id",
-                          "result_id"}
+    observation_fields = {"observation_id", "producer_id", "run_id", "observed_at",
+                          "input_id", "result_id"}
     if not isinstance(observation, dict) or set(observation) != observation_fields:
         raise ValidationError("build observation provenance has a non-closed shape")
-    for field in ("observation_id", "producer_id"):
+    for field in ("observation_id", "producer_id", "run_id"):
         _identifier(observation[field], field)
     timestamp(observation["observed_at"])
     if observation["input_id"] != expected_input:
@@ -462,9 +498,34 @@ def build_record(epic, target_sha, entries, outcome, reason, generation):
             "green": all(result["passed"] for result in normalized)}
 
 
+def _reviewed_diff(value, reviewed_paths):
+    if not isinstance(value, list):
+        raise ValidationError("reviewed_diff must be a list of observed blob transitions")
+    normalized = []
+    for item in value:
+        fields = {"path", "base_blob_sha", "head_blob_sha"}
+        if not isinstance(item, dict) or set(item) != fields:
+            raise ValidationError("reviewed diff fields differ from the closed shape")
+        path = _paths([item["path"]], "reviewed diff path")[0]
+        base, head = item["base_blob_sha"], item["head_blob_sha"]
+        for blob, label in ((base, "base_blob_sha"), (head, "head_blob_sha")):
+            if blob is not None:
+                _sha(blob, label)
+        if (base is None and head is None) or base == head:
+            raise ValidationError("reviewed diff must describe a changed blob transition")
+        normalized.append({"path": path, "base_blob_sha": base, "head_blob_sha": head})
+    normalized.sort(key=lambda item: item["path"])
+    if [item["path"] for item in normalized] != reviewed_paths:
+        raise ValidationError("reviewed diff paths differ from the candidate reviewed paths")
+    return normalized
+
+
 def delta_review_requirement(reviewed_paths, intervening_merges, *, head_sha, review_base_sha,
-                             target_sha, build_id, delta_review=None):
-    reviewed = set(_paths(reviewed_paths, "reviewed_paths"))
+                             target_sha, build_id, reviewed_diff=None, delta_review=None):
+    normalized_reviewed = _paths(reviewed_paths, "reviewed_paths")
+    reviewed = set(normalized_reviewed)
+    normalized_diff = (normalized_reviewed if reviewed_diff is None else
+                       _reviewed_diff(reviewed_diff, normalized_reviewed))
     for value, label in ((head_sha, "head_sha"), (review_base_sha, "review_base_sha"),
                          (target_sha, "target_sha")):
         _sha(value, label)
@@ -506,10 +567,12 @@ def delta_review_requirement(reviewed_paths, intervening_merges, *, head_sha, re
         if not isinstance(delta_review["code_change_required"], bool):
             raise ValidationError("code_change_required must be boolean")
         expected_intervening = fingerprint("integration_intervening", normalized_merges)
+        expected_diff = fingerprint("integration_reviewed_diff", normalized_diff)
         context_matches = (delta_review["head_sha"] == head_sha and
             delta_review["review_base_sha"] == review_base_sha and
             delta_review["target_sha"] == target_sha and delta_review["build_id"] == build_id and
-            delta_review["intervening_digest"] == expected_intervening)
+            delta_review["intervening_digest"] == expected_intervening and
+            delta_review["diff_digest"] == expected_diff)
         satisfied = (context_matches and delta_review["status"] == "PASS" and
                      not delta_review["code_change_required"])
         uses_round = delta_review["code_change_required"]
@@ -518,7 +581,32 @@ def delta_review_requirement(reviewed_paths, intervening_merges, *, head_sha, re
             "head_sha": head_sha, "review_base_sha": review_base_sha, "target_sha": target_sha,
             "build_id": build_id,
             "intervening_digest": fingerprint("integration_intervening", normalized_merges),
-            "diff_digest": None if delta_review is None else delta_review["diff_digest"]}
+            "diff_digest": fingerprint("integration_reviewed_diff", normalized_diff)}
+
+
+def _authenticated_delta_critic_run(bundle, review, *, config, now):
+    runs = {run.get("run_id"): run for run in bundle.get("runs", [])
+            if isinstance(run, dict)}
+    run = runs.get(review.get("run_id"))
+    max_age = config.get("validation", {}).get("max_evidence_age_seconds")
+    if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age < 0:
+        raise ValidationError("delta review requires a valid evidence freshness limit")
+    fresh(review["reviewed_at"], now, max_age)
+    if (run is None or run.get("role") != "critic" or run.get("status") != "COMPLETE" or
+            run.get("producer_id") != review.get("producer_id")):
+        raise ValidationError("delta review has no matching registered fresh critic run")
+    if run.get("run_id") == bundle.get("critic", {}).get("run_id"):
+        raise ValidationError("delta review requires a distinct registered fresh critic run")
+    fresh(run.get("created_at"), now, max_age)
+    if run.get("created_at") != review["reviewed_at"]:
+        raise ValidationError("delta review is not bound to its registered fresh critic run")
+    worker = bundle.get("worker")
+    worker_run = runs.get(worker.get("run_id")) if isinstance(worker, dict) else None
+    if (worker_run is not None and
+            (run.get("context_id") == worker_run.get("context_id") or
+             run.get("producer_id") == worker_run.get("producer_id"))):
+        raise ValidationError("delta review critic is not independent of implementation")
+    return run
 
 
 def _authorization_verifier(bundle, authorization):
@@ -609,17 +697,24 @@ def integration_status(state, pr_number, gate_bundle, final_gate,
         _authorization_verifier(gate_bundle, authorization)
     except (ValidationError, KeyError, TypeError) as exc:
         return {"status": "pending", "reason": str(exc)}
-    if not isinstance(delta, dict) or delta.get("satisfied") is not True:
-        return {"status": "pending", "reason": "required path-overlap delta review is not satisfied"}
-    delta_exact = {"head_sha": item["head_sha"], "target_sha": state["target_sha"],
-                   "build_id": build["build_id"]}
-    if any(delta.get(key) != value for key, value in delta_exact.items()):
-        return {"status": "pending", "reason": "delta review is not bound to the current head, target, and build"}
-    if delta.get("required") is True and (
-            not isinstance(delta.get("review_base_sha"), str) or
-            not isinstance(delta.get("intervening_digest"), str) or
-            not isinstance(delta.get("diff_digest"), str)):
-        return {"status": "pending", "reason": "delta review lacks replay-resistant context bindings"}
+    try:
+        fields = {"review_base_sha", "intervening_merges", "reviewed_diff", "review"}
+        if not isinstance(delta, dict) or set(delta) != fields:
+            raise ValidationError("delta review evidence fields differ from the closed raw-evidence shape")
+        requirement = delta_review_requirement(
+            item["reviewed_paths"], delta["intervening_merges"],
+            head_sha=item["head_sha"], review_base_sha=delta["review_base_sha"],
+            target_sha=state["target_sha"], build_id=build["build_id"],
+            reviewed_diff=delta["reviewed_diff"], delta_review=delta["review"])
+        if requirement["required"]:
+            if delta["review"] is None:
+                raise ValidationError("required path-overlap delta review is not satisfied")
+            _authenticated_delta_critic_run(
+                gate_bundle, delta["review"], config=config, now=now)
+        if requirement["satisfied"] is not True:
+            raise ValidationError("required path-overlap delta review is not satisfied")
+    except (ValidationError, KeyError, TypeError) as exc:
+        return {"status": "pending", "reason": str(exc)}
     return {"status": "success", "reason": "front entry has current exact-tuple evidence",
             "build_id": build["build_id"], "pr_number": pr_number,
             "head_sha": item["head_sha"], "target_sha": state["target_sha"],
@@ -646,11 +741,14 @@ class IntegrationQueueStore:
     """A durable queue whose SQLite write transaction is the admission lock."""
 
     def __init__(self, path, worktree_roots=(), *, project_config=None,
-                 owner_instruction_observer=None, reviewed_config_observer=None):
+                 owner_instruction_observer=None, reviewed_config_observer=None,
+                 build_producer_registry=None):
         self.path = Path(path).resolve()
         self.authority = None if project_config is None else _authority(project_config)
         self.owner_instruction_observer = owner_instruction_observer
         self.reviewed_config_observer = reviewed_config_observer
+        self.build_producer_registry = ({} if build_producer_registry is None else
+                                        build_producer_registry)
         for root in worktree_roots:
             root = Path(root).resolve()
             if self.path == root or root in self.path.parents:
@@ -669,6 +767,11 @@ class IntegrationQueueStore:
                 );
                 CREATE TABLE IF NOT EXISTS consumed_instructions (
                     instruction_id TEXT PRIMARY KEY,
+                    epic TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS consumed_build_runs (
+                    run_id TEXT PRIMARY KEY,
+                    producer_id TEXT NOT NULL,
                     epic TEXT NOT NULL
                 );
             """)
@@ -729,7 +832,7 @@ class IntegrationQueueStore:
                  "current_build": None, "generation": 0, "revision": 0,
                  "closed": False, "mode_record": mode_record, "last_event_id": None,
                  "front_since": None, "consumed_instruction_ids": [],
-                 "observed_commits": {}, "build_results": {}}
+                 "observed_commits": {}, "build_results": {}, "build_run_ids": []}
         with closing(self._connect()) as connection:
             try:
                 connection.execute("BEGIN IMMEDIATE")
@@ -806,13 +909,34 @@ class IntegrationQueueStore:
             raise ValidationError(
                 "integration builds require an in-process provider adapter runner; "
                 "caller-supplied outcome documents are not trusted")
-        outcome = outcome(deepcopy(state))
+        runner = outcome
+        outcome = runner(deepcopy(state))
         if (not isinstance(outcome, dict) or
                 outcome.get("test_command") != state["mode_record"]["test_command"]):
             raise ValidationError("build observation did not execute the accepted epic test command")
         state["generation"] += 1
         build = build_record(state["epic"], state["target_sha"], state["entries"],
                              outcome, reason, state["generation"])
+        observation = build["observation"]
+        registry = self.build_producer_registry
+        registration = (registry.get(observation["producer_id"])
+                        if isinstance(registry, dict) else None)
+        if not isinstance(registration, dict) or registration.get("runner") is not runner:
+            raise ValidationError("build has no matching registered integration-build producer")
+        expected_receipt = build_execution_receipt_sha256(
+            registration, build, state["integration_branch"])
+        receipt = registration["receipts"].get(observation["run_id"])
+        if receipt != expected_receipt:
+            raise ValidationError(
+                "registered integration-build producer has no matching observation receipt")
+        try:
+            connection.execute(
+                "INSERT INTO consumed_build_runs(run_id,producer_id,epic) VALUES (?,?,?)",
+                (observation["run_id"], observation["producer_id"], state["epic"]))
+        except sqlite3.IntegrityError as exc:
+            raise ValidationError(
+                "integration-build execution receipt has already been consumed") from exc
+        state.setdefault("build_run_ids", []).append(observation["run_id"])
         prior_result = state["build_results"].get(build["input_id"])
         if prior_result is not None and prior_result != build["result_id"]:
             raise ValidationError("identical integration inputs produced divergent construction or test results")
