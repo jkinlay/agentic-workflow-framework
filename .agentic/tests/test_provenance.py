@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
@@ -33,6 +34,8 @@ class TrailerParsingTests(unittest.TestCase):
         parsed = parse_writer_trailer(f"Implement change\n\nWriter: codex/{RUN_A}\n")
         self.assertEqual(("codex", RUN_A), (parsed["kind"], parsed["identity"]))
         self.assertIsNone(parse_writer_trailer("Human-authored commit\n"))
+        with self.assertRaisesRegex(ValidationError, "canonical UUID"):
+            parse_writer_trailer("Placeholder\n\nWriter: codex/writer-001\n")
 
     def test_duplicate_or_non_trailer_writer_lines_are_rejected(self):
         with self.assertRaisesRegex(ValidationError, "exactly one"):
@@ -126,6 +129,22 @@ class OwnerOverrideTests(unittest.TestCase):
                 covered_shas=["a" * 40], trusted_owner_ids=["owner-1"],
             )
 
+    def test_override_requires_non_empty_owner_identity_and_reason(self):
+        cases = [
+            ({"who": "", "why": "A reason", "trusted_owner_ids": [""]},
+             "owner identity"),
+            ({"who": "owner-1", "why": "", "trusted_owner_ids": ["owner-1"]},
+             "bounded reason"),
+        ]
+        for values, message in cases:
+            state = {}
+            with self.subTest(values=values), self.assertRaisesRegex(
+                    ValidationError, message):
+                record_owner_override(
+                    state, when=NOW, pr=49, covered_shas=["a" * 40], **values
+                )
+            self.assertEqual({}, state)
+
 
 class RepositoryRangeTests(unittest.TestCase):
     @classmethod
@@ -150,7 +169,7 @@ class RepositoryRangeTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def git_run(self, *args):
+    def git_run(self, *args, allowed_codes=(0,)):
         result = subprocess.run(
             [self.git, "-C", str(self.root), *args],
             text=True,
@@ -158,7 +177,7 @@ class RepositoryRangeTests(unittest.TestCase):
             env=self.environment,
             timeout=30,
         )
-        if result.returncode:
+        if result.returncode not in allowed_codes:
             self.fail(f"git {' '.join(args)} failed: {result.stderr}")
         return result.stdout.strip()
 
@@ -214,6 +233,25 @@ class RepositoryRangeTests(unittest.TestCase):
         self.assertEqual("REFUSE", refused["status"])
         self.assertIn("byte-for-byte", refused["refusals"][0]["reason"])
 
+    def test_manifest_mode_change_is_not_a_reproduced_generated_entry(self):
+        content = '{"version": 1}\n'
+        self.write("MANIFEST.json", content)
+        manifest_base = self.commit("manifest base", f"Writer: codex/{RUN_A}")
+        self.git_run("update-index", "--chmod=+x", "MANIFEST.json")
+        self.git_run(
+            "commit", "--quiet", "--message",
+            "mode only\n\nWriter: script/manifest-regen",
+        )
+        head = self.git_run("rev-parse", "HEAD")
+        result = check_commit_range(
+            self.root, manifest_base, head,
+            reproduce_generated=lambda _sha, _paths: {
+                "MANIFEST.json": content.encode("utf-8")
+            },
+        )
+        self.assertEqual("REFUSE", result["status"])
+        self.assertIn("mode/type", result["refusals"][0]["reason"])
+
     def test_optional_run_logs_are_checked_when_available_or_required(self):
         self.write("src/feature.py", "value = 1\n")
         head = self.commit("feature", f"Writer: codex/{RUN_B}")
@@ -250,13 +288,69 @@ class RepositoryRangeTests(unittest.TestCase):
             "Sync origin/main\n\nWriter: script/sync-merge",
         )
         head = self.git_run("rev-parse", "HEAD")
-        result = check_commit_range(
-            self.root, self.base, head, origin_main="origin/main"
-        )
+        real_run = subprocess.run
+        merge_environments = []
+
+        def observe_run(*args, **kwargs):
+            command = args[0]
+            if "merge-tree" in command:
+                merge_environments.append(dict(kwargs.get("env", {})))
+            return real_run(*args, **kwargs)
+
+        with patch("agentic.provenance.subprocess.run", side_effect=observe_run):
+            result = check_commit_range(
+                self.root, self.base, head, origin_main="origin/main"
+            )
         self.assertEqual("PASS", result["status"], result["refusals"])
         merge = next(item for item in result["commits"] if item["sha"] == head)
         self.assertEqual((True, "origin/main merge"),
                          (merge["mechanical"], merge["mechanical_reason"]))
+        self.assertEqual(1, len(merge_environments))
+        object_directory = Path(merge_environments[0]["GIT_OBJECT_DIRECTORY"])
+        self.assertTrue(object_directory.is_absolute())
+        self.assertFalse(object_directory.is_relative_to(self.root))
+        self.assertIn("GIT_ALTERNATE_OBJECT_DIRECTORIES", merge_environments[0])
+
+    def test_merge_accepts_only_reproduced_generated_conflict_resolution(self):
+        self.write("MANIFEST.md", "base\n")
+        merge_base = self.commit("manifest base", f"Writer: codex/{RUN_A}")
+        self.git_run("checkout", "--quiet", "-b", "feature")
+        self.write("MANIFEST.md", "feature\n")
+        self.commit("feature manifest", f"Writer: codex/{RUN_A}")
+
+        self.git_run("checkout", "--quiet", "main")
+        self.write("MANIFEST.md", "main\n")
+        main_head = self.commit("main manifest", f"Writer: codex/{RUN_B}")
+        self.git_run("update-ref", "refs/remotes/origin/main", main_head)
+
+        self.git_run("checkout", "--quiet", "feature")
+        self.git_run(
+            "merge", "--no-ff", "origin/main", allowed_codes=(1,)
+        )
+        resolution = "regenerated\n"
+        self.write("MANIFEST.md", resolution)
+        head = self.commit("resolve generated conflict", "Writer: script/sync-merge")
+
+        refused = check_commit_range(
+            self.root, merge_base, head, origin_main="origin/main"
+        )
+        self.assertEqual("REFUSE", refused["status"])
+        self.assertIn("generated conflict resolution", refused["refusals"][0]["reason"])
+
+        def reproduce(sha, paths):
+            self.assertEqual((head, ["MANIFEST.md"]), (sha, paths))
+            return {"MANIFEST.md": resolution.encode("utf-8")}
+
+        passed = check_commit_range(
+            self.root, merge_base, head, origin_main="origin/main",
+            reproduce_generated=reproduce,
+        )
+        self.assertEqual("PASS", passed["status"], passed["refusals"])
+        merge = next(item for item in passed["commits"] if item["sha"] == head)
+        self.assertEqual(
+            "origin/main merge with reproduced generated conflict resolution",
+            merge["mechanical_reason"],
+        )
 
     def test_valid_labelled_override_covers_only_named_commit(self):
         self.write("legacy.txt", "legacy\n")
