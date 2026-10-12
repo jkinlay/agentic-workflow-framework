@@ -109,6 +109,10 @@ def validate_critic_run_binding(verdict, *, reviewed_head=None):
     if reviewed_head is not None:
         _sha(reviewed_head, "Expected reviewed head")
         _require(head == reviewed_head, "Critic verdict names a different reviewed head")
+    candidate = verdict.get("candidate_binding")
+    if candidate is not None:
+        _require(isinstance(candidate, dict) and candidate.get("head_sha") == head,
+                 "Candidate binding disagrees with the verdict reviewed head")
     artifact = verdict.get("critic_artifact_binding")
     if artifact is not None:
         _require(isinstance(artifact, dict)
