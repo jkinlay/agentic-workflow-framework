@@ -134,7 +134,8 @@ def ci_workflow_provenance_matches(required, observed, candidate_blob_sha):
             and candidate_blob_sha == workflow_blob_sha)
 
 
-def verified_owner_records(config, contracts, bundle, binding, runs, excluded_contexts, excluded_producers, now):
+def verified_owner_records(config, contracts, bundle, binding, runs, excluded_contexts,
+                           excluded_producers, now, *, assignment_record=None):
     """Validate owner dispositions before any of them can change a gate."""
     from .authorization import verify_owner_record
     head = bundle["candidate"]["head_sha"]
@@ -156,7 +157,12 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
         if schema == "finding-disposition":
             dispositions.append(record)
     if cap is not None:
-        limit = config["execution"]["max_amendment_cycles"]
+        if assignment_record is None:
+            limit = config["execution"]["max_amendment_cycles"]
+        else:
+            from .review_tiers import round_cap
+            limit = round_cap(assignment_record["tier"],
+                              assignment_record=assignment_record)
         if cap["cycles"] < limit:
             raise ValidationError(f"Cap disposition at cycles {cap['cycles']} precedes the cap ({limit}); present REVIEW_CAP_REACHED first")
         if cap["cap_extensions"] > config["execution"].get("max_cap_extensions", 2):
@@ -263,6 +269,14 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     timestamp(now)
     binding = expected_binding(config, workflow, bundle)
     candidate, contract, snapshot = bundle["candidate"], bundle["contract"], bundle["snapshot"]
+    runtime_context = config.get("_awf_runtime")
+    assignment_record = None
+    if runtime_context is not None:
+        from .review_tiers import runtime_assignment
+        assignment_record = runtime_assignment(config, ticket_key=contract["ticket"])
+    if runtime_context is not None and assignment_record is None:
+        raise ValidationError(
+            f"No verified runtime review assignment for {contract['ticket']}; gate evaluation fails closed")
     for name, expected in [("host", config["github"]["host"]), ("repository_id", config["github"]["repository_id"]),
                            ("repository", config["github"]["repository"]), ("target_base_branch", config["github"]["base_branch"]),
                            ("merge_method", config["github"]["merge_method"])]:
@@ -316,7 +330,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         raise ValidationError("Critic is not independent of implementation")
     dispositions, cap_disposition = verified_owner_records(config, contracts, bundle, binding, runs,
                                                             {worker_run["context_id"], critic_run["context_id"]},
-                                                            {worker_run["producer_id"], critic_run["producer_id"]}, now)
+                                                            {worker_run["producer_id"], critic_run["producer_id"]}, now,
+                                                            assignment_record=assignment_record)
     if bundle["worker"]["dispatch_id"] != bundle["dispatch"]["record_id"]:
         raise ValidationError("Worker result references a different dispatch")
     dispatch = bundle["dispatch"]
@@ -378,6 +393,9 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         raise ValidationError("Contract risk_classification does not match observed paths and risk evidence")
     if bundle_classification != durable_classification:
         raise ValidationError("Evidence bundle tier_classification is missing or stale")
+    if assignment_record is not None:
+        from .review_tiers import round_cap
+        round_cap(tier, assignment_record=assignment_record)
     if not verdicts:
         raise ValidationError("Every consumed review round needs a current posted verdict record")
     unique(verdicts, "round", "review verdict round")
@@ -418,7 +436,16 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         if verdict["round"] == terminal_round and verdict["tier"] != tier:
             raise ValidationError("Review verdict tier does not match the recomputed contract tier")
         from .review_tiers import validate_round
-        validate_round(verdict["tier"], verdict["round"], owner_cap_disposition=bundle.get("cap_disposition"), config=config)
+        # The persisted runtime map intentionally exposes only the current
+        # assignment.  Apply it to the terminal/new round; retained rounds
+        # remain bound to their own tier evidence and mandatory policy ceiling.
+        round_kwargs = {}
+        if verdict["round"] == terminal_round:
+            round_kwargs = ({"assignment_record": assignment_record}
+                            if assignment_record is not None else {"config": config})
+        validate_round(verdict["tier"], verdict["round"],
+                       owner_cap_disposition=bundle.get("cap_disposition"),
+                       **round_kwargs)
         artifact_binding = verdict["critic_artifact_binding"]
         receipt = receipts_by_round.get(verdict["round"])
         critic_receipt = verdict.get("critic_review")
