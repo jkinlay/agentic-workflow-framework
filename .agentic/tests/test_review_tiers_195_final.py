@@ -5,6 +5,7 @@ import copy
 import sys
 import uuid
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,7 +17,8 @@ from agentic.gates import critic_artifact_receipt_sha256, evaluate, expected_bin
 from agentic.lifecycle import definition, review_round_transition, transition
 from agentic.policy import validate_config
 from agentic.review_tiers import review_decision, validate_round
-from agentic.upgrade import review_tier_defaults
+from agentic.upgrade import (MigrationBundle, migrate_1_9_4_to_1_9_5,
+                             review_tier_defaults)
 from test_review_policy import (Fixture, NOW, bind_production_posting_fixture,
                                  bind_review_admission, bind_review_round_receipt,
                                  sign, signed)
@@ -405,8 +407,29 @@ class ReviewTiers195FinalTests(Fixture):
     def test_awf16_195_r3_002_top_level_yaml_flow_mapping_migrates_exactly(self):
         before = (b"{template: {expected_workflow_version: 1.9.4}, "
                   b"execution: {mode: manual, risk_tiers: {}}}\n")
-        self._assert_awf16_195_r3_002_migration(
-            before, {"mode": "manual", "risk_tiers": {}})
+        bundle = MigrationBundle(
+            before, None, b"{}\n", b"{}\n", MappingProxyType({}))
+        target = {
+            "source_manifest_sha256": "0" * 64,
+            "_immutable_files": {},
+        }
+
+        after = migrate_1_9_4_to_1_9_5(bundle, target).project_config
+
+        self.assertEqual({
+            "template": {"expected_workflow_version": "1.9.5"},
+            "execution": {
+                "mode": "manual",
+                "risk_tiers": {
+                    "tier3_review": {
+                        "roles": ["critic", "specialist"],
+                        "findings": "blocking",
+                        "max_rounds": 3,
+                    },
+                },
+            },
+        }, load_yaml(after))
+        self.assertEqual(1, after.count(b"tier3_review"))
 
     def test_awf16_195_r3_002_quoted_keys_migrate_exactly(self):
         before = (b"template:\n  expected_workflow_version: 1.9.4\n"
