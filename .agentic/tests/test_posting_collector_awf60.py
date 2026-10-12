@@ -20,6 +20,7 @@ from agentic import posting_collector
 from agentic.canonical import canonical, load, sha256
 from agentic.cli import main as workflow_main
 from agentic.gates import evaluate, review_round_receipt_sha256
+from agentic.intake_assignment import assign_intake
 from agentic.lifecycle import definition
 from agentic.posting_collector import (
     COLLECTOR_ID,
@@ -745,6 +746,18 @@ class PostingCollectorTests(Fixture):
             )
             host_config_path = Path(folder) / "review-host.json"
             host_config_path.write_text("{}\n", encoding="utf-8")
+            assignment_state_path = Path(folder) / "controller-state.json"
+            assignment_config = copy.deepcopy(self.config)
+            assignment_config["jira"]["enabled"] = False
+            assignment_state = {}
+            assign_intake(
+                assignment_config,
+                {"key": self.bundle["contract"]["ticket"], "summary": "Moderate source change",
+                 "description": "", "write_paths": ["src/example.py"], "risk_flags": []},
+                assignment_state, None, now=NOW,
+                controller_actor_id=assignment_config["jira"]["controller_actor_id"],
+            )
+            assignment_state_path.write_text(json.dumps(assignment_state), encoding="utf-8")
             stdout = io.StringIO()
             with mock.patch(
                 "agentic.posting_collector.registry_from_host_config",
@@ -753,6 +766,7 @@ class PostingCollectorTests(Fixture):
                 exit_code = workflow_main([
                     "--root", str(runtime), "evaluate", str(bundle_path),
                     "--config", str(config_path),
+                    "--assignment-state", str(assignment_state_path),
                     "--posting-collector-host-config", str(host_config_path),
                     "--now", NOW,
                 ])
@@ -776,6 +790,18 @@ class PostingCollectorTests(Fixture):
             )
             host_config_path = Path(folder) / "review-host.json"
             host_config_path.write_text("{}\n", encoding="utf-8")
+            assignment_state_path = Path(folder) / "controller-state.json"
+            assignment_config = copy.deepcopy(self.config)
+            assignment_config["jira"]["enabled"] = False
+            assignment_state = {}
+            assign_intake(
+                assignment_config,
+                {"key": self.bundle["contract"]["ticket"], "summary": "Moderate source change",
+                 "description": "", "write_paths": ["src/example.py"], "risk_flags": []},
+                assignment_state, None, now=NOW,
+                controller_actor_id=assignment_config["jira"]["controller_actor_id"],
+            )
+            assignment_state_path.write_text(json.dumps(assignment_state), encoding="utf-8")
             stdout = io.StringIO()
             with mock.patch(
                 "agentic.posting_collector.registry_from_host_config",
@@ -786,6 +812,7 @@ class PostingCollectorTests(Fixture):
                 exit_code = workflow_main([
                     "--root", str(runtime), "evaluate", str(bundle_path),
                     "--config", str(config_path),
+                    "--assignment-state", str(assignment_state_path),
                     "--posting-collector-host-config", str(host_config_path),
                     "--now", NOW,
                 ])
@@ -812,6 +839,18 @@ class PostingCollectorTests(Fixture):
             )
             host_config_path = Path(folder) / "review-host.json"
             host_config_path.write_text("{}\n", encoding="utf-8")
+            assignment_state_path = Path(folder) / "controller-state.json"
+            assignment_config = copy.deepcopy(self.config)
+            assignment_config["jira"]["enabled"] = False
+            assignment_state = {}
+            assign_intake(
+                assignment_config,
+                {"key": self.bundle["contract"]["ticket"], "summary": "Moderate source change",
+                 "description": "", "write_paths": ["src/example.py"], "risk_flags": []},
+                assignment_state, None, now=NOW,
+                controller_actor_id=assignment_config["jira"]["controller_actor_id"],
+            )
+            assignment_state_path.write_text(json.dumps(assignment_state), encoding="utf-8")
             stderr = io.StringIO()
             with mock.patch(
                 "agentic.posting_collector.registry_from_host_config"
@@ -819,6 +858,7 @@ class PostingCollectorTests(Fixture):
                 exit_code = workflow_main([
                     "--root", str(runtime), "evaluate", str(bundle_path),
                     "--config", str(config_path),
+                    "--assignment-state", str(assignment_state_path),
                     "--posting-collector-host-config", str(host_config_path),
                     "--now", NOW,
                 ])
