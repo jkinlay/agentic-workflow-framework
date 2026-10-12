@@ -16,6 +16,7 @@ from urllib.parse import quote
 from ..canonical import candidate_id, loads, sha256
 from ..child_process import child_env, isolated_git_env
 from ..codex_skill import enforce_pinned_awf_skill
+from ..operating import is_awf_source_repository as has_awf_source_identity
 from ..path_containment import is_within, relative_within
 from ..review_loop import ValidationError, require
 from .. import review_qualification
@@ -37,15 +38,21 @@ def is_source_repository(root, revision='HEAD', git_runner=None):
         return False
     try:
         output = git_runner(root, 'ls-tree', '-r', '--name-only', revision)
-    except ValidationError as error:
-        if str(error).startswith('git failed with exit '):
+        if not isinstance(output, str):
             return False
-        raise
-    except (OSError, UnicodeError):
+        paths = set(output.splitlines())
+
+        def read(name):
+            if name not in paths:
+                return None
+            raw = git_runner(root, 'cat-file', 'blob', f'{revision}:{name}')
+            if not isinstance(raw, (str, bytes)):
+                raise TypeError('git cat-file returned unreadable content')
+            return raw.encode('utf-8') if isinstance(raw, str) else raw
+
+        return has_awf_source_identity(read)
+    except (ValidationError, OSError, UnicodeError, TypeError, ValueError):
         return False
-    paths = set(output.splitlines())
-    return {'MANIFEST.json', '.agentic/SPECIFICATION.md'} <= paths and any(
-        path.startswith('.agentic/lib/agentic/') for path in paths)
 
 
 def reviewed_model_effort_pairs(root, revision, git_runner=None):
