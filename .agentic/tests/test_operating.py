@@ -107,6 +107,15 @@ class ValidationTests(unittest.TestCase):
         self.refuse(current, "$.streams.count", "$.execution.host_broker.max_workers")
         self.assertEqual(3, op.operating_ceiling(self.gov)["effective_ceiling"])
 
+    def test_lower_structural_ceiling_rejects_every_retained_higher_label(self):
+        self.gov["execution"]["max_lanes"] = 3
+        value = op.default_operating()
+        value["streams"]["F"] = {"worker": op._pair("definitely-unapproved", "medium")}
+        with self.assertRaises(op.OperatingError) as caught:
+            op.validate_operating(value, self.gov)
+        self.assertTrue(any(item["path"] == "$.streams" and "F" in item["reason"]
+                            for item in caught.exception.refusals), caught.exception.refusals)
+
     def test_configured_ceiling_above_six_is_honoured_end_to_end(self):
         self.gov["execution"].update(max_parallel_tickets=12, max_lanes=10)
         value = op.default_operating()
@@ -643,6 +652,22 @@ class OperatingFileTests(unittest.TestCase):
         removals = {change["path"]: change for change in event["changes"] if change["after"] is None}
         self.assertEqual({"streams.G", "streams.H"}, set(removals))
         self.assertTrue(all(change["before"] == op._stream() for change in removals.values()))
+
+    def test_lowered_max_lanes_prunes_retained_routes_on_any_audited_change(self):
+        op.set_operating(self.root, self.gov, "use all six streams", ["streams.count=6"])
+        retained = op.set_operating(self.root, self.gov, "drain to three", ["streams.count=3"])
+        self.assertEqual(set("ABCDEF"), set(retained.config["streams"]) - {"count"})
+
+        reduced = deepcopy(self.gov)
+        reduced["execution"]["max_lanes"] = 3
+        (self.root / op.GOVERNANCE).write_bytes(op._json(reduced))
+        repaired = op.set_operating(
+            self.root, reduced, "pin A and migrate retained labels",
+            ["A.worker=gpt-5.6-sol/high"])
+        self.assertEqual(set("ABC"), set(repaired.config["streams"]) - {"count"})
+        event = next(item for item in self.events() if item["id"] == repaired.last_change_id)
+        removals = {change["path"] for change in event["changes"] if change["after"] is None}
+        self.assertEqual({"streams.D", "streams.E", "streams.F"}, removals)
 
     def test_initializing_existing_valid_choices_preserves_raw_bytes(self):
         with tempfile.TemporaryDirectory(prefix="awf-op-existing-") as directory:

@@ -112,6 +112,16 @@ class LaneTests(unittest.TestCase):
         lane_paths = [set(lane["write_paths"]) for lane in result["lanes"]]
         self.assertFalse(any(left & right for i, left in enumerate(lane_paths) for right in lane_paths[i + 1:]))
 
+    def test_in_flight_dependent_remains_blocked_until_its_open_blocker_closes(self):
+        tickets = [
+            ticket("AWF-1", "one.py"),
+            ticket("AWF-2", "two.py", status="in_flight", declared_dependencies=["AWF-1"]),
+        ]
+        result = planning.plan_lanes(planning.build_backlog_graph(tickets, config()), config())
+        scheduled = {key for lane in result["lanes"] for key in lane["ticket_keys"]}
+        self.assertEqual({"AWF-1"}, scheduled)
+        self.assertEqual(["AWF-1"], result["blocked"]["AWF-2"])
+
     def test_step1_fixture_yields_ten_strict_lanes(self):
         fixture = json.loads((ROOT / ".agentic/tests/fixtures/planning/step1.json").read_text(encoding="utf-8"))
         result = planning.plan_lanes(planning.build_backlog_graph(fixture["tickets"], config()), config())
@@ -172,7 +182,9 @@ class OwnerOverrideTests(unittest.TestCase):
         self.assertEqual(fixed["override_id"], changed["previous_override_id"])
         self.assertEqual(2, len(self.state["planning_override_history"]))
         tickets = [ticket(f"AWF-{i}", f"src/{i}.py") for i in range(1, 5)]
-        result = planning.plan_lanes(planning.build_backlog_graph(tickets, self.cfg), self.cfg, override=changed)
+        result = planning.plan_lanes(
+            planning.build_backlog_graph(tickets, self.cfg), self.cfg,
+            controller_state=self.state, verify_owner_source=verify_owner)
         self.assertEqual(2, result["lane_count"])
 
     def test_unauthorized_and_over_ceiling_overrides_refuse(self):
@@ -182,11 +194,43 @@ class OwnerOverrideTests(unittest.TestCase):
             self.change("fixed", 13)
 
     def test_above_estimate_fixed_value_warns_and_is_not_clamped(self):
-        override = self.change("fixed", 4)
+        self.change("fixed", 4)
         result = planning.plan_lanes(planning.build_backlog_graph([ticket("AWF-1", "one.py")], self.cfg), self.cfg,
-                                     resources={"limits": {"cpu": 2}, "headroom": {}}, override=override)
+                                     resources={"limits": {"cpu": 2}, "headroom": {}},
+                                     controller_state=self.state, verify_owner_source=verify_owner)
         self.assertEqual(4, result["lane_count"])
         self.assertTrue(any("above" in warning for warning in result["warnings"]))
+
+    def test_direct_or_incomplete_self_hashed_override_cannot_authorize_scheduling(self):
+        forged = {"schema_version": 1, "override_id": "forged-without-owner",
+                  "created_at": NOW, "mode": "fixed", "value": 4,
+                  "previous_override_id": None}
+        forged["override_sha256"] = planning.fingerprint(
+            "planning_override_record", forged)
+        graph = planning.build_backlog_graph(
+            [ticket(f"AWF-{i}", f"src/{i}.py") for i in range(1, 5)], self.cfg)
+        with self.assertRaisesRegex(ValidationError, "authenticated controller context"):
+            planning.verify_override_record(forged)
+        with self.assertRaisesRegex(ValidationError, "controller-owned"):
+            planning.plan_lanes(graph, self.cfg, override=forged)
+
+        forged_state = {"planning_override": deepcopy(forged),
+                        "planning_override_history": [deepcopy(forged)]}
+        with self.assertRaisesRegex(ValidationError, "owner-source|audit"):
+            planning.plan_lanes(graph, self.cfg, controller_state=forged_state,
+                                verify_owner_source=verify_owner)
+
+    def test_stored_override_chain_is_reauthenticated_before_each_plan(self):
+        self.change("fixed", 2)
+        graph = planning.build_backlog_graph(
+            [ticket(f"AWF-{i}", f"src/{i}.py") for i in range(1, 3)], self.cfg)
+
+        def reject_replay(source, expected):
+            raise RuntimeError("provider observation no longer authenticates")
+
+        with self.assertRaisesRegex(ValidationError, "authentication failed"):
+            planning.plan_lanes(graph, self.cfg, controller_state=self.state,
+                                verify_owner_source=reject_replay)
 
 
 class RecomputeAndAuditTests(unittest.TestCase):
@@ -202,6 +246,22 @@ class RecomputeAndAuditTests(unittest.TestCase):
                 self.assertEqual("PLANNED", result["status"])
                 self.assertEqual(trigger, result["record"]["trigger"])
         self.assertEqual(5, len(self.state["planning_history"]))
+
+    def test_recompute_uses_only_reauthenticated_controller_override_state(self):
+        planning.change_owner_override(
+            self.cfg, self.state, mode="fixed", value=1, reason="owner choice", now=NOW,
+            owner_source=owner_source(None, "fixed", 1, "owner choice"),
+            verify_owner_source=verify_owner)
+        result = planning.recompute_plan(
+            self.tickets, self.cfg, self.state, now=NOW, trigger="override_changed",
+            verify_owner_source=verify_owner)
+        self.assertEqual("owner_override", result["record"]["owner_decision"]["kind"])
+
+        forged = deepcopy(self.state["planning_override"])
+        with self.assertRaisesRegex(ValidationError, "controller-owned"):
+            planning.recompute_plan(
+                self.tickets, self.cfg, self.state, now=NOW, trigger="override_changed",
+                override=forged, verify_owner_source=verify_owner)
 
     def test_mid_round_reassignment_is_deferred(self):
         result = planning.recompute_plan(self.tickets, self.cfg, self.state, now=NOW,
