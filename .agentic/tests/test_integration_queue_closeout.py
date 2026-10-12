@@ -190,6 +190,15 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "predates.*merge"):
             self.gate(self.record(), transition)
 
+    def test_awf76_r1_002_fresh_envelope_cannot_wrap_stale_terminal_readback(self):
+        stale = "2026-10-01T10:01:00Z"
+        closeout = self.record()
+        closeout["created_at"] = stale
+        transition = self.reconciliation(created_at=stale)
+        transition["read_back"]["observed_at"] = stale
+        with self.assertRaisesRegex(ValidationError, "terminal readback.*stale"):
+            self.gate(closeout, transition)
+
     def test_awf76_ac3_closeout_metadata_substitution_and_replay_are_rejected(self):
         authenticated = self.record()
         mutations = {

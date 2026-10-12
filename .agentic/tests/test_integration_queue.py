@@ -42,6 +42,7 @@ SHA5 = "5" * 40
 NOW = "2026-10-10T10:00:00Z"
 GATE_NOW = "2026-09-09T12:00:00Z"
 PROJECT_CONFIG = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
+PROJECT_CONFIG["validation"]["required_ci_checks"][0]["name"] = "awf-integration"
 PROVIDER_IDENTITY = {"host": PROJECT_CONFIG["github"]["host"],
                      "repository": PROJECT_CONFIG["github"]["repository"],
                      "repository_id": PROJECT_CONFIG["github"]["repository_id"]}
@@ -386,6 +387,16 @@ def trusted_readiness():
         app_binding={"producer_id": "fixture-mode-provider"},
         mode_observer_registry=mode_registry, now=GATE_NOW)
     bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+    bundle["ci"]["checks"][0]["name"] = "awf-integration"
+    from agentic.gates import expected_binding
+    bundle["contract"]["policy_hash"] = policy_hash(config, definition())
+    binding = expected_binding(config, definition(), bundle)
+    for key in ("dispatch", "worker", "critic", "ci", "pr"):
+        bundle[key]["binding"] = copy.deepcopy(binding)
+    for run in bundle["runs"]:
+        run["binding"] = copy.deepcopy(binding)
+    for verdict in bundle.get("review_verdicts", []):
+        verdict["binding"] = copy.deepcopy(binding)
     bind_review_admission(bundle)
     verifier = copy.deepcopy(bundle["runs"][0])
     verifier.update(record_id=str(uuid.uuid4()), run_id=str(uuid.uuid4()),
@@ -1277,6 +1288,82 @@ class IntegrationQueueTests(unittest.TestCase):
             resolve_mode(config, app_binding={"producer_id": "fixture-wrong-app"},
                          epic="AWF-EPIC", project_config=PROJECT_CONFIG,
                          mode_observer_registry=MODE_REGISTRY, now=NOW)
+
+    def test_awf76_r1_001_requires_exact_unique_awf_integration_binding(self):
+        mode_config = {"mode": "epic", "test_command": "python -B -m unittest",
+                       "provenance": {
+                           "source": "reviewed_config",
+                           "config_path": ".agentic/integration-queue-config.yaml",
+                           "config_sha256": "a" * 64,
+                           "review_record_id": "review-semantic-binding",
+                           "reviewed_at": NOW,
+                           "producer_id": "fixture-semantic-binding"}}
+
+        missing = copy.deepcopy(PROJECT_CONFIG)
+        missing["validation"]["required_ci_checks"][0]["name"] = "unit-tests"
+        missing_registry = {}
+
+        def observe_missing(request):
+            if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+                return accepted_config_result(missing)
+            if request["operation"] == "APP_BINDING":
+                return {
+                    "producer_id": "fixture-semantic-binding",
+                    "provider_identity": copy.deepcopy(request["provider_identity"]),
+                    "repository_identity": copy.deepcopy(request["repository_identity"]),
+                    "source_identity": "repository_branch_rules",
+                    "target_branch": request["target_branch"],
+                    "ruleset_id": "fixture-semantic-ruleset",
+                    "ruleset_revision": 1,
+                    "rules": [{"context": context, "integration_id": 42,
+                               "required": True, "active": True, "applicable": True}
+                              for context in request["required_check_contexts"]],
+                }
+            return observed_mode(request)
+
+        register_integration_observer(
+            "fixture-semantic-binding", observe_missing, missing_registry)
+        with self.assertRaisesRegex(ValidationError, "exactly one awf-integration"):
+            resolve_mode(
+                mode_config, epic="AWF-EPIC", project_config=missing,
+                app_binding={"producer_id": "fixture-semantic-binding"},
+                mode_observer_registry=missing_registry, now=NOW)
+
+        exact = copy.deepcopy(PROJECT_CONFIG)
+        unrelated = copy.deepcopy(exact["validation"]["required_ci_checks"][0])
+        unrelated.update(name="unit-tests", app_id=7)
+        exact["validation"]["required_ci_checks"].append(unrelated)
+        exact_registry = {}
+
+        def observe_exact(request):
+            if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+                return accepted_config_result(exact)
+            if request["operation"] == "APP_BINDING":
+                return {
+                    "producer_id": "fixture-semantic-binding",
+                    "provider_identity": copy.deepcopy(request["provider_identity"]),
+                    "repository_identity": copy.deepcopy(request["repository_identity"]),
+                    "source_identity": "repository_branch_rules",
+                    "target_branch": request["target_branch"],
+                    "ruleset_id": "fixture-semantic-ruleset",
+                    "ruleset_revision": 1,
+                    "rules": [{"context": context, "integration_id": 42,
+                               "required": True, "active": True, "applicable": True}
+                              for context in request["required_check_contexts"]],
+                }
+            return observed_mode(request)
+
+        register_integration_observer(
+            "fixture-semantic-binding", observe_exact, exact_registry)
+        resolved = resolve_mode(
+            mode_config, epic="AWF-EPIC", project_config=exact,
+            app_binding={"producer_id": "fixture-semantic-binding"},
+            mode_observer_registry=exact_registry, now=NOW)
+        self.assertTrue(resolved["activation"]["app_binding"]["enforced"])
+        self.assertEqual(
+            ["awf-integration"],
+            [rule["context"] for rule in
+             resolved["activation"]["app_binding"]["rules"]])
 
     def test_awf76_ac2_target_branch_comes_from_accepted_configuration(self):
         other = IntegrationQueueStore(

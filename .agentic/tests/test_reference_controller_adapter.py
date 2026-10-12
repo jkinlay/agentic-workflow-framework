@@ -950,8 +950,12 @@ enabled = true
         adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](cfg)
         progress = {"jira_enabled": True, "merged_ticket": "100", "scope": "project = EX",
                     "observed_at": NOW, "jira_binding": {"cloud_id": "cloud-1", "project_id": "project-1", "actor_id": "controller"},
+                    "count_gate": {},
                     "max_pages": 5, "max_items": 10}
-        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False):
+        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False), \
+                patch("agentic.closeout.require_jira_reconciliation_before_counts",
+                      return_value={"status": "PASS", "count_allowed": True,
+                                    "ticket": "100"}):
             result = production_merge_observed(lifecycle_state="MERGING",
                 lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
                 jira_progress={**progress, "reconcile_merged_ticket": adapters["reconcile_merged_ticket"],
@@ -967,8 +971,12 @@ enabled = true
         progress = {"jira_enabled": True, "merged_ticket": "100", "scope": "project = EX",
                     "observed_at": NOW,
                     "jira_binding": {"cloud_id": "cloud-1", "project_id": "project-1", "actor_id": "controller"},
+                    "count_gate": {},
                     "max_pages": 5, "max_items": 10}
-        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False):
+        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False), \
+                patch("agentic.closeout.require_jira_reconciliation_before_counts",
+                      return_value={"status": "PASS", "count_allowed": True,
+                                    "ticket": "100"}):
             result = production_merge_observed(lifecycle_state="MERGING",
                 lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
                 jira_progress={**progress, "reconcile_merged_ticket": adapters["reconcile_merged_ticket"],
