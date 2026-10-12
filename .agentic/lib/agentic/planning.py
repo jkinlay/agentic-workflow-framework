@@ -13,10 +13,11 @@ import uuid
 from . import ValidationError
 from .canonical import fingerprint, sha256, timestamp
 from .intake_assignment import classify_ticket, _canonical_repo_path
-from .operating import operating_ceiling, stream_labels
+from .operating import DEFAULT_MAX_LANES, operating_ceiling, stream_labels
 
 
 MANIFEST_OUTPUTS = {"MANIFEST.json", "MANIFEST.md"}
+MANIFEST_OUTPUT_IDENTITIES = {path.casefold() for path in MANIFEST_OUTPUTS}
 ACTIVE_STATUSES = {"in_flight", "working", "dispatched", "in_progress"}
 READY_STATUSES = {"open", "ready", "backlog"}
 CLOSED_STATUSES = {"closed", "done", "merged", "cancelled", "canceled"}
@@ -32,6 +33,11 @@ def _path(value):
         raise ValidationError(
             "Planning file scopes must be exact repository file paths; globs and directories are not lane evidence")
     return path
+
+
+def _path_identity(path):
+    """Return the portable identity used to reject Windows case aliases."""
+    return path.casefold()
 
 
 def _string_list(value, field, *, allow_empty=True):
@@ -62,7 +68,7 @@ def _ticket_paths(ticket):
     for source, values in observations:
         for raw in _string_list(values, source + " file list"):
             path = _path(raw)
-            if path in MANIFEST_OUTPUTS:
+            if _path_identity(path) in MANIFEST_OUTPUT_IDENTITIES:
                 continue
             result.setdefault(path, set()).add(source)
     return result
@@ -71,7 +77,7 @@ def _ticket_paths(ticket):
 def _generator_outputs(ticket):
     values = ticket.get("generated_outputs", ticket.get("generates", []))
     result = {_path(item) for item in _string_list(values, "generated_outputs")}
-    return sorted(result - MANIFEST_OUTPUTS)
+    return sorted(path for path in result if _path_identity(path) not in MANIFEST_OUTPUT_IDENTITIES)
 
 
 def _dependency_edges(ticket):
@@ -118,6 +124,7 @@ def build_backlog_graph(tickets, config):
 
     nodes = {}
     generator_owners = {}
+    path_spellings = {}
     raw_dependencies = []
     for ticket in tickets:
         key = ticket["key"]
@@ -129,6 +136,12 @@ def build_backlog_graph(tickets, config):
                 raise ValidationError(f"Generated output {path} has multiple generator owners: {owner}, {key}")
             generator_owners[path] = key
             paths.setdefault(path, set()).add("generator_output")
+        for path in sorted(paths):
+            identity = _path_identity(path)
+            prior = path_spellings.setdefault(identity, path)
+            if prior != path:
+                raise ValidationError(
+                    f"Planning file scopes contain case-aliased paths: {prior}, {path}")
         classification_ticket = copy.deepcopy(ticket)
         classification_ticket["write_paths"] = sorted(paths)
         if not classification_ticket["write_paths"]:
@@ -293,11 +306,19 @@ def verify_override_record(record):
 def _estimate(graph, config, independent_count, resources):
     capacity = operating_ceiling(config)
     limits, headroom = _resource_constraints(resources)
-    constraints = {"dependency_graph/file_overlap": independent_count,
-                   "configured_ceiling": capacity["effective_ceiling"]}
-    for source in capacity["effective_ceiling_sources"]:
-        if source == "$.execution.host_broker.max_workers":
-            constraints["host_broker"] = capacity["effective_ceiling"]
+    execution = config["execution"]
+    constraints = {
+        "dependency_graph/file_overlap": independent_count,
+        "configured_ceiling": execution.get("max_lanes", DEFAULT_MAX_LANES),
+        "max_parallel_tickets": execution["max_parallel_tickets"],
+    }
+    broker = execution.get("host_broker")
+    if isinstance(broker, dict) and broker.get("enabled") is True:
+        constraints["host_broker"] = broker["max_workers"]
+    collisions = sorted(set(constraints) & set(limits))
+    if collisions:
+        raise ValidationError(
+            "Planning resource limits duplicate governed constraint names: " + ", ".join(collisions))
     constraints.update(limits)
     safe = min(constraints.values()) if constraints else 0
     binding = sorted(name for name, value in constraints.items() if value == safe)

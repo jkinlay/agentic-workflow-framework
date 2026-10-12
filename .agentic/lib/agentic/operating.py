@@ -735,6 +735,38 @@ def _selection(path, text):
     return {**_pair(model, effort), "pinned": True}
 
 
+def _prune_unrepresentable_routes(value, structural_ceiling):
+    """Remove only labels made structurally invalid by a lowered max_lanes.
+
+    The caller records every returned path in the normal append-only operating
+    change event. Labels that remain representable are deliberately retained so
+    ordinary count reductions keep their established draining-route behavior.
+    """
+    allowed = set(stream_labels(structural_ceiling))
+    removed = []
+    streams = value["streams"]
+    for label in sorted(set(streams) - {"count"} - allowed):
+        if re.fullmatch(r"[A-Z]+", label):
+            del streams[label]
+            removed.append("streams." + label)
+    overrides = value.get("epic_overrides", {})
+    if isinstance(overrides, dict):
+        for epic_id in sorted(list(overrides)):
+            scoped = overrides[epic_id]
+            scoped_streams = scoped.get("streams") if isinstance(scoped, dict) else None
+            if not isinstance(scoped_streams, dict):
+                continue
+            for label in sorted(set(scoped_streams) - allowed):
+                if re.fullmatch(r"[A-Z]+", label):
+                    del scoped_streams[label]
+                    removed.append(f"epic_overrides.{epic_id}.streams.{label}")
+            if not scoped_streams:
+                del scoped["streams"]
+            if not scoped:
+                del overrides[epic_id]
+    return removed
+
+
 def _editable_snapshot(tree, governance, initialize):
     if _read(tree, JOURNAL) is not None:
         fail("$", "Pending operating transaction requires pinned recovery before another change")
@@ -806,9 +838,13 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
             if path == "simple_worker" and isinstance(choice, dict):
                 choice.setdefault("enabled", value["simple_worker"]["enabled"])
             _put(value, path, choice)
+        migration_paths = []
+        if "streams.count" in selected and type(count) is int and 1 <= count <= ceiling:
+            structural_ceiling = governance["execution"].get("max_lanes", DEFAULT_MAX_LANES)
+            migration_paths = _prune_unrepresentable_routes(value, structural_ceiling)
         value["source"] = source
         validate_operating(value, governance)
-        paths = sorted(set(selected) | {"source"} | {"streams." + s for s in stream_labels(ceiling) if s in value["streams"] and s not in snapshot.config["streams"]})
+        paths = sorted(set(selected) | set(migration_paths) | {"source"} | {"streams." + s for s in stream_labels(ceiling) if s in value["streams"] and s not in snapshot.config["streams"]})
         changes = [{"path": p, "before": _get(snapshot.config, p), "after": _get(value, p)} for p in paths
                    if _get(snapshot.config, p) != _get(value, p)]
         return _commit(tree, governance, before, value, instruction, changes, "chat")
