@@ -14,6 +14,7 @@ from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, loads, sha256
 from agentic.safeio import Tree
 from agentic.streams import DEFAULT_NATIVE_EXECUTION, JOURNAL, MARKDOWN, PLAN, plan_inventory, recommendation_groups, render_markdown, write_project_plan
+from source_only import write_awf_source_fixture
 from test_operating_integration import configuration as operating_configuration, governance as operating_governance
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -846,7 +847,7 @@ class PlanPublicationTests(unittest.TestCase):
         self.project.mkdir()
         self.runtime = self.base / "runtime"
         self.runtime.mkdir()
-        (self.runtime / "MANIFEST.json").write_text("{}")
+        write_awf_source_fixture(self.runtime)
         self.raw = FIXTURE.read_bytes()
 
     def publish(self, expected=None, *, raw=None, redact_ownership_worktrees=False):

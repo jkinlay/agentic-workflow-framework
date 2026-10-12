@@ -5,7 +5,8 @@ from copy import deepcopy
 
 from . import ValidationError
 from .canonical import load_yaml
-from .operating import inspect_operating, operating_ceiling, validate_operating
+from .operating import (inspect_operating, is_awf_source_repository,
+                        operating_ceiling, tree_reader, validate_operating)
 from .safeio import Tree
 
 
@@ -16,7 +17,7 @@ def with_operating(root, governance, report):
     # must not create a lock file and invalidate its complete manifest. Normal
     # installed projects always use the required file and transaction-aware lock.
     with Tree(root) as tree:
-        source_template = tree.inspect('MANIFEST.json') is not None and tree.inspect('.agentic/installed-manifest.json') is None
+        source_template = is_awf_source_repository(tree_reader(tree))
         if source_template:
             try:
                 value = validate_operating(load_yaml(tree.read('OPERATING_CONFIG.yaml')), governance)
