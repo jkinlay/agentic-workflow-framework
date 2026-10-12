@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from agentic.cli import main as workflow_main
 from agentic.intake_assignment import assign_intake, change_assignment
 from agentic.review_tiers import runtime_assignment
+from source_only import skip_unless_source_repo
 from test_intake_assignment import NOW, owner_source, verify_owner_source
 from test_review_policy import sealed_runtime
 
@@ -157,6 +158,10 @@ class CliIntakeAssignmentTests(unittest.TestCase):
         self.assertEqual(0, final_code)
         self.assertEqual("CAP_PARK", final["event"])
 
+    @skip_unless_source_repo(
+        "scripts/validate_archive.py exists only in the AWF source repository",
+        "scripts/validate_archive.py",
+    )
     def test_archive_evaluate_command_supplies_assignment_state_and_reaches_evaluation(self):
         spec = importlib.util.spec_from_file_location(
             "validate_archive_assignment", ROOT / "scripts/validate_archive.py")

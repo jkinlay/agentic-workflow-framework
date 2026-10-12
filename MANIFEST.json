@@ -276,7 +276,7 @@
     ".agentic/tests/test_bootstrap_configuration.py": "2a96e3b578b044417ff20deb164db75203ca9e7ccd54721974ac89ab1fcdebe2",
     ".agentic/tests/test_candidate_id.py": "ade754baa57f0b2fc4c33ae0940902af6198f33125a1eff3aed0ea0bc1f1a041",
     ".agentic/tests/test_child_process.py": "63b233308dc0488b2ce0b3c07aba86441ea29b38637b268a221adca2a869fe60",
-    ".agentic/tests/test_cli_intake_assignment.py": "e25aa728f03f95684933614a4efbd9f0aa9c5cd509ba3b7042d1a42dcca79876",
+    ".agentic/tests/test_cli_intake_assignment.py": "001c5f8b3e4084429e08619b61bc61ac810babc31b12a263844fb136f396afe4",
     ".agentic/tests/test_codeowners.py": "12c0b86ed561d24d4d3c6cbe2c713be9820e62ed862455658a9b792e0fac5184",
     ".agentic/tests/test_codex_skill.py": "8b26aa7b811ad85236c47477d601633f8c88de4767c0e77055168fd296e7956f",
     ".agentic/tests/test_config_diagnostics.py": "e5eb082d99a5638909a50133aa0c053e4efd56417a4cf8149a5732348975bd07",
