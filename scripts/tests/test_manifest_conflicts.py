@@ -79,17 +79,13 @@ class ManifestConflictTests(unittest.TestCase):
         for name, data in files.items():
             (root / name).write_bytes(data)
         shutil.copy2(ROOT / ".gitattributes", root / ".gitattributes")
-        shutil.copy2(
-            ROOT / "scripts/manifest_merge_driver.py",
-            root / "manifest_merge_driver.py",
-        )
         self.write_manifests(root, files)
         self.git(root, "init", "-b", "main")
         self.git(root, "config", "user.name", "Manifest Fixture")
         self.git(root, "config", "user.email", "manifest@example.invalid")
         if configure_driver:
             command = (
-                f'"{sys.executable}" -B "{root / "manifest_merge_driver.py"}" '
+                f'"{sys.executable}" -B "{ROOT / "scripts/manifest_merge_driver.py"}" '
                 "%O %A %B %P"
             )
             self.git(root, "config", "merge.awf-manifest.driver", command)
@@ -160,7 +156,7 @@ class ManifestConflictTests(unittest.TestCase):
         right = self.branch_delete(root, base, "pr-b", files, "middle.txt")
         self.assert_merges_in_either_order(root, left, right)
 
-    def test_production_sync_registers_driver_without_repository_config(self):
+    def test_production_sync_merges_and_pushes_without_repository_config(self):
         root, files, base = self.make_repository(
             "production-sync", configure_driver=False
         )
@@ -170,7 +166,11 @@ class ManifestConflictTests(unittest.TestCase):
         right = self.branch_change(
             root, base, "pr-b", files, "aardvark-b.txt", b"added by B\n"
         )
-        self.git(root, "checkout", "-b", "sync", left)
+        remote = self.base / "provider.git"
+        self.git(self.base, "init", "--bare", str(remote))
+        self.git(root, "remote", "add", "origin", str(remote))
+        self.git(root, "push", "origin", f"{left}:refs/heads/pr-a")
+        self.git(root, "checkout", "-B", "pr-a", left)
 
         configured = self.git(
             root, "config", "--get", "merge.awf-manifest.driver", check=False
@@ -186,8 +186,10 @@ class ManifestConflictTests(unittest.TestCase):
                 sys.executable,
                 "-B",
                 str(ROOT / "scripts/manifest_merge_driver.py"),
-                "--merge-ref",
+                "--sync-ref",
                 right,
+                "--push-branch",
+                "pr-a",
             ],
             cwd=root,
             env=environment,
@@ -216,17 +218,33 @@ class ManifestConflictTests(unittest.TestCase):
         ).stdout.decode().splitlines()
         self.assertEqual([], unresolved)
         self.assert_current(root)
+        pushed = self.git(
+            root, "ls-remote", "--heads", "origin", "refs/heads/pr-a"
+        ).stdout.decode().split()[0]
+        self.assertEqual(self.git(root, "rev-parse", "HEAD").stdout.decode().strip(), pushed)
+        self.assertNotEqual(left, pushed)
+        parents = self.git(root, "show", "-s", "--format=%P", pushed).stdout.decode().split()
+        self.assertEqual([left, right], parents)
 
-    def test_workflow_invokes_production_manifest_sync(self):
+    def test_workflow_dispatches_authorized_production_manifest_sync(self):
         workflow = (ROOT / ".github/workflows/manifest-check.yml").read_text(
             encoding="utf-8"
         )
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("pull-request:", workflow)
         self.assertIn("fetch-depth: 0", workflow)
-        self.assertIn("github.event.pull_request.head.sha || github.sha", workflow)
+        self.assertIn("contents: write", workflow)
+        self.assertIn("pull-requests: read", workflow)
+        self.assertIn("pull.head.repo.full_name", workflow)
+        self.assertIn("pull.base.ref !== context.payload.repository.default_branch", workflow)
+        self.assertIn("path: trusted", workflow)
+        self.assertIn("path: candidate", workflow)
+        self.assertIn("working-directory: candidate", workflow)
         self.assertIn(
-            "python -B scripts/manifest_merge_driver.py --merge-ref",
+            "python -B ../trusted/scripts/manifest_merge_driver.py --sync-ref",
             workflow,
         )
+        self.assertIn("--push-branch", workflow)
 
     def test_workflow_scopes_matrix_concurrency_to_manifest_job(self):
         workflow = (ROOT / ".github/workflows/manifest-check.yml").read_text(
