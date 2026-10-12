@@ -673,6 +673,13 @@ def _yaml_insert_mapping_entry(text, node, flow_entry, block_lines, newline):
 
     indent = _yaml_block_indent(text, node)
     insertion = node.end_mark.index
+    line_start = text.rfind("\n", 0, insertion) + 1
+    if insertion < len(text) and not text[line_start:insertion].strip(" \t"):
+        # PyYAML locates the end of a nested block mapping at the first key of
+        # its following sibling, after that sibling's indentation.  Insert at
+        # the true start of the line so those already-consumed spaces remain
+        # attached to the sibling instead of becoming a blank line.
+        insertion = line_start
     prefix = "" if insertion == 0 or text[insertion - 1] in "\r\n" else newline
     rendered = prefix + "".join(
         " " * indent + line + newline for line in block_lines
