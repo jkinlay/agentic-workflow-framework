@@ -24,21 +24,29 @@ portable identifiers. A Writer-like body line, duplicate trailer, unknown
 namespace, non-canonical value, or Writer line outside the final Git trailer
 block is invalid. `interaction.writer_commit_message` constructs a message with one
 trailer and refuses non-mechanical work without a Codex run ID. It does not
-create the commit.
+create the commit. Publishers must supply the actual run UUID; a role name or
+placeholder such as `writer-001` is invalid.
 
 A `script/*` claim is accepted only when the commit is independently classified
 as mechanical. The classifier recognizes two cases:
 
 - A two-parent merge whose second parent is in the observed `origin/main`
-  history and whose tree is byte-identical to Git's automatic, conflict-free
-  merge result.
+  history and whose tree is byte-identical to Git's automatic merge result.
+  Reproduction writes only to a disposable object database and reads the
+  repository through an alternate-object binding. A conflicting merge passes
+  only when every conflict is a declared generated output, the committed tree
+  differs from the automatic tree only at those conflicts, and the generator
+  reproduces every resolution.
 - A commit changing only declared generator outputs. `MANIFEST.json` and
   `MANIFEST.md` are declared by default. A trusted caller must reproduce every
-  changed output, and every committed blob must match those bytes exactly.
+  changed output, and every committed tree entry must match its content, mode,
+  and object type. A byte value means a regular non-executable `100644 blob`;
+  an executable output must return an exact `mode`, `type`, and `content`
+  mapping.
 
 The script name alone never proves either case. Code, tests, configuration,
-documentation, mixed changes, deleted outputs, unresolved merges, unavailable
-reproduction, or any byte mismatch remain non-mechanical.
+documentation, mixed changes, deleted outputs, non-generated conflicts,
+unavailable reproduction, or any entry mismatch remain non-mechanical.
 
 `provenance.check_commit_range` examines every commit in `base..head`. Its
 result contains each SHA, changed-file inventory, parsed writer, mechanical and

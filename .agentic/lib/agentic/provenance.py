@@ -11,10 +11,12 @@ import copy
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import uuid
 
 from . import ValidationError
 from .canonical import fingerprint, timestamp
+from .child_process import child_env, isolated_git_env
 
 
 FALLBACK_LABEL = "fallback: bot-written"
@@ -133,11 +135,13 @@ def _verify_override_shape(record):
              "Provenance override has unsupported or missing fields")
     _require(record["schema_version"] == 1, "Unsupported provenance override version")
     _require(isinstance(record["who"], (str, int)) and not isinstance(record["who"], bool)
+             and bool(str(record["who"]))
              and str(record["who"]).strip() == str(record["who"])
              and not any(ord(char) < 32 for char in str(record["who"])),
              "Provenance override needs an owner identity")
     timestamp(record["when"])
-    _require(isinstance(record["why"], str) and record["why"].strip() == record["why"]
+    _require(isinstance(record["why"], str) and bool(record["why"])
+             and record["why"].strip() == record["why"]
              and len(record["why"]) <= 4096
              and not any(ord(char) < 32 for char in record["why"]),
              "Provenance override needs a bounded reason")
@@ -216,15 +220,25 @@ class _Git:
         _require(path.is_dir(), "Provenance repository root must be an existing directory")
         self.root = path
 
-    def run(self, *args, binary=False, allow_failure=False):
-        completed = subprocess.run(
-            ["git", "-C", str(self.root), *args],
-            capture_output=True,
-            text=not binary,
-            encoding=None if binary else "utf-8",
-            errors=None if binary else "strict",
-            timeout=60,
-        )
+    def run(self, *args, binary=False, allow_failure=False, environment=None):
+        try:
+            completed = subprocess.run(
+                ["git", "-c", "safe.directory=" + str(self.root),
+                 "-C", str(self.root), *args],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=not binary,
+                encoding=None if binary else "utf-8",
+                errors=None if binary else "strict",
+                timeout=60,
+                shell=False,
+                check=False,
+                env=child_env(isolated_git_env(extra=environment)),
+            )
+        except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
+            raise ValidationError(
+                f"Git provenance inspection failed ({args[0]}): {type(exc).__name__}"
+            ) from exc
         if completed.returncode and not allow_failure:
             error = (completed.stderr if binary else completed.stderr.strip())
             if isinstance(error, bytes):
@@ -242,10 +256,48 @@ class _Git:
         return _sha(resolved, field)
 
     def blob(self, commit, path):
-        result = self.run("show", f"{commit}:{path}", binary=True, allow_failure=True)
-        if result.returncode:
+        entry = self.entry(commit, path)
+        return None if entry is None else entry["content"]
+
+    def entry(self, treeish, path, *, environment=None):
+        result = self.run(
+            "ls-tree", "-z", treeish, "--", path,
+            binary=True, allow_failure=True, environment=environment,
+        )
+        if result.returncode or not result.stdout:
             return None
-        return result.stdout
+        rows = [row for row in result.stdout.split(b"\0") if row]
+        if len(rows) != 1 or b"\t" not in rows[0]:
+            return None
+        metadata, raw_path = rows[0].split(b"\t", 1)
+        try:
+            mode, object_type, object_id = metadata.decode("ascii").split()
+            decoded_path = raw_path.decode("utf-8")
+        except (UnicodeDecodeError, ValueError):
+            return None
+        if decoded_path != path:
+            return None
+        content = self.run(
+            "cat-file", object_type, object_id,
+            binary=True, allow_failure=True, environment=environment,
+        )
+        if content.returncode:
+            return None
+        return {
+            "mode": mode,
+            "type": object_type,
+            "object_id": object_id,
+            "content": content.stdout,
+        }
+
+    def object_directory(self):
+        value = self.text("rev-parse", "--git-path", "objects")
+        path = Path(value)
+        if not path.is_absolute():
+            path = self.root / path
+        path = path.resolve()
+        _require(path.is_dir(), "Git provenance object database is unavailable")
+        return path
 
 
 def _commit_details(git, commit):
@@ -265,7 +317,60 @@ def _commit_details(git, commit):
     }
 
 
-def _origin_main_merge(git, details, origin_main):
+def _decode_merge_tree_output(output):
+    fields = output.split(b"\0")
+    try:
+        tree = fields[0].decode("ascii")
+        paths = [field.decode("utf-8") for field in fields[1:] if field]
+    except UnicodeDecodeError:
+        return None, None
+    if _SHA.fullmatch(tree) is None:
+        return None, None
+    return tree, paths
+
+
+def _expected_generated_entry(value):
+    if isinstance(value, bytes):
+        return {"mode": "100644", "type": "blob", "content": value}
+    if not isinstance(value, dict) or set(value) != {"mode", "type", "content"}:
+        return None
+    if (value["mode"] not in {"100644", "100755"}
+            or value["type"] != "blob" or not isinstance(value["content"], bytes)):
+        return None
+    return value
+
+
+def _verify_generated_entries(git, details, paths, reproduce_generated):
+    if not callable(reproduce_generated):
+        return False, "generated outputs were not reproduced byte-for-byte with mode/type"
+    try:
+        reproduced = reproduce_generated(details["sha"], list(paths))
+    except Exception as exc:
+        return False, f"generator reproduction failed: {type(exc).__name__}: {exc}"
+    if not isinstance(reproduced, dict) or set(reproduced) != set(paths):
+        return False, "generator reproduction did not return every changed path exactly once"
+    for path in paths:
+        expected = _expected_generated_entry(reproduced[path])
+        if expected is None:
+            return False, (
+                f"generated output {path} reproduction needs bytes or an exact "
+                "mode/type/content entry"
+            )
+        actual = git.entry(details["sha"], path)
+        if actual is None:
+            return False, f"generated output {path} is not a committed tree entry"
+        if (expected["mode"], expected["type"]) != (actual["mode"], actual["type"]):
+            return False, (
+                f"generated output {path} mode/type did not reproduce "
+                f"({actual['mode']} {actual['type']} committed)"
+            )
+        if expected["content"] != actual["content"]:
+            return False, f"generated output {path} did not reproduce byte-for-byte"
+    return True, "byte-for-byte generated outputs with matching mode/type"
+
+
+def _origin_main_merge(git, details, origin_main, generated_paths,
+                       reproduce_generated):
     parents = details["parents"]
     if len(parents) != 2:
         return False, "commit is not a two-parent merge"
@@ -274,17 +379,52 @@ def _origin_main_merge(git, details, origin_main):
                       allow_failure=True)
     if lineage.returncode:
         return False, "second parent is not in origin/main history"
-    reproduced = git.run("merge-tree", "--write-tree", parents[0], parents[1],
-                         allow_failure=True)
-    if reproduced.returncode:
-        return False, "origin/main merge could not be reproduced without conflict resolution"
-    output = reproduced.stdout.splitlines()
-    if not output or _SHA.fullmatch(output[0].strip()) is None:
-        return False, "origin/main merge reproduction returned no tree"
+    source_objects = git.object_directory()
     actual = git.text("rev-parse", f"{details['sha']}^{{tree}}")
-    if output[0].strip() != actual:
-        return False, "origin/main merge tree differs from Git's automatic merge result"
-    return True, "origin/main merge"
+    with tempfile.TemporaryDirectory(prefix="awf-provenance-objects-") as directory:
+        object_directory = Path(directory).resolve() / "objects"
+        object_directory.mkdir()
+        environment = {
+            "GIT_OBJECT_DIRECTORY": str(object_directory),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(source_objects),
+        }
+        reproduced = git.run(
+            "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z",
+            parents[0], parents[1], binary=True, allow_failure=True,
+            environment=environment,
+        )
+        tree, conflict_paths = _decode_merge_tree_output(reproduced.stdout)
+        if tree is None:
+            return False, "origin/main merge reproduction failed in a disposable object database"
+        if reproduced.returncode == 0:
+            if conflict_paths:
+                return False, "origin/main merge reproduction returned unexpected conflict paths"
+            if tree != actual:
+                return False, "origin/main merge tree differs from Git's automatic merge result"
+            return True, "origin/main merge"
+        if reproduced.returncode != 1 or not conflict_paths:
+            return False, "origin/main merge reproduction failed in a disposable object database"
+        if not set(conflict_paths).issubset(generated_paths):
+            return False, (
+                "origin/main merge has non-generated conflicts: "
+                + ", ".join(conflict_paths)
+            )
+        differences = git.run(
+            "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", tree, actual,
+            environment=environment,
+        ).stdout
+        changed_from_automatic = {path for path in differences.split("\0") if path}
+        if not changed_from_automatic.issubset(set(conflict_paths)):
+            return False, (
+                "origin/main merge conflict resolution changed non-conflicted paths: "
+                + ", ".join(sorted(changed_from_automatic - set(conflict_paths)))
+            )
+        matched, reason = _verify_generated_entries(
+            git, details, sorted(set(conflict_paths)), reproduce_generated
+        )
+        if not matched:
+            return False, "generated conflict resolution " + reason
+        return True, "origin/main merge with reproduced generated conflict resolution"
 
 
 def _generated_commit(git, details, generated_paths, reproduce_generated):
@@ -292,20 +432,7 @@ def _generated_commit(git, details, generated_paths, reproduce_generated):
     if not paths or not set(paths).issubset(generated_paths):
         return False, ("changed paths are not limited to declared generated outputs: "
                        + (", ".join(paths) if paths else "<none>"))
-    if not callable(reproduce_generated):
-        return False, "generated outputs were not reproduced byte-for-byte"
-    try:
-        reproduced = reproduce_generated(details["sha"], list(paths))
-    except Exception as exc:
-        return False, f"generator reproduction failed: {type(exc).__name__}: {exc}"
-    if not isinstance(reproduced, dict) or set(reproduced) != set(paths):
-        return False, "generator reproduction did not return every changed path exactly once"
-    for path in paths:
-        expected = reproduced[path]
-        actual = git.blob(details["sha"], path)
-        if not isinstance(expected, bytes) or actual is None or expected != actual:
-            return False, f"generated output {path} did not reproduce byte-for-byte"
-    return True, "byte-for-byte generated outputs"
+    return _verify_generated_entries(git, details, paths, reproduce_generated)
 
 
 def classify_mechanical_commit(git, details, *, origin_main="origin/main",
@@ -313,7 +440,9 @@ def classify_mechanical_commit(git, details, *, origin_main="origin/main",
                                reproduce_generated=None):
     """Classify only reproducible mainline merges or exact generator output."""
     if len(details["parents"]) > 1:
-        return _origin_main_merge(git, details, origin_main)
+        return _origin_main_merge(
+            git, details, origin_main, set(generated_paths), reproduce_generated
+        )
     return _generated_commit(git, details, set(generated_paths), reproduce_generated)
 
 
