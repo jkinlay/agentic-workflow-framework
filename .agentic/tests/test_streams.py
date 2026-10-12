@@ -272,7 +272,9 @@ class PlannerTests(unittest.TestCase):
         self.value["tickets"][0]["ownership"]["state"] = "released"
         self.value["tickets"][1]["dependencies"] = [accepted("DEMO-11")]
         after = self.plan(previous=before)
-        self.assertEqual({k: t["stream"] for k, t in before["tickets"].items()}, {k: t["stream"] for k, t in after["tickets"].items()})
+        self.assertEqual("A", after["tickets"]["DEMO-11"]["stream"])
+        self.assertTrue(all(item["who"] == "awf"
+                            for item in after["stream_assignment_history"]))
         self.assertEqual(after["tickets"]["DEMO-11"]["history"], self.value["tickets"][0]["history"])
         self.assertIn("DEMO-12", {p["ticket_id"] for p in after["dispatch_packets"]})
 
@@ -374,6 +376,150 @@ class PlannerTests(unittest.TestCase):
         self.value["tickets"][2]["ownership"]["agent_id"] = "different-agent"
         with self.assertRaisesRegex(ValidationError, "separate agents and worktrees"):
             self.plan()
+
+    def test_unknown_write_scope_fails_closed_to_one_stream(self):
+        self.value["tickets"][2]["write_paths"] = []
+        plan = self.plan()
+        self.assertEqual(["A"], [stream["label"] for stream in plan["streams"]])
+        self.assertEqual(
+            ["DEMO-21"],
+            plan["write_scope"]["unknown_ticket_ids"],
+        )
+        self.assertEqual(
+            {"A"},
+            {ticket["stream"] for ticket in plan["tickets"].values()},
+        )
+        self.assertIn("unknown write scope", plan["rationale"])
+
+    def test_declared_and_derived_write_scope_and_modules_are_retained(self):
+        self.value["tickets"][0].update(
+            write_path_source="derived",
+            modules=["service", "service-tests"],
+        )
+        plan = self.plan()
+        ticket = plan["tickets"]["DEMO-11"]
+        self.assertEqual("derived", ticket["write_path_source"])
+        self.assertEqual(["service", "service-tests"], ticket["modules"])
+        self.assertEqual("declared", plan["write_scope"]["sources"]["DEMO-21"])
+
+    def test_finish_or_cancel_rebalances_only_unstarted_tickets_and_audits_awf_moves(self):
+        for terminal in ("done", "cancelled"):
+            with self.subTest(terminal=terminal):
+                value = deepcopy(self.value)
+                before = self.plan(value)
+                self.assertEqual("C", before["tickets"]["DEMO-31"]["stream"])
+                value["tickets"][2].update(status=terminal, history=[history(terminal)])
+                after = self.plan(value, before)
+                self.assertEqual("B", after["tickets"]["DEMO-31"]["stream"])
+                move = next(item for item in after["stream_assignment_history"]
+                            if item["ticket_id"] == "DEMO-31")
+                self.assertEqual(("awf", "C", "B"),
+                                 (move["who"], move["old"], move["new"]))
+                self.assertIn(terminal, move["why"])
+
+    def test_started_ticket_never_moves_during_rebalancing(self):
+        before = self.plan()
+        self.value["tickets"][2].update(status="done", history=[history("done")])
+        self.value["tickets"][3].update(
+            status="in_progress",
+            ownership=owner("C", "synthetic-agent-C"),
+            history=[history("started")],
+        )
+        after = self.plan(previous=before)
+        self.assertEqual("C", after["tickets"]["DEMO-31"]["stream"])
+        self.assertFalse(any(item["ticket_id"] == "DEMO-31"
+                             for item in after["stream_assignment_history"]))
+
+    def test_ticket_addition_can_rebalance_unstarted_work_with_audited_moves(self):
+        self.value["tickets"] = [deepcopy(self.value["tickets"][0]),
+                                 deepcopy(self.value["tickets"][2])]
+        for index, ticket in enumerate(self.value["tickets"]):
+            ticket["dependencies"] = []
+            ticket["write_paths"] = [f"src/component-{index}"]
+            ticket["estimate"] = index + 1
+        before = self.plan()
+        added = deepcopy(self.value["tickets"][0])
+        added.update(id="DEMO-41", epic_id=None, title="Large added ticket",
+                     write_paths=["src/component-added"], estimate=100)
+        self.value["tickets"].append(added)
+        after = self.plan(previous=before)
+        moved = [item for item in after["stream_assignment_history"]
+                 if item["old"] != item["new"]]
+        self.assertTrue(moved)
+        self.assertTrue(all(item["who"] == "awf" for item in moved))
+        self.assertTrue(all(after["tickets"][item["ticket_id"]]["status"] == "todo"
+                            for item in moved))
+        self.assertTrue(all("ticket added" in item["why"] for item in moved))
+
+    def test_verified_owner_reassignment_is_chained_and_pinned_across_rebalancing(self):
+        before = self.plan()
+        directive = {
+            "ticket_id": "DEMO-31", "who": "owner-1", "when": NOW,
+            "why": "AWF-48 owner lane decision", "old": "C", "new": "B",
+            "owner_source": {"comment_id": 48},
+        }
+
+        def verify(source, expected):
+            self.assertEqual({"comment_id": 48}, source)
+            self.assertEqual("DEMO-31", expected["ticket_id"])
+            return {"status": "VERIFIED", "actor_id": "owner-1",
+                    "source_id": "github-comment:48"}
+
+        raw = canonical(self.value)
+        changed = plan_inventory(
+            raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+            owner_reassignments=[directive], verify_owner_reassignment=verify,
+        )
+        audit = next(item for item in changed["stream_assignment_history"]
+                     if item["kind"] == "owner_reassignment")
+        self.assertEqual(("owner-1", NOW, "AWF-48 owner lane decision", "C", "B"),
+                         tuple(audit[name] for name in ("who", "when", "why", "old", "new")))
+        self.assertEqual(before["stream_assignment_chain_id"], audit["previous_assignment_id"])
+        following = [item for item in changed["stream_assignment_history"]
+                     if item["previous_assignment_id"] == audit["assignment_id"]]
+        self.assertTrue(following or changed["stream_assignment_chain_id"] == audit["assignment_id"])
+        self.assertEqual("B", changed["owner_stream_pins"]["DEMO-31"]["stream"])
+        self.assertEqual("B", changed["tickets"]["DEMO-31"]["stream"])
+        refreshed = self.plan(previous=changed)
+        self.assertEqual("B", refreshed["tickets"]["DEMO-31"]["stream"])
+        self.assertEqual(
+            {key: value["stream"] for key, value in changed["tickets"].items()},
+            {key: value["stream"] for key, value in refreshed["tickets"].items()},
+        )
+        self.assertEqual(changed["stream_assignment_history"],
+                         refreshed["stream_assignment_history"])
+
+    def test_stream_assignment_chain_and_owner_pin_tampering_are_rejected(self):
+        before = self.plan()
+        before["stream_assignment_history"] = [{
+            "ticket_id": "DEMO-31", "who": "awf", "when": NOW,
+            "why": "forged", "old": "C", "new": "B",
+            "kind": "automatic_rebalance",
+            "previous_assignment_id": before["stream_assignment_root_id"],
+            "source_id": None, "assignment_id": "0" * 64,
+        }]
+        raw = canonical(self.value)
+        with self.assertRaisesRegex(ValidationError, "digest"):
+            plan_inventory(raw, sha256(raw), NOW, allow_synthetic=True,
+                           previous=before)
+
+    def test_owner_reassignment_rejects_non_owner_or_unverified_source_without_mutation(self):
+        before = self.plan()
+        directive = {
+            "ticket_id": "DEMO-31", "who": "not-owner", "when": NOW,
+            "why": "claim", "old": "C", "new": "B", "owner_source": {},
+        }
+        raw = canonical(self.value)
+        with self.assertRaisesRegex(ValidationError, "trusted owner"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+                owner_reassignments=[directive],
+                verify_owner_reassignment=lambda source, expected: {
+                    "status": "REJECTED", "actor_id": "not-owner",
+                    "source_id": "github-comment:49",
+                },
+            )
+        self.assertEqual("C", before["tickets"]["DEMO-31"]["stream"])
 
 
 class NativeCapacityTests(unittest.TestCase):
