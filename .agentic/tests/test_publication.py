@@ -420,6 +420,81 @@ class PublicationScanTests(unittest.TestCase):
         self.assertRegex(digest, r"^[0-9a-f]{64}$")
         self.assertEqual("invalid-utf8", reason)
 
+    def test_large_file_allowance_accepts_existing_exact_blob_and_records_evidence(self):
+        content = b"x" * 80
+        git(self.repo.path, "switch", "main")
+        self.repo.write("artifacts/existing.dat", data=content)
+        self.repo.commit("add existing large fixture", "artifacts/existing.dat")
+        base = git(self.repo.path, "rev-parse", "HEAD")
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication")
+        allowance = {"path": "artifacts/existing.dat", "sha256": hashlib.sha256(content).hexdigest(),
+                     "reason": "Reviewed historical artifact", "approver": "fixture-owner"}
+
+        with mock.patch.object(publication, "MAX_TEXT_BYTES", 64):
+            result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping,
+                                     large_file_allowances=[allowance])
+
+        self.assertEqual("PASS", result["status"], render_scan(result))
+        self.assertFalse(result["unscanned"])
+        evidence = [item for item in result["findings"]
+                    if item["source"] == "large-file-allowance"]
+        self.assertEqual(1, len(evidence))
+        self.assertEqual("artifacts/existing.dat", evidence[0]["path"])
+        self.assertEqual("PRE_EXISTING", evidence[0]["classification"])
+        self.assertIn(allowance["sha256"], evidence[0]["detector_id"])
+        Contracts(ROOT / ".agentic/schemas").validate("publication-scan", result)
+
+    def test_new_large_file_is_blocked_without_a_baseline_allowance(self):
+        content = b"x" * 80
+        self.repo.write("artifacts/new.dat", data=content)
+        self.repo.commit("add new large fixture", "artifacts/new.dat")
+
+        with mock.patch.object(publication, "MAX_TEXT_BYTES", 64):
+            result = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
+
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertTrue(any(item["path"] == "artifacts/new.dat" and item["reason"] == "oversize"
+                            for item in result["unscanned"]))
+        allowance = {"path": "artifacts/new.dat", "sha256": hashlib.sha256(content).hexdigest(),
+                     "reason": "Candidate attempted allowance", "approver": "fixture-owner"}
+        with mock.patch.object(publication, "MAX_TEXT_BYTES", 64), self.assertRaises(ValidationError):
+            scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping,
+                            large_file_allowances=[allowance])
+
+    def test_modified_allowed_large_file_is_blocked_on_hash_mismatch(self):
+        content = b"x" * 80
+        git(self.repo.path, "switch", "main")
+        self.repo.write("artifacts/existing.dat", data=content)
+        self.repo.commit("add existing large fixture", "artifacts/existing.dat")
+        base = git(self.repo.path, "rev-parse", "HEAD")
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication")
+        self.repo.write("artifacts/existing.dat", data=b"y" * 80)
+        self.repo.commit("modify existing large fixture", "artifacts/existing.dat")
+        allowance = {"path": "artifacts/existing.dat", "sha256": hashlib.sha256(content).hexdigest(),
+                     "reason": "Reviewed historical artifact", "approver": "fixture-owner"}
+
+        with mock.patch.object(publication, "MAX_TEXT_BYTES", 64):
+            result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping,
+                                     large_file_allowances=[allowance])
+
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertTrue(any(item["path"] == "artifacts/existing.dat" and item["reason"] == "oversize"
+                            for item in result["unscanned"]))
+
+    def test_malformed_large_file_allowance_fails_closed(self):
+        malformed = [
+            {"path": "artifacts/existing.dat", "sha256": "0" * 64,
+             "reason": "Reviewed historical artifact"},
+            {"path": "../outside.dat", "sha256": "0" * 64,
+             "reason": "Reviewed historical artifact", "approver": "fixture-owner"},
+            {"path": "artifacts/existing.dat", "sha256": "not-a-digest",
+             "reason": "Reviewed historical artifact", "approver": "fixture-owner"},
+        ]
+        for allowance in malformed:
+            with self.subTest(allowance=allowance), self.assertRaises(ValidationError):
+                scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping,
+                                large_file_allowances=[allowance])
+
     def test_parentless_side_root_is_scanned(self):
         value = private_locator().encode("utf-8") + b"\n"
         blob = git(self.repo.path, "hash-object", "-w", "--stdin", input_bytes=value)
