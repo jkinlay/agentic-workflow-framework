@@ -636,6 +636,50 @@ def migrate_1_9_4_to_1_9_5(bundle, target):
                             migrated.provenance, migrated.state)
 
 
+_TIER3_REVIEW_DEFAULT = {
+    "roles": ["critic", "specialist"],
+    "findings": "blocking",
+    "max_rounds": 3,
+}
+
+
+def _yaml_mapping_value(node, key, yaml):
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    return next((value for candidate, value in node.value
+                 if isinstance(candidate, yaml.ScalarNode) and candidate.value == key), None)
+
+
+def _yaml_block_indent(text, node):
+    """Return the source indentation of a block mapping's existing entries."""
+    if not node.value:
+        return node.start_mark.column
+    key = node.value[0][0]
+    line_start = text.rfind("\n", 0, key.start_mark.index) + 1
+    line = text[line_start:key.start_mark.index]
+    return len(line) - len(line.lstrip(" "))
+
+
+def _yaml_insert_mapping_entry(text, node, flow_entry, block_lines, newline):
+    """Insert one entry without re-emitting or normalising retained YAML bytes."""
+    if node.flow_style:
+        opening = text.find("{", node.start_mark.index, node.end_mark.index)
+        if opening < 0:
+            raise ValidationError(
+                "Migration could not locate the parsed flow mapping boundary for execution/risk_tiers"
+            )
+        separator = ", " if node.value else ""
+        return text[:opening + 1] + flow_entry + separator + text[opening + 1:]
+
+    indent = _yaml_block_indent(text, node)
+    insertion = node.end_mark.index
+    prefix = "" if insertion == 0 or text[insertion - 1] in "\r\n" else newline
+    rendered = prefix + "".join(
+        " " * indent + line + newline for line in block_lines
+    )
+    return text[:insertion] + rendered + text[insertion:]
+
+
 def review_tier_defaults(config):
     """Return additive 1.9.5 review policy defaults without losing legacy data.
 
@@ -646,26 +690,40 @@ def review_tier_defaults(config):
     import copy
     raw = isinstance(config, (bytes, bytearray))
     original_text = bytes(config).decode("utf-8") if raw else None
+    json_value = None
     if raw and original_text.lstrip().startswith(("{", "[")):
         try:
-            value = json.loads(original_text)
-        except json.JSONDecodeError as exc:
-            raise ValidationError("Migration is not deterministic. Project configuration JSON is invalid") from exc
+            json_value = loads(original_text)
+        except ValidationError:
+            # YAML flow collections share JSON's opening characters.  Let the
+            # strict YAML loader decide whether non-JSON input is valid YAML.
+            pass
+    if json_value is not None:
+        value = json_value
+        if not isinstance(value, dict):
+            raise ValidationError("Migration is not deterministic. Project configuration must be a mapping")
         execution = value.setdefault("execution", {})
+        if not isinstance(execution, dict):
+            raise ValidationError("Migration is not deterministic. execution must be a mapping")
         tiers = execution.setdefault("risk_tiers", {})
-        tiers.setdefault("tier3_review", {"roles": ["critic", "specialist"], "findings": "blocking", "max_rounds": 3})
+        if not isinstance(tiers, dict):
+            raise ValidationError("Migration is not deterministic. execution.risk_tiers must be a mapping")
+        tiers.setdefault("tier3_review", copy.deepcopy(_TIER3_REVIEW_DEFAULT))
         output = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-        if json.loads(output) != value:
+        if loads(output.decode("utf-8")) != value:
             raise ValidationError("Migration output did not preserve the expected additive project configuration")
         return output
     value = copy.deepcopy(load_yaml(config) if raw else config)
     if not isinstance(value, dict):
         raise ValidationError("Migration is not deterministic. Project configuration must be a mapping")
     execution = value.setdefault("execution", {})
+    if not isinstance(execution, dict):
+        raise ValidationError("Migration is not deterministic. execution must be a mapping")
     tiers = execution.setdefault("risk_tiers", {})
+    if not isinstance(tiers, dict):
+        raise ValidationError("Migration is not deterministic. execution.risk_tiers must be a mapping")
     had_tier3 = "tier3_review" in tiers
-    tiers.setdefault("tier3_review", {"roles": ["critic", "specialist"],
-                                       "findings": "blocking", "max_rounds": 3})
+    tiers.setdefault("tier3_review", copy.deepcopy(_TIER3_REVIEW_DEFAULT))
     if not raw:
         return value
     def verified_yaml_output(output):
@@ -673,96 +731,50 @@ def review_tier_defaults(config):
             reparsed = load_yaml(output)
         except Exception as exc:
             raise ValidationError(
-                "Migration refused unsupported YAML mapping style for execution/risk_tiers"
+                "Migration output for execution/risk_tiers is invalid YAML"
             ) from exc
         if reparsed != value:
             raise ValidationError(
-                "Migration refused unsupported YAML mapping style for execution/risk_tiers; "
-                "emitted bytes did not equal the expected additive mapping"
+                "Migration output did not equal the expected additive mapping for execution/risk_tiers"
             )
         return output
     # The migration is byte-preserving apart from the one additive mapping.
     # Re-emitting parsed YAML as JSON loses comments, quoting and scalar style.
     if had_tier3:
         return verified_yaml_output(bytes(config))
-    lines = original_text.splitlines(keepends=True)
     newline = "\r\n" if "\r\n" in original_text else "\n"
-    # Valid YAML permits compact flow mappings.  Handle the common retained
-    # PROJECT_CONFIG form in place so we do not emit a duplicate top-level
-    # execution/risk_tiers key or discard comments and scalar spelling.
-    for index, line in enumerate(lines):
-        if not re.match(r"^execution:\s*\{", line):
-            continue
-        def matching_brace(text, opening):
-            depth = 0
-            quote = None
-            for position in range(opening, len(text)):
-                char = text[position]
-                if quote:
-                    if char == quote and (position == 0 or text[position - 1] != "\\"):
-                        quote = None
-                elif char in "'\"":
-                    quote = char
-                elif char == "{":
-                    depth += 1
-                elif char == "}":
-                    depth -= 1
-                    if depth == 0:
-                        return position
-            return None
-        risk_key = line.find("risk_tiers:")
-        if risk_key >= 0:
-            risk_open = line.find("{", risk_key)
-            risk_close = matching_brace(line, risk_open) if risk_open >= 0 else None
-            if risk_close is not None:
-                insertion = ", tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}"
-                lines[index] = line[:risk_close] + insertion + line[risk_close:]
-                return verified_yaml_output("".join(lines).encode("utf-8"))
-        execution_open = line.find("{")
-        execution_close = matching_brace(line, execution_open)
-        if execution_close is not None:
-            insertion = ", risk_tiers: {tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}}"
-            lines[index] = line[:execution_close] + insertion + line[execution_close:]
-            return verified_yaml_output("".join(lines).encode("utf-8"))
-    execution = next((i for i, line in enumerate(lines)
-                      if re.match(r"^execution:\s*(?:#.*)?(?:\r?\n)?$", line)), None)
-    if execution is None:
-        suffix = "" if not lines or lines[-1].endswith(("\n", "\r")) else newline
-        return verified_yaml_output((original_text + suffix
-                + "execution:" + newline
-                + "  risk_tiers:" + newline
-                + "    tier3_review:" + newline
-                + "      roles: [critic, specialist]" + newline
-                + "      findings: blocking" + newline
-                + "      max_rounds: 3" + newline).encode("utf-8"))
-    execution_end = len(lines)
-    for i in range(execution + 1, len(lines)):
-        if lines[i].strip() and not lines[i].lstrip().startswith("#") and not lines[i].startswith((" ", "\t")):
-            execution_end = i
-            break
-    risk = next((i for i in range(execution + 1, execution_end)
-                 if re.match(r"^\s{2}risk_tiers:\s*(?:#.*)?(?:\r?\n)?$", lines[i])), None)
-    addition = ["    tier3_review:" + newline,
-                "      roles: [critic, specialist]" + newline,
-                "      findings: blocking" + newline,
-                "      max_rounds: 3" + newline]
-    if risk is None:
-        lines[execution_end:execution_end] = ["  risk_tiers:" + newline] + addition
+    import yaml
+    try:
+        root = yaml.compose(original_text)
+    except yaml.YAMLError as exc:
+        raise ValidationError("Migration could not parse validated YAML node boundaries") from exc
+    if not isinstance(root, yaml.MappingNode):
+        raise ValidationError("Migration is not deterministic. Project configuration must be a mapping")
+
+    execution_node = _yaml_mapping_value(root, "execution", yaml)
+    if execution_node is None:
+        migrated_text = _yaml_insert_mapping_entry(
+            original_text, root,
+            "execution: {risk_tiers: {tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}}}",
+            ["execution:", "  risk_tiers:", "    tier3_review:",
+             "      roles: [critic, specialist]", "      findings: blocking",
+             "      max_rounds: 3"], newline)
     else:
-        risk_indent = len(lines[risk]) - len(lines[risk].lstrip(" "))
-        risk_end = execution_end
-        for i in range(risk + 1, execution_end):
-            stripped = lines[i].strip()
-            if stripped and not stripped.startswith("#") and len(lines[i]) - len(lines[i].lstrip(" ")) <= risk_indent:
-                risk_end = i
-                break
-        adjusted = [line.replace("    tier3_review:", " " * (risk_indent + 2) + "tier3_review:", 1)
-                    .replace("      roles:", " " * (risk_indent + 4) + "roles:", 1)
-                    .replace("      findings:", " " * (risk_indent + 4) + "findings:", 1)
-                    .replace("      max_rounds:", " " * (risk_indent + 4) + "max_rounds:", 1)
-                    for line in addition]
-        lines[risk_end:risk_end] = adjusted
-    return verified_yaml_output("".join(lines).encode("utf-8"))
+        risk_node = _yaml_mapping_value(execution_node, "risk_tiers", yaml)
+        if risk_node is None:
+            migrated_text = _yaml_insert_mapping_entry(
+                original_text, execution_node,
+                "risk_tiers: {tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}}",
+                ["risk_tiers:", "  tier3_review:",
+                 "    roles: [critic, specialist]", "    findings: blocking",
+                 "    max_rounds: 3"], newline)
+        else:
+            migrated_text = _yaml_insert_mapping_entry(
+                original_text, risk_node,
+                "tier3_review: {roles: [critic, specialist], findings: blocking, max_rounds: 3}",
+                ["tier3_review:", "  roles: [critic, specialist]",
+                 "  findings: blocking", "  max_rounds: 3"], newline)
+    return verified_yaml_output(migrated_text.encode("utf-8"))
 
 
 def config_diff(before, after, previous, current):
