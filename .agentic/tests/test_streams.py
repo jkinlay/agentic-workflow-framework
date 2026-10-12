@@ -90,7 +90,8 @@ def verify_stream_owner_source(source, expected):
     return {
         "status": "VERIFIED", "actor_id": source["actor_id"],
         "source_id": f"github_pr_comment:{source['comment_id']}",
-        "observed_at": expected["now"], "binding": deepcopy(source["binding"]),
+        "created_at": source["created_at"], "observed_at": expected["now"],
+        "binding": deepcopy(source["binding"]),
         "raw_body_sha256": source["raw_body_sha256"],
     }
 
@@ -543,6 +544,64 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(changed["stream_assignment_history"],
                          refreshed["stream_assignment_history"])
 
+    def test_active_and_paused_owners_cannot_conflict_with_pinned_or_established_stream(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        reason = "AWF-48 owner lane decision"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason),
+        }
+        raw = canonical(self.value)
+        pinned = plan_inventory(
+            raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+            owner_reassignments=[directive],
+            verify_owner_reassignment=verify_stream_owner_source,
+            governance=reassignment_governance(),
+            intake_assignments={"DEMO-31": assignment},
+        )
+
+        for state in ("active", "paused"):
+            for previous, stale_stream, message in (
+                    (before, "B", "established stream assignment"),
+                    (pinned, "C", "ownership stream conflicts with its owner pin")):
+                with self.subTest(state=state, conflict=message):
+                    refreshed = deepcopy(self.value)
+                    refreshed["tickets"][3].update(
+                        status="in_progress", ownership=owner(stale_stream, state=state),
+                        history=[history(f"{state} owner declared a conflicting stream")],
+                    )
+                    refreshed_raw = canonical(refreshed)
+                    with self.assertRaisesRegex(ValidationError, message):
+                        plan_inventory(
+                            refreshed_raw, sha256(refreshed_raw), NOW,
+                            allow_synthetic=True, previous=previous,
+                        )
+
+    def test_owner_reassignment_time_must_match_authenticated_source_creation(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        reason = "AWF-48 owner lane decision"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001,
+            "when": "2020-01-01T00:00:00Z", "why": reason,
+            "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason),
+        }
+        raw = canonical(self.value)
+        with self.assertRaisesRegex(
+                ValidationError, "authenticated owner-source creation time"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+                owner_reassignments=[directive],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(),
+                intake_assignments={"DEMO-31": assignment},
+            )
+
     def test_stream_assignment_chain_and_owner_pin_tampering_are_rejected(self):
         before = self.plan()
         before["stream_assignment_history"] = [{
@@ -646,6 +705,16 @@ class PlannerTests(unittest.TestCase):
             plan_inventory(
                 raw, sha256(raw), NOW,
                 verify_owner_reassignment=mismatched_receipt, **arguments)
+
+        def mismatched_timestamp_receipt(source, expected):
+            receipt = verify_stream_owner_source(source, expected)
+            receipt["created_at"] = "2020-01-01T00:00:00Z"
+            return receipt
+
+        with self.assertRaisesRegex(ValidationError, "exact stream reassignment"):
+            plan_inventory(
+                raw, sha256(raw), NOW,
+                verify_owner_reassignment=mismatched_timestamp_receipt, **arguments)
 
 
 class NativeCapacityTests(unittest.TestCase):

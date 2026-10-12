@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import source_only  # noqa: E402,F401
+from source_only import write_awf_source_fixture  # noqa: E402,F401
 
 from agentic.canonical import canonical, loads, sha256
 from agentic.intake_assignment import assign_intake
@@ -136,6 +136,7 @@ class PlanStreamsScriptTests(unittest.TestCase):
                     return {
                         "status": "VERIFIED", "actor_id": observed["actor_id"],
                         "source_id": "github_pr_comment:48",
+                        "created_at": observed["created_at"],
                         "observed_at": expected["now"],
                         "binding": observed["binding"],
                         "raw_body_sha256": observed["raw_body_sha256"],
