@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 
 from . import ValidationError
-from .canonical import fingerprint, now_text, timestamp
+from .canonical import fingerprint, fresh, now_text, timestamp
 from .child_process import child_env, isolated_git_env
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -377,6 +377,11 @@ def require_jira_reconciliation_before_counts(
         readback_time = timestamp(read_back["observed_at"])
         if readback_time < transition_time:
             raise ValidationError("Jira terminal readback predates its reconciliation transition")
+        try:
+            fresh(read_back["observed_at"], now, _evidence_max_age(project_config))
+        except ValidationError as exc:
+            raise ValidationError(
+                "Jira terminal readback is stale or implausibly future-dated") from exc
         if timestamp(jira_observation["observed_at"]) < readback_time:
             raise ValidationError("Jira observation receipt predates the terminal readback")
     elif transition is not None or jira_reconciliation_selector is not None:

@@ -88,16 +88,22 @@ def _authority(project_config):
     checks = project_config.get("validation", {}).get("required_ci_checks", [])
     if not isinstance(checks, list):
         raise ValidationError("accepted PROJECT_CONFIG has invalid required CI checks")
-    app_ids = {item.get("app_id") for item in checks if isinstance(item, dict)}
-    if any(type(value) is not int or value < 1 for value in app_ids):
-        raise ValidationError("accepted required CI checks need positive App integration IDs")
+    integration_checks = [
+        item for item in checks
+        if isinstance(item, dict) and item.get("name") == "awf-integration"
+    ]
+    if len(integration_checks) != 1:
+        raise ValidationError(
+            "accepted configuration requires exactly one awf-integration CI check binding")
+    integration_app_id = integration_checks[0].get("app_id")
+    if type(integration_app_id) is not int or integration_app_id < 1:
+        raise ValidationError(
+            "accepted awf-integration CI check needs a positive App integration ID")
     authority.update({
         "project_id": project.get("id"),
         "base_branch": github.get("base_branch"),
-        "integration_app_id": next(iter(app_ids)) if len(app_ids) == 1 else None,
-        "integration_check_contexts": tuple(sorted(
-            item.get("name") for item in checks
-            if isinstance(item, dict) and isinstance(item.get("name"), str))),
+        "integration_app_id": integration_app_id,
+        "integration_check_contexts": ("awf-integration",),
     })
     return authority
 
