@@ -1,0 +1,12 @@
+{
+  "template_for": "external-resource-evidence",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "format": "awf-external-resource-evidence-1",
+    "resource_alias": "UNFILLED",
+    "observed_at": "1970-01-01T00:00:00Z",
+    "result": "UNOBSERVED",
+    "execution_authority": false
+  }
+}
