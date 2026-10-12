@@ -1440,6 +1440,7 @@ class IntegrationQueueStore:
 
     def _refresh_mode_trust(self, state, observed_at):
         """Re-observe durable epic-mode authority and App enforcement before use."""
+        timestamp(observed_at)
         registries = {"project_config": self.project_config_observer_registry,
                       "activation": self.mode_observer_registry,
                       "app_binding": self.mode_observer_registry}
@@ -1449,14 +1450,14 @@ class IntegrationQueueStore:
                     _registration_trust_root(registration) != pin["registration_sha256"]):
                 raise ValidationError(
                     f"{role} observer registration changed; close and reinitialize the queue")
-        state["project_config_trust"] = self._refresh_project_config(None)
+        state["project_config_trust"] = self._refresh_project_config(observed_at)
         if state.get("authority_projection_sha256") != self.authority_projection_sha256:
             raise ValidationError(
                 "accepted authority changed; close and reinitialize the integration queue")
         record, trust = _mode_record(
             state.get("mode_record"), state.get("epic"), authority=self.authority,
             observer_registry=self.mode_observer_registry,
-            now=state["project_config_trust"]["observed_at"],
+            now=observed_at,
             max_age=self.max_evidence_age_seconds, return_trust=True)
         binding = record["activation"]["app_binding"]
         if binding.get("enforced") is not True:
@@ -1489,7 +1490,9 @@ class IntegrationQueueStore:
         observed = result["observed_at"]
         if timestamp(observed) < timestamp(state["last_authority_observed_at"]):
             raise ValidationError("integration queue clock rolled back")
-        return observed, attestation
+        stored = {"request": deepcopy(request), "result": deepcopy(result),
+                  "observation": deepcopy(attestation)}
+        return observed, attestation, stored
 
     @staticmethod
     def _validate_state(state):
@@ -1499,11 +1502,12 @@ class IntegrationQueueStore:
                     "project_config_trust", "authority_projection_sha256",
                     "observer_registration_pins",
                     "last_authority_observed_at", "last_event_id", "front_since",
+                    "front_since_observation",
                     "consumed_instruction_ids", "observed_commits", "build_results",
                     "build_run_ids", "quarantined_entries", "state_digest"}
         if not isinstance(state, dict) or set(state) != required:
             raise ValidationError("integration queue state has an invalid closed shape")
-        if state.get("format") != "awf-integration-queue-2":
+        if state.get("format") != "awf-integration-queue-3":
             raise ValidationError(
                 "legacy integration queue state is not trusted; close and reinitialize it")
         expected_digest = fingerprint(
@@ -1539,6 +1543,17 @@ class IntegrationQueueStore:
         timestamp(state["last_authority_observed_at"])
         if state["front_since"] is not None:
             timestamp(state["front_since"])
+            observation = state.get("front_since_observation")
+            if (not isinstance(observation, dict) or
+                    set(observation) != {"request", "result", "observation"} or
+                    observation.get("request", {}).get("operation") != "QUEUE_TIME" or
+                    observation.get("result") != {"observed_at": state["front_since"]} or
+                    observation.get("observation", {}).get("observed_at") !=
+                    state["front_since"]):
+                raise ValidationError(
+                    "front-start time is not bound to its authenticated queue-clock observation")
+        elif state.get("front_since_observation") is not None:
+            raise ValidationError("empty queue cannot retain a front-start observation")
         return state
 
     def _observe_front_merge(self, state, merged, new_target_sha, observer_id, observed_at):
@@ -1620,7 +1635,7 @@ class IntegrationQueueStore:
             binding = (mode_record.get("activation", {}).get("app_binding", {})
                        if isinstance(mode_record, dict) else {})
             self.project_config_selector = {"producer_id": binding.get("producer_id")}
-        project_config_trust = self._refresh_project_config(None, match_expected=True)
+        project_config_trust = self._refresh_project_config(observed_at, match_expected=True)
         if target_branch != self.authority.get("base_branch"):
             raise ValidationError("target branch differs from the accepted base branch")
         self._observe_target_tip(
@@ -1628,7 +1643,7 @@ class IntegrationQueueStore:
         mode_record, mode_trust = _mode_record(
             mode_record, epic, authority=self.authority,
             observer_registry=self.mode_observer_registry,
-            now=project_config_trust["observed_at"],
+            now=observed_at,
             max_age=self.max_evidence_age_seconds, return_trust=True)
         if mode_record["activation"]["app_binding"].get("enforced") is not True:
             raise ValidationError("epic queue initialization requires active applicable App enforcement")
@@ -1651,7 +1666,7 @@ class IntegrationQueueStore:
                 "producer_id": producer_id,
                 "registration_sha256": _registration_trust_root(registration),
             }
-        state = {"format": "awf-integration-queue-2", "epic": epic,
+        state = {"format": "awf-integration-queue-3", "epic": epic,
                  "target_branch": target_branch, "target_sha": target_sha,
                  "integration_branch": INTEGRATION_PREFIX + epic.lower(), "entries": [],
                  "current_build": None, "generation": 0, "revision": 0,
@@ -1661,7 +1676,8 @@ class IntegrationQueueStore:
                   "observer_registration_pins": observer_registration_pins,
                   "last_authority_observed_at": authority_time,
                  "last_event_id": None,
-                 "front_since": None, "consumed_instruction_ids": [],
+                  "front_since": None, "front_since_observation": None,
+                  "consumed_instruction_ids": [],
                  "observed_commits": {}, "build_results": {}, "build_run_ids": [],
                  "quarantined_entries": []}
         state["state_digest"] = fingerprint("integration_queue_state", state)
@@ -1707,15 +1723,15 @@ class IntegrationQueueStore:
         return None if not state["entries"] else [state["entries"][0]["pr_number"],
                                                    state["entries"][0]["head_sha"]]
 
-    @classmethod
-    def _refresh_front_since(cls, state, previous_front, observed_at):
-        current = cls._front_key(state)
+    def _refresh_front_since(self, state, previous_front, observed_at):
+        current = self._front_key(state)
         if current is None:
             state["front_since"] = None
+            state["front_since_observation"] = None
         elif current != previous_front:
-            authenticated = state.get("last_authority_observed_at")
-            timestamp(authenticated)
+            authenticated, _attestation, stored = self._observe_queue_time(state)
             state["front_since"] = authenticated
+            state["front_since_observation"] = stored
 
     @staticmethod
     def _consume_instruction(connection, state, instruction):
@@ -2101,8 +2117,8 @@ class IntegrationQueueStore:
     def move_stalled_front(self, epic, outcome):
         with self._locked(epic) as (connection, state):
             self._require_open(state)
-            self._refresh_mode_trust(state, None)
-            decision_time, clock_attestation = self._observe_queue_time(state)
+            decision_time, clock_attestation, clock_record = self._observe_queue_time(state)
+            self._refresh_mode_trust(state, decision_time)
             current_time = timestamp(decision_time)
             stall_after_hours = state["mode_record"].get("stall_after_hours")
             if (isinstance(stall_after_hours, bool) or
@@ -2114,6 +2130,12 @@ class IntegrationQueueStore:
             front = state["entries"][0]
             if state.get("front_since") is None:
                 raise ValidationError("front entry has no observed front-start time")
+            front_clock = _verify_stored_provider_observation(
+                state.get("front_since_observation"), self.mode_observer_registry,
+                "front-start queue clock")
+            if front_clock != {"observed_at": state["front_since"]}:
+                raise ValidationError(
+                    "front-start queue clock differs from the persisted front-start time")
             if current_time - timestamp(state["front_since"]) <= timedelta(hours=stall_after_hours):
                 raise ValidationError("front entry has not reached the stall threshold")
             dependency_closure = {front["pr_number"]}
@@ -2127,6 +2149,7 @@ class IntegrationQueueStore:
             candidate = state["entries"].pop(candidate_index)
             state["entries"].insert(0, candidate)
             state["front_since"] = decision_time
+            state["front_since_observation"] = clock_record
             self._validate_order(state["entries"], [item["pr_number"] for item in state["entries"]])
             notice = {"owner_notification_required": True,
                       "stalled_pr": front["pr_number"], "new_front": candidate["pr_number"],
@@ -2172,6 +2195,7 @@ class IntegrationQueueStore:
                           if item["pr_number"] == number), None)
             if index is None:
                 raise ValidationError("changed PR is not admitted")
+            previous_front = self._front_key(state)
             old = state["entries"].pop(index)
             item = validate_entry(replacement, state["entries"], state["target_branch"])
             if item["head_sha"] == old["head_sha"]:
@@ -2182,8 +2206,7 @@ class IntegrationQueueStore:
             self._record_observed_commits(state, item, commit_observer_id, observed_at)
             item["entry_id"] = entry_identity(epic, item)
             state["entries"].insert(index, item)
-            if index == 0:
-                state["front_since"] = state["last_authority_observed_at"]
+            self._refresh_front_since(state, previous_front, observed_at)
             self._validate_order(state["entries"],
                                  [candidate["pr_number"] for candidate in state["entries"]])
             self._event(connection, state, "HEAD_CHANGED",

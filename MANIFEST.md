@@ -97,7 +97,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/host_preflight.py` | `1c9e0c5da08947aba2f2bc98b8be1fa0459be5a278c932e01aa19648d3282384` |
 | `.agentic/lib/agentic/installer.py` | `af7593842bc4e7f3aae32b2150591dd1fbdb2d596819f5e2fdb937f305d3b3aa` |
 | `.agentic/lib/agentic/intake_assignment.py` | `f099d5839df09582960bd411730f48dc5b115da2d133d1ff7e49d23673e7fe09` |
-| `.agentic/lib/agentic/integration_queue.py` | `9434077ed11649a1355aabc84ed424a5c46b8c272a6562aedeff85e34578432c` |
+| `.agentic/lib/agentic/integration_queue.py` | `178eeadecd8b87305734da126eaa558f39c6fab2ddc00a854641df4137bd8d23` |
 | `.agentic/lib/agentic/interaction.py` | `1d0147cae333a0053d99e7c32767cb91f4253d3003e13db3ceb7be8c6a084370` |
 | `.agentic/lib/agentic/jira_lifecycle.py` | `2eec1374e5f850ba1bc3a5ff31c6c28f000aff6e5cbbb04767443b05fffad00b` |
 | `.agentic/lib/agentic/launch_surfaces.py` | `441dc8afea45d36ab404a762ebd01959652d44c7b7d3353e4c444cfb1d163c4d` |
@@ -209,7 +209,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/schemas/work-dispatch.schema.json` | `b940a50a8a6ae1106ed4acf6893bdf4477c2c056d1f843cb7835043ae2c708a4` |
 | `.agentic/schemas/worker-result.schema.json` | `9f4b5c212459ba9fc90e1c83fadf8961eed89fe53e11ec24e72b3c70acb1e013` |
 | `.agentic/scripts/benchmark_native.py` | `27e423c7459c202e404156d78bfba95af554ef6a6e438896d2afca844ed018d2` |
-| `.agentic/scripts/continuous_controller.py` | `97684f52973d26245879325dd08716fc5464389df42140050b31a849e8f6c6bf` |
+| `.agentic/scripts/continuous_controller.py` | `d8f725ba5c671d965483ee01d0d1b65a3c2d1898a3902137a4ae34c275224efc` |
 | `.agentic/scripts/evaluate_native.py` | `bf5bacc4cc19e8a39c672d91174c310fda48d477dce3af490b3f0bdcea2a9fa3` |
 | `.agentic/scripts/external_resources.py` | `10c20b51ed8bacf667a7f02b88e8b7177fa80feed307f04af5110987c9fcd810` |
 | `.agentic/scripts/five_slot_acceleration.py` | `805bbbdf0947939a0deebffd8b515d2c16c616cdf2789fbced6ebb36c97635d5` |
@@ -307,7 +307,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_codex_skill.py` | `4dcf304e00236c2540e41841e8230d54b511a04f19df77b59bfa1761191f392e` |
 | `.agentic/tests/test_config_diagnostics.py` | `226162fb7438b47069a5ceb0760c7c49559ac25c4eb20f295c65c3fe21a4309b` |
 | `.agentic/tests/test_continuation.py` | `39c20ac2265ec9f01306b0dc45a46e63fb306515046c87c725191d8ee359217e` |
-| `.agentic/tests/test_continuous_controller.py` | `c3c72f1fc13e4fbd6b0872cd01940964e9200857f90687c6f178497d1404d345` |
+| `.agentic/tests/test_continuous_controller.py` | `74f4e52572fa1c253d652d79e99476769767295c47519e86f9183039a1d51ff7` |
 | `.agentic/tests/test_external_resources.py` | `fd70b11e804bb3a07c4f8adab48e0a9674bea5ac83718925ff6181530c8f371e` |
 | `.agentic/tests/test_external_resources_cli.py` | `1141bbb0d8c0eff51ab08e1855f154cdd1c4da102477d5409567dcf192f7d11c` |
 | `.agentic/tests/test_five_slot_acceleration.py` | `35b3f99410481c16f91e5be438d44ccb6e61e429e1b869fd18ac184a238bbb98` |
@@ -318,7 +318,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_host_preflight_split_root.py` | `71d996b32ae2ef3744786fee6bc56c65cd4fc71ec0299706ead251df6a320d89` |
 | `.agentic/tests/test_host_process.py` | `e878e0f17ad20079f37e4f663623789550e4f639cf390bb26d1ecd9ff6fa6ce5` |
 | `.agentic/tests/test_intake_assignment.py` | `c518d8bdd68af2f5fbdd7c2a5e60b4c7697df3e89f53bfdc7a2e9566dc459a11` |
-| `.agentic/tests/test_integration_queue.py` | `3ab5fb355002b9db7f5d08af3027e6e26b2115ea9f71f02ea38ed5c3e2565965` |
+| `.agentic/tests/test_integration_queue.py` | `41de6d6caa9e59528f889254bc7004b440eb98fa324d298934492b20b5e6f61d` |
 | `.agentic/tests/test_integration_queue_closeout.py` | `8977a6af02e4b7dbd6554b0ad80c540fc1fd008f83b7c4bced40581cec98fa31` |
 | `.agentic/tests/test_integration_queue_round6_regressions.py` | `35d2aff1bb3de932e2f9107dcd7b19d209d2d951cac8a82497e16f80a299734d` |
 | `.agentic/tests/test_integration_queue_round7_regressions.py` | `f8f9ad923023ebebb82d371d50fb485a5973816bf1b93972f06a526aa72c5eff` |
