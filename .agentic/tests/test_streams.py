@@ -72,14 +72,15 @@ def intake_assignment(ticket_id="DEMO-31"):
     )
 
 
-def stream_owner_source(ticket_id, assignment_id, old, new, reason, actor_id=1001):
+def stream_owner_source(ticket_id, assignment_id, old, new, reason, actor_id=1001,
+                        comment_id=48):
     binding = {"ticket_key": ticket_id, "current_assignment_id": assignment_id}
     body = (
         f"AWF STREAM REASSIGNMENT ticket={ticket_id} current={assignment_id} "
         f"old={old} new={new} reason_sha256={sha256(reason.strip().encode('utf-8'))}"
     )
     return {
-        "channel": "github_pr_comment", "comment_id": 48, "actor_id": actor_id,
+        "channel": "github_pr_comment", "comment_id": comment_id, "actor_id": actor_id,
         "actor_login": "synthetic-owner", "created_at": NOW, "updated_at": NOW,
         "raw_body": body, "raw_body_sha256": sha256(body.encode("utf-8")),
         "binding": binding,
@@ -543,6 +544,80 @@ class PlannerTests(unittest.TestCase):
         )
         self.assertEqual(changed["stream_assignment_history"],
                          refreshed["stream_assignment_history"])
+
+    def test_consumed_owner_reassignment_source_cannot_be_replayed_after_later_move(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        first_reason = "AWF-48 owner move C to B"
+        first = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": first_reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B",
+                first_reason, comment_id=48),
+        }
+        raw = canonical(self.value)
+        moved_to_b = plan_inventory(
+            raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+            owner_reassignments=[first],
+            verify_owner_reassignment=verify_stream_owner_source,
+            governance=reassignment_governance(),
+            intake_assignments={"DEMO-31": assignment},
+        )
+        second_reason = "AWF-48 owner move B to C"
+        second = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": second_reason, "old": "B", "new": "C",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "B", "C",
+                second_reason, comment_id=49),
+        }
+        moved_to_c = plan_inventory(
+            raw, sha256(raw), NOW, allow_synthetic=True, previous=moved_to_b,
+            owner_reassignments=[second],
+            verify_owner_reassignment=verify_stream_owner_source,
+            governance=reassignment_governance(),
+            intake_assignments={"DEMO-31": assignment},
+        )
+
+        self.assertEqual("C", moved_to_c["tickets"]["DEMO-31"]["stream"])
+        self.assertEqual(
+            ["github_pr_comment:48", "github_pr_comment:49"],
+            [event["source_id"] for event in moved_to_c["stream_assignment_history"]
+             if event["kind"] == "owner_reassignment"],
+        )
+        with self.assertRaisesRegex(ValidationError, "already consumed"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=moved_to_c,
+                owner_reassignments=[first],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(),
+                intake_assignments={"DEMO-31": assignment},
+            )
+
+    def test_released_ownership_cannot_be_owner_reassigned(self):
+        released = deepcopy(self.value)
+        released["tickets"][3]["ownership"] = owner(
+            "C", agent="synthetic-released-agent", state="released")
+        raw = canonical(released)
+        before = plan_inventory(raw, sha256(raw), NOW, allow_synthetic=True)
+        assignment = intake_assignment()
+        reason = "AWF-48 owner move released work"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason),
+        }
+
+        with self.assertRaisesRegex(ValidationError, "Started or completed work"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+                owner_reassignments=[directive],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(),
+                intake_assignments={"DEMO-31": assignment},
+            )
 
     def test_active_and_paused_owners_cannot_conflict_with_pinned_or_established_stream(self):
         before = self.plan()
