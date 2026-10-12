@@ -18,6 +18,12 @@ from agentic.child_process import child_env  # noqa: E402
 MISSING = object()
 ROW = re.compile(r"^\| `(?P<path>.+)` \| `(?P<digest>[0-9a-f]{64})` \|$")
 TITLE = re.compile(r"^# Release manifest — (?P<version>\d+\.\d+\.\d+)$")
+MERGE_IDENTITY_CONFIG = [
+    "-c",
+    "user.name=AWF Manifest Merge",
+    "-c",
+    "user.email=awf-manifest@example.invalid",
+]
 
 
 def merge_value(base, ours, theirs):
@@ -139,6 +145,7 @@ def merge_ref(reference):
     completed = subprocess.run(
         [
             "git",
+            *MERGE_IDENTITY_CONFIG,
             "-c",
             "merge.awf-manifest.name=AWF manifest merge driver",
             "-c",
@@ -160,6 +167,7 @@ def sync_ref(reference, push_branch):
     merged = subprocess.run(
         [
             "git",
+            *MERGE_IDENTITY_CONFIG,
             "-c",
             "merge.awf-manifest.name=AWF manifest merge driver",
             "-c",
