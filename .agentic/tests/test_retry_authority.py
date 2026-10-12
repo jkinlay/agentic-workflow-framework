@@ -6,10 +6,14 @@ from datetime import datetime, timedelta, timezone
 import sqlite3
 import json
 from pathlib import Path
+import sys
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic.model_routing import RoutingLedger, default_policy, _fingerprint, _raw_fingerprint
