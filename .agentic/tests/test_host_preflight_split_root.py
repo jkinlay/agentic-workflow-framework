@@ -72,7 +72,12 @@ class SplitRootPreflightTests(unittest.TestCase):
         self.assertEqual(rows["external_workspace_roots"]["status"], "PASS")
         self.assertEqual(rows["external_resource:{raw_estate}"]["status"], "PASS")
         self.assertEqual(len(resource_commands), 1)
-        self.assertEqual(resource_commands[0][0], "powershell")
+        if os.name == "nt":
+            self.assertTrue(Path(resource_commands[0][0]).is_absolute())
+            self.assertIn(Path(resource_commands[0][0]).name.casefold(),
+                          {"powershell.exe", "pwsh.exe"})
+        else:
+            self.assertEqual(resource_commands[0][0], "powershell")
         rendered = json.dumps(report)
         self.assertNotIn("synthetic", rendered)
         self.assertNotIn(raw_local_path, rendered)
