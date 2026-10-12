@@ -434,7 +434,6 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         raise ValidationError("Review verdicts must cover every consumed round without gaps")
     terminal_round = max(v["round"] for v in verdicts)
     if (assignment_record is None
-            and terminal_round > 1
             and bundle.get("provenance_mode") == "production_observation"):
         raise ValidationError(
             f"No verified runtime review assignment for {contract['ticket']}; gate cap evaluation fails closed")
