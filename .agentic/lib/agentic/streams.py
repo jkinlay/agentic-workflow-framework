@@ -53,6 +53,13 @@ def text(value, label):
             and not any(ord(c) < 32 for c in value), f"{label}: expected nonempty single-line text")
 
 
+def actor(value, label):
+    require((type(value) is int and value >= 1)
+            or (isinstance(value, str) and value.strip() == value and value
+                and len(value) <= 8192 and not any(ord(c) < 32 for c in value)),
+            f"{label}: expected a nonempty actor ID")
+
+
 def key(value, label):
     require(isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*", value),
             f"{label}: expected an actual Jira key")
@@ -113,7 +120,7 @@ def inventory(raw, expected_sha256, now, allow_synthetic=False, redact_ownership
     tickets = {}
     for ticket in value["tickets"]:
         fields(ticket, "id epic_id dispatch_scope title scope status estimate dependencies write_paths ownership history", "ticket",
-               "risk_flags complexity uncertainty verification")
+               "risk_flags complexity uncertainty verification modules write_path_source")
         _risk_metadata(ticket)
         key(ticket["id"], "ticket ID")
         require(ticket["id"] not in tickets and ticket["id"] not in epics, "Duplicate or ambiguous Jira ID")
@@ -126,7 +133,6 @@ def inventory(raw, expected_sha256, now, allow_synthetic=False, redact_ownership
         require(ticket["status"] in {"todo", "in_progress", "blocked", "done", "cancelled"}, "Unknown ticket status")
         require(type(ticket["estimate"]) is int and 1 <= ticket["estimate"] <= 1000, "Ticket estimate must be an integer from 1 to 1000")
         require(isinstance(ticket["write_paths"], list) and len(ticket["write_paths"]) <= 64, "Ticket write_paths must be a list of at most 64 subtree reservations")
-        require(ticket["dispatch_scope"] == "dependency_only" or ticket["status"] in FINAL or ticket["write_paths"], "Unfinished owned tickets need explicit write boundaries")
         require(ticket["dispatch_scope"] != "dependency_only" or (ticket["write_paths"] == [] and ticket["ownership"] is None),
                 "Read-only prerequisite tickets cannot reserve write paths or own an agent")
         path_keys = set()
@@ -140,6 +146,23 @@ def inventory(raw, expected_sha256, now, allow_synthetic=False, redact_ownership
                     and path.casefold() not in {PLAN.casefold(), MARKDOWN.casefold(), LOCK, JOURNAL, "operating_config.yaml"},
                     "Governance/state surfaces belong to the coordinator; separate them from worker tickets")
             path_keys.add(path.casefold())
+        path_source = ticket.get("write_path_source", "declared" if ticket["write_paths"] else "unknown")
+        require(path_source in {"declared", "derived", "unknown"},
+                "write_path_source must be declared, derived or unknown")
+        require((path_source == "unknown") == (ticket["write_paths"] == []),
+                "Unknown write scope must have no paths; declared or derived scope must have paths")
+        modules = ticket.get("modules")
+        if modules is None:
+            modules = sorted({path.split("/")[0] for path in ticket["write_paths"]}, key=str.casefold)
+        require(isinstance(modules, list) and len(modules) <= 64,
+                "Ticket modules must be a list of at most 64 names")
+        module_keys = set()
+        for module in modules:
+            text(module, "ticket module")
+            require(module.casefold() not in module_keys, "Duplicate or case-aliased ticket module")
+            module_keys.add(module.casefold())
+        ticket["write_path_source"] = path_source
+        ticket["modules"] = modules
         require(isinstance(ticket["history"], list), "Ticket history must be a list")
         prior_time = None
         for entry in ticket["history"]:
@@ -223,8 +246,14 @@ def _risk_metadata(value):
             require(isinstance(value[field], str) and value[field] in choices, f"Invalid recommendation {field}")
 
 
-def _preserve(previous, value, tickets, redacted_worktree_tickets=()):
+def _preserve(previous, value, tickets, owner_pins, redacted_worktree_tickets=()):
     fixed = {ticket_id: ticket["ownership"]["stream"] for ticket_id, ticket in tickets.items() if ticket["ownership"]}
+    for ticket_id, pin in owner_pins.items():
+        ownership = tickets[ticket_id]["ownership"]
+        require(ownership is None or ownership["state"] not in {"active", "paused"}
+                or ownership["stream"] == pin["stream"],
+                "Active or paused ownership stream conflicts with its owner pin")
+    fixed.update({ticket_id: pin["stream"] for ticket_id, pin in owner_pins.items()})
     if previous is None:
         return fixed
     require(previous.get("plan_schema_version") == 1 and previous.get("project") == value["project"], "Existing plan belongs to a different project/schema")
@@ -245,10 +274,245 @@ def _preserve(previous, value, tickets, redacted_worktree_tickets=()):
             require(new["ownership"] is not None and new["ownership"]["stream"] == owner["stream"]
                     and new["ownership"]["agent_id"] == owner["agent_id"] and same_worktree,
                     "Existing ownership cannot be silently reassigned")
-        require(ticket_id not in fixed or fixed[ticket_id] == old["stream"], "Inventory contradicts the established stream assignment")
-        if old["stream"] is not None:
+        require(ticket_id not in fixed or fixed[ticket_id] == old["stream"] or ticket_id in owner_pins,
+                "Inventory contradicts the established stream assignment")
+        # Retain historical placement whenever either snapshot establishes
+        # started, terminal, or owned work. Only work that is unstarted in both
+        # snapshots is eligible for deterministic re-balancing.
+        started = (
+            old["status"] in {"in_progress", *FINAL}
+            or new["status"] in {"in_progress", *FINAL}
+            or old["ownership"] is not None
+            or new["ownership"] is not None
+        )
+        if old["stream"] is not None and started:
             fixed[ticket_id] = old["stream"]
     return fixed
+
+
+def _assignment_root(previous, expected_sha256):
+    if previous is not None and isinstance(previous.get("stream_assignment_chain_id"), str):
+        return previous["stream_assignment_chain_id"]
+    if previous is not None:
+        legacy = {ticket_id: ticket.get("stream") for ticket_id, ticket in previous["tickets"].items()}
+        return fingerprint("stream_assignment_legacy_root", legacy)
+    return fingerprint("stream_assignment_root", {"inventory_sha256": expected_sha256})
+
+
+def _assignment_event(chain_id, *, ticket_id, who, when, why, old, new, kind,
+                      source_id=None, intake_assignment_id=None,
+                      owner_source_sha256=None):
+    event = {"ticket_id": ticket_id, "who": who, "when": when, "why": why,
+             "old": old, "new": new, "kind": kind,
+             "previous_assignment_id": chain_id, "source_id": source_id}
+    if intake_assignment_id is not None:
+        event["intake_assignment_id"] = intake_assignment_id
+        event["previous_assignment_id"] = intake_assignment_id
+        event["previous_stream_assignment_id"] = chain_id
+        event["owner_source_sha256"] = owner_source_sha256
+    event["assignment_id"] = fingerprint("stream_assignment_event", event)
+    return event
+
+
+def _authenticate_owner_reassignment(governance, ticket_id, intake_assignments,
+                                     directive, verifier, now):
+    """Bind a stream move to the sealed intake chain and immutable owner source."""
+    require(isinstance(governance, dict),
+            "Owner stream reassignment requires accepted governance configuration")
+    owners = governance.get("merge_gate", {}).get("trusted_owner_ids", [])
+    require(isinstance(owners, list) and directive["who"] in owners,
+            "Owner stream reassignment requires an authenticated trusted owner")
+    require(isinstance(intake_assignments, dict)
+            and isinstance(intake_assignments.get(ticket_id), dict),
+            "Owner stream reassignment requires the current intake assignment")
+    from .intake_assignment import verify_assignment_record
+    current = verify_assignment_record(deepcopy(intake_assignments[ticket_id]))
+    require(current.get("ticket_key") == ticket_id,
+            "Current intake assignment belongs to a different ticket")
+    current_id = current["assignment_id"]
+
+    source = directive["owner_source"]
+    require(isinstance(source, dict) and callable(verifier),
+            "Owner stream reassignment requires a verified immutable owner-source record")
+    require(source.get("channel") == "github_pr_comment"
+            and type(source.get("comment_id")) is int and source["comment_id"] >= 1
+            and isinstance(source.get("actor_login"), str)
+            and source["actor_login"],
+            "Owner-source record lacks an immutable provider comment identity")
+    binding = {"ticket_key": ticket_id, "current_assignment_id": current_id}
+    require(source.get("binding") == binding,
+            "Owner-source binding differs from the current intake assignment")
+    require(source.get("actor_id") == directive["who"],
+            "Owner-source actor differs from the requested owner reassignment")
+    created = source.get("created_at")
+    require(source.get("updated_at") == created,
+            "Edited owner-source records are invalid; obtain a new immutable observation")
+    require(timestamp(created) <= timestamp(now), "Owner-source record is future-dated")
+    expected_body = (
+        f"AWF STREAM REASSIGNMENT ticket={ticket_id} current={current_id} "
+        f"old={directive['old']} new={directive['new']} "
+        f"reason_sha256={sha256(directive['why'].strip().encode('utf-8'))}"
+    )
+    raw_body = source.get("raw_body")
+    raw_digest = source.get("raw_body_sha256")
+    require(raw_body == expected_body
+            and raw_digest == sha256(expected_body.encode("utf-8")),
+            "Owner-source raw command does not bind the requested stream reassignment")
+    expected = {
+        "binding": binding, "actor_id": directive["who"],
+        "raw_body_sha256": raw_digest,
+        "requested": {"old": directive["old"], "new": directive["new"]},
+        "created_at": created,
+        "now": now,
+    }
+    try:
+        verified = verifier(deepcopy(source), deepcopy(expected))
+    except Exception as exc:
+        raise ValidationError(
+            "Owner stream reassignment trusted owner verification failed") from exc
+    require(isinstance(verified, dict) and verified.get("status") == "VERIFIED"
+            and verified.get("actor_id") == directive["who"]
+            and verified.get("binding") == binding
+            and verified.get("raw_body_sha256") == raw_digest
+            and verified.get("created_at") == created
+            and isinstance(verified.get("source_id"), str) and verified["source_id"]
+            and isinstance(verified.get("observed_at"), str),
+            "Owner-source verifier did not authenticate the exact stream reassignment")
+    require(timestamp(verified["observed_at"]) <= timestamp(now),
+            "Owner-source verification is future-dated")
+    return current_id, verified, created
+
+
+def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
+                expected_sha256, governance=None, intake_assignments=None):
+    pins = deepcopy(previous.get("owner_stream_pins", {})) if previous is not None else {}
+    require(isinstance(pins, dict), "Existing owner stream pins must be an object")
+    for ticket_id, pin in pins.items():
+        require(ticket_id in tickets and isinstance(pin, dict)
+                and set(pin) == {"stream", "assignment_id"}
+                and pin["stream"] in LABELS and isinstance(pin["assignment_id"], str),
+                "Existing owner stream pin is malformed or references missing work")
+    history = deepcopy(previous.get("stream_assignment_history", [])) if previous is not None else []
+    require(isinstance(history, list), "Existing stream assignment history must be a list")
+    chain_id = _assignment_root(previous, expected_sha256)
+    root_id = (previous.get("stream_assignment_root_id", chain_id) if previous is not None else
+               chain_id)
+    require(isinstance(root_id, str) and re.fullmatch(r"[0-9a-f]{64}", root_id),
+            "Existing stream assignment root is malformed")
+    prior = root_id
+    owner_events = {}
+    consumed_owner_source_ids = set()
+    for event in history:
+        fields(event, "ticket_id who when why old new kind previous_assignment_id source_id assignment_id",
+               "stream assignment audit",
+               "intake_assignment_id previous_stream_assignment_id owner_source_sha256")
+        key(event["ticket_id"], "stream assignment ticket ID")
+        require(event["ticket_id"] in tickets,
+                "Stream assignment audit references work outside the retained inventory")
+        actor(event["who"], "stream assignment who")
+        text(event["why"], "stream assignment why")
+        require(timestamp(event["when"]) <= timestamp(now),
+                "Stream assignment audit is future-dated")
+        require(event["old"] in LABELS and event["new"] in LABELS and event["old"] != event["new"],
+                "Stream assignment audit has invalid old/new streams")
+        previous_stream_id = event.get(
+            "previous_stream_assignment_id", event["previous_assignment_id"])
+        require(event["kind"] in {"automatic_rebalance", "owner_reassignment"}
+                and previous_stream_id == prior,
+                "Stream assignment audit chain is discontinuous")
+        expected_event = {name: deepcopy(value) for name, value in event.items()
+                          if name != "assignment_id"}
+        require(event["assignment_id"] == fingerprint("stream_assignment_event", expected_event),
+                "Stream assignment audit digest is stale")
+        if event["kind"] == "automatic_rebalance":
+            require(event["who"] == "awf" and event["source_id"] is None
+                    and "intake_assignment_id" not in event
+                    and "previous_stream_assignment_id" not in event
+                    and "owner_source_sha256" not in event,
+                    "Automatic stream moves must be attributed only to awf")
+        else:
+            require(event["who"] != "awf" and isinstance(event["source_id"], str)
+                    and event["source_id"]
+                    and isinstance(event.get("intake_assignment_id"), str)
+                    and event["intake_assignment_id"]
+                    and event["previous_assignment_id"] == event["intake_assignment_id"]
+                    and isinstance(event.get("previous_stream_assignment_id"), str)
+                    and isinstance(event.get("owner_source_sha256"), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", event["owner_source_sha256"]),
+                    "Owner stream reassignment lacks its authenticated source")
+            require(event["source_id"] not in consumed_owner_source_ids,
+                    "Owner stream reassignment source identity was already consumed")
+            consumed_owner_source_ids.add(event["source_id"])
+            owner_events[event["assignment_id"]] = event
+        prior = event["assignment_id"]
+    require(not history or chain_id == prior,
+            "Current stream assignment chain does not match its audit history")
+    directives = [] if directives is None else directives
+    require(isinstance(directives, list), "Owner stream reassignments must be a list")
+    if directives:
+        require(callable(verifier), "Owner stream reassignment requires a trusted owner-source verifier")
+    seen = set()
+    for directive in directives:
+        fields(directive, "ticket_id who when why old new owner_source", "owner stream reassignment")
+        ticket_id = directive["ticket_id"]
+        require(ticket_id in tickets and ticket_id not in seen,
+                "Owner stream reassignment references missing or duplicate work")
+        seen.add(ticket_id)
+        actor(directive["who"], "owner stream reassignment who")
+        text(directive["why"], "owner stream reassignment why")
+        changed_at = timestamp(directive["when"])
+        require(changed_at <= timestamp(now), "Owner stream reassignment is future-dated")
+        require(directive["old"] in LABELS and directive["new"] in LABELS
+                and LABELS.index(directive["new"]) < operating_count,
+                "Owner stream reassignment must use an enabled stream")
+        current = (pins[ticket_id]["stream"] if ticket_id in pins else
+                   previous["tickets"][ticket_id]["stream"] if previous is not None
+                   and ticket_id in previous["tickets"] else None)
+        require(current == directive["old"] and directive["new"] != directive["old"],
+                "Owner stream reassignment old/new values do not match the current assignment")
+        ticket = tickets[ticket_id]
+        require(ticket["status"] not in {"in_progress", *FINAL}
+                and ticket["ownership"] is None,
+                "Started or completed work cannot be reassigned to another stream")
+        intake_assignment_id, verified, authenticated_when = _authenticate_owner_reassignment(
+            governance, ticket_id, intake_assignments, directive, verifier, now)
+        require(changed_at == timestamp(authenticated_when),
+                "Owner stream reassignment time must match the authenticated owner-source creation time")
+        require(verified["source_id"] not in consumed_owner_source_ids,
+                "Owner stream reassignment source identity was already consumed")
+        event = _assignment_event(
+            chain_id, ticket_id=ticket_id, who=directive["who"],
+            when=authenticated_when, why=directive["why"], old=directive["old"],
+            new=directive["new"], kind="owner_reassignment",
+            source_id=verified["source_id"],
+            intake_assignment_id=intake_assignment_id,
+            owner_source_sha256=verified["raw_body_sha256"],
+        )
+        history.append(event)
+        chain_id = event["assignment_id"]
+        pins[ticket_id] = {"stream": directive["new"], "assignment_id": chain_id}
+        owner_events[chain_id] = event
+        consumed_owner_source_ids.add(verified["source_id"])
+    for ticket_id, pin in pins.items():
+        event = owner_events.get(pin["assignment_id"])
+        require(event is not None and event["ticket_id"] == ticket_id
+                and event["new"] == pin["stream"],
+                "Owner stream pin is not bound to its audited owner reassignment")
+    return pins, history, chain_id, root_id
+
+
+def _automatic_move_reason(previous, tickets):
+    added = sorted(set(tickets) - set(previous["tickets"]))
+    if added:
+        return "automatic re-balance after ticket added: " + ", ".join(added)
+    terminal = sorted(
+        f"{ticket_id} {tickets[ticket_id]['status']}"
+        for ticket_id, old in previous["tickets"].items()
+        if old["status"] not in FINAL and tickets[ticket_id]["status"] in FINAL
+    )
+    if terminal:
+        return "automatic re-balance after ticket " + ", ".join(terminal)
+    return "automatic re-balance after Jira inventory refresh"
 
 
 def _ready(ticket):
@@ -615,6 +879,8 @@ def _antichain(potential, reaches):
 def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=None, *,
                    execution=None, host_writer_capacity=None, coordinator_spawn_depth=0, execution_provenance=None,
                    coordinator_agent_id=None, operating=None, governance=None, redact_ownership_worktrees=False,
+                   owner_reassignments=None, verify_owner_reassignment=None,
+                   intake_assignments=None,
                    _recommendation=False):
     """Return a stable plan from one caller-pinned snapshot; never dispatch work."""
     policy = native_execution_policy(execution)
@@ -639,7 +905,11 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
     path_redaction = {"ownership_worktrees": "sha256-placeholder-v1" if redact_ownership_worktrees else "reject-absolute",
                       "applied_ticket_ids": redacted_worktree_tickets,
                       "inventory_pin": "original-verified-bytes"}
-    fixed = _preserve(previous, value, tickets, path_redaction["applied_ticket_ids"])
+    owner_pins, assignment_history, assignment_chain_id, assignment_root_id = _owner_pins(
+        previous, tickets, owner_reassignments, verify_owner_reassignment, now,
+        operating_count, expected_sha256, governance, intake_assignments)
+    fixed = _preserve(previous, value, tickets, owner_pins,
+                      path_redaction["applied_ticket_ids"])
     roots = {ticket_id: ticket_id for ticket_id in tickets}
 
     def root(ticket_id):
@@ -654,6 +924,13 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
 
     unfinished = sorted(ticket_id for ticket_id, ticket in tickets.items()
                         if ticket["dispatch_scope"] == "in_scope" and ticket["status"] not in FINAL)
+    unknown_scope = sorted(ticket_id for ticket_id in unfinished
+                           if tickets[ticket_id]["write_path_source"] == "unknown")
+    if unknown_scope:
+        # Any unknown surface can overlap every known surface. Serializing the
+        # complete unfinished inventory is the only safe planner conclusion.
+        for ticket_id in unfinished[1:]:
+            join(unfinished[0], ticket_id)
     # Sorting component tuples puts every subtree next to its ancestor. The
     # stack groups reservations without a quadratic ticket/path comparison.
     reservations = sorted((tuple(path.casefold().split("/")), ticket_id)
@@ -758,6 +1035,32 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
         assigned[group] = label
         loads[label] += weight(group)
     assignment = {ticket_id: assigned[root(ticket_id)] if tickets[ticket_id]["dispatch_scope"] == "in_scope" else None for ticket_id in tickets}
+    for ticket_id, pin in owner_pins.items():
+        require(assignment[ticket_id] == pin["stream"],
+                "Resulting ticket stream differs from its owner pin")
+    if previous is not None:
+        reason = _automatic_move_reason(previous, tickets)
+        for ticket_id in sorted(set(previous["tickets"]) & set(tickets)):
+            old_stream, new_stream = previous["tickets"][ticket_id]["stream"], assignment[ticket_id]
+            if old_stream is None or new_stream is None or old_stream == new_stream:
+                continue
+            if ticket_id in owner_pins:
+                # The separately authenticated owner event is the audit record
+                # for this change and its pin controls all later re-balancing.
+                continue
+            old = previous["tickets"][ticket_id]
+            new = tickets[ticket_id]
+            require(old["status"] not in {"in_progress", *FINAL}
+                    and new["status"] not in {"in_progress", *FINAL}
+                    and old["ownership"] is None and new["ownership"] is None,
+                    "Automatic re-balancing attempted to move started work")
+            event = _assignment_event(
+                assignment_chain_id, ticket_id=ticket_id, who="awf", when=now,
+                why=reason, old=old_stream, new=new_stream,
+                kind="automatic_rebalance",
+            )
+            assignment_history.append(event)
+            assignment_chain_id = event["assignment_id"]
     streams = []
     packets = []
     barriers = []
@@ -830,10 +1133,21 @@ def plan_inventory(raw, expected_sha256, now, allow_synthetic=False, previous=No
                  if count > 1 and len(anchors) >= count else "Established stream assignments are retained although some streams have no independent future work; advance the ready packets and reconcile the remaining barriers."
                  if count > 1 else "At most one independent branch is available; parallel streams would create waiting or conflicting writers, so work remains in stream A.".replace("stream A", "stream " + labels[0]))
     rationale += " Established assignments and agent/worktree ownership are retained when present; an existing stream may remain blocked."
+    if unknown_scope:
+        rationale += (" At least one unfinished ticket has unknown write scope, so every unfinished owned ticket fails closed "
+                      "to one stream until declared or derived paths are refreshed.")
     result = {"plan_schema_version": 1, "template_version": VERSION, "project": deepcopy(value["project"]),
                "operating_hash": operating_hash, "independent_future_group_count": len(future_anchors),
                "inventory": deepcopy(value["inventory"]), "inventory_sha256": expected_sha256,
                "path_redaction": path_redaction,
+               "write_scope": {"unknown_ticket_ids": unknown_scope,
+                               "fail_closed_to_one_stream": bool(unknown_scope),
+                               "sources": {ticket_id: tickets[ticket_id]["write_path_source"]
+                                           for ticket_id in sorted(tickets)}},
+               "owner_stream_pins": owner_pins,
+               "stream_assignment_root_id": assignment_root_id,
+               "stream_assignment_chain_id": assignment_chain_id,
+               "stream_assignment_history": assignment_history,
               "status": "COMPLETE" if complete else "READY" if packets else "BLOCKED",
               "execution_authority": False, "jira_mutations": False, "synthetic": synthetic,
               "rationale": rationale, "streams": streams,
@@ -896,6 +1210,27 @@ def render_markdown(plan):
              ("**SYNTHETIC EXAMPLE — no live agent dispatch.**" if plan["synthetic"] else "The host must revalidate the pinned inventory and acquire single-writer ownership before each dispatch."), "",
              "## Stream decision", "", plan["rationale"], "",
              "Write paths reserve their whole subtree, without case-sensitive exceptions. A stream has one writer; its tickets run sequentially. Shared integration and stream-plan updates belong to the coordinator.", ""]
+    scope = plan.get("write_scope", {"unknown_ticket_ids": [], "fail_closed_to_one_stream": False})
+    lines.extend(["## Jira inventory and write scope", "",
+                  "Every ticket retains its Jira key, status, Epic, dependency links, modules and declared/derived write-path source.", "",
+                  "Unknown write scope: " + (", ".join(scope["unknown_ticket_ids"]) or "none") + ".", "",
+                  "Fail-closed single-stream segmentation: " + str(scope["fail_closed_to_one_stream"]).lower() + ".", "",
+                  "## Stream assignment audit", "",
+                  f"Current AWF-48 assignment chain: `{plan.get('stream_assignment_chain_id', 'legacy-unrecorded')}`.", ""])
+    audit = plan.get("stream_assignment_history", [])
+    if audit:
+        lines.extend(["| Ticket | Actor | When | Why | Old | New | Kind | Assignment | Previous |",
+                      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"])
+        for item in audit:
+            lines.append("| " + " | ".join([
+                _md(item["ticket_id"]), _md(item["who"]), _md(item["when"]),
+                _md(item["why"]), _md(item["old"]), _md(item["new"]),
+                _md(item["kind"]), f"`{item['assignment_id']}`",
+                f"`{item['previous_assignment_id']}`",
+            ]) + " |")
+        lines.append("")
+    else:
+        lines.extend(["No stream moves have been recorded; initial deterministic placement is not a reassignment.", ""])
     capacity = plan["capacity"]
     effective = capacity["effective_writer_capacity"]
     lines.extend(["## Effective native writer capacity", "",
@@ -930,7 +1265,10 @@ def render_markdown(plan):
         for ticket_id in stream["ticket_ids"]:
             ticket = plan["tickets"][ticket_id]
             dependencies = "; ".join(f"{d['ticket_id']}: {d['state']} (" + (f"stream {plan['tickets'][d['ticket_id']]['stream']}" if plan['tickets'][d['ticket_id']]['stream'] else "read-only prerequisite") + ")" for d in ticket["dependencies"]) or "None"
-            lines.append(f"| {_md(ticket_id)} | {_md(ticket['epic_id'] or 'No Epic')} | {ticket['status']} | {_md(ticket['title'])} — {_md(ticket['scope'])} | {_md(dependencies)} |")
+            scope_detail = (f"{ticket['title']} — {ticket['scope']} "
+                            f"[write scope: {ticket['write_path_source']}; modules: "
+                            f"{', '.join(ticket['modules']) or 'unknown'}]")
+            lines.append(f"| {_md(ticket_id)} | {_md(ticket['epic_id'] or 'No Epic')} | {ticket['status']} | {_md(scope_detail)} | {_md(dependencies)} |")
         lines.extend(["", "Ready work from this snapshot: " + (", ".join(stream["ready_ticket_ids"]) or "None") + ".", "",
                       "First ready ticket: " + (stream["first_ticket_id"] or "None") + ".", "",
                       "Capacity selection: " + stream["dispatch_selection"] + (" — " + stream["capacity_reason"] if stream["capacity_reason"] else "") + ".", "",
@@ -1045,7 +1383,8 @@ def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
                        expected_plan_sha256=None, allow_synthetic=False, *, execution=None,
                        host_writer_capacity=None, coordinator_spawn_depth=0, execution_provenance=None,
                        coordinator_agent_id=None, operating=None, governance=None,
-                       redact_ownership_worktrees=False):
+                       redact_ownership_worktrees=False, owner_reassignments=None,
+                       verify_owner_reassignment=None, intake_assignments=None):
     """CAS-update a project plan under a native lock with a recoverable journal."""
     project_root, runtime_root = Path(project_root).absolute(), Path(runtime_root).absolute()
     require(project_root.is_dir(), "Project root must already exist")
@@ -1072,7 +1411,10 @@ def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
                               host_writer_capacity=host_writer_capacity, coordinator_spawn_depth=coordinator_spawn_depth,
                               execution_provenance=execution_provenance, coordinator_agent_id=coordinator_agent_id,
                               operating=operating, governance=governance,
-                              redact_ownership_worktrees=redact_ownership_worktrees)
+                               redact_ownership_worktrees=redact_ownership_worktrees,
+                               owner_reassignments=owner_reassignments,
+                               verify_owner_reassignment=verify_owner_reassignment,
+                               intake_assignments=intake_assignments)
         markdown = render_markdown(plan)
         plan["markdown_sha256"] = sha256(markdown)
         new_plan = (json.dumps(plan, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
@@ -1095,6 +1437,12 @@ def write_project_plan(project_root, raw, expected_sha256, now, runtime_root,
         return {"status": "PLANNED", "project_status": plan["status"], "plan_sha256": sha256(new_plan), "markdown_sha256": sha256(markdown),
                 "operating_hash": plan["operating_hash"],
                 "stream_labels": [s["label"] for s in plan["streams"]],
+                "ticket_streams": {ticket_id: ticket["stream"]
+                                   for ticket_id, ticket in plan["tickets"].items()},
+                "stream_assignment_chain_id": plan["stream_assignment_chain_id"],
+                "stream_assignment_history": deepcopy(plan["stream_assignment_history"]),
+                "owner_stream_pins": deepcopy(plan["owner_stream_pins"]),
+                "write_scope": deepcopy(plan["write_scope"]),
                 "plan_path": str(project_root / PLAN), "markdown_path": str(project_root / MARKDOWN),
                 "execution_authority": False, "prompt_user": False,
                 "dispatch_packets": deepcopy(plan["dispatch_packets"]),

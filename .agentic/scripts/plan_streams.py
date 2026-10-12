@@ -31,12 +31,32 @@ def snapshot_config_path(config_path, project_root):
         return EXTERNAL_CONFIG_PLACEHOLDER
 
 
-def main(argv=None):
+def _load_pinned_json(path, expected_sha256, label):
+    if (not isinstance(expected_sha256, str) or len(expected_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in expected_sha256)):
+        raise ValidationError(f"{label} requires a lowercase SHA-256 pin")
+    absolute = path.absolute()
+    with Tree(absolute.parent) as source:
+        raw = source.read(absolute.name, maximum=MAX_DOCUMENT_BYTES)
+    if sha256(raw) != expected_sha256:
+        raise ValidationError(f"{label} bytes differ from the caller's trusted hash")
+    return loads(raw.decode("utf-8"))
+
+
+def main(argv=None, owner_source_verifier=None):
     parser = PlannerParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="Complete inventory obtained and verified by the trusted host coordinator")
     parser.add_argument("--expected-input-sha256", required=True, help="Hash pinned after authoritative inventory verification; a hash alone does not authenticate Jira")
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--expected-plan-sha256", help="Explicit compare-and-swap update of an existing plan")
+    parser.add_argument("--owner-reassignments", type=Path,
+                        help="Pinned JSON owner stream-reassignment directives observed by the trusted host")
+    parser.add_argument("--expected-owner-reassignments-sha256",
+                        help="Trusted SHA-256 of --owner-reassignments")
+    parser.add_argument("--assignment-state", type=Path,
+                        help="Pinned controller state containing current sealed intake assignments")
+    parser.add_argument("--expected-assignment-state-sha256",
+                        help="Trusted SHA-256 of --assignment-state")
     parser.add_argument("--config", type=Path, help="Reviewed configuration for the target project; defaults to PROJECT_ROOT/.agentic/PROJECT_CONFIG.yaml")
     parser.add_argument("--host-writer-capacity", type=int, help="Observed total project writer slots, including the coordinator and retained active/paused owners; not merely free child slots")
     parser.add_argument("--coordinator-spawn-depth", type=int, default=0, help="Actual native coordinator depth (root=0); exhausted spawn depth permits its own writer only")
@@ -69,6 +89,31 @@ def main(argv=None):
         config = loads(config_bytes.decode("utf-8")) if config_path.suffix.lower() == ".json" else load_yaml(config_bytes)
         if not isinstance(config, dict) or "execution" not in config:
             raise ValidationError("Project configuration must supply its native execution policy")
+        reassignment_arguments = (
+            args.owner_reassignments, args.expected_owner_reassignments_sha256,
+            args.assignment_state, args.expected_assignment_state_sha256,
+        )
+        if any(value is not None for value in reassignment_arguments) != all(
+                value is not None for value in reassignment_arguments):
+            raise ValidationError(
+                "Owner stream reassignment requires both pinned directives and pinned assignment state")
+        owner_reassignments = None
+        intake_assignments = None
+        if args.owner_reassignments is not None:
+            if not callable(owner_source_verifier):
+                raise ValidationError(
+                    "Owner stream reassignment requires the embedded owner-source verifier")
+            owner_reassignments = _load_pinned_json(
+                args.owner_reassignments, args.expected_owner_reassignments_sha256,
+                "Owner reassignment directives")
+            assignment_state = _load_pinned_json(
+                args.assignment_state, args.expected_assignment_state_sha256,
+                "Intake assignment state")
+            if (not isinstance(assignment_state, dict)
+                    or not isinstance(assignment_state.get("tier_assignments"), dict)):
+                raise ValidationError(
+                    "Assignment state must contain current tier_assignments")
+            intake_assignments = assignment_state["tier_assignments"]
         if not synthetic:
             identity = value.get("project", {})
             jira = config.get("jira", {})
@@ -97,6 +142,9 @@ def main(argv=None):
                                         coordinator_agent_id=args.coordinator_agent_id,
                                         operating=operating, governance=config,
                                         redact_ownership_worktrees=args.redact_ownership_worktrees,
+                                        owner_reassignments=owner_reassignments,
+                                        verify_owner_reassignment=owner_source_verifier,
+                                        intake_assignments=intake_assignments,
                                         execution_provenance={"source": provenance_source,
                                                               "config_path": snapshot_config_path(config_path, args.project_root.absolute()),
                                                               "config_sha256": sha256(config_bytes)})
