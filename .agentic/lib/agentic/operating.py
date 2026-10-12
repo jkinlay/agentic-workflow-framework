@@ -31,13 +31,28 @@ GOVERNANCE = ".agentic/PROJECT_CONFIG.yaml"
 STATE = ".agentic-state/operating"
 LOCK = STATE + "/lock"
 JOURNAL = STATE + "/pending.json"
-LABELS = tuple("ABCDEF")
+DEFAULT_MAX_LANES = 6
+DEFAULT_MAX_LANES_SOURCE = ".agentic/schemas/operating-config.schema.json#/properties/streams/properties/count/maximum"
 EPIC_ID = r"[A-Z][A-Z0-9_]*-[1-9][0-9]*"
 STAGING_NAME = r"\.awf-operating-[0-9a-f]{32}\.tmp"
 MAX_BYTES = 1024 * 1024
 SCHEMAS = Path(__file__).resolve().parents[2] / "schemas"
 SOURCE_MANIFEST = "MANIFEST.json"
 SOURCE_MARKER = "scripts/build_release.py"
+
+
+def stream_labels(count):
+    """Return stable spreadsheet-style stream labels (A..Z, AA..)."""
+    if type(count) is not int or count < 0:
+        raise ValidationError("Stream label count must be a non-negative integer")
+    labels = []
+    for index in range(count):
+        value, label = index + 1, ""
+        while value:
+            value, remainder = divmod(value - 1, 26)
+            label = chr(ord("A") + remainder) + label
+        labels.append(label)
+    return tuple(labels)
 
 
 def filesystem_reader(root):
@@ -106,7 +121,7 @@ def _stream():
 
 
 def default_operating():
-    return {"version": 1, "source": "default", "streams": {"count": 3, **{s: _stream() for s in LABELS[:3]}},
+    return {"version": 1, "source": "default", "streams": {"count": 3, **{s: _stream() for s in stream_labels(3)}},
             "critic": _pair("gpt-5.6-sol", "high"),
             "controller": _pair("gpt-5.6-sol", "high"), "specialist": _pair("gpt-5.6-sol", "high"),
             "simple_worker": {"enabled": True, **_pair("gpt-5.6-luna", "low")}}
@@ -135,7 +150,7 @@ def _upgrade_safe_operating(governance):
         return default_operating()
     stream = {"worker": dict(defaults["worker"])}
     return {"version": 1, "source": "default",
-            "streams": {"count": 3, **{label: deepcopy(stream) for label in LABELS[:3]}},
+            "streams": {"count": 3, **{label: deepcopy(stream) for label in stream_labels(3)}},
             "critic": dict(defaults["critic"]),
             "controller": dict(defaults["controller"]),
             "specialist": dict(defaults["specialist"]),
@@ -150,8 +165,11 @@ def operating_ceiling(governance):
     project = execution.get("max_parallel_tickets")
     if type(project) is not int or project < 1:
         fail("$.streams.count", "Invalid configured writer ceiling", "$.execution.max_parallel_tickets", project)
-    limits = [(project, "$.execution.max_parallel_tickets"),
-              (6, ".agentic/schemas/operating-config.schema.json#/properties/streams/properties/count/maximum")]
+    configured = execution.get("max_lanes", DEFAULT_MAX_LANES)
+    if type(configured) is not int or configured < 1:
+        fail("$.streams.count", "Invalid configured lane ceiling", "$.execution.max_lanes", configured)
+    lane_source = "$.execution.max_lanes" if "max_lanes" in execution else DEFAULT_MAX_LANES_SOURCE
+    limits = [(project, "$.execution.max_parallel_tickets"), (configured, lane_source)]
     broker = execution.get("host_broker")
     if "host_broker" in execution:
         if not isinstance(broker, dict) or type(broker.get("enabled")) is not bool:
@@ -168,9 +186,29 @@ def operating_ceiling(governance):
             "effective_ceiling_sources": sources}
 
 
-def _schema(name, value):
+def _schema(name, value, *, stream_ceiling=None):
     from .contracts import checker
     schema = loads((SCHEMAS / (name + ".schema.json")).read_text(encoding="utf-8"))
+    if name == "operating-config" and stream_ceiling is not None:
+        # Part b updates the shipped static schema.  Until then the runtime
+        # validator derives its label members from the already reviewed
+        # governance ceiling, without broadening any model or effort rule.
+        streams = schema["properties"]["streams"]
+        route = deepcopy(streams["properties"]["A"])
+        streams["properties"]["count"]["maximum"] = stream_ceiling
+        labels = stream_labels(stream_ceiling)
+        for label in list(streams["properties"]):
+            if re.fullmatch(r"[A-Z]+", label) and label not in labels:
+                del streams["properties"][label]
+        for label in labels:
+            streams["properties"].setdefault(label, deepcopy(route))
+        scoped = schema["properties"]["epic_overrides"]["patternProperties"]
+        epic = next(iter(scoped.values()))
+        scoped_streams = epic["properties"]["streams"]
+        scoped_route = deepcopy(next(iter(scoped_streams["patternProperties"].values())))
+        scoped_streams["patternProperties"] = {
+            "^(?:" + "|".join(re.escape(label) for label in labels) + ")$": scoped_route
+        }
     errors = sorted(Draft202012Validator(schema, format_checker=checker()).iter_errors(value), key=lambda e: str(list(e.absolute_path)))
     return [refusal("$" + "".join("." + str(p) for p in e.absolute_path), e.message) for e in errors[:30]]
 
@@ -203,10 +241,13 @@ class OperatingSnapshot:
 def validate_operating(value, governance):
     """Validate choices against both allowlists/floors; never silently clamp."""
     canonical(value)
-    errors = _schema("operating-config", value)
     execution = governance.get("execution") if isinstance(governance, dict) else None
     if not isinstance(execution, dict) or not isinstance(execution.get("model_routing"), dict):
         fail("$", "A complete governing execution/model_routing policy is required", "$.execution", execution)
+    capacity = operating_ceiling(governance)
+    ceiling = capacity["effective_ceiling"]
+    structural_ceiling = execution.get("max_lanes", DEFAULT_MAX_LANES)
+    errors = _schema("operating-config", value, stream_ceiling=structural_ceiling)
     policy = execution["model_routing"]
     from .model_routing import EFFORTS, validate_policy
     try:
@@ -216,10 +257,9 @@ def validate_operating(value, governance):
     streams = value.get("streams", {}) if isinstance(value, dict) else {}
     if not isinstance(streams, dict):
         raise OperatingError(errors or [refusal("$.streams", "Streams must be an object")])
-    count, capacity = streams.get("count"), operating_ceiling(governance)
-    ceiling = capacity["effective_ceiling"]
+    count = streams.get("count")
     if type(count) is int and (count > ceiling or count < 1):
-        errors.append(refusal("$.streams.count", "Stream count must be 1.." + str(ceiling) + " within the effective governance ceiling and six-stream structure; binding limits: "
+        errors.append(refusal("$.streams.count", "Stream count must be 1.." + str(ceiling) + " within the effective governance ceiling; binding limits: "
                               + ", ".join(capacity["effective_ceiling_sources"]), capacity["effective_ceiling_governance_path"], ceiling))
     reviewers = execution.get("independent_reviewers", {})
     if not isinstance(reviewers, dict) or not isinstance(execution.get("roles"), dict):
@@ -227,8 +267,8 @@ def validate_operating(value, governance):
     if "count" in reviewers and reviewers["count"] != count:
         errors.append(refusal("$.streams.count", "Legacy fixed reviewer count disagrees; remove/update it by governance PR",
                               "$.execution.independent_reviewers.count", reviewers["count"]))
-    if type(count) is int and 1 <= count <= 6:
-        for label in LABELS[:count]:
+    if type(count) is int and 1 <= count <= ceiling:
+        for label in stream_labels(count):
             if label not in streams:
                 errors.append(refusal("$.streams." + label, "Active stream requires a worker route"))
             elif "critic" not in value and (not isinstance(streams.get(label), dict)
@@ -239,8 +279,9 @@ def validate_operating(value, governance):
     if isinstance(value, dict):
         pairs.append(("$.simple_worker", "worker", value.get("simple_worker")))
     if isinstance(streams, dict):
-        for label in LABELS:
-            entry = streams.get(label)
+        for label, entry in streams.items():
+            if label == "count" or not re.fullmatch(r"[A-Z]+", label):
+                continue
             if isinstance(entry, dict):
                 pairs.extend(("$.streams." + label + "." + key, role, entry.get(key))
                              for key, role in (("worker", "worker"), ("reviewer", "critic")))
@@ -653,10 +694,10 @@ def _path(path, epic_id=None):
         if epic_id is not None:
             fail("$." + path, "Use either a fully qualified Epic path or --epic, never both")
         return _path(qualified[2], qualified[1])
-    if re.fullmatch(r"[A-F]\.(worker|reviewer)(\.pinned)?", path):
+    if re.fullmatch(r"[A-Z]+\.(worker|reviewer)(\.pinned)?", path):
         path = "streams." + path
     if path not in {"streams.count", "controller", "critic", "specialist", "simple_worker", "simple_worker.enabled",
-                    "controller.pinned", "critic.pinned", "specialist.pinned", "simple_worker.pinned"} and not re.fullmatch(r"streams\.[A-F]\.(worker|reviewer)(\.pinned)?", path):
+                    "controller.pinned", "critic.pinned", "specialist.pinned", "simple_worker.pinned"} and not re.fullmatch(r"streams\.[A-Z]+\.(worker|reviewer)(\.pinned)?", path):
         fail("$." + path, "Unsupported operating path; use --epic with a stream/role route for an explicit Epic scope")
     if epic_id is not None:
         if not isinstance(epic_id, str) or len(epic_id) > 80 or not re.fullmatch(EPIC_ID, epic_id):
@@ -685,7 +726,7 @@ def _put(value, path, selected):
 
 def _selection(path, text):
     if path == "streams.count":
-        if not re.fullmatch(r"[0-9]{1,3}", text):
+        if not re.fullmatch(r"[0-9]+", text):
             fail("$." + path, "Stream count must be an integer")
         return int(text)
     if path.endswith((".pinned", ".enabled")):
@@ -696,6 +737,38 @@ def _selection(path, text):
         fail("$." + path, "Route requires model/reasoning_effort")
     model, effort = text.split("/")
     return {**_pair(model, effort), "pinned": True}
+
+
+def _prune_unrepresentable_routes(value, structural_ceiling):
+    """Remove only labels made structurally invalid by a lowered max_lanes.
+
+    The caller records every returned path in the normal append-only operating
+    change event. Labels that remain representable are deliberately retained so
+    ordinary count reductions keep their established draining-route behavior.
+    """
+    allowed = set(stream_labels(structural_ceiling))
+    removed = []
+    streams = value["streams"]
+    for label in sorted(set(streams) - {"count"} - allowed):
+        if re.fullmatch(r"[A-Z]+", label):
+            del streams[label]
+            removed.append("streams." + label)
+    overrides = value.get("epic_overrides", {})
+    if isinstance(overrides, dict):
+        for epic_id in sorted(list(overrides)):
+            scoped = overrides[epic_id]
+            scoped_streams = scoped.get("streams") if isinstance(scoped, dict) else None
+            if not isinstance(scoped_streams, dict):
+                continue
+            for label in sorted(set(scoped_streams) - allowed):
+                if re.fullmatch(r"[A-Z]+", label):
+                    del scoped_streams[label]
+                    removed.append(f"epic_overrides.{epic_id}.streams.{label}")
+            if not scoped_streams:
+                del scoped["streams"]
+            if not scoped:
+                del overrides[epic_id]
+    return removed
 
 
 def _editable_snapshot(tree, governance, initialize):
@@ -759,9 +832,12 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
                 selected[path] = _selection(path, text)
             source = "user"
         count = selected.get("streams.count", value["streams"]["count"])
-        if type(count) is int and 1 <= count <= 6:
-            for label in LABELS[:count]:
+        ceiling = operating_ceiling(governance)["effective_ceiling"]
+        if type(count) is int and 1 <= count <= ceiling:
+            for label in stream_labels(count):
                 value["streams"].setdefault(label, _stream())
+        structural_ceiling = governance["execution"].get("max_lanes", DEFAULT_MAX_LANES)
+        migration_paths = _prune_unrepresentable_routes(value, structural_ceiling)
         for path, choice in selected.items():
             if path.startswith("epic_overrides.") and path.endswith(".pinned") and _get(value, path.rsplit(".", 1)[0]) is None:
                 fail("$." + path, "Choose a complete scoped route before changing its pin")
@@ -770,7 +846,7 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
             _put(value, path, choice)
         value["source"] = source
         validate_operating(value, governance)
-        paths = sorted(set(selected) | {"source"} | {"streams." + s for s in LABELS if s in value["streams"] and s not in snapshot.config["streams"]})
+        paths = sorted(set(selected) | set(migration_paths) | {"source"} | {"streams." + s for s in stream_labels(ceiling) if s in value["streams"] and s not in snapshot.config["streams"]})
         changes = [{"path": p, "before": _get(snapshot.config, p), "after": _get(value, p)} for p in paths
                    if _get(snapshot.config, p) != _get(value, p)]
         return _commit(tree, governance, before, value, instruction, changes, "chat")
@@ -811,8 +887,9 @@ def _epic_groups(epics, ceiling, scopes):
             reason = "Unknown Epic scope: " + unknown["id"] + " value " + repr(value) + "; conservatively requires one stream"
         return [{"label": "A", "epic_ids": sorted(scopes), "ticket_ids": [],
                  "write_paths": sorted({p for paths in scopes.values() for p in paths or []})}], reason
-    count = min(len(epics), ceiling, 6)
-    groups = [{"label": LABELS[i], "epic_ids": [], "ticket_ids": [], "write_paths": []} for i in range(count)]
+    count = min(len(epics), ceiling)
+    labels = stream_labels(count)
+    groups = [{"label": labels[i], "epic_ids": [], "ticket_ids": [], "write_paths": []} for i in range(count)]
     for i, epic in enumerate(epics):
         group = groups[i % count]
         group["epic_ids"].append(epic["id"])
@@ -902,7 +979,8 @@ def recommend_operating(epics_raw, snapshot, governance, *, inventory_raw=None, 
             ticket_metadata = {t["id"]: t for t in inventory_value["tickets"]}
             inventory_epics = {e["id"]: e for e in inventory_value["epics"]}
             group_count = planned["independent_group_count"]
-            groups = [{"label": LABELS[i], "ticket_ids": [], "epic_ids": [], "write_paths": []} for i in range(group_count)]
+            labels = stream_labels(group_count)
+            groups = [{"label": labels[i], "ticket_ids": [], "epic_ids": [], "write_paths": []} for i in range(group_count)]
             for index, group in enumerate(planned["groups"] if group_count else []):
                 for key in ("ticket_ids", "epic_ids", "write_paths"):
                     groups[index % group_count][key] = sorted(set(groups[index % group_count][key]) | set(group[key]))
@@ -1044,7 +1122,7 @@ def render_operating(snapshot, governance, *, state, version=VERSION):
              f"Streams: {snapshot.count} of ceiling {capacity['effective_ceiling']}; one shared independent critic/adversarial handler by default; binding limits: "
              + ", ".join(capacity["effective_ceiling_sources"]) + ". Observed host slots remain separate.",
              "| Stream | Worker | Legacy per-stream reviewer |", "|---|---|---|"]
-    for label in LABELS[:snapshot.count]:
+    for label in stream_labels(snapshot.count):
         item = value["streams"][label]
         lines.append(f"| {label} | {_display(item['worker'])} | {_display(item['reviewer']) if item.get('reviewer') else '—'} |")
     if value.get("critic"):
