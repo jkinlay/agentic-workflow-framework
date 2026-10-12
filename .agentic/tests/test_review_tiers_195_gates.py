@@ -1,6 +1,7 @@
 """AWF-16 1.9.5 final-gate regressions from the split #70 review."""
 from __future__ import annotations
 
+import base64
 import copy
 import contextlib
 import io
@@ -15,10 +16,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
-from agentic.canonical import fingerprint
+from agentic.canonical import canonical, fingerprint, sha256
 from agentic.cli import main as workflow_main
 from agentic.gates import (cap_disposition_record_id,
                            critic_artifact_receipt_sha256, evaluate,
+                           posting_collector_receipt_sha256,
+                           review_round_receipt_sha256,
                            verified_owner_records)
 from agentic.intake_assignment import assign_intake, change_assignment
 from agentic.lifecycle import definition
@@ -189,13 +192,79 @@ class ReviewTiers195GateTests(Fixture):
         self.bundle["contract"].update(risk_tier=3, tier_justification="Release gate escalation.")
         self.rebind()
 
-    def _owner_review(self):
+    def _owner_review(self, *, provider_evidence=True):
         verifier = self.verifier_run()
         terminal = copy.deepcopy(self.bundle["review_verdicts"][-1])
+        if provider_evidence:
+            observation = self.bundle["review_verdicts"][-1]["posting_observation"]
+            provider_response = json.loads(base64.b64decode(
+                observation["provider_response_bytes"]["data"]
+            ).decode("utf-8"))
+            approval_id = 9001
+            approval_url = (
+                f"{self.bundle['candidate']['host']}/"
+                f"{self.bundle['candidate']['repository']}/pull/"
+                f"{self.bundle['candidate']['pr_number']}#pullrequestreview-{approval_id}"
+            )
+            provider_response["owner_approval"] = {
+                "id": approval_id,
+                "html_url": approval_url,
+                "state": "APPROVED",
+                "commit_id": self.bundle["candidate"]["head_sha"],
+                "user": {"id": 1001},
+                "candidate": copy.deepcopy(terminal["candidate_binding"]),
+            }
+            provider_bytes = canonical(provider_response)
+            observation["provider_response_bytes"] = {
+                "encoding": "base64",
+                "data": base64.b64encode(provider_bytes).decode("ascii"),
+            }
+            observation["provider_response_sha256"] = sha256(provider_bytes)
+            # Keep the owner record on the exact registered terminal observation;
+            # the fixture binder assigns its collector receipt after this helper.
+            terminal["posting_observation"] = observation
+            terminal["pr_comment_url"] = approval_url
         terminal.update(record_id=str(uuid.uuid4()), producer_id=verifier["producer_id"],
                         run_id=verifier["run_id"], reviewer_id="fixture-owner",
                         owner_review=True, owner_id=1001)
         self.bundle["owner_review"] = terminal
+
+    def _refresh_owner_posting_receipt(self, registry):
+        observation = self.bundle["review_verdicts"][-1]["posting_observation"]
+        registration = registry[observation["producer_id"]]
+        basis = copy.deepcopy(observation)
+        basis["collector_receipt_sha256"] = "0" * 64
+        receipt_sha256 = posting_collector_receipt_sha256(
+            observation, sha256(canonical(basis)), registration
+        )
+        observation["collector_receipt_sha256"] = receipt_sha256
+        registration["receipts"][observation["run_id"]] = receipt_sha256
+        receipt = self.bundle["review_round_receipts"][-1]
+        posting_bytes = canonical(observation)
+        receipt["posting_observation_json"] = {
+            "encoding": "base64",
+            "data": base64.b64encode(posting_bytes).decode("ascii"),
+        }
+        receipt["posting_observation_sha256"] = sha256(posting_bytes)
+        entry = next(
+            item for item in self.bundle["evidence_registry"]
+            if item["uri"] == (
+                "urn:awf:review-round-receipt:"
+                f"{receipt['critic_artifact_binding']['round']}"
+            )
+        )
+        entry["sha256"] = review_round_receipt_sha256(receipt)
+
+    def _owner_gate(self, *, provider_evidence=True):
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
+        self._owner_review(provider_evidence=provider_evidence)
+        if provider_evidence:
+            self._refresh_owner_posting_receipt(registry)
+        return evaluate(
+            self.config, definition(), self.bundle, self.contracts, NOW,
+            posting_collector_registry=registry,
+        )
 
     def _retain_historical_posting_body(self, body_sha256):
         verdict = self.bundle["review_verdicts"][0]
@@ -250,8 +319,10 @@ class ReviewTiers195GateTests(Fixture):
     def test_awf48_r5_044_001_cli_keeps_historical_t2_and_current_t3(self):
         self._tier_three_candidate()
         self._review_history(2, historical_tier=2, terminal_tier=3)
-        self._owner_review()
         bind_review_admission(self.bundle)
+        collector_registry = bind_production_posting_fixture(self.config, self.bundle)
+        self._owner_review()
+        self._refresh_owner_posting_receipt(collector_registry)
 
         state_config = copy.deepcopy(self.config0)
         state_config["jira"]["enabled"] = False
@@ -283,11 +354,16 @@ class ReviewTiers195GateTests(Fixture):
             state_path.write_text(json.dumps(state), encoding="utf-8")
 
             stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with mock.patch(
+                    "agentic.posting_collector.registry_from_host_config",
+                    return_value=collector_registry), \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 code = workflow_main([
                     "--root", str(runtime), "evaluate", str(bundle_path),
                     "--config", str(config_path),
-                    "--assignment-state", str(state_path), "--now", NOW])
+                    "--assignment-state", str(state_path),
+                    "--posting-collector-host-config", str(base / "posting-host.json"),
+                    "--now", NOW])
             self.assertEqual(0, code, stderr.getvalue())
             self.assertEqual(3, json.loads(stdout.getvalue())["risk_tier"])
             self.assertEqual(changed["assignment_id"],
@@ -297,11 +373,16 @@ class ReviewTiers195GateTests(Fixture):
             mismatched["review_verdicts"][-1]["tier"] = 2
             bundle_path.write_text(json.dumps(mismatched), encoding="utf-8")
             stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with mock.patch(
+                    "agentic.posting_collector.registry_from_host_config",
+                    return_value=collector_registry), \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 code = workflow_main([
                     "--root", str(runtime), "evaluate", str(bundle_path),
                     "--config", str(config_path),
-                    "--assignment-state", str(state_path), "--now", NOW])
+                    "--assignment-state", str(state_path),
+                    "--posting-collector-host-config", str(base / "posting-host.json"),
+                    "--now", NOW])
             self.assertEqual(2, code)
             self.assertIn("tier", json.loads(stderr.getvalue())["reason"].lower())
 
@@ -368,8 +449,16 @@ class ReviewTiers195GateTests(Fixture):
     def test_awf16_195_r3_004_pre_escalation_round_keeps_old_tier_and_binding(self):
         self._tier_three_candidate()
         self._review_history(2, historical_tier=2, terminal_tier=3)
-        self._owner_review()
-        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", self.gate()["conclusion"])
+        self.assertEqual(
+            "READY_FOR_OWNER_AUTHORIZATION", self._owner_gate()["conclusion"]
+        )
+
+    def test_ac5_self_asserted_tier_three_owner_record_does_not_qualify(self):
+        self._tier_three_candidate()
+        self._review_history(2, historical_tier=2, terminal_tier=3)
+        self.assertEqual(
+            "NOT_READY", self._owner_gate(provider_evidence=False)["conclusion"]
+        )
 
     def test_awf16_r3_001_historical_posting_keeps_original_pr_body(self):
         self._review_history(2)
@@ -380,8 +469,9 @@ class ReviewTiers195GateTests(Fixture):
         self._tier_three_candidate()
         self._review_history(2, historical_tier=2, terminal_tier=3)
         self._retain_historical_posting_body("a" * 64)
-        self._owner_review()
-        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", self.gate()["conclusion"])
+        self.assertEqual(
+            "READY_FOR_OWNER_AUTHORIZATION", self._owner_gate()["conclusion"]
+        )
 
     def test_awf16_195_r4_001_policy_continues_before_cap_with_open_p2(self):
         finding = {"id": "OPEN-P2", "severity": "MINOR"}
