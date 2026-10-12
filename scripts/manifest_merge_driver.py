@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Deterministically merge AWF's derived manifests for local sync tooling."""
+"""Deterministically merge AWF's derived manifests during PR synchronization."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
+import shlex
+import subprocess
 import sys
 
 
@@ -117,10 +120,46 @@ def merge_advisory(base_path, ours_path, theirs_path):
     return render_advisory(version, merge_mapping(base, ours, theirs))
 
 
+def driver_command():
+    """Return the command Git invokes for one manifest merge."""
+    arguments = [sys.executable, "-B", str(Path(__file__).resolve())]
+    if os.name == "nt":
+        command = f'"{arguments[0]}" -B "{arguments[2]}"'
+    else:
+        command = " ".join(shlex.quote(argument) for argument in arguments)
+    return command + " %O %A %B %P"
+
+
+def merge_ref(reference):
+    """Rehearse a sync while registering the driver for this Git invocation."""
+    completed = subprocess.run(
+        [
+            "git",
+            "-c",
+            "merge.awf-manifest.name=AWF manifest merge driver",
+            "-c",
+            f"merge.awf-manifest.driver={driver_command()}",
+            "merge",
+            "--no-commit",
+            "--no-ff",
+            "--",
+            reference,
+        ],
+        check=False,
+    )
+    return completed.returncode
+
+
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if len(arguments) == 2 and arguments[0] == "--merge-ref":
+        return merge_ref(arguments[1])
     if len(arguments) != 4:
-        print('usage: manifest_merge_driver.py BASE OURS THEIRS PATH', file=sys.stderr)
+        print(
+            "usage: manifest_merge_driver.py --merge-ref REF\n"
+            "   or: manifest_merge_driver.py BASE OURS THEIRS PATH",
+            file=sys.stderr,
+        )
         return 2
     base, ours, theirs, relative = arguments
     try:

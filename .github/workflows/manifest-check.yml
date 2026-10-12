@@ -22,10 +22,16 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install hash-locked dependencies
         run: python -m pip install --require-hashes "--only-binary=:all:" -r requirements.txt
+      - name: Rehearse PR base sync with manifest driver
+        if: github.event_name == 'pull_request'
+        run: python -B scripts/manifest_merge_driver.py --merge-ref "${{ github.event.pull_request.base.sha }}"
       - name: Verify committed manifest bytes
         run: python -B scripts/build_release.py --check-manifest
