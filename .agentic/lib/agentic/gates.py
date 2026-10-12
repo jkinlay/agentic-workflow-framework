@@ -194,11 +194,11 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
             dispositions.append(record)
     if cap is not None:
         if assignment_record is None:
-            limit = config["execution"]["max_amendment_cycles"]
-        else:
-            from .review_tiers import round_cap
-            limit = round_cap(assignment_record["tier"],
-                              assignment_record=assignment_record)
+            raise ValidationError(
+                "Review cap disposition requires a verified per-ticket intake assignment")
+        from .review_tiers import round_cap
+        limit = round_cap(assignment_record["tier"],
+                          assignment_record=assignment_record)
         if cap["cycles"] < limit:
             raise ValidationError(f"Cap disposition at cycles {cap['cycles']} precedes the cap ({limit}); present REVIEW_CAP_REACHED first")
         if cap["cap_extensions"] > config["execution"].get("max_cap_extensions", 2):
@@ -305,12 +305,10 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     timestamp(now)
     binding = expected_binding(config, workflow, bundle)
     candidate, contract, snapshot = bundle["candidate"], bundle["contract"], bundle["snapshot"]
-    runtime_context = config.get("_awf_runtime")
-    assignment_record = None
-    if runtime_context is not None:
-        from .review_tiers import runtime_assignment
-        assignment_record = runtime_assignment(config, ticket_key=contract["ticket"])
-    if runtime_context is not None and assignment_record is None:
+    from .review_tiers import runtime_assignment
+    assignment_record = runtime_assignment(config, ticket_key=contract["ticket"])
+    if (assignment_record is None
+            and bundle.get("provenance_mode") == "production_observation"):
         raise ValidationError(
             f"No verified runtime review assignment for {contract['ticket']}; gate evaluation fails closed")
     for name, expected in [("host", config["github"]["host"]), ("repository_id", config["github"]["repository_id"]),
