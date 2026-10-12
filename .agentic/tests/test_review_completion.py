@@ -14,6 +14,9 @@ import unittest
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
+
 from agentic import ValidationError
 from agentic.authorization import make_request
 from agentic.canonical import canonical, fingerprint, load, sha256

@@ -3,9 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic.configuration import valid_workflow_blob_sha
 from agentic.gates import (candidate_workflow_blob_sha,

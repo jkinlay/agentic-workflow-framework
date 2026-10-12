@@ -1,7 +1,11 @@
 """Routing is a project-policy extension, not a replacement for existing caps."""
 from copy import deepcopy
 from pathlib import Path
+import sys
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic.canonical import load
