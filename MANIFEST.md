@@ -130,7 +130,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
 | `.agentic/lib/agentic/safeio.py` | `c2b2297c364d1a886fddbef7c01eff69882de2f29a1a00531d7ae15fbdcb5af7` |
 | `.agentic/lib/agentic/store.py` | `91287fc2aa44e9db2b1343027baa6f32e0660a838db54f8dd628b1caf0336b6c` |
-| `.agentic/lib/agentic/streams.py` | `67bc96a62e0b12739e6e95296bbb21642bb26163be054939fe27eba786ec5006` |
+| `.agentic/lib/agentic/streams.py` | `cfc41f20e108037cf0b013c5df32ddeb2c75d89becbcb76bf1ebe4ec1ca7b4af` |
 | `.agentic/lib/agentic/upgrade.py` | `d664cc7c5928c4c0beb55cae0cbf83d555047f09d3365975b4925b62b56a61e0` |
 | `.agentic/prompts/amendment.md` | `bcea716185a20e57099349458c3974304c8e2dd635fefd1270ae6389dbc2f532` |
 | `.agentic/prompts/controller.md` | `51033ee5f655e7736259177999776993436daa93a99f8e5ca8975a087eb0baab` |
@@ -317,7 +317,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_operating_integration.py` | `463524d335d5796027069f94f2149d0837fc25f832ffe93e5d11cfc6a8898d8e` |
 | `.agentic/tests/test_owner_publication.py` | `98d4f785a021e9deb1f36b992207ad4c5e0c0c95ef08bc8066f93bf51d989a47` |
 | `.agentic/tests/test_path_containment.py` | `18cb0c113915b08d88ff94e067f1d4c5fbe9a7dab7fecec75e0e2ad59b8dbf67` |
-| `.agentic/tests/test_plan_streams.py` | `92b1c2df894c2e9fb5b3d6e92524880ebd9516bd4b1bee37a7d36c9b7ac8b258` |
+| `.agentic/tests/test_plan_streams.py` | `d301e9d1d49e7907db560f4f5de0b83979040a0ad278716d8b36bf80db35fd52` |
 | `.agentic/tests/test_posting_collector_awf60.py` | `9b8ef5bba29f7430175a3df057dfa52eef7514584d73efbcc5449912b0be45d6` |
 | `.agentic/tests/test_private_deny_binary.py` | `b6da0ffbcce95cedece5c337106bb6f642f127180ae21ba14ec606da37ac6de1` |
 | `.agentic/tests/test_provider_identity.py` | `a276d68b89dfb6e65513f62732dd3fddab93419b04f20cc59bbec7c8a0e2fc2b` |
@@ -347,7 +347,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_safeio_unlink.py` | `86d91b38a4e930fc1af316caf359b04cf8748dc53958465a141aeab200c1457f` |
 | `.agentic/tests/test_source_only.py` | `ff834d09650472ae5522aeaf6cad4dad7caf205e80ee73e03e7bcb3ac17208e3` |
 | `.agentic/tests/test_store_regressions.py` | `340df570120f78d77ef33c3e9c8f315ec72b0a3e49bd7e053a5a5ef24679111f` |
-| `.agentic/tests/test_streams.py` | `492edc788795399f053280a6523b21b031bf9d4fc35f51ae9ce8d180e85f25fe` |
+| `.agentic/tests/test_streams.py` | `5305ecc098673a8098f32cf2e21696bea90d9f07b057ee3210cdd4f8f8c2e24a` |
 | `.agentic/tests/test_upgrade_194.py` | `9a830eb7bb65ef835c9de24c205d656db78d3edcf902c4463c31c73a2216ef53` |
 | `.agentic/tests/test_upgrade_journal.py` | `449c96d3f8a9138335bfdf1cd413d453cf2b5f35be5125d860a3726d1d260270` |
 | `.agentic/tests/test_upgrade_matrix.py` | `ae4397837a1b4c4e8b888d379a1ea1f61e403f414724ecfaf91945c00fec6675` |

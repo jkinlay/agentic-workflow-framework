@@ -248,6 +248,11 @@ def _risk_metadata(value):
 
 def _preserve(previous, value, tickets, owner_pins, redacted_worktree_tickets=()):
     fixed = {ticket_id: ticket["ownership"]["stream"] for ticket_id, ticket in tickets.items() if ticket["ownership"]}
+    for ticket_id, pin in owner_pins.items():
+        ownership = tickets[ticket_id]["ownership"]
+        require(ownership is None or ownership["state"] not in {"active", "paused"}
+                or ownership["stream"] == pin["stream"],
+                "Active or paused ownership stream conflicts with its owner pin")
     fixed.update({ticket_id: pin["stream"] for ticket_id, pin in owner_pins.items()})
     if previous is None:
         return fixed
@@ -351,6 +356,7 @@ def _authenticate_owner_reassignment(governance, ticket_id, intake_assignments,
         "binding": binding, "actor_id": directive["who"],
         "raw_body_sha256": raw_digest,
         "requested": {"old": directive["old"], "new": directive["new"]},
+        "created_at": created,
         "now": now,
     }
     try:
@@ -362,12 +368,13 @@ def _authenticate_owner_reassignment(governance, ticket_id, intake_assignments,
             and verified.get("actor_id") == directive["who"]
             and verified.get("binding") == binding
             and verified.get("raw_body_sha256") == raw_digest
+            and verified.get("created_at") == created
             and isinstance(verified.get("source_id"), str) and verified["source_id"]
             and isinstance(verified.get("observed_at"), str),
             "Owner-source verifier did not authenticate the exact stream reassignment")
     require(timestamp(verified["observed_at"]) <= timestamp(now),
             "Owner-source verification is future-dated")
-    return current_id, verified
+    return current_id, verified, created
 
 
 def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
@@ -457,11 +464,13 @@ def _owner_pins(previous, tickets, directives, verifier, now, operating_count,
         require(ticket["status"] not in {"in_progress", *FINAL}
                 and not (ticket["ownership"] and ticket["ownership"]["state"] in {"active", "paused"}),
                 "Started or completed work cannot be reassigned to another stream")
-        intake_assignment_id, verified = _authenticate_owner_reassignment(
+        intake_assignment_id, verified, authenticated_when = _authenticate_owner_reassignment(
             governance, ticket_id, intake_assignments, directive, verifier, now)
+        require(changed_at == timestamp(authenticated_when),
+                "Owner stream reassignment time must match the authenticated owner-source creation time")
         event = _assignment_event(
             chain_id, ticket_id=ticket_id, who=directive["who"],
-            when=directive["when"], why=directive["why"], old=directive["old"],
+            when=authenticated_when, why=directive["why"], old=directive["old"],
             new=directive["new"], kind="owner_reassignment",
             source_id=verified["source_id"],
             intake_assignment_id=intake_assignment_id,
