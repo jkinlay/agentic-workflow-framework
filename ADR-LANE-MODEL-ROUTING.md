@@ -8,11 +8,11 @@
 
 Observations, 13 October 2026:
 
-* Lane scripts hard-code runs to `gpt-5.6-sol`/high, bypassing routing and ledger.
+* Lane scripts hard-code every run to `gpt-5.6-sol`/high, bypassing routing, floors, escalation and ledger.
 * Runs omit provenance; review comments cite Codex CLI 0.149.0 while 0.162.0 is installed. AWF-80 removes the hard-coded string.
-* Host offers `gpt-6-luna`, `gpt-6.1-sol` and `gpt-6-astra` through ultra under a weekly allowance.
+* Host offers `gpt-6-luna`, `gpt-6.1-sol` and `gpt-6-astra` through ultra.
 
-`gpt-6-luna` matched quality faster and cheaper in tests.
+`gpt-6-luna` matched quality faster and cheaper in owner simple-task tests.
 
 | Option | Why not chosen |
 | --- | --- |
