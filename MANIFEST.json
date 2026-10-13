@@ -314,7 +314,7 @@
     ".agentic/tests/test_host_preflight_split_root.py": "71d996b32ae2ef3744786fee6bc56c65cd4fc71ec0299706ead251df6a320d89",
     ".agentic/tests/test_host_process.py": "e878e0f17ad20079f37e4f663623789550e4f639cf390bb26d1ecd9ff6fa6ce5",
     ".agentic/tests/test_intake_assignment.py": "c518d8bdd68af2f5fbdd7c2a5e60b4c7697df3e89f53bfdc7a2e9566dc459a11",
-    ".agentic/tests/test_integration_queue.py": "41de6d6caa9e59528f889254bc7004b440eb98fa324d298934492b20b5e6f61d",
+    ".agentic/tests/test_integration_queue.py": "8cacfe0d44a0f685533f74f7fae905ab1d7b9edda6dc817d97a57641c1e18541",
     ".agentic/tests/test_integration_queue_closeout.py": "8977a6af02e4b7dbd6554b0ad80c540fc1fd008f83b7c4bced40581cec98fa31",
     ".agentic/tests/test_integration_queue_round6_regressions.py": "35d2aff1bb3de932e2f9107dcd7b19d209d2d951cac8a82497e16f80a299734d",
     ".agentic/tests/test_integration_queue_round7_regressions.py": "f8f9ad923023ebebb82d371d50fb485a5973816bf1b93972f06a526aa72c5eff",
