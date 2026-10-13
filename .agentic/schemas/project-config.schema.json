@@ -1054,6 +1054,11 @@
                 "minLength": 1,
                 "pattern": "^[0-9a-f]{40}$"
               },
+              "workflow_blob_sha": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[0-9a-f]{40}$"
+              },
               "min_tests_executed": {
                 "type": "integer",
                 "minimum": 1,

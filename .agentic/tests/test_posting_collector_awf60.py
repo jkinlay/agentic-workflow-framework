@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from agentic import posting_collector
-from agentic.canonical import canonical, load, sha256
+from agentic.canonical import canonical, fingerprint, load, sha256
 from agentic.cli import main as workflow_main
 from agentic.gates import evaluate, review_round_receipt_sha256
 from agentic.intake_assignment import assign_intake
@@ -131,6 +131,53 @@ class PostingCollectorTests(Fixture):
         )
         return registrations, registry
 
+    def _tier_three_owner_review(self):
+        path = "src/release_gate.py"
+        self.bundle["worker"]["files_changed"] = [path]
+        self.bundle["pr"]["file_manifest"] = [{"path": path, "blob_sha": "1" * 40}]
+        self.bundle["critic"]["coverage"].update(
+            file_manifest_sha256=fingerprint(
+                "file-manifest", self.bundle["pr"]["file_manifest"]
+            ),
+            reviewed_paths=[path],
+        )
+        self.bundle["contract"]["scope"]["expected_paths"] = [path]
+        self.bundle["contract"].update(
+            risk_tier=3, tier_justification="Release gate escalation."
+        )
+        self.rebind()
+        verifier = self.verifier_run()
+        terminal = self.bundle["review_verdicts"][-1]
+        owner = copy.deepcopy(terminal)
+        approval_id = 9001
+        approval_url = (
+            f"{self.bundle['candidate']['host']}/"
+            f"{self.bundle['candidate']['repository']}/pull/"
+            f"{self.bundle['candidate']['pr_number']}#pullrequestreview-{approval_id}"
+        )
+        owner.update(
+            record_id="10000000-0000-4000-8000-000000000001",
+            producer_id=verifier["producer_id"],
+            run_id=verifier["run_id"],
+            reviewer_id="fixture-owner",
+            owner_review=True,
+            owner_id=1001,
+            pr_comment_url=approval_url,
+        )
+        self.bundle["owner_review"] = owner
+        candidate = self.bundle["candidate"]
+        pr_suffix = f"pulls/{candidate['pr_number']}"
+        self.host.responses[pr_suffix]["head"] = {"sha": candidate["head_sha"]}
+        self.host.responses[pr_suffix]["base"]["sha"] = candidate["target_base_sha"]
+        self.host.responses[f"{pr_suffix}/reviews/{approval_id}"] = {
+            "id": approval_id,
+            "html_url": approval_url,
+            "state": "APPROVED",
+            "commit_id": candidate["head_sha"],
+            "user": {"id": 1001},
+        }
+        return owner
+
     def _terminal_fragment_fixture(self):
         terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
         fragment = f"review-verdict-{terminal['round']}-{terminal['record_id']}"
@@ -164,6 +211,79 @@ class PostingCollectorTests(Fixture):
         self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", gate["conclusion"])
         self.assertEqual("PASS", gate["gates"]["verdict_posting"]["result"])
         self.assertTrue(all(item["collector_id"] == COLLECTOR_ID for item in registrations))
+
+    def test_ac5_collector_observes_formal_owner_approval_for_exact_candidate(self):
+        owner = self._tier_three_owner_review()
+        verdict = self.bundle["review_verdicts"][-1]
+        receipt = self.bundle["review_round_receipts"][-1]
+        collected = collect_posting_observation(
+            self.host,
+            candidate=self.bundle["candidate"],
+            verdict=verdict,
+            review_round_receipt=receipt,
+            collector_run_id=verdict["posting_observation"]["run_id"],
+            observed_at=verdict["posting_observation"]["observed_at"],
+            release_sha256=RELEASE_SHA256,
+            owner_review=owner,
+        )
+        provider = json.loads(base64.b64decode(
+            collected["observation"]["provider_response_bytes"]["data"]
+        ).decode("utf-8"))
+        self.assertEqual("APPROVED", provider["owner_approval"]["state"])
+        self.assertEqual(1001, provider["owner_approval"]["user"]["id"])
+        self.assertEqual(
+            self.bundle["candidate"]["head_sha"],
+            provider["owner_approval"]["commit_id"],
+        )
+        self.assertEqual(
+            owner["candidate_binding"], provider["owner_approval"]["candidate"]
+        )
+        verdict["posting_observation"] = collected["observation"]
+        owner["posting_observation"] = collected["observation"]
+        registry = registry_from_review_host(
+            self.host, self.bundle, release_sha256=RELEASE_SHA256
+        )
+        self.assertIn(
+            collected["observation"]["run_id"], registry[COLLECTOR_ID]["receipts"]
+        )
+
+    def test_ac5_collector_refuses_wrong_owner_or_candidate_approval(self):
+        owner = self._tier_three_owner_review()
+        verdict = self.bundle["review_verdicts"][-1]
+        receipt = self.bundle["review_round_receipts"][-1]
+        suffix = f"pulls/{self.bundle['candidate']['pr_number']}/reviews/9001"
+        cases = {
+            "owner": ("user", {"id": 2002}),
+            "candidate": ("commit_id", "f" * 40),
+        }
+        original = copy.deepcopy(self.host.responses[suffix])
+        for label, (field, value) in cases.items():
+            with self.subTest(label=label):
+                self.host.responses[suffix] = copy.deepcopy(original)
+                self.host.responses[suffix][field] = value
+                with self.assertRaisesRegex(
+                    PostingCollectorMismatch, "OWNER_APPROVAL_MISMATCH"
+                ):
+                    collect_posting_observation(
+                        self.host,
+                        candidate=self.bundle["candidate"],
+                        verdict=verdict,
+                        review_round_receipt=receipt,
+                        collector_run_id=verdict["posting_observation"]["run_id"],
+                        observed_at=verdict["posting_observation"]["observed_at"],
+                        release_sha256=RELEASE_SHA256,
+                        owner_review=owner,
+                    )
+        self.host.responses[suffix] = original
+
+    def test_ac5_registry_refuses_self_asserted_owner_without_provider_approval(self):
+        self._tier_three_owner_review()
+        with self.assertRaisesRegex(
+            PostingCollectorMismatch, "OWNER_APPROVAL_MISMATCH"
+        ):
+            registry_from_review_host(
+                self.host, self.bundle, release_sha256=RELEASE_SHA256
+            )
 
     def test_ac2_comment_mismatch_has_specific_reason_and_gate_stays_not_ready(self):
         self._install_runtime_observations()
@@ -682,7 +802,7 @@ class PostingCollectorTests(Fixture):
                         generate_contracts.main()
                 with mock.patch.object(generate_examples, "ROOT", generated_root):
                     with redirect_stdout(io.StringIO()):
-                        generate_examples.main()
+                        generate_examples.main([])
 
                 checked_schema = (
                     ROOT / ".agentic/schemas/posting-collector-registration.schema.json"

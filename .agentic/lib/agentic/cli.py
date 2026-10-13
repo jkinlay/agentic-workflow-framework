@@ -438,6 +438,7 @@ def main(argv=None, default_root=None):
                     gate = evaluate(
                         config, workflow, bundle, contracts, args.now or now_text(),
                         posting_collector_registry=posting_collector_registry,
+                        repository=root,
                     )
                     if posting_collector_reason is not None:
                         gate["residual_risks"].append(

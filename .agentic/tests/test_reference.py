@@ -32,7 +32,9 @@ from agentic.review_tiers import classify
 from agentic.safeio import Tree
 from agentic.store import Store
 import test_ready_authorization as ready_fixtures
-from test_review_policy import bind_production_posting_fixture, bind_review_admission
+from test_review_policy import (RuntimeAssignedGateConfig,
+                                bind_production_posting_fixture,
+                                bind_review_admission)
 
 NOW = "2026-09-09T12:00:00Z"
 
@@ -45,8 +47,8 @@ class Fixture(unittest.TestCase):
         cls.bundle0 = load(ROOT / ".agentic/examples/evidence-bundle.json")
 
     def setUp(self):
-        self.config = copy.deepcopy(self.config0)
         self.bundle = copy.deepcopy(self.bundle0)
+        self.config = RuntimeAssignedGateConfig(copy.deepcopy(self.config0), self)
 
     def gate(self):
         bind_review_admission(self.bundle)
@@ -408,6 +410,8 @@ class LifecycleTests(unittest.TestCase):
                 if event == "FINAL_GATE_PASSED":
                     config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
                     bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+                    self.bundle = bundle
+                    config = RuntimeAssignedGateConfig(config, self)
                     bind_review_admission(bundle)
                     registry = bind_production_posting_fixture(config, bundle)
                     facts["final_gate"] = evaluate(config, definition(), bundle,
