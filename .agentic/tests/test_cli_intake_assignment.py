@@ -21,7 +21,9 @@ from agentic.intake_assignment import assign_intake, change_assignment
 from agentic.review_tiers import runtime_assignment
 from source_only import skip_unless_source_repo
 from test_intake_assignment import NOW, owner_source, verify_owner_source
-from test_review_policy import sealed_runtime
+from test_review_policy import NOW as REVIEW_NOW
+from test_review_policy import (bind_production_posting_fixture,
+                                bind_review_admission, sealed_runtime)
 
 
 class CliIntakeAssignmentTests(unittest.TestCase):
@@ -90,6 +92,81 @@ class CliIntakeAssignmentTests(unittest.TestCase):
                 "--config", str(config_path),
                 "--assignment-state", str(state_path),
                 "--ticket", "EX-1",
+            ])
+        stream = stdout if code == 0 else stderr
+        return code, json.loads(stream.getvalue())
+
+    def _tier_change_gate_fixture(self, folder, *, terminal_tier=3):
+        from test_review_tiers_195_gates import ReviewTiers195GateTests
+
+        ReviewTiers195GateTests.setUpClass()
+        gate_fixture = ReviewTiers195GateTests(
+            "test_awf16_195_r3_004_pre_escalation_round_keeps_old_tier_and_binding"
+        )
+        gate_fixture.setUp()
+        gate_fixture._tier_three_candidate()
+        gate_fixture._review_history(2, historical_tier=2, terminal_tier=terminal_tier)
+        bind_review_admission(gate_fixture.bundle)
+        collector_registry = bind_production_posting_fixture(
+            gate_fixture.config, gate_fixture.bundle
+        )
+        gate_fixture._owner_review()
+        gate_fixture._refresh_owner_posting_receipt(collector_registry)
+
+        state_config = copy.deepcopy(gate_fixture.config0)
+        state_config["jira"]["enabled"] = False
+        state = {}
+        first = assign_intake(
+            state_config,
+            {"key": "EX-1", "summary": "Moderate code", "description": "",
+             "write_paths": ["src/example.py"], "risk_flags": []},
+            state,
+            None,
+            now="2026-10-10T08:00:00Z",
+            controller_actor_id="controller-1",
+        )
+        changed = change_assignment(
+            state_config,
+            "EX-1",
+            state,
+            None,
+            requested_tier=3,
+            requested_cap=3,
+            owner_source=owner_source(
+                "EX-1", first["assignment_id"], 3, 3, "Gate scope added"
+            ),
+            verify_owner_source=verify_owner_source,
+            reason="Gate scope added",
+            now="2026-10-10T09:00:00Z",
+            controller_actor_id="controller-1",
+        )
+
+        base = Path(folder)
+        runtime = sealed_runtime(folder)
+        config_path = base / "project-config.json"
+        bundle_path = base / "bundle.json"
+        state_path = base / "controller-state.json"
+        config_path.write_text(json.dumps(dict(gate_fixture.config)), encoding="utf-8")
+        bundle_path.write_text(json.dumps(gate_fixture.bundle), encoding="utf-8")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        return (runtime, config_path, bundle_path, state_path, collector_registry,
+                first, changed)
+
+    def _gate_evaluate(self, runtime, config_path, bundle_path, state_path,
+                       collector_registry):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch(
+                "agentic.posting_collector.registry_from_host_config",
+                return_value=collector_registry), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = workflow_main([
+                "--root", str(runtime), "evaluate", str(bundle_path),
+                "--config", str(config_path),
+                "--assignment-state", str(state_path),
+                "--posting-collector-host-config", str(
+                    state_path.parent / "posting-host.json"
+                ),
+                "--now", REVIEW_NOW,
             ])
         stream = stdout if code == 0 else stderr
         return code, json.loads(stream.getvalue())
@@ -198,6 +275,36 @@ class CliIntakeAssignmentTests(unittest.TestCase):
                     "--config", str(config_path), "--now", NOW,
                 ])
         self.assertEqual(2, raised.exception.code)
+
+    def test_awf48_r5_044_001_cli_accepts_historical_t2_then_terminal_t3(self):
+        with tempfile.TemporaryDirectory() as folder:
+            (runtime, config_path, bundle_path, state_path, collector_registry,
+             first, changed) = (
+                self._tier_change_gate_fixture(folder)
+            )
+            code, output = self._gate_evaluate(
+                runtime, config_path, bundle_path, state_path, collector_registry
+            )
+        self.assertEqual(2, first["tier"])
+        self.assertEqual(3, changed["tier"])
+        self.assertEqual(0, code, output)
+        self.assertEqual(3, output["risk_tier"])
+        self.assertEqual("PASS", output["gates"]["critic_current_tuple"]["result"])
+        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", output["conclusion"])
+
+    def test_awf48_r5_044_001_cli_refuses_terminal_tier_assignment_mismatch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            (runtime, config_path, bundle_path, state_path, collector_registry,
+             first, changed) = (
+                self._tier_change_gate_fixture(folder, terminal_tier=2)
+            )
+            code, output = self._gate_evaluate(
+                runtime, config_path, bundle_path, state_path, collector_registry
+            )
+        self.assertEqual(2, first["tier"])
+        self.assertEqual(3, changed["tier"])
+        self.assertEqual(2, code)
+        self.assertIn("tier", output["reason"].lower())
 
 
 if __name__ == "__main__":
