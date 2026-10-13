@@ -29,7 +29,9 @@ from agentic.review_completion import ReviewCompletionStore, review_authority_fr
 from agentic.providers.github_reviewer_removal import (approval_comment_body,
     github_reviewer_removal_observer)
 from agentic.store import Store
-from test_review_policy import bind_production_posting_fixture, bind_review_admission
+from test_review_policy import (RuntimeAssignedGateConfig,
+                                bind_production_posting_fixture,
+                                bind_review_admission)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -861,10 +863,11 @@ class ReviewCompletionTests(unittest.TestCase):
     def test_old_gate_authorization_interaction_and_lifecycle_routes_cannot_bypass_barrier(self):
         contracts = Contracts(ROOT / ".agentic/schemas")
         config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
-        bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
-        bind_review_admission(bundle)
-        registry = bind_production_posting_fixture(config, bundle)
-        gate = evaluate(config, definition(), bundle, contracts, "2026-09-09T12:00:00Z",
+        self.bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+        config = RuntimeAssignedGateConfig(config, self)
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(config, self.bundle)
+        gate = evaluate(config, definition(), self.bundle, contracts, "2026-09-09T12:00:00Z",
                         posting_collector_registry=registry)
         request = make_request(gate, contracts, "2026-09-09T12:00:00Z")
         gate_handoff(gate, request, config, contracts, "2026-09-09T12:00:00Z")
@@ -873,7 +876,7 @@ class ReviewCompletionTests(unittest.TestCase):
         self.assertEqual(transition("FINAL_REVIEW", "FINAL_GATE_PASSED", facts),
                          "READY_FOR_OWNER_AUTHORIZATION")
 
-        missing = copy.deepcopy(bundle)
+        missing = copy.deepcopy(self.bundle)
         del missing["review_submission"]
         with self.assertRaises(ValidationError):
             evaluate(config, definition(), missing, contracts, "2026-09-09T12:00:00Z")

@@ -35,6 +35,42 @@ def decode_base64_bytes(value, field):
     return raw
 
 
+def owner_approval_evidence_matches(owner, terminal_verdict, candidate):
+    """Require the owner record to carry the terminal registered GitHub approval."""
+    if not isinstance(owner, dict) or not isinstance(terminal_verdict, dict):
+        return False
+    observation = owner.get("posting_observation")
+    if observation != terminal_verdict.get("posting_observation"):
+        return False
+    try:
+        raw = decode_base64_bytes(
+            observation.get("provider_response_bytes"), "provider_response_bytes"
+        )
+        provider = loads(raw.decode("utf-8"))
+    except (AttributeError, UnicodeError, ValidationError):
+        return False
+    if canonical(provider) != raw:
+        return False
+    approval = provider.get("owner_approval") if isinstance(provider, dict) else None
+    if (not isinstance(approval, dict)
+            or set(approval) != {
+                "id", "html_url", "state", "commit_id", "user", "candidate"
+            }
+            or type(approval.get("id")) is not int or approval["id"] <= 0
+            or approval.get("state") != "APPROVED"
+            or approval.get("commit_id") != candidate.get("head_sha")
+            or approval.get("user") != {"id": owner.get("owner_id")}
+            or approval.get("candidate") != owner.get("candidate_binding")):
+        return False
+    prefix = (
+        f"{candidate.get('host')}/{candidate.get('repository')}/pull/"
+        f"{candidate.get('pr_number')}"
+    )
+    expected_url = f"{prefix}#pullrequestreview-{approval['id']}"
+    return (approval.get("html_url") == expected_url
+            and owner.get("pr_comment_url") == expected_url)
+
+
 def resource_overlaps(runs, limits):
     """Concurrent COMPLETE runs from different contexts exceeding a named resource's slots.
 
@@ -134,7 +170,8 @@ def ci_workflow_provenance_matches(required, observed, candidate_blob_sha):
             and candidate_blob_sha == workflow_blob_sha)
 
 
-def verified_owner_records(config, contracts, bundle, binding, runs, excluded_contexts, excluded_producers, now):
+def verified_owner_records(config, contracts, bundle, binding, runs, excluded_contexts,
+                           excluded_producers, now, *, assignment_record=None):
     """Validate owner dispositions before any of them can change a gate."""
     from .authorization import verify_owner_record
     head = bundle["candidate"]["head_sha"]
@@ -156,7 +193,12 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
         if schema == "finding-disposition":
             dispositions.append(record)
     if cap is not None:
-        limit = config["execution"]["max_amendment_cycles"]
+        if assignment_record is None:
+            raise ValidationError(
+                "Review cap disposition requires a verified per-ticket intake assignment")
+        from .review_tiers import round_cap
+        limit = round_cap(assignment_record["tier"],
+                          assignment_record=assignment_record)
         if cap["cycles"] < limit:
             raise ValidationError(f"Cap disposition at cycles {cap['cycles']} precedes the cap ({limit}); present REVIEW_CAP_REACHED first")
         if cap["cap_extensions"] > config["execution"].get("max_cap_extensions", 2):
@@ -263,6 +305,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     timestamp(now)
     binding = expected_binding(config, workflow, bundle)
     candidate, contract, snapshot = bundle["candidate"], bundle["contract"], bundle["snapshot"]
+    from .review_tiers import runtime_assignment
+    assignment_record = runtime_assignment(config, ticket_key=contract["ticket"])
     for name, expected in [("host", config["github"]["host"]), ("repository_id", config["github"]["repository_id"]),
                            ("repository", config["github"]["repository"]), ("target_base_branch", config["github"]["base_branch"]),
                            ("merge_method", config["github"]["merge_method"])]:
@@ -316,7 +360,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         raise ValidationError("Critic is not independent of implementation")
     dispositions, cap_disposition = verified_owner_records(config, contracts, bundle, binding, runs,
                                                             {worker_run["context_id"], critic_run["context_id"]},
-                                                            {worker_run["producer_id"], critic_run["producer_id"]}, now)
+                                                            {worker_run["producer_id"], critic_run["producer_id"]}, now,
+                                                            assignment_record=assignment_record)
     if bundle["worker"]["dispatch_id"] != bundle["dispatch"]["record_id"]:
         raise ValidationError("Worker result references a different dispatch")
     dispatch = bundle["dispatch"]
@@ -378,6 +423,9 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         raise ValidationError("Contract risk_classification does not match observed paths and risk evidence")
     if bundle_classification != durable_classification:
         raise ValidationError("Evidence bundle tier_classification is missing or stale")
+    if assignment_record is not None:
+        from .review_tiers import round_cap
+        round_cap(tier, assignment_record=assignment_record)
     if not verdicts:
         raise ValidationError("Every consumed review round needs a current posted verdict record")
     unique(verdicts, "round", "review verdict round")
@@ -385,6 +433,10 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     if {v["round"] for v in verdicts} != expected_rounds:
         raise ValidationError("Review verdicts must cover every consumed round without gaps")
     terminal_round = max(v["round"] for v in verdicts)
+    if (assignment_record is None
+            and bundle.get("provenance_mode") == "production_observation"):
+        raise ValidationError(
+            f"No verified runtime review assignment for {contract['ticket']}; gate cap evaluation fails closed")
     critic_run_ids = set()
     completion_cycle_ids = set()
     critic_artifacts_ok = True
@@ -418,7 +470,16 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         if verdict["round"] == terminal_round and verdict["tier"] != tier:
             raise ValidationError("Review verdict tier does not match the recomputed contract tier")
         from .review_tiers import validate_round
-        validate_round(verdict["tier"], verdict["round"], owner_cap_disposition=bundle.get("cap_disposition"), config=config)
+        # The persisted runtime map intentionally exposes only the current
+        # assignment.  Apply it to the terminal/new round; retained rounds
+        # remain bound to their own tier evidence and mandatory policy ceiling.
+        round_kwargs = {}
+        if verdict["round"] == terminal_round:
+            round_kwargs = ({"assignment_record": assignment_record}
+                            if assignment_record is not None else {"config": config})
+        validate_round(verdict["tier"], verdict["round"],
+                       owner_cap_disposition=bundle.get("cap_disposition"),
+                       **round_kwargs)
         artifact_binding = verdict["critic_artifact_binding"]
         receipt = receipts_by_round.get(verdict["round"])
         critic_receipt = verdict.get("critic_review")
@@ -708,6 +769,9 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     # REQUEST_CHANGES result forward.
     lenient = (cap_disposition is not None
                and cap_disposition["decision"] == "MERGE_WITH_NOTES")
+    critic_verdicts = [v for v in verdicts if not v["owner_review"]]
+    terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
+    terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
     owner = bundle.get("owner_review")
     owner_run = runs.get(owner.get("run_id")) if owner is not None else None
     owner_review_ok = tier != 3 or (owner is not None
@@ -724,10 +788,10 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                                         "pr_number": candidate["pr_number"],
                                         "base_sha": candidate["target_base_sha"],
                                          "head_sha": candidate["head_sha"]}
-                                     and owner.get("record_id") in {v.get("record_id") for v in records})
-    critic_verdicts = [v for v in verdicts if not v["owner_review"]]
-    terminal_critic = max(critic_verdicts, key=lambda v: v["round"]) if critic_verdicts else None
-    terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
+                                     and owner.get("record_id") in {v.get("record_id") for v in records}
+                                     and posting_evidence_ok
+                                     and owner_approval_evidence_matches(
+                                         owner, terminal_verdict, candidate))
     terminal_verdict_ok = (terminal_verdict["verdict"] in {"PASS", "REQUEST_CHANGES"}
                            if lenient else terminal_verdict["verdict"] == "PASS")
     critic_ok = (no_blockers and p2_ticketing_ok and critic_artifacts_ok

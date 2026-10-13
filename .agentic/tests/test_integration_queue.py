@@ -25,6 +25,7 @@ from agentic.canonical import canonical, fingerprint, load, sha256
 from agentic.contracts import Contracts
 from agentic.gates import evaluate
 from agentic.integration_queue import (DEFAULTS, WORKER_GUIDANCE, IntegrationQueueStore,
+    _accepted_project_config,
     build_execution_receipt_sha256, build_input_id, build_record,
     delta_review_requirement, integration_status as _integration_status, post_merge_action,
     provider_observation_receipt_sha256, render_owner_instruction, resolve_mode,
@@ -51,9 +52,37 @@ GIT_REGISTRY = {}
 MODE_REGISTRY = {}
 
 
+class ReviewedConfigWithRuntime(dict):
+    def __init__(self, values, runtime):
+        super().__init__(values)
+        self.runtime = runtime
+
+    def __deepcopy__(self, memo):
+        return type(self)(copy.deepcopy(dict(self), memo),
+                          copy.deepcopy(self.runtime, memo))
+
+    def get(self, key, default=None):
+        if key == "_awf_runtime":
+            return self.runtime
+        return super().get(key, default)
+
+
 def integration_status(*args, **kwargs):
     kwargs.setdefault("build_producer_registry", BUILD_REGISTRY)
-    return _integration_status(*args, **kwargs)
+    runtime = kwargs.get("config", {}).get("_awf_runtime")
+
+    def accepted_config_with_runtime(*accepted_args, **accepted_kwargs):
+        result = _accepted_project_config(*accepted_args, **accepted_kwargs)
+        if runtime is None:
+            return result
+        if accepted_kwargs.get("return_attestation"):
+            accepted, attestation = result
+            return ReviewedConfigWithRuntime(accepted, runtime), attestation
+        return ReviewedConfigWithRuntime(result, runtime)
+
+    with patch("agentic.integration_queue._accepted_project_config",
+               side_effect=accepted_config_with_runtime):
+        return _integration_status(*args, **kwargs)
 
 
 def entry(pr, head, *, depends=(), base="main", validated=NOW, paths=None, patch=None):
@@ -392,6 +421,21 @@ def trusted_readiness():
         app_binding={"producer_id": "fixture-mode-provider"},
         mode_observer_registry=mode_registry, now=GATE_NOW)
     bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+    ticket = bundle["contract"]["ticket"]
+    tier = bundle["tier_classification"]["tier"]
+    assignment = {
+        "assignment_id": "integration-queue-fixture-assignment",
+        "ticket_key": ticket,
+        "tier": tier,
+        "round_cap": {1: 1, 2: 2, 3: 3}[tier],
+        "owner_review_required": tier == 3,
+    }
+    assignment["assignment_sha256"] = fingerprint(
+        "intake_assignment_record", assignment)
+    runtime = {"active_ticket_key": ticket,
+               "intake_assignments": {ticket: assignment}}
+
+    config = ReviewedConfigWithRuntime(config, runtime)
     bundle["ci"]["checks"][0]["name"] = "awf-integration"
     from agentic.gates import expected_binding
     bundle["contract"]["policy_hash"] = policy_hash(config, definition())
