@@ -18,6 +18,7 @@ from agentic.canonical import validate_value
 
 ROLES = ("controller", "worker", "critic", "specialist")
 RUN_ROLES = ("controller", "worker", "fix", "critic", "specialist")
+PROVENANCE_RUN_KINDS = ("writer", "critic", "design", "spec_review", "specialist")
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
 RISK_FLAGS = ("security", "permissions", "schema_or_migration", "data_loss",
@@ -272,6 +273,106 @@ def _at_least(policy, pair, floor):
             and EFFORTS.index(pair["reasoning_effort"]) >= EFFORTS.index(floor["reasoning_effort"]))
 
 
+def require_reviewer_route(policy, writer_route, reviewer_route):
+    """Return a reviewer route only when it is not weaker than the writer.
+
+    Both axes use the reviewed policy's existing ordering. Unknown models,
+    unsupported efforts and partial route objects are invalid rather than low.
+    """
+    validate_policy(policy)
+    _valid_pair(policy, writer_route, "writer route")
+    _valid_pair(policy, reviewer_route, "reviewer route")
+    _require(_at_least(policy, reviewer_route, writer_route),
+             "reviewer route is weaker than the writer route")
+    return deepcopy(reviewer_route)
+
+
+def review_route_requires_fresh_review(policy, prior_route, new_route):
+    """R-2: report whether a same-PR review route changed on either axis."""
+    validate_policy(policy)
+    _valid_pair(policy, prior_route, "prior review route")
+    _valid_pair(policy, new_route, "new review route")
+    return any(prior_route[field] != new_route[field]
+               for field in ("model", "reasoning_effort"))
+
+
+def _timestamp(value, label):
+    _name(value, label)
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except ValueError as exc:
+        raise ValidationError(label + " must be an ISO-8601 timestamp") from exc
+    _require(parsed.tzinfo is not None, label + " must include a UTC offset")
+
+
+def _provenance_digest(record):
+    payload = {key: value for key, value in record.items() if key != "provenance_sha256"}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _validate_run_provenance(record, *, ledger_recorded=False):
+    """Validate caller observations without inventing absent launch telemetry."""
+    _object(record, "run provenance")
+    required = {"role", "run_id", "ticket", "pr", "head", "tier",
+                "escalation_step", "requested_model", "requested_effort",
+                "observed_model", "observed_effort", "codex_cli_version",
+                "tokens", "outcome"}
+    _require(required <= set(record),
+             "run provenance requires " + ", ".join(sorted(required)))
+    for field in ("run_id", "ticket", "head", "requested_model", "codex_cli_version", "outcome"):
+        _name(record.get(field), field)
+    _require(record.get("role") in PROVENANCE_RUN_KINDS,
+             "role must be writer, critic, design, spec_review, or specialist")
+    pr = record.get("pr")
+    _require((type(pr) is int and 1 <= pr <= 2**53 - 1)
+             or (isinstance(pr, str) and bool(pr) and pr.strip() == pr),
+             "pr must be a positive interoperable integer or nonempty identifier")
+    _require(type(record.get("tier")) is int and record["tier"] in (1, 2, 3),
+             "tier must be 1, 2, or 3")
+    _integer(record.get("escalation_step"), "escalation_step")
+    _require(record.get("requested_effort") in EFFORTS, "requested_effort is unknown")
+    observed_model = record.get("observed_model")
+    observed_effort = record.get("observed_effort")
+    if observed_model != "unobserved":
+        _name(observed_model, "observed_model")
+    if observed_effort != "unobserved":
+        _require(observed_effort in EFFORTS, "observed_effort is unknown")
+    tokens = record.get("tokens")
+    _require(tokens == "unknown" or
+             (type(tokens) is int and 0 <= tokens <= 2**53 - 1),
+             "tokens must be a nonnegative interoperable integer or the literal 'unknown'")
+    if "started_at" in record:
+        _timestamp(record.get("started_at"), "started_at")
+    if ledger_recorded:
+        _require(record.get("ledger_recorded") is True,
+                 "routing switch provenance must be a ledger-recorded record")
+        _name(record.get("project_id"), "project_id")
+        _timestamp(record.get("recorded_at"), "recorded_at")
+        digest = record.get("provenance_sha256")
+        _require(isinstance(digest, str) and len(digest) == 64
+                 and digest == _provenance_digest(record),
+                 "ledger-recorded run provenance digest is invalid")
+    return record
+
+
+def require_routing_switch_provenance(policy, prior_route, new_route, provenance_record):
+    """R-3: refuse activation of a changed route without bound run evidence."""
+    validate_policy(policy)
+    _valid_pair(policy, prior_route, "prior routing route")
+    _valid_pair(policy, new_route, "new routing route")
+    changed = any(prior_route[field] != new_route[field]
+                  for field in ("model", "reasoning_effort"))
+    if not changed:
+        return False
+    _require(provenance_record is not None,
+             "routing switch requires a present run provenance record")
+    _validate_run_provenance(provenance_record, ledger_recorded=True)
+    _require((provenance_record["requested_model"], provenance_record["requested_effort"])
+             == (new_route["model"], new_route["reasoning_effort"]),
+             "routing switch provenance does not match the requested route")
+    return True
+
+
 def _critic_route(default_route, stream_route):
     """Apply an explicit stream reviewer pin over the shared critic default."""
     if stream_route is not None and stream_route.get("pinned", False):
@@ -503,6 +604,13 @@ def initialize_routing_ledger(connection, *, legacy_only=False):
         return
     connection.execute("CREATE TABLE IF NOT EXISTS model_failure_resolutions (run_id TEXT PRIMARY KEY, observation TEXT NOT NULL)")
     connection.execute("CREATE TABLE IF NOT EXISTS model_defect_observations (observation_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, observation TEXT NOT NULL)")
+    connection.execute("""CREATE TABLE IF NOT EXISTS routing_run_provenance (
+      run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, ticket_id TEXT NOT NULL,
+      run_kind TEXT NOT NULL, record TEXT NOT NULL)""")
+    connection.execute("CREATE INDEX IF NOT EXISTS routing_run_provenance_project ON routing_run_provenance(project_id,ticket_id)")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS routing_run_provenance_no_update BEFORE UPDATE ON routing_run_provenance BEGIN SELECT RAISE(ABORT, 'run provenance is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS routing_run_provenance_no_delete BEFORE DELETE ON routing_run_provenance BEGIN SELECT RAISE(ABORT, 'run provenance is append-only'); END")
+    connection.execute("CREATE TRIGGER IF NOT EXISTS routing_run_provenance_no_replace BEFORE INSERT ON routing_run_provenance WHEN EXISTS(SELECT 1 FROM routing_run_provenance WHERE run_id=NEW.run_id OR rowid=NEW.rowid) BEGIN SELECT RAISE(ABORT, 'run provenance is append-only'); END")
     connection.execute("""CREATE TABLE IF NOT EXISTS model_disposition_requests (
       request_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, ticket_id TEXT NOT NULL,
       run_id TEXT UNIQUE NOT NULL, observation TEXT NOT NULL)""")
@@ -604,6 +712,81 @@ class RoutingLedger:
             raise
         finally:
             connection.close()
+
+    def record_run_provenance(self, project_id, record):
+        """Append one caller-supplied launch/result provenance record.
+
+        The ledger supplies only its recording time and digest. In particular it
+        never probes, defaults or rewrites the caller's Codex CLI version,
+        observed route, or token usage.
+        """
+        _name(project_id, "project_id")
+        _validate_run_provenance(record)
+        generated = {"project_id", "recorded_at", "ledger_recorded", "provenance_sha256"}
+        _require(not (generated & set(record)),
+                 "caller run provenance cannot supply ledger-generated fields")
+        supplied = deepcopy(record)
+        with self._transaction() as connection:
+            prior = connection.execute(
+                "SELECT project_id,record FROM routing_run_provenance WHERE run_id=?",
+                (supplied["run_id"],)).fetchone()
+            if prior is not None:
+                recorded = json.loads(prior["record"])
+                original = {key: value for key, value in recorded.items()
+                            if key not in generated}
+                _require(prior["project_id"] == project_id and original == supplied,
+                         "run_id conflicts with existing append-only provenance")
+                _validate_run_provenance(recorded, ledger_recorded=True)
+                return recorded
+            result = {**supplied, "project_id": project_id,
+                      "recorded_at": datetime.now(timezone.utc).isoformat(),
+                      "ledger_recorded": True}
+            result["provenance_sha256"] = _provenance_digest(result)
+            connection.execute(
+                "INSERT INTO routing_run_provenance "
+                "(run_id,project_id,ticket_id,run_kind,record) VALUES (?,?,?,?,?)",
+                (result["run_id"], project_id, result["ticket"],
+                 result["role"], json.dumps(result)))
+            return result
+
+    def run_provenance(self, project_id, run_id):
+        """Read one project-bound provenance row, preserving unknown literals."""
+        _name(project_id, "project_id")
+        _name(run_id, "run_id")
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT record FROM routing_run_provenance WHERE project_id=? AND run_id=?",
+                (project_id, run_id)).fetchone()
+        if row is None:
+            return None
+        record = json.loads(row["record"])
+        _validate_run_provenance(record, ledger_recorded=True)
+        return record
+
+    def provenance_history(self, project_id, ticket_id=None):
+        """Read append order for a project or one ticket without touching runs."""
+        _name(project_id, "project_id")
+        if ticket_id is not None:
+            _name(ticket_id, "ticket_id")
+        query = "SELECT record FROM routing_run_provenance WHERE project_id=?"
+        parameters = [project_id]
+        if ticket_id is not None:
+            query += " AND ticket_id=?"
+            parameters.append(ticket_id)
+        query += " ORDER BY rowid"
+        with closing(self._connect()) as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        records = [json.loads(row["record"]) for row in rows]
+        for record in records:
+            _validate_run_provenance(record, ledger_recorded=True)
+        return {"project_id": project_id, "ticket_id": ticket_id, "runs": records}
+
+    def require_routing_switch_provenance(self, project_id, policy,
+                                          prior_route, new_route, run_id):
+        """R-3 gate backed by a row present in this protected ledger."""
+        record = self.run_provenance(project_id, run_id)
+        return require_routing_switch_provenance(
+            policy, prior_route, new_route, record)
 
     def reserve(self, project_id, policy, request, capabilities, *, operating=None, governance=None):
         """Persist a validated policy observation, then atomically admit a run.
