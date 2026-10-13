@@ -1,4 +1,5 @@
 import copy
+import base64
 import hashlib
 from pathlib import Path
 import shutil
@@ -11,9 +12,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
-from agentic.canonical import canonical, load, sha256
+from agentic.canonical import canonical, fingerprint, load, sha256
 from agentic.closeout import require_jira_reconciliation_before_counts
+from agentic.continuous_controller import production_merge_observed
 from agentic.contracts import Contracts
+from agentic.lifecycle import definition
+from agentic.policy import policy_hash
 from test_integration_queue import register_integration_observer
 
 
@@ -59,20 +63,22 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temporary.cleanup()
 
-    def binding(self, issue="AWF-17"):
-        return {"project_id": "10000000-0000-0000-0000-000000000003",
-                "repository_id": 17, "issue_id": issue,
+    def binding(self, issue="AWF-17", config=None):
+        config = PROJECT_CONFIG if config is None else config
+        return {"project_id": config["project"]["id"],
+                "repository_id": config["github"]["repository_id"], "issue_id": issue,
                 "requirements_hash": "a" * 64, "contract_hash": "b" * 64,
-                "policy_hash": "c" * 64, "candidate_id": "d" * 64}
+                "policy_hash": policy_hash(config, definition()),
+                "candidate_id": "d" * 64}
 
-    def record(self, transition="VALID"):
+    def record(self, transition="VALID", config=None):
         if transition == "VALID":
             transition = TRANSITION_ID
         return {"schema_version": 3,
                 "record_id": "10000000-0000-0000-0000-000000000004",
-                "created_at": NOW, "producer_id": "controller-1",
+                "created_at": NOW, "producer_id": "fixture-controller",
                 "run_id": "10000000-0000-0000-0000-000000000005",
-                "binding": self.binding(), "pr_number": 17,
+                "binding": self.binding(config=config), "pr_number": 17,
                 "reviewed_head_sha": self.head, "base_sha": self.base,
                 "merge_commit_sha": self.merge, "merge_tree_sha": self.tree,
                 "bound_files": [{"path": "src/task.py", "blob_sha": self.blob,
@@ -84,7 +90,7 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
 
     def reconciliation(self, **changes):
         value = {"schema_version": 3, "record_id": TRANSITION_ID,
-                 "created_at": NOW, "producer_id": "controller-1",
+                 "created_at": NOW, "producer_id": "fixture-controller",
                  "run_id": "10000000-0000-0000-0000-000000000008",
                  "binding": self.binding(),
                  "operation_id": "10000000-0000-0000-0000-000000000009",
@@ -103,31 +109,61 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
         return value
 
     def gate(self, closeout, reconciliation=None, *, config=None,
-             accepted_config=None):
+             accepted_config=None, authenticate_closeout=True,
+             authenticate_jira=True, return_args=False,
+             observed_closeout=None):
         config = copy.deepcopy(PROJECT_CONFIG if config is None else config)
         accepted_config = copy.deepcopy(
             PROJECT_CONFIG if accepted_config is None else accepted_config)
         registry = {}
         config_registry = {}
+        closeout_registry = {}
+        raw = canonical(accepted_config)
         register_integration_observer(
             "fixture-project-config",
             lambda _request: {
-                "project_config": copy.deepcopy(accepted_config),
-                "config_sha256": sha256(canonical(accepted_config)),
+                "raw_bytes_base64": base64.b64encode(raw).decode("ascii"),
+                "config_sha256": sha256(raw),
+                "policy_sha256": policy_hash(accepted_config, definition()),
+                "path": ".agentic/PROJECT_CONFIG.yaml",
+                "repository": accepted_config["github"]["repository"],
+                "repository_id": accepted_config["github"]["repository_id"],
+                "ref": "refs/heads/" + accepted_config["github"]["base_branch"],
+                "blob_sha": "e" * 40,
+                "acceptance": {"status": "ACCEPTED", "receipt_id": "fixture-acceptance",
+                               "workflow_version": accepted_config["template"]["expected_workflow_version"]},
             }, config_registry, observed_at=NOW)
+        if authenticate_closeout and "producer_id" in closeout:
+            authenticated = closeout if observed_closeout is None else observed_closeout
+            register_integration_observer(
+                closeout["producer_id"],
+                lambda _request: {"record": copy.deepcopy(authenticated),
+                                  "merge_result_id": MERGE_RESULT_ID,
+                                  "merge_observed_at": authenticated["created_at"]},
+                closeout_registry, observed_at=NOW)
         selector = None
         if reconciliation is not None:
             selector = {"producer_id": reconciliation["producer_id"]}
-            register_integration_observer(
-                reconciliation["producer_id"],
-                lambda _request: {"record": copy.deepcopy(reconciliation)},
-                registry, observed_at=NOW)
-        return require_jira_reconciliation_before_counts(
-            closeout, repository=self.repo, project_config=config, contracts=self.contracts,
+            if authenticate_jira:
+                register_integration_observer(
+                    reconciliation["producer_id"],
+                    lambda _request: {"record": copy.deepcopy(reconciliation)},
+                    registry, observed_at=NOW,
+                    provider_identity=copy.deepcopy(reconciliation["jira_provider"]),
+                    repository_identity=None)
+        arguments = dict(
+            closeout_record=closeout, repository=self.repo,
+            project_config=config, contracts=self.contracts,
             project_config_selector={"producer_id": "fixture-project-config"},
             project_config_observer_registry=config_registry,
+            closeout_selector=({"producer_id": closeout["producer_id"]}
+                               if authenticate_closeout and "producer_id" in closeout else None),
+            closeout_observer_registry=closeout_registry,
             jira_reconciliation_selector=selector,
             jira_observer_registry=registry, now=NOW)
+        if return_args:
+            return arguments
+        return require_jira_reconciliation_before_counts(**arguments)
 
     def test_ac11_schema_valid_jira_reconciliation_precedes_post_merge_count(self):
         closeout, transition = self.record(), self.reconciliation()
@@ -141,6 +177,81 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
         self.assertFalse(result["execution_authority"])
         self.assertRegex(
             result["jira_observation"]["receipt_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_awf76_ac3_closeout_requires_registered_producer_observation(self):
+        """Valid Git objects do not authenticate attacker-selected closeout metadata."""
+        closeout, transition = self.record(), self.reconciliation()
+        with self.assertRaisesRegex(ValidationError, "closeout producer"):
+            self.gate(closeout, transition, authenticate_closeout=False)
+
+    def test_awf76_ac3_transition_must_follow_authenticated_merge(self):
+        transition = self.reconciliation(created_at="2026-10-10T09:59:00Z")
+        transition["read_back"]["observed_at"] = "2026-10-10T09:59:01Z"
+        with self.assertRaisesRegex(ValidationError, "predates.*merge"):
+            self.gate(self.record(), transition)
+
+    def test_awf76_r1_002_fresh_envelope_cannot_wrap_stale_terminal_readback(self):
+        stale = "2026-10-01T10:01:00Z"
+        closeout = self.record()
+        closeout["created_at"] = stale
+        transition = self.reconciliation(created_at=stale)
+        transition["read_back"]["observed_at"] = stale
+        with self.assertRaisesRegex(ValidationError, "terminal readback.*stale"):
+            self.gate(closeout, transition)
+
+    def test_awf76_ac3_closeout_metadata_substitution_and_replay_are_rejected(self):
+        authenticated = self.record()
+        mutations = {
+            "issue": lambda value: value["binding"].update(issue_id="AWF-99"),
+            "pr": lambda value: value.update(pr_number=99),
+            "candidate": lambda value: value["binding"].update(candidate_id="e" * 64),
+            "policy": lambda value: value["binding"].update(policy_hash="f" * 64),
+            "producer": lambda value: value.update(producer_id="alternate-controller"),
+            "gate": lambda value: value.update(
+                gate_record_id="10000000-0000-0000-0000-000000000099"),
+            "reviews": lambda value: value.update(
+                review_record_ids=["10000000-0000-0000-0000-000000000098"]),
+            "record": lambda value: value.update(
+                record_id="10000000-0000-0000-0000-000000000097"),
+        }
+        for name, mutate in mutations.items():
+            forged = copy.deepcopy(authenticated)
+            mutate(forged)
+            with self.subTest(field=name), self.assertRaises(ValidationError):
+                self.gate(forged, self.reconciliation(),
+                          observed_closeout=authenticated)
+
+        replay = self.reconciliation(merge_result_id=
+                                     "10000000-0000-0000-0000-000000000099")
+        with self.assertRaisesRegex(ValidationError, "this merge result"):
+            self.gate(authenticated, replay)
+
+    def test_awf76_ac3_production_entry_cannot_count_before_closeout_gate(self):
+        closeout, transition = self.record(), self.reconciliation()
+        count_gate = self.gate(closeout, transition, return_args=True)
+        jira_binding = {"cloud_id": "fixture-cloud", "project_id": "fixture-project",
+                        "actor_id": "fixture-controller"}
+        scope = "project = EX"
+        scope_sha = fingerprint("jira-progress-scope", {
+            "scope": scope, "binding": jira_binding, "include_epics": False})
+        progress = production_merge_observed(
+            lifecycle_state="MERGING",
+            lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
+            jira_progress={
+                "jira_enabled": True, "merged_ticket": "AWF-17", "scope": scope,
+                "observed_at": NOW, "jira_binding": jira_binding,
+                "count_gate": count_gate,
+                "reconcile_merged_ticket": lambda ticket: {
+                    "ticket": ticket, "issue_id": "17", **jira_binding,
+                    "status": "RECONCILED",
+                    "operation_id": "10000000-0000-0000-0000-000000000009",
+                    "before_status_id": "In Review", "after_status_id": "Done",
+                    "observed_at": NOW},
+                "fetch_scope_page": lambda _scope, _cursor: {
+                    "items": [], "next_cursor": None, "complete": True,
+                    "snapshot_id": "fixture-snapshot", "scope_sha256": scope_sha,
+                    "observed_at": NOW}})
+        self.assertEqual("COUNTED", progress["jira_progress"]["jira_state"])
 
     def test_r6_002_api_has_no_caller_jira_enablement_boolean(self):
         import inspect
@@ -180,12 +291,12 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
                     "controller_actor_id"):
             disabled["jira"][key] = None
         result = self.gate(
-            self.record(None), config=disabled, accepted_config=disabled)
+            self.record(None, config=disabled), config=disabled, accepted_config=disabled)
         self.assertTrue(result["count_allowed"])
         self.assertFalse(result["jira_reconciled"])
         with self.assertRaisesRegex(ValidationError, "cannot claim"):
             self.gate(
-                self.record(), self.reconciliation(), config=disabled,
+                self.record(config=disabled), self.reconciliation(), config=disabled,
                 accepted_config=disabled)
 
     def test_r7_003_caller_disabled_configuration_is_not_accepted_authority(self):
@@ -207,22 +318,8 @@ class IntegrationQueueCloseoutTests(unittest.TestCase):
             self.gate(self.record(), in_review)
 
     def test_r6_002_reconciliation_must_be_freshly_observed(self):
-        config_registry = {}
-        register_integration_observer(
-            "fixture-project-config",
-            lambda _request: {
-                "project_config": copy.deepcopy(PROJECT_CONFIG),
-                "config_sha256": sha256(canonical(PROJECT_CONFIG)),
-            }, config_registry, observed_at=NOW)
         with self.assertRaisesRegex(ValidationError, "registered Git/provider observer"):
-            require_jira_reconciliation_before_counts(
-                self.record(), project_config=PROJECT_CONFIG,
-                repository=self.repo,
-                contracts=self.contracts,
-                project_config_selector={"producer_id": "fixture-project-config"},
-                project_config_observer_registry=config_registry,
-                jira_reconciliation_selector={"producer_id": "controller-1"},
-                jira_observer_registry={}, now=NOW)
+            self.gate(self.record(), self.reconciliation(), authenticate_jira=False)
 
     def test_r6_002_count_gate_revalidates_closeout_git_objects(self):
         forged = self.record()

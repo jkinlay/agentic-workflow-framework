@@ -16,6 +16,7 @@ from source_only import write_awf_source_fixture  # noqa: E402
 
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, loads, sha256
+from agentic.intake_assignment import assign_intake
 from agentic.safeio import Tree
 from agentic.streams import DEFAULT_NATIVE_EXECUTION, JOURNAL, MARKDOWN, PLAN, plan_inventory, recommendation_groups, render_markdown, write_project_plan
 from test_operating_integration import configuration as operating_configuration, governance as operating_governance
@@ -53,6 +54,47 @@ def history(summary="Synthetic work completed"):
 
 def owner(stream="A", agent="synthetic-agent-A", state="active"):
     return {"stream": stream, "agent_id": agent, "worktree": f"synthetic/worktrees/{agent}", "state": state, "evidence": "synthetic:writer-lease"}
+
+
+def reassignment_governance():
+    value = loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+    value["merge_gate"]["trusted_owner_ids"] = [1001]
+    return value
+
+
+def intake_assignment(ticket_id="DEMO-31"):
+    state = {}
+    return assign_intake(
+        reassignment_governance(),
+        {"key": ticket_id, "summary": "Synthetic stream work", "description": "",
+         "write_paths": ["src/component.py"], "risk_flags": []},
+        state, None, now=NOW, controller_actor_id="controller-1",
+    )
+
+
+def stream_owner_source(ticket_id, assignment_id, old, new, reason, actor_id=1001,
+                        comment_id=48):
+    binding = {"ticket_key": ticket_id, "current_assignment_id": assignment_id}
+    body = (
+        f"AWF STREAM REASSIGNMENT ticket={ticket_id} current={assignment_id} "
+        f"old={old} new={new} reason_sha256={sha256(reason.strip().encode('utf-8'))}"
+    )
+    return {
+        "channel": "github_pr_comment", "comment_id": comment_id, "actor_id": actor_id,
+        "actor_login": "synthetic-owner", "created_at": NOW, "updated_at": NOW,
+        "raw_body": body, "raw_body_sha256": sha256(body.encode("utf-8")),
+        "binding": binding,
+    }
+
+
+def verify_stream_owner_source(source, expected):
+    return {
+        "status": "VERIFIED", "actor_id": source["actor_id"],
+        "source_id": f"github_pr_comment:{source['comment_id']}",
+        "created_at": source["created_at"], "observed_at": expected["now"],
+        "binding": deepcopy(source["binding"]),
+        "raw_body_sha256": source["raw_body_sha256"],
+    }
 
 
 class PlannerTests(unittest.TestCase):
@@ -272,7 +314,9 @@ class PlannerTests(unittest.TestCase):
         self.value["tickets"][0]["ownership"]["state"] = "released"
         self.value["tickets"][1]["dependencies"] = [accepted("DEMO-11")]
         after = self.plan(previous=before)
-        self.assertEqual({k: t["stream"] for k, t in before["tickets"].items()}, {k: t["stream"] for k, t in after["tickets"].items()})
+        self.assertEqual("A", after["tickets"]["DEMO-11"]["stream"])
+        self.assertTrue(all(item["who"] == "awf"
+                            for item in after["stream_assignment_history"]))
         self.assertEqual(after["tickets"]["DEMO-11"]["history"], self.value["tickets"][0]["history"])
         self.assertIn("DEMO-12", {p["ticket_id"] for p in after["dispatch_packets"]})
 
@@ -346,7 +390,13 @@ class PlannerTests(unittest.TestCase):
             ticket["dependencies"] = [accepted("DEMO-11")]
         second = self.plan(previous=first)
         self.assertEqual({p["ticket_id"] for p in second["dispatch_packets"]}, {"DEMO-12", "DEMO-21", "DEMO-31"})
-        self.assertEqual({k: t["stream"] for k, t in first["tickets"].items()}, {k: t["stream"] for k, t in second["tickets"].items()})
+        self.assertEqual(first["tickets"]["DEMO-11"]["stream"],
+                         second["tickets"]["DEMO-11"]["stream"])
+        moved = [ticket_id for ticket_id in first["tickets"]
+                 if first["tickets"][ticket_id]["stream"]
+                 != second["tickets"][ticket_id]["stream"]]
+        self.assertTrue(all(second["tickets"][ticket_id]["status"] == "todo"
+                            for ticket_id in moved))
 
     def test_completed_scope_reports_completion_instead_of_permanent_blocking(self):
         for ticket in self.value["tickets"]:
@@ -374,6 +424,395 @@ class PlannerTests(unittest.TestCase):
         self.value["tickets"][2]["ownership"]["agent_id"] = "different-agent"
         with self.assertRaisesRegex(ValidationError, "separate agents and worktrees"):
             self.plan()
+
+    def test_unknown_write_scope_fails_closed_to_one_stream(self):
+        self.value["tickets"][2]["write_paths"] = []
+        plan = self.plan()
+        self.assertEqual(["A"], [stream["label"] for stream in plan["streams"]])
+        self.assertEqual(
+            ["DEMO-21"],
+            plan["write_scope"]["unknown_ticket_ids"],
+        )
+        self.assertEqual(
+            {"A"},
+            {ticket["stream"] for ticket in plan["tickets"].values()},
+        )
+        self.assertIn("unknown write scope", plan["rationale"])
+
+    def test_declared_and_derived_write_scope_and_modules_are_retained(self):
+        self.value["tickets"][0].update(
+            write_path_source="derived",
+            modules=["service", "service-tests"],
+        )
+        plan = self.plan()
+        ticket = plan["tickets"]["DEMO-11"]
+        self.assertEqual("derived", ticket["write_path_source"])
+        self.assertEqual(["service", "service-tests"], ticket["modules"])
+        self.assertEqual("declared", plan["write_scope"]["sources"]["DEMO-21"])
+
+    def test_finish_or_cancel_rebalances_only_unstarted_tickets_and_audits_awf_moves(self):
+        for terminal in ("done", "cancelled"):
+            with self.subTest(terminal=terminal):
+                value = deepcopy(self.value)
+                before = self.plan(value)
+                self.assertEqual("C", before["tickets"]["DEMO-31"]["stream"])
+                value["tickets"][2].update(status=terminal, history=[history(terminal)])
+                after = self.plan(value, before)
+                self.assertEqual("B", after["tickets"]["DEMO-31"]["stream"])
+                move = next(item for item in after["stream_assignment_history"]
+                            if item["ticket_id"] == "DEMO-31")
+                self.assertEqual(("awf", "C", "B"),
+                                 (move["who"], move["old"], move["new"]))
+                self.assertIn(terminal, move["why"])
+
+    def test_ticket_becoming_terminal_keeps_its_stream_without_move_audit(self):
+        for terminal in ("done", "cancelled"):
+            with self.subTest(terminal=terminal):
+                value = deepcopy(self.value)
+                before = self.plan(value)
+                self.assertEqual("C", before["tickets"]["DEMO-31"]["stream"])
+                value["tickets"][3].update(
+                    status=terminal, history=[history(terminal)])
+
+                after = self.plan(value, before)
+
+                self.assertEqual("C", after["tickets"]["DEMO-31"]["stream"])
+                self.assertFalse(any(
+                    item["ticket_id"] == "DEMO-31"
+                    for item in after["stream_assignment_history"]
+                ))
+
+    def test_started_ticket_never_moves_during_rebalancing(self):
+        before = self.plan()
+        self.value["tickets"][2].update(status="done", history=[history("done")])
+        self.value["tickets"][3].update(
+            status="in_progress",
+            ownership=owner("C", "synthetic-agent-C"),
+            history=[history("started")],
+        )
+        after = self.plan(previous=before)
+        self.assertEqual("C", after["tickets"]["DEMO-31"]["stream"])
+        self.assertFalse(any(item["ticket_id"] == "DEMO-31"
+                             for item in after["stream_assignment_history"]))
+
+    def test_ticket_addition_can_rebalance_unstarted_work_with_audited_moves(self):
+        self.value["tickets"] = [deepcopy(self.value["tickets"][0]),
+                                 deepcopy(self.value["tickets"][2])]
+        for index, ticket in enumerate(self.value["tickets"]):
+            ticket["dependencies"] = []
+            ticket["write_paths"] = [f"src/component-{index}"]
+            ticket["estimate"] = index + 1
+        before = self.plan()
+        added = deepcopy(self.value["tickets"][0])
+        added.update(id="DEMO-41", epic_id=None, title="Large added ticket",
+                     write_paths=["src/component-added"], estimate=100)
+        self.value["tickets"].append(added)
+        after = self.plan(previous=before)
+        moved = [item for item in after["stream_assignment_history"]
+                 if item["old"] != item["new"]]
+        self.assertTrue(moved)
+        self.assertTrue(all(item["who"] == "awf" for item in moved))
+        self.assertTrue(all(after["tickets"][item["ticket_id"]]["status"] == "todo"
+                            for item in moved))
+        self.assertTrue(all("ticket added" in item["why"] for item in moved))
+
+    def test_verified_owner_reassignment_is_chained_and_pinned_across_rebalancing(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        reason = "AWF-48 owner lane decision"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason),
+        }
+
+        def verify(source, expected):
+            self.assertEqual(48, source["comment_id"])
+            self.assertEqual(
+                {"ticket_key": "DEMO-31",
+                 "current_assignment_id": assignment["assignment_id"]},
+                expected["binding"],
+            )
+            self.assertEqual({"old": "C", "new": "B"}, expected["requested"])
+            return verify_stream_owner_source(source, expected)
+
+        raw = canonical(self.value)
+        changed = plan_inventory(
+            raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+            owner_reassignments=[directive], verify_owner_reassignment=verify,
+            governance=reassignment_governance(),
+            intake_assignments={"DEMO-31": assignment},
+        )
+        audit = next(item for item in changed["stream_assignment_history"]
+                     if item["kind"] == "owner_reassignment")
+        self.assertEqual((1001, NOW, reason, "C", "B"),
+                         tuple(audit[name] for name in ("who", "when", "why", "old", "new")))
+        self.assertEqual(assignment["assignment_id"], audit["intake_assignment_id"])
+        self.assertEqual(assignment["assignment_id"], audit["previous_assignment_id"])
+        self.assertEqual(before["stream_assignment_chain_id"],
+                         audit["previous_stream_assignment_id"])
+        self.assertEqual(directive["owner_source"]["raw_body_sha256"],
+                         audit["owner_source_sha256"])
+        following = [item for item in changed["stream_assignment_history"]
+                     if item["previous_assignment_id"] == audit["assignment_id"]]
+        self.assertTrue(following or changed["stream_assignment_chain_id"] == audit["assignment_id"])
+        self.assertEqual("B", changed["owner_stream_pins"]["DEMO-31"]["stream"])
+        self.assertEqual("B", changed["tickets"]["DEMO-31"]["stream"])
+        refreshed = self.plan(previous=changed)
+        self.assertEqual("B", refreshed["tickets"]["DEMO-31"]["stream"])
+        self.assertEqual(
+            {key: value["stream"] for key, value in changed["tickets"].items()},
+            {key: value["stream"] for key, value in refreshed["tickets"].items()},
+        )
+        self.assertEqual(changed["stream_assignment_history"],
+                         refreshed["stream_assignment_history"])
+
+    def test_consumed_owner_reassignment_source_cannot_be_replayed_after_later_move(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        first_reason = "AWF-48 owner move C to B"
+        first = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": first_reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B",
+                first_reason, comment_id=48),
+        }
+        raw = canonical(self.value)
+        moved_to_b = plan_inventory(
+            raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+            owner_reassignments=[first],
+            verify_owner_reassignment=verify_stream_owner_source,
+            governance=reassignment_governance(),
+            intake_assignments={"DEMO-31": assignment},
+        )
+        second_reason = "AWF-48 owner move B to C"
+        second = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": second_reason, "old": "B", "new": "C",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "B", "C",
+                second_reason, comment_id=49),
+        }
+        moved_to_c = plan_inventory(
+            raw, sha256(raw), NOW, allow_synthetic=True, previous=moved_to_b,
+            owner_reassignments=[second],
+            verify_owner_reassignment=verify_stream_owner_source,
+            governance=reassignment_governance(),
+            intake_assignments={"DEMO-31": assignment},
+        )
+
+        self.assertEqual("C", moved_to_c["tickets"]["DEMO-31"]["stream"])
+        self.assertEqual(
+            ["github_pr_comment:48", "github_pr_comment:49"],
+            [event["source_id"] for event in moved_to_c["stream_assignment_history"]
+             if event["kind"] == "owner_reassignment"],
+        )
+        with self.assertRaisesRegex(ValidationError, "already consumed"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=moved_to_c,
+                owner_reassignments=[first],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(),
+                intake_assignments={"DEMO-31": assignment},
+            )
+
+    def test_released_ownership_cannot_be_owner_reassigned(self):
+        released = deepcopy(self.value)
+        released["tickets"][3]["ownership"] = owner(
+            "C", agent="synthetic-released-agent", state="released")
+        raw = canonical(released)
+        before = plan_inventory(raw, sha256(raw), NOW, allow_synthetic=True)
+        assignment = intake_assignment()
+        reason = "AWF-48 owner move released work"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason),
+        }
+
+        with self.assertRaisesRegex(ValidationError, "Started or completed work"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+                owner_reassignments=[directive],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(),
+                intake_assignments={"DEMO-31": assignment},
+            )
+
+    def test_active_and_paused_owners_cannot_conflict_with_pinned_or_established_stream(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        reason = "AWF-48 owner lane decision"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason),
+        }
+        raw = canonical(self.value)
+        pinned = plan_inventory(
+            raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+            owner_reassignments=[directive],
+            verify_owner_reassignment=verify_stream_owner_source,
+            governance=reassignment_governance(),
+            intake_assignments={"DEMO-31": assignment},
+        )
+
+        for state in ("active", "paused"):
+            for previous, stale_stream, message in (
+                    (before, "B", "established stream assignment"),
+                    (pinned, "C", "ownership stream conflicts with its owner pin")):
+                with self.subTest(state=state, conflict=message):
+                    refreshed = deepcopy(self.value)
+                    refreshed["tickets"][3].update(
+                        status="in_progress", ownership=owner(stale_stream, state=state),
+                        history=[history(f"{state} owner declared a conflicting stream")],
+                    )
+                    refreshed_raw = canonical(refreshed)
+                    with self.assertRaisesRegex(ValidationError, message):
+                        plan_inventory(
+                            refreshed_raw, sha256(refreshed_raw), NOW,
+                            allow_synthetic=True, previous=previous,
+                        )
+
+    def test_owner_reassignment_time_must_match_authenticated_source_creation(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        reason = "AWF-48 owner lane decision"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001,
+            "when": "2020-01-01T00:00:00Z", "why": reason,
+            "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason),
+        }
+        raw = canonical(self.value)
+        with self.assertRaisesRegex(
+                ValidationError, "authenticated owner-source creation time"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+                owner_reassignments=[directive],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(),
+                intake_assignments={"DEMO-31": assignment},
+            )
+
+    def test_stream_assignment_chain_and_owner_pin_tampering_are_rejected(self):
+        before = self.plan()
+        before["stream_assignment_history"] = [{
+            "ticket_id": "DEMO-31", "who": "awf", "when": NOW,
+            "why": "forged", "old": "C", "new": "B",
+            "kind": "automatic_rebalance",
+            "previous_assignment_id": before["stream_assignment_root_id"],
+            "source_id": None, "assignment_id": "0" * 64,
+        }]
+        raw = canonical(self.value)
+        with self.assertRaisesRegex(ValidationError, "digest"):
+            plan_inventory(raw, sha256(raw), NOW, allow_synthetic=True,
+                           previous=before)
+
+    def test_owner_reassignment_rejects_non_owner_even_if_callback_claims_verified(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        reason = "claim"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 9999, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason,
+                actor_id=9999),
+        }
+        raw = canonical(self.value)
+        with self.assertRaisesRegex(ValidationError, "trusted owner"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+                owner_reassignments=[directive],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(),
+                intake_assignments={"DEMO-31": assignment},
+            )
+        self.assertEqual("C", before["tickets"]["DEMO-31"]["stream"])
+
+    def test_owner_reassignment_rejects_missing_intake_chain_and_mutable_source(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        reason = "owner move"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", assignment["assignment_id"], "C", "B", reason),
+        }
+        raw = canonical(self.value)
+        with self.assertRaisesRegex(ValidationError, "intake assignment"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+                owner_reassignments=[directive],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(), intake_assignments={},
+            )
+        directive["owner_source"]["updated_at"] = "2026-09-11T10:00:01Z"
+        with self.assertRaisesRegex(ValidationError, "Edited owner-source"):
+            plan_inventory(
+                raw, sha256(raw), NOW, allow_synthetic=True, previous=before,
+                owner_reassignments=[directive],
+                verify_owner_reassignment=verify_stream_owner_source,
+                governance=reassignment_governance(),
+                intake_assignments={"DEMO-31": assignment},
+            )
+
+    def test_owner_reassignment_rejects_wrong_intake_binding_and_verifier_receipt(self):
+        before = self.plan()
+        assignment = intake_assignment()
+        reason = "owner move"
+        directive = {
+            "ticket_id": "DEMO-31", "who": 1001, "when": NOW,
+            "why": reason, "old": "C", "new": "B",
+            "owner_source": stream_owner_source(
+                "DEMO-31", "wrong-assignment", "C", "B", reason),
+        }
+        raw = canonical(self.value)
+        arguments = dict(
+            allow_synthetic=True, previous=before,
+            owner_reassignments=[directive], governance=reassignment_governance(),
+            intake_assignments={"DEMO-31": assignment},
+        )
+        with self.assertRaisesRegex(ValidationError, "binding"):
+            plan_inventory(
+                raw, sha256(raw), NOW,
+                verify_owner_reassignment=verify_stream_owner_source, **arguments)
+        directive["owner_source"] = stream_owner_source(
+            "DEMO-31", assignment["assignment_id"], "C", "B", reason)
+        directive["owner_source"]["raw_body"] += " altered"
+        with self.assertRaisesRegex(ValidationError, "raw command"):
+            plan_inventory(
+                raw, sha256(raw), NOW,
+                verify_owner_reassignment=verify_stream_owner_source, **arguments)
+        directive["owner_source"] = stream_owner_source(
+            "DEMO-31", assignment["assignment_id"], "C", "B", reason)
+
+        def mismatched_receipt(source, expected):
+            receipt = verify_stream_owner_source(source, expected)
+            receipt["raw_body_sha256"] = "0" * 64
+            return receipt
+
+        with self.assertRaisesRegex(ValidationError, "exact stream reassignment"):
+            plan_inventory(
+                raw, sha256(raw), NOW,
+                verify_owner_reassignment=mismatched_receipt, **arguments)
+
+        def mismatched_timestamp_receipt(source, expected):
+            receipt = verify_stream_owner_source(source, expected)
+            receipt["created_at"] = "2020-01-01T00:00:00Z"
+            return receipt
+
+        with self.assertRaisesRegex(ValidationError, "exact stream reassignment"):
+            plan_inventory(
+                raw, sha256(raw), NOW,
+                verify_owner_reassignment=mismatched_timestamp_receipt, **arguments)
 
 
 class NativeCapacityTests(unittest.TestCase):
