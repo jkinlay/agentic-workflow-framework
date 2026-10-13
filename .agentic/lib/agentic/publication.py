@@ -35,6 +35,8 @@ except ImportError:  # pragma: no cover - exercised on older Python runtimes
 from . import ValidationError
 from .child_process import child_env
 from .gittree import verify_publisher_tree
+from .interaction import writer_commit_message
+from .provenance import parse_writer_trailer
 
 
 DEFAULT_MAPPING = Path(".agentic-state/publication-deny.json")
@@ -2225,6 +2227,29 @@ def _remote_urls(root, remote):
     return sorted(values)
 
 
+def _writer_emitted_rewrite_message(message):
+    """Require the exact non-mechanical message shape emitted for a Codex run."""
+    reason = "Rewrite message must be produced by the Writer emitter with a valid Codex run id"
+    try:
+        text = message.decode("utf-8")
+        if "\r" in text.replace("\r\n", ""):
+            raise ValidationError(reason)
+        text = text.replace("\r\n", "\n")
+        trailer = parse_writer_trailer(text)
+        if trailer is None or trailer["kind"] != "codex":
+            raise ValidationError(reason)
+        suffix = "\n\n" + trailer["trailer"]
+        if not text.endswith(suffix):
+            raise ValidationError(reason)
+        body = text[:-len(suffix)]
+        emitted = writer_commit_message(body, codex_run_id=trailer["identity"])
+        if emitted != text:
+            raise ValidationError(reason)
+    except (UnicodeDecodeError, ValidationError) as exc:
+        raise ValidationError(reason + ": " + str(exc)) from exc
+    return emitted.encode("utf-8")
+
+
 def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_path=None, config_path=None):
     """Atomically squash one unpublished branch after scanning the replacement history."""
     root = Path(root).resolve()
@@ -2279,6 +2304,7 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
         message.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValidationError("Rewrite message file must be strict UTF-8") from exc
+    message = _writer_emitted_rewrite_message(message)
     old_tree = _git(root, "rev-parse", old_head + "^{tree}").stdout.decode("ascii").strip()
     verify_publisher_tree(root, old_tree)
     with tempfile.TemporaryDirectory(prefix="awf-publication-rewrite-") as temporary:

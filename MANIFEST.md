@@ -121,7 +121,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/providers/github_review_host.py` | `d165a192fc480bf932fb9a8a67c0a6cf1d853976f24c7bbf89a33c2850e625e5` |
 | `.agentic/lib/agentic/providers/github_reviewer_removal.py` | `6bdbe9065e3ffe29561113e5c267b4cb033b9e01855b4597e09ec8056f3cbf8e` |
 | `.agentic/lib/agentic/providers/github_status.py` | `69820fd9191039666142014b29c1e254218608ce33020a78cc6d133e99955776` |
-| `.agentic/lib/agentic/publication.py` | `263a27ca435f63061dd13c6ce3e2ec8f060ac5cbbf53aa53071337cc0b86cf0a` |
+| `.agentic/lib/agentic/publication.py` | `78605d421f69eb2a4aa86658829e020ebe5cb37e00f5502194f28cf8d3105f32` |
 | `.agentic/lib/agentic/publication_readiness.py` | `cbc0a38cb74bc646bd77b81d914c088b7d2088ded6944c7d4a4cd631ca1e466e` |
 | `.agentic/lib/agentic/release_trust.py` | `a8d468759d1c974b5a06ae3855b7bf17ea2e1a937edf4d0c1c76a7bef8988896` |
 | `.agentic/lib/agentic/repository_rules.py` | `6c04a815378ced7163dc763e3fb9a93889f8adde5461c4a58d5df13c20a27fcc` |
@@ -349,7 +349,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_private_deny_binary.py` | `b6da0ffbcce95cedece5c337106bb6f642f127180ae21ba14ec606da37ac6de1` |
 | `.agentic/tests/test_provenance.py` | `43c0b93750036f731cae46fcf10f184245711d1780d1101c83d7d8a3a54dc697` |
 | `.agentic/tests/test_provider_identity.py` | `a276d68b89dfb6e65513f62732dd3fddab93419b04f20cc59bbec7c8a0e2fc2b` |
-| `.agentic/tests/test_publication.py` | `4d0ee9e4689a64925a322a8e467e91998efa8c7eadd50bc6a9da16073409f16c` |
+| `.agentic/tests/test_publication.py` | `59d7ceca00cbd397735a0c60b4f5d6fe835ffdc406f8a27378e5a1df40628060` |
 | `.agentic/tests/test_publication_readiness.py` | `4c2e48395f0a3a26c86625cf49e62b2b71353ff9bb33cb9c2bedcb7c40431354` |
 | `.agentic/tests/test_publication_sync_merge.py` | `b522354cc6b31b50da5f6cf916d5204d14d4a52bbe9b872b0ba77160baed48af` |
 | `.agentic/tests/test_publication_sync_merge_history.py` | `ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e` |
