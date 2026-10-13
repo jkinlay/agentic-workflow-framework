@@ -1,16 +1,57 @@
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/tests"))
 from test_bootstrap_configuration import installed_wheel, wheel_lock
+
+
+MIN_INSTALL_TIMEOUT_SECONDS = 180
+OBSERVED_CONTROLLER_LOAD_SECONDS = 96.3
+
+
+def install_timeout_seconds(observed_seconds):
+    """Add 50% measured headroom, with twice the former 90s limit."""
+    return max(MIN_INSTALL_TIMEOUT_SECONDS, math.ceil(observed_seconds * 1.5))
+
+
+INSTALL_TIMEOUT_SECONDS = install_timeout_seconds(OBSERVED_CONTROLLER_LOAD_SECONDS)
+
+
+def run_with_timeout(command, *, timeout, **kwargs):
+    started = time.monotonic()
+    try:
+        return subprocess.run(command, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired as failure:
+        elapsed = time.monotonic() - started
+        raise AssertionError(
+            f"subprocess timeout: elapsed={elapsed:.3f}s; limit={float(timeout):.3f}s; "
+            f"command={command!r}"
+        ) from failure
+
+
+class InstallSubprocessTimeoutTests(unittest.TestCase):
+    def test_timeout_limit_has_documented_margin_over_observed_controller_load(self):
+        self.assertEqual(180, install_timeout_seconds(96.3))
+        self.assertEqual(300, install_timeout_seconds(200.0))
+
+    def test_timeout_failure_reports_elapsed_time_and_limit(self):
+        failure = subprocess.TimeoutExpired(["synthetic-install"], 180)
+        with mock.patch("subprocess.run", side_effect=failure), \
+                mock.patch("time.monotonic", side_effect=[10.0, 190.25]):
+            with self.assertRaisesRegex(
+                    AssertionError, r"elapsed=180\.250s; limit=180\.000s"):
+                run_with_timeout(["synthetic-install"], timeout=180)
 
 
 class FreshBootstrapIntegrationTests(unittest.TestCase):
@@ -28,8 +69,9 @@ class FreshBootstrapIntegrationTests(unittest.TestCase):
                 (wheelhouse / (name.replace("-", "_") + "-" + version + "-py3-none-any.whl")).write_bytes(wheel)
                 entries.append((name, version, wheel))
             (fixture_source / ".agentic/requirements.lock").write_bytes(wheel_lock(entries))
-            built = subprocess.run([sys.executable, "-B", "scripts/build_release.py", "--manifest-only"],
-                                   cwd=fixture_source, capture_output=True, text=True, timeout=60)
+            built = run_with_timeout(
+                [sys.executable, "-B", "scripts/build_release.py", "--manifest-only"],
+                cwd=fixture_source, capture_output=True, text=True, timeout=60)
             self.assertEqual(0, built.returncode, built.stderr)
             manifest = fixture_source / "MANIFEST.json"
             pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
@@ -45,7 +87,9 @@ class FreshBootstrapIntegrationTests(unittest.TestCase):
                 "--default-branch", "main"]
             env = os.environ.copy()
             env.update(TMP=raw, TEMP=raw, PYTHONDONTWRITEBYTECODE="1")
-            result = subprocess.run(command, cwd=fixture_source, capture_output=True, text=True, env=env, timeout=90)
+            result = run_with_timeout(
+                command, cwd=fixture_source, capture_output=True, text=True, env=env,
+                timeout=INSTALL_TIMEOUT_SECONDS)
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
             self.assertEqual(report["status"], "CONFIGURED")
