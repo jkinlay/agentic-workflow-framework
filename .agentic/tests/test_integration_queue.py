@@ -1,4 +1,5 @@
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
+import base64
 import copy
 from datetime import datetime, timedelta
 import importlib.util
@@ -13,6 +14,7 @@ import unittest
 import uuid
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
@@ -28,6 +30,7 @@ from agentic.integration_queue import (DEFAULTS, WORKER_GUIDANCE, IntegrationQue
     provider_observation_receipt_sha256, render_owner_instruction, resolve_mode,
     steward_policy, verify_own_commits)
 from agentic.lifecycle import definition
+from agentic.policy import policy_hash
 from test_review_policy import bind_production_posting_fixture, bind_review_admission
 
 
@@ -39,6 +42,7 @@ SHA5 = "5" * 40
 NOW = "2026-10-10T10:00:00Z"
 GATE_NOW = "2026-09-09T12:00:00Z"
 PROJECT_CONFIG = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
+PROJECT_CONFIG["validation"]["required_ci_checks"][0]["name"] = "awf-integration"
 PROVIDER_IDENTITY = {"host": PROJECT_CONFIG["github"]["host"],
                      "repository": PROJECT_CONFIG["github"]["repository"],
                      "repository_id": PROJECT_CONFIG["github"]["repository_id"]}
@@ -169,16 +173,22 @@ def same_tree_different_commit_runner():
 
 
 def register_integration_observer(producer_id, callback, registry,
-                                  *, observed_at=NOW):
+                                  *, observed_at=NOW, capabilities=None,
+                                  provider_identity=None, repository_identity=None):
+    receipts = registry.get(producer_id, {}).get("receipts", {})
+
     def observer(request):
+        observation_time = observed_at(request) if callable(observed_at) else observed_at
         result = callback(request)
+        if request.get("operation") == "QUEUE_TIME":
+            result = {"observed_at": observation_time}
         request_sha256 = fingerprint("integration_provider_request", request)
-        material = {"producer_id": producer_id, "observed_at": observed_at,
+        material = {"producer_id": producer_id, "observed_at": observation_time,
                     "request_sha256": request_sha256, "result": result}
         observation = {
             "status": "OBSERVED", "producer_id": producer_id,
             "observation_id": fingerprint("integration_provider_observation", material),
-            "observed_at": observed_at, "request_sha256": request_sha256,
+            "observed_at": observation_time, "request_sha256": request_sha256,
             "result": result,
         }
         registration = registry[producer_id]
@@ -190,8 +200,22 @@ def register_integration_observer(producer_id, callback, registry,
         "producer_kind": "integration_observer",
         "implementation_sha256": "c" * 64,
         "release_sha256": "d" * 64,
+        "capabilities": capabilities or [
+            "ACCEPTED_PROJECT_CONFIG", "APP_BINDING", "CANDIDATE_VALIDATION",
+            "CLOSEOUT_RECORD", "MERGE_CONFLICT", "OWNER_INSTRUCTION",
+            "PULL_REQUEST_MERGE", "QUEUE_TIME", "REMOVAL_TRIGGER",
+            "RETARGET_DIFF", "RETARGET_RETENTION", "REVIEWED_CONFIG",
+            "TARGET_CI", "TARGET_TIP", "TASK_COMMIT_RANGE", "DELTA_REVIEW",
+            "JIRA_RECONCILIATION"],
+        "provider_identity": copy.deepcopy(
+            PROVIDER_IDENTITY if provider_identity is None else provider_identity),
+        "repository_identity": copy.deepcopy(
+            {"repository": PROVIDER_IDENTITY["repository"],
+             "repository_id": PROVIDER_IDENTITY["repository_id"]}
+            if repository_identity is None else repository_identity),
+        "receipt_namespace": "awf-integration-observer-v1",
         "observer": observer,
-        "receipts": {},
+        "receipts": receipts,
     }
     return producer_id
 
@@ -286,10 +310,23 @@ def config_observer(request):
             "observed_at": NOW}
 
 
+def accepted_config_result(config):
+    raw = canonical(config)
+    return {"raw_bytes_base64": base64.b64encode(raw).decode("ascii"),
+                "config_sha256": sha256(raw),
+                "policy_sha256": policy_hash(config, definition()),
+                "path": ".agentic/PROJECT_CONFIG.yaml",
+                "repository": config["github"]["repository"],
+                "repository_id": config["github"]["repository_id"],
+                "ref": "refs/heads/" + config["github"]["base_branch"],
+                "blob_sha": "e" * 40,
+                "acceptance": {"status": "ACCEPTED", "receipt_id": "fixture-acceptance",
+                               "workflow_version": config["template"]["expected_workflow_version"]}}
+
+
 def observed_mode(request):
     if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
-        return {"project_config": copy.deepcopy(PROJECT_CONFIG),
-                "config_sha256": sha256(canonical(PROJECT_CONFIG))}
+        return accepted_config_result(PROJECT_CONFIG)
     if request["operation"] == "OWNER_INSTRUCTION":
         return {"instruction": copy.deepcopy(request["instruction"])}
     if request["operation"] == "REVIEWED_CONFIG":
@@ -300,7 +337,13 @@ def observed_mode(request):
                 "provider_identity": copy.deepcopy(request["provider_identity"]),
                 "repository_identity": copy.deepcopy(request["repository_identity"]),
                 "source_identity": "repository_branch_rules",
-                "enforced": False}
+                "target_branch": request["target_branch"],
+                "ruleset_id": "fixture-ruleset", "ruleset_revision": 1,
+                "rules": [{"context": context, "integration_id": 42,
+                           "required": True, "active": True, "applicable": True}
+                          for context in request["required_check_contexts"]]}
+    if request["operation"] == "QUEUE_TIME":
+        return {"observed_at": NOW}
     raise AssertionError("unexpected mode observation operation")
 
 
@@ -323,14 +366,14 @@ def delta_review_record(*, status, run_id, producer_id, head_sha, review_base_sh
     return record
 
 
-def epic_mode_record():
+def epic_mode_record(now=NOW):
     return resolve_mode({"mode": "epic", "test_command": "python -B -m unittest", "provenance": {
         "source": "reviewed_config", "config_path": ".agentic/integration-queue-config.yaml",
         "config_sha256": "a" * 64, "review_record_id": "config-review-1",
         "reviewed_at": NOW, "producer_id": "fixture-mode-provider"}}, epic="AWF-EPIC",
         project_config=PROJECT_CONFIG,
         app_binding={"producer_id": "fixture-mode-provider"},
-        mode_observer_registry=MODE_REGISTRY, now=NOW)
+        mode_observer_registry=MODE_REGISTRY, now=now)
 
 
 def trusted_readiness():
@@ -349,6 +392,16 @@ def trusted_readiness():
         app_binding={"producer_id": "fixture-mode-provider"},
         mode_observer_registry=mode_registry, now=GATE_NOW)
     bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+    bundle["ci"]["checks"][0]["name"] = "awf-integration"
+    from agentic.gates import expected_binding
+    bundle["contract"]["policy_hash"] = policy_hash(config, definition())
+    binding = expected_binding(config, definition(), bundle)
+    for key in ("dispatch", "worker", "critic", "ci", "pr"):
+        bundle[key]["binding"] = copy.deepcopy(binding)
+    for run in bundle["runs"]:
+        run["binding"] = copy.deepcopy(binding)
+    for verdict in bundle.get("review_verdicts", []):
+        verdict["binding"] = copy.deepcopy(binding)
     bind_review_admission(bundle)
     verifier = copy.deepcopy(bundle["runs"][0])
     verifier.update(record_id=str(uuid.uuid4()), run_id=str(uuid.uuid4()),
@@ -916,6 +969,13 @@ class IntegrationQueueTests(unittest.TestCase):
             "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=old)
         register_integration_observer(
             "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=old)
+        self.store = IntegrationQueueStore(
+            Path(self.temporary.name) / "old-front.sqlite3",
+            project_config=PROJECT_CONFIG, mode_observer_registry=MODE_REGISTRY,
+            build_producer_registry=BUILD_REGISTRY, git_observer_registry=GIT_REGISTRY)
+        self.store.initialize("AWF-EPIC", "main", SHA1,
+                              target_observer_id="fixture-git-provider",
+                              mode_record=epic_mode_record(old), observed_at=old)
         first = entry(11, SHA2, validated=old)
         self.store.admit("AWF-EPIC", first, "fixture-git-provider", runner(observed_at=old),
                          observed_at=old)
@@ -926,8 +986,7 @@ class IntegrationQueueTests(unittest.TestCase):
             "fixture-git-provider", runner(observed_at=old), observed_at=old)
         register_integration_observer(
             "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=NOW)
-        result = self.store.move_stalled_front(
-            "AWF-EPIC", runner(), now=NOW)
+        result = self.store.move_stalled_front("AWF-EPIC", runner())
         self.assertEqual(13, result["notice"]["new_front"])
         self.assertTrue(result["notice"]["owner_notification_required"])
         self.assertEqual([13, 11, 12], [item[0] for item in result["build"]["entries"]])
@@ -950,6 +1009,13 @@ class IntegrationQueueTests(unittest.TestCase):
             "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=old)
         register_integration_observer(
             "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=old)
+        self.store = IntegrationQueueStore(
+            Path(self.temporary.name) / "reset-front.sqlite3",
+            project_config=PROJECT_CONFIG, mode_observer_registry=MODE_REGISTRY,
+            build_producer_registry=BUILD_REGISTRY, git_observer_registry=GIT_REGISTRY)
+        self.store.initialize("AWF-EPIC", "main", SHA1,
+                              target_observer_id="fixture-git-provider",
+                              mode_record=epic_mode_record(old), observed_at=old)
         first = entry(11, SHA2, validated=old)
         second = entry(12, SHA3, validated=old)
         self.store.admit("AWF-EPIC", first, "fixture-git-provider", runner(observed_at=old),
@@ -965,11 +1031,93 @@ class IntegrationQueueTests(unittest.TestCase):
             trigger={"producer_id": "fixture-git-provider"}, observed_at=NOW)
         self.admit(entry(13, SHA4))
         with self.assertRaisesRegex(ValidationError, "stall threshold"):
-            self.store.move_stalled_front("AWF-EPIC", runner(), now=NOW)
+            self.store.move_stalled_front("AWF-EPIC", runner())
 
     def test_ac6_stall_threshold_has_no_caller_override(self):
-        self.assertNotIn("stall_after_hours",
-                         inspect.signature(self.store.move_stalled_front).parameters)
+        parameters = inspect.signature(self.store.move_stalled_front).parameters
+        self.assertNotIn("stall_after_hours", parameters)
+        self.assertNotIn("hours", parameters)
+        self.assertNotIn("now", parameters)
+
+    def test_awf76_ac1_caller_time_cannot_move_the_front(self):
+        """The stall decision clock is a receipted runtime observation, not an argument."""
+        parameters = inspect.signature(self.store.move_stalled_front).parameters
+        self.assertEqual(["epic", "outcome"], list(parameters))
+
+    def test_awf76_r2_authority_refresh_rejects_expired_observations(self):
+        later = "2026-10-10T12:00:00Z"
+        register_integration_observer(
+            "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=NOW)
+        register_integration_observer(
+            "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=later)
+        before = (canonical(self.store.snapshot("AWF-EPIC")),
+                  canonical(self.store.audit("AWF-EPIC")))
+        with self.assertRaisesRegex(ValidationError, "stale"):
+            self.store.admit(
+                "AWF-EPIC", entry(11, SHA2, validated=later),
+                "fixture-git-provider", runner(observed_at=later), observed_at=later)
+        self.assertEqual(before, (canonical(self.store.snapshot("AWF-EPIC")),
+                                  canonical(self.store.audit("AWF-EPIC"))))
+
+    def test_awf76_r2_app_binding_refresh_rejects_expired_observation(self):
+        later = "2026-10-10T12:00:00Z"
+        register_integration_observer(
+            "fixture-mode-provider", observed_mode, MODE_REGISTRY,
+            observed_at=lambda request: NOW if request["operation"] == "APP_BINDING" else later)
+        register_integration_observer(
+            "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=later)
+        before = (canonical(self.store.snapshot("AWF-EPIC")),
+                  canonical(self.store.audit("AWF-EPIC")))
+        with self.assertRaisesRegex(ValidationError, "stale"):
+            self.store.admit(
+                "AWF-EPIC", entry(11, SHA2, validated=later),
+                "fixture-git-provider", runner(observed_at=later), observed_at=later)
+        self.assertEqual(before, (canonical(self.store.snapshot("AWF-EPIC")),
+                                  canonical(self.store.audit("AWF-EPIC"))))
+
+    def test_awf76_r2_new_front_uses_fresh_queue_time_not_authority_time(self):
+        later = "2026-10-10T12:00:00Z"
+        config = copy.deepcopy(PROJECT_CONFIG)
+        config["validation"]["max_evidence_age_seconds"] = 3 * 60 * 60
+
+        def mode_observer(request):
+            if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+                return accepted_config_result(config)
+            if request["operation"] == "QUEUE_TIME":
+                return {"observed_at": later}
+            return observed_mode(request)
+
+        register_integration_observer(
+            "fixture-mode-provider", mode_observer, MODE_REGISTRY,
+            observed_at=lambda request: later if request["operation"] == "QUEUE_TIME" else NOW)
+        register_integration_observer(
+            "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=later)
+        store = IntegrationQueueStore(
+            Path(self.temporary.name) / "fresh-front-time.sqlite3",
+            project_config=config, mode_observer_registry=MODE_REGISTRY,
+            build_producer_registry=BUILD_REGISTRY, git_observer_registry=GIT_REGISTRY)
+        mode = resolve_mode(
+            {"mode": "epic", "test_command": "python -B -m unittest",
+             "stall_after_hours": 1,
+             "provenance": {"source": "reviewed_config",
+                 "config_path": ".agentic/integration-queue-config.yaml",
+                 "config_sha256": "a" * 64, "review_record_id": "fresh-front-time",
+                 "reviewed_at": NOW, "producer_id": "fixture-mode-provider"}},
+            epic="AWF-EPIC", project_config=config,
+            app_binding={"producer_id": "fixture-mode-provider"},
+            mode_observer_registry=MODE_REGISTRY, now=NOW)
+        store.initialize("AWF-EPIC", "main", SHA1,
+                         target_observer_id="fixture-git-provider",
+                         mode_record=mode, observed_at=later)
+        for item in (entry(11, SHA2, validated=later), entry(12, SHA3, validated=later)):
+            store.admit("AWF-EPIC", item, "fixture-git-provider",
+                        runner(observed_at=later), observed_at=later)
+        self.assertEqual(later, store.snapshot("AWF-EPIC")["front_since"])
+        before = (canonical(store.snapshot("AWF-EPIC")), canonical(store.audit("AWF-EPIC")))
+        with self.assertRaisesRegex(ValidationError, "stall threshold"):
+            store.move_stalled_front("AWF-EPIC", runner(observed_at=later))
+        self.assertEqual(before, (canonical(store.snapshot("AWF-EPIC")),
+                                  canonical(store.audit("AWF-EPIC"))))
 
     def test_ac7_stacked_retarget_retains_only_unchanged_patch_evidence(self):
         self.admit(entry(11, SHA2))
@@ -1168,18 +1316,20 @@ class IntegrationQueueTests(unittest.TestCase):
             return {"producer_id": f"fixture-app-{required}",
                     "provider_identity": copy.deepcopy(request["provider_identity"]),
                     "repository_identity": copy.deepcopy(request["repository_identity"]),
-                    "source_identity": "repository_branch_rules", "enforced": True,
-                    "check_name": "awf-integration", "integration_id": 7,
-                    "required_from_integration_id": required}
+                    "source_identity": "repository_branch_rules",
+                    "target_branch": request["target_branch"],
+                    "ruleset_id": "fixture-ruleset", "ruleset_revision": 1,
+                    "rules": [{"context": context, "integration_id": 42,
+                               "required": required, "active": True, "applicable": True}
+                              for context in request["required_check_contexts"]]}
 
         register_integration_observer(
             "fixture-app-False", lambda request: app_binding(request, False),
             MODE_REGISTRY)
-        with self.assertRaisesRegex(ValidationError, "App integration ID"):
-            resolve_mode(config, owner, {"producer_id": "fixture-app-False"},
-                         epic="AWF-EPIC",
-                         project_config=PROJECT_CONFIG,
-                         mode_observer_registry=MODE_REGISTRY, now=NOW)
+        advisory = resolve_mode(config, owner, {"producer_id": "fixture-app-False"},
+                                epic="AWF-EPIC", project_config=PROJECT_CONFIG,
+                                mode_observer_registry=MODE_REGISTRY, now=NOW)
+        self.assertFalse(advisory["activation"]["app_binding"]["enforced"])
         register_integration_observer(
             "fixture-app-True", lambda request: app_binding(request, True),
             MODE_REGISTRY)
@@ -1188,6 +1338,297 @@ class IntegrationQueueTests(unittest.TestCase):
             project_config=PROJECT_CONFIG,
             mode_observer_registry=MODE_REGISTRY, now=NOW)
         self.assertEqual("epic", enforced["mode"])
+
+    def test_awf76_ac2_enforced_binding_matches_configured_app_identity(self):
+        config = {"mode": "epic", "test_command": "python -B -m unittest",
+                  "provenance": {
+                      "source": "reviewed_config",
+                      "config_path": ".agentic/integration-queue-config.yaml",
+                      "config_sha256": "a" * 64,
+                      "review_record_id": "review-app-identity",
+                      "reviewed_at": NOW,
+                      "producer_id": "fixture-wrong-app"}}
+
+        def wrong_app(request):
+            if request["operation"] != "APP_BINDING":
+                return observed_mode(request)
+            return {"producer_id": "fixture-wrong-app",
+                    "provider_identity": copy.deepcopy(request["provider_identity"]),
+                    "repository_identity": copy.deepcopy(request["repository_identity"]),
+                    "source_identity": "repository_branch_rules",
+                    "target_branch": request["target_branch"],
+                    "ruleset_id": "fixture-wrong-ruleset", "ruleset_revision": 1,
+                    "rules": [{"context": context, "integration_id": 7,
+                               "required": True, "active": True, "applicable": True}
+                              for context in request["required_check_contexts"]]}
+
+        register_integration_observer(
+            "fixture-wrong-app", wrong_app, MODE_REGISTRY)
+        with self.assertRaisesRegex(ValidationError, "configured App integration ID"):
+            resolve_mode(config, app_binding={"producer_id": "fixture-wrong-app"},
+                         epic="AWF-EPIC", project_config=PROJECT_CONFIG,
+                         mode_observer_registry=MODE_REGISTRY, now=NOW)
+
+    def test_awf76_r1_001_requires_exact_unique_awf_integration_binding(self):
+        mode_config = {"mode": "epic", "test_command": "python -B -m unittest",
+                       "provenance": {
+                           "source": "reviewed_config",
+                           "config_path": ".agentic/integration-queue-config.yaml",
+                           "config_sha256": "a" * 64,
+                           "review_record_id": "review-semantic-binding",
+                           "reviewed_at": NOW,
+                           "producer_id": "fixture-semantic-binding"}}
+
+        missing = copy.deepcopy(PROJECT_CONFIG)
+        missing["validation"]["required_ci_checks"][0]["name"] = "unit-tests"
+        missing_registry = {}
+
+        def observe_missing(request):
+            if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+                return accepted_config_result(missing)
+            if request["operation"] == "APP_BINDING":
+                return {
+                    "producer_id": "fixture-semantic-binding",
+                    "provider_identity": copy.deepcopy(request["provider_identity"]),
+                    "repository_identity": copy.deepcopy(request["repository_identity"]),
+                    "source_identity": "repository_branch_rules",
+                    "target_branch": request["target_branch"],
+                    "ruleset_id": "fixture-semantic-ruleset",
+                    "ruleset_revision": 1,
+                    "rules": [{"context": context, "integration_id": 42,
+                               "required": True, "active": True, "applicable": True}
+                              for context in request["required_check_contexts"]],
+                }
+            return observed_mode(request)
+
+        register_integration_observer(
+            "fixture-semantic-binding", observe_missing, missing_registry)
+        with self.assertRaisesRegex(ValidationError, "exactly one awf-integration"):
+            resolve_mode(
+                mode_config, epic="AWF-EPIC", project_config=missing,
+                app_binding={"producer_id": "fixture-semantic-binding"},
+                mode_observer_registry=missing_registry, now=NOW)
+
+        exact = copy.deepcopy(PROJECT_CONFIG)
+        unrelated = copy.deepcopy(exact["validation"]["required_ci_checks"][0])
+        unrelated.update(name="unit-tests", app_id=7)
+        exact["validation"]["required_ci_checks"].append(unrelated)
+        exact_registry = {}
+
+        def observe_exact(request):
+            if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+                return accepted_config_result(exact)
+            if request["operation"] == "APP_BINDING":
+                return {
+                    "producer_id": "fixture-semantic-binding",
+                    "provider_identity": copy.deepcopy(request["provider_identity"]),
+                    "repository_identity": copy.deepcopy(request["repository_identity"]),
+                    "source_identity": "repository_branch_rules",
+                    "target_branch": request["target_branch"],
+                    "ruleset_id": "fixture-semantic-ruleset",
+                    "ruleset_revision": 1,
+                    "rules": [{"context": context, "integration_id": 42,
+                               "required": True, "active": True, "applicable": True}
+                              for context in request["required_check_contexts"]],
+                }
+            return observed_mode(request)
+
+        register_integration_observer(
+            "fixture-semantic-binding", observe_exact, exact_registry)
+        resolved = resolve_mode(
+            mode_config, epic="AWF-EPIC", project_config=exact,
+            app_binding={"producer_id": "fixture-semantic-binding"},
+            mode_observer_registry=exact_registry, now=NOW)
+        self.assertTrue(resolved["activation"]["app_binding"]["enforced"])
+        self.assertEqual(
+            ["awf-integration"],
+            [rule["context"] for rule in
+             resolved["activation"]["app_binding"]["rules"]])
+
+    def test_awf76_ac2_target_branch_comes_from_accepted_configuration(self):
+        other = IntegrationQueueStore(
+            Path(self.temporary.name) / "wrong-target.sqlite3",
+            project_config=PROJECT_CONFIG, mode_observer_registry=MODE_REGISTRY,
+            build_producer_registry=BUILD_REGISTRY,
+            git_observer_registry=GIT_REGISTRY)
+        with self.assertRaisesRegex(ValidationError, "accepted base branch"):
+            other.initialize("AWF-OTHER", "release", SHA1,
+                             target_observer_id="fixture-git-provider",
+                             mode_record={**epic_mode_record(), "epic": "AWF-OTHER"},
+                             observed_at=NOW)
+
+    def test_awf76_state_unknown_field_fails_closed_on_reopen(self):
+        with closing(self.store._connect()) as connection:
+            state = self.store.snapshot("AWF-EPIC")
+            state["caller_proof"] = True
+            connection.execute("UPDATE epics SET state_json=? WHERE epic=?",
+                               (canonical(state).decode("utf-8"), "AWF-EPIC"))
+        with self.assertRaisesRegex(ValidationError, "state.*shape"):
+            self.store.snapshot("AWF-EPIC")
+
+    def test_awf76_proof_bearing_state_tamper_fails_closed(self):
+        original = self.store.snapshot("AWF-EPIC")
+        mutations = {
+            "front_since": lambda value: value.update(front_since=NOW),
+            "authority_pin": lambda value: value.update(
+                authority_projection_sha256="f" * 64),
+            "mode_record": lambda value: value["mode_record"].update(stall_after_hours=1),
+            "legacy_format": lambda value: value.update(format="awf-integration-queue-1"),
+            "receipt": lambda value: value["mode_trust"]["app_binding"].update(
+                receipt_sha256="f" * 64),
+        }
+        for name, mutate in mutations.items():
+            value = copy.deepcopy(original)
+            mutate(value)
+            with closing(self.store._connect()) as connection:
+                connection.execute("UPDATE epics SET state_json=? WHERE epic=?",
+                                   (canonical(value).decode("utf-8"), "AWF-EPIC"))
+            with self.subTest(field=name), self.assertRaises(ValidationError):
+                self.store.snapshot("AWF-EPIC")
+        with closing(self.store._connect()) as connection:
+            connection.execute("UPDATE epics SET state_json=? WHERE epic=?",
+                               (canonical(original).decode("utf-8"), "AWF-EPIC"))
+
+    def test_awf76_accepted_config_bytes_and_acceptance_are_closed(self):
+        config = {"mode": "epic", "test_command": "python -B -m unittest",
+                  "provenance": {"source": "reviewed_config",
+                      "config_path": ".agentic/integration-queue-config.yaml",
+                      "config_sha256": "a" * 64, "review_record_id": "raw-config",
+                      "reviewed_at": NOW, "producer_id": "fixture-raw-config"}}
+        cases = []
+        bom = accepted_config_result(PROJECT_CONFIG)
+        raw = b"\xef\xbb\xbf" + canonical(PROJECT_CONFIG)
+        bom.update(raw_bytes_base64=base64.b64encode(raw).decode("ascii"),
+                   config_sha256=sha256(raw))
+        cases.append((bom, "invalid bytes"))
+        duplicate = accepted_config_result(PROJECT_CONFIG)
+        raw = b'{"a":1,"a":2}'
+        duplicate.update(raw_bytes_base64=base64.b64encode(raw).decode("ascii"),
+                         config_sha256=sha256(raw))
+        cases.append((duplicate, "invalid bytes"))
+        rejected = accepted_config_result(PROJECT_CONFIG)
+        rejected["acceptance"]["status"] = "REJECTED"
+        cases.append((rejected, "accepted runtime"))
+        for index, (result, reason) in enumerate(cases):
+            registry = {}
+            def observer(request, value=result):
+                if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+                    return copy.deepcopy(value)
+                return observed_mode(request)
+            register_integration_observer(
+                f"fixture-raw-{index}", observer, registry)
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValidationError, reason):
+                resolve_mode(config, epic="AWF-EPIC", project_config=PROJECT_CONFIG,
+                             app_binding={"producer_id": f"fixture-raw-{index}"},
+                             mode_observer_registry=registry, now=NOW)
+
+    def test_awf76_observer_capability_is_operation_scoped(self):
+        registry = {}
+        register_integration_observer(
+            "fixture-app-only", observed_mode, registry, capabilities=["APP_BINDING"])
+        with self.assertRaisesRegex(ValidationError, "not authorized.*operation"):
+            resolve_mode({"mode": "epic", "test_command": "python -B -m unittest",
+                          "provenance": {"source": "reviewed_config",
+                              "config_path": ".agentic/integration-queue-config.yaml",
+                              "config_sha256": "a" * 64, "review_record_id": "capability",
+                              "reviewed_at": NOW, "producer_id": "fixture-app-only"}},
+                         epic="AWF-EPIC", project_config=PROJECT_CONFIG,
+                         app_binding={"producer_id": "fixture-app-only"},
+                         mode_observer_registry=registry, now=NOW)
+
+    def test_awf76_observers_are_bounded_and_non_reentrant(self):
+        config = {"mode": "epic", "test_command": "python -B -m unittest",
+                  "provenance": {"source": "reviewed_config",
+                      "config_path": ".agentic/integration-queue-config.yaml",
+                      "config_sha256": "a" * 64, "review_record_id": "observer-bounds",
+                      "reviewed_at": NOW, "producer_id": "fixture-bounded"}}
+        slow_registry = {}
+        register_integration_observer(
+            "fixture-bounded", lambda request: time.sleep(0.05) or observed_mode(request),
+            slow_registry)
+        with patch("agentic.integration_queue.OBSERVER_TIMEOUT_SECONDS", 0.005), \
+                self.assertRaisesRegex(ValidationError, "bounded runtime"):
+            resolve_mode(config, epic="AWF-EPIC", project_config=PROJECT_CONFIG,
+                         app_binding={"producer_id": "fixture-bounded"},
+                         mode_observer_registry=slow_registry, now=NOW)
+
+        reentrant_registry = {}
+        def reentrant(request):
+            if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+                return resolve_mode(
+                    config, epic="AWF-EPIC", project_config=PROJECT_CONFIG,
+                    app_binding={"producer_id": "fixture-reentrant"},
+                    mode_observer_registry=reentrant_registry, now=NOW)
+            return observed_mode(request)
+        register_integration_observer("fixture-reentrant", reentrant, reentrant_registry)
+        with self.assertRaisesRegex(ValidationError, "re-entered"):
+            resolve_mode(config, epic="AWF-EPIC", project_config=PROJECT_CONFIG,
+                         app_binding={"producer_id": "fixture-reentrant"},
+                         mode_observer_registry=reentrant_registry, now=NOW)
+
+    def test_awf76_authority_projection_allows_unrelated_rotation_but_blocks_sensitive_change(self):
+        current = [copy.deepcopy(PROJECT_CONFIG)]
+        registry = {}
+
+        def rotating(request):
+            if request["operation"] == "ACCEPTED_PROJECT_CONFIG":
+                return accepted_config_result(current[0])
+            result = observed_mode(request)
+            if request["operation"] == "APP_BINDING":
+                result["producer_id"] = "fixture-rotating-config"
+            return result
+
+        register_integration_observer("fixture-rotating-config", rotating, registry)
+        store = IntegrationQueueStore(
+            Path(self.temporary.name) / "rotation.sqlite3",
+            project_config=PROJECT_CONFIG, mode_observer_registry=registry,
+            build_producer_registry=BUILD_REGISTRY, git_observer_registry=GIT_REGISTRY)
+        mode = resolve_mode(
+            {"mode": "epic", "test_command": "python -B -m unittest",
+             "provenance": {"source": "reviewed_config",
+                 "config_path": ".agentic/integration-queue-config.yaml",
+                 "config_sha256": "a" * 64, "review_record_id": "rotation",
+                 "reviewed_at": NOW, "producer_id": "fixture-rotating-config"}},
+            epic="AWF-EPIC", project_config=PROJECT_CONFIG,
+            app_binding={"producer_id": "fixture-rotating-config"},
+            mode_observer_registry=registry, now=NOW)
+        store.initialize("AWF-EPIC", "main", SHA1,
+                         target_observer_id="fixture-git-provider",
+                         mode_record=mode, observed_at=NOW)
+        current[0]["controller"]["status_cadence_seconds"] += 60
+        store.admit("AWF-EPIC", entry(11, SHA2), "fixture-git-provider",
+                    runner(), observed_at=NOW)
+        before = canonical(store.snapshot("AWF-EPIC"))
+        current[0]["github"]["base_branch"] = "release"
+        with self.assertRaisesRegex(ValidationError, "authority changed"):
+            store.admit("AWF-EPIC", entry(12, SHA3), "fixture-git-provider",
+                        runner(), observed_at=NOW)
+        self.assertEqual(before, canonical(store.snapshot("AWF-EPIC")))
+
+    def test_awf76_stall_exact_boundary_is_ineligible_without_mutation(self):
+        old = (datetime.fromisoformat(NOW.replace("Z", "+00:00")) -
+               timedelta(hours=24)).isoformat().replace("+00:00", "Z")
+        register_integration_observer(
+            "fixture-git-provider", observed_git, GIT_REGISTRY, observed_at=old)
+        register_integration_observer(
+            "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=old)
+        store = IntegrationQueueStore(
+            Path(self.temporary.name) / "boundary.sqlite3",
+            project_config=PROJECT_CONFIG, mode_observer_registry=MODE_REGISTRY,
+            build_producer_registry=BUILD_REGISTRY, git_observer_registry=GIT_REGISTRY)
+        store.initialize("AWF-EPIC", "main", SHA1,
+                         target_observer_id="fixture-git-provider",
+                         mode_record=epic_mode_record(old), observed_at=old)
+        for item in (entry(11, SHA2, validated=old), entry(12, SHA3, validated=old)):
+            store.admit("AWF-EPIC", item, "fixture-git-provider",
+                        runner(observed_at=old), observed_at=old)
+        register_integration_observer(
+            "fixture-mode-provider", observed_mode, MODE_REGISTRY, observed_at=NOW)
+        before = (canonical(store.snapshot("AWF-EPIC")), canonical(store.audit("AWF-EPIC")))
+        with self.assertRaisesRegex(ValidationError, "stall threshold"):
+            store.move_stalled_front("AWF-EPIC", runner())
+        self.assertEqual(before, (canonical(store.snapshot("AWF-EPIC")),
+                                  canonical(store.audit("AWF-EPIC"))))
 
     def test_ac12_mode_authority_has_no_direct_callback_trust_points(self):
         parameters = inspect.signature(resolve_mode).parameters
