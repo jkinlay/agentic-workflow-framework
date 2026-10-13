@@ -15,6 +15,55 @@ from agentic.upgrade import (MigrationBundle, migrate_1_9_4_to_1_9_5,
 
 
 class AWF59ReviewTierYamlTests(unittest.TestCase):
+    def test_awf59_c195_r4_001_tagged_empty_mappings_full_migration_is_idempotent(self):
+        cases = {
+            "execution": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"? execution\n"
+                b": &execution_defaults !!map\n"
+            ),
+            "risk_tiers": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"? execution\n"
+                b":\n"
+                b"  ? risk_tiers\n"
+                b"  : &risk_defaults !!map\n"
+            ),
+        }
+        target = {
+            "source_manifest_sha256": "0" * 64,
+            "_immutable_files": {},
+        }
+        expected = {
+            "template": {"expected_workflow_version": "1.9.5"},
+            "execution": {
+                "risk_tiers": {
+                    "tier3_review": {
+                        "roles": ["critic", "specialist"],
+                        "findings": "blocking",
+                        "max_rounds": 3,
+                    },
+                },
+            },
+        }
+
+        for name, before in cases.items():
+            with self.subTest(name=name):
+                bundle = MigrationBundle(
+                    before,
+                    None,
+                    b"{}\n",
+                    b"{}\n",
+                    MappingProxyType({}),
+                )
+
+                after = migrate_1_9_4_to_1_9_5(bundle, target).project_config
+
+                self.assertEqual(expected, load_yaml(after))
+                self.assertIn(b"!!map", after)
+                self.assertEqual(1, after.count(b"tier3_review"))
+                self.assertEqual(after, review_tier_defaults(after))
+
     def test_awf59_c195_r2_001_cr_only_version_step_reparses_and_is_idempotent(self):
         before = (
             b"template:\r  expected_workflow_version: 1.9.4\r"
