@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Generate complete inert forms and a deterministic offline evidence example."""
 from __future__ import annotations
+import argparse
 import base64
 import copy
+import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import uuid
 
 sys.dont_write_bytecode = True
@@ -13,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.canonical import canonical, fingerprint, sha256
 from agentic import VERSION
+from agentic.child_process import child_env
 from agentic.lifecycle import definition
 from agentic.policy import CAPABILITIES, PROTECTED_PATHS, policy_hash
 from agentic.review_policy import DEFAULT_RISK_TIERS
@@ -24,6 +29,7 @@ from agentic.gates import (critic_artifact_receipt_sha256,
 from generate_contracts import catalog
 
 NOW = "2026-09-09T12:00:00Z"
+WORKFLOW_PATH = ".github/workflows/ci.yml"
 
 
 def base64_bytes(value):
@@ -70,6 +76,41 @@ def uid(name):
 def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+
+
+def workflow_blob_sha(repository):
+    """Derive the reviewed workflow blob ID and match trusted Git observations."""
+    repository = Path(repository).resolve()
+    raw = (repository / WORKFLOW_PATH).read_bytes()
+    derived = hashlib.sha1(
+        b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+    ).hexdigest()
+    hashed = subprocess.run(
+        ["git", "hash-object", "--stdin"], cwd=repository, input=raw,
+        check=True, capture_output=True, env=child_env(),
+    ).stdout.decode("ascii").strip()
+    if hashed != derived:
+        raise ValueError(
+            "checked-in workflow bytes disagree with the trusted Git blob observation"
+        )
+    worktree = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=repository,
+        check=False, capture_output=True, text=True, env=child_env(),
+    )
+    if worktree.returncode == 0 and Path(worktree.stdout.strip()).resolve() == repository:
+        observed = subprocess.run(
+            ["git", "rev-parse", f"HEAD:{WORKFLOW_PATH}"], cwd=repository,
+            check=True, capture_output=True, text=True, env=child_env(),
+        ).stdout.strip()
+        kind = subprocess.run(
+            ["git", "cat-file", "-t", observed], cwd=repository,
+            check=True, capture_output=True, text=True, env=child_env(),
+        ).stdout.strip()
+        if kind != "blob" or observed != derived:
+            raise ValueError(
+                "checked-in workflow bytes disagree with the trusted Git blob observation"
+            )
+    return derived
 
 
 def config(example=True):
@@ -133,6 +174,15 @@ def config(example=True):
         result["execution"]["roles"][name].update(
             model=values["model"], reasoning_effort=values["reasoning_effort"],
             approved_model_ids=routing["role_allowed_models"][name])
+    return result
+
+
+def content_binding_config(repository=ROOT):
+    """Return a separate schema example without changing the legacy fixture."""
+    result = config(True)
+    check = result["validation"]["required_ci_checks"][0]
+    check["workflow_path"] = WORKFLOW_PATH
+    check["workflow_blob_sha"] = workflow_blob_sha(repository)
     return result
 
 
@@ -351,24 +401,28 @@ def sample(schema, schemas, document=None):
     return "UNFILLED"
 
 
-def main():
+def generate(output_root, source_root=ROOT):
+    output_root = Path(output_root)
+    source_root = Path(source_root)
     schemas = catalog()
-    write(ROOT / ".agentic/examples/reference-controller-adapter.json", controller_adapter_config())
+    write(output_root / ".agentic/examples/reference-controller-adapter.json", controller_adapter_config())
     from agentic.operating import default_operating
-    write(ROOT / "OPERATING_CONFIG.yaml", default_operating())
-    write(ROOT / ".agentic/examples/OPERATING_CONFIG.yaml", default_operating())
-    write(ROOT / ".agentic/workflow.yaml", definition())
+    write(output_root / "OPERATING_CONFIG.yaml", default_operating())
+    write(output_root / ".agentic/examples/OPERATING_CONFIG.yaml", default_operating())
+    write(output_root / ".agentic/workflow.yaml", definition())
     source_config = config(False)
-    write(ROOT / ".agentic/PROJECT_CONFIG.yaml", source_config)
-    write(ROOT / ".agentic/templates/source-config/PROJECT_CONFIG.yaml", source_config)
-    write(ROOT / ".agentic/examples/unconfigured-project.yaml", config(False))
-    write(ROOT / ".agentic/workflow-version.yaml", {"template": {"name": "generic-agentic-development-workflow", "version": VERSION, "schema_revision": 3},
+    write(output_root / ".agentic/PROJECT_CONFIG.yaml", source_config)
+    write(output_root / ".agentic/templates/source-config/PROJECT_CONFIG.yaml", source_config)
+    write(output_root / ".agentic/examples/unconfigured-project.yaml", config(False))
+    write(output_root / ".agentic/workflow-version.yaml", {"template": {"name": "generic-agentic-development-workflow", "version": VERSION, "schema_revision": 3},
         "installation": {"install_id": None, "last_operation": None, "operation_at": None, "source_manifest_sha256": None, "profile": "manual_reference"}})
     cfg = config(True)
-    write(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml", cfg)
+    write(output_root / ".agentic/examples/PROJECT_CONFIG.yaml", cfg)
+    write(output_root / ".agentic/examples/workflow-content-binding-project.yaml",
+          content_binding_config(source_root))
     bundle = example_bundle(cfg)
-    write(ROOT / ".agentic/examples/evidence-bundle.json", bundle)
-    write(ROOT / ".agentic/examples/controller-status-digest.json", {
+    write(output_root / ".agentic/examples/evidence-bundle.json", bundle)
+    write(output_root / ".agentic/examples/controller-status-digest.json", {
         "schema_version": 3, "observed_at": NOW, "kind": "REGULAR", "cadence_seconds": 600,
         "delivery_id": "d" * 64, "all_complete": False,
         "streams": [{"stream": stream, "state": state, "ticket": ticket,
@@ -384,7 +438,7 @@ def main():
                  "owner decision recorded", "Await input for EX-2", "Open"),
                 ("C", "BLOCKED", "EX-3", "controller", "Dependency unavailable", "Continue independent streams",
                  "dependency becomes satisfied", "Blocked on EX-3 dependency", "Open")]]})
-    write(ROOT / ".agentic/examples/jira-progress.json", {"schema_version": 3, "merged_ticket": "EX-1",
+    write(output_root / ".agentic/examples/jira-progress.json", {"schema_version": 3, "merged_ticket": "EX-1",
         "scope": "project=EX AND labels=awf-fixture", "observed_at": NOW, "closed": 4,
         "remaining_open": 2, "jira_state": "COUNTED", "scope_sha256": "d" * 64,
         "include_epics": False, "snapshot_id": "fixture-snapshot-1",
@@ -392,13 +446,13 @@ def main():
     from agentic.contracts import Contracts
     from agentic.digest import render
     from agentic.gates import evaluate
-    gate = evaluate(cfg, definition(), bundle, Contracts(ROOT / ".agentic/schemas"), NOW)
+    gate = evaluate(cfg, definition(), bundle, Contracts(source_root / ".agentic/schemas"), NOW)
     finding = {"id": "F1", "severity": "MAJOR", "summary": "Fixture finding F1", "evidence": ["urn:awf:fixture:example-evidence"], "status": "OPEN",
                "resolution_evidence": [], "basis": {"criterion_id": "AC1"}, "supersedes_finding_id": None, "path": "src/example.py"}
     state = {"ticket": "EX-1", "awf_state": "MERGED", "pr_number": 7, "head_sha": "b" * 40, "base_sha": "c" * 40, "tree_sha": "e" * 40, "risk_tier": 2}
-    (ROOT / ".agentic/examples/digest-jira.md").write_text(render(state, audience="jira", gate=gate, findings=[finding],
+    (output_root / ".agentic/examples/digest-jira.md").write_text(render(state, audience="jira", gate=gate, findings=[finding],
         validation=bundle["worker"]["validation"], ci=bundle["ci"]["checks"], reviewer={"engine": "codex", "run_id": "r-1"}), encoding="utf-8", newline="\n")
-    (ROOT / ".agentic/examples/evidence.txt").write_text("Illustrative evidence; no external test was executed.\n", encoding="utf-8", newline="\n")
+    (output_root / ".agentic/examples/evidence.txt").write_text("Illustrative evidence; no external test was executed.\n", encoding="utf-8", newline="\n")
     for name, schema in schemas.items():
         # Dedicated configuration and operating surfaces own these forms;
         # generic UNFILLED sampling cannot populate their open objects.
@@ -412,9 +466,35 @@ def main():
                                         ("adoption", "verification", "validation", "status", "operating")):
                 command["purpose"] = purpose
         filename = "project-status" if name == "project-state" else name
-        write(ROOT / ".agentic/templates" / (filename + (".json" if name == "controller-event" else ".yaml")), draft)
+        write(output_root / ".agentic/templates" / (filename + (".json" if name == "controller-event" else ".yaml")), draft)
     print("Generated complete draft forms, configuration and offline evidence fixture")
 
 
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true",
+                        help="verify generated example bytes without changing files")
+    args = parser.parse_args(argv)
+    if not args.check:
+        generate(ROOT)
+        return 0
+    with tempfile.TemporaryDirectory(prefix="awf-generate-examples-") as raw:
+        destination = Path(raw)
+        generate(destination)
+        drift = []
+        for generated in destination.rglob("*"):
+            if not generated.is_file():
+                continue
+            relative = generated.relative_to(destination)
+            checked_in = ROOT / relative
+            if not checked_in.is_file() or checked_in.read_bytes() != generated.read_bytes():
+                drift.append(relative.as_posix())
+    if drift:
+        print("Generated example drift: " + ", ".join(sorted(drift)), file=sys.stderr)
+        return 2
+    print("Generated examples are current")
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
