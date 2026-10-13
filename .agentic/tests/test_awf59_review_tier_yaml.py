@@ -16,6 +16,103 @@ from agentic.upgrade import (MigrationBundle, migrate_1_9_4_to_1_9_5,
 
 
 class AWF59ReviewTierYamlTests(unittest.TestCase):
+    def test_awf59_c195_r6_001_flow_mapping_boundaries_ignore_comment_braces(self):
+        cases = {
+            "anchored_execution": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"execution: &execution_defaults # decoy { and } in comment\n"
+                b"  {mode: manual}\n",
+                {"mode": "manual", "risk_tiers": {}},
+                b"# decoy { and } in comment\n",
+            ),
+            "tagged_execution": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"execution: !!map # decoy { and } in comment\n"
+                b"  {mode: manual}\n",
+                {"mode": "manual", "risk_tiers": {}},
+                b"# decoy { and } in comment\n",
+            ),
+            "nested_anchored_risk_tiers": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"execution:\n"
+                b"  risk_tiers: &risk_defaults # decoy { and } in comment\n"
+                b"    {tier1_review: {}}\n",
+                {"risk_tiers": {"tier1_review": {}}},
+                b"# decoy { and } in comment\n",
+            ),
+        }
+
+        for name, (before, expected_execution, retained) in cases.items():
+            with self.subTest(name=name):
+                after = self._migrate_r6_case(before)
+                expected_execution["risk_tiers"]["tier3_review"] = {
+                    "roles": ["critic", "specialist"],
+                    "findings": "blocking",
+                    "max_rounds": 3,
+                }
+
+                self.assertEqual({
+                    "template": {"expected_workflow_version": "1.9.5"},
+                    "execution": expected_execution,
+                }, load_yaml(after))
+                self.assertIn(retained, after)
+                self.assertEqual(1, after.count(b"tier3_review"))
+                self.assertEqual(after, review_tier_defaults(after))
+
+    def test_awf59_c195_r6_001_flow_mapping_boundaries_ignore_quoted_braces(self):
+        cases = {
+            "single_quoted_scalar": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"execution: {note: 'decoy { and } scalar', "
+                b"risk_tiers: {tier1_review: {}}}\n",
+                "decoy { and } scalar",
+                b"'decoy { and } scalar'",
+            ),
+            "double_quoted_scalar": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b'execution: {note: "decoy { and } scalar", '
+                b"risk_tiers: {tier1_review: {}}}\n",
+                "decoy { and } scalar",
+                b'"decoy { and } scalar"',
+            ),
+        }
+
+        for name, (before, note, retained) in cases.items():
+            with self.subTest(name=name):
+                after = self._migrate_r6_case(before)
+
+                self.assertEqual({
+                    "template": {"expected_workflow_version": "1.9.5"},
+                    "execution": {
+                        "note": note,
+                        "risk_tiers": {
+                            "tier1_review": {},
+                            "tier3_review": {
+                                "roles": ["critic", "specialist"],
+                                "findings": "blocking",
+                                "max_rounds": 3,
+                            },
+                        },
+                    },
+                }, load_yaml(after))
+                self.assertIn(retained, after)
+                self.assertEqual(1, after.count(b"tier3_review"))
+                self.assertEqual(after, review_tier_defaults(after))
+
+    def _migrate_r6_case(self, before):
+        bundle = MigrationBundle(
+            before,
+            None,
+            b"{}\n",
+            b"{}\n",
+            MappingProxyType({}),
+        )
+        target = {
+            "source_manifest_sha256": "0" * 64,
+            "_immutable_files": {},
+        }
+        return migrate_1_9_4_to_1_9_5(bundle, target).project_config
+
     def test_awf59_c195_r5_001_multiline_explicit_keys_full_migration_is_idempotent(self):
         cases = {
             "execution": (
