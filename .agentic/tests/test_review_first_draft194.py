@@ -259,6 +259,7 @@ class FirstDraftTests(unittest.TestCase):
                 git=Adapter(), allowed_paths={'a.txt'})
             self.assertEqual(published['head_tree'], tree.tested_tree)
             self.assertEqual(command(root, 'rev-parse', 'HEAD^{tree}'), tree.tested_tree)
+            self.assertEqual(published['title'], 'first draft')
             self.assertIn('Writer: codex/' + CODEX_THREAD_ID,
                           command(root, 'show', '-s', '--format=%B', 'HEAD'))
 

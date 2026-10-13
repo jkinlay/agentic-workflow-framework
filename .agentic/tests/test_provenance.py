@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import copy
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -20,6 +22,7 @@ from agentic.provenance import (
     parse_writer_trailer,
     record_owner_override,
     render_owner_override,
+    supersede_owner_override,
     validate_critic_run_binding,
     verify_owner_override,
 )
@@ -167,6 +170,105 @@ class OwnerOverrideTests(unittest.TestCase):
                     state, when=NOW, pr=49, covered_shas=["a" * 40], **values
                 )
             self.assertEqual({}, state)
+
+    def test_superseding_override_preserves_and_binds_the_original_record(self):
+        state = {}
+        original = record_owner_override(
+            state, who="owner-1", when=NOW, why="Initial exception", pr=49,
+            covered_shas=["a" * 40], trusted_owner_ids=["owner-1"],
+        )
+        original_bytes = json.dumps(
+            state["provenance_overrides"]["49"],
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+
+        superseding = supersede_owner_override(
+            state, who="owner-1", when="2026-10-13T11:05:00Z",
+            why="Extend the authenticated exception", pr=49,
+            covered_shas=["a" * 40, "b" * 40],
+            supersedes=original["override_sha256"],
+            trusted_owner_ids=["owner-1"],
+        )
+
+        self.assertEqual(
+            original_bytes,
+            json.dumps(state["provenance_overrides"]["49"],
+                       sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        )
+        self.assertEqual(original, verify_owner_override(
+            original, trusted_owner_ids=["owner-1"], pr=49
+        ))
+        self.assertEqual(original["override_sha256"], superseding["supersedes"])
+        self.assertEqual(
+            superseding,
+            verify_owner_override(
+                superseding, trusted_owner_ids=["owner-1"], pr=49,
+                supersedes=original,
+            ),
+        )
+        self.assertEqual(
+            [superseding], state["provenance_override_supersessions"]["49"]
+        )
+        rendered = render_owner_override(superseding)
+        self.assertIn(original["override_sha256"], rendered)
+
+    def test_tampering_with_original_or_superseding_override_is_detected(self):
+        state = {}
+        original = record_owner_override(
+            state, who="owner-1", when=NOW, why="Initial exception", pr=49,
+            covered_shas=["a" * 40], trusted_owner_ids=["owner-1"],
+        )
+        superseding = supersede_owner_override(
+            state, who="owner-1", when="2026-10-13T11:05:00Z",
+            why="Extended exception", pr=49,
+            covered_shas=["a" * 40, "b" * 40],
+            supersedes=original["override_sha256"],
+            trusted_owner_ids=["owner-1"],
+        )
+        tampered_original = copy.deepcopy(original)
+        tampered_original["why"] = "Changed"
+        with self.assertRaisesRegex(ValidationError, "digest"):
+            verify_owner_override(
+                tampered_original, trusted_owner_ids=["owner-1"], pr=49
+            )
+        for field, value in (("why", "Changed"), ("supersedes", "c" * 64)):
+            tampered = copy.deepcopy(superseding)
+            tampered[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(
+                    ValidationError, "digest"):
+                verify_owner_override(
+                    tampered, trusted_owner_ids=["owner-1"], pr=49,
+                    supersedes=original,
+                )
+
+    def test_invalid_supersede_is_refused_without_state_change(self):
+        state = {}
+        original = record_owner_override(
+            state, who="owner-1", when=NOW, why="Initial exception", pr=49,
+            covered_shas=["a" * 40], trusted_owner_ids=["owner-1"],
+        )
+        cases = [
+            {"who": "outsider"},
+            {"who": ""},
+            {"why": ""},
+            {"pr": 50},
+            {"supersedes": "c" * 64},
+            {"supersedes": None},
+        ]
+        for changed in cases:
+            with self.subTest(changed=changed):
+                before = copy.deepcopy(state)
+                values = {
+                    "who": "owner-1", "when": "2026-10-13T11:05:00Z",
+                    "why": "Extended exception", "pr": 49,
+                    "covered_shas": ["a" * 40, "b" * 40],
+                    "supersedes": original["override_sha256"],
+                    "trusted_owner_ids": ["owner-1"],
+                }
+                values.update(changed)
+                with self.assertRaises(ValidationError):
+                    supersede_owner_override(state, **values)
+                self.assertEqual(before, state)
 
 
 class RepositoryRangeTests(unittest.TestCase):
@@ -459,6 +561,33 @@ class RepositoryRangeTests(unittest.TestCase):
                 trusted_owner_ids=["owner-1"], pr_number=49,
                 pr_labels=["fallback: bot-written"],
             )
+
+    def test_range_honours_latest_superseding_override(self):
+        self.write("legacy-one.txt", "legacy one\n")
+        first = self.commit("legacy bot commit one")
+        self.write("legacy-two.txt", "legacy two\n")
+        second = self.commit("legacy bot commit two")
+        state = {}
+        original = record_owner_override(
+            state, who="owner-1", when=NOW, why="Initial exception", pr=49,
+            covered_shas=[first], trusted_owner_ids=["owner-1"],
+        )
+        latest = supersede_owner_override(
+            state, who="owner-1", when="2026-10-13T11:05:00Z",
+            why="Cover the second affected commit", pr=49,
+            covered_shas=[first, second],
+            supersedes=original["override_sha256"],
+            trusted_owner_ids=["owner-1"],
+        )
+
+        result = check_commit_range(
+            self.root, self.base, second, override=latest,
+            trusted_owner_ids=["owner-1"], pr_number=49,
+            pr_labels=["fallback: bot-written"],
+        )
+        self.assertEqual("PASS", result["status"])
+        self.assertEqual(["OVERRIDDEN", "OVERRIDDEN"],
+                         [item["status"] for item in result["commits"]])
 
 
 if __name__ == "__main__":
