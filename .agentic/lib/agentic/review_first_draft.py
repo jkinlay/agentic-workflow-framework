@@ -127,8 +127,10 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
     # This is the commit boundary, not merely a convenience wrapper.  Format
     # the message here so every caller must supply the authenticated Codex
     # execution identity before any Git mutation can occur.
+    plain_commit_message = commit_message
     commit_message = writer_commit_message(commit_message,
                                            codex_run_id=codex_run_id)
+    commit_title = plain_commit_message.splitlines()[0]
     receipt = validate_worker_receipt(receipt, allowed_paths=set(allowed_paths))
     if git_guard:
         git_guard()
@@ -143,7 +145,7 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
             "Worker ignored_untracked inventory does not match the candidate tree")
     plan = {"base": base, "head_tree": receipt["tested_tree"], "branch": branch,
             "body_sha256": sha256(body.encode()).hexdigest(),
-            "title": title or commit_message, "commit_message": commit_message,
+            "title": title or commit_title, "commit_message": commit_message,
             "ignored_untracked": excluded}
     require(publication_plan is None or publication_plan == plan,
             "First-draft publication plan changed during recovery")
@@ -185,7 +187,7 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
     publication = {"base": base, "head": head, "head_tree": actual,
                    "branch": branch, "body": body,
                    "body_sha256": sha256(body.encode()).hexdigest(),
-                   "title": title or commit_message,
+                   "title": title or commit_title,
                    "ignored_untracked": excluded}
     if prepare_publication:
         prepare_publication(publication)

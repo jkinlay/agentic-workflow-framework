@@ -87,3 +87,11 @@ failures `OVERRIDDEN` and names the override digest; there is no silent bypass.
 The host remains responsible for authenticating the owner source and posting
 the rendered record. Gate, schema, template, and generator wiring are part of
 the follow-up split.
+
+An existing record is never replaced in place. `supersede_owner_override`
+validates the complete current chain, requires another trusted-owner identity,
+and appends a version-2 record whose `supersedes` field names the current
+record's sealed digest. It retains every previously covered commit. The
+original record remains byte-for-byte unchanged; a stale, missing, cross-PR,
+unauthorised, or tampered link refuses without changing state. Range checking
+uses the latest verified record supplied by the controller.

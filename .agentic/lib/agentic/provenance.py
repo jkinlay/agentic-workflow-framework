@@ -22,6 +22,7 @@ from .child_process import child_env, isolated_git_env
 FALLBACK_LABEL = "fallback: bot-written"
 DEFAULT_GENERATED_PATHS = frozenset({"MANIFEST.json", "MANIFEST.md"})
 _SHA = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _SCRIPT = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _WRITER_LINE = re.compile(r"^Writer:\s*(.*?)\s*$")
 _TRAILER_LINE = re.compile(r"^[A-Za-z0-9-]+:\s+\S.*$")
@@ -133,11 +134,14 @@ def _override_payload(record):
 
 
 def _verify_override_shape(record):
+    version = record.get("schema_version") if isinstance(record, dict) else None
     expected = {"schema_version", "override_sha256", "who", "when", "why", "pr",
                 "covered_shas"}
+    if version == 2:
+        expected.add("supersedes")
     _require(isinstance(record, dict) and set(record) == expected,
              "Provenance override has unsupported or missing fields")
-    _require(record["schema_version"] == 1, "Unsupported provenance override version")
+    _require(version in {1, 2}, "Unsupported provenance override version")
     _require(isinstance(record["who"], (str, int)) and not isinstance(record["who"], bool)
              and bool(str(record["who"]))
              and str(record["who"]).strip() == str(record["who"])
@@ -156,13 +160,17 @@ def _verify_override_shape(record):
              "Provenance override needs unique covered commit SHAs")
     for value in shas:
         _sha(value, "Covered commit SHA")
+    if version == 2:
+        _require(isinstance(record["supersedes"], str)
+                 and _DIGEST.fullmatch(record["supersedes"]) is not None,
+                 "Superseding provenance override needs the current override SHA-256")
     digest = fingerprint("provenance_override", _override_payload(record))
     _require(record["override_sha256"] == digest,
              "Provenance override digest is missing or stale")
     return record
 
 
-def verify_owner_override(record, *, trusted_owner_ids, pr=None):
+def verify_owner_override(record, *, trusted_owner_ids, pr=None, supersedes=None):
     """Validate a sealed override against reviewed owner IDs and optional PR."""
     _verify_override_shape(record)
     _require(isinstance(trusted_owner_ids, (list, tuple, set, frozenset))
@@ -171,6 +179,13 @@ def verify_owner_override(record, *, trusted_owner_ids, pr=None):
     if pr is not None:
         _require(type(pr) is int and record["pr"] == pr,
                  "Provenance override is bound to a different PR")
+    if supersedes is not None:
+        verify_owner_override(
+            supersedes, trusted_owner_ids=trusted_owner_ids, pr=record["pr"]
+        )
+        _require(record["schema_version"] == 2
+                 and record["supersedes"] == supersedes["override_sha256"],
+                 "Superseding provenance override does not reference the current record")
     return record
 
 
@@ -200,10 +215,70 @@ def record_owner_override(state, *, who, when, why, pr, covered_shas,
     return copy.deepcopy(draft)
 
 
+def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
+                             supersedes, trusted_owner_ids):
+    """Append a sealed replacement while preserving the original record.
+
+    The original v1 record remains at ``provenance_overrides[pr]``.  Later
+    records form a digest-linked append-only list in the separate
+    ``provenance_override_supersessions`` map.  The full existing chain and
+    the proposed replacement are validated before caller-owned state changes.
+    """
+    _require(isinstance(state, dict), "AWF state must be an object")
+    originals = state.get("provenance_overrides", {})
+    _require(isinstance(originals, dict), "AWF provenance override state is malformed")
+    key = str(pr)
+    _require(key in originals, "This PR has no provenance override record to supersede")
+    current = verify_owner_override(
+        originals[key], trusted_owner_ids=trusted_owner_ids, pr=pr
+    )
+    histories = state.get("provenance_override_supersessions", {})
+    _require(isinstance(histories, dict),
+             "AWF provenance override supersession state is malformed")
+    history = histories.get(key, [])
+    _require(isinstance(history, list),
+             "AWF provenance override supersession history is malformed")
+    for existing in history:
+        verify_owner_override(
+            existing, trusted_owner_ids=trusted_owner_ids, pr=pr,
+            supersedes=current,
+        )
+        current = existing
+
+    draft = {
+        "schema_version": 2,
+        "override_sha256": "",
+        "who": who,
+        "when": when,
+        "why": why,
+        "pr": pr,
+        "covered_shas": sorted(covered_shas) if isinstance(covered_shas, list)
+        else covered_shas,
+        "supersedes": supersedes,
+    }
+    draft["override_sha256"] = fingerprint(
+        "provenance_override", _override_payload(draft)
+    )
+    verify_owner_override(
+        draft, trusted_owner_ids=trusted_owner_ids, pr=pr, supersedes=current
+    )
+    _require(set(current["covered_shas"]).issubset(set(draft["covered_shas"])),
+             "Superseding provenance override must retain all covered commit SHAs")
+
+    updated = copy.deepcopy(histories)
+    updated.setdefault(key, []).append(copy.deepcopy(draft))
+    state["provenance_override_supersessions"] = updated
+    return copy.deepcopy(draft)
+
+
 def render_owner_override(record):
     """Render the exact auditable section the controller can place on the PR."""
     _verify_override_shape(record)
     commits = "\n".join(f"  - `{value}`" for value in record["covered_shas"])
+    supersession = (
+        f"- Supersedes override SHA-256: `{record['supersedes']}`\n"
+        if record["schema_version"] == 2 else ""
+    )
     return (
         "<!-- awf-provenance-override:start -->\n"
         "## AWF provenance override\n\n"
@@ -212,6 +287,7 @@ def render_owner_override(record):
         f"- When: {record['when']}\n"
         f"- Why: {record['why']}\n"
         f"- Override SHA-256: `{record['override_sha256']}`\n"
+        f"{supersession}"
         "- Covered commits:\n"
         f"{commits}\n"
         "<!-- awf-provenance-override:end -->\n"
