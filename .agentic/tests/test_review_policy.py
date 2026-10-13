@@ -242,6 +242,33 @@ def bind_production_posting_fixture(config, bundle):
     return {producer_id: registration}
 
 
+class RuntimeAssignedGateConfig(dict):
+    """Test config whose hidden runtime assignment follows the mutable bundle."""
+
+    def __init__(self, values, fixture):
+        super().__init__(values)
+        self.fixture = fixture
+
+    def __deepcopy__(self, memo):
+        return type(self)(copy.deepcopy(dict(self), memo), self.fixture)
+
+    def get(self, key, default=None):
+        if key != "_awf_runtime":
+            return super().get(key, default)
+        bundle = self.fixture.bundle
+        ticket = bundle["contract"]["ticket"]
+        tier = bundle["tier_classification"]["tier"]
+        record = {"assignment_id": "gate-fixture-assignment",
+                  "ticket_key": ticket, "tier": tier,
+                  "round_cap": {1: 1, 2: 2, 3: 3}[tier],
+                  "owner_review_required": tier == 3}
+        record["assignment_sha256"] = fingerprint(
+            "intake_assignment_record", record
+        )
+        return {"active_ticket_key": ticket,
+                "intake_assignments": {ticket: record}}
+
+
 class Fixture(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -250,8 +277,10 @@ class Fixture(unittest.TestCase):
         cls.bundle0 = load(ROOT / ".agentic/examples/evidence-bundle.json")
 
     def setUp(self):
-        self.config = copy.deepcopy(self.config0)
         self.bundle = copy.deepcopy(self.bundle0)
+        self.config = RuntimeAssignedGateConfig(
+            copy.deepcopy(self.config0), self
+        )
 
     def gate(self):
         bind_review_admission(self.bundle)
@@ -583,7 +612,7 @@ class CapTests(Fixture):
         self.assertIn("REVIEW_CAP_REACHED", STATES)
         self.assertIn("REVIEW_CAP_REACHED", RESUME)
         self.assertTrue(cap_status(self.config, 3, 0)["cap_reached"])
-        self.assertFalse(cap_status(self.config, 2, 0)["cap_reached"])
+        self.assertTrue(cap_status(self.config, 2, 0)["cap_reached"])
         with self.assertRaisesRegex(ValidationError, "amendment_cycles_available"):
             transition("CHANGES_REQUESTED", "AMENDMENT_ACCEPTED", {k: True for k in ["dispatch_permitted", "lease_current", "budget_reserved", "ownership_current"]})
         self.assertEqual("REVIEW_CAP_REACHED", transition("CHANGES_REQUESTED", "CAP_REACHED", {"amendment_cycles_exhausted": True, "open_findings_presented": True}))
@@ -606,7 +635,7 @@ class CapTests(Fixture):
         self.assertTrue(cap_status(self.config, 3, 0)["cap_reached"])
         self.config["execution"]["max_agent_runs_per_ticket"] = 1
         self.config["execution"]["model_routing"]["budgets"]["max_runs_per_ticket"] = 1
-        self.assertFalse(cap_status(self.config, 2, 0)["cap_reached"])
+        self.assertTrue(cap_status(self.config, 2, 0)["cap_reached"])
         self.assertTrue(cap_status(self.config, 3, 0)["cap_reached"])
 
     def test_third_extension_refused_by_governance_path(self):

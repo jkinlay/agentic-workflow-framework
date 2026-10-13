@@ -11,6 +11,7 @@ The only other accepted form is ``<a name="review-verdict-<round>-<record_id>"><
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 import re
 
@@ -118,15 +119,88 @@ def _gate_entry(registration):
     return {key: value for key, value in registration.items() if key != "collector_id"}
 
 
-def _provider_response(comment_id, comment_url, comment_body, pr_body):
+def _provider_response(comment_id, comment_url, comment_body, pr_body,
+                       owner_approval=None):
     # Retain only the provider fields used by the gate.  This deliberately
     # excludes actor profiles, headers and other unrelated provider data.
-    return canonical({
+    response = {
         "comment_id": comment_id,
         "comment_url": comment_url,
         "comment_body": comment_body,
         "pr_body": pr_body,
-    })
+    }
+    if owner_approval is not None:
+        response["owner_approval"] = owner_approval
+    return canonical(response)
+
+
+def _formal_owner_approval(review_host, candidate, owner_review, pull):
+    """Re-read one formal GitHub approval bound to the trusted owner claim."""
+    if not isinstance(owner_review, dict) or owner_review.get("owner_review") is not True:
+        _mismatch("OWNER_APPROVAL_MISMATCH", "Tier 3 owner review record is missing")
+    expected_binding = {
+        "repository_id": candidate.get("repository_id"),
+        "pr_number": candidate.get("pr_number"),
+        "base_sha": candidate.get("target_base_sha"),
+        "head_sha": candidate.get("head_sha"),
+    }
+    if owner_review.get("candidate_binding") != expected_binding:
+        _mismatch("OWNER_APPROVAL_MISMATCH",
+                  "owner review does not bind the exact candidate")
+    prefix = (
+        f"{candidate['host']}/{candidate['repository']}/pull/{candidate['pr_number']}"
+    )
+    match = re.fullmatch(
+        re.escape(prefix) + r"#pullrequestreview-([1-9][0-9]*)",
+        owner_review.get("pr_comment_url", ""),
+    )
+    if match is None:
+        _mismatch("OWNER_APPROVAL_MISMATCH",
+                  "owner review URL is not an immutable GitHub review URL")
+    head = pull.get("head") if isinstance(pull, dict) else None
+    base = pull.get("base") if isinstance(pull, dict) else None
+    if (not isinstance(head, dict) or not isinstance(base, dict)
+            or head.get("sha") != candidate["head_sha"]
+            or base.get("sha") != candidate["target_base_sha"]):
+        _mismatch("OWNER_APPROVAL_MISMATCH",
+                  "live pull request head/base differs from the owner candidate")
+    review_id = int(match.group(1))
+    review = review_host.api(
+        f"pulls/{candidate['pr_number']}/reviews/{review_id}"
+    )
+    user = review.get("user") if isinstance(review, dict) else None
+    if (not isinstance(review, dict) or review.get("id") != review_id
+            or review.get("html_url") != owner_review["pr_comment_url"]
+            or review.get("state") != "APPROVED"
+            or review.get("commit_id") != candidate["head_sha"]
+            or not isinstance(user, dict)
+            or user.get("id") != owner_review.get("owner_id")):
+        _mismatch("OWNER_APPROVAL_MISMATCH",
+                  "GitHub review is not an approval by the claimed owner of the exact head")
+    return {
+        "id": review_id,
+        "html_url": review["html_url"],
+        "state": review["state"],
+        "commit_id": review["commit_id"],
+        "user": {"id": user["id"]},
+        "candidate": expected_binding,
+    }
+
+
+def _retained_owner_approval(owner_review):
+    observation = owner_review.get("posting_observation") if isinstance(owner_review, dict) else None
+    envelope = observation.get("provider_response_bytes") if isinstance(observation, dict) else None
+    try:
+        raw = base64.b64decode(envelope["data"].encode("ascii"), validate=True)
+        value = json.loads(raw.decode("utf-8"))
+    except (KeyError, TypeError, ValueError, UnicodeError):
+        _mismatch("OWNER_APPROVAL_MISMATCH",
+                  "owner record has no decodable provider approval evidence")
+    approval = value.get("owner_approval") if isinstance(value, dict) else None
+    if not isinstance(approval, dict):
+        _mismatch("OWNER_APPROVAL_MISMATCH",
+                  "owner record has no provider-observed formal approval")
+    return approval
 
 
 def _without_code_spans(markdown):
@@ -342,7 +416,7 @@ def _defines_fragment(body, fragment):
 
 def collect_posting_observation(review_host, *, candidate, verdict,
                                 review_round_receipt, collector_run_id,
-                                observed_at, release_sha256):
+                                observed_at, release_sha256, owner_review=None):
     """Read one posted verdict and return its observation and registration.
 
     ``review_host`` is the existing GitHub review-host provider (or a
@@ -405,8 +479,11 @@ def collect_posting_observation(review_host, *, candidate, verdict,
         _mismatch("POSTING_ANCHOR_MISMATCH",
                   "live pull request body omits the exact verdict anchor")
 
+    owner_approval = (_formal_owner_approval(
+        review_host, candidate, owner_review, pull
+    ) if owner_review is not None else None)
     provider_response = _provider_response(
-        comment_id, comment["html_url"], comment["body"], body
+        comment_id, comment["html_url"], comment["body"], body, owner_approval
     )
     registration = _registration(release_sha256, candidate["repository_id"])
     observation = {
@@ -476,6 +553,11 @@ def registry_from_review_host(review_host, bundle, *, release_sha256):
             if isinstance(item, dict)}
     receipts = bundle.get("review_round_receipts", [])
     merged = _registration(release_sha256, candidate.get("repository_id"))
+    owner_review = bundle.get("owner_review")
+    if owner_review is not None:
+        _retained_owner_approval(owner_review)
+    terminal_round = max((item.get("round", 0)
+                          for item in bundle.get("review_verdicts", [])), default=0)
     for verdict in sorted(bundle.get("review_verdicts", []),
                           key=lambda item: item.get("round", 0)):
         observation = verdict.get("posting_observation")
@@ -502,8 +584,13 @@ def registry_from_review_host(review_host, bundle, *, release_sha256):
             collector_run_id=observation["run_id"],
             observed_at=observation.get("observed_at"),
             release_sha256=release_sha256,
+            owner_review=(owner_review if verdict.get("round") == terminal_round else None),
         )
         _retained_mismatch(collected["observation"], observation)
+        if (owner_review is not None and verdict.get("round") == terminal_round
+                and owner_review.get("posting_observation") != observation):
+            _mismatch("OWNER_APPROVAL_MISMATCH",
+                      "owner record does not carry the registered provider observation")
         merged["receipts"].update(collected["registration"]["receipts"])
     if not merged["receipts"]:
         _mismatch("POSTING_OBSERVATION_MISMATCH", "no review verdict postings were observed")

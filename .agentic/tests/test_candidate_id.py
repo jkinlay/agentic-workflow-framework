@@ -16,7 +16,9 @@ from agentic.contracts import Contracts
 from agentic import gates, interaction, review_completion
 from agentic.lifecycle import definition, transition
 from agentic.providers.github_review_host import HostDriver
-from test_review_policy import bind_production_posting_fixture, bind_review_admission
+from test_review_policy import (RuntimeAssignedGateConfig,
+                                bind_production_posting_fixture,
+                                bind_review_admission)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -91,13 +93,14 @@ class CandidateIdTests(unittest.TestCase):
     def test_git_sha_diagnostic_is_used_by_ready_gate_and_lifecycle(self):
         contracts = Contracts(ROOT / ".agentic/schemas")
         config = load(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml")
-        bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
-        bind_review_admission(bundle)
-        registry = bind_production_posting_fixture(config, bundle)
+        self.bundle = load(ROOT / ".agentic/examples/evidence-bundle.json")
+        config = RuntimeAssignedGateConfig(config, self)
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(config, self.bundle)
         gate = gates.evaluate(
             config,
             definition(),
-            bundle,
+            self.bundle,
             contracts,
             "2026-09-09T12:00:00Z",
             posting_collector_registry=registry,
