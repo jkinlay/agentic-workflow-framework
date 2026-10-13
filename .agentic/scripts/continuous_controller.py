@@ -7,11 +7,14 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 import argparse
+from copy import deepcopy
 import json
 import types
 
 from agentic import ValidationError
-from agentic.canonical import load, sha256
+from agentic.canonical import canonical, fingerprint, load, sha256
+from agentic.contracts import Contracts
+from agentic.integration_queue import provider_observation_receipt_sha256
 from agentic.safeio import Tree
 from agentic.continuous_controller import (
     ContinuousControllerStore,
@@ -59,11 +62,125 @@ def _require_adapters(adapters, names):
 def _jira_progress_request(path):
     value = load(path)
     allowed = {"jira_enabled", "merged_ticket", "scope", "observed_at", "jira_binding",
-               "include_epics", "max_pages", "max_items", "max_bytes", "max_seconds"}
-    required = {"jira_enabled", "merged_ticket", "scope", "observed_at", "jira_binding"}
+               "include_epics", "max_pages", "max_items", "max_bytes", "max_seconds",
+               "count_gate"}
+    required = {"jira_enabled", "merged_ticket", "scope", "observed_at", "jira_binding",
+                "count_gate"}
     if not isinstance(value, dict) or not required <= set(value) <= allowed:
         raise ValidationError("Post-merge Jira request has missing or unknown fields")
     return value
+
+
+def _adapter_observer_registration(producer_id, operation, adapter, adapter_sha256,
+                                   *, provider_identity=None, repository_identity=None):
+    """Bind one operation of the digest-pinned adapter to the observer protocol."""
+    receipts = {}
+    registration = {
+        "producer_kind": "integration_observer",
+        "implementation_sha256": adapter_sha256,
+        "release_sha256": adapter_sha256,
+        "capabilities": [operation],
+        "provider_identity": deepcopy(provider_identity),
+        "repository_identity": deepcopy(repository_identity),
+        "receipt_namespace": "awf-integration-observer-v1",
+        "observer": None,
+        "receipts": receipts,
+    }
+
+    def observer(request):
+        adapter_request = deepcopy(request)
+        before = canonical(adapter_request)
+        response = adapter(adapter_request)
+        if canonical(adapter_request) != before:
+            raise ValidationError("Reviewed closeout observer mutated its request")
+        if (not isinstance(response, dict) or set(response) != {"observed_at", "result"} or
+                not isinstance(response["observed_at"], str)):
+            raise ValidationError(
+                "Reviewed closeout observer returned a non-closed observation")
+        request_sha256 = fingerprint("integration_provider_request", request)
+        material = {"producer_id": producer_id,
+                    "observed_at": response["observed_at"],
+                    "request_sha256": request_sha256,
+                    "result": response["result"]}
+        observation = {
+            "status": "OBSERVED", "producer_id": producer_id,
+            "observation_id": fingerprint("integration_provider_observation", material),
+            "observed_at": response["observed_at"],
+            "request_sha256": request_sha256,
+            "result": deepcopy(response["result"]),
+        }
+        receipts[observation["observation_id"]] = provider_observation_receipt_sha256(
+            registration, request, observation)
+        return observation
+
+    registration["observer"] = observer
+    return {producer_id: registration}
+
+
+def _count_gate_inputs(value, *, config, repository, contracts, adapters,
+                       adapter_sha256, observed_at):
+    """Build the closeout gate solely from configured and reviewed runtime inputs."""
+    if not isinstance(value, dict) or set(value) != {"closeout_record"}:
+        raise ValidationError(
+            "Production merge observation requires validated closeout gate inputs")
+    closeout_record = value["closeout_record"]
+    if not isinstance(closeout_record, dict):
+        raise ValidationError("Production closeout record must be an object")
+    repository = Path(repository)
+    if not repository.is_absolute():
+        raise ValidationError("Production closeout repository must be absolute")
+    try:
+        repository = repository.resolve(strict=True)
+    except OSError as exc:
+        raise ValidationError("Production closeout repository is unavailable") from exc
+
+    github = config.get("github") if isinstance(config, dict) else None
+    jira = config.get("jira") if isinstance(config, dict) else None
+    if not isinstance(github, dict) or not isinstance(jira, dict):
+        raise ValidationError("Production closeout needs accepted GitHub and Jira configuration")
+    repository_identity = {"repository": github.get("repository"),
+                           "repository_id": github.get("repository_id")}
+    github_identity = {"host": str(github.get("host", "")).rstrip("/"),
+                       **repository_identity}
+    closeout_producer = closeout_record.get("producer_id")
+    project_config_producer = "awf-controller-accepted-project-config"
+    project_registry = _adapter_observer_registration(
+        project_config_producer, "ACCEPTED_PROJECT_CONFIG",
+        adapters["observe_accepted_project_config"], adapter_sha256)
+    closeout_registry = _adapter_observer_registration(
+        closeout_producer, "CLOSEOUT_RECORD", adapters["observe_closeout_record"],
+        adapter_sha256, provider_identity=github_identity,
+        repository_identity=repository_identity)
+
+    jira_selector = None
+    jira_registry = {}
+    if jira.get("enabled") is True:
+        jira_producer = jira.get("controller_actor_id")
+        jira_identity = {
+            "cloud_id": jira.get("cloud_id"), "site": jira.get("site"),
+            "project_id": jira.get("provider_project_id"),
+            "project_key": jira.get("project_key"),
+            "controller_actor_id": jira_producer,
+        }
+        jira_registry = _adapter_observer_registration(
+            jira_producer, "JIRA_RECONCILIATION",
+            adapters["observe_jira_reconciliation"], adapter_sha256,
+            provider_identity=jira_identity)
+        jira_selector = {"producer_id": jira_producer}
+
+    return {
+        "closeout_record": deepcopy(closeout_record),
+        "repository": repository,
+        "project_config": config,
+        "contracts": contracts,
+        "project_config_selector": {"producer_id": project_config_producer},
+        "project_config_observer_registry": project_registry,
+        "closeout_selector": {"producer_id": closeout_producer},
+        "closeout_observer_registry": closeout_registry,
+        "jira_reconciliation_selector": jira_selector,
+        "jira_observer_registry": jira_registry,
+        "now": observed_at,
+    }
 
 
 def main(argv=None, default_root=ROOT):
@@ -110,6 +227,7 @@ def main(argv=None, default_root=ROOT):
     merge.add_argument("--lifecycle-state", required=True)
     merge.add_argument("--lifecycle-facts", type=Path, required=True)
     merge.add_argument("--jira-progress", type=Path, required=True)
+    merge.add_argument("--repository-root", type=Path, required=True)
 
     owner_prepare = sub.add_parser("owner-publication-prepare", help="Retain completed streams and emit one owner push command")
     owner_prepare.add_argument("--request", type=Path, required=True)
@@ -170,10 +288,19 @@ def main(argv=None, default_root=ROOT):
     elif args.command == "merge-observed":
         calls = _require_adapters(adapters, {"reconcile_merged_ticket", "fetch_scope_page"})
         progress = _jira_progress_request(args.jira_progress)
+        gate_names = {"observe_accepted_project_config", "observe_closeout_record"}
+        if config.get("jira", {}).get("enabled") is True:
+            gate_names.add("observe_jira_reconciliation")
+        gate_adapters = _require_adapters(adapters, gate_names)
+        count_gate = _count_gate_inputs(
+            progress["count_gate"], config=config, repository=args.repository_root,
+            contracts=Contracts(default_root / ".agentic/schemas"),
+            adapters=gate_adapters, adapter_sha256=args.adapter_sha256,
+            observed_at=progress["observed_at"])
         output = production_merge_observed(
             lifecycle_state=args.lifecycle_state,
             lifecycle_facts=load(args.lifecycle_facts),
-            jira_progress={**progress, **calls})
+            jira_progress={**progress, "count_gate": count_gate, **calls})
     else:
         output = {"streams": store.snapshot(), "execution_authority": False}
     print(json.dumps(output, indent=2))
