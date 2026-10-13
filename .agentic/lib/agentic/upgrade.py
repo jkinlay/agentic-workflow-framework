@@ -722,8 +722,17 @@ def _yaml_insert_mapping_entry(text, node, flow_entry, block_lines, newline):
         insertion = node.end_mark.index
         return text[:insertion] + " {" + flow_entry + "}" + text[insertion:]
     if node.flow_style:
-        opening = text.find("{", node.start_mark.index, node.end_mark.index)
-        if opening < 0:
+        import yaml
+        start = node.start_mark.index
+        end = node.end_mark.index
+        if not (0 <= start < end <= len(text)):
+            raise ValidationError(
+                "Migration could not locate the parsed flow mapping boundary for execution/risk_tiers"
+            )
+        opening = next((token.start_mark.index for token in yaml.scan(text)
+                        if isinstance(token, yaml.tokens.FlowMappingStartToken)
+                        and start <= token.start_mark.index < end), None)
+        if opening is None:
             raise ValidationError(
                 "Migration could not locate the parsed flow mapping boundary for execution/risk_tiers"
             )
