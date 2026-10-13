@@ -73,7 +73,13 @@
         "count": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 6
+          "maximum": 9007199254740991,
+          "x-awf-governed-maximum": {
+            "path": "$.execution.max_lanes",
+            "default": 6,
+            "minimum": 1,
+            "fail_closed": true
+          }
         },
         "A": {
           "type": "object",

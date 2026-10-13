@@ -46,6 +46,28 @@ def ref(name):
     return {"$ref": f"urn:awf:1.2:{name}"}
 
 
+def stream_labels(count):
+    """Return stable spreadsheet-style labels for the governed lane default."""
+    labels = []
+    for index in range(count):
+        value, label = index + 1, ""
+        while value:
+            value, remainder = divmod(value - 1, 26)
+            label = chr(ord("A") + remainder) + label
+        labels.append(label)
+    return tuple(labels)
+
+
+def stream_label_pattern(labels):
+    """Render the smallest exact regex for a generated stream-label set."""
+    single = [label for label in labels if len(label) == 1]
+    parts = []
+    if single:
+        parts.append("[" + single[0] + "-" + single[-1] + "]")
+    parts.extend(label for label in labels if len(label) > 1)
+    return "^" + (parts[0] if len(parts) == 1 else "(?:" + "|".join(parts) + ")") + "$"
+
+
 def when(field, value, condition):
     return {"if": {"properties": {field: const(value)}, "required": [field]}, "then": condition}
 
@@ -125,6 +147,13 @@ GATE_NAMES = ["review_completion", "verdict_posting", "acceptance_criteria", "sc
 
 def catalog():
     schemas = {}
+    governed_max_lanes = {
+        "path": "$.execution.max_lanes",
+        "default": 6,
+        "minimum": 1,
+        "fail_closed": True,
+    }
+    generated_stream_labels = stream_labels(governed_max_lanes["default"])
     operating_model = obj({
         "model": text(maxLength=256),
         "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
@@ -147,7 +176,7 @@ def catalog():
         "properties": {
         "streams": {
             "type": "object", "minProperties": 1,
-            "patternProperties": {"^[A-F]$": operating_epic_stream},
+            "patternProperties": {stream_label_pattern(generated_stream_labels): operating_epic_stream},
             "additionalProperties": False,
         },
         "controller": {"$ref": "#/properties/controller"},
@@ -157,11 +186,11 @@ def catalog():
         "additionalProperties": False,
     }
     operating_streams = obj({
-        "count": integer(1, maximum=6),
-        **{label: operating_stream for label in "ABCDEF"},
+        "count": integer(1, **{"x-awf-governed-maximum": governed_max_lanes}),
+        **{label: operating_stream for label in generated_stream_labels},
     }, required=["count"])
     reviewer_requirements = []
-    for count, label in enumerate("ABCDEF", 1):
+    for count, label in enumerate(generated_stream_labels, 1):
         reviewer_requirements.append({
             "if": {"properties": {"streams": {"properties": {
                 "count": {"minimum": count},

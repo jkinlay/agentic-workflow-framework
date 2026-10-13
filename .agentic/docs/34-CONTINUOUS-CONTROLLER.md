@@ -20,50 +20,51 @@ Protected state stays outside worktrees; link aliases are rejected.
 
 ## No silent idle state
 
-Streams are `WORKING`, `PAUSED_INPUT`, `BLOCKED` or `COMPLETE`; rows retain all
-ticket, action, tuple, gate, review and Jira state. `COMPLETE` means no scoped
-action remains. After dependency, budget, cap, independence and capacity
-checks, priority then ticket identity select. One writer owns overlapping
-physical paths; other streams continue. Each cycle pins one absolute Git
-worktree/head/tree. Git spelling is canonical; directory descendants, case
-aliases and hardlinks share ownership. Uncertain identity/parent, collisions,
-links, nested repositories, junctions, reparses or rebinding fail closed.
-Require `required = completed + outstanding` and `completed = acceptable +
-failed + stale`; contradictions fail before effects. Revalidate running work,
-and require completed tickets to become absent or terminal before refill.
+Streams are `WORKING`, `PAUSED_INPUT`, `BLOCKED` or `COMPLETE`; `COMPLETE`
+means no scoped action remains. Dependency, budget, cap, independence,
+capacity and physical-path ownership bind selection. Each cycle pins one
+absolute Git worktree/head/tree; spelling aliases, links, nested repositories,
+reparses, collisions or rebinding fail closed. Reviewer counts must balance.
+Revalidate running work; completed tickets must become absent or terminal.
 
 ## Dispatch and cadence
 
 Persist intents before calls. `PENDING`, `IN_FLIGHT` and `UNKNOWN` reserve the
-ticket; the latter consume capacity. Preflight cancels unbegun ineligible
-intents. UNKNOWN affects only its stream/ticket/tuple. Cadence is 600 seconds;
-only `--migrate-status-cadence` changes it. Mismatch and clock rollback fail.
-`--disable-periodic-status` leaves event digests enabled. Outbox readback,
-deadlines and delivery survive restart; digests include every stream/gate and
-unresolved UNKNOWN identity/detached flag.
+ticket; begun intents consume capacity. Preflight may cancel only unbegun
+ineligible intents. Cadence is 600 seconds; migration is explicit. Clock or
+cadence mismatch fails. Event digests remain enabled and restart-durable.
 
 ## Jira lifecycle and merge progress
 
-Disabled Jira performs no access. Otherwise cloud/site/project/key, actor and
-issue bind receipts. Recover `UNKNOWN` work by reading and reconciling before
-planning. IDs survive restart; persist `IN_FLIGHT` before mutation. Never
-reissue a lost response: matching readback completes it, otherwise stop that
-ticket's writes. Every write needs exact pre-read/receipt/readback; identity or
-time mismatch fails closed without stopping other streams. After validated
-merge, reconcile the ticket, then page one digest-bound scope. Stable-ID counts
-exclude Epics unless requested; incomplete or mismatched evidence is
-`UNOBSERVED`.
+Disabled Jira performs no access. Otherwise provider, actor and issue bind
+receipts. Recover `UNKNOWN` by readback before planning; never reissue a lost
+response. Every write needs exact pre-read/receipt/readback. After validated
+merge, reconcile the ticket, then count one digest-bound scope; incomplete or
+mismatched evidence is `UNOBSERVED`.
 
 Final submission requires the [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
+## Planning, overrides and overlap allowances
+
+At start/intake, persist the shared planner's sealed plan and highest-ranked
+count within `execution.max_lanes` and observed capacity. Default acceptance,
+fixed/max owner overrides and above-estimate warnings retain AWF-48 audit form.
+Merge/file/ticket/override triggers defer while `WORKING`; never reassign
+mid-round.
+
+An allowance binds one exact file, two exact open PRs, and owner/name/time/
+reason evidence. Fresh PR observation is mandatory. Merge, unreadability,
+malformation, duplicate/unlisted scope, live/parked/worktree scope or globs
+keep blocking. Recheck the sealed projection at planning and start.
+
+Launch a fresh writer only for code; every review gets a fresh, distinct,
+read-only critic. The controller never writes code or edits critic output.
+
 ## Reference adapter (AWF-32)
 
-Use PowerShell 7 and disposable issues; owner publication is omitted. Set
-`AWF_JIRA_TOKEN` and a pre-provisioned `$AWF_CODEX_HOME` per [credential
-guidance](38-PROVIDER-IDENTITY-AND-CREDENTIALS.md). The adapter isolates all
-launches. Acceptance waits for nonce-bound terminal proof; on Windows the
-watcher PID binds handoff, run and proof. It drains stderr while retaining a
-1 MiB tail and names failures as `AWF isolated CODEX_HOME/config.toml`.
+Use PowerShell 7, disposable issues, `AWF_JIRA_TOKEN`, and a provisioned
+`$AWF_CODEX_HOME` per [credential guidance](38-PROVIDER-IDENTITY-AND-CREDENTIALS.md).
+Launches are isolated and require nonce-bound proof; owner publication is omitted.
 
 ```powershell
 $SOURCE_ROOT=(Resolve-Path (git rev-parse --show-toplevel).Trim()).Path
@@ -159,11 +160,8 @@ $ticket=@{ticket="$JIRA_KEY-$JIRA_ISSUE";priority=1;disposition="ELIGIBLE";actor
 if ($LASTEXITCODE) { throw "disposable inventory issue creation failed" }
 ```
 
-The adapter refuses non-AWF config and keeps auth and raw stderr out of runs,
-outboxes, logs and evidence; doc 38 covers provisioning and troubleshooting.
-
-Each operation reuses one UTC time in its record and command. A non-advancing
-clock fails before provider access.
+The adapter rejects non-AWF config and excludes auth/raw stderr. Each operation
+uses one advancing UTC time.
 
 ```powershell
 $script:LAST_OBSERVATION=$null
@@ -201,9 +199,8 @@ if ((Read-Host "Type MERGE-OBSERVED after independent confirmation") -cne "MERGE
 if ($LASTEXITCODE) { throw "merge observation failed" }
 ```
 
-Run `Invoke-ControllerCycle` at the approved cadence. To stop, atomically write
-the marker; later calls refuse. Let a running cycle finish; observe, never
-replay, any `UNKNOWN`.
+Run at the approved cadence. Stop atomically; let a cycle finish and observe
+any `UNKNOWN` without replay.
 
 ```powershell
 $STATE_DIR=Read-Host "STATE_DIR printed by setup"
@@ -214,6 +211,5 @@ $temporaryStop="$STOP_FILE.tmp"
 Move-Item -LiteralPath $temporaryStop -Destination $STOP_FILE
 ```
 
-Output includes status, errors and `execution_authority: false`. Merge
-observation needs independent confirmation. Missing proof or identity/non-zero
-failures fail closed.
+Output has status/errors and `execution_authority: false`. Merge confirmation,
+proof and identity fail closed.

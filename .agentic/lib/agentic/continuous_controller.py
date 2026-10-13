@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 from contextlib import contextmanager
+from copy import deepcopy
 import os
 from pathlib import Path
 import re
@@ -119,6 +120,359 @@ def _overlap(first, second):
     return any(a == b or a.startswith(b + "/") or b.startswith(a + "/") for a in left for b in right)
 
 
+def _applied_allowance_keys(values):
+    """Read only sealed-plan allowance projections; malformed rows grant nothing."""
+    result = set()
+    if not isinstance(values, list):
+        return result
+    for value in values:
+        if (not isinstance(value, dict) or set(value) != {
+                "allowance_id", "path", "pull_requests", "tickets"} or
+                not isinstance(value.get("allowance_id"), str) or
+                not value["allowance_id"] or
+                not isinstance(value.get("pull_requests"), list) or
+                len(value["pull_requests"]) != 2 or
+                not all(type(number) is int and number > 0
+                        for number in value["pull_requests"]) or
+                not isinstance(value.get("tickets"), list) or
+                len(value["tickets"]) != 2 or
+                len(set(value["tickets"])) != 2 or
+                not all(isinstance(ticket, str) and ticket
+                        for ticket in value["tickets"])):
+            continue
+        try:
+            path = _exact_overlap_path(value["path"])
+        except ValidationError:
+            continue
+        result.add((path.casefold(), tuple(sorted(value["tickets"]))))
+    return result
+
+
+def _blocking_overlap(first_ticket, first_paths, second_ticket, second_paths,
+                      applied_allowances):
+    """Return true unless every collision is the one exact allowed file/pair."""
+    def surface(path):
+        value = _owned_path(path)
+        for suffix in ("/**", "/*"):
+            if value.endswith(suffix):
+                value = value[:-len(suffix)].rstrip("/")
+        return value.casefold()
+
+    allowed = _applied_allowance_keys(applied_allowances)
+    ticket_pair = tuple(sorted((first_ticket, second_ticket)))
+    collisions = []
+    for first in first_paths:
+        left = surface(first)
+        for second in second_paths:
+            right = surface(second)
+            if left == right or left.startswith(right + "/") or right.startswith(left + "/"):
+                collisions.append((left, right))
+    if not collisions:
+        return False
+    return any(left != right or (left, ticket_pair) not in allowed
+               for left, right in collisions)
+
+
+def _exact_overlap_path(path):
+    value = _owned_path(path)
+    _require(not value.endswith(("/**", "/*")),
+             "Overlap allowances require one exact repository file path")
+    return value
+
+
+def dispatch_role_contract(role, *, code_needed, writer_session_id=None):
+    """Return the fail-closed launch constraints for an on-demand Codex role."""
+    _require(role in {"writer", "critic"}, "Controller dispatch role must be writer or critic")
+    _require(type(code_needed) is bool, "Role dispatch needs an observed code-needed decision")
+    if role == "writer":
+        _require(code_needed, "A writer session may be created only when code is needed")
+        _require(writer_session_id is None,
+                 "A writer launch cannot claim another writer's session identity")
+        return {
+            "role": "writer", "on_demand": True, "code_needed": True,
+            "fresh_session_required": True, "access": "workspace_write",
+            "controller_writes_code": False,
+        }
+    _require(not code_needed, "A critic is a read-only review role and cannot be dispatched to write code")
+    _require(writer_session_id is None or
+             isinstance(writer_session_id, str) and writer_session_id.strip(),
+             "Critic independence needs a nonempty writer session identity when one is supplied")
+    return {
+        "role": "critic", "on_demand": True, "code_needed": False,
+        "fresh_session_required": True, "access": "read_only",
+        "independent_review_required": True,
+        "must_differ_from_session": writer_session_id,
+        "controller_writes_code": False,
+    }
+
+
+def create_overlap_allowance(config, *, path, pull_requests, owner_source,
+                             approved_at, reason, verify_owner_source):
+    """Create one owner-authenticated exact path/open-PR overlap allowance."""
+    from .canonical import fingerprint
+
+    path = _exact_overlap_path(path)
+    _require(isinstance(pull_requests, list) and len(pull_requests) == 2 and
+             all(type(number) is int and number > 0 for number in pull_requests) and
+             len(set(pull_requests)) == 2,
+             "Overlap allowance needs exactly two distinct positive PR numbers")
+    pull_requests = sorted(pull_requests)
+    _require(isinstance(reason, str) and reason.strip() == reason and reason,
+             "Overlap allowance needs the exact nonempty owner reason")
+    timestamp(approved_at)
+    _require(isinstance(owner_source, dict) and callable(verify_owner_source),
+             "Overlap allowance requires an immutable owner source and verifier")
+    actor_id = owner_source.get("actor_id")
+    actor_name = owner_source.get("actor_name")
+    source_id = owner_source.get("source_id")
+    _require(type(actor_id) is int and isinstance(actor_name, str) and actor_name.strip() and
+             isinstance(source_id, str) and source_id.strip() and
+             isinstance(owner_source.get("observed_at"), str),
+             "Overlap allowance owner identity is incomplete")
+    timestamp(owner_source["observed_at"])
+    owners = set(config.get("merge_gate", {}).get("trusted_owner_ids", []))
+    project_owner = config.get("github", {}).get("expected_actor_id")
+    if project_owner is not None:
+        owners.add(project_owner)
+    _require(actor_id in owners, "Overlap allowances require an authenticated owner or trusted owner")
+    request = {
+        "path": path, "pull_requests": pull_requests, "approved_at": approved_at,
+        "reason": reason, "actor_id": actor_id,
+    }
+    request_sha256 = fingerprint("controller_overlap_allowance_request", request)
+    try:
+        verification = verify_owner_source(
+            deepcopy(owner_source), {"request_sha256": request_sha256, **deepcopy(request)})
+    except Exception as exc:
+        raise ValidationError("Overlap allowance owner authentication failed") from exc
+    _require(isinstance(verification, dict) and verification.get("status") == "VERIFIED" and
+             verification.get("actor_id") == actor_id and
+             verification.get("source_id") == source_id and
+             verification.get("request_sha256") == request_sha256 and
+             isinstance(verification.get("observed_at"), str),
+             "Overlap allowance verifier did not authenticate the exact request")
+    timestamp(verification["observed_at"])
+    seed = {**request, "source_id": source_id}
+    record = {
+        "schema_version": 1,
+        "allowance_id": str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "awf-controller-overlap-allowance:" +
+            fingerprint("controller_overlap_allowance_identity", seed))),
+        "path": path, "pull_requests": pull_requests,
+        "change_audit": {
+            "who": {"actor_id": actor_id, "name": actor_name.strip()},
+            "when": approved_at, "why": reason,
+            "old": None, "new": {"path": path, "pull_requests": pull_requests},
+            "owner_source_id": source_id,
+        },
+        "owner_source": deepcopy(owner_source),
+        "owner_verification": deepcopy(verification),
+    }
+    record["allowance_sha256"] = fingerprint("controller_overlap_allowance", record)
+    return record
+
+
+def _verify_overlap_allowance(record, config, verify_owner_source, observe_pr):
+    """Return an audit row. Any malformed/unreadable record remains non-applicable."""
+    from .canonical import fingerprint
+
+    base = {"allowance_id": record.get("allowance_id") if isinstance(record, dict) else None,
+            "status": "INVALID", "reason": "malformed overlap allowance"}
+    try:
+        required = {"schema_version", "allowance_id", "path", "pull_requests",
+                    "change_audit", "owner_source", "owner_verification",
+                    "allowance_sha256"}
+        _require(isinstance(record, dict) and set(record) == required and
+                 record["schema_version"] == 1,
+                 "Overlap allowance record is not closed")
+        expected_digest = fingerprint(
+            "controller_overlap_allowance",
+            {key: value for key, value in record.items() if key != "allowance_sha256"})
+        _require(record["allowance_sha256"] == expected_digest,
+                 "Overlap allowance digest is stale")
+        path = _exact_overlap_path(record["path"])
+        prs = record["pull_requests"]
+        _require(isinstance(prs, list) and len(prs) == 2 and prs == sorted(prs) and
+                 all(type(number) is int and number > 0 for number in prs) and
+                 len(set(prs)) == 2,
+                 "Overlap allowance PR pair is malformed")
+        audit = record["change_audit"]
+        source = record["owner_source"]
+        verification = record["owner_verification"]
+        _require(isinstance(audit, dict) and set(audit) == {
+            "who", "when", "why", "old", "new", "owner_source_id"},
+            "Overlap allowance audit is incomplete")
+        _require(audit["old"] is None and
+                 audit["new"] == {"path": path, "pull_requests": prs} and
+                 isinstance(audit["who"], dict) and
+                 set(audit["who"]) == {"actor_id", "name"} and
+                 isinstance(audit["why"], str) and audit["why"].strip() == audit["why"] and
+                 audit["why"], "Overlap allowance audit does not bind its exact scope")
+        timestamp(audit["when"])
+        actor_id = audit["who"]["actor_id"]
+        owners = set(config.get("merge_gate", {}).get("trusted_owner_ids", []))
+        project_owner = config.get("github", {}).get("expected_actor_id")
+        if project_owner is not None:
+            owners.add(project_owner)
+        _require(actor_id in owners and source.get("actor_id") == actor_id and
+                 verification.get("actor_id") == actor_id and
+                 source.get("source_id") == audit["owner_source_id"] ==
+                 verification.get("source_id"),
+                 "Overlap allowance owner identity is not trusted and bound")
+        request = {"path": path, "pull_requests": prs, "approved_at": audit["when"],
+                   "reason": audit["why"], "actor_id": actor_id}
+        request_sha256 = fingerprint("controller_overlap_allowance_request", request)
+        _require(verification.get("status") == "VERIFIED" and
+                 verification.get("request_sha256") == request_sha256 and
+                 callable(verify_owner_source),
+                 "Overlap allowance owner verification is unavailable or stale")
+        observed_owner = verify_owner_source(
+            deepcopy(source), {"request_sha256": request_sha256, **deepcopy(request)})
+        _require(isinstance(observed_owner, dict) and
+                 all(observed_owner.get(field) == verification.get(field)
+                     for field in ("status", "actor_id", "source_id", "request_sha256")) and
+                 isinstance(observed_owner.get("observed_at"), str),
+                 "Overlap allowance owner re-authentication changed")
+        timestamp(observed_owner["observed_at"])
+        _require(callable(observe_pr), "Overlap allowance PR state observer is unavailable")
+        observations = []
+        for number in prs:
+            observation = observe_pr(number)
+            _require(isinstance(observation, dict) and
+                     {"number", "state", "merged", "observed_at"} <= set(observation) and
+                     observation["number"] == number and
+                     isinstance(observation["state"], str) and
+                     type(observation["merged"]) is bool,
+                     "Overlap allowance PR observation is malformed")
+            timestamp(observation["observed_at"])
+            observations.append(deepcopy(observation))
+        if any(item["merged"] or item["state"].upper() != "OPEN" for item in observations):
+            return {"allowance_id": record["allowance_id"], "status": "EXPIRED",
+                    "reason": "a named PR is no longer open", "path": path,
+                    "pull_requests": prs, "pr_observations": observations}
+        return {"allowance_id": record["allowance_id"], "status": "ACTIVE",
+                "reason": "owner and both exact open PRs were freshly observed",
+                "path": path, "pull_requests": prs,
+                "pr_observations": observations}
+    except Exception as exc:
+        base["status"] = "UNOBSERVED" if not isinstance(exc, ValidationError) or "observer" in str(exc).lower() else "INVALID"
+        base["reason"] = str(exc) if isinstance(exc, ValidationError) else type(exc).__name__
+        return base
+
+
+def _ticket_pr_number(ticket):
+    number = ticket.get("open_pr_number") if isinstance(ticket, dict) else None
+    open_pr = ticket.get("open_pr") if isinstance(ticket, dict) else None
+    if number is None and isinstance(open_pr, dict):
+        number = open_pr.get("number")
+    return number if type(number) is int and number > 0 else None
+
+
+def _apply_overlap_allowances(tickets, graph, allowances, config,
+                              verify_owner_source, observe_pr):
+    """Remove only overlap paths proven by an exact active allowance."""
+    records = allowances if isinstance(allowances, list) else [allowances]
+    audit = [_verify_overlap_allowance(
+        record, config, verify_owner_source, observe_pr) for record in records]
+    counts = {}
+    for row in audit:
+        if row.get("status") == "ACTIVE":
+            key = (row["path"], tuple(row["pull_requests"]))
+            counts[key] = counts.get(key, 0) + 1
+    for row in audit:
+        key = (row.get("path"), tuple(row.get("pull_requests", [])))
+        if row.get("status") == "ACTIVE" and counts.get(key, 0) != 1:
+            row.update(status="INVALID", reason="duplicate allowance for the same exact path/PR pair")
+
+    by_key = {(row["path"], tuple(row["pull_requests"])): row
+              for row in audit if row.get("status") == "ACTIVE"}
+    raw_tickets = {ticket.get("key"): ticket for ticket in tickets if isinstance(ticket, dict)}
+    effective, applied = [], []
+    for overlap in graph["overlaps"]:
+        left, right = overlap["left"], overlap["right"]
+        observed_prs = (_ticket_pr_number(raw_tickets.get(left, {})),
+                        _ticket_pr_number(raw_tickets.get(right, {})))
+        prs = sorted(observed_prs) if all(observed_prs) else None
+        kept = []
+        for path in overlap["paths"]:
+            allowance = by_key.get((path, tuple(prs))) if prs is not None else None
+            sources = overlap["sources"][path]
+            source_safe = (set(sources.get(left, [])) == {"open_pr"} and
+                           set(sources.get(right, [])) == {"open_pr"})
+            status_safe = (graph["tickets"][left]["status"] not in {"in_flight", "working", "dispatched", "in_progress"} and
+                           graph["tickets"][right]["status"] not in {"in_flight", "working", "dispatched", "in_progress"})
+            if allowance is None or not source_safe or not status_safe:
+                kept.append(path)
+                continue
+            applied.append({
+                "allowance_id": allowance["allowance_id"], "path": path,
+                "pull_requests": list(prs), "tickets": sorted([left, right]),
+            })
+        if kept:
+            effective.append({**deepcopy(overlap), "paths": kept,
+                              "sources": {path: deepcopy(overlap["sources"][path]) for path in kept}})
+    effective_graph = deepcopy(graph)
+    effective_graph["overlaps"] = effective
+    applied = sorted({item["allowance_id"] + "\0" + item["path"] + "\0" +
+                      ",".join(item["tickets"]): item for item in applied}.values(),
+                     key=lambda item: (item["path"], item["pull_requests"], item["tickets"]))
+    return effective_graph, audit, applied
+
+
+def recompute_controller_plan(tickets, config, state, *, now, trigger,
+                              resources=None, round_active=False,
+                              verify_owner_source=None, overlap_allowances=None,
+                              observe_pr=None):
+    """Use the shared planner while binding controller-only overlap evidence."""
+    from .canonical import fingerprint
+    from . import planning
+
+    if round_active:
+        return planning.recompute_plan(
+            tickets, config, state, now=now, trigger=trigger,
+            resources=resources, round_active=True,
+            verify_owner_source=verify_owner_source)
+    _require(trigger in planning.RECOMPUTE_TRIGGERS,
+             "Unknown planning recompute trigger")
+    _require(isinstance(state, dict), "AWF state must be an object")
+    timestamp(now)
+    graph = planning.build_backlog_graph(tickets, config)
+    original_overlaps = deepcopy(graph["overlaps"])
+    effective_graph, allowance_audit, applied = _apply_overlap_allowances(
+        tickets, graph, overlap_allowances or [], config,
+        verify_owner_source, observe_pr)
+    result = planning.plan_lanes(
+        effective_graph, config, resources=resources,
+        controller_state=state, verify_owner_source=verify_owner_source)
+    body = {
+        "schema_version": 1, "created_at": now, "trigger": trigger,
+        "inputs": {
+            "jira_snapshot_sha256": fingerprint("planning_ticket_snapshot", tickets),
+            "tickets": deepcopy(graph["tickets"]),
+            "dependencies": deepcopy(graph["dependencies"]),
+            "overlaps": original_overlaps,
+            "generator_owners": deepcopy(graph["generator_owners"]),
+        },
+        "lanes": deepcopy(result["lanes"]), "blocked": deepcopy(result["blocked"]),
+        "ranking": deepcopy(result["critical_path_minutes"]),
+        "estimate": deepcopy(result["estimate"]),
+        "owner_decision": deepcopy(result["owner_decision"]),
+        "lane_count": result["lane_count"], "warnings": deepcopy(result["warnings"]),
+        "no_mid_round_reassignment": True,
+        "effective_overlaps": deepcopy(effective_graph["overlaps"]),
+        "overlap_allowance_audit": allowance_audit,
+        "applied_overlap_allowances": applied,
+    }
+    body["plan_id"] = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        "awf-controller-planning-record:" + fingerprint("controller_planning_audit_seed", body)))
+    body["plan_sha256"] = fingerprint("planning_audit_record", body)
+    planning.append_plan_record(state, body)
+    state["pending_planning_triggers"] = []
+    return {"status": "PLANNED", "record": deepcopy(body)}
+
+
 def _reparse(path):
     """Recognise every link-like filesystem surface available to this host."""
     try:
@@ -141,6 +495,7 @@ def _git(root, *args):
     try:
         result = subprocess.run(
             ["git", "--no-replace-objects", "-c", "core.fsmonitor=false",
+             "-c", "safe.directory=" + str(Path(root).resolve(strict=False)),
              "-c", "core.hooksPath=" + os.devnull, "-c", "core.quotePath=false",
              "-c", "protocol.file.allow=never", "-C", str(root), *args],
             capture_output=True, timeout=30, check=False, env=child_env(environment))
@@ -486,17 +841,87 @@ class ContinuousControllerStore:
              restore["open_findings"], restore["jira_status"],
              canonical(restore["paths"]).decode(), now, payload["stream"]))
 
-    def schedule(self, inventory, now, host_capacity):
+    def schedule(self, inventory, now, host_capacity, *, planning_record=None):
         """Fill every free stream or record its concrete pause/block/complete state."""
         timestamp(now)
         _require(type(host_capacity) is int and host_capacity >= 0, "Observed host capacity must be nonnegative")
         tickets = [_ticket(item) for item in inventory]
         _require(len(tickets) == len({item["ticket"] for item in tickets}), "Scoped inventory has duplicate tickets")
         with self.transaction() as db:
-            self._schedule(db, tickets, now, host_capacity)
+            overlap_allowances = []
+            if planning_record is not None:
+                from . import planning
+                planning.verify_plan_record(planning_record)
+                current = self._planning_state(db).get("current_plan")
+                _require(current == planning_record,
+                         "Lane start requires the exact current controller-owned plan")
+                overlap_allowances = planning_record.get("applied_overlap_allowances", [])
+            self._schedule(db, tickets, now, host_capacity, overlap_allowances)
             return self._snapshot(db)
 
-    def _schedule(self, db, tickets, now, host_capacity):
+    @staticmethod
+    def _planning_state(db):
+        row = db.execute(
+            "SELECT value FROM controller_meta WHERE key='planning_state'").fetchone()
+        if row is None:
+            return {}
+        state = loads(row[0])
+        _require(isinstance(state, dict), "Stored controller planning state is malformed")
+        return state
+
+    @staticmethod
+    def _save_planning_state(db, state):
+        db.execute(
+            "INSERT INTO controller_meta(key,value) VALUES('planning_state',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (canonical(state).decode(),))
+
+    def planning_state(self):
+        """Return a detached copy of the controller-owned planning audit state."""
+        with self.connection() as db:
+            return deepcopy(self._planning_state(db))
+
+    def recompute_lane_plan(self, tickets, config, *, now, trigger,
+                            resources=None, verify_owner_source=None,
+                            overlap_allowances=None, observe_pr=None):
+        """Persist a shared-planner result, deferring while any round is active."""
+        with self.transaction() as db:
+            state = self._planning_state(db)
+            round_active = db.execute(
+                "SELECT 1 FROM stream_status WHERE state='WORKING' LIMIT 1").fetchone() is not None
+            result = recompute_controller_plan(
+                tickets, config, state, now=now, trigger=trigger,
+                resources=resources, round_active=round_active,
+                verify_owner_source=verify_owner_source,
+                overlap_allowances=overlap_allowances,
+                observe_pr=observe_pr)
+            self._save_planning_state(db, state)
+            return deepcopy(result)
+
+    def change_lane_override(self, tickets, config, *, mode, value, reason, now,
+                             owner_source, verify_owner_source, resources=None,
+                             overlap_allowances=None, observe_pr=None):
+        """Audit an owner override and re-plan now or at the round boundary."""
+        from . import planning
+
+        with self.transaction() as db:
+            state = self._planning_state(db)
+            override = planning.change_owner_override(
+                config, state, mode=mode, value=value, reason=reason, now=now,
+                owner_source=owner_source,
+                verify_owner_source=verify_owner_source)
+            round_active = db.execute(
+                "SELECT 1 FROM stream_status WHERE state='WORKING' LIMIT 1").fetchone() is not None
+            result = recompute_controller_plan(
+                tickets, config, state, now=now, trigger="override_changed",
+                resources=resources, round_active=round_active,
+                verify_owner_source=verify_owner_source,
+                overlap_allowances=overlap_allowances,
+                observe_pr=observe_pr)
+            self._save_planning_state(db, state)
+            return {"override": deepcopy(override), "planning": deepcopy(result)}
+
+    def _schedule(self, db, tickets, now, host_capacity, overlap_allowances=()):
         rows = db.execute("SELECT * FROM stream_status ORDER BY stream_id").fetchall()
         inventory = {item["ticket"]: item for item in tickets}
         # A durable dispatch intent reserves its ticket globally until the host
@@ -522,9 +947,11 @@ class ContinuousControllerStore:
             intent_streams = reserved_dispatches.get(item["ticket"], set()) if item else set()
             intent_matches_stream = not intent_streams or intent_streams == {row["stream_id"]}
             if (prerequisites and intent_matches_stream and len(working) < host_capacity and
-                    not any(_overlap(item["paths"], paths) for paths in held_paths)):
+                    not any(_blocking_overlap(item["ticket"], item["paths"], ticket, paths,
+                                              overlap_allowances)
+                            for ticket, paths in held_paths)):
                 working.append(row)
-                held_paths.append(item["paths"])
+                held_paths.append((item["ticket"], item["paths"]))
                 self._update_stream(db, row["stream_id"], "WORKING", item, now)
         assigned = {row["ticket"] for row in working}
         represented_intents = {(row["stream_id"], row["ticket"]) for row in working}
@@ -568,13 +995,16 @@ class ContinuousControllerStore:
             for item in eligible:
                 prerequisites = (item["dependencies_satisfied"] and item["budget_available"] and
                                  item["cap_available"] and item["review_independent"])
-                if prerequisites and slots > 0 and not any(_overlap(item["paths"], paths) for paths in held_paths):
+                if prerequisites and slots > 0 and not any(
+                        _blocking_overlap(item["ticket"], item["paths"], ticket, paths,
+                                          overlap_allowances)
+                        for ticket, paths in held_paths):
                     selected = item
                     break
             if selected is not None:
                 eligible.remove(selected)
                 assigned.add(selected["ticket"])
-                held_paths.append(selected["paths"])
+                held_paths.append((selected["ticket"], selected["paths"]))
                 slots -= 1
                 self._update_stream(db, row["stream_id"], "WORKING", selected, now)
                 continue
@@ -586,7 +1016,10 @@ class ContinuousControllerStore:
                 if not item["cap_available"]: reason.append("run or amendment cap")
                 if not item["review_independent"]: reason.append("review independence")
                 if slots <= 0: reason.append("host capacity")
-                if any(_overlap(item["paths"], paths) for paths in held_paths): reason.append("path ownership")
+                if any(_blocking_overlap(item["ticket"], item["paths"], ticket, paths,
+                                         overlap_allowances)
+                       for ticket, paths in held_paths):
+                    reason.append("path ownership")
                 blocked_item = {**item, "reason": "Blocked by " + ", ".join(reason),
                                 "next_action": "Re-evaluate eligibility without weakening governance",
                                 "resume_trigger": "all named prerequisites become current"}
@@ -598,7 +1031,8 @@ class ContinuousControllerStore:
             else:
                 self._update_stream(db, row["stream_id"], "COMPLETE", None, now)
 
-    def finish_and_refill(self, stream_id, ticket, inventory, now, host_capacity):
+    def finish_and_refill(self, stream_id, ticket, inventory, now, host_capacity,
+                          *, planning_record=None):
         """Complete one run and refill its stream within the same transaction."""
         timestamp(now)
         tickets = [_ticket(item) for item in inventory]
@@ -610,7 +1044,14 @@ class ContinuousControllerStore:
             _require(row is not None and row["state"] == "WORKING" and row["ticket"] == ticket,
                      "Completed run does not match the stream's active ticket")
             self._update_stream(db, stream_id, "COMPLETE", None, now)
-            self._schedule(db, tickets, now, host_capacity)
+            overlap_allowances = []
+            if planning_record is not None:
+                from . import planning
+                planning.verify_plan_record(planning_record)
+                _require(self._planning_state(db).get("current_plan") == planning_record,
+                         "Lane refill requires the exact current controller-owned plan")
+                overlap_allowances = planning_record.get("applied_overlap_allowances", [])
+            self._schedule(db, tickets, now, host_capacity, overlap_allowances)
             return self._snapshot(db)
 
     def _snapshot(self, db):
@@ -1093,11 +1534,68 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
             "reason": "authoritative complete scoped Jira observation"}
 
 
+def _controller_planning_tickets(tickets, active_tickets):
+    """Project closed controller inventory into the shared planner's snapshot."""
+    result = []
+    for item in tickets:
+        if item["ticket"] in active_tickets:
+            status = "in_flight"
+        elif item["disposition"] == "COMPLETE":
+            status = "done"
+        elif (item["disposition"] != "ELIGIBLE" or
+              not item["dependencies_satisfied"]):
+            status = "blocked"
+        else:
+            status = "open"
+        result.append({
+            "key": item["ticket"], "status": status,
+            "write_paths": list(item["paths"]),
+            "expected_rounds": 1, "round_time_minutes": 30,
+        })
+    return result
+
+
+def _apply_current_plan_to_inventory(tickets, record, active_tickets):
+    """Rank and cap newly startable work without disturbing active tickets."""
+    from . import planning
+
+    planning.verify_plan_record(record)
+    lanes = record.get("lanes")
+    count = record.get("lane_count")
+    _require(isinstance(lanes, list) and type(count) is int and count >= 0,
+             "Controller planning record has malformed lane selection")
+    selected_lanes = lanes[:count]
+    order = [key for lane in selected_lanes for key in lane.get("ticket_keys", [])]
+    _require(len(order) == len(set(order)),
+             "Controller planning record assigns one ticket to multiple lanes")
+    rank = {ticket: index for index, ticket in enumerate(order)}
+    planned = []
+    for item in tickets:
+        if (item["ticket"] in active_tickets or
+                item["disposition"] != "ELIGIBLE" or
+                item["ticket"] in rank):
+            ranked = dict(item)
+            if item["ticket"] in rank and item["ticket"] not in active_tickets:
+                ranked["priority"] = rank[item["ticket"]]
+            planned.append(ranked)
+            continue
+        planned.append({
+            **item, "disposition": "BLOCKED",
+            "reason": "Blocked by the current audited lane plan and governed lane ceiling",
+            "next_action": "Wait for the next audited plan or a higher-ranked lane to complete",
+            "resume_trigger": "the current round ends and the controller recomputes the lane plan",
+        })
+    return planned
+
+
 def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                                 repository_root, repository_head_sha, repository_tree_sha,
                                 observe_inventory, dispatch_ticket, observe_dispatch, deliver_status,
                                 publication_config=None, observe_publication=None,
-                                dispatch_role="writer"):
+                                dispatch_role="writer", code_needed=None,
+                                writer_session_id=None, planning_config=None,
+                                planning_resources=None, overlap_allowances=None,
+                                observe_overlap_pr=None, verify_owner_source=None):
     """Run one real host-controller cycle through explicit reviewed adapters.
 
     Inventory is observed before scheduling.  Dispatch intent is durable before
@@ -1113,6 +1611,11 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
     timestamp(now)
     _require(dispatch_role in {"writer", "critic"},
              "Production dispatch role must be writer or critic")
+    if code_needed is None:
+        code_needed = dispatch_role == "writer"
+    role_contract = dispatch_role_contract(
+        dispatch_role, code_needed=code_needed,
+        writer_session_id=writer_session_id)
     store.recover_dispatches(now)
     _require(isinstance(inventory_binding, dict) and set(inventory_binding) == {
         "project_id", "repository_id", "scope_sha256"} and
@@ -1146,6 +1649,44 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
     tickets, repository_binding = canonical_repository_paths(
         observation["tickets"], repository_root, repository_head_sha, repository_tree_sha)
     store.bind_repository(repository_binding)
+    active_tickets = {
+        row["ticket"] for row in store.snapshot()
+        if row["state"] == "WORKING" and row["ticket"] is not None
+    }
+    planning_report = None
+    selected_plan = None
+    accepted_planning_config = planning_config
+    if accepted_planning_config is None and isinstance(publication_config, dict) and isinstance(
+            publication_config.get("execution"), dict):
+        accepted_planning_config = publication_config
+    if accepted_planning_config is not None:
+        try:
+            planning_tickets = _controller_planning_tickets(tickets, active_tickets)
+            planning_state = store.planning_state()
+            trigger = "project_start" if planning_state.get("current_plan") is None else "intake"
+            planning_report = store.recompute_lane_plan(
+                planning_tickets, accepted_planning_config, now=now,
+                trigger=trigger, resources=planning_resources,
+                verify_owner_source=verify_owner_source,
+                overlap_allowances=overlap_allowances,
+                observe_pr=observe_overlap_pr)
+            selected_plan = (planning_report.get("record") if planning_report["status"] == "PLANNED"
+                             else store.planning_state().get("current_plan"))
+            if selected_plan is None:
+                raise ValidationError(
+                    "An active round has no prior audited plan; preserve current work and block new starts")
+            tickets = _apply_current_plan_to_inventory(tickets, selected_plan, active_tickets)
+            host_capacity = min(host_capacity, selected_plan["lane_count"])
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, ValidationError) else type(exc).__name__
+            planning_report = {"status": "BLOCKED", "reason": reason}
+            tickets = [item if item["ticket"] in active_tickets or item["disposition"] != "ELIGIBLE" else {
+                **item, "disposition": "BLOCKED",
+                "reason": "Planning failed closed: " + reason,
+                "next_action": "Repair the exact planning evidence or configuration",
+                "resume_trigger": "a fresh audited lane plan is accepted",
+            } for item in tickets]
+            host_capacity = len(active_tickets)
     from .publication_readiness import require_publication_readiness
     publication_reports, errors = {}, []
     for index, item in enumerate(tickets):
@@ -1188,7 +1729,9 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
         except Exception as exc:
             errors.append({"operation": "dispatch_cancellation", "dispatch_id": operation["dispatch_id"],
                            "state": "PENDING", "reason": type(exc).__name__})
-    streams = store.schedule(tickets, now, host_capacity)
+    streams = store.schedule(
+        tickets, now, host_capacity,
+        planning_record=selected_plan)
     dispatches = []
     for operation in store.prepare_dispatches(now):
         payload, dispatch_id = operation["payload"], operation["dispatch_id"]
@@ -1235,11 +1778,13 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                     continue
                 payload = store.begin_dispatch(dispatch_id, now)
                 receipt = dispatch_ticket({**payload, "role": dispatch_role,
+                                           "role_contract": deepcopy(role_contract),
                                            "worktree": str(launch_directory)})
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now))
             else:
                 payload = store.begin_dispatch_reconciliation(dispatch_id, now)
-                receipt = observe_dispatch({**payload, "role": dispatch_role})
+                receipt = observe_dispatch({**payload, "role": dispatch_role,
+                                            "role_contract": deepcopy(role_contract)})
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now, reconcile=True))
         except Exception as exc:
             try:
@@ -1267,6 +1812,7 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
     return {"schema_version": 3, "observed_at": now, "streams": streams,
             "dispatch_receipts": dispatches, "status_delivery": delivery,
             "publication_readiness": publication_reports,
+            "planning": planning_report, "role_contract": role_contract,
             "errors": errors, "execution_authority": False}
 
 

@@ -6,13 +6,15 @@ At CONFIGURED, run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\script
 
 Protected `.agentic/PROJECT_CONFIG.yaml` holds ceilings, budgets, model allowlists, floors, escalation and one shared critic route; legacy per-stream reviewer routes remain accepted. Governance changes require a reviewed PR.
 
-Show JSON/text, status and newly prepared `operating.state` share `effective_ceiling`: the minimum of six, `execution.max_parallel_tickets`, and enabled `execution.host_broker.max_workers`. `host_broker.*` limits bind only when `host_broker.enabled` is true. Disabled values cannot lower the ceiling; heavy/GPU limits are not stream counts. Configured capacity never proves observed host slots or reviewer availability.
+`effective_ceiling` is the minimum of positive-integer `execution.max_lanes`, `execution.max_parallel_tickets`, and enabled `execution.host_broker.max_workers`. Omitted `max_lanes` preserves the six-lane default; malformed values fail closed. Disabled broker values and heavy/GPU limits do not bind. Configured capacity never proves host slots or reviewer availability.
 
-`effective_ceiling_governance_path` names the binding project/broker path, preferring project on ties. `effective_ceiling_sources` lists every tied path, including the schema's six-stream maximum. When only that structural limit binds, the governance path is null. Native planning separately considers observed host slots, ownership and spawn depth. Malformed inputs are refused.
+`effective_ceiling_governance_path` names the binding project/broker path, preferring project on ties; `effective_ceiling_sources` lists ties. An omitted ceiling cites the `operating-config.schema.json` governed-maximum annotation and has no governance path unless another limit ties it. Native planning also considers observed resources and ownership.
+
+The schema's `x-awf-governed-maximum` makes `streams.count` use that accepted ceiling. Change `execution.max_lanes` by governance PR; omission needs no migration. A reduction prunes unrepresentable inactive routes through an audited operating change.
 
 Project-owned `OPERATING_CONFIG.yaml` holds choices within governance. New AWF 1.9.4 defaults seed three `gpt-5.6-luna` / medium workers, one shared `gpt-5.6-sol` / high critic/adversarial handler, a `gpt-5.6-sol` / high controller and specialist, and `gpt-5.6-luna` / low simple work. The controller, critic and workers use five slots. Existing files are preserved byte-for-byte; legacy per-stream reviewer routes remain accepted and are not silently migrated. This file is mutable and unprotected. Missing/invalid choices prevent CONFIGURED; preserve evidence and follow the remedy.
 
-New governance declares `independent_reviewers.allocation: shared_critic`; the shared reviewer pool has one slot, with candidate reviews scheduled through that handler. Legacy `one_per_stream` allocation and fixed counts remain valid and binding. Bootstrap preserves existing allocation and counts; `--propose-operating-capacity` only proposes a ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
+New governance uses one-slot `independent_reviewers.allocation: shared_critic`; legacy fixed/per-stream allocations remain binding. Bootstrap preserves them; `--propose-operating-capacity` only proposes a ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md).
 
 ## Apply the user's choices
 
@@ -52,7 +54,7 @@ Inventory is optional. `data/`, `data/**` and `data/*` are equivalent prefixes. 
 
 Present the table; wait for adoption or keep. Apply with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "adopt all" --recommendation ID --accept all`. Stale input/operating/governance hashes require a fresh recommendation.
 
-Adopted defaults stay unpinned. Unchanged pins appear in one footnote so actual changes remain visible; stored rows, named-row adoption and replay checks stay intact. Adoption preserves pins and mandatory floors. Custom instructions change pins; non-default recommendations display their pin state.
+Adopted defaults stay unpinned; adoption preserves existing pins, mandatory floors, stored rows and replay checks. Custom instructions change pins.
 
 ## Audit and recovery
 
