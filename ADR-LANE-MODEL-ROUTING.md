@@ -43,7 +43,7 @@ Every lane run records:
 * tokens, or `unknown` (never zero);
 * outcome.
 
-Critic comments carry observed model, effort and CLI version beside `Critic run:`. The ledger reserves requested routes and settles observed ones. A one-week baseline precedes route switching.
+Critic comments carry observed model, effort and CLI version beside `Critic run:`. The ledger reserves requested routes and settles observed ones. A one-week baseline precedes the routing switch.
 
 ### 2. Review rules
 
