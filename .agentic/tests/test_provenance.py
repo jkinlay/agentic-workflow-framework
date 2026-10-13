@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
+from agentic.gittree import candidate_tree
 from agentic.interaction import writer_commit_message
 from agentic.provenance import (
     check_commit_range,
@@ -22,6 +23,7 @@ from agentic.provenance import (
     validate_critic_run_binding,
     verify_owner_override,
 )
+from agentic.review_first_draft import publish_codex_tested_tree
 
 
 RUN_A = "11111111-1111-4111-8111-111111111111"
@@ -225,6 +227,46 @@ class RepositoryRangeTests(unittest.TestCase):
         self.assertEqual("REFUSE", refused["status"])
         self.assertEqual(untagged, refused["refusals"][0]["sha"])
         self.assertIn("missing Writer trailer", refused["refusals"][0]["reason"])
+
+    def test_first_draft_publisher_emits_writer_trailer_from_reserved_run(self):
+        self.write("src/feature.py", "value = 1\n")
+        changes = [{"path": "src/feature.py", "action": "added"}]
+        tree = candidate_tree(self.root, self.base, changes)
+        receipt = {
+            "outcome": "CHANGED",
+            "changes": changes,
+            "tested_tree": tree.tested_tree,
+            "ignored_untracked": list(tree.ignored_untracked),
+            "summary": "Implemented the feature",
+        }
+        pushes = []
+        fixture = self
+
+        class Adapter:
+            def run(self, *args):
+                if args[0] == "push":
+                    pushes.append(args)
+                    return ""
+                return fixture.git_run(*args)
+
+        publication = publish_codex_tested_tree(
+            self.root,
+            self.base,
+            "main",
+            receipt,
+            body="Safe body",
+            commit_message="Implement feature",
+            codex_run_id=RUN_B,
+            git=Adapter(),
+            allowed_paths={"src/feature.py"},
+        )
+
+        message = self.git_run("show", "-s", "--format=%B", publication["head"])
+        self.assertEqual(
+            f"Implement feature\n\nWriter: codex/{RUN_B}",
+            message,
+        )
+        self.assertEqual(1, len(pushes))
 
     def test_script_tag_on_non_mechanical_diff_is_rejected(self):
         self.write("src/feature.py", "value = 1\n")
