@@ -24,6 +24,19 @@ from agentic.providers.github_review_host import HostDriver, is_source_repositor
 ROOT = Path(__file__).resolve().parents[2]
 CANDIDATE = {'repository_id':12,'pr':7,'head':'a'*40,'base':'b'*40,'head_ref':'codex/test','base_ref':'main'}
 FINDING = {'id':'F1','severity':'MAJOR','status':'OPEN','file':'src/a.py','message':'Missing error handling','evidence':'','basis':'criterion:AC1'}
+CODEX_THREAD_ID = '01a1317f-dadb-7071-80de-12832161734c'
+
+
+def record_fixture_codex_identity(driver, run_id):
+    """Give a synthetic worker the same durable identity evidence as Codex."""
+    run = driver.state / 'runs' / run_id
+    run.mkdir(parents=True, exist_ok=True)
+    (run / 'codex.jsonl').write_text(json.dumps({
+        'type': 'thread.started', 'thread_id': CODEX_THREAD_ID,
+    }) + '\n', encoding='utf-8')
+    result = run / 'result.json'
+    result.write_text('{"outcome":"CHANGED"}\n', encoding='utf-8')
+    driver._record_codex_identity(run_id, run, run, result)
 
 
 def pin_passing_qualification(value):
@@ -361,6 +374,7 @@ class HostTests(unittest.TestCase):
         driver.local_api_calls=api_calls
         def agent(role,current,findings,run_id,files=None):
             (worker/'src/a.py').write_text('value = 3\n')
+            record_fixture_codex_identity(driver, run_id)
             return {'candidate':current,'outcome':'CHANGED','summary':'Synthetic file edit; no model called'}
         driver.agent=agent
         return driver,candidate,command
@@ -570,11 +584,13 @@ class HostTests(unittest.TestCase):
     def test_source_allowlist_allows_protected_amendment_for_source_repository(self):
         driver, candidate, command = self.local_git_driver()
         driver.c.update(allowed_paths=['.agentic/a.py'], governed_source_paths=['.agentic/**'], risk_tier='Tier 3')
-        driver.agent = lambda *args, **kwargs: (
-            (driver.worker / '.agentic').mkdir(exist_ok=True),
-            (driver.worker / '.agentic/a.py').write_text('value = 3\n'),
-            {'candidate': candidate, 'outcome': 'CHANGED', 'summary': 'Synthetic source amendment'}
-        )[-1]
+        def source_agent(role, current, findings, run_id, files=None):
+            (driver.worker / '.agentic').mkdir(exist_ok=True)
+            (driver.worker / '.agentic/a.py').write_text('value = 3\n')
+            record_fixture_codex_identity(driver, run_id)
+            return {'candidate': candidate, 'outcome': 'CHANGED',
+                    'summary': 'Synthetic source amendment'}
+        driver.agent = source_agent
         with patch('agentic.providers.github_review_host.is_source_repository', return_value=True):
             amended = driver.amend(candidate, [FINDING], 'fixture-source-amend')
         self.assertNotEqual(amended['head'], candidate['head'])
@@ -648,6 +664,9 @@ class HostTests(unittest.TestCase):
             else:
                 value = {'candidate':CANDIDATE,'outcome':'CHANGED','summary':'Fixture only'}
             output.write_text(json.dumps(value))
+            Path(kwargs['log']).write_text(json.dumps({
+                'type': 'thread.started', 'thread_id': CODEX_THREAD_ID,
+            }) + '\n', encoding='utf-8')
             return ''
         driver.run = run
         driver.agent('critic',CANDIDATE,[],'fixture-review',['src/a.py'])

@@ -30,6 +30,7 @@ from agentic.providers.github_review_host import HostDriver, load_config
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CODEX_THREAD_ID = '01a1317f-dadb-7071-80de-12832161734c'
 
 
 def pin_passing_qualification(value):
@@ -155,7 +156,8 @@ class FirstDraftTests(unittest.TestCase):
                     raise AssertionError('publisher must stop before Git mutation')
             with self.assertRaises(ValidationError):
                 publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
-                                    commit_message='first draft', git=NoPush(), allowed_paths={'a.txt'})
+                                    commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
+                                    git=NoPush(), allowed_paths={'a.txt'})
 
     def test_publisher_scans_after_commit_but_withholds_push(self):
         git = shutil.which('git')
@@ -184,10 +186,11 @@ class FirstDraftTests(unittest.TestCase):
                     return run(*args)
             with self.assertRaises(ValidationError):
                 publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
-                                    commit_message='first draft', git=Adapter(), allowed_paths={'a.txt'})
+                                    commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
+                                    git=Adapter(), allowed_paths={'a.txt'})
             self.assertEqual(pushes, [])
 
-    def test_publisher_commits_exact_tested_tree_before_push(self):
+    def test_publisher_refuses_unauthenticated_non_mechanical_commit(self):
         git = shutil.which('git')
         if not git:
             self.skipTest('Git unavailable')
@@ -212,10 +215,52 @@ class FirstDraftTests(unittest.TestCase):
             class Adapter:
                 def run(self, *args):
                     return command(root, *args)
-            published = publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
-                                            commit_message='first draft', git=Adapter(), allowed_paths={'a.txt'})
+            with self.assertRaisesRegex(ValidationError,
+                                        'non-mechanical commit requires a Codex run id'):
+                publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
+                                    commit_message='first draft', git=Adapter(),
+                                    allowed_paths={'a.txt'})
+            self.assertEqual(command(root, 'rev-parse', 'HEAD'), base)
+
+    def test_publisher_commits_exact_tested_tree_with_authenticated_writer(self):
+        git = shutil.which('git')
+        if not git:
+            self.skipTest('Git unavailable')
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name); remote = root.parent / (root.name + '-remote.git')
+            def command(cwd, *args):
+                return subprocess.run([git, '-C', str(cwd), *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            subprocess.run([git, 'init', '-b', 'main', str(root)], check=True,
+                           capture_output=True)
+            subprocess.run([git, 'init', '--bare', str(remote)], check=True,
+                           capture_output=True)
+            command(root, 'config', 'user.name', 'fixture')
+            command(root, 'config', 'user.email', 'fixture@example.invalid')
+            command(root, 'config', 'core.autocrlf', 'false')
+            command(root, 'remote', 'add', 'origin', str(remote))
+            (root / 'a.txt').write_text('safe\n')
+            command(root, 'add', 'a.txt'); command(root, 'commit', '-m', 'base')
+            base = command(root, 'rev-parse', 'HEAD')
+            command(root, 'checkout', '-b', 'codex/awf-30')
+            (root / 'a.txt').write_text('changed\n')
+            changes = [{'path': 'a.txt', 'action': 'modified'}]
+            tree = candidate_tree(root, base, changes)
+            receipt = {'outcome': 'CHANGED', 'changes': changes,
+                       'tested_tree': tree.tested_tree,
+                       'ignored_untracked': list(tree.ignored_untracked),
+                       'summary': 'changed'}
+            class Adapter:
+                def run(self, *args):
+                    return command(root, *args)
+            published = publish_tested_tree(
+                root, base, 'codex/awf-30', receipt, body='body',
+                commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
+                git=Adapter(), allowed_paths={'a.txt'})
             self.assertEqual(published['head_tree'], tree.tested_tree)
             self.assertEqual(command(root, 'rev-parse', 'HEAD^{tree}'), tree.tested_tree)
+            self.assertIn('Writer: codex/' + CODEX_THREAD_ID,
+                          command(root, 'show', '-s', '--format=%B', 'HEAD'))
 
     def test_publication_record_failure_recovers_exact_local_child_without_worker_replay(self):
         git = shutil.which('git')
@@ -268,7 +313,8 @@ class FirstDraftTests(unittest.TestCase):
                     record_first_draft_publication(store, config, publication)
                 return publish_tested_tree(
                     root, base, 'codex/awf-30', value, body='body',
-                    commit_message='first draft', git=Adapter(), allowed_paths={'a.txt'},
+                    commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
+                    git=Adapter(), allowed_paths={'a.txt'},
                     publication_plan=saved.get('first_draft_publication_plan'),
                     prepare_plan=lambda plan:
                         record_first_draft_publication_plan(store, config, plan),
@@ -334,10 +380,12 @@ class FirstDraftTests(unittest.TestCase):
                        'summary': 'changed'}
             with self.assertRaisesRegex(ValidationError, 'ignored_untracked inventory'):
                 publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
-                    commit_message='first draft', git=Adapter(), allowed_paths={'a.txt'})
+                    commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
+                    git=Adapter(), allowed_paths={'a.txt'})
             receipt['ignored_untracked'] = ['local.secret']
             published = publish_tested_tree(root, base, 'codex/awf-30', receipt,
-                body='body', commit_message='first draft', git=Adapter(),
+                body='body', commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
+                git=Adapter(),
                 allowed_paths={'a.txt'})
             self.assertEqual(published['ignored_untracked'], ['local.secret'])
             self.assertTrue((root / 'local.secret').is_file())
@@ -450,7 +498,9 @@ class RecordedGitHubDriver(HostDriver):
                 'summary': 'recorded worker edit',
             }), encoding='utf-8')
             if log:
-                Path(log).write_text('{"recorded":true}\n', encoding='utf-8')
+                Path(log).write_text(json.dumps({
+                    'type': 'thread.started', 'thread_id': CODEX_THREAD_ID,
+                }) + '\n', encoding='utf-8')
             if self.mutate_git_controls:
                 self.command('-C', str(self.worker), 'config', 'remote.origin.pushurl',
                              'https://example.invalid/captured.git')
@@ -610,6 +660,17 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         remote_tree = self.command('--git-dir', str(self.remote), 'rev-parse',
                                    'refs/heads/codex/awf-30^{tree}')
         self.assertEqual(remote_tree, state['first_draft_publication']['head_tree'])
+        message = self.command('--git-dir', str(self.remote), 'show', '-s', '--format=%B',
+                               'refs/heads/codex/awf-30')
+        self.assertIn('Writer: codex/' + CODEX_THREAD_ID, message)
+        reservations = [path.name for path in (self.base / 'state' / 'runs').iterdir()
+                        if path.is_dir()]
+        self.assertEqual(len(reservations), 1)
+        reservation = reservations[0]
+        self.assertNotIn('Writer: codex/' + reservation, message)
+        identity = json.loads((self.base / 'state' / 'runs' / reservation /
+                               'codex-identity.json').read_text(encoding='utf-8'))
+        self.assertEqual(identity['codex_run_id'], CODEX_THREAD_ID)
         self.assertIn(('GET', 'branches/main'), self.driver.calls)
         self.assertIn(('POST', 'pulls'), self.driver.calls)
         self.assertIn(('GET', 'pulls/41'), self.driver.calls)
