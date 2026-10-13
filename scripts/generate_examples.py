@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 from agentic.canonical import canonical, fingerprint, sha256
 from agentic import VERSION
+from agentic.child_process import child_env
 from agentic.lifecycle import definition
 from agentic.policy import CAPABILITIES, PROTECTED_PATHS, policy_hash
 from agentic.review_policy import DEFAULT_RISK_TIERS
@@ -86,7 +87,7 @@ def workflow_blob_sha(repository):
     ).hexdigest()
     hashed = subprocess.run(
         ["git", "hash-object", "--stdin"], cwd=repository, input=raw,
-        check=True, capture_output=True,
+        check=True, capture_output=True, env=child_env(),
     ).stdout.decode("ascii").strip()
     if hashed != derived:
         raise ValueError(
@@ -94,16 +95,16 @@ def workflow_blob_sha(repository):
         )
     worktree = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"], cwd=repository,
-        check=False, capture_output=True, text=True,
+        check=False, capture_output=True, text=True, env=child_env(),
     )
     if worktree.returncode == 0 and Path(worktree.stdout.strip()).resolve() == repository:
         observed = subprocess.run(
             ["git", "rev-parse", f"HEAD:{WORKFLOW_PATH}"], cwd=repository,
-            check=True, capture_output=True, text=True,
+            check=True, capture_output=True, text=True, env=child_env(),
         ).stdout.strip()
         kind = subprocess.run(
             ["git", "cat-file", "-t", observed], cwd=repository,
-            check=True, capture_output=True, text=True,
+            check=True, capture_output=True, text=True, env=child_env(),
         ).stdout.strip()
         if kind != "blob" or observed != derived:
             raise ValueError(
