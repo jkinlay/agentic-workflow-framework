@@ -1,6 +1,6 @@
 # Lane model routing: Luna-first writers, stronger reviewers, early escalation
 
-**Status:** proposed. The owner accepts it by merging this PR; it then binds the 1.9.5 routing work below. Merging changes no configuration, code or lane behaviour by itself. **Date:** 13 October 2026.
+**Status:** accepted by owner rulings of 13 October 2026, recorded below; binding once this PR merges. Merging changes no configuration, code or lane behaviour by itself.
 
 ## Context
 
@@ -11,40 +11,50 @@
 * critic `gpt-5.6-sol`/high;
 * at most two escalations per ticket.
 
-The reviewed allowlist already includes `gpt-6-luna`, `gpt-6-sol` and `gpt-6-astra`.
+The allowlist already includes `gpt-6-luna`, `gpt-6-sol` and `gpt-6-astra`.
 
 Observed on the owner's lane host, 13 October 2026:
 
-* The operator-local lane scripts hard-code `gpt-5.6-sol`/high for writer, reviewer and design runs. They bypass AWF routing, floors, escalation and the ledger.
-* No run records its model or effort.
-* Review comments state Codex CLI 0.149.0 while 0.162.0 is installed, so that field is not observed.
-* The host offers `gpt-6-luna`, `gpt-6.1-sol` and `gpt-6-astra`, with efforts up to ultra. It shows no prices or limits.
+* The operator-local lane scripts hard-code `gpt-5.6-sol`/high for every writer, reviewer and design run, bypassing AWF routing, floors, escalation and the ledger.
+* No run records its model.
+* Review comments state Codex CLI 0.149.0 while 0.162.0 is installed.
+* The host offers `gpt-6-luna`, `gpt-6.1-sol` and `gpt-6-astra`, with efforts up to ultra.
 * One weekly allowance covers all runs.
 
-In the owner's simple-task comparison, `gpt-6-luna` was faster, cheaper and as good. Those results are to be recorded as benchmark evidence.
+In the owner's simple-task tests, `gpt-6-luna` was faster, cheaper and as good.
 
 Options considered:
 
 | Option | Why not chosen |
 | --- | --- |
-| A. Raise everything to `gpt-6.1-sol`/high | Raises the cost of every run without evidence that model weakness causes the failures. |
-| B. Escalate after two failed rounds | Too late: Tier 3's three-round cap is unextendable ([30-REVIEW-TIERS-AND-CLOSEOUT](.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md)). |
+| A. Raise everything to `gpt-6.1-sol`/high | Costs more on every run, without evidence. |
+| B. Escalate after two failed rounds | Too late when caps are two or three rounds. |
 | C. A plus B | Inherits both problems. |
 
 ## Decision (option D)
 
-### 1. Provenance first
+### Owner rulings, 13 October 2026
+
+| Ruling | Decision |
+| --- | --- |
+| D1 | Adopt option D. |
+| D2 | Approve provenance and the reviewer rules first. |
+| D3 | Luna starts on Tier 1 only. |
+| D5 | The provenance change lands in 1.9.5 now. The routing switch (follow-ups 3 and 4) follows the open Tier 3 core. |
+| D6 | The owner records the Luna test results as benchmark evidence. |
+
+### 1. Provenance
 
 Every lane run records:
 
 * role, run id, ticket, PR and head;
 * tier and escalation step;
-* requested and observed model and effort (observed may be `unobserved`);
+* requested and observed model and effort;
 * the Codex CLI version read at launch;
 * tokens, or `unknown` (never zero);
 * outcome.
 
-The critic comment carries the observed model, effort and CLI version beside `Critic run:`. The ledger reserves the requested route and settles the observed one. A one-week baseline precedes any routing switch.
+The critic comment carries the observed model, effort and CLI version beside `Critic run:`. The ledger reserves the requested route and settles the observed one. A one-week baseline precedes the routing switch.
 
 ### 2. Review rules
 
@@ -57,17 +67,17 @@ Routes rank by model (`gpt-6-luna` < `gpt-6.1-sol` < `gpt-6-astra`), then by eff
 
 | Work | Writer | Reviewer | Design / spec review |
 | --- | --- | --- | --- |
-| Tier 1–2 | `gpt-6-luna`/medium | `gpt-6.1-sol`/high | — |
-| Tier 3 | `gpt-6.1-sol`/high | `gpt-6.1-sol`/high | `gpt-6.1-sol`/xhigh |
-| High-risk | At least `gpt-6.1-sol`/high | At least `gpt-6.1-sol`/high | `gpt-6.1-sol`/xhigh |
+| Tier 1 | `gpt-6-luna`/medium | `gpt-6.1-sol`/high | — |
+| Tier 2 | `gpt-6.1-sol`/high | `gpt-6.1-sol`/high | — |
+| Tier 3 and high-risk | `gpt-6.1-sol`/high | `gpt-6.1-sol`/high | `gpt-6.1-sol`/xhigh |
 
-Specialist routes are unchanged. Mandatory floors still apply.
+**Tier 2 moves to `gpt-6-luna`/medium** by owner ruling once about 10 Tier 1 Luna tickets pass cleanly, meaning a PASS with no escalation and no cap disposition. Specialist routes and mandatory floors are unchanged.
 
 ### 4. Escalation
 
 Ladder: `gpt-6-luna`/medium → `gpt-6.1-sol`/high → `gpt-6.1-sol`/xhigh → `gpt-6-astra`/xhigh.
 
-The last step applies only to an owner-authorized round beyond the cap, where policy permits one. Each of these moves a ticket up one step:
+The last step applies only to an owner extension beyond the cap: Tier 2 `EXTEND_ONE_CYCLE`, or Tier 3 under [ADR-TIER3-CAP-EXTENSION](ADR-TIER3-CAP-EXTENSION.md). Each of these moves a ticket up one step:
 
 * a failed local validation, before the critic, so no round is spent;
 * a critic P1;
@@ -77,9 +87,8 @@ Further rules:
 
 * Escalation is monotonic, within the configured two escalations.
 * The reviewer rises with the writer.
-* Caps never reset.
 * Max and ultra effort need an owner ruling per ticket.
-* Infrastructure, credential, rate-limit and unknown failures never change the model.
+* Infrastructure and unknown failures never change the model.
 
 ### 5. Rollout and revert
 
@@ -89,7 +98,7 @@ Further rules:
 * rounds per merge;
 * escalations;
 * cap dispositions;
-* time and usage per merge, critics included;
+* usage per merge, critics included;
 * escaped defects.
 
 Review after 15 tickets per tier, or two weeks.
@@ -98,25 +107,19 @@ Review after 15 tickets per tier, or two weeks.
 
 | Trigger | Action |
 | --- | --- |
-| A tier's Luna first-round PASS rate falls more than 10 points below baseline over 15 tickets | That tier's writer → `gpt-6.1-sol`/high |
-| An escaped defect attributable to Luna | Owner review before continuing |
+| Luna's first-round PASS rate falls more than 10 points below baseline over 15 tickets | Writer → `gpt-6.1-sol`/high |
+| An escaped defect attributable to Luna | Owner review |
 | Allowance above 80% with more than two days to reset | Escalation beyond `gpt-6.1-sol`/high pauses except for release-critical work |
-
-Tier 2 uses Luna from day one under these triggers. The routing switch never delays the open 1.9.5 Tier 3 core work.
 
 ## Consequences
 
 **Follow-up Tier 3 tickets** (Codex writes, independent critic, exact-head CI, owner merge):
 
-1. Per-run provenance. This relates to AWF-49.
+1. Per-run provenance (1.9.5 now; relates to AWF-49).
 2. R-1 and R-2 in the critic launch path.
-3. A governance PR adding `gpt-6.1-sol` to `model_order`, the role allowlists and the effort lists, and confirming whether it supersedes `gpt-6-sol`.
-4. Dispatch through `suggest` → `reserve` → `settle` with these defaults: in the controller adapter (AWF-36) and, meanwhile, in the operator-local lane scripts. This depends on AWF-48 and AWF-74.
+3. Add `gpt-6.1-sol` to `model_order`, the allowlists and the efforts; confirm it against `gpt-6-sol`.
+4. Dispatch through `suggest` → `reserve` → `settle`, in the controller adapter (AWF-36) and meanwhile the operator-local lane scripts. Depends on AWF-48 and AWF-74.
 
-**Effects:**
+Follow-ups 3 and 4 wait for the open 1.9.5 Tier 3 core.
 
-* Writer cost falls where most runs are, and review cost rises modestly.
-* Unservable routes still return `unavailable`, never a silent fallback. Mismatches between requested and observed models are reported.
-* The metrics, not the pilot, decide whether Luna stays.
-
-**Unchanged:** budgets, pins, floors, review caps and owner merge authority.
+**Effects:** unservable routes still return `unavailable`, and model mismatches are reported. Budgets, pins, floors and owner merge authority are unchanged.
