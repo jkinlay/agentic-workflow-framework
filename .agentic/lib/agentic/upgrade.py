@@ -675,6 +675,19 @@ def _yaml_block_indent(text, node):
 
 def _yaml_insert_mapping_entry(text, node, flow_entry, block_lines, newline):
     """Insert one entry without re-emitting or normalising retained YAML bytes."""
+    if not hasattr(node, "flow_style"):
+        if (getattr(node, "tag", None) != "tag:yaml.org,2002:map"
+                or getattr(node, "value", None) != ""):
+            raise ValidationError(
+                "Migration could not locate the parsed mapping boundary for execution/risk_tiers"
+            )
+        # PyYAML composes an explicitly tagged empty mapping (``!!map`` with
+        # no collection node) as a ScalarNode even though its constructor and
+        # the canonical loader correctly produce {}.  Materialise that empty
+        # value as a flow mapping so anchors, comments and surrounding bytes
+        # remain in place and subsequent composition sees a MappingNode.
+        insertion = node.end_mark.index
+        return text[:insertion] + " {" + flow_entry + "}" + text[insertion:]
     if node.flow_style:
         opening = text.find("{", node.start_mark.index, node.end_mark.index)
         if opening < 0:
