@@ -186,6 +186,8 @@ def verify_owner_override(record, *, trusted_owner_ids, pr=None, supersedes=None
         _require(record["schema_version"] == 2
                  and record["supersedes"] == supersedes["override_sha256"],
                  "Superseding provenance override does not reference the current record")
+        _require(set(supersedes["covered_shas"]).issubset(record["covered_shas"]),
+                 "Superseding provenance override must retain all covered commit SHAs")
     return record
 
 
@@ -291,6 +293,39 @@ def render_owner_override(record):
         "- Covered commits:\n"
         f"{commits}\n"
         "<!-- awf-provenance-override:end -->\n"
+    )
+
+
+def _verify_override_chain(record, predecessors, *, trusted_owner_ids, pr):
+    """Verify an override and every digest-linked predecessor, oldest first."""
+    _require(isinstance(predecessors, (list, tuple)),
+             "Provenance override predecessors must be an ordered list")
+    _verify_override_shape(record)
+    if record["schema_version"] == 1:
+        _require(not predecessors,
+                 "An original provenance override cannot have predecessors")
+        return verify_owner_override(
+            record, trusted_owner_ids=trusted_owner_ids, pr=pr
+        )
+    _require(predecessors,
+             "A superseding provenance override requires its predecessor chain")
+    current = None
+    for predecessor in predecessors:
+        if current is None:
+            verified = verify_owner_override(
+                predecessor, trusted_owner_ids=trusted_owner_ids, pr=pr
+            )
+            _require(verified["schema_version"] == 1,
+                     "Provenance override predecessor chain must start with the original record")
+        else:
+            verified = verify_owner_override(
+                predecessor, trusted_owner_ids=trusted_owner_ids, pr=pr,
+                supersedes=current,
+            )
+        current = verified
+    return verify_owner_override(
+        record, trusted_owner_ids=trusted_owner_ids, pr=pr,
+        supersedes=current,
     )
 
 
@@ -559,12 +594,14 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
                        generated_paths=(), reproduce_generated=None,
                        run_log_verifier=None, require_run_logs=False,
                        override=None, trusted_owner_ids=(), pr_number=None,
-                       pr_labels=()):
+                       pr_labels=(), override_predecessors=()):
     """Check every ``base..head`` commit and report a refusal reason per commit.
 
     Optional run logs fail only when configured as required; an observed mismatch
     always fails.  A sealed owner override applies only to its named SHAs and only
-    on a PR carrying the exact fallback label.
+    on a PR carrying the exact fallback label.  A superseding override must be
+    accompanied by its ordered, oldest-first predecessor chain so its digest
+    link cannot be accepted in isolation.
     """
     _require(type(require_run_logs) is bool, "require_run_logs must be Boolean")
     git = _Git(root)
@@ -584,12 +621,16 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
                  f"Provenance override requires the exact '{FALLBACK_LABEL}' fallback label")
         _require(type(pr_number) is int and pr_number > 0,
                  "Provenance override checking requires the bound PR number")
-        override_record = verify_owner_override(
-            override, trusted_owner_ids=trusted_owner_ids, pr=pr_number
+        override_record = _verify_override_chain(
+            override, override_predecessors,
+            trusted_owner_ids=trusted_owner_ids, pr=pr_number,
         )
         covered = set(override_record["covered_shas"])
         _require(covered.issubset(set(commits)),
                  "Provenance override names commits outside the checked PR range")
+    else:
+        _require(not override_predecessors,
+                 "Provenance override predecessors require an override record")
 
     allowed_generated = set(DEFAULT_GENERATED_PATHS)
     _require(isinstance(generated_paths, (list, tuple, set, frozenset))
