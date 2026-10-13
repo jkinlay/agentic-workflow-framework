@@ -102,7 +102,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/jira_lifecycle.py` | `2eec1374e5f850ba1bc3a5ff31c6c28f000aff6e5cbbb04767443b05fffad00b` |
 | `.agentic/lib/agentic/launch_surfaces.py` | `441dc8afea45d36ab404a762ebd01959652d44c7b7d3353e4c444cfb1d163c4d` |
 | `.agentic/lib/agentic/lifecycle.py` | `e03f6bd45f9d1e26acc78daf7de6ef348802d7f02ba310598f13c9bed06efc5d` |
-| `.agentic/lib/agentic/model_routing.py` | `0a3ea0831c53158f7f3f2b2b8e515edc49e092f44145e535ed05f680e89cf7bc` |
+| `.agentic/lib/agentic/model_routing.py` | `d0a8d82cf4700117a23b6a22e859b339aecaf130d7b020989e8cb8047a6f3a13` |
 | `.agentic/lib/agentic/operating.py` | `80218a2b77afc238176cfde70346018f5cde3b406e60ebbd047b1e42c6544ecd` |
 | `.agentic/lib/agentic/operating_status.py` | `d10c1289dd3172034adf6b5b52399e0f3dc590f9c601a6ebdfa71d8e703eb17d` |
 | `.agentic/lib/agentic/output.py` | `f893651d8839f18db71e8f75cde9dcc6a8e3a16b38eeb05669d9e9e102c3800b` |
@@ -328,7 +328,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_launch_surfaces.py` | `2666ff8d2b5ec264f3a5e00ada7d83fb9ef4761f6f544b58fb44660778ec2725` |
 | `.agentic/tests/test_lifecycle_190.py` | `fe656d84e0880848dc27f628ff7c55e9404a08341ae2c21053e07cf6def1ba26` |
 | `.agentic/tests/test_model_routing.py` | `bf4ea2a986d1f85c284a9ed24640a0ff35fada638bc007c0ae5ae007caf288d5` |
-| `.agentic/tests/test_model_routing_provenance.py` | `538c622857938a57081b8bb27a081f25b113b73f64d393e57bda54944bbb0a41` |
+| `.agentic/tests/test_model_routing_provenance.py` | `5fa10912c2440288bff5849ea91aa4472452b3e6268228826260c1c0c6c7ac8c` |
 | `.agentic/tests/test_module_import_isolation.py` | `75fa93ebd60268e51812989bd900201190589a0c4e895bb44e26d57924f1366d` |
 | `.agentic/tests/test_native_benchmark.py` | `21e12b7857e1e0af622087bcdd4db538d10b7477163116a1d7169b374c8e88fd` |
 | `.agentic/tests/test_native_decision_contract.py` | `b0b8f27b3315bf411a808bb5e10e2f87b00de9d623cee901782273359bda95e3` |

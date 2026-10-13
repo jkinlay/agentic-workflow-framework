@@ -355,8 +355,9 @@ def _validate_run_provenance(record, *, ledger_recorded=False):
     return record
 
 
-def require_routing_switch_provenance(policy, prior_route, new_route, provenance_record):
-    """R-3: refuse activation of a changed route without bound run evidence."""
+def require_routing_switch_provenance(ledger, policy, prior_route, new_route,
+                                      provenance_record):
+    """R-3: refuse a changed route unless its exact record is in the ledger."""
     validate_policy(policy)
     _valid_pair(policy, prior_route, "prior routing route")
     _valid_pair(policy, new_route, "new routing route")
@@ -364,10 +365,18 @@ def require_routing_switch_provenance(policy, prior_route, new_route, provenance
                   for field in ("model", "reasoning_effort"))
     if not changed:
         return False
+    _require(isinstance(ledger, RoutingLedger),
+             "routing switch provenance requires a protected RoutingLedger lookup")
     _require(provenance_record is not None,
              "routing switch requires a present run provenance record")
     _validate_run_provenance(provenance_record, ledger_recorded=True)
-    _require((provenance_record["requested_model"], provenance_record["requested_effort"])
+    recorded = ledger.run_provenance(
+        provenance_record["project_id"], provenance_record["run_id"])
+    _require(recorded is not None,
+             "routing switch requires provenance present in the protected ledger")
+    _require(recorded == provenance_record,
+             "routing switch provenance does not match the protected ledger record")
+    _require((recorded["requested_model"], recorded["requested_effort"])
              == (new_route["model"], new_route["reasoning_effort"]),
              "routing switch provenance does not match the requested route")
     return True
@@ -786,7 +795,7 @@ class RoutingLedger:
         """R-3 gate backed by a row present in this protected ledger."""
         record = self.run_provenance(project_id, run_id)
         return require_routing_switch_provenance(
-            policy, prior_route, new_route, record)
+            self, policy, prior_route, new_route, record)
 
     def reserve(self, project_id, policy, request, capabilities, *, operating=None, governance=None):
         """Persist a validated policy observation, then atomically admit a run.
