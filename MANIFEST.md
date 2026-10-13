@@ -387,6 +387,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
 | `.github/workflows/ci.yml` | `152895b64476156cb96cb1725be65d24283704250d16a6255f3ea790ff3b1ec8` |
 | `.github/workflows/manifest-check.yml` | `c966a63516568158fd078ac22d4d10e46ef77de795c081d9b7bf322c4a1cc6b4` |
+| `ADR-DESIGN-FIRST-TRIAL.md` | `4cb1c38d093443512a7679bb29a779f915ffc3d6b1ca7cb029d0274d774de5a0` |
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `AGENTS.md` | `dc2a7603f45f01fdfc9505a51af7747527582434b3daaa964d26464fd6293a75` |
 | `ARCHITECTURE.md` | `761781e0581d5d2a75013bf5f131ff06f18180805f485c1e50dfbc0a9680042c` |
