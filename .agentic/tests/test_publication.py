@@ -21,11 +21,13 @@ from agentic import publication
 from agentic.canonical import load
 from agentic.contracts import Contracts
 from agentic.gates import evaluate
+from agentic.interaction import writer_commit_message
 from agentic.publication import (_detectors, _scan_text, render_aliases, render_scan,
                                  rewrite_unpublished, scan_repository)
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CODEX_RUN_ID = "01a1302f-71ca-7e51-8cee-a61729815489"
 
 
 def git(repository, *args, input_bytes=None, check=True):
@@ -809,11 +811,88 @@ class PublicationRewriteTests(unittest.TestCase):
         second = self.repo.commit("remove locator", "history.txt")
         return first, second
 
+    def write_rewrite_message(self, path, subject="clean squash"):
+        path.write_text(
+            writer_commit_message(subject, codex_run_id=CODEX_RUN_ID),
+            encoding="utf-8", newline="\n")
+
+    def test_awf49_rewrite_refuses_arbitrary_message_before_commit_creation(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text("arbitrary replacement\n", encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+
+        with mock.patch.object(publication, "_git", wraps=publication._git) as git_call:
+            with self.assertRaisesRegex(ValidationError, "Writer emitter"):
+                rewrite_unpublished(
+                    self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                    message, mapping_path=self.mapping)
+
+        self.assertFalse(any(call.args[1:2] == ("commit-tree",)
+                             for call in git_call.call_args_list))
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+
+    def test_awf49_rewrite_refuses_missing_or_malformed_codex_run_id(self):
+        for content in (
+                "replacement without provenance",
+                "replacement\n\nWriter: codex/not-a-run-id",
+                "replacement\n\nWriter: codex/00000000-0000-0000-0000-000000000000"):
+            with self.subTest(content=content):
+                self.contaminate_then_remove()
+                message = Path(self.temp.name) / "message.txt"
+                message.write_text(content, encoding="utf-8")
+                head = git(self.repo.path, "rev-parse", "HEAD")
+                with self.assertRaisesRegex(ValidationError, "Codex run id"):
+                    rewrite_unpublished(
+                        self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                        message, mapping_path=self.mapping)
+                self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+                git(self.repo.path, "reset", "--hard", self.repo.base)
+
+    def test_awf49_rewrite_accepts_writer_emitter_message_with_valid_codex_run_id(self):
+        self.contaminate_then_remove()
+        old_tree = git(self.repo.path, "rev-parse", "HEAD^{tree}")
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text(
+            writer_commit_message("clean squash", codex_run_id=CODEX_RUN_ID),
+            encoding="utf-8")
+
+        result = rewrite_unpublished(
+            self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+            message, mapping_path=self.mapping)
+
+        self.assertEqual("PASS", result["status"])
+        self.assertEqual(old_tree, git(self.repo.path, "rev-parse", "HEAD^{tree}"))
+        self.assertIn(
+            "Writer: codex/" + CODEX_RUN_ID,
+            git(self.repo.path, "show", "-s", "--format=%B", "HEAD"))
+
+    def test_awf49_rewrite_keeps_existing_pre_commit_safety_refusal(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_text(
+            writer_commit_message("clean squash", codex_run_id=CODEX_RUN_ID),
+            encoding="utf-8")
+        head = git(self.repo.path, "rev-parse", "HEAD")
+        shutil.copytree(self.repo.path / ".git" / "objects", self.remote / "objects",
+                        dirs_exist_ok=True)
+        subprocess.run(
+            ["git", "--git-dir", str(self.remote), "update-ref",
+             "refs/heads/awf/EX-6-publication", head],
+            check=True, capture_output=True)
+
+        with self.assertRaisesRegex(ValidationError, "Published-history rewrite refused"):
+            rewrite_unpublished(
+                self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                message, mapping_path=self.mapping)
+
+        self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
+
     def test_ac44_unpublished_squash_preserves_tree_and_cleans_refs(self):
         old_commits = self.contaminate_then_remove()
         old_tree = git(self.repo.path, "rev-parse", "HEAD^{tree}")
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         result = rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                      mapping_path=self.mapping)
         self.assertEqual("PASS", result["status"])
@@ -829,7 +908,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_published_branch_and_unsupported_count_refuse_without_change(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         with self.assertRaisesRegex(ValidationError, "Only --commits 1"):
             rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 2, message,
@@ -846,7 +925,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_all_push_urls_and_remote_tracking_refs_block(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         published = Path(self.temp.name) / "published.git"
         subprocess.run(["git", "init", "--bare", str(published)], check=True, capture_output=True)
@@ -869,7 +948,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_every_ref_namespace_is_in_the_reachability_census(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         git(self.repo.path, "update-ref", "refs/notes/retention-proof", head)
         with self.assertRaisesRegex(ValidationError, "reachable from another"):
@@ -880,7 +959,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_awf52_stale_pseudorefs_refuse_before_cas(self):
         old_commit, _ = self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         git_dir = Path(git(self.repo.path, "rev-parse", "--absolute-git-dir"))
         real_git = publication._git
@@ -913,7 +992,7 @@ class PublicationRewriteTests(unittest.TestCase):
         linked = Path(self.temp.name) / "linked-old-head"
         git(self.repo.path, "worktree", "add", "--detach", str(linked), old_commit)
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
 
         with self.assertRaisesRegex(
@@ -936,7 +1015,7 @@ class PublicationRewriteTests(unittest.TestCase):
             ["git", "config", "--file", str(global_config), "user.email",
              "global@example.invalid"], check=True, capture_output=True)
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
 
         with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(global_config)}), \
@@ -953,7 +1032,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_reachability_lookup_error_refuses_before_mutation(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         refs = git(self.repo.path, "for-each-ref", "--format=%(refname)%00%(objectname)")
         objects = git(self.repo.path, "count-objects", "-v")
@@ -975,7 +1054,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_distinct_fetch_and_push_urls_are_all_checked(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         published = Path(self.temp.name) / "fetch-published.git"
         subprocess.run(["git", "init", "--bare", str(published)], check=True, capture_output=True)
@@ -992,7 +1071,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_failed_final_cas_retains_owned_object_with_truthful_recovery_required(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         snapshot = publication._rewrite_snapshot(self.repo.path)
         real_git = publication._git
@@ -1019,7 +1098,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_failed_final_cas_preserves_objects_claimed_by_all_ref_namespaces(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
         created = []
@@ -1046,7 +1125,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_failed_final_cas_preserves_object_retained_only_by_reflog(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
         created = []
@@ -1073,7 +1152,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_failed_final_cas_preserves_reflogless_detached_head_claim(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         git(self.repo.path, "config", "core.logAllRefUpdates", "false")
         (self.repo.path / ".git" / "logs" / "HEAD").unlink(missing_ok=True)
@@ -1102,7 +1181,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_failed_final_cas_preserves_reflogless_orig_head_claim(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         git(self.repo.path, "config", "core.logAllRefUpdates", "false")
         (self.repo.path / ".git" / "logs" / "ORIG_HEAD").unlink(missing_ok=True)
@@ -1136,7 +1215,7 @@ class PublicationRewriteTests(unittest.TestCase):
         (linked_git_dir / "logs" / "HEAD").unlink(missing_ok=True)
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
         created = []
@@ -1163,7 +1242,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_claimant_created_after_census_keeps_object_and_recovery_evidence(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
         created = []
@@ -1215,7 +1294,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_ambiguous_partial_install_is_retained_and_fails_closed(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         snapshot = publication._rewrite_snapshot(self.repo.path)
         real_link = os.link
         installed = []
@@ -1272,7 +1351,9 @@ class PublicationRewriteTests(unittest.TestCase):
         tree = git(self.repo.path, "rev-parse", "HEAD^{tree}")
         candidate = None
         for value in range(256):
-            candidate_message = f"clean squash\ncandidate {value:03d}\n".encode("utf-8")
+            candidate_message = writer_commit_message(
+                f"clean squash\ncandidate {value:03d}",
+                codex_run_id=CODEX_RUN_ID).encode("utf-8")
             probe_env = {
                 **fixed_dates,
                 "GIT_OBJECT_DIRECTORY": str(probe_objects),
@@ -1317,7 +1398,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_fanout_created_after_locked_snapshot_is_never_snapshot_present(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         real_install = publication._install_quarantine_objects
         raced = []
         seen = []
@@ -1802,7 +1883,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_shallow_boundary_is_rejected_before_rewrite_mutation(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         common = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
                           "--git-common-dir"))
@@ -1821,7 +1902,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_grafts_are_rejected_before_rewrite_mutation(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         common = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
                           "--git-common-dir"))
@@ -1841,7 +1922,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_post_cas_shallow_boundary_race_rolls_back_exact_ref(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         ref = "refs/heads/awf/EX-6-publication"
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         common = Path(git(self.repo.path, "rev-parse", "--path-format=absolute",
@@ -1887,7 +1968,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_post_cas_rewrite_rolls_back_after_same_inode_graph_corruption(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         ref = "refs/heads/awf/EX-6-publication"
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         snapshot = publication._rewrite_snapshot(self.repo.path)
@@ -1900,7 +1981,7 @@ class PublicationRewriteTests(unittest.TestCase):
                 # A distinct message per subtest keeps the replacement commit
                 # new; an identical commit from an earlier subtest already in
                 # the object store would leave the quarantine empty.
-                message.write_text("clean squash " + kind + "\n", encoding="utf-8")
+                self.write_rewrite_message(message, "clean squash " + kind)
                 item = next(value for value in closure
                             if value["kind"] == kind and value["loose_identity"] is not None and
                             (kind != "commit" or value["oid"] != old_head))
@@ -1945,7 +2026,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_post_cas_proof_failure_rolls_back_ref_and_retains_owned_object(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         head = git(self.repo.path, "rev-parse", "HEAD")
         snapshot = publication._rewrite_snapshot(self.repo.path)
         with mock.patch.object(publication, "_post_cas_proof",
@@ -1965,7 +2046,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_post_cas_snapshot_exception_uses_exact_rollback_and_recovery_evidence(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         real_snapshot = publication._rewrite_snapshot
         calls = []
@@ -1990,7 +2071,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_post_cas_ancestor_exception_uses_exact_rollback_and_recovery_evidence(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
         real_is_ancestor = publication._is_ancestor
@@ -2016,7 +2097,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_post_cas_proof_exception_contention_never_overwrites_concurrent_ref(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         real_snapshot = publication._rewrite_snapshot
         real_git = publication._git
         calls = []
@@ -2043,7 +2124,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_post_cas_recovery_snapshot_exception_is_recovery_required(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         real_snapshot = publication._rewrite_snapshot
         calls = []
@@ -2099,7 +2180,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_post_cas_rollback_failure_preserves_recovery_evidence(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
 
@@ -2123,7 +2204,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_initial_cas_applied_then_exception_is_reconciled_and_rolled_back(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
         created = []
@@ -2149,7 +2230,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_initial_cas_exception_without_apply_retains_recovery_evidence(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
         raised = False
@@ -2174,7 +2255,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_indeterminate_cas_concurrent_ref_is_preserved_with_evidence(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         concurrent = git(self.repo.path, "rev-parse", "HEAD~1")
         real_git = publication._git
@@ -2200,7 +2281,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_indeterminate_cas_rollback_exception_retains_recovery_evidence(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
         created = []
@@ -2230,7 +2311,7 @@ class PublicationRewriteTests(unittest.TestCase):
     def test_ac44_concurrent_ref_after_cas_is_detected_and_target_is_rolled_back(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
-        message.write_text("clean squash\n", encoding="utf-8")
+        self.write_rewrite_message(message)
         old_head = git(self.repo.path, "rev-parse", "HEAD")
         real_git = publication._git
         created = []
