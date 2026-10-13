@@ -9,12 +9,126 @@ from types import MappingProxyType
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
+from agentic import ValidationError
 from agentic.canonical import load_yaml
 from agentic.upgrade import (MigrationBundle, migrate_1_9_4_to_1_9_5,
                              review_tier_defaults)
 
 
 class AWF59ReviewTierYamlTests(unittest.TestCase):
+    def test_awf59_c195_r5_001_multiline_explicit_keys_full_migration_is_idempotent(self):
+        cases = {
+            "execution": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"execution:\n"
+                b"  ?\n"
+                b"    mode\n"
+                b"  : manual\n",
+                {
+                    "mode": "manual",
+                    "risk_tiers": {},
+                },
+            ),
+            "risk_tiers": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"execution:\n"
+                b"  risk_tiers:\n"
+                b"    ?\n"
+                b"      tier1_review\n"
+                b"    : {}\n",
+                {
+                    "risk_tiers": {
+                        "tier1_review": {},
+                    },
+                },
+            ),
+        }
+        target = {
+            "source_manifest_sha256": "0" * 64,
+            "_immutable_files": {},
+        }
+
+        for name, (before, expected_execution) in cases.items():
+            with self.subTest(name=name):
+                bundle = MigrationBundle(
+                    before,
+                    None,
+                    b"{}\n",
+                    b"{}\n",
+                    MappingProxyType({}),
+                )
+                expected_execution["risk_tiers"]["tier3_review"] = {
+                    "roles": ["critic", "specialist"],
+                    "findings": "blocking",
+                    "max_rounds": 3,
+                }
+
+                after = migrate_1_9_4_to_1_9_5(bundle, target).project_config
+
+                self.assertEqual({
+                    "template": {"expected_workflow_version": "1.9.5"},
+                    "execution": expected_execution,
+                }, load_yaml(after))
+                self.assertEqual(1, after.count(b"tier3_review"))
+                self.assertEqual(after, review_tier_defaults(after))
+
+    def test_awf59_c195_r5_001_rare_mapping_forms_are_handled_or_refused(self):
+        accepted = {
+            "anchored_multiline_explicit_execution": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"execution: &execution_defaults\n"
+                b"  ?\n"
+                b"    mode\n"
+                b"  : manual\n",
+                {"mode": "manual"},
+            ),
+            "tagged_nonempty_execution": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"execution: !!map\n"
+                b"  mode: manual\n",
+                {"mode": "manual"},
+            ),
+            "flow_risk_tiers_inside_block_execution": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"execution:\n"
+                b"  risk_tiers: {\n"
+                b"    ? tier1_review\n"
+                b"    : {}\n"
+                b"  }\n",
+                {"risk_tiers": {"tier1_review": {}}},
+            ),
+        }
+        tier3 = {
+            "roles": ["critic", "specialist"],
+            "findings": "blocking",
+            "max_rounds": 3,
+        }
+
+        for name, (before, expected_execution) in accepted.items():
+            with self.subTest(name=name):
+                expected_execution.setdefault("risk_tiers", {})["tier3_review"] = tier3
+
+                after = review_tier_defaults(before)
+
+                self.assertEqual({
+                    "template": {"expected_workflow_version": "1.9.4"},
+                    "execution": expected_execution,
+                }, load_yaml(after))
+                self.assertEqual(1, after.count(b"tier3_review"))
+                self.assertEqual(after, review_tier_defaults(after))
+
+        refused = {
+            "aliased_execution_mapping": (
+                b"template:\n  expected_workflow_version: 1.9.4\n"
+                b"execution_defaults: &execution_defaults {mode: manual}\n"
+                b"execution: *execution_defaults\n",
+                "YAML aliases are not supported",
+            ),
+        }
+        for name, (before, error) in refused.items():
+            with self.subTest(name=name), self.assertRaisesRegex(ValidationError, error):
+                review_tier_defaults(before)
+
     def test_awf59_c195_r4_001_tagged_empty_mappings_full_migration_is_idempotent(self):
         cases = {
             "execution": (
