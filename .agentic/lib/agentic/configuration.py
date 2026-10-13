@@ -101,7 +101,8 @@ def placeholder_issues(value, parts=()):
         reason = ('unresolved placeholder' if 'CHANGE_ME' in value or 'SET_BY_BOOTSTRAP' in value else
                   'whitespace-only value' if value and not value.strip() else
                   'zero UUID placeholder' if path == '$.project.id' and value == '00000000-0000-0000-0000-000000000000' else
-                  'zero commit SHA placeholder' if parts and parts[-1] == 'workflow_sha' and value == '0' * 40 else None)
+                  'zero commit SHA placeholder' if parts and parts[-1] == 'workflow_sha' and value == '0' * 40 else
+                  'zero workflow blob SHA placeholder' if parts and parts[-1] == 'workflow_blob_sha' and value == '0' * 40 else None)
         if reason:
             found.append(issue(path, reason))
     return found
