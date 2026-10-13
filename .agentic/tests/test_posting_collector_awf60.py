@@ -802,7 +802,7 @@ class PostingCollectorTests(Fixture):
                         generate_contracts.main()
                 with mock.patch.object(generate_examples, "ROOT", generated_root):
                     with redirect_stdout(io.StringIO()):
-                        generate_examples.main()
+                        generate_examples.main([])
 
                 checked_schema = (
                     ROOT / ".agentic/schemas/posting-collector-registration.schema.json"
