@@ -26,6 +26,7 @@ _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _SCRIPT = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _WRITER_LINE = re.compile(r"^Writer:\s*(.*?)\s*$")
 _TRAILER_LINE = re.compile(r"^[A-Za-z0-9-]+:\s+\S.*$")
+_NON_GIT_LINE_SEPARATOR = re.compile(r"[\v\f\x1c-\x1e\x85\u2028\u2029]|\r(?!\n)")
 
 
 def _require(condition, reason):
@@ -63,6 +64,15 @@ def format_writer_trailer(kind, identity):
     return f"Writer: {kind}/{identity}"
 
 
+def _split_git_message_lines(message):
+    """Split only the LF and CRLF boundaries recognized in Git messages."""
+    _require(_NON_GIT_LINE_SEPARATOR.search(message) is None,
+             "Commit message contains an unsupported line or paragraph separator; "
+             "only LF and CRLF are allowed")
+    return [line[:-1] if line.endswith("\r") else line
+            for line in message.split("\n")]
+
+
 def parse_writer_trailer(message):
     """Parse the sole final ``Writer`` trailer, or return ``None`` when absent.
 
@@ -71,7 +81,7 @@ def parse_writer_trailer(message):
     """
     _require(isinstance(message, str) and "\x00" not in message,
              "Commit message must be text without NUL bytes")
-    lines = message.splitlines()
+    lines = _split_git_message_lines(message)
     writer_lines = [(index, line) for index, line in enumerate(lines)
                     if re.match(r"^writer\s*:", line, re.IGNORECASE)]
     if not writer_lines:

@@ -27,6 +27,8 @@ from ..safeio import Tree
 
 PROTECTED = {'AGENTS.md','CODEOWNERS','.agentic','.codex','.github','.gitattributes','.gitmodules','.lfsconfig'}
 OVERRIDE_KEYS = {'windows.sandbox'}
+CODEX_LOG_LIMIT = 64 * 1024 * 1024
+CODEX_RESULT_LIMIT = 1024 * 1024
 
 
 def protected(path):
@@ -267,7 +269,7 @@ class HostDriver:
         """Return the sole canonical thread UUID observed in a Codex JSONL log."""
         log = Path(log)
         require(log.is_file() and not log.is_symlink()
-                and log.stat().st_size <= 64 * 1024 * 1024,
+                and log.stat().st_size <= CODEX_LOG_LIMIT,
                 'Codex execution log is missing, linked or too large')
         threads = []
         with log.open('r', encoding='utf-8', errors='strict') as stream:
@@ -294,7 +296,7 @@ class HostDriver:
         log = execution / 'codex.jsonl'
         output = Path(output)
         require(output.is_file() and not output.is_symlink()
-                and output.stat().st_size <= 1024 * 1024,
+                and output.stat().st_size <= CODEX_RESULT_LIMIT,
                 'Agent output missing, linked or too large')
         codex_run_id = self._codex_thread_id(log)
         record = {
@@ -354,6 +356,10 @@ class HostDriver:
 
         log = evidence_path(record['codex_log'], 'log')
         output = evidence_path(record['result'], 'result')
+        require(log.stat().st_size <= CODEX_LOG_LIMIT,
+                'Codex execution log is too large')
+        require(output.stat().st_size <= CODEX_RESULT_LIMIT,
+                'Codex execution result is too large')
         require(sha256(log.read_bytes()) == record['codex_log_sha256']
                 and sha256(output.read_bytes()) == record['result_sha256'],
                 'Codex execution identity evidence changed after binding')
