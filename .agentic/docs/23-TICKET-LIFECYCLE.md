@@ -5,9 +5,9 @@ This renders [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/li
 
 ## Routine work
 
-On COMPLETE, publish a draft PR. A Git-blocked worker leaves the tree uncommitted and reports commit BLOCKED with `commit_route: PUBLISHER`, `tested_tree`, `changes`, and excluded `ignored_untracked`. The publisher commits without edits and requires matching `HEAD^{tree}`. Absent `commit_route` means `WORKER`. Observe PR/head/base/target before PR records. Mark-ready precedes review; changes require re-review. Owner-ready requires critic, specialists and final gate, but does not authorize merge.
+COMPLETE publishes a draft PR. Git-blocked BLOCKED records include `commit_route: PUBLISHER`, `tested_tree`, `changes` and excluded `ignored_untracked`; the publisher makes no edits and requires matching `HEAD^{tree}`. No route means `WORKER`. Mark-ready needs an explicit owner/manager authorization record for PR/head: a pre-issued request/expiry plus authenticated immutable provider observation binding accepted configuration and trusted time. Offline checks, CI or validation retain refusal/draft. Log authorization before mutation. Changes require re-review. Owner-ready needs critic/specialists/final-gate; it never authorizes merge.
 
-Before push or PR creation, run the [publication scan](31-PUBLICATION-SAFETY.md) on the exact base, head and final body. Require exit 0 and a matching PASS receipt bound to the candidate and observed body. Repeat for amendments; scan body edits and comments before posting. `diff --check` is whitespace-only.
+Before publication, require a [publication scan](31-PUBLICATION-SAFETY.md) exit 0 and matching PASS receipt for exact base/head/final body. Rescan amendments, body edits and comments. `diff --check` is whitespace-only.
 
 Routine publication requires accepted repository/ref bindings, branch pattern and fresh APPLIED rules. Classification is presentation only: retain scope, permissions, non-force refs and secret/adapter prerequisites. Report missing action and owner.
 
@@ -17,7 +17,7 @@ Routine publication requires accepted repository/ref bindings, branch pattern an
 | READY | DISPATCH_ACCEPTED → DISPATCHED | Permitted dispatch, current lease/ownership, reserved budget. |
 | DISPATCHED | WORKER_STARTED → IN_PROGRESS | Registered run and verified worktree. |
 | IN_PROGRESS | WORKER_COMPLETED → PR_DRAFT | Valid worker result, `branch_pushed`, `pr_exists`. |
-| PR_DRAFT | PR_READY → READY_FOR_CRITIC | Current validation/requirements and observed `draft_cleared`. |
+| PR_DRAFT | PR_READY → READY_FOR_CRITIC | Validation/requirements, logged explicit owner/manager authorization for PR/head, observed `draft_cleared`; else logged refusal, unchanged draft. |
 | READY_FOR_CRITIC | CRITIC_REJECTED → CHANGES_REQUESTED | Current review. |
 | CHANGES_REQUESTED | AMENDMENT_ACCEPTED → AMENDING | Permitted dispatch, current lease/ownership, reserved budget, cycles available. |
 | CHANGES_REQUESTED | CAP_REACHED → REVIEW_CAP_REACHED | Cycles exhausted; open findings presented to the owner. |
