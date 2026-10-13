@@ -4,20 +4,20 @@
 
 ## Context
 
-[27-MODEL-ROUTING](.agentic/docs/27-MODEL-ROUTING.md) defaults: controller `gpt-5.6-sol`/high, workers `gpt-5.6-luna`/medium, critic `gpt-5.6-sol`/high, and a two-escalation ticket cap.
+[27-MODEL-ROUTING](.agentic/docs/27-MODEL-ROUTING.md) defaults: controller `gpt-5.6-sol`/high, workers `gpt-5.6-luna`/medium, critic `gpt-5.6-sol`/high; two escalations per ticket.
 
-Owner-lane observations, 13 October 2026:
+Observations, 13 October 2026:
 
-* Lane scripts hard-code every run to `gpt-5.6-sol`/high, bypassing routing, floors, escalation and ledger.
-* Runs omit model provenance. Review comments state Codex CLI 0.149.0 while 0.162.0 is installed; AWF-80 removes the hard-coded string.
-* The host offers `gpt-6-luna`, `gpt-6.1-sol` and `gpt-6-astra` through ultra under a weekly allowance.
+* Lane scripts hard-code runs to `gpt-5.6-sol`/high, bypassing routing and ledger.
+* Runs omit provenance; review comments cite Codex CLI 0.149.0 while 0.162.0 is installed. AWF-80 removes the hard-coded string.
+* Host offers `gpt-6-luna`, `gpt-6.1-sol` and `gpt-6-astra` through ultra under a weekly allowance.
 
-`gpt-6-luna` matched quality faster and cheaper in owner simple-task tests.
+`gpt-6-luna` matched quality faster and cheaper in tests.
 
 | Option | Why not chosen |
 | --- | --- |
 | A. Raise everything to `gpt-6.1-sol`/high | Unproven cost. |
-| B. Escalate after two failed rounds | Too late for caps. |
+| B. Escalate after two failed rounds | Too late for caps (AWF-81). |
 | C. A plus B | Both. |
 
 ## Decision (option D)
@@ -66,7 +66,7 @@ Routes rank by model (`gpt-6-luna` < `gpt-6.1-sol` < `gpt-6-astra`), then by eff
 
 Ladder: `gpt-6-luna`/medium → `gpt-6.1-sol`/high → `gpt-6.1-sol`/xhigh → `gpt-6-astra`/xhigh.
 
-The last step applies only to an owner extension beyond the cap: Tier 2 `EXTEND_ONE_CYCLE`, or Tier 3 under [ADR-TIER3-CAP-EXTENSION](ADR-TIER3-CAP-EXTENSION.md). The owner-signed `review-cap-disposition` remains the gate record; an `AWF-OVERCAP-APPROVAL` comment may echo it, to be settled in AWF-81 and [Chapter 24](.agentic/docs/24-STREAM-STARTUP.md). Each extension moves a ticket up one step:
+The last step applies only to an owner extension beyond the cap: Tier 2 `EXTEND_ONE_CYCLE`, or Tier 3 under [ADR-TIER3-CAP-EXTENSION](ADR-TIER3-CAP-EXTENSION.md). The owner-signed `review-cap-disposition` remains the gate record; an `AWF-OVERCAP-APPROVAL` comment may echo it, to be settled in AWF-81 and [Chapter 30](.agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md#the-amendment-cap). Each of these moves a ticket up one step:
 
 * a failed local validation, before the critic, so no round is spent;
 * a critic P1;
@@ -104,10 +104,10 @@ Review after 15 tickets per tier, or two weeks.
 
 **Follow-up Tier 3 tickets** (Codex writes, independent critic, exact-head CI, owner merge):
 
-1. Per-run provenance (AWF-80).
+1. Per-run provenance (AWF-80; relates to AWF-49).
 2. R-1 and R-2 in the critic launch path (AWF-80).
 3. Add `gpt-6.1-sol` to `model_order`, allowlists and efforts; confirm it against `gpt-6-sol` (AWF-82).
-4. Dispatch through `suggest` → `reserve` → `settle` in the controller adapter and lane scripts (AWF-82).
+4. Dispatch through `suggest` → `reserve` → `settle` in the controller adapter (AWF-36) and lane scripts (AWF-82); depends on AWF-48/AWF-74.
 
 Changes 1 and 2—provenance, R-1/R-2 and R-3—ship in 1.9.5 now. Changes 3 and 4 follow the 1.9.5 Tier 3 core without delaying release. R-3 permits no routing switch before AWF-80 merges and the baseline week ends. AWF-83 measures rollout; AWF-81 corrects cap handling.
 
