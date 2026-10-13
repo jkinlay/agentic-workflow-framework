@@ -23,7 +23,7 @@ The design phase is time-boxed to about 30 minutes and touches no candidate file
 
 * **Not a review round.** A design review counts towards no cap and is never a PASS or FAIL.
 * **Off-branch records.** The design and its findings are stored on the ticket, in the PR description, or in operator state referenced from the PR description. They are never committed to the PR branch, because a commit would move the head.
-* **Recorded runs.** Each run records its id, model, effort and Codex CLI version, per `ADR-LANE-MODEL-ROUTING.md`. The design reviewer is never weaker than the design writer.
+* **Recorded runs.** Each run records its id, model, effort and Codex CLI version, per [ADR-LANE-MODEL-ROUTING](ADR-LANE-MODEL-ROUTING.md). The design reviewer is never weaker than the design writer.
 * **Findings carry ids** (for example `AWF-76-D-001`) and a severity.
 * **Verified dispositions.** Before the first code review, the controller records each blocking and important finding as implemented, superseded or rejected with a reason. The critic receives that list as context and judges the code independently.
 
@@ -53,7 +53,7 @@ The design phase is time-boxed to about 30 minutes and touches no candidate file
 
 * **Design phase:** about 17 minutes. Design review found 5 blocking issues on AWF-76 and 4 on AWF-14 phase 2. These are leading indicators only.
 * **AWF-76** (#130) passed on round 4 (`critic-c195-r4-027`, exact-head CI green) and merged as `d3116ba`.
-  * Its round 4 was over the Tier 3 cap. The owner approved it at 21:30 on 12 October 2026, and it is recorded in #130's description. `ADR-TIER3-CAP-EXTENSION.md` ratifies one Tier 3 extension going forward and records this round as an exception.
+  * Its round 4 was over the Tier 3 cap. The owner approved it at 21:30 on 12 October 2026, and it is recorded in #130's description. [ADR-TIER3-CAP-EXTENSION](ADR-TIER3-CAP-EXTENSION.md) ratifies one Tier 3 extension going forward and records this round as an exception.
   * Its input was already precise. It is not compared with AWF-10, a larger parent ticket; the baseline replaces that comparison.
 * **AWF-14 phase 2:** awaiting code review.
 
