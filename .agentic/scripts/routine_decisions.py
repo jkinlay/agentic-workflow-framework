@@ -94,7 +94,8 @@ def state_from_case(case):
     return state
 
 
-def _expected_decisions(state):
+def _expected_decisions(state, *, ready_authorization_config=None,
+                        verify_ready_owner_source=None):
     """Return one current ordered plan; no future observation is invented."""
     if state.get('format') == 'awf-native-operating-state-1':
         return operating_decisions(state)
@@ -186,9 +187,14 @@ def _expected_decisions(state):
         if not state["validation_current"] or not state["requirements_current"]:
             return ["block_readiness", "continue_affected_work", "defer_reviewer_launch", *follow]
         try:
-            from agentic.lifecycle import validate_ready_transition_record
-            validate_ready_transition_record(
-                state["ready_transition_record"], state["pr"], state["head_sha"], require_authorized=True)
+            from agentic.lifecycle import revalidate_ready_transition_record
+            revalidate_ready_transition_record(
+                state["ready_transition_record"],
+                state["pr"],
+                state["head_sha"],
+                config=ready_authorization_config,
+                verify_owner_source=verify_ready_owner_source,
+            )
         except (ValueError, TypeError):
             return ["block_readiness", "continue_affected_work", "defer_reviewer_launch", *follow]
         return ["mark_pr_ready", *follow]  # Critic waits for observed ready readback.
@@ -200,9 +206,14 @@ def _expected_decisions(state):
     return ([] if state["branch_pushed"] else ["publish_branch"]) + ["open_draft_pr", *follow]
 
 
-def expected_decision_plan(state):
+def expected_decision_plan(state, *, ready_authorization_config=None,
+                           verify_ready_owner_source=None):
     """Return actions plus the retained readiness refusal/authorization evidence."""
-    actions = _expected_decisions(state)
+    actions = _expected_decisions(
+        state,
+        ready_authorization_config=ready_authorization_config,
+        verify_ready_owner_source=verify_ready_owner_source,
+    )
     plan = {"actions": actions, "ready_transition_record": None}
     if state.get("event") != "DRAFT_PR_OBSERVED":
         return plan
@@ -226,9 +237,14 @@ def expected_decision_plan(state):
     return plan
 
 
-def expected_decisions(state):
+def expected_decisions(state, *, ready_authorization_config=None,
+                       verify_ready_owner_source=None):
     """Return the ordered actions from the evidence-bearing routine plan."""
-    return expected_decision_plan(state)["actions"]
+    return expected_decision_plan(
+        state,
+        ready_authorization_config=ready_authorization_config,
+        verify_ready_owner_source=verify_ready_owner_source,
+    )["actions"]
 
 
 def operating_decisions(state):

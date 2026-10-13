@@ -98,6 +98,7 @@
       "actor": "controller",
       "requires": [
         "validation_current",
+        "ready_authorization_current",
         "draft_cleared",
         "requirements_current"
       ]

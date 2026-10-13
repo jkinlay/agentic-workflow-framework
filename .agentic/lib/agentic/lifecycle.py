@@ -27,7 +27,7 @@ NORMAL = [
     ("READY", "DISPATCH_ACCEPTED", "DISPATCHED", ["dispatch_permitted", "lease_current", "budget_reserved", "ownership_current"]),
     ("DISPATCHED", "WORKER_STARTED", "IN_PROGRESS", ["run_registered", "worktree_verified"]),
     ("IN_PROGRESS", "WORKER_COMPLETED", "PR_DRAFT", ["worker_result_valid", "branch_pushed", "pr_exists"]),
-    ("PR_DRAFT", "PR_READY", "READY_FOR_CRITIC", ["validation_current", "draft_cleared", "requirements_current"]),
+    ("PR_DRAFT", "PR_READY", "READY_FOR_CRITIC", ["validation_current", "ready_authorization_current", "draft_cleared", "requirements_current"]),
     ("READY_FOR_CRITIC", "CRITIC_REJECTED", "CHANGES_REQUESTED", ["review_current"]),
     ("CHANGES_REQUESTED", "AMENDMENT_ACCEPTED", "AMENDING", ["dispatch_permitted", "lease_current", "budget_reserved", "ownership_current", "amendment_cycles_available"]),
     ("CHANGES_REQUESTED", "CAP_REACHED", "REVIEW_CAP_REACHED", ["amendment_cycles_exhausted", "open_findings_presented"]),
@@ -173,6 +173,28 @@ def validate_ready_transition_record(record, pr, head_sha, *, require_authorized
     return True
 
 
+def revalidate_ready_transition_record(record, pr, head_sha, *, config=None,
+                                       verify_owner_source=None):
+    """Re-read provider/configuration/time evidence before a ready mutation."""
+    validate_ready_transition_record(record, pr, head_sha, require_authorized=True)
+    from .authorization import verify_ready_authorization
+    current = verify_ready_authorization(
+        record.get("authorization"),
+        config,
+        pr=pr,
+        head_sha=head_sha,
+        verify_owner_source=verify_owner_source,
+    )
+    saved = record["authorization_verification"]
+    stable_fields = ("action", "role", "actor_id", "actor_login", "source_id",
+                     "configuration_sha256", "raw_body_sha256", "record_consistent",
+                     "live_source_verified", "configuration_accepted", "trusted_time_verified",
+                     "execution_authority")
+    if any(current.get(field) != saved.get(field) for field in stable_fields):
+        raise ValidationError("PR ready authorization provider observation changed")
+    return True
+
+
 def _require_ready_authorization(facts):
     pr = facts.get("pr")
     head_sha = facts.get("head_sha")
@@ -183,22 +205,13 @@ def _require_ready_authorization(facts):
     if record.get("decision") != "AUTHORIZED":
         raise ValidationError("PR ready refused: explicit owner/manager authorization record is required; retain the refusal record")
     try:
-        validate_ready_transition_record(record, pr, head_sha, require_authorized=True)
-        from .authorization import verify_ready_authorization
-        current = verify_ready_authorization(
-            record.get("authorization"),
-            facts.get("ready_authorization_config"),
-            pr=pr,
-            head_sha=head_sha,
+        revalidate_ready_transition_record(
+            record,
+            pr,
+            head_sha,
+            config=facts.get("ready_authorization_config"),
             verify_owner_source=facts.get("verify_ready_owner_source"),
         )
-        saved = record["authorization_verification"]
-        stable_fields = ("action", "role", "actor_id", "actor_login", "source_id",
-                         "configuration_sha256", "raw_body_sha256", "record_consistent",
-                         "live_source_verified", "configuration_accepted", "trusted_time_verified",
-                         "execution_authority")
-        if any(current.get(field) != saved.get(field) for field in stable_fields):
-            raise ValidationError("provider observation changed")
     except (ValidationError, KeyError, TypeError, ValueError):
         raise ValidationError("PR ready refused: authorization decision record is invalid")
 
