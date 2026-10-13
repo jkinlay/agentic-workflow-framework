@@ -316,7 +316,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_external_resources_cli.py` | `1141bbb0d8c0eff51ab08e1855f154cdd1c4da102477d5409567dcf192f7d11c` |
 | `.agentic/tests/test_five_slot_acceleration.py` | `35b3f99410481c16f91e5be438d44ccb6e61e429e1b869fd18ac184a238bbb98` |
 | `.agentic/tests/test_gates_workflow_sha.py` | `9fcf0c6f9854591531ef41ab534eca18afc4b4141a8e9cca2c8625d061292d10` |
-| `.agentic/tests/test_github_review_host_provenance.py` | `3cd1596a1ccff5988444a86a62458ef47ba48791907afd9b079196926c530256` |
+| `.agentic/tests/test_github_review_host_provenance.py` | `71f0b98d459f97a3cc4d466abfae616205240b0a112a2063386c7259b9017e99` |
 | `.agentic/tests/test_gittree.py` | `0e0ad6e18da3cc1638f66df688c87f8be729f041ad51d6f59824be1990e3da95` |
 | `.agentic/tests/test_handoff.py` | `c76eb1c485e516ab771764cff82ffddeac13e1342752442f5dcbad2932fea157` |
 | `.agentic/tests/test_heavy_validation.py` | `fb89a68095c82f96c2f31f38fd4322426193fd094599ef6429944342d3d165bb` |
