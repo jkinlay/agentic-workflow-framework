@@ -15,8 +15,9 @@ from agentic.review_loop import (LoopStore, complete_first_draft,
     confirm_first_draft_publication, enroll, pause, record_first_draft_publication,
     record_first_draft_publication_plan, require_first_draft_config_binding,
     resume, resume_first_draft, tick, require)
-from agentic.review_first_draft import (publish_tested_tree, render_first_draft_body,
-    republish_prepared_tree, run_first_draft)
+from agentic.review_first_draft import (publish_codex_tested_tree,
+    publish_tested_tree, render_first_draft_body, republish_prepared_tree,
+    run_first_draft)
 from agentic.review_qualification import collect_qualification
 from agentic.providers.github_review_host import HostDriver, load_config
 from agentic.interaction import loop_next_step, next_step, render_markdown, rejected_next_step
@@ -79,6 +80,7 @@ def main(argv=None):
             reserved = store.db.execute('SELECT 1 FROM prs WHERE key=?',
                                         (f"{config['repository_id']}:0",)).fetchone()
             prior = None
+            writer_run_id = None
             if reserved:
                 reserved_state = store.get(f"{config['repository_id']}:0")
                 require_first_draft_config_binding(
@@ -90,6 +92,9 @@ def main(argv=None):
                 prior = reserved_state.get('first_draft_publication')
                 prior_receipt = reserved_state.get('first_draft_worker_receipt')
                 prior_plan = reserved_state.get('first_draft_publication_plan')
+                inflight = reserved_state.get('inflight')
+                if isinstance(inflight, dict):
+                    writer_run_id = inflight.get('id')
             else:
                 git_controls = driver.first_draft_git_controls()
                 prior_receipt = None
@@ -108,6 +113,8 @@ def main(argv=None):
                         'First-draft worker HEAD does not equal the provider base')
             driver.bind_reviewed_policy({'base': provider_base})
             def worker(run_id=None):
+                nonlocal writer_run_id
+                writer_run_id = run_id
                 return driver.first_draft_worker(run_id=run_id,
                                                  expected_git_controls=git_controls)
             def git_guard():
@@ -116,6 +123,8 @@ def main(argv=None):
                 def run(self, *git_args):
                     return driver.git(driver.worker, *git_args)
             def publisher(receipt):
+                require(writer_run_id is not None,
+                        'First-draft publisher has no reserved Codex run id')
                 body = render_first_draft_body(contract, risk_tier=tier,
                     worker_model=config['models']['worker'],
                     reasoning_effort=(config.get('reasoning_effort') or {}).get('worker', 'default'),
@@ -123,8 +132,9 @@ def main(argv=None):
                 git_guard()
                 current_provider_base = driver.provider_base()
                 require(current_provider_base == provider_base, 'Provider base branch moved during first-draft execution')
-                return publish_tested_tree(driver.worker, provider_base,
+                return publish_codex_tested_tree(driver.worker, provider_base,
                     config['head_branch'], receipt, body=body, commit_message=args.title,
+                    codex_run_id=writer_run_id,
                     git=GitAdapter(), allowed_paths=config['allowed_paths'],
                     mapping_path=Path(config['state_dir']) / 'publication-deny.json',
                     title=args.title, git_guard=git_guard,

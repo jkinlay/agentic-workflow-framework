@@ -12,6 +12,7 @@ from hashlib import sha256
 
 from . import ValidationError
 from .gittree import candidate_tree, verify_publisher_tree
+from .interaction import writer_commit_message
 from .publication import scan_repository
 from .review_loop import (complete_first_draft, confirm_first_draft_publication,
                           enroll, first_draft_failure,
@@ -89,6 +90,29 @@ def excluded_worktree_inventory(git, changes):
                                        "--exclude-standard", "-z"))
     declared_additions = {change["path"] for change in changes if change["action"] == "added"}
     return sorted((ordinary | ignored) - declared_additions)
+
+
+def publish_codex_tested_tree(root, base, branch, receipt, *, body,
+                              commit_message, codex_run_id, git,
+                              allowed_paths, mapping_path=None, title=None,
+                              prepare_publication=None, prepare_plan=None,
+                              publication_plan=None, git_guard=None):
+    """Publish a Codex-written first draft with its required Writer trailer."""
+    return publish_tested_tree(
+        root, base, branch, receipt,
+        body=body,
+        commit_message=writer_commit_message(
+            commit_message, codex_run_id=codex_run_id
+        ),
+        git=git,
+        allowed_paths=allowed_paths,
+        mapping_path=mapping_path,
+        title=title,
+        prepare_publication=prepare_publication,
+        prepare_plan=prepare_plan,
+        publication_plan=publication_plan,
+        git_guard=git_guard,
+    )
 
 
 def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
