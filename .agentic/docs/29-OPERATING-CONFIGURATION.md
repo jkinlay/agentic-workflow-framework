@@ -10,9 +10,19 @@ Protected `.agentic/PROJECT_CONFIG.yaml` holds ceilings, budgets, model allowlis
 
 `effective_ceiling_governance_path` names the binding project/broker path, preferring project on ties; `effective_ceiling_sources` lists ties. An omitted ceiling cites the `operating-config.schema.json` governed-maximum annotation and has no governance path unless another limit ties it. Native planning also considers observed resources and ownership.
 
-The schema's `x-awf-governed-maximum` makes `streams.count` use that accepted ceiling. Change `execution.max_lanes` by governance PR; omission needs no migration. A reduction prunes unrepresentable inactive routes through an audited operating change.
+Generated schemas use a dynamic count placeholder and finite route set. The
+shipped set is A–F; `scripts/generate_contracts.py --max-lanes N` derives another
+set without fixing the schema bound at six. `x-awf-governed-maximum` identifies
+the governing key and default. Runtime validation projects accepted
+`execution.max_lanes` into an in-memory schema, rejecting missing active routes,
+unknown labels and above-ceiling counts. Change it by governance PR; omission
+needs no migration. Reductions prune inactive routes through an audited change.
 
-Project-owned `OPERATING_CONFIG.yaml` holds choices within governance. New AWF 1.9.4 defaults seed three `gpt-5.6-luna` / medium workers, one shared `gpt-5.6-sol` / high critic/adversarial handler, a `gpt-5.6-sol` / high controller and specialist, and `gpt-5.6-luna` / low simple work. The controller, critic and workers use five slots. Existing files are preserved byte-for-byte; legacy per-stream reviewer routes remain accepted and are not silently migrated. This file is mutable and unprotected. Missing/invalid choices prevent CONFIGURED; preserve evidence and follow the remedy.
+Project-owned `OPERATING_CONFIG.yaml` holds governed choices. Defaults are three
+`gpt-5.6-luna` / medium workers, one shared `gpt-5.6-sol` / high critic,
+`gpt-5.6-sol` / high controller and specialist, and `gpt-5.6-luna` / low simple
+work (five slots including controller and critic). Existing files and legacy
+per-stream reviewers are preserved. Missing/invalid choices prevent CONFIGURED.
 
 New governance uses one-slot `independent_reviewers.allocation: shared_critic`; legacy fixed/per-stream allocations remain binding. Bootstrap preserves them; `--propose-operating-capacity` only proposes a ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md).
 

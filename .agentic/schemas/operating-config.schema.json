@@ -471,7 +471,117 @@
             }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "count": {
+                "minimum": 1,
+                "maximum": 6
+              }
+            },
+            "required": [
+              "count"
+            ]
+          },
+          "then": {
+            "required": [
+              "A"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "count": {
+                "minimum": 2,
+                "maximum": 6
+              }
+            },
+            "required": [
+              "count"
+            ]
+          },
+          "then": {
+            "required": [
+              "B"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "count": {
+                "minimum": 3,
+                "maximum": 6
+              }
+            },
+            "required": [
+              "count"
+            ]
+          },
+          "then": {
+            "required": [
+              "C"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "count": {
+                "minimum": 4,
+                "maximum": 6
+              }
+            },
+            "required": [
+              "count"
+            ]
+          },
+          "then": {
+            "required": [
+              "D"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "count": {
+                "minimum": 5,
+                "maximum": 6
+              }
+            },
+            "required": [
+              "count"
+            ]
+          },
+          "then": {
+            "required": [
+              "E"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "count": {
+                "minimum": 6,
+                "maximum": 6
+              }
+            },
+            "required": [
+              "count"
+            ]
+          },
+          "then": {
+            "required": [
+              "F"
+            ]
+          }
+        }
+      ]
     },
     "controller": {
       "type": "object",

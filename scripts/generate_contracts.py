@@ -13,6 +13,9 @@ sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import VERSION
 
 
+DEFAULT_MAX_LANES = 6
+
+
 def obj(properties, **extra):
     return {"type": "object", "additionalProperties": False,
             "required": list(properties), "properties": properties, **extra}
@@ -145,15 +148,17 @@ GATE_NAMES = ["review_completion", "verdict_posting", "acceptance_criteria", "sc
               "publication_safety"]
 
 
-def catalog():
+def catalog(max_lanes=DEFAULT_MAX_LANES):
+    if type(max_lanes) is not int or max_lanes < 1:
+        raise ValueError("max_lanes must be a positive integer")
     schemas = {}
     governed_max_lanes = {
         "path": "$.execution.max_lanes",
-        "default": 6,
+        "default": DEFAULT_MAX_LANES,
         "minimum": 1,
         "fail_closed": True,
     }
-    generated_stream_labels = stream_labels(governed_max_lanes["default"])
+    generated_stream_labels = stream_labels(max_lanes)
     operating_model = obj({
         "model": text(maxLength=256),
         "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
@@ -185,10 +190,24 @@ def catalog():
         },
         "additionalProperties": False,
     }
+    active_stream_requirements = []
+    for count in range(1, max_lanes + 1):
+        active_stream_requirements.append({
+            "if": {
+                "properties": {
+                    "count": {"minimum": count, "maximum": max_lanes},
+                },
+                "required": ["count"],
+            },
+            "then": {"required": [generated_stream_labels[count - 1]]},
+        })
     operating_streams = obj({
-        "count": integer(1, **{"x-awf-governed-maximum": governed_max_lanes}),
+        "count": integer(
+            1,
+            **{"x-awf-governed-maximum": governed_max_lanes},
+        ),
         **{label: operating_stream for label in generated_stream_labels},
-    }, required=["count"])
+    }, required=["count"], allOf=active_stream_requirements)
     reviewer_requirements = []
     for count, label in enumerate(generated_stream_labels, 1):
         reviewer_requirements.append({
@@ -998,18 +1017,25 @@ def catalog():
     return schemas
 
 
-def render_catalog():
+def render_catalog(max_lanes=DEFAULT_MAX_LANES):
     return {name: (json.dumps(schema, indent=2) + "\n").encode("utf-8")
-            for name, schema in catalog().items()}
+            for name, schema in catalog(max_lanes=max_lanes).items()}
 
 
 def main(argv=()):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true",
                         help="verify generated schema bytes without changing files")
+    parser.add_argument(
+        "--max-lanes", type=int, default=DEFAULT_MAX_LANES,
+        help="generate operating routes through this governed ceiling (default: 6)",
+    )
     args = parser.parse_args(argv)
     path = ROOT / ".agentic/schemas"
-    rendered = render_catalog()
+    try:
+        rendered = render_catalog(max_lanes=args.max_lanes)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.check:
         generated_names = {item.name.removesuffix(".schema.json")
                            for item in path.glob("*.schema.json")}
