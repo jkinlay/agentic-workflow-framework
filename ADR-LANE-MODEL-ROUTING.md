@@ -10,7 +10,7 @@ Observations, 13 October 2026:
 
 * Lane scripts hard-code every run to `gpt-5.6-sol`/high, bypassing routing, floors, escalation and ledger.
 * Runs omit provenance; review comments cite Codex CLI 0.149.0 while 0.162.0 is installed. AWF-80 removes the hard-coded string.
-* Host offers `gpt-6-luna`, `gpt-6.1-sol` and `gpt-6-astra` through ultra.
+* Host offers `gpt-6-luna`, `gpt-6.1-sol` and `gpt-6-astra` through ultra under a weekly allowance.
 
 `gpt-6-luna` matched quality faster and cheaper in owner simple-task tests.
 
@@ -43,7 +43,7 @@ Every lane run records:
 * tokens, or `unknown` (never zero);
 * outcome.
 
-The critic comment carries the observed model, effort and CLI version beside `Critic run:`. The ledger reserves the requested route and settles the observed one. A one-week baseline precedes the routing switch.
+Critic comments carry observed model, effort and CLI version beside `Critic run:`. The ledger reserves requested routes and settles observed ones. A one-week baseline precedes route switching.
 
 ### 2. Review rules
 
