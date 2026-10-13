@@ -663,14 +663,47 @@ def _yaml_line_start(text, index):
     return max(text.rfind("\n", 0, index), text.rfind("\r", 0, index)) + 1
 
 
-def _yaml_block_indent(text, node):
-    """Return the source indentation of a block mapping's existing entries."""
-    if not node.value:
-        return node.start_mark.column
-    key = node.value[0][0]
-    line_start = _yaml_line_start(text, key.start_mark.index)
-    line = text[line_start:key.start_mark.index]
-    return len(line) - len(line.lstrip(" "))
+def _yaml_block_layout(text, node):
+    """Return insertion and indentation from a composed block mapping."""
+    import yaml
+
+    start = node.start_mark.index
+    insertion = node.end_mark.index
+    if not (0 <= start <= insertion <= len(text)):
+        raise ValidationError(
+            "Migration found invalid block mapping boundaries for execution/risk_tiers"
+        )
+
+    # The scanner's BlockMappingStartToken identifies the real entry boundary.
+    # For an explicit multiline key this is the ``?`` indicator, not the
+    # more-indented scalar key on the following line.  A MappingNode with an
+    # anchor or tag starts at that property on the parent line, so constrain
+    # the structural token search through the first composed key.
+    first_key = node.value[0][0].start_mark.index if node.value else insertion
+    starts = [token.start_mark for token in yaml.scan(text)
+              if isinstance(token, yaml.tokens.BlockMappingStartToken)
+              and start <= token.start_mark.index <= first_key]
+    if len(starts) != 1:
+        raise ValidationError(
+            "Migration does not support this block mapping boundary for execution/risk_tiers"
+        )
+    mapping_start = starts[0]
+    line_start = _yaml_line_start(text, mapping_start.index)
+    leading = text[line_start:mapping_start.index]
+    if leading.strip(" ") or len(leading) != mapping_start.column:
+        raise ValidationError(
+            "Migration does not support this block mapping indentation for execution/risk_tiers"
+        )
+    indent = mapping_start.column
+
+    insertion_line_start = _yaml_line_start(text, insertion)
+    if insertion < len(text) and not text[insertion_line_start:insertion].strip(" \t"):
+        # PyYAML locates the end of a nested block mapping at the first key of
+        # its following sibling, after that sibling's indentation.  Insert at
+        # the true start of the line so those already-consumed spaces remain
+        # attached to the sibling instead of becoming a blank line.
+        insertion = insertion_line_start
+    return insertion, indent
 
 
 def _yaml_insert_mapping_entry(text, node, flow_entry, block_lines, newline):
@@ -697,15 +730,7 @@ def _yaml_insert_mapping_entry(text, node, flow_entry, block_lines, newline):
         separator = ", " if node.value else ""
         return text[:opening + 1] + flow_entry + separator + text[opening + 1:]
 
-    indent = _yaml_block_indent(text, node)
-    insertion = node.end_mark.index
-    line_start = _yaml_line_start(text, insertion)
-    if insertion < len(text) and not text[line_start:insertion].strip(" \t"):
-        # PyYAML locates the end of a nested block mapping at the first key of
-        # its following sibling, after that sibling's indentation.  Insert at
-        # the true start of the line so those already-consumed spaces remain
-        # attached to the sibling instead of becoming a blank line.
-        insertion = line_start
+    insertion, indent = _yaml_block_layout(text, node)
     prefix = "" if insertion == 0 or text[insertion - 1] in "\r\n" else newline
     rendered = prefix + "".join(
         " " * indent + line + newline for line in block_lines
