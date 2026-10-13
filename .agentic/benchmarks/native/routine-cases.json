@@ -59,7 +59,7 @@
         {
           "ref": "policy.lifecycle",
           "trust": "accepted_policy",
-          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Mark ready only after the current open draft PR, requirements and validation are observed. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede owner authorization; no code selection executes an action."
+          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Current requirements and validation do not permit mark-ready alone: require an explicit verified owner/manager authorization record bound to the current open draft PR and head. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede merge authorization; no code selection executes an action."
         },
         {
           "ref": "policy.publication",
@@ -91,7 +91,7 @@
         {
           "ref": "policy.lifecycle",
           "trust": "accepted_policy",
-          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Mark ready only after the current open draft PR, requirements and validation are observed. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede owner authorization; no code selection executes an action."
+          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Current requirements and validation do not permit mark-ready alone: require an explicit verified owner/manager authorization record bound to the current open draft PR and head. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede merge authorization; no code selection executes an action."
         },
         {
           "ref": "policy.jira",
@@ -118,7 +118,7 @@
         {
           "ref": "policy.lifecycle",
           "trust": "accepted_policy",
-          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Mark ready only after the current open draft PR, requirements and validation are observed. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede owner authorization; no code selection executes an action."
+          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Current requirements and validation do not permit mark-ready alone: require an explicit verified owner/manager authorization record bound to the current open draft PR and head. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede merge authorization; no code selection executes an action."
         },
         {
           "ref": "policy.jira",
@@ -145,7 +145,7 @@
         {
           "ref": "policy.lifecycle",
           "trust": "accepted_policy",
-          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Mark ready only after the current open draft PR, requirements and validation are observed. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede owner authorization; no code selection executes an action."
+          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Current requirements and validation do not permit mark-ready alone: require an explicit verified owner/manager authorization record bound to the current open draft PR and head. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede merge authorization; no code selection executes an action."
         },
         {
           "ref": "policy.jira",
@@ -172,7 +172,7 @@
         {
           "ref": "policy.lifecycle",
           "trust": "accepted_policy",
-          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Mark ready only after the current open draft PR, requirements and validation are observed. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede owner authorization; no code selection executes an action."
+          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Current requirements and validation do not permit mark-ready alone: require an explicit verified owner/manager authorization record bound to the current open draft PR and head. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede merge authorization; no code selection executes an action."
         },
         {
           "ref": "policy.jira",
@@ -199,7 +199,7 @@
         {
           "ref": "policy.lifecycle",
           "trust": "accepted_policy",
-          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Mark ready only after the current open draft PR, requirements and validation are observed. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede owner authorization; no code selection executes an action."
+          "content": "Accepted synthetic workflow: COMPLETE -> normal branch publication and observed head -> open draft PR. Current requirements and validation do not permit mark-ready alone: require an explicit verified owner/manager authorization record bound to the current open draft PR and head. The critic reviews that PR head only after ready-state readback. Critic/specialists/final gate precede merge authorization; no code selection executes an action."
         },
         {
           "ref": "policy.jira",

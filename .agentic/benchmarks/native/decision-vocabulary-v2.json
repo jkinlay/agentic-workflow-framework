@@ -11,7 +11,7 @@
       "target": "candidate"
     },
     "block_readiness": {
-      "definition": "Keep the candidate unready.",
+      "definition": "Keep the candidate unready and emit a retained refusal record bound to the observed PR and head when ready authorization is absent or invalid.",
       "preconditions": "A current blocking finding, missing required evidence or unmet acceptance criterion prevents readiness.",
       "target": "candidate"
     },
@@ -71,8 +71,8 @@
       "target": "reviewer_launch"
     },
     "mark_pr_ready": {
-      "definition": "Mark the observed open draft PR ready once current requirements and validation are satisfied; read back the current PR/head/readiness before dispatching its critic.",
-      "preconditions": "A current pushed candidate and an already observed open draft PR, current requirements and passing validation, accepted in-scope PR authority. Merely planning open_draft_pr supplies no observed PR. This does not establish final approval readiness or merge authorization.",
+      "definition": "Mark the observed open draft PR ready only after current requirements and validation are satisfied and a verified owner/manager ready authorization record is bound to that PR and head; read back the current PR/head/readiness before dispatching its critic. Requirements and validation alone never permit this transition.",
+      "preconditions": "A current pushed candidate and an already observed open draft PR, current requirements and passing validation, accepted in-scope PR authority, and a verified owner/manager ready authorization record whose trusted identity, raw-source integrity, freshness and candidate binding checks succeed for that PR and head. Requirements and validation alone never permit mark_pr_ready. Merely planning open_draft_pr supplies no observed PR. This does not establish final approval readiness or merge authorization.",
       "target": "candidate_pr"
     },
     "merge_candidate": {

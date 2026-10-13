@@ -26,11 +26,12 @@ from agentic.cli import local_semantics
 from agentic.contracts import Contracts
 from agentic.gates import critic_artifact_receipt_sha256, evaluate, expected_binding
 from agentic.installer import install, recover, rollback, verify_installed, verify_release, ensure_usable, json_bytes, JOURNAL, MARKER
-from agentic.lifecycle import definition, transition, STATES, NORMAL, INVALIDATING, CONTROL_EVENTS
+from agentic.lifecycle import definition, ready_transition_record, transition, STATES, NORMAL, INVALIDATING, CONTROL_EVENTS
 from agentic.policy import validate_config, topological_order, require_reference_capability, inside_scope
 from agentic.review_tiers import classify
 from agentic.safeio import Tree
 from agentic.store import Store
+import test_ready_authorization as ready_fixtures
 from test_review_policy import (RuntimeAssignedGateConfig,
                                 bind_production_posting_fixture,
                                 bind_review_admission)
@@ -383,10 +384,27 @@ class AuthorizationTests(Fixture):
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_pr_ready_definition_requires_current_authorization(self):
+        ready = next(
+            transition
+            for transition in definition()["normal_transitions"]
+            if transition["from"] == "PR_DRAFT" and transition["event"] == "PR_READY"
+        )
+        self.assertEqual(
+            ["validation_current", "ready_authorization_current", "draft_cleared", "requirements_current"],
+            ready["requires"],
+        )
+
     def test_all_normal_transitions(self):
         for source, event, target, guards in NORMAL:
             with self.subTest(source=source, event=event):
                 facts = {g: True for g in guards}
+                if event == "PR_READY":
+                    ready_fixture = ready_fixtures.ReadyAuthorizationTests()
+                    ready_fixture.setUp()
+                    authorization = ready_fixture.authorization()
+                    record = ready_fixture.transition_record(authorization)
+                    facts.update(ready_fixture.ready_facts(record))
                 if event == "CAP_EXTEND_ONE_CYCLE":
                     facts["risk_tier"] = 2
                 if event == "FINAL_GATE_PASSED":

@@ -5,6 +5,8 @@ import copy
 import sys
 import uuid
 from pathlib import Path
+from types import MappingProxyType
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
@@ -15,7 +17,8 @@ from agentic.gates import critic_artifact_receipt_sha256, evaluate, expected_bin
 from agentic.lifecycle import definition, review_round_transition, transition
 from agentic.policy import validate_config
 from agentic.review_tiers import review_decision, validate_round
-from agentic.upgrade import review_tier_defaults
+from agentic.upgrade import (MigrationBundle, migrate_1_9_4_to_1_9_5,
+                             review_tier_defaults)
 from test_review_policy import (Fixture, NOW, bind_production_posting_fixture,
                                  bind_review_admission, bind_review_round_receipt,
                                  sign, signed)
@@ -380,27 +383,142 @@ class ReviewTiers195FinalTests(Fixture):
                     ValidationError, "Tier 3"):
                 validate_round(3, round_number)
 
-    def test_awf16_195_r3_002_unsupported_yaml_styles_are_refused(self):
-        cases = {
-            "quoted": b"template:\n  expected_workflow_version: 1.9.4\n'execution':\n  risk_tiers: {}\n",
-            "multiline-flow": (b"template:\n  expected_workflow_version: 1.9.4\nexecution: {\n"
-                               b"  risk_tiers: {tier1_review: {max_rounds: 1}}\n}\n"),
-            "explicit-key": (b"template:\n  expected_workflow_version: 1.9.4\n? execution\n: \n"
-                             b"  risk_tiers: {}\n"),
-        }
-        for style, before in cases.items():
-            with self.subTest(style=style), self.assertRaisesRegex(
-                    ValidationError, "unsupported YAML mapping style"):
-                review_tier_defaults(before)
-
-    def test_awf16_195_r3_002_supported_yaml_output_is_reparsed_and_exact(self):
-        before = (b"template:\n  expected_workflow_version: 1.9.4\nexecution:\n"
-                  b"  risk_tiers:\n    tier1_review: {max_rounds: 1}\n")
+    def _assert_awf16_195_r3_002_migration(self, before, expected_execution):
         after = review_tier_defaults(before)
-        parsed = load_yaml(after)
-        self.assertEqual({"roles": ["critic", "specialist"], "findings": "blocking",
-                          "max_rounds": 3},
-                         parsed["execution"]["risk_tiers"]["tier3_review"])
+        expected = {
+            "template": {"expected_workflow_version": "1.9.4"},
+            "execution": copy.deepcopy(expected_execution),
+        }
+        expected["execution"].setdefault("risk_tiers", {})["tier3_review"] = {
+            "roles": ["critic", "specialist"],
+            "findings": "blocking",
+            "max_rounds": 3,
+        }
+        self.assertEqual(expected, load_yaml(after))
+        self.assertEqual(1, after.count(b"tier3_review"))
+        return after
+
+    def test_awf16_195_r3_002_plain_keys_and_flow_mapping_migrate_exactly(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\n"
+                  b"execution: {mode: manual, risk_tiers: {}}\n")
+        self._assert_awf16_195_r3_002_migration(
+            before, {"mode": "manual", "risk_tiers": {}})
+
+    def test_awf16_195_r3_002_top_level_yaml_flow_mapping_migrates_exactly(self):
+        before = (b"{template: {expected_workflow_version: 1.9.4}, "
+                  b"execution: {mode: manual, risk_tiers: {}}}\n")
+        bundle = MigrationBundle(
+            before, None, b"{}\n", b"{}\n", MappingProxyType({}))
+        target = {
+            "source_manifest_sha256": "0" * 64,
+            "_immutable_files": {},
+        }
+
+        after = migrate_1_9_4_to_1_9_5(bundle, target).project_config
+
+        self.assertEqual({
+            "template": {"expected_workflow_version": "1.9.5"},
+            "execution": {
+                "mode": "manual",
+                "risk_tiers": {
+                    "tier3_review": {
+                        "roles": ["critic", "specialist"],
+                        "findings": "blocking",
+                        "max_rounds": 3,
+                    },
+                },
+            },
+        }, load_yaml(after))
+        self.assertEqual(1, after.count(b"tier3_review"))
+
+    def test_awf16_195_r3_002_quoted_keys_migrate_exactly(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\n"
+                  b"'execution':\n  \"mode\": manual\n  'risk_tiers': {}\n")
+        self._assert_awf16_195_r3_002_migration(
+            before, {"mode": "manual", "risk_tiers": {}})
+
+    def test_awf16_195_r3_002_block_mappings_migrate_exactly(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\nexecution:\n"
+                  b"  mode: manual\n  risk_tiers:\n"
+                  b"    tier1_review:\n      findings: advisory\n")
+        self._assert_awf16_195_r3_002_migration(
+            before, {"mode": "manual", "risk_tiers": {
+                "tier1_review": {"findings": "advisory"}}})
+
+    def test_awf16_195_r3_002_multiline_flow_mappings_migrate_exactly(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\nexecution: {\n"
+                  b"  mode: manual,\n  risk_tiers: {\n"
+                  b"    tier1_review: {findings: advisory}\n  }\n}\n")
+        self._assert_awf16_195_r3_002_migration(
+            before, {"mode": "manual", "risk_tiers": {
+                "tier1_review": {"findings": "advisory"}}})
+
+    def test_awf16_195_r3_002_explicit_keys_migrate_exactly(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\n"
+                  b"? execution\n" b":\n  ? risk_tiers\n  :\n"
+                  b"    tier1_review: {findings: advisory}\n")
+        self._assert_awf16_195_r3_002_migration(
+            before, {"risk_tiers": {
+                "tier1_review": {"findings": "advisory"}}})
+
+    def test_awf16_195_r3_002_comments_are_preserved_while_migrating_exactly(self):
+        before = (b"# project comment\ntemplate:\n  expected_workflow_version: 1.9.4\n"
+                  b"execution: # execution comment\n"
+                  b"  risk_tiers: # tiers comment\n"
+                  b"    tier1_review: {} # retained comment\n")
+        after = self._assert_awf16_195_r3_002_migration(
+            before, {"risk_tiers": {"tier1_review": {}}})
+        for comment in (b"# project comment", b"# execution comment",
+                        b"# tiers comment", b"# retained comment"):
+            self.assertIn(comment, after)
+
+    def test_awf16_195_r3_002_mapping_anchors_migrate_exactly(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\n"
+                  b"execution: &execution_defaults\n"
+                  b"  mode: manual\n  risk_tiers: &risk_defaults\n"
+                  b"    tier1_review: {findings: advisory}\n")
+        self._assert_awf16_195_r3_002_migration(
+            before, {"mode": "manual", "risk_tiers": {
+                "tier1_review": {"findings": "advisory"}}})
+
+    def test_awf16_195_r3_002_missing_risk_tiers_mapping_is_added(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\n"
+                  b"execution: {mode: manual}\n")
+        self._assert_awf16_195_r3_002_migration(before, {"mode": "manual"})
+
+    def test_awf16_195_r3_002_missing_execution_mapping_is_added(self):
+        before = b"template:\n  expected_workflow_version: 1.9.4\n"
+        self._assert_awf16_195_r3_002_migration(before, {})
+
+    def test_awf16_195_r3_002_duplicate_keys_are_refused_not_emitted(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\n"
+                  b"execution: {risk_tiers: {}}\n'execution': {risk_tiers: {}}\n")
+        with self.assertRaisesRegex(ValidationError, "Duplicate mapping key: execution"):
+            review_tier_defaults(before)
+
+    def test_awf16_195_r3_002_invalid_yaml_is_refused_clearly(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\n"
+                  b"execution: {risk_tiers: [}\n")
+        with self.assertRaisesRegex(ValidationError, "Invalid YAML"):
+            review_tier_defaults(before)
+
+    def test_awf16_195_r3_002_reparse_mismatch_fails_closed(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\n"
+                  b"execution:\n  risk_tiers: {}\n")
+        parsed = load_yaml(before)
+        with patch("agentic.upgrade.load_yaml",
+                   side_effect=[parsed, {"execution": {}}]) as loader:
+            with self.assertRaisesRegex(
+                    ValidationError, "did not equal the expected additive mapping"):
+                review_tier_defaults(before)
+        self.assertEqual(2, loader.call_count)
+
+    def test_awf16_195_r3_002_migration_is_byte_idempotent(self):
+        before = (b"template:\n  expected_workflow_version: 1.9.4\n"
+                  b"'execution': {risk_tiers: {tier1_review: {}}} # retained\n")
+        once = self._assert_awf16_195_r3_002_migration(
+            before, {"risk_tiers": {"tier1_review": {}}})
+        self.assertEqual(once, review_tier_defaults(once))
 
     def test_awf16_r1_009_schema_requires_every_review_verdict(self):
         del self.bundle["review_verdicts"]
