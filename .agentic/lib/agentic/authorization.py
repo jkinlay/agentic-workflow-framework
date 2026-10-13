@@ -11,7 +11,8 @@ import re
 import uuid
 
 from . import ValidationError
-from .canonical import fingerprint, fresh, sha256, timestamp, loads
+from .canonical import (fingerprint, fresh, loads, reject_git_sha_candidate_ids,
+                        sha256, timestamp)
 
 ORDER = ["request", "gate", "gatehash", "project", "issue", "host", "repoid", "repo", "pr", "branch",
          "head", "base", "tree", "method", "policy", "contract", "requirements", "expires"]
@@ -50,6 +51,7 @@ def parse_text(raw):
 
 
 def make_request(gate, contracts, now):
+    reject_git_sha_candidate_ids(gate)
     contracts.validate("final-gate", gate)
     from .review_completion import validate_ready_gate_completion
     validate_ready_gate_completion(gate)
