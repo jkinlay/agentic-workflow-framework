@@ -83,13 +83,82 @@ class NativeRoutineTests(unittest.TestCase):
             with self.subTest(updates=updates):
                 self.assert_rejected(0, ["publish_branch", "open_draft_pr"], updates)
 
-    def test_mark_ready_needs_already_observed_draft_and_current_requirements_validation(self):
-        ready = {"event": "DRAFT_PR_OBSERVED", "branch_pushed": True, "pr_state": "DRAFT"}
-        self.assertEqual("PASS", self.grade_case(0, ["mark_pr_ready"], ready, permissive=True)["status"])
+    def test_mark_ready_needs_full_authenticated_record_and_refusal_is_retained(self):
+        from routine_decisions import expected_decision_plan
+        from test_ready_authorization import ReadyAuthorizationTests, HEAD
+
+        ready = {"event": "DRAFT_PR_OBSERVED", "branch_pushed": True, "pr_state": "DRAFT",
+                 "pr": 67, "head_sha": HEAD, "ready_transition_record": None}
+        refusal = ["block_readiness", "continue_affected_work", "defer_reviewer_launch"]
+        self.assertEqual("PASS", self.grade_case(0, refusal, ready, permissive=True)["status"])
+        self.assert_rejected(0, ["mark_pr_ready"], ready)
+
+        state = benchmark.parse(next(item["content"] for item in self.packet["cases"][0]["inputs"]
+                                     if item["ref"] == "routine.state").encode())
+        state.update(ready)
+        refusal_plan = expected_decision_plan(state)
+        self.assertEqual(refusal, refusal_plan["actions"])
+        self.assertEqual("REFUSED", refusal_plan["ready_transition_record"]["decision"])
+        self.assertTrue(refusal_plan["ready_transition_record"]["logged"])
+
+        fixture = ReadyAuthorizationTests()
+        fixture.setUp()
+        transition_record = fixture.transition_record(fixture.authorization())
+        authorized = {**ready, "ready_transition_record": transition_record}
+        self.assert_rejected(0, ["mark_pr_ready"], authorized)
+        authorized_state = deepcopy(state)
+        authorized_state.update(authorized)
+        authorized_plan = expected_decision_plan(
+            authorized_state,
+            ready_authorization_config=fixture.config,
+            verify_ready_owner_source=fixture.provider.verify,
+        )
+        self.assertEqual(["mark_pr_ready"], authorized_plan["actions"])
+        self.assertEqual(transition_record, authorized_plan["ready_transition_record"])
+
+        fixture.provider.comments.clear()
+        missing_source_plan = expected_decision_plan(
+            authorized_state,
+            ready_authorization_config=fixture.config,
+            verify_ready_owner_source=fixture.provider.verify,
+        )
+        self.assertEqual(refusal, missing_source_plan["actions"])
+        self.assertEqual("REFUSED", missing_source_plan["ready_transition_record"]["decision"])
+        self.assertEqual("AUTHORIZATION_RECORD_INVALID", missing_source_plan["ready_transition_record"]["reason"])
         for change in ({"pr_state": "NONE"}, {"branch_pushed": False}, {"validation_current": False},
                        {"requirements_current": False}, {"publication_authorized": False}, {"branch_owned": False}):
-            self.assert_rejected(0, ["mark_pr_ready"], {**ready, **change})
-        self.assert_rejected(0, ["mark_pr_ready", "launch_reviewer"], ready)
+            self.assert_rejected(0, ["mark_pr_ready"], {**authorized, **change})
+        self.assert_rejected(0, ["mark_pr_ready", "launch_reviewer"], authorized)
+
+        forged = deepcopy(transition_record)
+        forged["authorization_verification"]["live_source_verified"] = False
+        self.assert_rejected(0, ["mark_pr_ready"], {**ready, "ready_transition_record": forged})
+        self.assert_rejected(0, ["mark_pr_ready"], {**ready, "ready_authorization_verified": True})
+
+        vocabulary = benchmark.parse(
+            benchmark.read(ROOT / ".agentic/benchmarks/native/decision-vocabulary-v2.json")
+        )
+        self.assertIn("retained refusal record", vocabulary["codes"]["block_readiness"]["definition"])
+
+    def test_routine_policy_does_not_describe_current_validation_as_ready_authority(self):
+        for case in self.packet["cases"][:6]:
+            policy = next(item["content"] for item in case["inputs"] if item["ref"] == "policy.lifecycle")
+            with self.subTest(case_id=case["case_id"]):
+                self.assertIn("do not permit mark-ready alone", policy)
+                self.assertIn("explicit verified owner/manager authorization record", policy)
+
+    def test_active_decision_vocabulary_never_permits_mark_ready_without_verified_authorization(self):
+        vocabulary = benchmark.parse(
+            benchmark.read(ROOT / ".agentic/benchmarks/native/decision-vocabulary-v2.json")
+        )
+        mark_ready = vocabulary["codes"]["mark_pr_ready"]
+        active_text = " ".join((mark_ready["definition"], mark_ready["preconditions"])).lower()
+        for required in ("verified owner/manager ready authorization record", "bound to that pr and head",
+                         "trusted identity", "raw-source integrity", "freshness", "candidate binding"):
+            with self.subTest(required=required):
+                self.assertIn(required, active_text)
+        self.assertIn("requirements and validation alone", active_text)
+        self.assertIn("never permit", active_text)
 
     def test_blocked_stale_and_request_changes_cannot_publish_advance_or_write_jira(self):
         for index in (1, 2, 3):

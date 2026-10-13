@@ -2,13 +2,14 @@
 import json
 from copy import deepcopy
 from pathlib import Path
+import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 
 NEW_CODES = {"publish_branch", "open_draft_pr", "mark_pr_ready", "transition_jira",
              "apply_operating_change", "refuse_operating_change", "post_evidence_comment"}
-OPTIONAL_FIELDS = {"owner_closure_required": bool}
+OPTIONAL_FIELDS = {"owner_closure_required", "pr", "head_sha", "ready_transition_record"}
 STATE_REF = "routine.state"
 OPERATING_REF = "operating.state"
 CEILING_FIELDS = {"effective_ceiling", "effective_ceiling_governance_path", "effective_ceiling_sources"}
@@ -68,8 +69,15 @@ def state_from_case(case):
     expected = BOOLEAN_FIELDS | set(ENUM_FIELDS) | {"format", "jira_write_attempts", "jira_actor", "jira_observed_at"}
     if not isinstance(state, dict) or set(state) - set(OPTIONAL_FIELDS) != expected or state["format"] != "awf-native-routine-state-1":
         raise ValueError("Routine state has missing, unexpected or unsupported fields")
-    if any(key in state and type(state[key]) is not kind for key, kind in OPTIONAL_FIELDS.items()):
+    if "owner_closure_required" in state and type(state["owner_closure_required"]) is not bool:
         raise ValueError("Optional routine fields require their declared observed types")
+    if "pr" in state and (type(state["pr"]) is not int or state["pr"] < 1):
+        raise ValueError("Routine PR number must be a positive observed integer")
+    if "head_sha" in state and (not isinstance(state["head_sha"], str) or
+                                not re.fullmatch(r"[0-9a-f]{40}", state["head_sha"])):
+        raise ValueError("Routine head must be a lowercase 40-character SHA")
+    if "ready_transition_record" in state and state["ready_transition_record"] is not None and not isinstance(state["ready_transition_record"], dict):
+        raise ValueError("Routine ready-transition evidence must be an object or null")
     if any(type(state[key]) is not bool for key in BOOLEAN_FIELDS):
         raise ValueError("Routine flags require observed booleans")
     if any(not isinstance(state[key], str) or state[key] not in values for key, values in ENUM_FIELDS.items()):
@@ -86,7 +94,8 @@ def state_from_case(case):
     return state
 
 
-def expected_decisions(state):
+def _expected_decisions(state, *, ready_authorization_config=None,
+                        verify_ready_owner_source=None):
     """Return one current ordered plan; no future observation is invented."""
     if state.get('format') == 'awf-native-operating-state-1':
         return operating_decisions(state)
@@ -173,7 +182,20 @@ def expected_decisions(state):
     if event == "DRAFT_PR_OBSERVED" or state["pr_state"] == "DRAFT":
         if not state["branch_pushed"] or state["pr_state"] != "DRAFT":
             raise ValueError("Readiness requires the observed current branch and open draft PR")
+        if "pr" not in state or "head_sha" not in state or "ready_transition_record" not in state:
+            raise ValueError("Readiness requires the PR, head and complete transition record observation")
         if not state["validation_current"] or not state["requirements_current"]:
+            return ["block_readiness", "continue_affected_work", "defer_reviewer_launch", *follow]
+        try:
+            from agentic.lifecycle import revalidate_ready_transition_record
+            revalidate_ready_transition_record(
+                state["ready_transition_record"],
+                state["pr"],
+                state["head_sha"],
+                config=ready_authorization_config,
+                verify_owner_source=verify_ready_owner_source,
+            )
+        except (ValueError, TypeError):
             return ["block_readiness", "continue_affected_work", "defer_reviewer_launch", *follow]
         return ["mark_pr_ready", *follow]  # Critic waits for observed ready readback.
     if state["pr_state"] != "NONE":
@@ -182,6 +204,47 @@ def expected_decisions(state):
             and state["publication_authorized"]):
         return ["pause_affected_work", *follow]
     return ([] if state["branch_pushed"] else ["publish_branch"]) + ["open_draft_pr", *follow]
+
+
+def expected_decision_plan(state, *, ready_authorization_config=None,
+                           verify_ready_owner_source=None):
+    """Return actions plus the retained readiness refusal/authorization evidence."""
+    actions = _expected_decisions(
+        state,
+        ready_authorization_config=ready_authorization_config,
+        verify_ready_owner_source=verify_ready_owner_source,
+    )
+    plan = {"actions": actions, "ready_transition_record": None}
+    if state.get("event") != "DRAFT_PR_OBSERVED":
+        return plan
+    record = state.get("ready_transition_record")
+    if "mark_pr_ready" in actions:
+        plan["ready_transition_record"] = deepcopy(record)
+        return plan
+    if isinstance(record, dict) and record.get("decision") == "REFUSED":
+        try:
+            from agentic.lifecycle import validate_ready_transition_record
+            validate_ready_transition_record(record, state["pr"], state["head_sha"])
+            plan["ready_transition_record"] = deepcopy(record)
+            return plan
+        except (ValueError, TypeError):
+            pass
+    from agentic.lifecycle import ready_transition_record
+    refusal = ready_transition_record(state["pr"], state["head_sha"], None)
+    if record is not None:
+        refusal["reason"] = "AUTHORIZATION_RECORD_INVALID"
+    plan["ready_transition_record"] = refusal
+    return plan
+
+
+def expected_decisions(state, *, ready_authorization_config=None,
+                       verify_ready_owner_source=None):
+    """Return the ordered actions from the evidence-bearing routine plan."""
+    return expected_decision_plan(
+        state,
+        ready_authorization_config=ready_authorization_config,
+        verify_ready_owner_source=verify_ready_owner_source,
+    )["actions"]
 
 
 def operating_decisions(state):

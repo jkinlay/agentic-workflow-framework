@@ -8,7 +8,7 @@ At CONFIGURED, show `operating show`; apply choices through `operating set` (`--
 
 Progress every stream until scoped completion or owner-stop. Refill completed runs; otherwise record `WORKING`, `PAUSED_INPUT`, `BLOCKED`, or `COMPLETE` with ticket, actor, reason, next action, and resume trigger. Continue independent streams. Default cadence: 600s. `--disable-periodic-status` keeps immediate notifications.
 
-After worker COMPLETE, publish a scanned draft PR; observe `branch_pushed`, `pr_exists`, validation, and `draft_cleared` before review. Freeze reviewers against repository, base, head, tree, contract, and review input. Missing, running, failed, timed-out, malformed, duplicate, or mismatched results block submission. Movement restarts review; late results cannot alter submission. Owner-ready needs critics, specialists, final gate, and human authority.
+After worker COMPLETE, publish/observe a scanned draft PR. Mark-ready needs an explicit owner/manager authorization record for PR/head: a pre-issued request/expiry plus authenticated immutable provider observation binding accepted configuration and trusted time. CI/validation/offline checks alone log refusal; draft stays. Log authorization before mutation; observe `draft_cleared`; then review the frozen tuple. Missing/unacceptable results block; movement restarts. Owner-ready needs critic, specialists, final gate and human authority.
 
 Before push or PR, require a history-aware scan PASS bound to base, head, and body; scan comments. Findings or unscanned content block; deletion does not clean history. `diff --check` is whitespace-only. Rewrite only unpublished history.
 

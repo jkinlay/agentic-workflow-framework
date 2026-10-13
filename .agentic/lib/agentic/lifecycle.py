@@ -1,5 +1,8 @@
 """Exhaustive reference transition rules; no external side effects."""
 from __future__ import annotations
+import copy
+import hashlib
+import json
 from . import ValidationError, VERSION
 from .review_tiers import diff_effect, review_decision, validate_round
 
@@ -24,7 +27,7 @@ NORMAL = [
     ("READY", "DISPATCH_ACCEPTED", "DISPATCHED", ["dispatch_permitted", "lease_current", "budget_reserved", "ownership_current"]),
     ("DISPATCHED", "WORKER_STARTED", "IN_PROGRESS", ["run_registered", "worktree_verified"]),
     ("IN_PROGRESS", "WORKER_COMPLETED", "PR_DRAFT", ["worker_result_valid", "branch_pushed", "pr_exists"]),
-    ("PR_DRAFT", "PR_READY", "READY_FOR_CRITIC", ["validation_current", "draft_cleared", "requirements_current"]),
+    ("PR_DRAFT", "PR_READY", "READY_FOR_CRITIC", ["validation_current", "ready_authorization_current", "draft_cleared", "requirements_current"]),
     ("READY_FOR_CRITIC", "CRITIC_REJECTED", "CHANGES_REQUESTED", ["review_current"]),
     ("CHANGES_REQUESTED", "AMENDMENT_ACCEPTED", "AMENDING", ["dispatch_permitted", "lease_current", "budget_reserved", "ownership_current", "amendment_cycles_available"]),
     ("CHANGES_REQUESTED", "CAP_REACHED", "REVIEW_CAP_REACHED", ["amendment_cycles_exhausted", "open_findings_presented"]),
@@ -57,6 +60,160 @@ INVALIDATING = {"HEAD_CHANGED", "BASE_CHANGED", "BASE_RETARGETED", "MERGE_METHOD
 CONTROL_EVENTS = {"BLOCK", "FAIL", "RECOVER", "CANCEL", "SUPERSEDE", "MERGE_TIMEOUT", "MANUAL_MERGE_OBSERVED",
                   "REVERT_OBSERVED", "PR_CLOSED", "BRANCH_DELETED", "REVIEW_DISMISSED",
                   "OWNER_CHANGES_REQUESTED", "POST_MERGE_FINDING"}
+READY_TRANSITION_FORMAT = "awf-pr-ready-transition-1"
+
+
+def _ready_candidate(pr, head_sha):
+    if isinstance(pr, bool) or not isinstance(pr, int) or pr < 1:
+        raise ValidationError("PR ready transition requires a positive integer PR number")
+    if (not isinstance(head_sha, str) or len(head_sha) != 40 or
+            any(character not in "0123456789abcdef" for character in head_sha)):
+        raise ValidationError("PR ready transition requires a lowercase 40-character head SHA")
+
+
+def _authorization_digest(authorization):
+    encoded = json.dumps(authorization, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def ready_transition_record(pr, head_sha, authorization_record, *, config=None,
+                            verify_owner_source=None):
+    """Return the mandatory audit record for one draft-to-ready decision.
+
+    The authorization verifier checks trusted provider identity evidence,
+    candidate binding, source integrity and freshness.  A host must persist the
+    returned record before attempting any provider mutation.
+    """
+    _ready_candidate(pr, head_sha)
+    base = {"format": READY_TRANSITION_FORMAT, "pr": pr, "head_sha": head_sha,
+            "logged": True}
+    if authorization_record is None:
+        return {**base, "decision": "REFUSED",
+                "reason": "OWNER_MANAGER_AUTHORIZATION_REQUIRED",
+                "authorization": None, "authorization_sha256": None}
+    if not isinstance(authorization_record, dict):
+        return {**base, "decision": "REFUSED", "reason": "AUTHORIZATION_RECORD_INVALID",
+                "authorization": None, "authorization_sha256": None}
+
+    authorization = copy.deepcopy(authorization_record)
+    digest = _authorization_digest(authorization)
+    request = authorization.get("request")
+    if (isinstance(request, dict) and
+            (request.get("pr") != pr or request.get("head_sha") != head_sha)):
+        return {**base, "decision": "REFUSED", "reason": "AUTHORIZATION_CANDIDATE_MISMATCH",
+                "authorization": authorization, "authorization_sha256": digest}
+    if not callable(verify_owner_source):
+        return {**base, "decision": "REFUSED",
+                "reason": "AUTHENTICATED_PROVIDER_OBSERVATION_REQUIRED",
+                "authorization": authorization, "authorization_sha256": digest}
+    try:
+        from .authorization import verify_ready_authorization
+        verification = verify_ready_authorization(
+            authorization, config, pr=pr, head_sha=head_sha,
+            verify_owner_source=verify_owner_source,
+        )
+    except (ValidationError, KeyError, TypeError, ValueError):
+        return {**base, "decision": "REFUSED", "reason": "AUTHORIZATION_RECORD_INVALID",
+                "authorization": authorization, "authorization_sha256": digest}
+    source = authorization["owner_source"]
+    request = authorization["request"]
+    return {**base, "decision": "AUTHORIZED", "reason": "EXPLICIT_OWNER_MANAGER_AUTHORIZATION",
+            "authorization_id": request["request_id"], "actor_id": source["actor_id"],
+            "actor": source["actor_login"],
+            "role": request["role"], "authorized_at": source["created_at"],
+            "authorization": authorization, "authorization_sha256": digest,
+            "authorization_verification": verification}
+
+
+def validate_ready_transition_record(record, pr, head_sha, *, require_authorized=False):
+    """Validate persisted readiness evidence without treating it as live authority."""
+    _ready_candidate(pr, head_sha)
+    if not isinstance(record, dict) or record.get("format") != READY_TRANSITION_FORMAT or not record.get("logged"):
+        raise ValidationError("PR ready transition record is missing or malformed")
+    if record.get("pr") != pr or record.get("head_sha") != head_sha:
+        raise ValidationError("PR ready transition record references a different candidate")
+    if record.get("decision") == "REFUSED":
+        if require_authorized:
+            raise ValidationError("PR ready transition retains a refusal, not authorization")
+        if not isinstance(record.get("reason"), str) or not record["reason"]:
+            raise ValidationError("PR ready refusal lacks its retained reason")
+        return True
+    if record.get("decision") != "AUTHORIZED":
+        raise ValidationError("PR ready transition decision is invalid")
+    authorization = record.get("authorization")
+    verification = record.get("authorization_verification")
+    if (not isinstance(authorization, dict) or
+            record.get("authorization_sha256") != _authorization_digest(authorization) or
+            not isinstance(verification, dict)):
+        raise ValidationError("PR ready authorization record or digest is invalid")
+    request = authorization.get("request")
+    source = authorization.get("owner_source")
+    if not isinstance(request, dict) or not isinstance(source, dict):
+        raise ValidationError("PR ready authorization source/request is incomplete")
+    if (request.get("pr") != pr or request.get("head_sha") != head_sha or
+            record.get("authorization_id") != request.get("request_id") or
+            record.get("actor_id") != source.get("actor_id") or
+            record.get("actor") != source.get("actor_login") or
+            record.get("role") != request.get("role") or
+            record.get("authorized_at") != source.get("created_at")):
+        raise ValidationError("PR ready authorization audit fields do not bind its source and request")
+    if any(verification.get(field) is not True for field in
+           ("record_consistent", "live_source_verified", "configuration_accepted", "trusted_time_verified")):
+        raise ValidationError("PR ready authorization lacks authenticated provider/configuration/time evidence")
+    if (verification.get("actor_id") != source.get("actor_id") or
+            verification.get("actor_login") != source.get("actor_login") or
+            verification.get("role") != request.get("role") or
+            verification.get("raw_body_sha256") != source.get("raw_body_sha256") or
+            not isinstance(verification.get("source_id"), str) or not verification["source_id"] or
+            not isinstance(verification.get("configuration_sha256"), str) or
+            not isinstance(verification.get("observed_at"), str) or
+            verification.get("execution_authority") is not False):
+        raise ValidationError("PR ready authorization verification is internally inconsistent")
+    return True
+
+
+def revalidate_ready_transition_record(record, pr, head_sha, *, config=None,
+                                       verify_owner_source=None):
+    """Re-read provider/configuration/time evidence before a ready mutation."""
+    validate_ready_transition_record(record, pr, head_sha, require_authorized=True)
+    from .authorization import verify_ready_authorization
+    current = verify_ready_authorization(
+        record.get("authorization"),
+        config,
+        pr=pr,
+        head_sha=head_sha,
+        verify_owner_source=verify_owner_source,
+    )
+    saved = record["authorization_verification"]
+    stable_fields = ("action", "role", "actor_id", "actor_login", "source_id",
+                     "configuration_sha256", "raw_body_sha256", "record_consistent",
+                     "live_source_verified", "configuration_accepted", "trusted_time_verified",
+                     "execution_authority")
+    if any(current.get(field) != saved.get(field) for field in stable_fields):
+        raise ValidationError("PR ready authorization provider observation changed")
+    return True
+
+
+def _require_ready_authorization(facts):
+    pr = facts.get("pr")
+    head_sha = facts.get("head_sha")
+    _ready_candidate(pr, head_sha)
+    record = facts.get("ready_transition_record")
+    if not isinstance(record, dict):
+        raise ValidationError("PR ready refused: explicit owner/manager authorization record is required and the refusal must be recorded")
+    if record.get("decision") != "AUTHORIZED":
+        raise ValidationError("PR ready refused: explicit owner/manager authorization record is required; retain the refusal record")
+    try:
+        revalidate_ready_transition_record(
+            record,
+            pr,
+            head_sha,
+            config=facts.get("ready_authorization_config"),
+            verify_owner_source=facts.get("verify_ready_owner_source"),
+        )
+    except (ValidationError, KeyError, TypeError, ValueError):
+        raise ValidationError("PR ready refused: authorization decision record is invalid")
 
 
 def definition():
@@ -97,6 +254,8 @@ def transition(state, event, facts=None, resume_state=None):
         missing = [name for name in names if facts.get(name) is not True]
         if missing:
             raise ValidationError("Missing verified guards: " + ", ".join(missing))
+    if state == "PR_DRAFT" and event == "PR_READY":
+        _require_ready_authorization(facts)
     if event == "CAP_EXTEND_ONE_CYCLE" and facts.get("risk_tier") != 2:
         raise ValidationError("CAP_EXTEND_ONE_CYCLE is a Tier 2-only transition; Tier 3 is hard-capped at three rounds")
     if state == "FINAL_REVIEW" and event == "FINAL_GATE_PASSED":
