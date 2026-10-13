@@ -1,6 +1,6 @@
 # Lane model routing: Luna-first writers, stronger reviewers, early escalation
 
-**Status:** accepted by owner rulings of 13 October 2026, recorded below; binding once this PR merges. Merging changes no configuration, code or lane behaviour by itself.
+**Status:** accepted on merge. Owner rulings 2026-10-13 05:56 BST (Jonathan, relayed by DevHead): D1 option D, D2, D3, D5, D6 approved. No pre-merge behaviour changes.
 
 ## Context
 
@@ -17,7 +17,7 @@ Observed on the owner's lane host, 13 October 2026:
 
 * The operator-local lane scripts hard-code `gpt-5.6-sol`/high for every writer, reviewer and design run, bypassing AWF routing, floors, escalation and the ledger.
 * No run records its model.
-* Review comments state Codex CLI 0.149.0 while 0.162.0 is installed.
+* Review comments hard-code a stale CLI version; 0.162.0 is installed.
 * The host offers `gpt-6-luna`, `gpt-6.1-sol` and `gpt-6-astra`, with efforts up to ultra.
 * One weekly allowance covers all runs.
 
@@ -28,7 +28,7 @@ Options considered:
 | Option | Why not chosen |
 | --- | --- |
 | A. Raise everything to `gpt-6.1-sol`/high | Costs more on every run, without evidence. |
-| B. Escalate after two failed rounds | Too late when caps are two or three rounds. |
+| B. Escalate after two failed rounds | Tier 3 is currently `unextendable`; AWF-81 adds an owner-authorised chapter 24 extension carrying `AWF-OVERCAP-APPROVAL`. |
 | C. A plus B | Inherits both problems. |
 
 ## Decision (option D)
@@ -50,7 +50,7 @@ Every lane run records:
 * role, run id, ticket, PR and head;
 * tier and escalation step;
 * requested and observed model and effort;
-* the Codex CLI version read at launch;
+* the Codex CLI version from `codex --version` at launch, never a constant;
 * tokens, or `unknown` (never zero);
 * outcome.
 
@@ -71,13 +71,13 @@ Routes rank by model (`gpt-6-luna` < `gpt-6.1-sol` < `gpt-6-astra`), then by eff
 | Tier 2 | `gpt-6.1-sol`/high | `gpt-6.1-sol`/high | — |
 | Tier 3 and high-risk | `gpt-6.1-sol`/high | `gpt-6.1-sol`/high | `gpt-6.1-sol`/xhigh |
 
-**Tier 2 moves to `gpt-6-luna`/medium** by owner ruling once about 10 Tier 1 Luna tickets pass cleanly, meaning a PASS with no escalation and no cap disposition. Specialist routes and mandatory floors are unchanged.
+Specialist routes and mandatory floors are unchanged.
 
 ### 4. Escalation
 
 Ladder: `gpt-6-luna`/medium → `gpt-6.1-sol`/high → `gpt-6.1-sol`/xhigh → `gpt-6-astra`/xhigh.
 
-The last step applies only to an owner extension beyond the cap: Tier 2 `EXTEND_ONE_CYCLE`, or Tier 3 under [ADR-TIER3-CAP-EXTENSION](ADR-TIER3-CAP-EXTENSION.md). Each of these moves a ticket up one step:
+`gpt-6-astra`/xhigh applies only to owner-authorised over-cap rounds: Tier 2 `EXTEND_ONE_CYCLE`; or Tier 3 under AWF-81 with `AWF-OVERCAP-APPROVAL` (chapter 24; [cap ADR](ADR-TIER3-CAP-EXTENSION.md)), never in-cap. Each trigger moves a ticket up one step:
 
 * a failed local validation, before the critic, so no round is spent;
 * a critic P1;
@@ -91,6 +91,10 @@ Further rules:
 * Infrastructure and unknown failures never change the model.
 
 ### 5. Rollout and revert
+
+Luna writers start on Tier 1; Tier 2 follows after about 10 clean Tier 1 tickets (PASS without escalation/cap disposition; D3).
+
+Changes 1/2 (provenance, R-1/R-2, R-3) ship in 1.9.5 now; changes 3/4 follow its Tier 3 core without delaying release. **R-3:** no routing switch before AWF-80 merges and the baseline week ends (D5).
 
 **Measure per tier:**
 
@@ -115,11 +119,13 @@ Review after 15 tickets per tier, or two weeks.
 
 **Follow-up Tier 3 tickets** (Codex writes, independent critic, exact-head CI, owner merge):
 
-1. Per-run provenance (1.9.5 now; relates to AWF-49).
-2. R-1 and R-2 in the critic launch path.
-3. Add `gpt-6.1-sol` to `model_order`, the allowlists and the efforts; confirm it against `gpt-6-sol`.
-4. Dispatch through `suggest` → `reserve` → `settle`, in the controller adapter (AWF-36) and meanwhile the operator-local lane scripts. Depends on AWF-48 and AWF-74.
+1. Per-run provenance (AWF-80).
+2. R-1/R-2/R-3 (AWF-80).
+3. `gpt-6.1-sol` route governance (AWF-82).
+4. `suggest` → `reserve` → `settle` dispatch (AWF-82).
 
-Follow-ups 3 and 4 wait for the open 1.9.5 Tier 3 core.
+Also: rollout measurement (AWF-83) and cap correction (AWF-81).
 
-**Effects:** unservable routes still return `unavailable`, and model mismatches are reported. Budgets, pins, floors and owner merge authority are unchanged.
+**Effects:** unservable routes still return `unavailable`, and model mismatches are reported.
+
+**Unchanged:** budgets, pins, floors, review caps (subject to AWF-81) and owner merge authority.
