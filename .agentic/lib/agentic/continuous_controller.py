@@ -959,6 +959,7 @@ def _zero_counts():
 
 def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
                              jira_binding, reconcile_merged_ticket, fetch_scope_page,
+                             count_gate,
                              include_epics=False, max_pages=20, max_items=10000,
                              max_bytes=16 * 1024 * 1024, max_seconds=60, clock=None):
     """Reconcile the merge first, then report only complete authoritative counts."""
@@ -980,8 +981,26 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
             "scope_sha256": scope_sha256, "include_epics": include_epics,
             "snapshot_id": None,
             "observed_at": observed_at, "closed": "UNOBSERVED", "remaining_open": "UNOBSERVED"}
+    _require(isinstance(count_gate, dict),
+             "Post-merge counting requires validated closeout gate inputs")
+
+    def validate_count_gate():
+        from .closeout import require_jira_reconciliation_before_counts
+        gate = require_jira_reconciliation_before_counts(**count_gate)
+        _require(gate.get("status") == "PASS" and gate.get("count_allowed") is True,
+                 "validated closeout did not permit post-merge counting")
+        _require(gate.get("ticket") == merged_ticket,
+                 "validated closeout ticket differs from the reconciled ticket")
+        return gate
+
     if not jira_enabled:
-        return {**base, "jira_state": "JIRA_DISABLED", "reason": "Jira is disabled; no reads or writes attempted"}
+        try:
+            validate_count_gate()
+        except Exception as exc:
+            return {**base, "jira_state": "UNOBSERVED",
+                    "reason": f"validated closeout count gate failed: {type(exc).__name__}"}
+        return {**base, "jira_state": "JIRA_DISABLED",
+                "reason": "accepted Jira is disabled; no Jira reads or writes attempted"}
     try:
         reconciled = reconcile_merged_ticket(merged_ticket)
     except Exception as exc:
@@ -1002,6 +1021,11 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
     except (ValidationError, ValueError, TypeError, AttributeError):
         return {**base, "jira_state": "UNOBSERVED", "reason": "merge reconciliation receipt is malformed"}
     base["observed_at"] = reconciled["observed_at"]
+    try:
+        validate_count_gate()
+    except Exception as exc:
+        return {**base, "jira_state": "UNOBSERVED",
+                "reason": f"validated closeout count gate failed: {type(exc).__name__}"}
     items, identities, cursor, seen_cursors = [], set(), None, set()
     snapshot_id = page_observed_at = None
     import time
@@ -1418,6 +1442,8 @@ def production_jira_lifecycle(store, *, config, contract, event, facts, binding,
 
 def production_post_merge_progress(**adapters):
     """Named production route for reconcile-first scoped Jira reporting."""
+    _require(isinstance(adapters.get("count_gate"), dict),
+             "Production post-merge counting requires validated closeout gate inputs")
     return post_merge_jira_progress(**adapters)
 
 
@@ -1427,6 +1453,8 @@ def production_merge_observed(*, lifecycle_state, lifecycle_facts, jira_progress
              "Production merge observation needs a merge-in-progress state")
     _require(isinstance(lifecycle_facts, dict) and isinstance(jira_progress, dict),
              "Production merge observation needs lifecycle facts and Jira adapters")
+    _require(isinstance(jira_progress.get("count_gate"), dict),
+             "Production merge observation requires validated closeout gate inputs")
     from .lifecycle import transition
     state = transition(lifecycle_state, "MERGE_OBSERVED", lifecycle_facts)
     progress = production_post_merge_progress(**jira_progress)

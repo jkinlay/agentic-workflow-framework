@@ -14,6 +14,7 @@ authorization evidence must be supplied by a separately qualified host.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -27,7 +28,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from agentic import ValidationError
-from agentic.canonical import canonical, fingerprint, now_text, sha256, timestamp
+from agentic.canonical import canonical, fingerprint, load_yaml, now_text, sha256, timestamp
 
 
 MAX_OUTPUT = 1024 * 1024
@@ -717,6 +718,204 @@ def _build(config):
     _require(callable(getattr(clock, "now", None)) and callable(getattr(clock, "monotonic", None)),
              "Clock injection is incomplete")
 
+    def observation_evidence():
+        value = config.get("observations")
+        required = {"accepted_project_config", "closeout_directory",
+                    "jira_transition_directory"}
+        _require(isinstance(value, dict) and set(value) == required,
+                 "Closeout observer evidence is not configured")
+        accepted = value["accepted_project_config"]
+        _require(isinstance(accepted, dict) and set(accepted) == {
+            "path", "sha256", "blob_sha", "acceptance_receipt_id"},
+            "Accepted project configuration evidence is incomplete")
+        project_path = _absolute(accepted["path"],
+                                 "observations.accepted_project_config.path").resolve()
+        closeout_directory = _absolute(
+            value["closeout_directory"], "observations.closeout_directory").resolve()
+        jira_directory = _absolute(
+            value["jira_transition_directory"],
+            "observations.jira_transition_directory").resolve()
+        for path, name in ((project_path, "accepted project configuration"),
+                           (closeout_directory, "closeout evidence"),
+                           (jira_directory, "Jira transition evidence")):
+            _require(_disjoint(path, worktree_root),
+                     name + " must be outside codex.worktree_root")
+        _require(project_path.is_file(),
+                 "Accepted project configuration evidence is unavailable")
+        _require(closeout_directory.is_dir() and jira_directory.is_dir(),
+                 "Closeout observer evidence directories are unavailable")
+        _require(re.fullmatch(r"[0-9a-f]{64}", accepted["sha256"]) is not None,
+                 "Accepted project configuration SHA-256 is invalid")
+        _require(re.fullmatch(r"[0-9a-f]{40}", accepted["blob_sha"]) is not None,
+                 "Accepted project configuration blob identity is invalid")
+        _text(accepted["acceptance_receipt_id"],
+              "observations.accepted_project_config.acceptance_receipt_id")
+        return accepted, project_path, closeout_directory, jira_directory
+
+    def evidence_record(directory, record_id, purpose):
+        _require(isinstance(record_id, str) and
+                 re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                              record_id) is not None,
+                 purpose + " record identity is invalid")
+        path = (directory / (record_id + ".json")).resolve()
+        _require(path.parent == directory, purpose + " record path escaped its evidence directory")
+        try:
+            raw = path.read_bytes()
+            _require(len(raw) <= MAX_OUTPUT, purpose + " record exceeded its byte bound")
+            value = json.loads(raw.decode("utf-8", "strict"))
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValidationError(purpose + " record is unavailable or invalid") from exc
+        _require(isinstance(value, dict), purpose + " record is not an object")
+        return value
+
+    def observe_accepted_project_config(request):
+        _require(request == {
+            "operation": "ACCEPTED_PROJECT_CONFIG",
+            "source_identity": {"kind": "installed_project_configuration",
+                                "path": ".agentic/PROJECT_CONFIG.yaml"},
+        }, "Accepted project configuration request is invalid")
+        accepted, project_path, _closeout_directory, _jira_directory = observation_evidence()
+        try:
+            raw = project_path.read_bytes()
+            _require(len(raw) <= 8 * 1024 * 1024,
+                     "Accepted project configuration exceeded its byte bound")
+            text = raw.decode("utf-8", "strict")
+            _require(not text.startswith("\ufeff"),
+                     "Accepted project configuration must not contain a UTF-8 BOM")
+            project_config = load_yaml(raw)
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            raise ValidationError(
+                "Accepted project configuration bytes are unavailable or invalid") from exc
+        _require(sha256(raw) == accepted["sha256"],
+                 "Accepted project configuration bytes differ from their reviewed digest")
+        _require(isinstance(project_config, dict),
+                 "Accepted project configuration is not an object")
+        accepted_github = project_config.get("github", {})
+        _require(accepted_github.get("host") == github["host"]
+                 and accepted_github.get("repository") == github["repository"]
+                 and accepted_github.get("repository_id") == github["repository_id"]
+                 and accepted_github.get("base_branch") == github["base_branch"],
+                 "Accepted project configuration differs from adapter repository identity")
+        from agentic.contracts import Contracts
+        from agentic.lifecycle import definition
+        from agentic.policy import validate_config
+        contracts = Contracts(Path(__file__).resolve().parents[1] / "schemas")
+        policy_sha256 = validate_config(project_config, definition(), contracts)
+        observed_at = _clock_text(clock)
+        return {"observed_at": observed_at, "result": {
+            "raw_bytes_base64": base64.b64encode(raw).decode("ascii"),
+            "config_sha256": sha256(raw), "policy_sha256": policy_sha256,
+            "path": ".agentic/PROJECT_CONFIG.yaml",
+            "repository": github["repository"],
+            "repository_id": github["repository_id"],
+            "ref": "refs/heads/" + github["base_branch"],
+            "blob_sha": accepted["blob_sha"],
+            "acceptance": {
+                "status": "ACCEPTED",
+                "receipt_id": accepted["acceptance_receipt_id"],
+                "workflow_version": project_config.get("template", {}).get(
+                    "expected_workflow_version"),
+            },
+        }}
+
+    def observe_closeout_record(request):
+        required = {"operation", "provider_identity", "repository_identity",
+                    "source_identity", "accepted_policy_sha256", "record_id",
+                    "record_sha256", "binding", "pr_number", "reviewed_head_sha",
+                    "merge_commit_sha", "gate_record_id", "review_record_ids"}
+        _require(isinstance(request, dict) and set(request) == required
+                 and request.get("operation") == "CLOSEOUT_RECORD"
+                 and request.get("source_identity") == "protected_controller_closeout",
+                 "Closeout observation request is invalid")
+        _accepted, _project_path, closeout_directory, _jira_directory = observation_evidence()
+        expected_provider = {"host": github["host"].rstrip("/"),
+                             "repository": github["repository"],
+                             "repository_id": github["repository_id"]}
+        expected_repository = {"repository": github["repository"],
+                               "repository_id": github["repository_id"]}
+        _require(request["provider_identity"] == expected_provider
+                 and request["repository_identity"] == expected_repository,
+                 "Closeout request differs from adapter repository identity")
+        value = evidence_record(closeout_directory, request["record_id"], "Closeout")
+        _require(set(value) == {"record", "merge_result_id", "merge_observed_at"},
+                 "Closeout evidence has a non-closed shape")
+        record = value["record"]
+        _require(isinstance(record, dict)
+                 and fingerprint("closeout_record", record) == request["record_sha256"]
+                 and record.get("record_id") == request["record_id"]
+                 and record.get("binding") == request["binding"]
+                 and record.get("binding", {}).get("policy_hash") ==
+                     request["accepted_policy_sha256"]
+                 and record.get("pr_number") == request["pr_number"]
+                 and record.get("reviewed_head_sha") == request["reviewed_head_sha"]
+                 and record.get("merge_commit_sha") == request["merge_commit_sha"]
+                 and record.get("gate_record_id") == request["gate_record_id"]
+                 and record.get("review_record_ids") == request["review_record_ids"],
+                 "Closeout evidence differs from the exact requested record")
+        timestamp(value["merge_observed_at"])
+        _text(value["merge_result_id"], "Closeout merge result identity")
+        return {"observed_at": _clock_text(clock), "result": value}
+
+    def observe_jira_reconciliation(request):
+        required = {"operation", "provider_identity", "source_identity", "binding",
+                    "issue_id", "transition_record_id", "expected_status_id"}
+        _require(isinstance(request, dict) and set(request) == required
+                 and request.get("operation") == "JIRA_RECONCILIATION"
+                 and request.get("source_identity") == "jira_issue_transition_and_readback",
+                 "Jira reconciliation observation request is invalid")
+        _accepted, _project_path, _closeout_directory, jira_directory = observation_evidence()
+        provider = provider_identity()
+        _require(request["provider_identity"] == provider,
+                 "Jira reconciliation request differs from observed provider identity")
+        value = evidence_record(
+            jira_directory, request["transition_record_id"], "Jira transition")
+        _require(set(value) == {"record"} and isinstance(value["record"], dict),
+                 "Jira transition evidence has a non-closed shape")
+        record = value["record"]
+        _require(record.get("record_id") == request["transition_record_id"]
+                 and record.get("binding") == request["binding"]
+                 and record.get("binding", {}).get("issue_id") == request["issue_id"]
+                 and record.get("jira_provider") == provider
+                 and record.get("producer_id") == provider["controller_actor_id"]
+                 and record.get("lifecycle_event") == "JIRA_RECONCILED"
+                 and record.get("status") == "SUCCEEDED"
+                 and record.get("to_status_id") == request["expected_status_id"],
+                 "Jira transition evidence differs from the requested reconciliation")
+        issue = jira_json(
+            "GET", "/rest/api/3/issue/" + quote(request["issue_id"], safe="")
+            + "?fields=status&expand=changelog")
+        _require(issue.get("id") == request["issue_id"],
+                 "Jira reconciliation readback returned a different issue")
+        current_status = issue.get("fields", {}).get("status", {}).get("id")
+        _require(current_status == request["expected_status_id"],
+                 "Jira issue is not currently at the configured terminal status")
+        read_back = record.get("read_back")
+        _require(isinstance(read_back, dict)
+                 and read_back.get("observed_status") == current_status
+                 and read_back.get("observed_actor") == provider["controller_actor_id"]
+                 and isinstance(read_back.get("observed_at"), str),
+                 "Jira transition record lacks the matching terminal readback")
+        matched_history = False
+        for history in issue.get("changelog", {}).get("histories", []):
+            if not isinstance(history, dict) or not isinstance(history.get("created"), str):
+                continue
+            actor = history.get("author", {}).get("accountId")
+            if actor != provider["controller_actor_id"]:
+                continue
+            for item in history.get("items", []):
+                if (isinstance(item, dict) and item.get("field") == "status"
+                        and (item.get("to") == current_status
+                             or item.get("toString") == current_status)
+                        and timestamp(record["created_at"]) <= timestamp(history["created"])
+                        <= timestamp(read_back["observed_at"])):
+                    matched_history = True
+        _require(matched_history,
+                 "Jira provider history does not prove the protected reconciliation")
+        observed_at = _clock_text(clock)
+        _require(timestamp(observed_at) >= timestamp(read_back["observed_at"]),
+                 "Jira reconciliation observation predates its protected readback")
+        return {"observed_at": observed_at, "result": value}
+
     def command(executable, args, *, cwd=None, stdin=None, timeout_override=None):
         _verify_executable(executable)
         argv = [str(executable["path"]), *[str(item) for item in args]]
@@ -1226,7 +1425,10 @@ def _build(config):
             "observe_provider_identity": provider_identity,
             "read_current_status": read_current_status, "write_transition": write_transition,
             "read_transition": read_transition, "reconcile_merged_ticket": reconcile_merged_ticket,
-            "fetch_scope_page": fetch_scope_page}
+            "fetch_scope_page": fetch_scope_page,
+            "observe_accepted_project_config": observe_accepted_project_config,
+            "observe_closeout_record": observe_closeout_record,
+            "observe_jira_reconciliation": observe_jira_reconciliation}
 
 
 def build_adapters(config):

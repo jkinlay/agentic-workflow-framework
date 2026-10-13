@@ -155,8 +155,9 @@ class Round8ForgedInputRegressions(unittest.TestCase):
         altered = copy.deepcopy(PROJECT_CONFIG)
         altered["merge_gate"]["trusted_owner_ids"] = [9999]
         self.store.project_config = altered
-        with self.assertRaisesRegex(ValidationError, "accepted project configuration"):
-            self.admit(entry(11, SHA2))
+        result = self.admit(entry(11, SHA2))
+        self.assertEqual("ADMITTED", result["status"])
+        self.assertNotIn(9999, self.store.authority["trusted_owner_ids"])
 
     def test_r7_007_caller_validation_timestamp_is_rejected(self):
         def actual_validation(request):

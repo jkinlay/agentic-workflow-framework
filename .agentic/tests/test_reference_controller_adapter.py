@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,11 +14,14 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
 from source_only import skip_unless_source_repo
-from agentic.canonical import fingerprint, sha256
+from agentic.canonical import canonical, fingerprint, sha256
+from agentic.contracts import Contracts
 from agentic.continuous_controller import (
     ContinuousControllerStore, production_controller_cycle,
     production_jira_lifecycle, production_merge_observed,
 )
+from agentic.lifecycle import definition
+from agentic.policy import policy_hash
 
 
 NOW = "2026-10-09T08:00:00Z"
@@ -246,7 +250,9 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertEqual(set(adapters), {"observe_inventory", "dispatch_ticket", "observe_dispatch",
                                          "deliver_status", "observe_publication", "observe_provider_identity",
                                          "read_current_status", "write_transition", "read_transition",
-                                         "reconcile_merged_ticket", "fetch_scope_page"})
+                                         "reconcile_merged_ticket", "fetch_scope_page",
+                                         "observe_accepted_project_config", "observe_closeout_record",
+                                         "observe_jira_reconciliation"})
         with self.assertRaisesRegex(ValidationError, "SHA-256 pin"):
             loader._load_reviewed_adapters(self.adapter, "0" * 64, config_path)
 
@@ -950,12 +956,148 @@ enabled = true
         adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](cfg)
         progress = {"jira_enabled": True, "merged_ticket": "100", "scope": "project = EX",
                     "observed_at": NOW, "jira_binding": {"cloud_id": "cloud-1", "project_id": "project-1", "actor_id": "controller"},
+                    "count_gate": {},
                     "max_pages": 5, "max_items": 10}
-        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False):
+        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False), \
+                patch("agentic.closeout.require_jira_reconciliation_before_counts",
+                      return_value={"status": "PASS", "count_allowed": True,
+                                    "ticket": "100"}):
             result = production_merge_observed(lifecycle_state="MERGING",
                 lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
                 jira_progress={**progress, "reconcile_merged_ticket": adapters["reconcile_merged_ticket"],
                                "fetch_scope_page": adapters["fetch_scope_page"]})
+        self.assertEqual(result["state"], "MERGED")
+        self.assertEqual(result["jira_progress"]["jira_state"], "COUNTED")
+        self.assertEqual(result["jira_progress"]["closed"], 1)
+
+    def test_merge_observed_uses_shipped_adapter_closeout_observers(self):
+        repository = self.root / "merge-repository"
+        repository.mkdir()
+
+        def git(*args):
+            return subprocess.run(
+                ["git", "-C", str(repository), *args], check=True,
+                capture_output=True, text=True).stdout.strip()
+
+        git("init", "-q", "--initial-branch=main")
+        (repository / "tracked.txt").write_bytes(b"base\n")
+        git("add", "tracked.txt")
+        git("-c", "user.email=fixture@example.invalid", "-c", "user.name=Fixture",
+            "-c", "commit.gpgsign=false", "commit", "-qm", "base")
+        base = git("rev-parse", "HEAD")
+        git("checkout", "-qb", "feature")
+        (repository / "tracked.txt").write_bytes(b"candidate\n")
+        git("add", "tracked.txt")
+        git("-c", "user.email=fixture@example.invalid", "-c", "user.name=Fixture",
+            "-c", "commit.gpgsign=false", "commit", "-qm", "candidate")
+        head = git("rev-parse", "HEAD")
+        git("checkout", "-q", "main")
+        git("-c", "user.email=fixture@example.invalid", "-c", "user.name=Fixture",
+            "-c", "commit.gpgsign=false", "merge", "-q", "--no-ff", "-m", "merge", "feature")
+        merge = git("rev-parse", "HEAD")
+        tree = git("rev-parse", "HEAD^{tree}")
+        blob = git("rev-parse", "HEAD:tracked.txt")
+
+        project_config = json.loads(
+            (ROOT / ".agentic/examples/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+        project_config["github"].update(repository="example/project", repository_id=101,
+                                         base_branch="main")
+        project_config["jira"].update(
+            cloud_id="cloud-1", site="https://jira.example.invalid",
+            provider_project_id="project-1", project_key="EX",
+            controller_actor_id="controller")
+        project_bytes = canonical(project_config)
+        evidence = self.root / "observer-evidence"
+        closeout_dir = evidence / "closeout"
+        jira_dir = evidence / "jira"
+        closeout_dir.mkdir(parents=True)
+        jira_dir.mkdir()
+        project_path = evidence / "PROJECT_CONFIG.yaml"
+        project_path.write_bytes(project_bytes)
+
+        binding = {
+            "project_id": project_config["project"]["id"], "repository_id": 101,
+            "issue_id": "100", "requirements_hash": "a" * 64,
+            "contract_hash": "b" * 64,
+            "policy_hash": policy_hash(project_config, definition()),
+            "candidate_id": "d" * 64,
+        }
+        transition_id = "10000000-0000-0000-0000-000000000001"
+        merge_result_id = "10000000-0000-0000-0000-000000000002"
+        closeout_id = "10000000-0000-0000-0000-000000000003"
+        closeout = {
+            "schema_version": 3, "record_id": closeout_id, "created_at": NOW,
+            "producer_id": "fixture-controller",
+            "run_id": "10000000-0000-0000-0000-000000000004",
+            "binding": binding, "pr_number": 32, "reviewed_head_sha": head,
+            "base_sha": base, "merge_commit_sha": merge, "merge_tree_sha": tree,
+            "bound_files": [{"path": "tracked.txt", "blob_sha": blob,
+                              "sha256": hashlib.sha256(b"candidate\n").hexdigest()}],
+            "gate_record_id": "10000000-0000-0000-0000-000000000005",
+            "review_record_ids": ["10000000-0000-0000-0000-000000000006"],
+            "jira_transition_record_id": transition_id,
+            "evidence": ["urn:awf:fixture:closeout"],
+        }
+        transition = {
+            "schema_version": 3, "record_id": transition_id, "created_at": NOW,
+            "producer_id": "controller",
+            "run_id": "10000000-0000-0000-0000-000000000007",
+            "binding": binding,
+            "operation_id": "10000000-0000-0000-0000-000000000008",
+            "merge_result_id": merge_result_id,
+            "jira_provider": {"cloud_id": "cloud-1", "site": "https://jira.example.invalid",
+                              "project_id": "project-1", "project_key": "EX",
+                              "controller_actor_id": "controller"},
+            "lifecycle_event": "JIRA_RECONCILED", "from_status_id": "3",
+            "to_status_id": "Done", "transition_id": "done-transition",
+            "status": "SUCCEEDED", "evidence": ["urn:awf:fixture:jira-transition"],
+            "read_back": {"observed_status": "Done", "observed_actor": "controller",
+                          "observed_at": NOW},
+        }
+        (closeout_dir / (closeout_id + ".json")).write_bytes(canonical({
+            "record": closeout, "merge_result_id": merge_result_id,
+            "merge_observed_at": NOW,
+        }))
+        (jira_dir / (transition_id + ".json")).write_bytes(canonical({"record": transition}))
+
+        adapter_config = {
+            **self.config, "_http_transport": FakeHttp(), "_clock": FakeClock(),
+            "observations": {
+                "accepted_project_config": {
+                    "path": str(project_path), "sha256": sha256(project_bytes),
+                    "blob_sha": "e" * 40, "acceptance_receipt_id": "fixture-acceptance",
+                },
+                "closeout_directory": str(closeout_dir),
+                "jira_transition_directory": str(jira_dir),
+            },
+        }
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            adapter_config)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "test_awf76_controller_loader", ROOT / ".agentic/scripts/continuous_controller.py")
+        controller_script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(controller_script)
+        count_gate = controller_script._count_gate_inputs(
+            {"closeout_record": closeout}, config=project_config, repository=repository,
+            contracts=Contracts(ROOT / ".agentic/schemas"), adapters=adapters,
+            adapter_sha256=sha256(self.adapter.read_bytes()), observed_at=NOW)
+        progress = {
+            "jira_enabled": True, "merged_ticket": "100", "scope": "project = EX",
+            "observed_at": NOW,
+            "jira_binding": {"cloud_id": "cloud-1", "project_id": "project-1",
+                             "actor_id": "controller"},
+            "count_gate": count_gate, "max_pages": 5, "max_items": 10,
+        }
+        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False):
+            result = production_merge_observed(
+                lifecycle_state="MERGING",
+                lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
+                jira_progress={
+                    **progress,
+                    "reconcile_merged_ticket": adapters["reconcile_merged_ticket"],
+                    "fetch_scope_page": adapters["fetch_scope_page"],
+                })
         self.assertEqual(result["state"], "MERGED")
         self.assertEqual(result["jira_progress"]["jira_state"], "COUNTED")
         self.assertEqual(result["jira_progress"]["closed"], 1)
@@ -967,8 +1109,12 @@ enabled = true
         progress = {"jira_enabled": True, "merged_ticket": "100", "scope": "project = EX",
                     "observed_at": NOW,
                     "jira_binding": {"cloud_id": "cloud-1", "project_id": "project-1", "actor_id": "controller"},
+                    "count_gate": {},
                     "max_pages": 5, "max_items": 10}
-        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False):
+        with patch.dict(os.environ, {"AWF_JIRA_TOKEN": "secret-jira"}, clear=False), \
+                patch("agentic.closeout.require_jira_reconciliation_before_counts",
+                      return_value={"status": "PASS", "count_allowed": True,
+                                    "ticket": "100"}):
             result = production_merge_observed(lifecycle_state="MERGING",
                 lifecycle_facts={"merge_confirmed": True, "candidate_matched": True},
                 jira_progress={**progress, "reconcile_merged_ticket": adapters["reconcile_merged_ticket"],

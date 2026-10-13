@@ -113,7 +113,8 @@ class Round7TrustRegressions(unittest.TestCase):
         MODE_REGISTRY.clear()
         fresh_build = register_build_runner(
             lambda state: observed_build(state, observed_at=later))
-        with self.assertRaisesRegex(ValidationError, "accepted project configuration"):
+        with self.assertRaisesRegex(
+                ValidationError, "observer registration changed|accepted project configuration"):
             self.admit(entry(11, SHA2), fresh_build, observed_at=later)
         self.assertEqual([], self.store.snapshot("AWF-EPIC")["entries"])
 
@@ -121,9 +122,7 @@ class Round7TrustRegressions(unittest.TestCase):
         def changed_binding(request):
             result = observed_mode(request)
             if request["operation"] == "APP_BINDING":
-                result["enforced"] = True
-                result.update(check_name="awf-integration", integration_id=42,
-                              required_from_integration_id=True)
+                result["ruleset_revision"] = 2
             return result
         register_integration_observer(
             "fixture-mode-provider", changed_binding, MODE_REGISTRY)
