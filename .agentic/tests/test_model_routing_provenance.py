@@ -1,5 +1,6 @@
 """Adversarial routing provenance and review-route policy regressions."""
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -113,11 +114,22 @@ class ModelRoutingProvenanceTests(unittest.TestCase):
         prior = {"model": "gpt-5.6-luna", "reasoning_effort": "medium"}
         new = {"model": "gpt-5.6-sol", "reasoning_effort": "high"}
         with self.assertRaisesRegex(ValidationError, "provenance"):
-            require_routing_switch_provenance(self.policy, prior, new, None)
+            require_routing_switch_provenance(self.ledger, self.policy, prior, new, None)
         with self.assertRaisesRegex(ValidationError, "ledger"):
-            require_routing_switch_provenance(self.policy, prior, new, provenance())
+            require_routing_switch_provenance(self.ledger, self.policy, prior, new, provenance())
+        forged = {
+            **provenance(run_id="forged"),
+            "project_id": "project-1",
+            "recorded_at": "2026-10-13T06:30:00+00:00",
+            "ledger_recorded": True,
+        }
+        forged["provenance_sha256"] = hashlib.sha256(json.dumps(
+            forged, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        with self.assertRaisesRegex(ValidationError, "present"):
+            require_routing_switch_provenance(self.ledger, self.policy, prior, new, forged)
         recorded = self.ledger.record_run_provenance("project-1", provenance())
-        self.assertTrue(require_routing_switch_provenance(self.policy, prior, new, recorded))
+        self.assertTrue(require_routing_switch_provenance(
+            self.ledger, self.policy, prior, new, recorded))
         self.assertTrue(self.ledger.require_routing_switch_provenance(
             "project-1", self.policy, prior, new, "run-1"))
         with self.assertRaisesRegex(ValidationError, "present"):
@@ -126,7 +138,8 @@ class ModelRoutingProvenanceTests(unittest.TestCase):
         mismatch = self.ledger.record_run_provenance(
             "project-1", provenance(run_id="mismatch", requested_model="gpt-5.6-terra"))
         with self.assertRaisesRegex(ValidationError, "requested route"):
-            require_routing_switch_provenance(self.policy, prior, new, mismatch)
+            require_routing_switch_provenance(
+                self.ledger, self.policy, prior, new, mismatch)
 
     def test_existing_model_run_rows_remain_readable_after_provenance_migration(self):
         legacy = sqlite3.connect(self.path)
