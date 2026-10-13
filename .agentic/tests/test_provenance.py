@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
+from agentic.canonical import fingerprint
 from agentic.gittree import candidate_tree
 from agentic.interaction import writer_commit_message
 from agentic.provenance import (
@@ -317,6 +318,38 @@ class RepositoryRangeTests(unittest.TestCase):
         self.git_run("commit", "--quiet", "--message", message)
         return self.git_run("rev-parse", "HEAD")
 
+    def make_override_recovery_range(self):
+        affected = []
+        for index in range(2):
+            self.write(f"legacy-{index}.txt", f"legacy {index}\n")
+            affected.append(self.commit(
+                f"legacy writer {index}",
+                "Writer: codex/writer-amend-r3-p1-013",
+            ))
+        duplicate = f"Writer: codex/{RUN_A}\nWriter: codex/{RUN_B}"
+        for index in range(2):
+            self.write(f"duplicate-{index}.txt", f"duplicate {index}\n")
+            affected.append(self.commit(f"duplicate writer {index}", duplicate))
+        self.write("valid.txt", "valid\n")
+        head = self.commit("valid writer", f"Writer: codex/{RUN_A}")
+        return affected, head
+
+    def make_superseding_override(self, affected, *, who="owner-1",
+                                  trusted_owner_ids=("owner-1",)):
+        state = {}
+        original = record_owner_override(
+            state, who="owner-1", when=NOW, why="Initial two-commit exception",
+            pr=128, covered_shas=affected[:2],
+            trusted_owner_ids=trusted_owner_ids,
+        )
+        latest = supersede_owner_override(
+            state, who=who, when="2026-10-13T18:18:00Z",
+            why="Digest-linked four-commit recovery", pr=128,
+            covered_shas=affected, supersedes=original["override_sha256"],
+            trusted_owner_ids=trusted_owner_ids,
+        )
+        return original, latest
+
     def test_tagged_commit_passes_and_untagged_commit_has_per_commit_reason(self):
         self.write("src/feature.py", "value = 1\n")
         tagged = self.commit("feature", f"Writer: codex/{RUN_B}")
@@ -582,12 +615,84 @@ class RepositoryRangeTests(unittest.TestCase):
 
         result = check_commit_range(
             self.root, self.base, second, override=latest,
+            override_predecessors=[original],
             trusted_owner_ids=["owner-1"], pr_number=49,
             pr_labels=["fallback: bot-written"],
         )
         self.assertEqual("PASS", result["status"])
         self.assertEqual(["OVERRIDDEN", "OVERRIDDEN"],
                          [item["status"] for item in result["commits"]])
+
+    def test_duplicate_writer_commits_refuse_without_an_override(self):
+        affected, head = self.make_override_recovery_range()
+
+        result = check_commit_range(self.root, self.base, head)
+
+        self.assertEqual("REFUSE", result["status"])
+        refusals = {item["sha"]: item["reason"] for item in result["refusals"]}
+        self.assertEqual(set(affected), set(refusals))
+        for sha in affected[2:]:
+            self.assertIn("exactly one Writer trailer", refusals[sha])
+
+    def test_range_accepts_exact_four_commit_digest_linked_supersession(self):
+        affected, head = self.make_override_recovery_range()
+        original, latest = self.make_superseding_override(affected)
+
+        result = check_commit_range(
+            self.root, self.base, head, override=latest,
+            override_predecessors=[original], trusted_owner_ids=["owner-1"],
+            pr_number=128, pr_labels=["fallback: bot-written"],
+        )
+
+        self.assertEqual("PASS", result["status"], result["refusals"])
+        overridden = {
+            item["sha"] for item in result["commits"]
+            if item["status"] == "OVERRIDDEN"
+        }
+        self.assertEqual(set(affected), overridden)
+        self.assertEqual("PASS", result["commits"][-1]["status"])
+
+    def test_range_refuses_invalid_superseding_override_chain(self):
+        affected, head = self.make_override_recovery_range()
+        original, latest = self.make_superseding_override(affected)
+        common = {
+            "root": self.root,
+            "base": self.base,
+            "head": head,
+            "trusted_owner_ids": ["owner-1"],
+            "pr_number": 128,
+            "pr_labels": ["fallback: bot-written"],
+        }
+
+        tampered = copy.deepcopy(latest)
+        tampered["why"] = "Tampered reason"
+
+        _, unauthorised = self.make_superseding_override(
+            affected, who="outsider", trusted_owner_ids=("owner-1", "outsider")
+        )
+
+        wrong_link = copy.deepcopy(latest)
+        wrong_link["supersedes"] = "c" * 64
+        wrong_link["override_sha256"] = fingerprint(
+            "provenance_override",
+            {key: value for key, value in wrong_link.items()
+             if key != "override_sha256"},
+        )
+
+        cases = (
+            (tampered, [original], "digest"),
+            (unauthorised, [original], "trusted owner"),
+            (wrong_link, [original], "does not reference the current record"),
+            (latest, [], "predecessor"),
+        )
+        for override, predecessors, reason in cases:
+            with self.subTest(reason=reason), self.assertRaisesRegex(
+                    ValidationError, reason):
+                check_commit_range(
+                    override=override,
+                    override_predecessors=predecessors,
+                    **common,
+                )
 
 
 if __name__ == "__main__":

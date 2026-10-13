@@ -816,6 +816,13 @@ class PublicationRewriteTests(unittest.TestCase):
             writer_commit_message(subject, codex_run_id=CODEX_RUN_ID),
             encoding="utf-8", newline="\n")
 
+    def reset_subtest_repository(self):
+        git(self.repo.path, "reset", "--hard", self.repo.base)
+        git_dir = Path(git(
+            self.repo.path, "rev-parse", "--path-format=absolute", "--git-dir"
+        ))
+        (git_dir / "ORIG_HEAD").unlink(missing_ok=True)
+
     def test_awf49_rewrite_refuses_arbitrary_message_before_commit_creation(self):
         self.contaminate_then_remove()
         message = Path(self.temp.name) / "message.txt"
@@ -838,6 +845,7 @@ class PublicationRewriteTests(unittest.TestCase):
                 "replacement\n\nWriter: codex/not-a-run-id",
                 "replacement\n\nWriter: codex/00000000-0000-0000-0000-000000000000"):
             with self.subTest(content=content):
+                self.reset_subtest_repository()
                 self.contaminate_then_remove()
                 message = Path(self.temp.name) / "message.txt"
                 message.write_text(content, encoding="utf-8")
@@ -847,7 +855,6 @@ class PublicationRewriteTests(unittest.TestCase):
                         self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
                         message, mapping_path=self.mapping)
                 self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
-                git(self.repo.path, "reset", "--hard", self.repo.base)
 
     def test_awf49_rewrite_accepts_writer_emitter_message_with_valid_codex_run_id(self):
         self.contaminate_then_remove()
