@@ -390,10 +390,7 @@ class LifecycleTests(unittest.TestCase):
                     ready_fixture = ready_fixtures.ReadyAuthorizationTests()
                     ready_fixture.setUp()
                     authorization = ready_fixture.authorization()
-                    record = ready_transition_record(
-                        67, ready_fixtures.HEAD, authorization,
-                        config=ready_fixture.config, now=ready_fixtures.NOW,
-                    )
+                    record = ready_fixture.transition_record(authorization)
                     facts.update(ready_fixture.ready_facts(record))
                 if event == "CAP_EXTEND_ONE_CYCLE":
                     facts["risk_tier"] = 2

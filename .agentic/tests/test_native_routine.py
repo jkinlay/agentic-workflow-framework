@@ -83,18 +83,43 @@ class NativeRoutineTests(unittest.TestCase):
             with self.subTest(updates=updates):
                 self.assert_rejected(0, ["publish_branch", "open_draft_pr"], updates)
 
-    def test_mark_ready_needs_verified_owner_manager_authorization_as_well_as_current_draft(self):
-        ready = {"event": "DRAFT_PR_OBSERVED", "branch_pushed": True, "pr_state": "DRAFT"}
+    def test_mark_ready_needs_full_authenticated_record_and_refusal_is_retained(self):
+        from routine_decisions import expected_decision_plan
+        from test_ready_authorization import ReadyAuthorizationTests, HEAD
+
+        ready = {"event": "DRAFT_PR_OBSERVED", "branch_pushed": True, "pr_state": "DRAFT",
+                 "pr": 67, "head_sha": HEAD, "ready_transition_record": None}
         refusal = ["block_readiness", "continue_affected_work", "defer_reviewer_launch"]
         self.assertEqual("PASS", self.grade_case(0, refusal, ready, permissive=True)["status"])
         self.assert_rejected(0, ["mark_pr_ready"], ready)
 
-        authorized = {**ready, "ready_authorization_verified": True}
+        state = benchmark.parse(next(item["content"] for item in self.packet["cases"][0]["inputs"]
+                                     if item["ref"] == "routine.state").encode())
+        state.update(ready)
+        refusal_plan = expected_decision_plan(state)
+        self.assertEqual(refusal, refusal_plan["actions"])
+        self.assertEqual("REFUSED", refusal_plan["ready_transition_record"]["decision"])
+        self.assertTrue(refusal_plan["ready_transition_record"]["logged"])
+
+        fixture = ReadyAuthorizationTests()
+        fixture.setUp()
+        transition_record = fixture.transition_record(fixture.authorization())
+        authorized = {**ready, "ready_transition_record": transition_record}
         self.assertEqual("PASS", self.grade_case(0, ["mark_pr_ready"], authorized, permissive=True)["status"])
         for change in ({"pr_state": "NONE"}, {"branch_pushed": False}, {"validation_current": False},
                        {"requirements_current": False}, {"publication_authorized": False}, {"branch_owned": False}):
             self.assert_rejected(0, ["mark_pr_ready"], {**authorized, **change})
         self.assert_rejected(0, ["mark_pr_ready", "launch_reviewer"], authorized)
+
+        forged = deepcopy(transition_record)
+        forged["authorization_verification"]["live_source_verified"] = False
+        self.assert_rejected(0, ["mark_pr_ready"], {**ready, "ready_transition_record": forged})
+        self.assert_rejected(0, ["mark_pr_ready"], {**ready, "ready_authorization_verified": True})
+
+        vocabulary = benchmark.parse(
+            benchmark.read(ROOT / ".agentic/benchmarks/native/decision-vocabulary-v2.json")
+        )
+        self.assertIn("retained refusal record", vocabulary["codes"]["block_readiness"]["definition"])
 
     def test_routine_policy_does_not_describe_current_validation_as_ready_authority(self):
         for case in self.packet["cases"][:6]:
