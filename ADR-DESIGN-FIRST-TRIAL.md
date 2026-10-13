@@ -52,7 +52,6 @@ The design phase is time-boxed to about 30 minutes and touches no candidate file
 
 ## Evidence so far
 
-* **Design phase:** about 17 minutes. Design review found 5 blocking issues on AWF-76 and 4 on AWF-14 phase 2. These are leading indicators only.
 * **AWF-76** (#130) passed on round 4 (`critic-c195-r4-027`, exact-head CI green) and merged as `d3116ba`.
   * Its round 4 was over the Tier 3 cap. The owner approved it at 21:30 on 12 October 2026, and it is recorded in #130's description. [ADR-TIER3-CAP-EXTENSION](ADR-TIER3-CAP-EXTENSION.md) ratifies one Tier 3 extension going forward and records this round as an exception.
   * Its input was already precise. It is not compared with AWF-10, a larger parent ticket; the baseline replaces that comparison.
