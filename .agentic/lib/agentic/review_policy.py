@@ -10,7 +10,8 @@ import fnmatch
 import re
 
 from . import ValidationError
-from .policy import BOUNDARY_CODES
+from .canonical import timestamp
+from .policy import BOUNDARY_CODES, parse_overcap_approval
 
 CAP_DECISIONS = ("MERGE_WITH_NOTES", "PARK", "RESCOPE", "EXTEND_ONE_CYCLE")
 CAP_EVENTS = {"MERGE_WITH_NOTES": "CAP_MERGE_WITH_NOTES", "PARK": "CAP_PARK",
@@ -46,6 +47,50 @@ SOFT_PHRASES = [
     re.compile(r"\b(?:boundary|boundaries|scope\s+escapes?|credential\s+exposures?|unsafe\s+paths?)\b.{0,80}\b(?:advisory|non\s?blocking|waiv(?:e|ed|able)|ignored?)\b", re.I | re.S),
 ]
 NEGATIVE_PHRASES = HARD_PHRASES + SOFT_PHRASES
+
+
+def authorize_tier3_round(round_number, cap, *, pr_comments, trusted_owner_ids,
+                          round_started_at):
+    """Require a canonical trusted-owner PR comment before an over-cap round.
+
+    This is a round-admission check, not a cap increase: the configured Tier 3
+    maximum remains at most three. Provider comments are expected to be
+    immutable observations collected from the PR; caller-supplied text or an
+    owner name without the matching trusted provider actor does not qualify.
+    """
+    if type(round_number) is not int or round_number < 1:
+        raise ValidationError("Tier 3 review round must be a positive integer")
+    if type(cap) is not int or cap < 1 or cap > 3:
+        raise ValidationError("Tier 3 review cap must be between 1 and the mandatory maximum of 3")
+    if round_number <= cap:
+        return True
+
+    started = timestamp(round_started_at)
+    trusted = set(trusted_owner_ids or ())
+    for comment in pr_comments or ():
+        if not isinstance(comment, dict) or comment.get("channel") != "github_pr_comment":
+            continue
+        actor_id = comment.get("actor_id")
+        if actor_id not in trusted:
+            continue
+        created_at = comment.get("created_at")
+        if comment.get("updated_at") != created_at:
+            continue
+        try:
+            approval = parse_overcap_approval(comment.get("raw_body"))
+            created = timestamp(created_at)
+            ruling = timestamp(approval["ruling_at"])
+        except (TypeError, ValidationError):
+            continue
+        if (approval["round"] == round_number
+                and approval["cap"] == cap
+                and approval["approver"] == str(actor_id)
+                and ruling <= created < started):
+            return True
+    raise ValidationError(
+        f"Tier 3 review round {round_number} exceeds cap {cap}; a canonical owner approval "
+        "from a trusted owner must be present on the PR before the round starts"
+    )
 
 
 def matches(path, patterns):

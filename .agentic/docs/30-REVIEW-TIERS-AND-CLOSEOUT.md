@@ -1,19 +1,24 @@
 # Review tiers, cap dispositions and closeout
 
-Version 1.9.4 runtime; AWF-16 policy revision and migration ship in 1.9.5. The code (`review_tiers.py`, `review_policy.py`, `gates.py`, `jira_lifecycle.py`, `closeout.py`, `digest.py`, `host_preflight.py`) and the [lifecycle](23-TICKET-LIFECYCLE.md) are the authority; nothing here grants execution authority.
+Version 1.9.4 runtime; AWF-16 revision ships in 1.9.5. The code and [lifecycle](23-TICKET-LIFECYCLE.md) are authoritative; this document grants no execution authority.
 
 ## Risk tiers
 
 Every contract declares `risk_tier` (1, 2 or 3) and justification; uncertain is Tier 2. Tier 1 needs eligible paths, no protected paths and no true `risk_flags`. The gate recomputes the highest match. Only an owner-signed `tier-reassignment` and re-issued contract changes it; all records rebind.
 
-Tier 1 uses one critic; findings advise. Tier 2 has three rounds; at cap, ticket P2s and route P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, has an unextendable three-round cap, and requires owner review bound to the candidate. Escalation preserves history. Boundaries always block.
+Tier 1 uses one critic; findings advise. Tier 2 has three rounds; at cap, ticket P2s and route P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, defaults to a mandatory maximum of three, and requires candidate-bound owner review. Boundaries always block.
 
-Each round's exact `critic_artifact_binding` contains critic run ID, retained
-canonical UTF-8 `result.json` SHA-256, head and round. Its receipt retains those
-bytes and frozen completion identities. The gate reparses every artifact and
-derives verdict/findings; copied fields cannot substitute. Unchanged diffs keep
-old-head history; changed diffs need a current round. Only Tier 2 may exceed the
-cap through authenticated owner disposition.
+Each round's `critic_artifact_binding` contains critic run ID, retained canonical
+UTF-8 `result.json` SHA-256, head and round. Its receipt retains those bytes and
+frozen completion identities. The gate reparses artifacts and derives findings;
+copied fields cannot substitute. Unchanged diffs keep history; changed diffs need
+a current round. Tier 2 exceeds its cap only through authenticated owner
+disposition. Tier 3 may exceed its cap for round N only when a PR comment from
+the posting actor's trusted owner id predates that round and consists exactly of:
+
+`AWF-OVERCAP-APPROVAL: round N of cap M, approver <owner>, ruling <time>`
+
+Wrong-round, malformed, untrusted or late records do not qualify.
 
 Verdicts/posting observations repeat it, binding verdict/digest,
 repository/PR, immutable comment ID/URL, exact comment/body, anchor, run/time.
@@ -25,7 +30,7 @@ with a reason.
 
 ## Bases, lineage and dispositions
 
-A BLOCKER or MAJOR finding carries `basis`: `{criterion_id}` from the contract or `{boundary_code}` from `PROTECTED_PATH`, `SCOPE_ESCAPE`, `CREDENTIAL_EXPOSURE`, `UNSAFE_PATH`, `UNREGISTERED_PRODUCER`, `CI_BINDING`, `INDEPENDENCE`; without one the record is refused and the critic re-emits. A new serious finding on a locus (same `path` and basis) with a lineage names `supersedes_finding_id`. A defect outside the closure standard is a successor-ticket proposal, MINOR, never a new round.
+BLOCKER/MAJOR findings carry contract `{criterion_id}` or `{boundary_code}` from `PROTECTED_PATH`, `SCOPE_ESCAPE`, `CREDENTIAL_EXPOSURE`, `UNSAFE_PATH`, `UNREGISTERED_PRODUCER`, `CI_BINDING`, `INDEPENDENCE`; missing bases are refused. A new serious finding at an existing path/basis names `supersedes_finding_id`. An out-of-closure defect is a MINOR successor-ticket proposal, never a new round.
 
 `finding-disposition` `ACCEPT_RISK` or `NOT_A_DEFECT` makes a non-boundary finding non-blocking for the exact `head_sha` and copies it into `residual_risks`; `REQUIRE_FIX` keeps it open; `HEAD_CHANGED` voids it.
 
@@ -44,7 +49,7 @@ A BLOCKER or MAJOR finding carries `basis`: `{criterion_id}` from the contract o
 | `MERGE_WITH_NOTES` | → FINAL_REVIEW | Listed open non-boundary findings become notes in `residual_risks` and the authorization text. |
 | `PARK` | → BLOCKED | `reason_code: REVIEW_CAP_PARKED`, `resume_state: CHANGES_REQUESTED`. |
 | `RESCOPE` | → SUPERSEDED | Successor recorded. |
-| `EXTEND_ONE_CYCLE` | → CHANGES_REQUESTED | Tier 2 only: increments `cap_extensions`; refused at `execution.max_cap_extensions` (default 2, maximum 3). |
+| `EXTEND_ONE_CYCLE` | → CHANGES_REQUESTED | Tier 2: increments `cap_extensions`; refused at `execution.max_cap_extensions` (default 2, maximum 3). Tier 3 uses the canonical pre-round approval above. |
 
 `workflow.py cap-plan` translates a disposition into event and facts or refuses it; the host loop pauses with `REVIEW_CAP_REACHED` and resumes only with `--disposition`.
 
@@ -54,7 +59,7 @@ carry its `REQUEST_CHANGES`. The gate records its ordered verified bindings.
 
 ## Jira lifecycle mirroring
 
-The controller is the sole writer. `WORKER_STARTED` → `in_progress`; `PR_READY` → `in_review`; `OWNER_CHANGES_REQUESTED` or `HEAD_CHANGED` → `in_progress`; `JIRA_RECONCILED` → `done` with a closing comment naming the PR, reviewed head and merge commit. BLOCK/PARK never write. Tickets matching `jira.owner_closure_keywords` (the gate refuses a contract hiding the match) wait in `MERGED_PENDING_OWNER_CLOSURE` for an `owner-closure` record. `jira.lifecycle_writes` turns a mapping off, never adds one. Read back after every write; a mismatch or unknown result stops that ticket's writes, keeps observed actor/time or unknown, and is never reissued. `controller.auto_transition_jira: true` skips the per-write prompt.
+Only the controller writes. `WORKER_STARTED` → `in_progress`; `PR_READY` → `in_review`; owner changes → `in_progress`; `JIRA_RECONCILED` → `done` with PR, reviewed head and merge commit. BLOCK/PARK never write. Tickets matching `jira.owner_closure_keywords` wait for an `owner-closure` record. `jira.lifecycle_writes` only disables mappings. Read back every write; mismatch or unknown stops that ticket's writes and is never reissued. `controller.auto_transition_jira: true` skips per-write prompts.
 
 ## Closeout and history
 
