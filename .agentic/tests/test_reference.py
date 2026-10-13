@@ -382,6 +382,17 @@ class AuthorizationTests(Fixture):
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_pr_ready_definition_requires_current_authorization(self):
+        ready = next(
+            transition
+            for transition in definition()["normal_transitions"]
+            if transition["from"] == "PR_DRAFT" and transition["event"] == "PR_READY"
+        )
+        self.assertEqual(
+            ["validation_current", "ready_authorization_current", "draft_cleared", "requirements_current"],
+            ready["requires"],
+        )
+
     def test_all_normal_transitions(self):
         for source, event, target, guards in NORMAL:
             with self.subTest(source=source, event=event):

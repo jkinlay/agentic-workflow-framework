@@ -129,6 +129,7 @@ class ReadyAuthorizationTests(unittest.TestCase):
     def ready_facts(self, record):
         return {
             "validation_current": True,
+            "ready_authorization_current": True,
             "requirements_current": True,
             "draft_cleared": True,
             "ci_green": True,
@@ -258,6 +259,13 @@ class ReadyGuidanceTests(unittest.TestCase):
             ".agentic/prompts/controller.md",
             ".agentic/prompts/worker.md",
         )
+        # Repository distributions include the portable skill, while installed
+        # project self-tests intentionally contain only the .agentic tree.
+        if (ROOT / "global").is_dir():
+            paths += (
+                "global/awf-portable/SKILL.md",
+                "global/awf-portable/references/workflow.md",
+            )
         for relative in paths:
             with self.subTest(path=relative):
                 text = (ROOT / relative).read_text(encoding="utf-8")
@@ -265,7 +273,6 @@ class ReadyGuidanceTests(unittest.TestCase):
                 self.assertIn("explicit owner/manager authorization record", normalized)
                 self.assertIn("pre-issued request", normalized)
                 self.assertIn("authenticated immutable provider observation", normalized)
-
 
 if __name__ == "__main__":
     unittest.main()

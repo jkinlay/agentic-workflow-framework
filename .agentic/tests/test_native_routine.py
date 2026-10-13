@@ -105,7 +105,26 @@ class NativeRoutineTests(unittest.TestCase):
         fixture.setUp()
         transition_record = fixture.transition_record(fixture.authorization())
         authorized = {**ready, "ready_transition_record": transition_record}
-        self.assertEqual("PASS", self.grade_case(0, ["mark_pr_ready"], authorized, permissive=True)["status"])
+        self.assert_rejected(0, ["mark_pr_ready"], authorized)
+        authorized_state = deepcopy(state)
+        authorized_state.update(authorized)
+        authorized_plan = expected_decision_plan(
+            authorized_state,
+            ready_authorization_config=fixture.config,
+            verify_ready_owner_source=fixture.provider.verify,
+        )
+        self.assertEqual(["mark_pr_ready"], authorized_plan["actions"])
+        self.assertEqual(transition_record, authorized_plan["ready_transition_record"])
+
+        fixture.provider.comments.clear()
+        missing_source_plan = expected_decision_plan(
+            authorized_state,
+            ready_authorization_config=fixture.config,
+            verify_ready_owner_source=fixture.provider.verify,
+        )
+        self.assertEqual(refusal, missing_source_plan["actions"])
+        self.assertEqual("REFUSED", missing_source_plan["ready_transition_record"]["decision"])
+        self.assertEqual("AUTHORIZATION_RECORD_INVALID", missing_source_plan["ready_transition_record"]["reason"])
         for change in ({"pr_state": "NONE"}, {"branch_pushed": False}, {"validation_current": False},
                        {"requirements_current": False}, {"publication_authorized": False}, {"branch_owned": False}):
             self.assert_rejected(0, ["mark_pr_ready"], {**authorized, **change})
