@@ -72,7 +72,7 @@ The last step applies only to an owner extension beyond the cap: Tier 2 `EXTEND_
 * a critic P1;
 * a durable reasoning or implementation failure.
 
-Further rules:
+Rules:
 
 * Escalation is monotonic, within the configured two escalations.
 * The reviewer rises with the writer.

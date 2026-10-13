@@ -391,7 +391,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.github/workflows/ci.yml` | `152895b64476156cb96cb1725be65d24283704250d16a6255f3ea790ff3b1ec8` |
 | `.github/workflows/manifest-check.yml` | `c966a63516568158fd078ac22d4d10e46ef77de795c081d9b7bf322c4a1cc6b4` |
 | `ADR-DESIGN-FIRST-TRIAL.md` | `6702007630ee25d4e8cc64b9913ee0b86e7eaf03ecf8dba0632e124bbe179e16` |
-| `ADR-LANE-MODEL-ROUTING.md` | `397003fd2d05ab4344414d5b5283204eae3531aa6603570250179c77afbda0e6` |
+| `ADR-LANE-MODEL-ROUTING.md` | `c713ee7cb72d5d504674bdd5cfaf7437a9cbb122f738ab49dbac3e70f79bff52` |
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `ADR-TIER3-CAP-EXTENSION.md` | `1e730fa828682a456e7f7768f2db8d002c2b9b227dbe8521dd6c96565275763b` |
 | `AGENTS.md` | `dc2a7603f45f01fdfc9505a51af7747527582434b3daaa964d26464fd6293a75` |
