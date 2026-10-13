@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
@@ -56,6 +57,26 @@ class CodexIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'exactly one thread.started'):
             self.driver._record_codex_identity(
                 CONTROLLER_RUN_ID, self.run, self.run, self.result)
+
+    def test_revalidation_rejects_grown_log_before_reading_it(self):
+        self.driver._record_codex_identity(
+            CONTROLLER_RUN_ID, self.run, self.run, self.result)
+        with self.log.open('ab') as stream:
+            stream.truncate(64 * 1024 * 1024 + 1)
+        with patch.object(Path, 'read_bytes', side_effect=AssertionError(
+                'oversized retained log must not be read')):
+            with self.assertRaisesRegex(ValidationError, 'log.*too large'):
+                self.driver.codex_run_id(CONTROLLER_RUN_ID)
+
+    def test_revalidation_rejects_grown_result_before_reading_it(self):
+        self.driver._record_codex_identity(
+            CONTROLLER_RUN_ID, self.run, self.run, self.result)
+        with self.result.open('ab') as stream:
+            stream.truncate(1024 * 1024 + 1)
+        with patch.object(Path, 'read_bytes', side_effect=AssertionError(
+                'oversized retained result must not be read')):
+            with self.assertRaisesRegex(ValidationError, 'result.*too large'):
+                self.driver.codex_run_id(CONTROLLER_RUN_ID)
 
 
 class AmendmentWriterTests(unittest.TestCase):

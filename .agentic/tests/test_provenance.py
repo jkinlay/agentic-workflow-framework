@@ -57,6 +57,32 @@ class TrailerParsingTests(unittest.TestCase):
         )
         self.assertEqual(RUN_A, parsed["identity"])
 
+    def test_non_git_line_separators_cannot_create_a_writer_trailer(self):
+        separators = {
+            "line separator": "\u2028",
+            "paragraph separator": "\u2029",
+            "next line": "\u0085",
+            "vertical tab": "\v",
+            "form feed": "\f",
+            "file separator": "\x1c",
+            "group separator": "\x1d",
+            "record separator": "\x1e",
+            "lone carriage return": "\r",
+        }
+        for name, separator in separators.items():
+            message = f"Change{separator}{separator}Writer: codex/{RUN_A}"
+            with self.subTest(separator=name), self.assertRaisesRegex(
+                    ValidationError, "unsupported.*separator"):
+                parse_writer_trailer(message)
+
+    def test_lf_and_crlf_writer_trailers_are_accepted(self):
+        for name, separator in {"LF": "\n", "CRLF": "\r\n"}.items():
+            with self.subTest(separator=name):
+                parsed = parse_writer_trailer(
+                    f"Change{separator}{separator}Writer: codex/{RUN_A}{separator}"
+                )
+                self.assertEqual(RUN_A, parsed["identity"])
+
     def test_interaction_emits_one_writer_trailer_and_requires_codex_for_code(self):
         message = writer_commit_message("Implement change", codex_run_id=RUN_A)
         self.assertEqual(f"Implement change\n\nWriter: codex/{RUN_A}", message)
@@ -318,6 +344,19 @@ class RepositoryRangeTests(unittest.TestCase):
         self.git_run("commit", "--quiet", "--message", message)
         return self.git_run("rev-parse", "HEAD")
 
+    def commit_exact_message(self, message):
+        self.git_run("add", "--all")
+        with tempfile.NamedTemporaryFile(delete=False) as stream:
+            message_path = Path(stream.name)
+            stream.write(message.encode("utf-8"))
+        try:
+            self.git_run(
+                "commit", "--quiet", "--cleanup=verbatim", "--file", str(message_path)
+            )
+        finally:
+            message_path.unlink()
+        return self.git_run("rev-parse", "HEAD")
+
     def make_override_recovery_range(self):
         affected = []
         for index in range(2):
@@ -362,6 +401,25 @@ class RepositoryRangeTests(unittest.TestCase):
         self.assertEqual("REFUSE", refused["status"])
         self.assertEqual(untagged, refused["refusals"][0]["sha"])
         self.assertIn("missing Writer trailer", refused["refusals"][0]["reason"])
+
+    def test_real_commits_use_only_git_line_boundaries_for_writer_trailers(self):
+        previous = self.base
+        for name, separator in {"LF": "\n", "CRLF": "\r\n"}.items():
+            self.write(f"{name}.txt", f"{name}\n")
+            head = self.commit_exact_message(
+                f"{name} message{separator}{separator}Writer: codex/{RUN_B}{separator}"
+            )
+            result = check_commit_range(self.root, previous, head)
+            self.assertEqual("PASS", result["status"], result["refusals"])
+            previous = head
+
+        self.write("unicode-separator.txt", "refuse\n")
+        head = self.commit_exact_message(
+            f"Unicode message\u2028\u2028Writer: codex/{RUN_B}"
+        )
+        result = check_commit_range(self.root, previous, head)
+        self.assertEqual("REFUSE", result["status"])
+        self.assertIn("unsupported", result["refusals"][0]["reason"])
 
     def test_first_draft_publisher_emits_writer_trailer_from_reserved_run(self):
         self.write("src/feature.py", "value = 1\n")
