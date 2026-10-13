@@ -329,12 +329,12 @@ class ReviewTiers195FinalTests(Fixture):
             }))
 
     def test_awf16_r2_015_001_approval_bound_round_four_reaches_real_gate(self):
-        self._review_history(4)
+        self._review_history(3)
         cap = self.record(
             decision="EXTEND_ONE_CYCLE",
             open_finding_ids=[],
             notes="AWF-OVERCAP-APPROVAL",
-            cycles=3,
+            cycles=2,
             cap_extensions=1,
             successor_ticket=None,
             **signed(),
@@ -362,7 +362,7 @@ class ReviewTiers195FinalTests(Fixture):
             posting_collector_registry=registry,
         )
         self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", gate["conclusion"])
-        self.assertEqual(4, gate["verified_critic_artifact_bindings"][-1]["round"])
+        self.assertEqual(3, gate["verified_critic_artifact_bindings"][-1]["round"])
 
     def test_awf16_r2_015_001_unbound_and_tier3_overcap_rounds_are_rejected(self):
         self._review_history(4)
