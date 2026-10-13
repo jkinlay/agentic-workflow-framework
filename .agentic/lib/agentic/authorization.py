@@ -4,6 +4,7 @@ These functions do not fetch comments, issue execution permits, or call merge.
 Source freshness/revocation must be reconciled by a certified external adapter.
 """
 from __future__ import annotations
+import copy
 import hashlib
 import hmac
 import re
@@ -117,19 +118,69 @@ def verify_record(record, request, gate, config, contracts, now):
 OWNER_KINDS = {"finding-disposition": "finding", "review-cap-disposition": "cap",
                "tier-reassignment": "tier", "owner-closure": "closure"}
 OWNER_ORDER = ["kind", "record", "request", "decision", "subject", "head", "contract", "project"]
-READY_AUTHORIZATION_FORMAT = "awf-pr-ready-authorization-1"
+READY_AUTHORIZATION_FORMAT = "awf-pr-ready-authorization-2"
+READY_AUTHORIZATION_REQUEST_FORMAT = "awf-pr-ready-authorization-request-1"
 READY_AUTHORIZATION_ROLES = {"manager", "owner"}
-READY_AUTHORIZATION_ORDER = ["record", "action", "role", "repoid", "pr", "head", "authorized"]
+READY_AUTHORIZATION_ORDER = ["request", "action", "role", "repoid", "pr", "head", "requested", "expires"]
 
 
-def ready_authorization_fields(record):
+def _ready_request_shape(request):
+    required = {"format", "request_id", "role", "action", "repository_id", "pr", "head_sha",
+                "requested_at", "expires_at"}
+    if not isinstance(request, dict) or set(request) != required:
+        raise ValidationError("Ready authorization request has invalid, missing or unexpected fields")
+    if (request["format"] != READY_AUTHORIZATION_REQUEST_FORMAT or
+            request["role"] not in READY_AUTHORIZATION_ROLES or request["action"] != "MARK_READY"):
+        raise ValidationError("Ready authorization request action or role is invalid")
+    if (not isinstance(request["request_id"], str) or not request["request_id"].strip() or
+            isinstance(request["repository_id"], bool) or not isinstance(request["repository_id"], int) or
+            request["repository_id"] < 1 or isinstance(request["pr"], bool) or
+            not isinstance(request["pr"], int) or request["pr"] < 1 or
+            not isinstance(request["head_sha"], str) or
+            not re.fullmatch(r"[0-9a-f]{40}", request["head_sha"])):
+        raise ValidationError("Ready authorization request identity or candidate shape is invalid")
+    requested = timestamp(request["requested_at"])
+    expires = timestamp(request["expires_at"])
+    if requested >= expires:
+        raise ValidationError("Ready authorization request must expire after it is issued")
+    return requested, expires
+
+
+def make_ready_authorization_request(*, repository_id, pr, head_sha, role, request_id,
+                                     requested_at, expires_at):
+    """Create the complete owner-signable request before provider publication."""
+    request = {
+        "format": READY_AUTHORIZATION_REQUEST_FORMAT,
+        "request_id": request_id,
+        "role": role,
+        "action": "MARK_READY",
+        "repository_id": repository_id,
+        "pr": pr,
+        "head_sha": head_sha,
+        "requested_at": requested_at,
+        "expires_at": expires_at,
+    }
+    _ready_request_shape(request)
+    return request
+
+
+def ready_authorization_config_sha256(config):
+    """Bind host acceptance to the exact configuration supplied for verification."""
+    if not isinstance(config, dict):
+        raise ValidationError("Ready authorization configuration must be an object")
+    return fingerprint("ready_authorization_config", config)
+
+
+def ready_authorization_fields(request):
     """Return the exact fields signed by a ready-for-review authorization."""
-    return dict(zip(READY_AUTHORIZATION_ORDER, [record["authorization_id"], record["action"], record["role"],
-        str(record["repository_id"]), str(record["pr"]), record["head_sha"], record["authorized_at"]]))
+    _ready_request_shape(request)
+    return dict(zip(READY_AUTHORIZATION_ORDER, [request["request_id"], request["action"], request["role"],
+        str(request["repository_id"]), str(request["pr"]), request["head_sha"], request["requested_at"],
+        request["expires_at"]]))
 
 
-def render_ready_authorization(record):
-    fields = ready_authorization_fields(record)
+def render_ready_authorization(request):
+    fields = ready_authorization_fields(request)
     if any(not isinstance(value, str) or not value or any(char.isspace() for char in value) or "=" in value
            for value in fields.values()):
         raise ValidationError("Ready authorization field contains unsupported whitespace/delimiter")
@@ -152,27 +203,21 @@ def parse_ready_authorization(raw):
     return values
 
 
-def verify_ready_authorization(record, config, now, *, pr, head_sha):
+def verify_ready_authorization(record, config, *, pr, head_sha, verify_owner_source=None):
     """Verify a trusted, fresh owner/manager authorization for one PR head.
 
     The schema/template for this new record type is generator-owned.  Until it
-    is generated, this function deliberately performs closed Python shape
-    validation as well as source, integrity, freshness and candidate checks.
+    is generated, this function performs closed Python shape validation.  A
+    host-injected observer must also re-read the immutable provider object and
+    bind an accepted configuration and its trusted observation clock.
     """
-    required = {"format", "authorization_id", "role", "action", "repository_id", "pr", "head_sha",
-                "authorized_at", "owner_source"}
+    required = {"format", "request", "owner_source"}
     if not isinstance(record, dict) or set(record) != required:
         raise ValidationError("Ready authorization has invalid, missing or unexpected fields")
-    if (record["format"] != READY_AUTHORIZATION_FORMAT or record["role"] not in READY_AUTHORIZATION_ROLES or
-            record["action"] != "MARK_READY"):
-        raise ValidationError("Ready authorization action or role is invalid")
-    if (not isinstance(record["authorization_id"], str) or not record["authorization_id"].strip() or
-            isinstance(record["repository_id"], bool) or not isinstance(record["repository_id"], int) or
-            record["repository_id"] < 1 or isinstance(record["pr"], bool) or not isinstance(record["pr"], int) or
-            record["pr"] < 1 or not isinstance(record["head_sha"], str) or
-            not re.fullmatch(r"[0-9a-f]{40}", record["head_sha"])):
-        raise ValidationError("Ready authorization identity or candidate shape is invalid")
-    timestamp(record["authorized_at"])
+    if record["format"] != READY_AUTHORIZATION_FORMAT:
+        raise ValidationError("Ready authorization format is invalid")
+    request = record["request"]
+    requested_at, expires_at = _ready_request_shape(request)
 
     source = record["owner_source"]
     source_fields = {"channel", "comment_id", "actor_id", "actor_login", "repository_id", "pr_number",
@@ -201,24 +246,64 @@ def verify_ready_authorization(record, config, now, *, pr, head_sha):
         raise ValidationError("Ready authorization configuration is invalid")
     if source["actor_id"] not in trusted_owner_ids:
         raise ValidationError("Ready authorization uses an untrusted numeric owner/manager identity")
-    if record["repository_id"] != repository_id or source["repository_id"] != repository_id:
+    if request["repository_id"] != repository_id or source["repository_id"] != repository_id:
         raise ValidationError("Ready authorization came from a different repository")
-    if record["pr"] != pr or record["head_sha"] != head_sha:
+    if request["pr"] != pr or request["head_sha"] != head_sha:
         raise ValidationError("Ready authorization references a different PR or head")
     if source["pr_number"] != pr:
         raise ValidationError("Ready authorization comment came from a different PR")
     if source["created_at"] != source["updated_at"]:
         raise ValidationError("Edited ready authorization comments are invalid; create a new authorization")
-    if record["authorized_at"] != source["created_at"]:
-        raise ValidationError("Ready authorization time differs from its source comment")
-    fresh(source["updated_at"], now, ttl)
     if sha256(source["raw_body"].encode("utf-8")) != source["raw_body_sha256"]:
         raise ValidationError("Ready authorization raw-body digest mismatch")
-    if parse_ready_authorization(source["raw_body"]) != ready_authorization_fields(record):
+    if parse_ready_authorization(source["raw_body"]) != ready_authorization_fields(request):
         raise ValidationError("Raw ready authorization and recorded fields disagree")
-    return {"action": "MARK_READY", "role": record["role"], "actor_id": source["actor_id"],
-            "actor_login": source["actor_login"], "record_consistent": True,
-            "live_source_verified": False, "execution_authority": False}
+    created_at = timestamp(source["created_at"])
+    if created_at < requested_at or created_at >= expires_at:
+        raise ValidationError("Ready authorization comment is outside its pre-issued request window")
+    if (expires_at - requested_at).total_seconds() > ttl:
+        raise ValidationError("Ready authorization request exceeds the configured authorization lifetime")
+    if not callable(verify_owner_source):
+        raise ValidationError("Ready authorization requires authenticated provider observation")
+
+    config_sha256 = ready_authorization_config_sha256(config)
+    observation_request = {
+        "purpose": "MARK_PR_READY",
+        "request_id": request["request_id"],
+        "repository_id": repository_id,
+        "pr": pr,
+        "head_sha": head_sha,
+        "raw_body_sha256": source["raw_body_sha256"],
+        "configuration_sha256": config_sha256,
+    }
+    try:
+        observed = verify_owner_source(copy.deepcopy(source), copy.deepcopy(observation_request))
+    except Exception as exc:
+        raise ValidationError("Ready authorization provider observation failed") from exc
+    expected_observation = {
+        "status", "source_id", "actor_id", "actor_login", "repository_id", "pr_number",
+        "created_at", "updated_at", "raw_body_sha256", "observed_at", "configuration_status",
+        "configuration_sha256",
+    }
+    if not isinstance(observed, dict) or set(observed) != expected_observation:
+        raise ValidationError("Ready authorization provider observation has invalid fields")
+    for field in ("actor_id", "actor_login", "repository_id", "pr_number", "created_at", "updated_at",
+                  "raw_body_sha256"):
+        if observed[field] != source[field]:
+            raise ValidationError("Ready authorization provider observation differs from the recorded source")
+    if (observed["status"] != "VERIFIED" or not isinstance(observed["source_id"], str) or
+            not observed["source_id"].strip() or observed["configuration_status"] != "ACCEPTED" or
+            observed["configuration_sha256"] != config_sha256):
+        raise ValidationError("Ready authorization provider/configuration observation is not accepted")
+    observed_at = timestamp(observed["observed_at"])
+    if observed_at < timestamp(source["updated_at"]) or observed_at >= expires_at:
+        raise ValidationError("Ready authorization trusted observation time is outside the request window")
+    return {"action": "MARK_READY", "role": request["role"], "actor_id": source["actor_id"],
+            "actor_login": source["actor_login"], "source_id": observed["source_id"],
+            "observed_at": observed["observed_at"], "configuration_sha256": config_sha256,
+            "raw_body_sha256": source["raw_body_sha256"], "record_consistent": True,
+            "live_source_verified": True, "configuration_accepted": True,
+            "trusted_time_verified": True, "execution_authority": False}
 
 
 def owner_fields(record, kind, head_sha):

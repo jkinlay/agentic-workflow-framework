@@ -62,10 +62,14 @@ change invalidates it. Scan prospective comments with `--comment FILE`.
 
 A publication-scan PASS, current validation or green CI never authorizes a
 draft-state change. Mark-ready requires an explicit owner/manager authorization
-record bound to the exact PR and head. Persist the lifecycle's authorized transition
-record before the provider mutation and observe `draft_cleared` afterward. If
-the authorization is absent, invalid or mismatched, persist the refusal record,
-leave the PR draft and do not dispatch review.
+record bound to the exact PR and head. Render a pre-issued request identifier,
+issue time and expiry before creating the owner comment; provider-assigned comment
+time is observation, not signed input. Require an authenticated immutable provider observation
+through the trusted host, binding accepted configuration and trusted current time. Persist
+the lifecycle's authorized transition record before mutation and observe
+`draft_cleared` afterward. If authorization is absent, invalid, mismatched or only
+offline-consistent, persist the refusal record, leave the PR draft and do not
+dispatch review.
 
 `PRE_EXISTING` applies only here. Private deny baseline acceptance is the
 separate [`37-PRIVATE-DENY-SCAN.md`](37-PRIVATE-DENY-SCAN.md) gate; neither

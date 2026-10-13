@@ -11,7 +11,7 @@
       "target": "candidate"
     },
     "block_readiness": {
-      "definition": "Keep the candidate unready.",
+      "definition": "Keep the candidate unready and emit a retained refusal record bound to the observed PR and head when ready authorization is absent or invalid.",
       "preconditions": "A current blocking finding, missing required evidence or unmet acceptance criterion prevents readiness.",
       "target": "candidate"
     },

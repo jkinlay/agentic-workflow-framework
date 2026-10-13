@@ -5,9 +5,9 @@ This renders [workflow.yaml](../workflow.yaml); [lifecycle.py](../lib/agentic/li
 
 ## Routine work
 
-COMPLETE publishes draft PR. Git-blocked BLOCKED reports include `commit_route: PUBLISHER`, `tested_tree`, `changes`, excluded `ignored_untracked`; publisher verifies `HEAD^{tree}` before unchanged commit. No route means `WORKER`. Observe PR/head/base/target. Mark-ready needs explicit owner/manager authorization record for PR/head. CI/validation alone logs refusal, preserves draft; log authorization before mutation. Changes require re-review. Owner-ready needs critic/specialists/final-gate, never authorizes merge.
+COMPLETE publishes a draft PR. Git-blocked BLOCKED records include `commit_route: PUBLISHER`, `tested_tree`, `changes` and excluded `ignored_untracked`; the publisher makes no edits and requires matching `HEAD^{tree}`. No route means `WORKER`. Mark-ready needs an explicit owner/manager authorization record for PR/head: a pre-issued request/expiry plus authenticated immutable provider observation binding accepted configuration and trusted time. Offline checks, CI or validation retain refusal/draft. Log authorization before mutation. Changes require re-review. Owner-ready needs critic/specialists/final-gate; it never authorizes merge.
 
-Before push or PR creation, run the [publication scan](31-PUBLICATION-SAFETY.md) on the exact base, head and final body. Require exit 0 and a matching PASS receipt bound to the candidate and observed body. Repeat for amendments; scan body edits and comments before posting. `diff --check` is whitespace-only.
+Before publication, require a [publication scan](31-PUBLICATION-SAFETY.md) exit 0 and matching PASS receipt for exact base/head/final body. Rescan amendments, body edits and comments. `diff --check` is whitespace-only.
 
 Routine publication requires accepted repository/ref bindings, branch pattern and fresh APPLIED rules. Classification is presentation only: retain scope, permissions, non-force refs and secret/adapter prerequisites. Report missing action and owner.
 
