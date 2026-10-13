@@ -4,7 +4,7 @@
 
 ## Context
 
-Seventeen of the last 19 reviews in 1.9.5 needed another fix round, and AWF-10 passed only at round 8. The hypothesis is that many rounds trace to specification gaps that are catchable before any code exists.
+The hypothesis is that implementation review rounds often trace to specification gaps that are catchable before any code exists.
 
 The owner launched the trial at 11:10 on 12 October 2026 for AWF-76 and AWF-14 phase 2, before either started coding. The launch was relayed and recorded in #130's description, and the owner confirmed it directly on 13 October 2026.
 
@@ -26,12 +26,13 @@ The design phase is time-boxed to about 30 minutes and touches no candidate file
 * **Recorded runs.** Each run records its id, model, effort and Codex CLI version, per [ADR-LANE-MODEL-ROUTING](ADR-LANE-MODEL-ROUTING.md). The design reviewer is never weaker than the design writer.
 * **Findings carry ids** (for example `AWF-76-D-001`) and a severity.
 * **Verified dispositions.** Before the first code review, the controller records each blocking and important finding as implemented, superseded or rejected with a reason. The critic receives that list as context and judges the code independently.
+* **One writer per ticket.** For this trial, "replaces parallel writers" means one accountable writer per ticket, consistent with `one_writer_per_ticket`; parallel lanes on different tickets are unaffected.
 
 ### Measures
 
-* **Baseline:** the median and distribution of implementation rounds to PASS for Tier 3 tickets merged in 1.9.5 before the trial, excluding VOID rounds.
+* **Baseline:** the median and distribution of implementation rounds to PASS for Tier 3 tickets merged in 1.9.5 before the trial, excluding VOID rounds. Before the 4-ticket result is judged, this baseline must be computed and recorded with the tickets, PRs and round counts used; no trial judgment occurs until that record exists.
 * **Primary measure:** implementation rounds to PASS for each trial ticket.
-* **Mechanism:** each P1 in a failed round is classified as one of:
+* **Mechanism:** the independent critic or a separate Codex run, never the trial controller, classifies each P1 in a failed round as one of:
   * *spec gap caught but unresolved*;
   * *spec gap missed*;
   * *implementation error*.
@@ -40,7 +41,7 @@ The design phase is time-boxed to about 30 minutes and touches no candidate file
 ### Selection and decision (owner ruling: sample of 4)
 
 * **Selection:** the controller marks a ticket "hard Tier 3" with a reason **before work starts**. Tickets are never added after a result is known.
-* **Sample:** **4 tickets**, including AWF-76 and AWF-14 phase 2. The release has few hard Tier 3 tickets left.
+* **Sample:** **4 tickets**, including AWF-76 and AWF-14 phase 2. Each of the other two is marked hard Tier 3 with a reason before its work starts. The release has few hard Tier 3 tickets left.
 * **The 4-ticket result decides whether design-first continues** for hard Tier 3 work in 1.9.5. Continue if all three hold:
   * median rounds are at least one below the baseline median;
   * the share of spec-gap-missed P1s falls;
@@ -59,6 +60,5 @@ The design phase is time-boxed to about 30 minutes and touches no candidate file
 
 ## Open items
 
-* Clarify whether "replaces parallel writers" means several writers on one ticket, which `one_writer_per_ticket` forbids, or parallel lanes on different tickets.
-* Compute the baseline. Classify AWF-76's failed-round P1s.
+* Classify AWF-76's failed-round P1s through the required independent route.
 * Give the trial tickets' design findings ids and record their dispositions.

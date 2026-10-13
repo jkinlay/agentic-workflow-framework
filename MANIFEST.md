@@ -389,7 +389,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
 | `.github/workflows/ci.yml` | `152895b64476156cb96cb1725be65d24283704250d16a6255f3ea790ff3b1ec8` |
 | `.github/workflows/manifest-check.yml` | `c966a63516568158fd078ac22d4d10e46ef77de795c081d9b7bf322c4a1cc6b4` |
-| `ADR-DESIGN-FIRST-TRIAL.md` | `f7560a5dfc2f47b142f7a7e05002d002368b24a73ad217e88fa4f15bb56ba2ba` |
+| `ADR-DESIGN-FIRST-TRIAL.md` | `73d1db36d97bd9815e288e8940d5476b2c161f7baa97a20b0a827796a83658be` |
 | `ADR-LANE-MODEL-ROUTING.md` | `d5e1af60c7b02daedc186c7b7c3445abdc8278dce41c5ed51878881c51cadef7` |
 | `ADR-RETRY-CEILING.md` | `d5780054178fd9f3511dfddd636c8185b15a98adb2066f45b4436594d67d9b00` |
 | `ADR-TIER3-CAP-EXTENSION.md` | `1e730fa828682a456e7f7768f2db8d002c2b9b227dbe8521dd6c96565275763b` |
