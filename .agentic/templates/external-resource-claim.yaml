@@ -1,0 +1,14 @@
+{
+  "template_for": "external-resource-claim",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "format": "awf-external-resource-claim-1",
+    "status": "CLAIM_ACCEPTED",
+    "resource_alias": "UNFILLED",
+    "kind": "accessibility",
+    "value": "CONFIRMED",
+    "reason": null,
+    "execution_authority": false
+  }
+}

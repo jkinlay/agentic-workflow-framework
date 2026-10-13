@@ -1,0 +1,21 @@
+{
+  "template_for": "external-resource-scan",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "format": "awf-external-resource-scan-1",
+    "status": "BOUNDED_SCAN_ACCEPTED",
+    "resource_alias": "UNFILLED",
+    "bounds": {
+      "recursive": false,
+      "max_depth": 0,
+      "file_limit": 1,
+      "date_range": {
+        "start": "UNFILLED",
+        "end": "UNFILLED"
+      },
+      "timeout_seconds": 1
+    },
+    "execution_authority": false
+  }
+}

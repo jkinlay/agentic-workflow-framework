@@ -1,0 +1,43 @@
+{
+  "template_for": "external-resource-receipt",
+  "status": "UNFILLED",
+  "instructions": "Replace all draft values, extract record, then validate shape AND semantics. This wrapper cannot satisfy a runtime record schema.",
+  "record": {
+    "format": "awf-external-resource-receipt-1",
+    "visibility": "operator_local",
+    "receipt_id": "0000000000000000000000000000000000000000000000000000000000000000",
+    "resource_alias": "UNFILLED",
+    "task_id": "UNFILLED",
+    "principal": "UNFILLED",
+    "session_id": "UNFILLED",
+    "observed_at": "1970-01-01T00:00:00Z",
+    "permission": {
+      "access": "read_only",
+      "scope": "one_command",
+      "expires_at": null,
+      "source": "existing_grant"
+    },
+    "state": "UNOBSERVED",
+    "error_layer": "UNFILLED",
+    "command_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "attempts": [
+      {
+        "attempted_at": "1970-01-01T00:00:00Z",
+        "command_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "state": "UNOBSERVED",
+        "error_layer": "UNFILLED",
+        "exit_code": null
+      }
+    ],
+    "evidence": {
+      "listing_limit": 1,
+      "listing_count": null,
+      "sample_metadata_observed": false,
+      "bytes_read": 0,
+      "accessibility": "CONFIRMED",
+      "data_validity": "UNCONFIRMED"
+    },
+    "private_mapping_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+    "execution_authority": false
+  }
+}
