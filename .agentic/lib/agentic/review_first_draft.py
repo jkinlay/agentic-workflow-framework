@@ -101,9 +101,8 @@ def publish_codex_tested_tree(root, base, branch, receipt, *, body,
     return publish_tested_tree(
         root, base, branch, receipt,
         body=body,
-        commit_message=writer_commit_message(
-            commit_message, codex_run_id=codex_run_id
-        ),
+        commit_message=commit_message,
+        codex_run_id=codex_run_id,
         git=git,
         allowed_paths=allowed_paths,
         mapping_path=mapping_path,
@@ -116,6 +115,7 @@ def publish_codex_tested_tree(root, base, branch, receipt, *, body,
 
 
 def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
+                        codex_run_id=None,
                         git, allowed_paths, mapping_path=None, title=None,
                         prepare_publication=None, prepare_plan=None,
                         publication_plan=None, git_guard=None):
@@ -124,6 +124,11 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
     ``git`` is a narrow host adapter with ``run(*args)``.  It is intentionally
     injected so tests can prove scan denial and tree mismatch without a remote.
     """
+    # This is the commit boundary, not merely a convenience wrapper.  Format
+    # the message here so every caller must supply the authenticated Codex
+    # execution identity before any Git mutation can occur.
+    commit_message = writer_commit_message(commit_message,
+                                           codex_run_id=codex_run_id)
     receipt = validate_worker_receipt(receipt, allowed_paths=set(allowed_paths))
     if git_guard:
         git_guard()

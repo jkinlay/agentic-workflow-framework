@@ -6,7 +6,7 @@ Jira write, API-key provisioning, approval bypass or automatic force-push exists
 from __future__ import annotations
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import fnmatch
@@ -16,8 +16,10 @@ from urllib.parse import quote
 from ..canonical import candidate_id, loads, sha256
 from ..child_process import child_env, isolated_git_env
 from ..codex_skill import enforce_pinned_awf_skill
+from ..interaction import writer_commit_message
 from ..operating import is_awf_source_repository as has_awf_source_identity
 from ..path_containment import is_within, relative_within
+from ..provenance import format_writer_trailer
 from ..review_loop import ValidationError, require
 from .. import review_qualification
 from ..safeio import Tree
@@ -259,6 +261,106 @@ class HostDriver:
         require(result.returncode == 0, f'{name} failed with exit {result.returncode}; reconcile before retry')
         require(len(result.stdout) <= 8 * 1024 * 1024, 'Command output exceeds record limit')
         return result.stdout
+
+    @staticmethod
+    def _codex_thread_id(log):
+        """Return the sole canonical thread UUID observed in a Codex JSONL log."""
+        log = Path(log)
+        require(log.is_file() and not log.is_symlink()
+                and log.stat().st_size <= 64 * 1024 * 1024,
+                'Codex execution log is missing, linked or too large')
+        threads = []
+        with log.open('r', encoding='utf-8', errors='strict') as stream:
+            for line in stream:
+                require(len(line) <= 1024 * 1024,
+                        'Codex execution event exceeds the record limit')
+                require(line.strip(), 'Codex execution log contains an empty event')
+                event = loads(line)
+                require(isinstance(event, dict), 'Codex execution event must be an object')
+                if event.get('type') == 'thread.started':
+                    threads.append(event.get('thread_id'))
+        require(len(threads) == 1,
+                'Codex execution must contain exactly one thread.started identity')
+        # The formatter is the canonical UUID validator used by Writer trailers.
+        format_writer_trailer('codex', threads[0])
+        return threads[0]
+
+    def _record_codex_identity(self, controller_run_id, run_root, execution, output):
+        """Persist a re-verifiable controller-run -> Codex-thread binding."""
+        run_root = Path(run_root).resolve(strict=True)
+        execution = Path(execution).resolve(strict=True)
+        require(execution == run_root or execution.is_relative_to(run_root),
+                'Codex execution directory escapes its controller run')
+        log = execution / 'codex.jsonl'
+        output = Path(output)
+        require(output.is_file() and not output.is_symlink()
+                and output.stat().st_size <= 1024 * 1024,
+                'Agent output missing, linked or too large')
+        codex_run_id = self._codex_thread_id(log)
+        record = {
+            'version': 1,
+            'controller_run_id': controller_run_id,
+            'codex_run_id': codex_run_id,
+            'codex_log': log.relative_to(run_root).as_posix(),
+            'codex_log_sha256': sha256(log.read_bytes()),
+            'result': output.resolve(strict=True).relative_to(run_root).as_posix(),
+            'result_sha256': sha256(output.read_bytes()),
+        }
+        raw = (json.dumps(record, indent=2, sort_keys=True) + '\n').encode('utf-8')
+        temporary = run_root / f'.codex-identity-{uuid.uuid4()}.tmp'
+        try:
+            with temporary.open('xb') as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(run_root / 'codex-identity.json')
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+        return codex_run_id
+
+    def codex_run_id(self, controller_run_id):
+        """Revalidate and return a durably bound Codex execution identity."""
+        try:
+            run_root = (self.state / 'runs' / controller_run_id).resolve(strict=True)
+        except OSError as exc:
+            raise ValidationError(
+                'Codex execution identity binding is missing, linked or too large') from exc
+        record_path = run_root / 'codex-identity.json'
+        require(record_path.is_file() and not record_path.is_symlink()
+                and record_path.stat().st_size <= 16 * 1024,
+                'Codex execution identity binding is missing, linked or too large')
+        record = loads(record_path.read_text(encoding='utf-8'))
+        required = {'version', 'controller_run_id', 'codex_run_id', 'codex_log',
+                    'codex_log_sha256', 'result', 'result_sha256'}
+        require(isinstance(record, dict) and set(record) == required
+                and record['version'] == 1
+                and record['controller_run_id'] == controller_run_id,
+                'Codex execution identity binding is malformed or belongs to another run')
+
+        def evidence_path(value, label):
+            require(isinstance(value, str) and value
+                    and '\\' not in value and ':' not in value,
+                    f'Codex {label} binding path is not portable')
+            relative = PurePosixPath(value)
+            require(not relative.is_absolute()
+                    and all(part not in {'', '.', '..'} for part in relative.parts),
+                    f'Codex {label} binding path escapes its run')
+            path = run_root.joinpath(*relative.parts)
+            require(path.is_file() and not path.is_symlink()
+                    and path.resolve().is_relative_to(run_root),
+                    f'Codex {label} binding target is missing or unsafe')
+            return path
+
+        log = evidence_path(record['codex_log'], 'log')
+        output = evidence_path(record['result'], 'result')
+        require(sha256(log.read_bytes()) == record['codex_log_sha256']
+                and sha256(output.read_bytes()) == record['result_sha256'],
+                'Codex execution identity evidence changed after binding')
+        observed = self._codex_thread_id(log)
+        require(observed == record['codex_run_id'],
+                'Codex execution log names a different thread than its binding')
+        return observed
 
     def git(self, checkout, *args, strip=True, binary=False):
         # The isolated Git environment intentionally ignores host configuration.
@@ -515,6 +617,8 @@ class HostDriver:
                     finding.setdefault('supersedes', None)
         from jsonschema import Draft202012Validator
         Draft202012Validator(loads((self.root / f'.agentic/review-loop/{role}-result.schema.json').read_text())).validate(value)
+        if role == 'worker':
+            self._record_codex_identity(run_id, run, run, output)
         return value
 
     def qualification_agent(self, role, record_id, probe):
@@ -643,7 +747,8 @@ class HostDriver:
     def first_draft_worker(self, *, run_id=None, expected_git_controls=None):
         """Run the pinned worker against the configured first-draft checkout."""
         run_id = run_id or str(uuid.uuid4())
-        run = self.state / 'runs' / run_id
+        run_root = self.state / 'runs' / run_id
+        run = run_root
         if run.exists():
             for attempt in range(2, 1000):
                 candidate = run / f'attempt-{attempt}'
@@ -676,8 +781,11 @@ class HostDriver:
         self.require_clean_first_draft_checkout()
         self.run('codex', args, stdin=prompt, timeout=self.c['agent_timeout_seconds'], log=run / 'codex.jsonl')
         self.require_first_draft_git_controls(git_controls)
-        require(output.is_file(), 'First-draft worker output missing')
-        return loads(output.read_text(encoding='utf-8'))
+        require(output.is_file() and output.stat().st_size <= 1024 * 1024,
+                'First-draft worker output missing or too large')
+        value = loads(output.read_text(encoding='utf-8'))
+        self._record_codex_identity(run_id, run_root, run, output)
+        return value
 
     def review(self, candidate, findings, run_id, files):
         git_config = self.git(self.critic,'config','--list','--includes','--null')
@@ -709,12 +817,16 @@ class HostDriver:
             file = self.worker / path
             require(not file.is_symlink() and file.resolve().is_relative_to(self.worker.resolve()), 'Amendment escapes checkout')
         require(self.snapshot() == candidate, 'PR moved before commit')
+        codex_run_id = self.codex_run_id(run_id)
         self.git(self.worker,'add','--',*paths)
         staged = self.git(self.worker,'diff','--cached','--name-only','-z').split('\0')
         require(set(x for x in staged if x) == set(paths), 'Staged inventory differs from validated amendment')
         # Whitespace hygiene only; publication safety is the history-aware scan below.
         self.git(self.worker,'diff','--cached','--check')
-        self.git(self.worker,'commit','-m',f'AWF: address independent review ({run_id})')
+        message = writer_commit_message(
+            f'AWF: address independent review ({run_id})',
+            codex_run_id=codex_run_id)
+        self.git(self.worker,'commit','-m',message)
         new_head = self.git(self.worker,'rev-parse','HEAD')
         require(self.git(self.worker,'rev-parse','HEAD^') == candidate['head'], 'Amendment parent mismatch')
         require(not self.git(self.worker,'status','--porcelain','--untracked-files=all'), 'Uncommitted changes remain after amendment')
