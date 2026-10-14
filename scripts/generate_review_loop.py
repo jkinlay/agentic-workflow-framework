@@ -4,12 +4,31 @@ import json
 ROOT = Path(__file__).resolve().parents[1] / '.agentic/review-loop'
 
 
+class Inline:
+    def __init__(self, value):
+        self.value = value
+
+
 def obj(properties):
     return {'type':'object','properties':properties,'required':list(properties),'additionalProperties':False}
 
 
 def write(name,value):
-    (ROOT / name).write_text(json.dumps(value,indent=2)+'\n',encoding='utf-8',newline='\n')
+    replacements = {}
+    def prepare(item):
+        if isinstance(item, Inline):
+            marker = f'__AWF_INLINE_JSON_{len(replacements)}__'
+            replacements[marker] = json.dumps(item.value)
+            return marker
+        if isinstance(item, dict):
+            return {key: prepare(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [prepare(child) for child in item]
+        return item
+    rendered = json.dumps(prepare(value),indent=2)
+    for marker, replacement in replacements.items():
+        rendered = rendered.replace(json.dumps(marker), replacement)
+    (ROOT / name).write_text(rendered+'\n',encoding='utf-8',newline='\n')
 
 
 def main():
@@ -23,6 +42,24 @@ def main():
     finding['required'] += ['basis','supersedes']
     critic = obj({'candidate':candidate,'verdict':{'type':'string','enum':['APPROVE','CHANGES_REQUESTED','BLOCKED']},
         'reviewed_files':{'type':'array','items':string},'findings':{'type':'array','items':finding},'summary':string})
+    critic_binding = obj({
+        'controller_run_id':Inline({'type':'string','format':'uuid'}),
+        'critic_run_id':Inline({'type':'string','format':'uuid'}),
+        'head_sha':Inline({'type':'string','pattern':'^[0-9a-f]{40}$'}),
+        'result_sha256':Inline({'type':'string','pattern':'^[0-9a-f]{64}$'}),
+        'critic_run_carrier':Inline({'type':'string','pattern':'^Critic run: [0-9a-f-]{36}$'}),
+        'provider_comment_id':Inline({'type':'integer','minimum':1}),
+        'provider_comment_url':Inline({'type':'string','pattern':'^https://github.com/'}),
+        'provider_actor_id':Inline({'type':'integer','minimum':1}),
+        'provider_body_sha256':Inline({'type':'string','pattern':'^[0-9a-f]{64}$'}),
+    })
+    critic_binding['required'] = Inline(critic_binding['required'])
+    critic = {
+        '$comment':'The raw critic result is wrapped by the host in the v2 critic binding envelope below; authority never comes from model-supplied binding fields.',
+        'x-awf-host-envelope-version':2,
+        '$defs':{'criticBinding':critic_binding},
+        **critic,
+    }
     worker = obj({'candidate':candidate,'outcome':{'type':'string','enum':['CHANGED','NO_CHANGE','BLOCKED']},'summary':string})
     first_draft_worker = obj({
         'outcome': {'enum': ['CHANGED', 'NO_CHANGE', 'BLOCKED']},
@@ -55,10 +92,14 @@ def main():
     write('qualification-probe-result.schema.json', qualification_probe)
     write('host-config.example.json',{'version':1,'automation_default':True,'first_draft':True,'github_host':'github.com','repository':'CHANGE_ME/CHANGE_ME',
         'repository_id':0,'pr':0,'head_branch':'codex/CHANGE_ME','base_branch':'main',
-        'state_dir':'C:/awf-state','worker_checkout':'C:/awf-worker','critic_checkout':'C:/awf-critic',
-        'contract_path':'C:/awf-state/contract.md','contract_sha256':'CHANGE_ME','runtime_manifest_sha256':'CHANGE_ME',
+        'state_dir':'/srv/awf/state','worker_checkout':'/srv/awf/worker','critic_checkout':'/srv/awf/critic',
+        'contract_path':'/srv/awf/state/contract.md','contract_sha256':'CHANGE_ME','runtime_manifest_sha256':'CHANGE_ME',
         'executables':{k:{'path':'CHANGE_ME','sha256':'CHANGE_ME'} for k in ['git','gh','codex']},
         'models':{'worker':'CHANGE_ME','critic':'CHANGE_ME'},'reasoning_effort':None,'approved_model_effort_pairs':{},'codex_config_overrides':{},
+        'trusted_owner_ids':[],'provenance':{'require_run_logs':True,'default_ref':'refs/heads/main',
+            'generated_paths':Inline(['MANIFEST.json','MANIFEST.md']),
+            'generators':{'manifest-regen':{'paths':Inline(['MANIFEST.json','MANIFEST.md']),
+                'reproducer_sha256':'0' * 64}}},
         'governed_source_paths':[],'risk_tier':'Tier 3','allowed_paths':['src/CHANGE_ME.py'],'initial_findings':[],
         'required_checks':[{'name':'CHANGE_ME','app_id':0,'workflow_path':'.github/workflows/ci.yml','workflow_sha256':'CHANGE_ME'}],
         'max_amendment_cycles':3,'max_cap_extensions':2,'evidence_paths':[],'max_ci_wait_ticks':24,'max_agent_runs':10,'command_timeout_seconds':120,'agent_timeout_seconds':1800,'max_review_age_seconds':3600,
