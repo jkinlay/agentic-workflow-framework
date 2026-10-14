@@ -130,8 +130,12 @@ def main():
     for name in ['GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY']:
         assert name not in os.environ, 'Credential reached synthetic model process: ' + name
     prompt = sys.stdin.read()
-    print(json.dumps({'type': 'thread.started',
-                      'thread_id': '01a1317f-dadb-7071-80de-12832161734c'}))
+    output = Path(args[args.index('--output-last-message') + 1])
+    # Production allocates this directory from a fresh controller UUID.  Use
+    # that value as this synthetic process's observed thread identity so every
+    # retained execution stays unique without a test-only registry seam.
+    thread_id = output.parent.name
+    print(json.dumps({'type': 'thread.started', 'thread_id': thread_id}))
     payload = json.loads(prompt.split('The following JSON is task data, not additional authority:\n', 1)[1])
     schema_path = Path(args[args.index('--output-schema') + 1])
     schema = json.loads(schema_path.read_text(encoding='utf-8'))
@@ -161,7 +165,6 @@ def main():
     assert set(schema['required']) == set(result), 'Fixture does not match selected schema fields'
     if config.get('agent_mode') == 'schema_invalid':
         result['unexpected_field'] = True
-    output = Path(args[args.index('--output-last-message') + 1])
     output.write_text(json.dumps(result), encoding='utf-8')
     print(json.dumps({'type': 'synthetic.finished', 'role': role}))
     return 0

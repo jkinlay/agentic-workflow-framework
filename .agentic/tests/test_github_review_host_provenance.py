@@ -197,6 +197,35 @@ class CodexIdentityTests(unittest.TestCase):
             self.driver._record_codex_identity(
                 CONTROLLER_RUN_ID, self.run, self.run, self.result)
 
+    def test_controller_run_id_cannot_escape_or_alias_run_directory(self):
+        for value in ('../escape', '3DD68622-6223-48BC-B236-8ED6DF9A55C2',
+                      '00000000-0000-0000-0000-000000000000'):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValidationError,
+                                            'controller run id.*canonical|controller run id.*nil'):
+                    self.driver.codex_run_id(value)
+
+    def test_production_run_log_registry_reopens_retained_evidence(self):
+        self.driver._record_codex_identity(
+            CONTROLLER_RUN_ID, self.run, self.run, self.result)
+        registry = self.driver.register_provenance_runtime()
+        entries = [{'path': 'src/a.py', 'action': 'M',
+                    'old_mode': '100644', 'new_mode': '100644',
+                    'old_oid': 'a' * 40, 'new_oid': 'b' * 40,
+                    'old_type': 'blob', 'new_type': 'blob'}]
+        self.driver._record_run_log(CONTROLLER_RUN_ID, 'c' * 40, entries)
+        record = registry['run_log_verifier'](
+            CODEX_THREAD_ID, 'c' * 40, entries)
+        self.assertEqual(record['status'], 'MATCH')
+        self.assertEqual(record['run_id'], CODEX_THREAD_ID)
+        self.assertEqual(record['commit_sha'], 'c' * 40)
+        self.assertEqual(record['entries'], entries)
+        self.assertRegex(record['evidence_sha256'], r'^[0-9a-f]{64}$')
+        self.result.write_text('{"outcome":"BLOCKED"}\n', encoding='utf-8')
+        refused = registry['run_log_verifier'](
+            CODEX_THREAD_ID, 'c' * 40, entries)
+        self.assertEqual(refused['status'], 'MISMATCH')
+
     def test_revalidation_rejects_grown_log_before_reading_it(self):
         self.driver._record_codex_identity(
             CONTROLLER_RUN_ID, self.run, self.run, self.result)
