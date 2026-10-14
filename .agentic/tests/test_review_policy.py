@@ -38,10 +38,27 @@ def base64_bytes(value):
 def sealed_runtime(folder):
     """A synthetic sealed runtime so CLI tests do not depend on a mutable developer manifest."""
     import hashlib
+    import importlib.util
     import shutil
     runtime = Path(folder) / "runtime"
     for name in [".agentic/lib", ".agentic/schemas"]:
         shutil.copytree(ROOT / name, runtime / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # Seal the locked runtime dependency closure into the fixture as well as
+    # AWF itself.  The child runs without site-packages, so its result cannot
+    # vary with packages installed in the invoking interpreter's environment.
+    runtime_lib = runtime / ".agentic/lib"
+    for module_name in ("attr", "attrs", "jsonschema", "jsonschema_specifications",
+                        "referencing", "rpds", "typing_extensions", "yaml"):
+        spec = importlib.util.find_spec(module_name)
+        if spec is None:
+            raise AssertionError(f"locked runtime dependency is unavailable: {module_name}")
+        if spec.submodule_search_locations:
+            source = Path(next(iter(spec.submodule_search_locations)))
+            shutil.copytree(source, runtime_lib / source.name,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        else:
+            source = Path(spec.origin)
+            shutil.copyfile(source, runtime_lib / source.name)
     (runtime / ".agentic/scripts").mkdir()
     shutil.copyfile(ROOT / ".agentic/scripts/workflow.py", runtime / ".agentic/scripts/workflow.py")
     shutil.copyfile(ROOT / ".agentic/workflow.yaml", runtime / ".agentic/workflow.yaml")
@@ -435,7 +452,7 @@ class TierTests(Fixture):
             runtime = sealed_runtime(folder)
             path = Path(folder) / "contract.json"
             path.write_text(json.dumps(contract), encoding="utf-8")
-            command = [sys.executable, "-B", "-I", str(runtime / ".agentic/scripts/workflow.py"), "validate-record", "ticket-contract", str(path)]
+            command = [sys.executable, "-B", "-I", "-S", str(runtime / ".agentic/scripts/workflow.py"), "validate-record", "ticket-contract", str(path)]
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(2, result.returncode)
             self.assertIn(".github/workflows/ci.yml", result.stderr)
