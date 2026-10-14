@@ -207,6 +207,16 @@ def main(argv=None, default_root=ROOT):
     cycle.add_argument("--now", required=True)
     cycle.add_argument("--host-capacity", type=int, required=True)
     cycle.add_argument("--dispatch-role", choices=("writer", "critic"), default="writer")
+    cycle.add_argument("--writer-session-id")
+    cycle.add_argument(
+        "--planning-trigger",
+        choices=("project_start", "intake", "pr_merged", "files_changed",
+                 "ticket_added", "ticket_closed", "override_changed", "round_ended"),
+        help="exact observed event that requires this audited re-plan")
+    cycle.add_argument("--lane-override", type=Path,
+                       help="authenticated fixed/max owner-override request JSON")
+    cycle.add_argument("--overlap-allowances", type=Path,
+                       help="owner-approved exact path/PR allowance record list JSON")
 
 
     jira = sub.add_parser("jira-lifecycle", help="Read, optionally write once, and read back Jira lifecycle state")
@@ -268,13 +278,31 @@ def main(argv=None, default_root=ROOT):
         output = store.snapshot(args.batch, config)
     elif args.command == "cycle":
         calls = _require_adapters(adapters, {"observe_inventory", "dispatch_ticket",
-                                             "observe_dispatch", "deliver_status", "observe_publication"})
+                                             "observe_dispatch", "deliver_status",
+                                             "observe_publication"})
+        inventory_adapter = adapters["observe_inventory"]
+        observe_overlap_pr = (adapters.get("observe_overlap_pr") or
+                              getattr(inventory_adapter, "observe_overlap_pr", None))
+        verify_owner_source = (adapters.get("verify_owner_source") or
+                               getattr(inventory_adapter, "verify_owner_source", None))
+        if args.overlap_allowances and not callable(observe_overlap_pr):
+            raise ValidationError(
+                "Overlap allowances require the reviewed observe_overlap_pr adapter")
+        if (args.overlap_allowances or args.lane_override) and not callable(verify_owner_source):
+            raise ValidationError(
+                "Planning changes require the reviewed verify_owner_source adapter")
         output = production_controller_cycle(
             store, now=args.now, host_capacity=args.host_capacity,
             inventory_binding=load(args.inventory_binding), repository_root=args.repository_root,
             repository_head_sha=args.repository_head_sha,
             repository_tree_sha=args.repository_tree_sha, publication_config=config,
-            dispatch_role=args.dispatch_role, **calls)
+            dispatch_role=args.dispatch_role, writer_session_id=args.writer_session_id,
+            planning_trigger=args.planning_trigger,
+            planning_override=load(args.lane_override) if args.lane_override else None,
+            overlap_allowances=(load(args.overlap_allowances)
+                                if args.overlap_allowances else None),
+            observe_overlap_pr=observe_overlap_pr,
+            verify_owner_source=verify_owner_source, **calls)
 
     elif args.command == "jira-lifecycle":
         calls = _require_adapters(adapters, {"observe_provider_identity", "read_current_status", "write_transition",

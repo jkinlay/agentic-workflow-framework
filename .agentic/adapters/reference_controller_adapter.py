@@ -596,11 +596,16 @@ def _validate_ticket_records(items):
                 "resume_trigger", "paths", "dependencies_satisfied", "budget_available",
                 "cap_available", "review_independent", "exact_tuple", "activity",
                 "verification_gate", "reviewer_completion", "open_findings", "jira_status"}
+    optional = {"write_paths", "brief", "open_pr_files", "open_pr", "worktree_diff",
+                "generated_outputs", "generates", "dependencies", "declared_dependencies",
+                "depends_on", "jira_links", "blocks", "blocked_by", "expected_rounds",
+                "round_time_minutes", "status", "code_needed"}
     _require(isinstance(items, list) and len(items) <= 1000, "GitHub inventory is not a bounded list")
     result = []
     seen = set()
     for item in items:
-        _require(isinstance(item, dict) and set(item) == required,
+        _require(isinstance(item, dict) and required <= set(item) <= required | optional and
+                 ("code_needed" not in item or type(item["code_needed"]) is bool),
                  "GitHub inventory contains a malformed continuous-controller ticket")
         _require(item["ticket"] not in seen, "GitHub inventory contains a duplicate ticket")
         seen.add(item["ticket"])
@@ -989,7 +994,7 @@ def _build(config):
         # controller's exact record at the adapter boundary.
         tickets = []
         for record in records:
-            if isinstance(record, dict) and set(record) == {"ticket", "priority", "disposition", "actor", "reason", "next_action", "resume_trigger", "paths", "dependencies_satisfied", "budget_available", "cap_available", "review_independent", "exact_tuple", "activity", "verification_gate", "reviewer_completion", "open_findings", "jira_status"}:
+            if isinstance(record, dict) and isinstance(record.get("ticket"), str):
                 tickets.append(record)
             else:
                 _require(isinstance(record, dict) and isinstance(record.get("body"), str),
@@ -1006,6 +1011,55 @@ def _build(config):
                 "binding": binding, "complete": True,
                 "inventory_sha256": fingerprint("controller-inventory", {"binding": binding, "tickets": tickets}),
                 "tickets": tickets}
+
+    def observe_overlap_pr(number, controller_now=None):
+        _require(type(number) is int and number > 0,
+                 "Overlap observation needs a positive PR number")
+        pull = gh_json("repos/" + github["repository"] + "/pulls/" + str(number))
+        base_repository = pull.get("base", {}).get("repo", {}) if isinstance(pull, dict) else {}
+        _require(pull.get("number") == number and
+                 base_repository.get("id") == github["repository_id"],
+                 "Overlap PR identity differs from the configured repository and number")
+        state = pull.get("state")
+        merged = pull.get("merged")
+        _require(isinstance(state, str) and type(merged) is bool,
+                 "Overlap PR state is incomplete")
+        return {"number": number, "repository_id": github["repository_id"],
+                "state": state.upper(), "merged": merged,
+                "observed_at": _clock_text(clock, controller_now)}
+
+    def verify_owner_source(source, expected):
+        _require(isinstance(source, dict) and isinstance(expected, dict),
+                 "Owner-source verification needs closed records")
+        comment_id = source.get("comment_id")
+        source_id = source.get("source_id")
+        _require(source.get("channel") == "github_pr_comment" and
+                 type(comment_id) is int and comment_id > 0 and
+                 isinstance(source_id, str) and source_id,
+                 "Owner source is not an identified GitHub PR comment")
+        comment = gh_json("repos/" + github["repository"] +
+                          "/issues/comments/" + str(comment_id))
+        actor_id = comment.get("user", {}).get("id") if isinstance(comment, dict) else None
+        body = comment.get("body") if isinstance(comment, dict) else None
+        _require(comment.get("id") == comment_id and actor_id == source.get("actor_id") and
+                 body == source.get("raw_body") and
+                 comment.get("created_at") == source.get("created_at") and
+                 comment.get("updated_at") == source.get("updated_at") and
+                 source.get("created_at") == source.get("updated_at"),
+                 "GitHub owner comment identity or immutable bytes changed")
+        _require(sha256(body.encode("utf-8")) == source.get("raw_body_sha256"),
+                 "GitHub owner comment digest changed")
+        if "request_sha256" in expected:
+            expected_binding = {key: expected[key] for key in (
+                "path", "pull_requests", "approved_at", "reason", "actor_id")}
+            _require(source.get("binding") == expected_binding,
+                     "GitHub owner comment does not bind the overlap request")
+        result = {"status": "VERIFIED", "actor_id": actor_id,
+                  "source_id": source_id, "observed_at": _clock_text(clock)}
+        for field in ("binding", "raw_body_sha256", "request_sha256"):
+            if field in expected:
+                result[field] = expected[field]
+        return result
 
     def observe_publication(item):
         _require(isinstance(item, dict) and isinstance(item.get("ticket"), str),
@@ -1419,6 +1473,10 @@ def _build(config):
                 "snapshot_id": snapshot_id, "scope_sha256": scope_sha,
                 "observed_at": observed_at}
 
+    # Keep the stable public operation-name set while exposing the planning
+    # observers as capabilities of the authenticated inventory boundary.
+    observe_inventory.observe_overlap_pr = observe_overlap_pr
+    observe_inventory.verify_owner_source = verify_owner_source
     return {"observe_inventory": observe_inventory, "dispatch_ticket": dispatch_ticket,
             "observe_dispatch": observe_dispatch, "deliver_status": deliver_status,
             "observe_publication": observe_publication,

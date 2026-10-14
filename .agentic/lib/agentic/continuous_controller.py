@@ -29,6 +29,19 @@ TICKET_STATES = {"ELIGIBLE", "PAUSED_INPUT", "BLOCKED", "COMPLETE"}
 DEFAULT_STATUS_CADENCE_SECONDS = 10 * 60
 STATE_APPLICATION_ID = 0x41574631
 
+CONTROLLER_TICKET_FIELDS = {
+    "ticket", "priority", "disposition", "actor", "reason", "next_action",
+    "resume_trigger", "paths", "dependencies_satisfied", "budget_available",
+    "cap_available", "review_independent", "exact_tuple", "activity",
+    "verification_gate", "reviewer_completion", "open_findings", "jira_status",
+}
+PLANNING_TICKET_FIELDS = {
+    "write_paths", "brief", "open_pr_files", "open_pr", "worktree_diff",
+    "generated_outputs", "generates", "dependencies", "declared_dependencies",
+    "depends_on", "jira_links", "blocks", "blocked_by", "expected_rounds",
+    "round_time_minutes", "status",
+}
+
 DDL = """
 CREATE TABLE IF NOT EXISTS controller_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS stream_status(
@@ -69,10 +82,9 @@ def _reviewer_counts(counts):
 
 
 def _ticket(value):
-    required = {"ticket", "priority", "disposition", "actor", "reason", "next_action", "resume_trigger",
-                "paths", "dependencies_satisfied", "budget_available", "cap_available", "review_independent",
-                "exact_tuple", "activity", "verification_gate", "reviewer_completion", "open_findings", "jira_status"}
-    _require(isinstance(value, dict) and set(value) == required, "Malformed continuous-controller ticket")
+    allowed = CONTROLLER_TICKET_FIELDS | PLANNING_TICKET_FIELDS | {"code_needed"}
+    _require(isinstance(value, dict) and CONTROLLER_TICKET_FIELDS <= set(value) <= allowed,
+             "Malformed continuous-controller ticket")
     _require(isinstance(value["ticket"], str) and value["ticket"].strip(), "Ticket identity is required")
     _require(type(value["priority"]) is int and value["priority"] >= 0, "Ticket priority must be nonnegative")
     _require(value["disposition"] in TICKET_STATES, "Unknown ticket scheduling disposition")
@@ -88,6 +100,9 @@ def _ticket(value):
     value["reviewer_completion"] = _reviewer_counts(value["reviewer_completion"])
     _require(type(value["open_findings"]) is int and value["open_findings"] >= 0,
              "Open finding count must be nonnegative")
+    if "code_needed" in value:
+        _require(type(value["code_needed"]) is bool,
+                 "Ticket code-needed decision must be an observed boolean")
     return value
 
 
@@ -132,6 +147,7 @@ def _applied_allowance_keys(values):
                 not value["allowance_id"] or
                 not isinstance(value.get("pull_requests"), list) or
                 len(value["pull_requests"]) != 2 or
+                len(set(value["pull_requests"])) != 2 or
                 not all(type(number) is int and number > 0
                         for number in value["pull_requests"]) or
                 not isinstance(value.get("tickets"), list) or
@@ -146,6 +162,52 @@ def _applied_allowance_keys(values):
             continue
         result.add((path.casefold(), tuple(sorted(value["tickets"]))))
     return result
+
+
+def _revalidated_applied_allowances(values, tickets, observe_pr,
+                                    expected_repository_id, now):
+    """Retain projections only while both exact PR identities are freshly open."""
+    if not values:
+        return []
+    if not callable(observe_pr) or not isinstance(expected_repository_id, (str, int)):
+        return []
+    current_ticket_prs = {item["ticket"]: _ticket_pr_number(item) for item in tickets}
+    active = []
+    for value in values if isinstance(values, list) else ():
+        if not _applied_allowance_keys([value]):
+            continue
+        try:
+            _require(sorted(current_ticket_prs.get(ticket)
+                            for ticket in value["tickets"]) == value["pull_requests"],
+                     "Lane-start ticket/PR identity differs from the sealed allowance")
+            observations = []
+            for number in value["pull_requests"]:
+                parameters = inspect.signature(observe_pr).parameters
+                accepts_cycle_time = ("controller_now" in parameters or
+                                      "now" in parameters or
+                                      any(parameter.kind == inspect.Parameter.VAR_POSITIONAL
+                                          for parameter in parameters.values()) or
+                                      len(parameters) >= 2)
+                observation = (observe_pr(number, now) if accepts_cycle_time
+                               else observe_pr(number))
+                _require(isinstance(observation, dict) and set(observation) >= {
+                    "number", "repository_id", "state", "merged", "observed_at"},
+                    "Lane-start PR observation is malformed")
+                _require(observation["number"] == number and
+                         str(observation["repository_id"]) == str(expected_repository_id) and
+                         observation["state"].upper() == "OPEN" and
+                         observation["merged"] is False,
+                         "Lane-start PR identity is no longer the exact open allowance pair")
+                timestamp(observation["observed_at"])
+                _require(observation["observed_at"] == now,
+                         "Lane-start PR observation is not current for this cycle")
+                observations.append(observation)
+            _require(len(observations) == 2,
+                     "Lane-start overlap allowance did not observe both PRs")
+        except Exception:
+            continue
+        active.append(value)
+    return active
 
 
 def _blocking_overlap(first_ticket, first_paths, second_ticket, second_paths,
@@ -841,7 +903,8 @@ class ContinuousControllerStore:
              restore["open_findings"], restore["jira_status"],
              canonical(restore["paths"]).decode(), now, payload["stream"]))
 
-    def schedule(self, inventory, now, host_capacity, *, planning_record=None):
+    def schedule(self, inventory, now, host_capacity, *, planning_record=None,
+                 observe_pr=None, expected_repository_id=None):
         """Fill every free stream or record its concrete pause/block/complete state."""
         timestamp(now)
         _require(type(host_capacity) is int and host_capacity >= 0, "Observed host capacity must be nonnegative")
@@ -855,7 +918,9 @@ class ContinuousControllerStore:
                 current = self._planning_state(db).get("current_plan")
                 _require(current == planning_record,
                          "Lane start requires the exact current controller-owned plan")
-                overlap_allowances = planning_record.get("applied_overlap_allowances", [])
+                overlap_allowances = _revalidated_applied_allowances(
+                    planning_record.get("applied_overlap_allowances", []),
+                    tickets, observe_pr, expected_repository_id, now)
             self._schedule(db, tickets, now, host_capacity, overlap_allowances)
             return self._snapshot(db)
 
@@ -1032,7 +1097,8 @@ class ContinuousControllerStore:
                 self._update_stream(db, row["stream_id"], "COMPLETE", None, now)
 
     def finish_and_refill(self, stream_id, ticket, inventory, now, host_capacity,
-                          *, planning_record=None):
+                          *, planning_record=None, observe_pr=None,
+                          expected_repository_id=None):
         """Complete one run and refill its stream within the same transaction."""
         timestamp(now)
         tickets = [_ticket(item) for item in inventory]
@@ -1050,7 +1116,9 @@ class ContinuousControllerStore:
                 planning.verify_plan_record(planning_record)
                 _require(self._planning_state(db).get("current_plan") == planning_record,
                          "Lane refill requires the exact current controller-owned plan")
-                overlap_allowances = planning_record.get("applied_overlap_allowances", [])
+                overlap_allowances = _revalidated_applied_allowances(
+                    planning_record.get("applied_overlap_allowances", []),
+                    tickets, observe_pr, expected_repository_id, now)
             self._schedule(db, tickets, now, host_capacity, overlap_allowances)
             return self._snapshot(db)
 
@@ -1547,11 +1615,18 @@ def _controller_planning_tickets(tickets, active_tickets):
             status = "blocked"
         else:
             status = "open"
-        result.append({
-            "key": item["ticket"], "status": status,
-            "write_paths": list(item["paths"]),
-            "expected_rounds": 1, "round_time_minutes": 30,
-        })
+        projected = {
+            key: deepcopy(item[key]) for key in PLANNING_TICKET_FIELDS
+            if key in item and key != "status"
+        }
+        if not any(key in projected for key in (
+                "write_paths", "brief", "open_pr_files", "open_pr",
+                "worktree_diff")):
+            projected["write_paths"] = list(item["paths"])
+        projected.setdefault("expected_rounds", 1)
+        projected.setdefault("round_time_minutes", 30)
+        projected.update(key=item["ticket"], status=status)
+        result.append(projected)
     return result
 
 
@@ -1595,7 +1670,8 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                                 dispatch_role="writer", code_needed=None,
                                 writer_session_id=None, planning_config=None,
                                 planning_resources=None, overlap_allowances=None,
-                                observe_overlap_pr=None, verify_owner_source=None):
+                                observe_overlap_pr=None, verify_owner_source=None,
+                                planning_trigger=None, planning_override=None):
     """Run one real host-controller cycle through explicit reviewed adapters.
 
     Inventory is observed before scheduling.  Dispatch intent is durable before
@@ -1611,11 +1687,8 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
     timestamp(now)
     _require(dispatch_role in {"writer", "critic"},
              "Production dispatch role must be writer or critic")
-    if code_needed is None:
-        code_needed = dispatch_role == "writer"
-    role_contract = dispatch_role_contract(
-        dispatch_role, code_needed=code_needed,
-        writer_session_id=writer_session_id)
+    _require(code_needed is None,
+             "Production code-needed decisions must come from each authenticated ticket")
     store.recover_dispatches(now)
     _require(isinstance(inventory_binding, dict) and set(inventory_binding) == {
         "project_id", "repository_id", "scope_sha256"} and
@@ -1648,6 +1721,20 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
              "Production inventory identity or digest differs from the configured scope")
     tickets, repository_binding = canonical_repository_paths(
         observation["tickets"], repository_root, repository_head_sha, repository_tree_sha)
+    full_tickets = [item for item in tickets if CONTROLLER_TICKET_FIELDS <= set(item)]
+    planning_enabled = (planning_config is not None or
+                        isinstance(publication_config, dict) and
+                        isinstance(publication_config.get("execution"), dict))
+    if planning_enabled:
+        _require(all(type(item.get("code_needed")) is bool for item in full_tickets),
+                 "Production tickets require an observed per-ticket code-needed decision")
+    expected_code_needed = dispatch_role == "writer"
+    _require(all(item.get("code_needed", expected_code_needed) is expected_code_needed
+                 for item in full_tickets if item["disposition"] == "ELIGIBLE"),
+             "Production dispatch role contradicts an eligible ticket's code-needed decision")
+    role_contract = dispatch_role_contract(
+        dispatch_role, code_needed=expected_code_needed,
+        writer_session_id=writer_session_id)
     store.bind_repository(repository_binding)
     active_tickets = {
         row["ticket"] for row in store.snapshot()
@@ -1661,15 +1748,34 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
         accepted_planning_config = publication_config
     if accepted_planning_config is not None:
         try:
+            from . import planning
+            _require(planning_trigger in planning.RECOMPUTE_TRIGGERS,
+                     "Production planning requires one exact recompute-trigger identity")
             planning_tickets = _controller_planning_tickets(tickets, active_tickets)
-            planning_state = store.planning_state()
-            trigger = "project_start" if planning_state.get("current_plan") is None else "intake"
-            planning_report = store.recompute_lane_plan(
-                planning_tickets, accepted_planning_config, now=now,
-                trigger=trigger, resources=planning_resources,
-                verify_owner_source=verify_owner_source,
-                overlap_allowances=overlap_allowances,
-                observe_pr=observe_overlap_pr)
+            if planning_override is not None:
+                _require(isinstance(planning_override, dict) and
+                         set(planning_override) == {"mode", "value", "reason", "owner_source"} and
+                         planning_trigger == "override_changed",
+                         "Production lane override must be closed and use override_changed")
+                override_result = store.change_lane_override(
+                    planning_tickets, accepted_planning_config,
+                    mode=planning_override["mode"], value=planning_override["value"],
+                    reason=planning_override["reason"], now=now,
+                    owner_source=planning_override["owner_source"],
+                    verify_owner_source=verify_owner_source,
+                    resources=planning_resources,
+                    overlap_allowances=overlap_allowances,
+                    observe_pr=observe_overlap_pr)
+                planning_report = override_result["planning"]
+                planning_report = {**planning_report,
+                                   "owner_override": override_result["override"]}
+            else:
+                planning_report = store.recompute_lane_plan(
+                    planning_tickets, accepted_planning_config, now=now,
+                    trigger=planning_trigger, resources=planning_resources,
+                    verify_owner_source=verify_owner_source,
+                    overlap_allowances=overlap_allowances,
+                    observe_pr=observe_overlap_pr)
             selected_plan = (planning_report.get("record") if planning_report["status"] == "PLANNED"
                              else store.planning_state().get("current_plan"))
             if selected_plan is None:
@@ -1731,7 +1837,8 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                            "state": "PENDING", "reason": type(exc).__name__})
     streams = store.schedule(
         tickets, now, host_capacity,
-        planning_record=selected_plan)
+        planning_record=selected_plan, observe_pr=observe_overlap_pr,
+        expected_repository_id=inventory_binding["repository_id"])
     dispatches = []
     for operation in store.prepare_dispatches(now):
         payload, dispatch_id = operation["payload"], operation["dispatch_id"]

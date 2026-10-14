@@ -8,7 +8,7 @@ Version 1.9.4. Continue streams until complete, blocked or owner-stopped.
 Use only this entry point:
 
 ```text
-python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --stream A --stream B --stream C --worktree-root ABSOLUTE_WORKTREE --project-config PROJECT_CONFIG --adapter-module REVIEWED_ADAPTER.py --adapter-sha256 PIN --adapter-config ADAPTER_CONFIG cycle --inventory-binding INVENTORY_BINDING --repository-root ABSOLUTE_REPOSITORY --repository-head-sha FULL_HEAD --repository-tree-sha FULL_TREE --now TIME --host-capacity N
+python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --stream A --stream B --stream C --worktree-root ABSOLUTE_WORKTREE --project-config PROJECT_CONFIG --adapter-module REVIEWED_ADAPTER.py --adapter-sha256 PIN --adapter-config ADAPTER_CONFIG cycle --inventory-binding INVENTORY_BINDING --repository-root ABSOLUTE_REPOSITORY --repository-head-sha FULL_HEAD --repository-tree-sha FULL_TREE --now TIME --host-capacity N --planning-trigger OBSERVED_TRIGGER
 ```
 
 `cycle` observes inventory, persists nonce-bound intent, reconciles uncertainty
@@ -52,10 +52,19 @@ fixed/max owner overrides and above-estimate warnings retain AWF-48 audit form.
 Merge/file/ticket/override triggers defer while `WORKING`; never reassign
 mid-round.
 
+Authenticated inventory tickets carry explicit `code_needed`, dependencies,
+brief/PR/worktree file sources, generator outputs, PR identity and duration.
+Unknown fields fail closed. `--planning-trigger` names the observed event;
+`--lane-override FILE` applies an authenticated fixed/max request. Writer cycles
+admit only eligible `true` tickets; critic cycles admit only `false` tickets and
+use `--writer-session-id` when the writer is known.
+
 An allowance binds one exact file, two exact open PRs, and owner/name/time/
 reason evidence. Fresh PR observation is mandatory. Merge, unreadability,
 malformation, duplicate/unlisted scope, live/parked/worktree scope or globs
-keep blocking. Recheck the sealed projection at planning and start.
+keep blocking. Supply records with `--overlap-allowances FILE`. Recheck the
+sealed projection against both exact PR numbers and the configured numeric
+repository identity at planning and immediately before lane start.
 
 Launch a fresh writer only for code; every review gets a fresh, distinct,
 read-only critic. The controller never writes code or edits critic output.
@@ -154,7 +163,7 @@ $project | ConvertTo-Json -Depth 100 | Set-Content (Join-Path $STATE_DIR "PROJEC
 @{owner_closure_required=$false} | ConvertTo-Json -Compress | Set-Content (Join-Path $STATE_DIR "contract.json") -Encoding utf8
 @{issue_id=$JIRA_ISSUE} | ConvertTo-Json -Compress | Set-Content (Join-Path $STATE_DIR "binding.json") -Encoding utf8
 
-$ticket=@{ticket="$JIRA_KEY-$JIRA_ISSUE";priority=1;disposition="ELIGIBLE";actor="owner";reason="disposable controller example";next_action="implement the disposable ticket";resume_trigger="owner input";paths=@("README.md");dependencies_satisfied=$true;budget_available=$true;cap_available=$true;review_independent=$true;exact_tuple="base:$HEAD/head:$HEAD/tree:$TREE/contract:example/review:pending";activity="example implementation";verification_gate="PENDING";reviewer_completion=@{required=0;completed=0;acceptable=0;failed=0;stale=0;outstanding=0};open_findings=0;jira_status="Ready"}
+$ticket=@{ticket="$JIRA_KEY-$JIRA_ISSUE";priority=1;disposition="ELIGIBLE";actor="owner";reason="disposable controller example";next_action="implement the disposable ticket";resume_trigger="owner input";paths=@("README.md");dependencies_satisfied=$true;budget_available=$true;cap_available=$true;review_independent=$true;exact_tuple="base:$HEAD/head:$HEAD/tree:$TREE/contract:example/review:pending";activity="example implementation";verification_gate="PENDING";reviewer_completion=@{required=0;completed=0;acceptable=0;failed=0;stale=0;outstanding=0};open_findings=0;jira_status="Ready";code_needed=$true}
 & $GH_EXE label create awf-controller --repo $REPOSITORY --color 5319e7 --force
 & $GH_EXE issue create --repo $REPOSITORY --title "Controller example $($ticket.ticket)" --label awf-controller --body ($ticket | ConvertTo-Json -Depth 10 -Compress)
 if ($LASTEXITCODE) { throw "disposable inventory issue creation failed" }
@@ -178,7 +187,7 @@ function Invoke-ControllerCycle {
   $NOW=New-ObservationTime
   $head=(git -C $WORKTREE_ROOT rev-parse HEAD).Trim()
   $tree=(git -C $WORKTREE_ROOT rev-parse "HEAD^{tree}").Trim()
-  $text=& $PYTHON @COMMON cycle --inventory-binding (Join-Path $STATE_DIR "inventory-binding.json") --repository-root $WORKTREE_ROOT --repository-head-sha $head --repository-tree-sha $tree --now $NOW --host-capacity 3 --dispatch-role writer | Out-String
+  $text=& $PYTHON @COMMON cycle --inventory-binding (Join-Path $STATE_DIR "inventory-binding.json") --repository-root $WORKTREE_ROOT --repository-head-sha $head --repository-tree-sha $tree --now $NOW --host-capacity 3 --dispatch-role writer --planning-trigger project_start | Out-String
   if ($LASTEXITCODE) { throw "controller cycle failed" }
   $cycle=$text | ConvertFrom-Json
   if (@($cycle.dispatch_receipts).Count -eq 0 -or @($cycle.errors).Count -ne 0) { throw "cycle did not prove dispatch" }

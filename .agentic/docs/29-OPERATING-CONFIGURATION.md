@@ -10,10 +10,10 @@ Protected `.agentic/PROJECT_CONFIG.yaml` holds ceilings, budgets, model allowlis
 
 `effective_ceiling_governance_path` names the binding project/broker path, preferring project on ties; `effective_ceiling_sources` lists ties. An omitted ceiling cites the `operating-config.schema.json` governed-maximum annotation and has no governance path unless another limit ties it. Native planning also considers observed resources and ownership.
 
-Generated schemas use a dynamic count placeholder and finite route set. The
-shipped set is A–F; `scripts/generate_contracts.py --max-lanes N` derives another
-set without fixing the schema bound at six. `x-awf-governed-maximum` identifies
-the governing key and default. Runtime validation projects accepted
+Generated schemas use the selected governed maximum and a matching finite route
+set. The shipped set and numeric maximum are A–F and six;
+`scripts/generate_contracts.py --max-lanes N` derives both from `N`.
+`x-awf-governed-maximum` identifies the governing key and default. Runtime validation projects accepted
 `execution.max_lanes` into an in-memory schema, rejecting missing active routes,
 unknown labels and above-ceiling counts. Change it by governance PR; omission
 needs no migration. Reductions prune inactive routes through an audited change.

@@ -204,6 +204,7 @@ def catalog(max_lanes=DEFAULT_MAX_LANES):
     operating_streams = obj({
         "count": integer(
             1,
+            maximum=max_lanes,
             **{"x-awf-governed-maximum": governed_max_lanes},
         ),
         **{label: operating_stream for label in generated_stream_labels},
