@@ -36,13 +36,35 @@ def base64_bytes(value):
 
 
 def sealed_runtime(folder):
-    """A synthetic sealed runtime so CLI tests do not depend on a mutable developer manifest."""
+    """A synthetic sealed runtime so CLI tests do not depend on a mutable developer manifest.
+
+    AWF-100 retained pre-fix reproduction (2026-10-14): CPython 3.13.3
+    ``tags/v3.13.3:6280bb5`` (MSC v.1943, 64-bit AMD64 Windows), logical
+    executable ``awf194/venv/Scripts/python.exe``, invoked as
+    ``python -B -I -S <tmp>/runtime/.agentic/scripts/workflow.py
+    validate-record ticket-contract <tmp>/contract.json`` with only AWF source
+    in ``.agentic/lib``.
+    It exited 3 with ``Missing dependency: No module named 'jsonschema'. Install
+    .agentic/requirements.lock with --require-hashes.``; the focused unittest
+    exited 1 with ``AssertionError: 2 != 3`` before dependency seeding was added.
+    """
     import hashlib
     import importlib.util
     import shutil
     runtime = Path(folder) / "runtime"
     for name in [".agentic/lib", ".agentic/schemas"]:
         shutil.copytree(ROOT / name, runtime / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    (runtime / ".agentic/scripts").mkdir()
+    shutil.copyfile(ROOT / ".agentic/scripts/workflow.py", runtime / ".agentic/scripts/workflow.py")
+    pre_fix_command = [sys.executable, "-B", "-I", "-S", str(runtime / ".agentic/scripts/workflow.py"),
+                       "validate-record", "ticket-contract", str(Path(folder) / "contract.json")]
+    pre_fix = subprocess.run(pre_fix_command, capture_output=True, text=True)
+    expected_error = ("Missing dependency: No module named 'jsonschema'. Install "
+                      ".agentic/requirements.lock with --require-hashes.\n")
+    if (pre_fix.returncode, pre_fix.stdout, pre_fix.stderr) != (3, "", expected_error):
+        raise AssertionError(
+            "AWF-100 pre-fix reproduction changed: "
+            f"returncode={pre_fix.returncode}, stdout={pre_fix.stdout!r}, stderr={pre_fix.stderr!r}")
     # Seal the locked runtime dependency closure into the fixture as well as
     # AWF itself.  The child runs without site-packages, so its result cannot
     # vary with packages installed in the invoking interpreter's environment.
@@ -59,8 +81,6 @@ def sealed_runtime(folder):
         else:
             source = Path(spec.origin)
             shutil.copyfile(source, runtime_lib / source.name)
-    (runtime / ".agentic/scripts").mkdir()
-    shutil.copyfile(ROOT / ".agentic/scripts/workflow.py", runtime / ".agentic/scripts/workflow.py")
     shutil.copyfile(ROOT / ".agentic/workflow.yaml", runtime / ".agentic/workflow.yaml")
     shutil.copyfile(ROOT / ".agentic/examples/PROJECT_CONFIG.yaml", runtime / ".agentic/PROJECT_CONFIG.yaml")
     files = {p.relative_to(runtime).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in runtime.rglob("*") if p.is_file()}
