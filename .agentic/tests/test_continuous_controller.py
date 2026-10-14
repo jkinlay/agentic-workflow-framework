@@ -112,6 +112,7 @@ def ticket(name, priority, disposition="ELIGIBLE", paths=None, **overrides):
         "reviewer_completion": dict(COUNTS),
         "open_findings": 0,
         "jira_status": "In Progress",
+        "code_needed": True,
     }
     value.update(overrides)
     return value
@@ -1466,7 +1467,8 @@ class JiraProgressTests(unittest.TestCase):
                                 "--repository-root", str(worktree),
                                 "--repository-head-sha", merged_head,
                                 "--repository-tree-sha", merged_tree,
-                                "--now", NOW, "--host-capacity", "1"],
+                                 "--now", NOW, "--host-capacity", "1",
+                                 "--planning-trigger", "project_start"],
                                cwd=ROOT, text=True, capture_output=True, timeout=30)
         self.assertEqual(cycle.returncode, 0, cycle.stderr)
         cycle_output = json.loads(cycle.stdout)

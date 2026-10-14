@@ -59,7 +59,7 @@ class OperatingConfigGenerationTests(unittest.TestCase):
     def test_default_schema_enforces_default_six_lane_ceiling(self):
         schema = generate_contracts.catalog()["operating-config"]
         count = schema["properties"]["streams"]["properties"]["count"]
-        self.assertNotEqual(6, count["maximum"])
+        self.assertEqual(6, count["maximum"])
         self.assertEqual(6, count["x-awf-governed-maximum"]["default"])
         self.assertEqual(
             list(generate_contracts.stream_labels(6)),
@@ -70,8 +70,11 @@ class OperatingConfigGenerationTests(unittest.TestCase):
         shipped = Contracts(ROOT / ".agentic/schemas")
         generated.validate("operating-config", operating(6))
         shipped.validate("operating-config", operating(6))
+
+        above_ceiling_without_unknown_route = operating(6)
+        above_ceiling_without_unknown_route["streams"]["count"] = 7
         with self.assertRaises(ValidationError):
-            shipped.validate("operating-config", operating(7))
+            shipped.validate("operating-config", above_ceiling_without_unknown_route)
 
         missing = operating(6)
         for label in ("D", "E", "F"):
@@ -82,7 +85,7 @@ class OperatingConfigGenerationTests(unittest.TestCase):
     def test_configured_schema_requires_and_accepts_eight_active_routes(self):
         schema = generate_contracts.catalog(max_lanes=8)["operating-config"]
         count = schema["properties"]["streams"]["properties"]["count"]
-        self.assertNotEqual(8, count["maximum"])
+        self.assertEqual(8, count["maximum"])
         self.assertEqual(6, count["x-awf-governed-maximum"]["default"])
         self.assertEqual(
             list(generate_contracts.stream_labels(8)),
@@ -91,6 +94,11 @@ class OperatingConfigGenerationTests(unittest.TestCase):
         )
         contracts = self.contracts(schema)
         contracts.validate("operating-config", operating(8))
+
+        above_ceiling_without_unknown_route = operating(8)
+        above_ceiling_without_unknown_route["streams"]["count"] = 9
+        with self.assertRaises(ValidationError):
+            contracts.validate("operating-config", above_ceiling_without_unknown_route)
 
         missing = operating(8)
         for label in generate_contracts.stream_labels(8)[3:]:
