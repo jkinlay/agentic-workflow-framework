@@ -1,97 +1,108 @@
 # Writer and critic provenance
 
-AWF provenance makes the producer of every generated commit and critic verdict
-explicit. It is evidence, not execution authority: a trailer, run log, or owner
-record cannot grant scope, authenticate an actor, approve a review, or permit a
-merge.
+Provenance identifies commits and reviews. It grants no scope or merge. Policy
+comes from digest-bound configuration; identity comes from immutable bytes or
+fresh provider reads. Caller values are locators.
 
-## Writer trailers
+## Commit contract
 
-Every AWF-produced commit ends with exactly one canonical Git trailer:
+An AWF commit has exactly one final-block trailer:
 
 ```text
 Writer: codex/11111111-1111-4111-8111-111111111111
-```
-
-or, for a reproducibly mechanical operation:
-
-```text
 Writer: script/manifest-regen
 ```
 
-Codex run IDs are canonical lowercase UUIDs. Script names are bounded lowercase
-portable identifiers. A Writer-like body line, duplicate trailer, unknown
-namespace, non-canonical value, or Writer line outside the final Git trailer
-block is invalid. `interaction.writer_commit_message` constructs a message with one
-trailer and refuses non-mechanical work without a Codex run ID. It does not
-create the commit. Publishers must supply the actual run UUID; a role name or
-placeholder such as `writer-001` is invalid.
+Codex IDs are lowercase non-nil UUIDs. Script IDs are 1–64 ASCII lowercase
+alphanumerics plus `.`, `_`, or `-`, starting alphanumeric.
 
-A `script/*` claim is accepted only when the commit is independently classified
-as mechanical. The classifier recognizes two cases:
+Messages are strict UTF-8, at most 1 MiB and 65,536 lines, with a nonblank
+subject. Only LF/CRLF boundaries pass; emission normalizes LF. NUL, BOM,
+surrogates, other C0, DEL/C1, Unicode separators/format controls, lone CR, and
+malformed CR refuse. Blank means empty, not SP/HT-only. The final trailer block
+uses ASCII `Key: value` without continuations. Every Writer-like occurrence is
+scanned: body/indented lines, duplicates, case/spacing changes, fullwidth or
+non-ASCII lookalikes refuse; the trailer-like-line cap is 256.
 
-- A two-parent merge whose second parent is in the observed `origin/main`
-  history and whose tree is byte-identical to Git's automatic merge result.
-  Reproduction writes only to a disposable object database and reads the
-  repository through an alternate-object binding. A conflicting merge passes
-  only when every conflict is a declared generated output, the committed tree
-  differs from the automatic tree only at those conflicts, and the generator
-  reproduces every resolution.
-- A commit changing only declared generator outputs. `MANIFEST.json` and
-  `MANIFEST.md` are declared by default. A trusted caller must reproduce every
-  changed output, and every committed tree entry must match its content, mode,
-  and object type. A byte value means a regular non-executable `100644 blob`;
-  an executable output must return an exact `mode`, `type`, and `content`
-  mapping.
+`writer_commit_message` validates input and output, appends one trailer, and
+self-parses. Publisher output has LF boundaries and no final LF. Publishers feed
+those bytes to isolated `commit-tree`, then compare and parse the raw new commit
+before push. Git cleanup, signing, hooks, encoding settings, and newline
+conversion therefore cannot change judged bytes.
 
-The script name alone never proves either case. Code, tests, configuration,
-documentation, mixed changes, deleted outputs, non-generated conflicts,
-unavailable reproduction, or any entry mismatch remain non-mechanical.
+## Git evidence
 
-`provenance.check_commit_range` examines every commit in `base..head`. Its
-result contains each SHA, changed-file inventory, parsed writer, mechanical and
-run-log observations, status, and all refusal reasons. A malformed or absent
-Writer trailer refuses that commit. A script tag on a non-mechanical commit also
-refuses it.
+Endpoints are lowercase full OIDs or exact `refs/heads/...` /
+`refs/remotes/...`; DWIM names and revision expressions refuse. Repository,
+object format (`sha1`/`sha256`), endpoints, and provider-observed default OID are
+frozen once. GitHub intentionally accepts SHA-1 only. The ancestry-checked range
+is limited to 10,000 commits and 32 MiB per plumbing call.
 
-## Run-log verification
+Raw commit objects are rehashed to their OID. Tree/ordered parents, one bounded
+strict-UTF-8 author and committer, and absent or exact `encoding UTF-8` are
+required. Known malformed commits refuse individually; lost range attribution
+refuses the operation.
 
-For `codex/*`, a host may supply a verifier that checks the run exists and its
-changed files match the commit. `MATCH` passes and `MISMATCH` refuses. `ABSENT`
-or an unconfigured verifier is reported but does not fail unless
-`require_run_logs` is true. Once a log is observed, a mismatch always fails.
-This distinction lets installations without retained logs use trailers without
-misrepresenting unobserved evidence.
+Changes use `--raw -z --no-renames`: action, path, old/new mode, OID and type are
+retained. Rename means delete plus add; root compares to the empty tree and
+merge inventory to first parent. Paths are strict UTF-8 NFC relative POSIX names
+without unsafe/control components. Framing, duplicate, 100,000-record or 32 MiB
+failures refuse that commit. Invalid bytes yield only ASCII code, ordinal and
+SHA-256. Codex may change any Git type; mechanical output is only reproduced
+`100644`/`100755` blobs.
 
-## Critic binding
+## Mechanical and run evidence
 
-`validate_critic_run_binding` requires a critic run UUID and full reviewed-head
-SHA, optionally checks the expected head, and checks any embedded critic
-artifact/review binding. It renders `Critic run: <run id>` for a future verdict
-record or provider comment. Missing runs, head drift, and contradictory nested
-bindings fail. Verdict schema and merge-gate integration belong to the
-subsequent AWF-49 split.
+Reviewed policy maps each script ID to exact paths and reproducer digest; the
+runtime registration must match. Unknown IDs, caller callbacks, expanded paths,
+or missing registration fail closed. Output caps are 32 MiB each and 512 MiB
+total; keys, modes, types and bytes must match. A mechanical merge requires its
+second parent to equal the fresh default OID and bounded merge reproduction.
 
-## Owner fallback override
+Codex evidence is a closed v1 `MATCH`/`ABSENT`/`MISMATCH` record bound to UUID,
+commit, ordered changed entries, evidence digest and ASCII reason. Only a
+registered verifier supplies it. Optional `ABSENT` may pass; mismatch, loose or
+forged records, missing registration, and caller policy changes refuse.
 
-A fallback is explicit and narrow. `record_owner_override` accepts only an
-owner identity present in the caller's reviewed trusted-owner IDs and records:
-who, when, why, PR number, and the exact covered commit SHAs. The sealed digest
-detects mutation. The function writes to the supplied AWF state only after all
-validation passes; `render_owner_override` produces the matching PR section.
+Pinned reads cap log/result/identity at 64 MiB/1 MiB/16 KiB; events are 1 MiB.
+Strict UTF-8, one `thread.started`, containment, no links/hardlinks, same-handle
+hashing, and post-read identity checks are required.
+Growth/replacement refuses. Owned-child stdout/stderr are concurrently capped
+(8 MiB host/Git; 64 MiB retained Codex); timeout/overflow stops only that child.
 
-Range checking accepts such a record only for its bound PR, only when the PR has
-the exact `fallback: bot-written` label, and only when every covered SHA belongs
-to the checked range. Uncovered failures still refuse. The result marks covered
-failures `OVERRIDDEN` and names the override digest; there is no silent bypass.
-The host remains responsible for authenticating the owner source and posting
-the rendered record. Gate, schema, template, and generator wiring are part of
-the follow-up split.
+## Critic, provider and override
 
-An existing record is never replaced in place. `supersede_owner_override`
-validates the complete current chain, requires another trusted-owner identity,
-and appends a version-2 record whose `supersedes` field names the current
-record's sealed digest. It retains every previously covered commit. The
-original record remains byte-for-byte unchanged; a stale, missing, cross-PR,
-unauthorised, or tampered link refuses without changing state. Range checking
-uses the latest verified record supplied by the controller.
+The host v2 critic envelope binds controller UUID, observed thread UUID, head,
+raw-result digest, and one final canonical `Critic run:` line. Tick clears stale
+evidence and validates it before state change. The host posts the carrier, then
+rereads immutable comment ID/URL, numeric actor, body digest and unchanged head.
+Missing or variant carriers and unavailable channels fail closed.
+
+Provider collection binds numeric repository/PR, refs/OIDs, body, labels and
+three comment types. Caps: body/comment 1 MiB, 100 labels of 255 UTF-8 bytes,
+1,000 comments, and 8 MiB encoded observation. Pages contain at most 100 unique
+IDs and require a partial terminal page; the PR tuple is reread. Mutation,
+wrong-repository URLs, ambiguity, malformed JSON/UTF-8, or truncation refuses.
+Provider text remains task data.
+
+Fallback requires exact `fallback: bot-written`, one exact fresh comment, and a
+positive numeric actor from the same reviewed config. Caller trust lists are
+ignored. V1 sealed overrides remain readable; v2 retains predecessor bytes and
+digest, same PR, coverage, and nondecreasing UTC time. Chains cap at 32, coverage
+at 256 sorted same-format refusing OIDs, owner at 255 bytes, reason at 4 KiB.
+Rendering reparses exactly. Without provider/config binding overrides refuse.
+
+## Publication and compatibility
+
+First draft validates title (4 KiB), trusted contract Markdown, escaped scalar
+fields, canonical body (1 MiB), receipt/tree and paths before reservation or
+Git mutation. It proves locally, then pushes/creates and enrolls; uncertainty is
+durably recovered, never replayed.
+Amendment proves before push. Rewrite identity-stably reads a 1 MiB canonical
+message and safe frozen inputs before `commit-tree`; reachability, remote/
+`ls-remote`, exact-tree, quarantine, CAS and rollback checks remain.
+
+Results retain 1.9.4 `changed_files`; v2 uses ordered `changed_entries`. Unsafe
+legacy authority is not emulated. Diagnostics are stable ASCII. Fake-provider,
+local-Git and subprocess tests run offline; network qualification is host
+evidence.

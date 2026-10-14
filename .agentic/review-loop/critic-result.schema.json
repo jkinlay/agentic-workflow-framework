@@ -1,4 +1,24 @@
 {
+  "$comment": "The raw critic result is wrapped by the host in the v2 critic binding envelope below; authority never comes from model-supplied binding fields.",
+  "x-awf-host-envelope-version": 2,
+  "$defs": {
+    "criticBinding": {
+      "type": "object",
+      "properties": {
+        "controller_run_id": {"type": "string", "format": "uuid"},
+        "critic_run_id": {"type": "string", "format": "uuid"},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "critic_run_carrier": {"type": "string", "pattern": "^Critic run: [0-9a-f-]{36}$"},
+        "provider_comment_id": {"type": "integer", "minimum": 1},
+        "provider_comment_url": {"type": "string", "pattern": "^https://github.com/"},
+        "provider_actor_id": {"type": "integer", "minimum": 1},
+        "provider_body_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "required": ["controller_run_id", "critic_run_id", "head_sha", "result_sha256", "critic_run_carrier", "provider_comment_id", "provider_comment_url", "provider_actor_id", "provider_body_sha256"],
+      "additionalProperties": false
+    }
+  },
   "type": "object",
   "properties": {
     "candidate": {

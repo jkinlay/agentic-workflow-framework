@@ -21,6 +21,7 @@ from agentic.review_first_draft import (publish_codex_tested_tree,
 from agentic.review_qualification import collect_qualification
 from agentic.providers.github_review_host import HostDriver, load_config
 from agentic.interaction import loop_next_step, next_step, render_markdown, rejected_next_step
+from agentic.provenance import validate_commit_message
 
 
 def main(argv=None):
@@ -46,6 +47,12 @@ def main(argv=None):
         digest = verify_installed(ROOT)
         config = load_config(args.config, ROOT,
                              require_qualification=args.command != 'qualify')
+        if args.command == 'first-draft':
+            canonical_title = validate_commit_message(args.title)
+            require('\n' not in canonical_title
+                    and len(canonical_title.encode('utf-8')) <= 4096,
+                    'first-draft title must be one canonical line within 4 KiB')
+            args.title = canonical_title
         require(config['runtime_manifest_sha256'] == digest, 'Runtime is not the enrolled approved release')
         driver = HostDriver(config,ROOT)
         store = LoopStore(config['state_dir'])
@@ -146,6 +153,9 @@ def main(argv=None):
                     mapping_path=Path(config['state_dir']) / 'publication-deny.json',
                     title=args.title, git_guard=git_guard,
                     publication_plan=prior_plan,
+                    provenance_check=lambda base, head: driver.validate_local_provenance(
+                        base, head,
+                        observation=driver.collect_default_branch_observation()),
                     prepare_plan=lambda plan:
                         record_first_draft_publication_plan(store, config, plan),
                     prepare_publication=lambda publication:

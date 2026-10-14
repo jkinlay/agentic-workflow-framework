@@ -8,9 +8,126 @@ from __future__ import annotations
 import os
 from pathlib import Path, PurePosixPath
 import stat
+import subprocess
+import threading
 import uuid
 
 from . import ValidationError
+
+
+def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
+                stdout_limit=8 * 1024 * 1024,
+                stderr_limit=8 * 1024 * 1024,
+                watched_files=(), watched_file_limit=1024 * 1024):
+    """Run one owned child while bounding both pipes during capture.
+
+    The readers drain concurrently, so a full stderr pipe cannot deadlock a
+    stdout-heavy command (and conversely).  On timeout or overflow only this
+    exact child is terminated; no ambient process discovery is performed.
+    """
+    if (not isinstance(argv, (list, tuple)) or not argv
+            or any(not isinstance(value, str) for value in argv)):
+        raise ValidationError("SUBPROCESS_ARGV: command arguments are invalid")
+    if not all(type(value) is int and value >= 0
+               for value in (stdout_limit, stderr_limit, watched_file_limit)):
+        raise ValidationError("SUBPROCESS_CAP: stream limits are invalid")
+    if (not isinstance(watched_files, (list, tuple))
+            or any(not isinstance(value, (str, os.PathLike))
+                   for value in watched_files)):
+        raise ValidationError("SUBPROCESS_WATCH: watched files are invalid")
+    watched = tuple(Path(value) for value in watched_files)
+    input_bytes = None
+    if stdin is not None:
+        input_bytes = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
+        if not isinstance(input_bytes, bytes):
+            raise ValidationError("SUBPROCESS_STDIN: stdin must be bytes or text")
+    process = subprocess.Popen(
+        list(argv), cwd=cwd, env=env, shell=False,
+        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    overflow = []
+
+    def drain(name, stream, limit):
+        try:
+            while True:
+                chunk = stream.read(65536)
+                if not chunk:
+                    return
+                if len(captured[name]) + len(chunk) > limit:
+                    overflow.append(name)
+                    # This is the exact child created above.  Stopping it here
+                    # prevents an endless producer from blocking on its full
+                    # pipe while preserving the rule against ambient process
+                    # discovery or signalling.
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    return
+                captured[name].extend(chunk)
+        finally:
+            stream.close()
+
+    threads = [
+        threading.Thread(target=drain, args=("stdout", process.stdout, stdout_limit), daemon=True),
+        threading.Thread(target=drain, args=("stderr", process.stderr, stderr_limit), daemon=True),
+    ]
+    monitor_stop = threading.Event()
+
+    def monitor_files():
+        while not monitor_stop.wait(0.01):
+            for path in watched:
+                try:
+                    size = path.stat().st_size
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    overflow.append("result_file")
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    return
+                if size > watched_file_limit:
+                    overflow.append("result_file")
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    return
+
+    monitor = threading.Thread(target=monitor_files, daemon=True)
+    for thread in threads:
+        thread.start()
+    monitor.start()
+    try:
+        if input_bytes is not None:
+            try:
+                process.stdin.write(input_bytes)
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        process.wait()
+        raise ValidationError("SUBPROCESS_TIMEOUT: owned child exceeded its timeout") from exc
+    finally:
+        monitor_stop.set()
+        for thread in threads:
+            thread.join(timeout=5)
+        monitor.join(timeout=5)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    if overflow:
+        code = "SUBPROCESS_" + overflow[0].upper() + "_LIMIT"
+        raise ValidationError(code + ": owned child exceeded its output cap")
+    return subprocess.CompletedProcess(
+        list(argv), process.returncode, bytes(captured["stdout"]), bytes(captured["stderr"])
+    )
 
 if os.name == "nt":
     import ctypes
@@ -44,7 +161,7 @@ if os.name == "nt":
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE = 0x10
     FILE_ATTRIBUTE_READONLY = 0x1
 
-    def win_open(path, directory=False, lock=False):
+    def win_open(path, directory=False, lock=False, allow_hardlinks=False):
         access = 0x80 if directory else (0xC0000000 if lock else 0x80000000)
         share = 3 if directory or lock else 1
         flags = 0x00200000 | (0x02000000 if directory else 0)
@@ -55,7 +172,8 @@ if os.name == "nt":
         if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
             kernel.CloseHandle(handle)
             raise OSError(ctypes.get_last_error(), f"Cannot inspect {path}")
-        if info.attributes & 0x400 or bool(info.attributes & 0x10) != directory or (not directory and info.links != 1):
+        if (info.attributes & 0x400 or bool(info.attributes & 0x10) != directory
+                or (not directory and not allow_hardlinks and info.links != 1)):
             kernel.CloseHandle(handle)
             raise ValidationError(f"Refusing link, reparse point, or wrong file type: {path}")
         return handle
@@ -164,20 +282,27 @@ class Tree:
             raise ValidationError(f"Refusing non-regular or linked file: {relative}")
         return info
 
-    def read(self, relative, maximum=64 * 1024 * 1024):
+    def read(self, relative, maximum=64 * 1024 * 1024, *, allow_hardlinks=False):
         parent, handle, name = self.parent(relative)
         if os.name == "nt":
-            raw = win_open(parent / name)
+            raw = win_open(parent / name, allow_hardlinks=allow_hardlinks)
             fd = msvcrt.open_osfhandle(raw, os.O_RDONLY | os.O_BINARY)
         else:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=handle)
         with os.fdopen(fd, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > maximum:
+            before = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(before.st_mode)
+                    or (not allow_hardlinks and before.st_nlink != 1)
+                    or before.st_size > maximum):
                 raise ValidationError("Unsafe file type/link count/size")
             data = stream.read(maximum + 1)
             if len(data) > maximum:
                 raise ValidationError("File exceeds size limit")
+            after = os.fstat(stream.fileno())
+            identity = lambda value: (value.st_dev, value.st_ino, value.st_size,
+                                      value.st_mtime_ns, value.st_nlink)
+            if identity(before) != identity(after) or after.st_size != len(data):
+                raise ValidationError("File changed during bounded read")
             return data
 
     def write(self, relative, data):

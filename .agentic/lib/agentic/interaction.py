@@ -109,13 +109,16 @@ def writer_commit_message(message, *, codex_run_id=None, script_name=None,
     checking that a ``script/*`` commit is actually mechanical and for creating
     the commit.  Non-mechanical work always requires its Codex writer run UUID.
     """
-    from .provenance import format_writer_trailer
+    from .provenance import (format_writer_trailer, parse_writer_trailer,
+                             validate_commit_message)
     require(type(mechanical) is bool, 'Mechanical commit flag must be Boolean')
-    require(isinstance(message, str) and message.strip() and '\x00' not in message,
-            'Commit message must contain concrete text')
-    require(not any(re.match(r'^writer\s*:', line, re.IGNORECASE)
-                    for line in message.splitlines()),
-            'Commit message already contains a Writer trailer')
+    message = validate_commit_message(message)
+    try:
+        existing = parse_writer_trailer(message)
+    except ValidationError as exc:
+        raise ValidationError('Commit message contains ambiguous Writer provenance: '
+                              + str(exc)) from exc
+    require(existing is None, 'Commit message already contains a Writer trailer')
     require(not (codex_run_id is not None and script_name is not None),
             'Select exactly one Codex run id or mechanical script writer')
     if not mechanical:
@@ -129,7 +132,18 @@ def writer_commit_message(message, *, codex_run_id=None, script_name=None,
         require(script_name is not None,
                 'A mechanical commit requires a Codex run id or script name')
         trailer = format_writer_trailer('script', script_name)
-    return message.rstrip() + '\n\n' + trailer
+    # Canonical construction removes empty physical records only.  It never
+    # strips SP/HT or any Unicode whitespace from meaningful input.
+    lines = message.split('\n')
+    while lines and lines[-1] == '':
+        lines.pop()
+    emitted = '\n'.join(lines) + '\n\n' + trailer
+    emitted = validate_commit_message(emitted)
+    parsed = parse_writer_trailer(emitted)
+    require(parsed is not None and parsed['kind'] == ('codex' if codex_run_id is not None else 'script')
+            and parsed['identity'] == (codex_run_id if codex_run_id is not None else script_name),
+            'Writer emitter/parser round trip failed')
+    return emitted
 
 
 def next_step(action, owner='controller', trigger='now', *, authorization=None, continue_independent_work=True):
