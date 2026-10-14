@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -11,11 +12,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 
 from agentic import ValidationError
-from agentic.providers.github_review_host import HostDriver
-from agentic.provenance import (record_owner_override,
+from agentic.providers.github_review_host import (HostDriver,
+    manifest_reproducer_sha256)
+from agentic.provenance import (check_commit_range, record_owner_override,
                                 verify_provider_owner_override,
                                 render_owner_override)
 from agentic.safeio import run_bounded
+from source_only import skip_unless_source_repo
 
 
 CODEX_THREAD_ID = '01a1317f-dadb-7071-80de-12832161734c'
@@ -136,6 +139,88 @@ class ProviderProvenanceTests(unittest.TestCase):
             sentinel.terminate()
             sentinel.wait(timeout=10)
 
+    def test_stream_overflow_kills_sleeping_producer_before_timeout(self):
+        program = ('import sys,time; '
+                   'sys.stdout.buffer.write(b"x" * (1024 * 1024)); '
+                   'sys.stdout.buffer.flush(); time.sleep(30)')
+        started = time.monotonic()
+        with self.assertRaisesRegex(ValidationError, 'STDOUT_LIMIT'):
+            run_bounded([sys.executable, '-c', program],
+                        stdout_limit=1024, stderr_limit=1024, timeout=10)
+        self.assertLess(time.monotonic() - started, 5)
+
+    @skip_unless_source_repo()
+    def test_registered_manifest_reproducer_accepts_real_generator_commit(self):
+        git = shutil.which('git')
+        if not git:
+            self.skipTest('Git unavailable')
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            subprocess.run([git, '-c', 'core.autocrlf=false', 'clone',
+                            '--quiet', '--no-hardlinks', '--no-checkout',
+                            str(ROOT), str(source)], check=True)
+            for key, value in (('core.autocrlf', 'false'),
+                               ('user.name', 'Fixture'),
+                               ('user.email', 'fixture@example.invalid'),
+                               ('commit.gpgsign', 'false')):
+                subprocess.run([git, '-C', str(source), 'config', key, value],
+                               check=True)
+            subprocess.run([git, '-C', str(source), 'checkout', '--quiet'],
+                           check=True)
+            changed_relative = '.agentic/tests/fixtures/fake_host_process.py'
+            changed = source / changed_relative
+            changed.write_text(changed.read_text(encoding='utf-8')
+                               + '\n# manifest reproducer fixture\n', encoding='utf-8',
+                               newline='\n')
+            subprocess.run([git, '-C', str(source), 'add', '--', changed_relative],
+                           check=True)
+            subprocess.run([
+                git, '-C', str(source), 'commit', '--quiet', '--message',
+                'Synthetic source baseline\n\nWriter: codex/' + CODEX_THREAD_ID,
+            ], check=True)
+            base = subprocess.run(
+                [git, '-C', str(source), 'rev-parse', 'HEAD'], check=True,
+                capture_output=True, text=True, encoding='utf-8').stdout.strip()
+            generated = subprocess.run([
+                sys.executable, '-B', str(source / 'scripts/build_release.py'),
+                '--manifest-only',
+            ], cwd=source, capture_output=True, text=True, encoding='utf-8')
+            self.assertEqual(generated.returncode, 0,
+                             generated.stdout + generated.stderr)
+            changed_paths = subprocess.run(
+                [git, '-C', str(source), 'diff', '--name-only'], check=True,
+                capture_output=True, text=True, encoding='utf-8').stdout.splitlines()
+            self.assertEqual(sorted(changed_paths), sorted(['MANIFEST.json',
+                                                            'MANIFEST.md']))
+            subprocess.run([git, '-C', str(source), 'add', '--',
+                            'MANIFEST.json', 'MANIFEST.md'], check=True)
+            subprocess.run([
+                git, '-C', str(source), 'commit', '--quiet', '--message',
+                'Regenerate manifests\n\nWriter: script/manifest-regen',
+            ], check=True)
+            head = subprocess.run(
+                [git, '-C', str(source), 'rev-parse', 'HEAD'], check=True,
+                capture_output=True, text=True, encoding='utf-8').stdout.strip()
+            driver = HostDriver.__new__(HostDriver)
+            driver.worker = source
+            driver.state = Path(directory) / 'state'
+            policy = {
+                'require_run_logs': False,
+                'default_ref': 'refs/heads/main',
+                'generated_paths': ['MANIFEST.json', 'MANIFEST.md'],
+                'generators': {'manifest-regen': {
+                    'paths': ['MANIFEST.json', 'MANIFEST.md'],
+                    'reproducer_sha256': manifest_reproducer_sha256(),
+                }},
+            }
+            observation = {'version': 1, 'base_ref': 'main', 'base': base,
+                           'pr': 1, 'labels': [], 'trusted_owner_ids': []}
+            result = check_commit_range(
+                source, base, head, reviewed_policy=policy,
+                provider_observation=observation,
+                runtime_registry=driver.register_provenance_runtime())
+            self.assertEqual(result['status'], 'PASS', result['refusals'])
+
     def test_child_result_file_is_capped_while_owned_process_runs(self):
         with tempfile.TemporaryDirectory() as directory:
             result = Path(directory) / 'result.json'
@@ -225,6 +310,18 @@ class CodexIdentityTests(unittest.TestCase):
         refused = registry['run_log_verifier'](
             CODEX_THREAD_ID, 'c' * 40, entries)
         self.assertEqual(refused['status'], 'MISMATCH')
+
+    def test_production_registry_includes_supported_manifest_reproducer(self):
+        registry = self.driver.register_provenance_runtime()
+        registered = registry['generators']['manifest-regen']
+        self.assertRegex(registered['reproducer_sha256'], r'^[0-9a-f]{64}$')
+        self.assertNotEqual(registered['reproducer_sha256'], '0' * 64)
+        self.assertTrue(callable(registered['callable']))
+        configured = json.loads(
+            (ROOT / '.agentic/review-loop/host-config.example.json').read_text(
+                encoding='utf-8'))['provenance']['generators']['manifest-regen']
+        self.assertEqual(configured['reproducer_sha256'],
+                         registered['reproducer_sha256'])
 
     def test_revalidation_rejects_grown_log_before_reading_it(self):
         self.driver._record_codex_identity(
