@@ -176,6 +176,56 @@ class ControllerPlanningTests(unittest.TestCase):
         self.assertEqual(first["record"], state["current_plan"])
         self.assertEqual(1, len(state["planning_history"]))
 
+    def test_scheduler_admits_only_one_startable_ticket_from_each_selected_lane(self):
+        planning_tickets = [
+            planning_ticket("AWF-A", "src/left.py"),
+            planning_ticket("AWF-B", "src/left.py", write_paths=[
+                "src/left.py", "src/right.py",
+            ]),
+            planning_ticket("AWF-C", "src/right.py"),
+            planning_ticket("AWF-D", "src/independent.py"),
+        ]
+        temporary = tempfile.TemporaryDirectory(prefix="awf-controller-lane-identity-")
+        self.addCleanup(temporary.cleanup)
+        store = ContinuousControllerStore(Path(temporary.name) / "state.sqlite3", ["A", "B"])
+        record = store.recompute_lane_plan(
+            planning_tickets, config(2), now=NOW, trigger="project_start",
+        )["record"]
+        self.assertEqual(
+            [["AWF-A", "AWF-B", "AWF-C"], ["AWF-D"]],
+            [lane["ticket_keys"] for lane in record["lanes"]],
+        )
+
+        rows = store.schedule([
+            controller_ticket("AWF-A", "src/left.py", 1),
+            controller_ticket("AWF-B", "src/left.py", 2,
+                              paths=["src/left.py", "src/right.py"]),
+            controller_ticket("AWF-C", "src/right.py", 3),
+            controller_ticket("AWF-D", "src/independent.py", 4),
+        ], NOW, host_capacity=2, planning_record=record)
+        self.assertEqual(
+            {"AWF-A", "AWF-D"},
+            {row["ticket"] for row in rows if row["state"] == "WORKING"},
+        )
+
+        second = ContinuousControllerStore(
+            Path(temporary.name) / "next-startable.sqlite3", ["A", "B"])
+        second_record = second.recompute_lane_plan(
+            planning_tickets, config(2), now=NOW, trigger="project_start",
+        )["record"]
+        rows = second.schedule([
+            controller_ticket("AWF-A", "src/left.py", 1,
+                              dependencies_satisfied=False),
+            controller_ticket("AWF-B", "src/left.py", 2,
+                              paths=["src/left.py", "src/right.py"]),
+            controller_ticket("AWF-C", "src/right.py", 3),
+            controller_ticket("AWF-D", "src/independent.py", 4),
+        ], NOW, host_capacity=2, planning_record=second_record)
+        self.assertEqual(
+            {"AWF-B", "AWF-D"},
+            {row["ticket"] for row in rows if row["state"] == "WORKING"},
+        )
+
 
 class ScopedOverlapAllowanceTests(unittest.TestCase):
     def allowance(self, path="src/shared.py", prs=(11, 12)):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 import sys
 import tempfile
@@ -49,12 +50,44 @@ class OperatingConfigGenerationTests(unittest.TestCase):
         global generate_contracts
         import generate_contracts  # noqa: E402
 
-    def contracts(self, schema):
+    def contracts(self, schema, name="operating-config"):
         temporary = tempfile.TemporaryDirectory(prefix="awf-operating-schema-")
         self.addCleanup(temporary.cleanup)
-        path = Path(temporary.name) / "operating-config.schema.json"
+        path = Path(temporary.name) / f"{name}.schema.json"
         path.write_text(json.dumps(schema), encoding="utf-8")
         return Contracts(path.parent)
+
+    def test_project_config_schema_accepts_optional_positive_lane_ceiling(self):
+        schema = generate_contracts.catalog()["project-config"]
+        execution = schema["properties"]["execution"]
+        maximum = execution["properties"]["max_lanes"]
+        self.assertEqual("integer", maximum["type"])
+        self.assertEqual(1, maximum["minimum"])
+        self.assertGreaterEqual(maximum["maximum"], 8)
+        self.assertNotIn("max_lanes", execution["required"])
+
+        generated = self.contracts(schema, "project-config")
+        shipped = Contracts(ROOT / ".agentic/schemas")
+        base = json.loads(
+            (ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8")
+        )
+        base["execution"].pop("max_lanes", None)
+        generated.validate("project-config", base)
+        shipped.validate("project-config", base)
+
+        configured = deepcopy(base)
+        configured["execution"]["max_lanes"] = 8
+        generated.validate("project-config", configured)
+        shipped.validate("project-config", configured)
+
+        for value in (0, -1, True, "8", None):
+            malformed = deepcopy(base)
+            malformed["execution"]["max_lanes"] = value
+            with self.subTest(value=value):
+                with self.assertRaises(ValidationError):
+                    generated.validate("project-config", malformed)
+                with self.assertRaises(ValidationError):
+                    shipped.validate("project-config", malformed)
 
     def test_default_schema_enforces_default_six_lane_ceiling(self):
         schema = generate_contracts.catalog()["operating-config"]
