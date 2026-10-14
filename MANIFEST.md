@@ -364,7 +364,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_review_completion.py` | `a0616eb2af069e793b42664d4055ff09c3ac5234c5b607cdc23ebeac354ecd18` |
 | `.agentic/tests/test_review_first_draft194.py` | `df4b17c45508040463e911d3f47c825be8141bf055c95a4e4a42e667499ee506` |
 | `.agentic/tests/test_review_loop.py` | `bb8b07b4dcc80dd9c33fc4ba23bd7228f590567ffe77f83c41066635b684f2e1` |
-| `.agentic/tests/test_review_policy.py` | `c1fa1d6f8cfae13e36f4cd9c5132b99394c0f02601d70e8ca2666231ec576918` |
+| `.agentic/tests/test_review_policy.py` | `71c92890272ae871e918b3fc76786ebe9d1b532fe4d50e363475a8066b97f109` |
 | `.agentic/tests/test_review_qualification.py` | `5c5e87c06f87fca38e1b86399fcfcda66771620bb0bee9b051a9287e3bf8def7` |
 | `.agentic/tests/test_review_tiers_194.py` | `5d6fbb5f4e45af267574bcc225e1e1dd2d4fe6e8b6e0cbe2f28b56c72417c516` |
 | `.agentic/tests/test_review_tiers_195_evidence_binding.py` | `11eeb7f9bcb129de1722f1224730f085f58cedb4e9d9e613c32012e205b9c016` |
