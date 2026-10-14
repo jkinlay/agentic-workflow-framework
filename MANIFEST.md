@@ -134,7 +134,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/review_tiers.py` | `052afd917a92c4c655189e90ec43d6a0c10d026ea261949b4b98f96d5cca38fa` |
 | `.agentic/lib/agentic/rules_activation.py` | `f9c5ccdfc309acc13ec998466d458ee9898298f692d19a6309bfbaf3fb76d7cb` |
 | `.agentic/lib/agentic/runtime_commands.py` | `eb27595fef937177ceecbf16e7754a01937f3b9eb4a4a482999c530f23587841` |
-| `.agentic/lib/agentic/safeio.py` | `34a3d6c078f71cd4e41578568eb69418be4cb3d082c867c057fe0157781d0feb` |
+| `.agentic/lib/agentic/safeio.py` | `009183deb93f6c07cf01120ddbc9963adc47671e5cce46c7fcc17924af62b7a1` |
 | `.agentic/lib/agentic/store.py` | `91287fc2aa44e9db2b1343027baa6f32e0660a838db54f8dd628b1caf0336b6c` |
 | `.agentic/lib/agentic/streams.py` | `e30cc2b0a58d0ff86d2ece527cd2d4df337ebbe354c7ff1116f87587d8f2f64c` |
 | `.agentic/lib/agentic/upgrade.py` | `f1814d9bfc02e8e1a5336fd0d84c94ead1a017a6bae7f3f40305c28e48ad6988` |
