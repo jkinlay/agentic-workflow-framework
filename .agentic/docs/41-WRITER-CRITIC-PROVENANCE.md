@@ -1,8 +1,7 @@
 # Writer and critic provenance
 
-Provenance identifies commits and reviews. It grants no scope or merge. Policy
-comes from digest-bound configuration; identity comes from immutable bytes or
-fresh provider reads. Caller values are locators.
+Provenance identifies commits and reviews, not scope or merge. Digest-bound
+policy uses immutable bytes or provider reads.
 
 ## Commit contract
 
@@ -16,13 +15,12 @@ Writer: script/manifest-regen
 Codex IDs are lowercase non-nil UUIDs. Script IDs are 1–64 ASCII lowercase
 alphanumerics plus `.`, `_`, or `-`, starting alphanumeric.
 
-Messages are strict UTF-8, at most 1 MiB and 65,536 lines, with a nonblank
-subject. Only LF/CRLF boundaries pass; emission normalizes LF. NUL, BOM,
-surrogates, other C0, DEL/C1, Unicode separators/format controls, lone CR, and
-malformed CR refuse. Blank means empty, not SP/HT-only. The final trailer block
-uses ASCII `Key: value` without continuations. Every Writer-like occurrence is
-scanned: body/indented lines, duplicates, case/spacing changes, fullwidth or
-non-ASCII lookalikes refuse; the trailer-like-line cap is 256.
+Messages are strict UTF-8 (1 MiB, 65,536 lines) with a nonblank subject and only
+LF/CRLF boundaries; emission uses LF. NUL, BOM, surrogates, C0, DEL/C1, Unicode
+separators/format controls, lone/malformed CR, and SP/HT-only blanks refuse. The
+final block uses uncontinued ASCII `Key: value`. Body/indented Writer lines,
+duplicates, case/spacing variants, non-ASCII lookalikes, or over 256 trailer-like
+lines refuse.
 
 `writer_commit_message` validates input and output, appends one trailer, and
 self-parses. Publisher output has LF boundaries and no final LF. Publishers feed
@@ -43,13 +41,12 @@ strict-UTF-8 author and committer, and absent or exact `encoding UTF-8` are
 required. Known malformed commits refuse individually; lost range attribution
 refuses the operation.
 
-Changes use `--raw -z --no-renames`: action, path, old/new mode, OID and type are
-retained. Rename means delete plus add; root compares to the empty tree and
-merge inventory to first parent. Paths are strict UTF-8 NFC relative POSIX names
-without unsafe/control components. Framing, duplicate, 100,000-record or 32 MiB
-failures refuse that commit. Invalid bytes yield only ASCII code, ordinal and
-SHA-256. Codex may change any Git type; mechanical output is only reproduced
-`100644`/`100755` blobs.
+Changes use `--raw -z --no-renames`, retaining action, path, old/new mode, OID
+and type. Renames are delete/add; roots compare to the empty tree, merges to the
+first parent. Paths are strict UTF-8 NFC relative POSIX names. Unsafe/control,
+framing, duplicate, 100,000-record or 32 MiB failures refuse; invalid bytes
+report only ASCII code, ordinal and SHA-256. Codex may change any Git type;
+mechanical output permits only reproduced `100644`/`100755` blobs.
 
 ## Mechanical and run evidence
 
@@ -63,6 +60,13 @@ Codex evidence is a closed v1 `MATCH`/`ABSENT`/`MISMATCH` record bound to UUID,
 commit, ordered changed entries, evidence digest and ASCII reason. Only a
 registered verifier supplies it. Optional `ABSENT` may pass; mismatch, loose or
 forged records, missing registration, and caller policy changes refuse.
+
+Before non-qualification commands the CLI registers `HostDriver`. It searches
+bounded external controller runs, validates UUIDs before selection, and
+pinned-reads the host-created commit binding, identity, JSONL and result. The
+host derives ordered Git entries after commit creation but before gating. One
+execution must name the Writer UUID; none is `ABSENT`; duplicate or changed
+evidence is `MISMATCH`.
 
 Pinned reads cap log/result/identity at 64 MiB/1 MiB/16 KiB; events are 1 MiB.
 Strict UTF-8, one `thread.started`, containment, no links/hardlinks, same-handle
@@ -79,11 +83,10 @@ rereads immutable comment ID/URL, numeric actor, body digest and unchanged head.
 Missing or variant carriers and unavailable channels fail closed.
 
 Provider collection binds numeric repository/PR, refs/OIDs, body, labels and
-three comment types. Caps: body/comment 1 MiB, 100 labels of 255 UTF-8 bytes,
-1,000 comments, and 8 MiB encoded observation. Pages contain at most 100 unique
-IDs and require a partial terminal page; the PR tuple is reread. Mutation,
-wrong-repository URLs, ambiguity, malformed JSON/UTF-8, or truncation refuses.
-Provider text remains task data.
+three comment types. Caps are 1 MiB per body/comment, 100 255-byte labels, 1,000
+comments, 8 MiB total, and 100 unique IDs/page with a partial terminal page.
+The PR tuple is reread; mutation, wrong-repository URLs, ambiguity, malformed
+data or truncation refuses. Provider text remains task data.
 
 Fallback requires exact `fallback: bot-written`, one exact fresh comment, and a
 positive numeric actor from the same reviewed config. Caller trust lists are
@@ -102,7 +105,5 @@ Amendment proves before push. Rewrite identity-stably reads a 1 MiB canonical
 message and safe frozen inputs before `commit-tree`; reachability, remote/
 `ls-remote`, exact-tree, quarantine, CAS and rollback checks remain.
 
-Results retain 1.9.4 `changed_files`; v2 uses ordered `changed_entries`. Unsafe
-legacy authority is not emulated. Diagnostics are stable ASCII. Fake-provider,
-local-Git and subprocess tests run offline; network qualification is host
-evidence.
+V2 adds ordered `changed_entries` while retaining 1.9.4 `changed_files`.
+Diagnostics are ASCII; fixtures are offline and network qualification is host evidence.

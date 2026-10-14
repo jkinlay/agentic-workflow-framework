@@ -21,7 +21,8 @@ from ..operating import is_awf_source_repository as has_awf_source_identity
 from ..path_containment import is_within, relative_within
 from ..provenance import (format_writer_trailer, parse_critic_run_carrier,
                           validate_critic_run_binding, decode_git_paths,
-                          parse_writer_trailer, check_commit_range)
+                          parse_writer_trailer, check_commit_range,
+                          _Git, _commit_details)
 from ..review_loop import ValidationError, require
 from .. import review_qualification
 from ..safeio import Tree, run_bounded
@@ -254,6 +255,146 @@ class HostDriver:
         self.url = f"https://github.com/{config['repository']}.git"
 
     @staticmethod
+    def _controller_run_id(value):
+        """Validate a controller UUID before it can select a state path."""
+        require(isinstance(value, str) and value == value.strip(),
+                'controller run id must be a canonical UUID')
+        try:
+            parsed = uuid.UUID(value)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValidationError(
+                'controller run id must be a canonical UUID') from exc
+        require(str(parsed) == value,
+                'controller run id must be a canonical lowercase UUID')
+        require(parsed.int != 0, 'controller run id must not be nil')
+        return value
+
+    def _record_run_log(self, controller_run_id, commit_sha, entries):
+        """Persist a commit binding after the host derives its Git inventory."""
+        self._controller_run_id(controller_run_id)
+        require(isinstance(commit_sha, str)
+                and re.fullmatch(r'[0-9a-f]{40}(?:[0-9a-f]{24})?', commit_sha),
+                'Run-log commit id is invalid')
+        require(isinstance(entries, list), 'Run-log entries must be a list')
+        binding = self.codex_binding(controller_run_id)
+        run_root = (self.state / 'runs' / controller_run_id).resolve(strict=True)
+        with Tree(run_root) as tree:
+            identity_raw = tree.read('codex-identity.json', maximum=16 * 1024)
+            core = {
+                'version': 1,
+                'controller_run_id': controller_run_id,
+                'codex_run_id': binding['codex_run_id'],
+                'commit_sha': commit_sha,
+                'entries': entries,
+                'identity_sha256': sha256(identity_raw),
+                'result_sha256': binding['result_sha256'],
+            }
+            record = {**core, 'evidence_sha256': sha256(json.dumps(
+                core, ensure_ascii=False, sort_keys=True,
+                separators=(',', ':')).encode('utf-8'))}
+            raw = (json.dumps(record, ensure_ascii=False, indent=2,
+                              sort_keys=True) + '\n').encode('utf-8')
+            if tree.inspect('commit-run-log.json') is not None:
+                require(tree.read('commit-run-log.json', maximum=1024 * 1024)
+                        == raw, 'Retained commit run-log binding changed')
+            else:
+                tree.write('commit-run-log.json', raw)
+        return record
+
+    def register_commit_run_log(self, controller_run_id, commit_sha):
+        """Derive and persist the exact commit inventory for a worker run."""
+        details = _commit_details(_Git(self.worker), commit_sha)
+        return self._record_run_log(
+            controller_run_id, commit_sha, details['changed_entries'])
+
+    def _retained_run_log(self, run_id, commit_sha, entries):
+        """Reopen retained controller evidence for one Codex Writer UUID."""
+        format_writer_trailer('codex', run_id)
+        require(isinstance(commit_sha, str)
+                and re.fullmatch(r'[0-9a-f]{40}(?:[0-9a-f]{24})?', commit_sha),
+                'Run-log commit id is invalid')
+        require(isinstance(entries, list), 'Run-log entries must be a list')
+        absent = {'version': 1, 'status': 'ABSENT', 'run_id': run_id,
+                  'commit_sha': commit_sha, 'entries': entries,
+                  'evidence_sha256': None,
+                  'reason_code': 'RUN_LOG_ABSENT'}
+        runs = self.state / 'runs'
+        if not runs.exists():
+            return absent
+        require(runs.is_dir() and not runs.is_symlink(),
+                'Controller run registry is unsafe')
+        matches = []
+        children = sorted(runs.iterdir(), key=lambda path: path.name)
+        require(len(children) <= 10000,
+                'Controller run registry exceeds 10000 records')
+        fields = {'version', 'controller_run_id', 'codex_run_id',
+                  'commit_sha', 'entries', 'identity_sha256',
+                  'result_sha256', 'evidence_sha256'}
+        for child in children:
+            require(child.is_dir() and not child.is_symlink(),
+                    'Controller run registry contains an unsafe entry')
+            controller_run_id = self._controller_run_id(child.name)
+            with Tree(child) as tree:
+                if tree.inspect('commit-run-log.json') is None:
+                    continue
+                raw = tree.read('commit-run-log.json', maximum=1024 * 1024)
+                try:
+                    record = loads(raw.decode('utf-8', 'strict'))
+                except (UnicodeDecodeError, ValueError) as exc:
+                    raise ValidationError(
+                        'Controller run registry contains malformed run-log evidence') from exc
+                require(isinstance(record, dict) and set(record) == fields
+                        and record.get('version') == 1
+                        and record.get('controller_run_id') == controller_run_id,
+                        'Controller run registry contains malformed run-log evidence')
+                core = {key: value for key, value in record.items()
+                        if key != 'evidence_sha256'}
+                expected = sha256(json.dumps(
+                    core, ensure_ascii=False, sort_keys=True,
+                    separators=(',', ':')).encode('utf-8'))
+                require(record['evidence_sha256'] == expected,
+                        'Controller run registry contains stale run-log evidence')
+                if record['codex_run_id'] != run_id:
+                    continue
+                try:
+                    binding = self.codex_binding(controller_run_id)
+                    identity_raw = tree.read(
+                        'codex-identity.json', maximum=16 * 1024)
+                    valid = (binding['codex_run_id'] == run_id
+                             and binding['result_sha256'] == record['result_sha256']
+                             and sha256(identity_raw) == record['identity_sha256'])
+                except (OSError, ValidationError, UnicodeDecodeError, ValueError):
+                    valid = False
+                if not valid:
+                    return {'version': 1, 'status': 'MISMATCH',
+                            'run_id': run_id, 'commit_sha': commit_sha,
+                            'entries': entries,
+                            'evidence_sha256': record['evidence_sha256'],
+                            'reason_code': 'RUN_LOG_EVIDENCE_MISMATCH'}
+                matches.append(record)
+        if not matches:
+            return absent
+        exact = [record for record in matches
+                 if record['commit_sha'] == commit_sha
+                 and record['entries'] == entries]
+        status = 'MATCH' if len(matches) == 1 and len(exact) == 1 else 'MISMATCH'
+        digest = sha256(json.dumps(
+            matches, ensure_ascii=False, sort_keys=True,
+            separators=(',', ':')).encode('utf-8'))
+        return {'version': 1, 'status': status, 'run_id': run_id,
+                'commit_sha': commit_sha, 'entries': entries,
+                'evidence_sha256': digest,
+                'reason_code': ('RUN_LOG_MATCH' if status == 'MATCH'
+                                else 'RUN_LOG_CANDIDATE_MISMATCH')}
+
+    def register_provenance_runtime(self):
+        """Install the production verifier backed by retained controller runs."""
+        registry = {'run_log_verifier': self._retained_run_log,
+                    'generators': {}}
+        self.provenance_registry = registry
+        return registry
+
+    @staticmethod
     def _bounded_result(path, run_root):
         path = Path(path)
         run_root = Path(run_root).resolve(strict=True)
@@ -366,7 +507,7 @@ class HostDriver:
 
     def _record_codex_identity(self, controller_run_id, run_root, execution, output):
         """Persist a re-verifiable controller-run -> Codex-thread binding."""
-        format_writer_trailer('codex', controller_run_id)
+        self._controller_run_id(controller_run_id)
         run_root = Path(run_root).resolve(strict=True)
         execution = Path(execution).resolve(strict=True)
         require(execution == run_root or execution.is_relative_to(run_root),
@@ -379,6 +520,7 @@ class HostDriver:
             log_relative = log.relative_to(run_root).as_posix()
             log_raw = tree.read(log_relative, maximum=CODEX_LOG_LIMIT)
         codex_run_id = self._codex_thread_id(log)
+        format_writer_trailer('codex', codex_run_id)
         record = {
             'version': 1,
             'controller_run_id': controller_run_id,
@@ -403,7 +545,7 @@ class HostDriver:
 
     def codex_run_id(self, controller_run_id):
         """Revalidate and return a durably bound Codex execution identity."""
-        format_writer_trailer('codex', controller_run_id)
+        self._controller_run_id(controller_run_id)
         try:
             run_root = (self.state / 'runs' / controller_run_id).resolve(strict=True)
         except OSError as exc:
@@ -848,7 +990,6 @@ class HostDriver:
         return files
 
     def agent(self, role, candidate, findings, run_id, files=None):
-        format_writer_trailer('codex', run_id)
         run = self.state / 'runs' / run_id
         run.mkdir(parents=True, exist_ok=False)
         payload = {'candidate':candidate,'prior_findings':findings,'changed_files':files,
@@ -889,19 +1030,8 @@ class HostDriver:
                     finding.setdefault('supersedes', None)
         from jsonschema import Draft202012Validator
         Draft202012Validator(loads((self.root / f'.agentic/review-loop/{role}-result.schema.json').read_text())).validate(value)
-        observed = self._record_codex_identity(run_id, run, run, output)
-        if role == 'critic':
-            binding = self.codex_binding(run_id)
-            carrier = f'Critic run: {observed}'
-            parse_critic_run_carrier(carrier)
-            self._critic_bindings = getattr(self, '_critic_bindings', {})
-            self._critic_bindings[run_id] = {
-                'controller_run_id': run_id,
-                'critic_run_id': observed,
-                'head_sha': candidate['head'],
-                'result_sha256': binding['result_sha256'],
-                'critic_run_carrier': carrier,
-            }
+        if role == 'worker':
+            self._record_codex_identity(run_id, run, run, output)
         return value
 
     def qualification_agent(self, role, record_id, probe):
@@ -1028,6 +1158,7 @@ class HostDriver:
     def first_draft_worker(self, *, run_id=None, expected_git_controls=None):
         """Run the pinned worker against the configured first-draft checkout."""
         run_id = run_id or str(uuid.uuid4())
+        self._controller_run_id(run_id)
         run_root = self.state / 'runs' / run_id
         run = run_root
         if run.exists():
@@ -1067,6 +1198,7 @@ class HostDriver:
         return value
 
     def review(self, candidate, findings, run_id, files):
+        self._controller_run_id(run_id)
         observation = self.collect_provenance_observation()
         require(observation.get('head') == candidate['head']
                 and observation.get('base') == candidate['base']
@@ -1077,6 +1209,20 @@ class HostDriver:
                                        observation=observation)
         git_config = self.git(self.critic,'config','--list','--includes','--null')
         report = self.agent('critic',candidate,findings,run_id,files)
+        run = self.state / 'runs' / run_id
+        observed = self._record_codex_identity(
+            run_id, run, run, run / 'result.json')
+        binding = self.codex_binding(run_id)
+        carrier = f'Critic run: {observed}'
+        parse_critic_run_carrier(carrier)
+        self._critic_bindings = getattr(self, '_critic_bindings', {})
+        self._critic_bindings[run_id] = {
+            'controller_run_id': run_id,
+            'critic_run_id': observed,
+            'head_sha': candidate['head'],
+            'result_sha256': binding['result_sha256'],
+            'critic_run_carrier': carrier,
+        }
         binding = getattr(self, '_critic_bindings', {}).get(run_id)
         require(binding is not None, 'Critic execution has no observed artifact binding')
         validate_critic_run_binding({
@@ -1101,6 +1247,7 @@ class HostDriver:
         return report
 
     def amend(self, candidate, findings, run_id):
+        self._controller_run_id(run_id)
         self.preflight(candidate)
         require(self.snapshot() == candidate, 'PR moved before amendment')
         git_controls = self.repository_git_controls(self.worker)
@@ -1159,6 +1306,7 @@ class HostDriver:
                 f'(actual_len={len(raw_message)} expected_len={len(expected_message)} '
                 f'actual_sha256={sha256(raw_message)} expected_sha256={sha256(expected_message)})')
         parse_writer_trailer(raw_message.decode('utf-8', 'strict'))
+        self.register_commit_run_log(run_id, new_head)
         observation = self.collect_provenance_observation()
         require(observation.get('head') == candidate['head']
                 and observation.get('base') == candidate['base'],

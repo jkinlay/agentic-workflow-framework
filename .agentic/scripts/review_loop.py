@@ -55,6 +55,8 @@ def main(argv=None):
             args.title = canonical_title
         require(config['runtime_manifest_sha256'] == digest, 'Runtime is not the enrolled approved release')
         driver = HostDriver(config,ROOT)
+        if args.command != 'qualify':
+            driver.register_provenance_runtime()
         store = LoopStore(config['state_dir'])
         if args.command == 'qualify':
             value = collect_qualification(
@@ -131,6 +133,13 @@ def main(argv=None):
                 return receipt
             def git_guard():
                 driver.require_first_draft_git_controls(git_controls)
+            def provenance_check(base, head):
+                require(writer_reservation_id is not None,
+                        'First-draft provenance has no reserved controller run id')
+                driver.register_commit_run_log(writer_reservation_id, head)
+                return driver.validate_local_provenance(
+                    base, head,
+                    observation=driver.collect_default_branch_observation())
             class GitAdapter:
                 def run(self, *git_args):
                     return driver.git(driver.worker, *git_args)
@@ -153,9 +162,7 @@ def main(argv=None):
                     mapping_path=Path(config['state_dir']) / 'publication-deny.json',
                     title=args.title, git_guard=git_guard,
                     publication_plan=prior_plan,
-                    provenance_check=lambda base, head: driver.validate_local_provenance(
-                        base, head,
-                        observation=driver.collect_default_branch_observation()),
+                    provenance_check=provenance_check,
                     prepare_plan=lambda plan:
                         record_first_draft_publication_plan(store, config, plan),
                     prepare_publication=lambda publication:
