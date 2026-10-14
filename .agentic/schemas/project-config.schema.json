@@ -462,6 +462,11 @@
           "minimum": 1,
           "maximum": 9007199254740991
         },
+        "max_lanes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
         "child_env_strip_extra": {
           "type": "array",
           "items": {

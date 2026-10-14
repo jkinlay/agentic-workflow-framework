@@ -918,6 +918,13 @@ class ContinuousControllerStore:
                 current = self._planning_state(db).get("current_plan")
                 _require(current == planning_record,
                          "Lane start requires the exact current controller-owned plan")
+                active_tickets = {
+                    row[0] for row in db.execute(
+                        "SELECT ticket FROM stream_status "
+                        "WHERE state='WORKING' AND ticket IS NOT NULL")
+                }
+                tickets = _apply_current_plan_to_inventory(
+                    tickets, planning_record, active_tickets)
                 overlap_allowances = _revalidated_applied_allowances(
                     planning_record.get("applied_overlap_allowances", []),
                     tickets, observe_pr, expected_repository_id, now)
@@ -1116,6 +1123,13 @@ class ContinuousControllerStore:
                 planning.verify_plan_record(planning_record)
                 _require(self._planning_state(db).get("current_plan") == planning_record,
                          "Lane refill requires the exact current controller-owned plan")
+                active_tickets = {
+                    active[0] for active in db.execute(
+                        "SELECT ticket FROM stream_status "
+                        "WHERE state='WORKING' AND ticket IS NOT NULL")
+                }
+                tickets = _apply_current_plan_to_inventory(
+                    tickets, planning_record, active_tickets)
                 overlap_allowances = _revalidated_applied_allowances(
                     planning_record.get("applied_overlap_allowances", []),
                     tickets, observe_pr, expected_repository_id, now)
@@ -1631,7 +1645,7 @@ def _controller_planning_tickets(tickets, active_tickets):
 
 
 def _apply_current_plan_to_inventory(tickets, record, active_tickets):
-    """Rank and cap newly startable work without disturbing active tickets."""
+    """Admit the first currently startable ticket from each selected lane."""
     from . import planning
 
     planning.verify_plan_record(record)
@@ -1643,21 +1657,47 @@ def _apply_current_plan_to_inventory(tickets, record, active_tickets):
     order = [key for lane in selected_lanes for key in lane.get("ticket_keys", [])]
     _require(len(order) == len(set(order)),
              "Controller planning record assigns one ticket to multiple lanes")
-    rank = {ticket: index for index, ticket in enumerate(order)}
+    inventory = {item["ticket"]: item for item in tickets}
+    admitted = {}
+    lane_members = {}
+    for lane_rank, lane in enumerate(selected_lanes):
+        keys = lane.get("ticket_keys", [])
+        label = lane.get("label")
+        _require(isinstance(keys, list) and keys and
+                 isinstance(label, str) and label,
+                 "Controller planning record has malformed lane identity")
+        lane_members.update({key: label for key in keys})
+        if any(key in active_tickets for key in keys):
+            continue
+        for key in keys:
+            item = inventory.get(key)
+            if (item is not None and item["disposition"] == "ELIGIBLE" and
+                    all(item[field] for field in (
+                        "dependencies_satisfied", "budget_available",
+                        "cap_available", "review_independent"))):
+                admitted[key] = (lane_rank, label)
+                break
     planned = []
     for item in tickets:
         if (item["ticket"] in active_tickets or
                 item["disposition"] != "ELIGIBLE" or
-                item["ticket"] in rank):
+                item["ticket"] in admitted):
             ranked = dict(item)
-            if item["ticket"] in rank and item["ticket"] not in active_tickets:
-                ranked["priority"] = rank[item["ticket"]]
+            if item["ticket"] in admitted and item["ticket"] not in active_tickets:
+                ranked["priority"] = admitted[item["ticket"]][0]
             planned.append(ranked)
             continue
+        label = lane_members.get(item["ticket"])
+        if label is not None:
+            reason = f"Blocked because planned lane {label} admits at most its first currently startable ticket"
+            next_action = f"Wait for the active ticket in planned lane {label} to finish or become ineligible"
+        else:
+            reason = "Blocked by the current audited lane plan and governed lane ceiling"
+            next_action = "Wait for the next audited plan or a higher-ranked lane to complete"
         planned.append({
             **item, "disposition": "BLOCKED",
-            "reason": "Blocked by the current audited lane plan and governed lane ceiling",
-            "next_action": "Wait for the next audited plan or a higher-ranked lane to complete",
+            "reason": reason,
+            "next_action": next_action,
             "resume_trigger": "the current round ends and the controller recomputes the lane plan",
         })
     return planned

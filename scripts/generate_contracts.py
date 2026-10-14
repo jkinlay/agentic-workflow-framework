@@ -783,6 +783,7 @@ def catalog(max_lanes=DEFAULT_MAX_LANES):
            "base_branch": text(), "branch_pattern": text(), "merge_method": enum("merge", "squash", "rebase"),
            "draft_pr_first": TRUE, "one_repository_per_controller": TRUE}),
         "execution": obj({"profile": const("manual_reference"), "max_parallel_tickets": integer(1),
+           "max_lanes": integer(1),
            "child_env_strip_extra": arr(text(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), 0, uniqueItems=True),
            "native_streams": obj({"enabled": BOOL, "dispatch_policy": const("ready_independent")}),
            "max_parallel_tickets_per_stream": integer(1), "max_agent_runs_per_ticket": integer(1),
@@ -830,7 +831,7 @@ def catalog(max_lanes=DEFAULT_MAX_LANES):
     # Current governance keys are optional for upgraded 1.8.9 configurations; the
     # code applies the documented defaults when they are absent. Bootstrap writes them.
     execution = schemas["project-config"]["properties"]["execution"]
-    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions", "route_capabilities", "child_env_strip_extra"]),
+    for container, keys in ((execution, ["risk_tiers", "max_cap_extensions", "route_capabilities", "child_env_strip_extra", "max_lanes"]),
                             (execution["properties"]["host_broker"], ["resources"]),
                             (jira, ["lifecycle_writes", "owner_closure_keywords"]),
                             (schemas["project-config"]["properties"]["validation"]["properties"]["required_ci_checks"]["items"], ["verifies_history", "local_command"])):
