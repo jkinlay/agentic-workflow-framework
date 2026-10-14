@@ -7,8 +7,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
+from agentic.canonical import fingerprint
 from agentic.review_policy import authorize_tier3_round
 from agentic.review_tiers import review_decision
+from test_review_policy import Fixture
+import test_review_tiers_195_gates as gate_fixtures
 
 
 CAP = 3
@@ -20,6 +23,10 @@ ROUND_STARTED_AT = "2026-10-13T17:33:00Z"
 CANONICAL = (
     "AWF-OVERCAP-APPROVAL: round 4 of cap 3, approver 1001, "
     "ruling 2026-10-13T17:31:00Z"
+)
+GATE_CANONICAL = (
+    "AWF-OVERCAP-APPROVAL: round 4 of cap 3, approver 1001, "
+    "ruling 2026-09-09T11:57:00Z"
 )
 
 
@@ -50,6 +57,16 @@ class Tier3OvercapApprovalTests(unittest.TestCase):
 
     def test_canonical_owner_record_allows_exact_round(self):
         self.assertTrue(self.authorize([self.comment()]))
+
+    def test_review_decision_admits_the_approved_round(self):
+        result = review_decision(
+            3,
+            ROUND,
+            overcap_approvals=[self.comment()],
+            trusted_owner_ids=[OWNER],
+            round_started_at=ROUND_STARTED_AT,
+        )
+        self.assertEqual("OWNER_REVIEW_REQUIRED", result["status"])
 
     def test_record_allows_only_its_named_round(self):
         with self.assertRaisesRegex(ValidationError, "canonical owner approval"):
@@ -110,6 +127,62 @@ class Tier3OvercapApprovalTests(unittest.TestCase):
         self.assertEqual("CONTINUE", review_decision(2, 1)["status"])
         with self.assertRaises(ValidationError):
             review_decision(2, 4)
+
+
+class Tier3OvercapGateTests(Fixture):
+    """Exercise the production final-gate round-admission call path."""
+
+    def setUp(self):
+        super().setUp()
+        gate_fixtures.ReviewTiers195GateTests._tier_three_candidate(self)
+        gate_fixtures.ReviewTiers195GateTests._review_history(
+            self, 4, historical_tier=3, terminal_tier=3,
+        )
+
+    def approval(self, *, body=GATE_CANONICAL, actor_id=OWNER,
+                 created_at="2026-09-09T11:58:00Z"):
+        return {
+            "channel": "github_pr_comment",
+            "comment_id": 41,
+            "repository_id": self.bundle["candidate"]["repository_id"],
+            "pr_number": self.bundle["candidate"]["pr_number"],
+            "actor_id": actor_id,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "raw_body": body,
+        }
+
+    def gate(self):
+        return gate_fixtures.ReviewTiers195GateTests._owner_gate(self)
+
+    def _owner_review(self, *, provider_evidence=True):
+        return gate_fixtures.ReviewTiers195GateTests._owner_review(
+            self, provider_evidence=provider_evidence,
+        )
+
+    def _refresh_owner_posting_receipt(self, registry):
+        return gate_fixtures.ReviewTiers195GateTests._refresh_owner_posting_receipt(
+            self, registry,
+        )
+
+    def test_final_gate_admits_canonical_owner_approved_round_four(self):
+        self.bundle["overcap_approvals"] = [self.approval()]
+        gate = self.gate()
+        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", gate["conclusion"])
+        self.assertIn(
+            "urn:awf:input:overcap_approvals:"
+            + fingerprint("gate-input", self.bundle["overcap_approvals"]),
+            gate["gates"]["critic_current_tuple"]["evidence"],
+        )
+
+    def test_final_gate_refuses_missing_or_wrong_candidate_approval(self):
+        with self.assertRaisesRegex(ValidationError, "canonical owner approval"):
+            self.gate()
+        wrong_pr = self.approval()
+        wrong_pr["pr_number"] += 1
+        self.bundle["overcap_approvals"] = [wrong_pr]
+        with self.assertRaisesRegex(ValidationError, "canonical owner approval"):
+            self.gate()
 
 
 if __name__ == "__main__":
