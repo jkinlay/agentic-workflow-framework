@@ -9,6 +9,7 @@ import os
 from pathlib import Path, PurePosixPath
 import stat
 import subprocess
+import tempfile
 import threading
 import uuid
 
@@ -42,6 +43,90 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
         input_bytes = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
         if not isinstance(input_bytes, bytes):
             raise ValidationError("SUBPROCESS_STDIN: stdin must be bytes or text")
+    if os.name == "nt":
+        # communicate() is the supported Windows protocol for feeding stdin.
+        # Spool output to files so the monitor can retain the live byte caps
+        # without relying on communicate()'s unbounded in-memory capture.
+        with tempfile.TemporaryFile() as stdout_stream, \
+                tempfile.TemporaryFile() as stderr_stream:
+            process = subprocess.Popen(
+                list(argv), cwd=cwd, env=child_env(env), shell=False,
+                stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+                stdout=stdout_stream, stderr=stderr_stream,
+            )
+            overflow = []
+            monitor_stop = threading.Event()
+
+            def monitor_files():
+                while not monitor_stop.wait(0.01):
+                    limits = (("stdout", stdout_stream, stdout_limit),
+                              ("stderr", stderr_stream, stderr_limit))
+                    for name, stream, limit in limits:
+                        try:
+                            if os.fstat(stream.fileno()).st_size > limit:
+                                overflow.append(name)
+                        except OSError:
+                            overflow.append(name)
+                        if overflow:
+                            break
+                    if not overflow:
+                        for path in watched:
+                            try:
+                                if path.stat().st_size > watched_file_limit:
+                                    overflow.append("result_file")
+                                    break
+                            except FileNotFoundError:
+                                continue
+                            except OSError:
+                                overflow.append("result_file")
+                                break
+                    if overflow:
+                        try:
+                            process.kill()
+                        except OSError:
+                            pass
+                        return
+
+            monitor = threading.Thread(target=monitor_files, daemon=True)
+            monitor.start()
+            try:
+                try:
+                    process.communicate(input=input_bytes, timeout=timeout)
+                except subprocess.TimeoutExpired as exc:
+                    process.kill()
+                    process.wait()
+                    raise ValidationError(
+                        "SUBPROCESS_TIMEOUT: owned child exceeded its timeout") from exc
+            finally:
+                monitor_stop.set()
+                monitor.join(timeout=5)
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+            sizes = (("stdout", stdout_stream, stdout_limit),
+                     ("stderr", stderr_stream, stderr_limit))
+            for name, stream, limit in sizes:
+                try:
+                    if os.fstat(stream.fileno()).st_size > limit:
+                        overflow.append(name)
+                except OSError:
+                    overflow.append(name)
+            for path in watched:
+                try:
+                    if path.stat().st_size > watched_file_limit:
+                        overflow.append("result_file")
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    overflow.append("result_file")
+            if overflow:
+                code = "SUBPROCESS_" + overflow[0].upper() + "_LIMIT"
+                raise ValidationError(code + ": owned child exceeded its output cap")
+            stdout_stream.seek(0)
+            stderr_stream.seek(0)
+            return subprocess.CompletedProcess(
+                list(argv), process.returncode,
+                stdout_stream.read(), stderr_stream.read())
     process = subprocess.Popen(
         list(argv), cwd=cwd, env=child_env(env), shell=False,
         stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
