@@ -13,6 +13,7 @@ import threading
 import uuid
 
 from . import ValidationError
+from .child_process import child_env
 
 
 def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
@@ -42,7 +43,7 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
         if not isinstance(input_bytes, bytes):
             raise ValidationError("SUBPROCESS_STDIN: stdin must be bytes or text")
     process = subprocess.Popen(
-        list(argv), cwd=cwd, env=env, shell=False,
+        list(argv), cwd=cwd, env=child_env(env), shell=False,
         stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
