@@ -485,7 +485,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/generate_examples.py` | `6c0a5b383d96d1e4b8a43028f401e4cea3e85e5861c4586a10e71da6b716584f` |
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
-| `scripts/generate_review_loop.py` | `7aee730fc511c631675c8c44d20a1c0fb87d5eabd8f294975b26fc74cb4e99f4` |
+| `scripts/generate_review_loop.py` | `17365bfbd62e9f36bbd520581b8d93e6155db7621d6707c587d0de673be8101e` |
 | `scripts/generate_rules_activation.py` | `e9f72016edcb898ac1ddc480c4d12181fb889118de776b8e536d090757edcaaa` |
 | `scripts/manifest_merge_driver.py` | `00916ad023ac7c79572cb6d0b9608f99bedbe1e131be6d30772a451cd697e1b9` |
 | `scripts/prompt_templates/amendment.md` | `99fdf23206b59af9dc6cfcc4386afba5f2576263836878281f9aa4b7918fbec3` |
