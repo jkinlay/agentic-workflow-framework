@@ -58,6 +58,29 @@ class ExternalResourceCliTests(unittest.TestCase):
                            side_effect=AssertionError("sanitized PATH must not be consulted"))):
             self.assertEqual(external_resources._powershell_executable(), expected)
 
+    def test_awf101_windows_resolver_refuses_unverified_relative_fallback(self):
+        with (patch.object(external_resources.os, "name", "nt"),
+              patch.dict(external_resources.os.environ,
+                         {"PATH": "", "PATHEXT": ""}, clear=True),
+              patch.object(external_resources, "_windows_system_directory",
+                           return_value=None),
+              patch.object(external_resources.shutil, "which",
+                           return_value=None) as which):
+            with self.assertRaisesRegex(
+                    OSError, "no verified absolute PowerShell executable"):
+                external_resources._powershell_executable()
+        self.assertEqual(
+            [item.args[0] for item in which.call_args_list],
+            ["pwsh.exe", "powershell.exe"])
+
+    def test_awf101_resolver_preserves_non_windows_behavior(self):
+        with (patch.object(external_resources.os, "name", "posix"),
+              patch.object(external_resources, "_windows_system_directory",
+                           side_effect=AssertionError("Windows discovery must not run")),
+              patch.object(external_resources.shutil, "which",
+                           side_effect=AssertionError("PATH discovery must not run"))):
+            self.assertEqual(external_resources._powershell_executable(), "powershell")
+
     def test_validate_registry_and_bounded_scan(self):
         with tempfile.TemporaryDirectory(prefix="awf-resource-cli-") as temporary:
             base = Path(temporary)

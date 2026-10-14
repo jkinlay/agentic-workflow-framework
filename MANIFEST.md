@@ -313,7 +313,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_continuation.py` | `39c20ac2265ec9f01306b0dc45a46e63fb306515046c87c725191d8ee359217e` |
 | `.agentic/tests/test_continuous_controller.py` | `74f4e52572fa1c253d652d79e99476769767295c47519e86f9183039a1d51ff7` |
 | `.agentic/tests/test_external_resources.py` | `fd70b11e804bb3a07c4f8adab48e0a9674bea5ac83718925ff6181530c8f371e` |
-| `.agentic/tests/test_external_resources_cli.py` | `66c0d5ca68cbf49fcc3d4f1d06565c4edf7c2f505b5b7177e7dba3248d8b14b4` |
+| `.agentic/tests/test_external_resources_cli.py` | `6be3021c6d4525915813a3d9d4d8df39b9aaf1b7ac35efdf9988d151da513533` |
 | `.agentic/tests/test_five_slot_acceleration.py` | `35b3f99410481c16f91e5be438d44ccb6e61e429e1b869fd18ac184a238bbb98` |
 | `.agentic/tests/test_gates_workflow_sha.py` | `1d82cfe03fec326046d4992168ce3c30cc4ad0e72bc491efcf5ea4dd949ce363` |
 | `.agentic/tests/test_gittree.py` | `0e0ad6e18da3cc1638f66df688c87f8be729f041ad51d6f59824be1990e3da95` |
