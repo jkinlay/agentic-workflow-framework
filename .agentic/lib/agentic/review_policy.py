@@ -50,7 +50,7 @@ NEGATIVE_PHRASES = HARD_PHRASES + SOFT_PHRASES
 
 
 def authorize_tier3_round(round_number, cap, *, pr_comments, trusted_owner_ids,
-                          round_started_at):
+                          round_started_at, repository_id=None, pr_number=None):
     """Require a canonical trusted-owner PR comment before an over-cap round.
 
     This is a round-admission check, not a cap increase: the configured Tier 3
@@ -65,10 +65,23 @@ def authorize_tier3_round(round_number, cap, *, pr_comments, trusted_owner_ids,
     if round_number <= cap:
         return True
 
+    if not pr_comments or round_started_at is None:
+        raise ValidationError(
+            f"Tier 3 review cap is {cap}; a canonical owner approval "
+            "must be present on the PR before the round starts"
+        )
+
     started = timestamp(round_started_at)
     trusted = set(trusted_owner_ids or ())
     for comment in pr_comments or ():
         if not isinstance(comment, dict) or comment.get("channel") != "github_pr_comment":
+            continue
+        if type(comment.get("comment_id")) is not int or comment["comment_id"] < 1:
+            continue
+        if (repository_id is not None
+                and comment.get("repository_id") != repository_id):
+            continue
+        if pr_number is not None and comment.get("pr_number") != pr_number:
             continue
         actor_id = comment.get("actor_id")
         if actor_id not in trusted:
@@ -88,8 +101,8 @@ def authorize_tier3_round(round_number, cap, *, pr_comments, trusted_owner_ids,
                 and ruling <= created < started):
             return True
     raise ValidationError(
-        f"Tier 3 review round {round_number} exceeds cap {cap}; a canonical owner approval "
-        "from a trusted owner must be present on the PR before the round starts"
+        f"Tier 3 review cap is {cap}; round {round_number} requires a canonical owner approval "
+        "from a trusted owner on the PR before the round starts"
     )
 
 

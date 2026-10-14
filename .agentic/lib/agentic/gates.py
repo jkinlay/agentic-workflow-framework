@@ -428,6 +428,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         round_cap(tier, assignment_record=assignment_record)
     if not verdicts:
         raise ValidationError("Every consumed review round needs a current posted verdict record")
+    overcap_approvals = bundle.get("overcap_approvals", [])
+    unique(overcap_approvals, "comment_id", "Tier 3 over-cap approval comment")
     unique(verdicts, "round", "review verdict round")
     expected_rounds = set(range(1, max(v["round"] for v in verdicts) + 1))
     if {v["round"] for v in verdicts} != expected_rounds:
@@ -479,6 +481,11 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                             if assignment_record is not None else {"config": config})
         validate_round(verdict["tier"], verdict["round"],
                        owner_cap_disposition=bundle.get("cap_disposition"),
+                       overcap_approvals=overcap_approvals,
+                       trusted_owner_ids=config["merge_gate"]["trusted_owner_ids"],
+                       round_started_at=verdict["created_at"],
+                       repository_id=candidate["repository_id"],
+                       pr_number=candidate["pr_number"],
                        **round_kwargs)
         artifact_binding = verdict["critic_artifact_binding"]
         receipt = receipts_by_round.get(verdict["round"])
@@ -882,6 +889,10 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     }
     refs = {name: ["urn:awf:input:" + key + ":" + fingerprint("gate-input", bundle[key]) for key in keys]
             for name, keys in inputs.items()}
+    refs["critic_current_tuple"].append(
+        "urn:awf:input:overcap_approvals:"
+        + fingerprint("gate-input", overcap_approvals)
+    )
     expires = timestamp(now) + timedelta(seconds=config["merge_gate"]["authorization_ttl_seconds"])
     gate = {"schema_version": 3, "record_id": str(uuid.uuid4()), "created_at": now,
         "producer_id": "offline-reference-evaluator", "run_id": str(uuid.uuid4()), "binding": binding,
