@@ -43,7 +43,7 @@
     "generators": {
       "manifest-regen": {
         "paths": ["MANIFEST.json", "MANIFEST.md"],
-        "reproducer_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        "reproducer_sha256": "229eddb630925c8d5a34a523b51c68db51ee41da433c92efc9ad167caf6ee9c4"
       }
     }
   },

@@ -1,7 +1,11 @@
 """Reproduce the host-loop schemas and configuration example."""
 from pathlib import Path
 import json
-ROOT = Path(__file__).resolve().parents[1] / '.agentic/review-loop'
+import sys
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+ROOT = SOURCE_ROOT / '.agentic/review-loop'
+sys.path.insert(0, str(SOURCE_ROOT / '.agentic/lib'))
+from agentic.providers.github_review_host import manifest_reproducer_sha256
 
 
 class Inline:
@@ -99,7 +103,7 @@ def main():
         'trusted_owner_ids':[],'provenance':{'require_run_logs':True,'default_ref':'refs/heads/main',
             'generated_paths':Inline(['MANIFEST.json','MANIFEST.md']),
             'generators':{'manifest-regen':{'paths':Inline(['MANIFEST.json','MANIFEST.md']),
-                'reproducer_sha256':'0' * 64}}},
+                'reproducer_sha256':manifest_reproducer_sha256()}}},
         'governed_source_paths':[],'risk_tier':'Tier 3','allowed_paths':['src/CHANGE_ME.py'],'initial_findings':[],
         'required_checks':[{'name':'CHANGE_ME','app_id':0,'workflow_path':'.github/workflows/ci.yml','workflow_sha256':'CHANGE_ME'}],
         'max_amendment_cycles':3,'max_cap_extensions':2,'evidence_paths':[],'max_ci_wait_ticks':24,'max_agent_runs':10,'command_timeout_seconds':120,'agent_timeout_seconds':1800,'max_review_age_seconds':3600,

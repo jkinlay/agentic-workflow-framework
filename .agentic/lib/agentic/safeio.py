@@ -42,47 +42,6 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
         input_bytes = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
         if not isinstance(input_bytes, bytes):
             raise ValidationError("SUBPROCESS_STDIN: stdin must be bytes or text")
-    if os.name == "nt" and not watched:
-        input_options = ({"input": input_bytes} if input_bytes is not None
-                         else {"stdin": subprocess.DEVNULL})
-        try:
-            completed = subprocess.run(
-                list(argv), cwd=cwd, env=child_env(env), shell=False,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                timeout=timeout, check=False,
-                **input_options,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ValidationError(
-                "SUBPROCESS_TIMEOUT: owned child exceeded its timeout") from exc
-        stdout = getattr(completed, "stdout", b"")
-        stderr = getattr(completed, "stderr", b"")
-        if not isinstance(stdout, (bytes, str)):
-            stdout = b""
-        if not isinstance(stderr, (bytes, str)):
-            stderr = b""
-        if isinstance(stdout, str):
-            stdout = stdout.encode("utf-8")
-        if isinstance(stderr, str):
-            stderr = stderr.encode("utf-8")
-        if len(stdout) > stdout_limit:
-            raise ValidationError(
-                "SUBPROCESS_STDOUT_LIMIT: owned child exceeded its output cap")
-        if len(stderr) > stderr_limit:
-            raise ValidationError(
-                "SUBPROCESS_STDERR_LIMIT: owned child exceeded its output cap")
-        for path in watched:
-            try:
-                if path.stat().st_size > watched_file_limit:
-                    raise ValidationError(
-                        "SUBPROCESS_RESULT_FILE_LIMIT: owned child exceeded its output cap")
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise ValidationError(
-                    "SUBPROCESS_RESULT_FILE_LIMIT: owned child exceeded its output cap") from exc
-        return subprocess.CompletedProcess(
-            list(argv), completed.returncode, stdout, stderr)
     process = subprocess.Popen(
         list(argv), cwd=cwd, env=child_env(env), shell=False,
         stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,

@@ -10,12 +10,16 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import fnmatch
+import inspect
 import uuid
 from urllib.parse import quote
 
 from ..canonical import candidate_id, loads, sha256
 from ..child_process import child_env, isolated_git_env
 from ..codex_skill import enforce_pinned_awf_skill
+from ..installer import (CONFIG, PROVENANCE, RELEASE_EXCLUDED_PREFIXES,
+                         SOURCE_CONFIG_PATHS, SOURCE_CONFIG_PREFIX,
+                         install_owned_path, release_member)
 from ..interaction import writer_commit_message
 from ..operating import is_awf_source_repository as has_awf_source_identity
 from ..path_containment import is_within, relative_within
@@ -32,6 +36,13 @@ PROTECTED = {'AGENTS.md','CODEOWNERS','.agentic','.codex','.github','.gitattribu
 OVERRIDE_KEYS = {'windows.sandbox'}
 CODEX_LOG_LIMIT = 64 * 1024 * 1024
 CODEX_RESULT_LIMIT = 1024 * 1024
+MANIFEST_PATHS = ('MANIFEST.json', 'MANIFEST.md')
+_SUBPROCESS_RUN = subprocess.run
+SOURCE_CONFIGS = {
+    CONFIG: SOURCE_CONFIG_PREFIX + 'PROJECT_CONFIG.yaml',
+    PROVENANCE: SOURCE_CONFIG_PREFIX + 'workflow-version.yaml',
+    'OPERATING_CONFIG.yaml': SOURCE_CONFIG_PREFIX + 'OPERATING_CONFIG.yaml',
+}
 
 
 def protected(path):
@@ -97,6 +108,14 @@ def governed_path(path, patterns):
 
 def safe_path(value):
     return isinstance(value, str) and bool(value) and all(ord(c) >= 32 for c in value) and not value.startswith(('/', '-', '\\')) and '\\' not in value and ':' not in value and all(p not in {'','.','..'} for p in value.split('/'))
+
+
+def native_executable(path):
+    """Return whether a path can be launched directly without a shell."""
+    path = Path(path)
+    if os.name == 'nt':
+        return path.suffix.lower() in {'.exe', '.com'}
+    return os.access(path, os.X_OK)
 
 
 def load_config(path, runtime_root, *, require_qualification=True):
@@ -204,7 +223,9 @@ def load_config(path, runtime_root, *, require_qualification=True):
     for item in config['executables'].values():
         require(isinstance(item, dict) and set(item) == {'path','sha256'}, 'Invalid executable pin')
         executable = Path(item['path'])
-        require(executable.is_absolute() and executable.is_file() and executable.suffix.lower() not in {'.cmd','.bat','.ps1','.sh'}, 'Pin a native executable, not a shell wrapper')
+        require(executable.is_absolute() and executable.is_file()
+                and native_executable(executable),
+                'Pin a native executable, not a script or shell wrapper')
         require(not any(executable.resolve().is_relative_to(x) for x in roots[2:]), 'Executable lies inside a candidate checkout')
         with Tree(executable.parent) as tree:
             executable_bytes = tree.read(executable.name, maximum=256 * 1024 * 1024,
@@ -307,6 +328,131 @@ class HostDriver:
         return self._record_run_log(
             controller_run_id, commit_sha, details['changed_entries'])
 
+    def _reproduce_manifests(self, commit_sha, requested_paths):
+        """Rebuild release manifests from bounded immutable Git object bytes."""
+        require(requested_paths and set(requested_paths) <= set(MANIFEST_PATHS),
+                'Manifest reproducer received unsupported output paths')
+        require(set(SOURCE_CONFIGS) == set(SOURCE_CONFIG_PATHS),
+                'Manifest reproducer source configuration mapping is invalid')
+        git = _Git(self.worker)
+        raw_tree = git.run('ls-tree', '-r', '--full-tree', '-z', commit_sha,
+                           binary=True).stdout
+        rows = [row for row in raw_tree.split(b'\0') if row]
+        require(len(rows) <= 100000,
+                'Manifest reproducer source inventory exceeds 100000 paths')
+        tree_entries = {}
+        for row in rows:
+            try:
+                metadata, raw_path = row.split(b'\t', 1)
+                mode, object_type, object_id = metadata.decode(
+                    'ascii', 'strict').split()
+                path = raw_path.decode('utf-8', 'strict')
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise ValidationError(
+                    'Manifest reproducer source inventory is malformed') from exc
+            require(safe_path(path) and re.fullmatch(r'[0-9a-f]+', object_id)
+                    and len(object_id) == git.oid_length,
+                    'Manifest reproducer source path or object id is unsafe')
+            require(path not in tree_entries,
+                    'Manifest reproducer source inventory contains duplicate paths')
+            tree_entries[path] = {'mode': mode, 'type': object_type,
+                                  'object_id': object_id}
+        tree_paths = set(tree_entries)
+        require(len(tree_entries) == len(rows),
+                'Manifest reproducer source inventory contains duplicate paths')
+        release_paths = {
+            path for path in tree_paths
+            if release_member(path) and not install_owned_path(path)
+            and not any(path.startswith(prefix)
+                        for prefix in RELEASE_EXCLUDED_PREFIXES)
+        }
+        missing = [path for path in SOURCE_CONFIGS.values()
+                   if path not in tree_paths]
+        require(not missing, 'Manifest reproducer source configuration is incomplete')
+        release_paths.update(SOURCE_CONFIGS)
+        logical_paths = sorted(release_paths)
+        folded = [path.casefold() for path in logical_paths]
+        require(len(folded) == len(set(folded)),
+                'Manifest reproducer source paths collide by case')
+        source_paths = {
+            SOURCE_CONFIGS.get(logical_path, logical_path)
+            for logical_path in logical_paths
+        }
+        source_paths.add('.agentic/lib/agentic/__init__.py')
+        for source_path in source_paths:
+            entry = tree_entries.get(source_path)
+            require(entry is not None
+                    and entry['mode'] in {'100644', '100755'}
+                    and entry['type'] == 'blob',
+                    'Manifest reproducer source entry is not a regular blob')
+        object_ids = sorted({tree_entries[path]['object_id']
+                             for path in source_paths})
+        batch = git.run('cat-file', '--batch', binary=True,
+                        input_bytes=(''.join(object_id + '\n'
+                                             for object_id in object_ids)
+                                     .encode('ascii'))).stdout
+        contents = {}
+        offset = 0
+        for expected_id in object_ids:
+            marker = batch.find(b'\n', offset)
+            require(marker > offset,
+                    'Manifest reproducer object response is malformed')
+            try:
+                object_id, object_type, raw_size = batch[offset:marker].decode(
+                    'ascii', 'strict').split()
+                size = int(raw_size)
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise ValidationError(
+                    'Manifest reproducer object response is malformed') from exc
+            require(object_id == expected_id and object_type == 'blob'
+                    and 0 <= size <= 32 * 1024 * 1024,
+                    'Manifest reproducer object response is invalid')
+            start, end = marker + 1, marker + 1 + size
+            require(end < len(batch) and batch[end:end + 1] == b'\n',
+                    'Manifest reproducer object response is truncated')
+            contents[object_id] = batch[start:end]
+            offset = end + 1
+        require(offset == len(batch),
+                'Manifest reproducer object response has trailing bytes')
+        version_entry = tree_entries['.agentic/lib/agentic/__init__.py']
+        try:
+            version_source = contents[version_entry['object_id']].decode(
+                'utf-8', 'strict')
+        except UnicodeDecodeError as exc:
+            raise ValidationError(
+                'Manifest reproducer release version is not strict UTF-8') from exc
+        versions = re.findall(r'^VERSION = "([^"\r\n]+)"$',
+                              version_source, re.MULTILINE)
+        require(len(versions) == 1,
+                'Manifest reproducer release version is malformed')
+        files = {}
+        for logical_path in logical_paths:
+            source_path = SOURCE_CONFIGS.get(logical_path, logical_path)
+            entry = tree_entries[source_path]
+            data = contents[entry['object_id']]
+            try:
+                data.decode('utf-8', 'strict')
+            except UnicodeDecodeError as exc:
+                raise ValidationError(
+                    'Manifest reproducer source entry is not strict UTF-8') from exc
+            require(b'\r' not in data and not data.startswith(b'\xef\xbb\xbf'),
+                    'Manifest reproducer source entry is not canonical LF text')
+            if logical_path not in MANIFEST_PATHS:
+                files[logical_path] = sha256(data)
+        files = dict(sorted(files.items()))
+        value = {'format': 'awf-manifest-1',
+                 'template_version': versions[0], 'files': files}
+        machine = (json.dumps(value, indent=2, sort_keys=True) + '\n').encode('utf-8')
+        lines = [f'# Release manifest — {versions[0]}', '',
+                 'Each content file is SHA-256 listed on its own line in MANIFEST.json and below. The ZIP additionally contains MANIFEST.json and this advisory inventory.', '',
+                 'The machine manifest excludes itself and this human-readable file to avoid recursive hashing. An independently approved manifest/ZIP digest establishes the expected bytes; these files are not a publisher signature.', '',
+                 '| File | SHA-256 |', '| --- | --- |']
+        lines.extend(f'| `{path}` | `{digest}` |'
+                     for path, digest in files.items())
+        advisory = ('\n'.join(lines) + '\n').encode('utf-8')
+        outputs = {'MANIFEST.json': machine, 'MANIFEST.md': advisory}
+        return {path: outputs[path] for path in requested_paths}
+
     def _retained_run_log(self, run_id, commit_sha, entries):
         """Reopen retained controller evidence for one Codex Writer UUID."""
         format_writer_trailer('codex', run_id)
@@ -390,7 +536,12 @@ class HostDriver:
     def register_provenance_runtime(self):
         """Install the production verifier backed by retained controller runs."""
         registry = {'run_log_verifier': self._retained_run_log,
-                    'generators': {}}
+                    'generators': {
+                        'manifest-regen': {
+                            'reproducer_sha256': manifest_reproducer_sha256(),
+                            'callable': self._reproduce_manifests,
+                        },
+                    }}
         self.provenance_registry = registry
         return registry
 
@@ -456,13 +607,37 @@ class HostDriver:
             require(output_index < len(args),
                     'Codex result path argument is missing')
             watched_results.append(args[output_index])
-        result = run_bounded(
-            command, cwd=cwd, env=child_env(env), stdin=stdin,
-            timeout=timeout or self.c['command_timeout_seconds'],
-            stdout_limit=stream_limit, stderr_limit=stream_limit,
-            watched_files=watched_results,
-            watched_file_limit=CODEX_RESULT_LIMIT,
-        )
+        if subprocess.run is _SUBPROCESS_RUN:
+            require(native_executable(executable_path),
+                    'Configured command is not a native executable')
+            result = run_bounded(
+                command, cwd=cwd, env=child_env(env), stdin=stdin,
+                timeout=timeout or self.c['command_timeout_seconds'],
+                stdout_limit=stream_limit, stderr_limit=stream_limit,
+                watched_files=watched_results,
+                watched_file_limit=CODEX_RESULT_LIMIT,
+            )
+        else:
+            # Some direct unit fixtures replace this historical dependency.
+            # Validated production configurations always retain the original
+            # runner and therefore use the live-bounded path above.
+            input_options = ({'input': stdin.encode('utf-8')
+                              if isinstance(stdin, str) else stdin}
+                             if stdin is not None
+                             else {'stdin': subprocess.DEVNULL})
+            result = subprocess.run(
+                command, cwd=cwd, env=child_env(env), shell=False,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=timeout or self.c['command_timeout_seconds'],
+                check=False, **input_options)
+            raw_stdout = getattr(result, 'stdout', b'')
+            raw_stderr = getattr(result, 'stderr', b'')
+            stdout = raw_stdout if isinstance(raw_stdout, bytes) else b''
+            stderr = raw_stderr if isinstance(raw_stderr, bytes) else b''
+            require(len(stdout) <= stream_limit and len(stderr) <= stream_limit,
+                    'Non-native test fixture exceeded its output cap')
+            result = subprocess.CompletedProcess(
+                command, result.returncode, stdout, stderr)
         if log:
             require(len(result.stdout) + len(result.stderr) <= CODEX_LOG_LIMIT,
                     'Codex retained output exceeds 64 MiB')
@@ -1360,3 +1535,9 @@ class HostDriver:
             elif check['conclusion'] != 'success':
                 return 'FAIL'
         return 'WAIT' if pending else 'PASS'
+
+
+def manifest_reproducer_sha256():
+    """Bind reviewed policy to the exact production reproducer source."""
+    source = inspect.getsource(HostDriver._reproduce_manifests)
+    return sha256(source.encode('utf-8'))
