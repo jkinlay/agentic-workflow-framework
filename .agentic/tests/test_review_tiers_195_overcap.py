@@ -1,16 +1,23 @@
 """AWF-81 canonical owner approval for Tier 3 rounds beyond the cap."""
+import base64
+import copy
 from pathlib import Path
 import sys
 import unittest
+import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 from agentic import ValidationError
-from agentic.canonical import fingerprint
+from agentic.canonical import canonical, fingerprint, sha256
+from agentic.gates import (evaluate,
+                           overcap_approval_collector_receipt_sha256)
+from agentic.lifecycle import definition
 from agentic.review_policy import authorize_tier3_round
 from agentic.review_tiers import review_decision
-from test_review_policy import Fixture
+from test_review_policy import (Fixture, bind_production_posting_fixture,
+                                bind_review_admission)
 import test_review_tiers_195_gates as gate_fixtures
 
 
@@ -69,11 +76,22 @@ class Tier3OvercapApprovalTests(unittest.TestCase):
         self.assertEqual("OWNER_REVIEW_REQUIRED", result["status"])
 
     def test_record_allows_only_its_named_round(self):
-        with self.assertRaisesRegex(ValidationError, "canonical owner approval"):
+        with self.assertRaisesRegex(ValidationError, "only round 4"):
             authorize_tier3_round(
                 5,
                 CAP,
                 pr_comments=[self.comment()],
+                trusted_owner_ids=[OWNER],
+                round_started_at=ROUND_STARTED_AT,
+            )
+
+    def test_even_a_separately_canonical_round_five_record_is_refused(self):
+        round_five = CANONICAL.replace("round 4", "round 5")
+        with self.assertRaisesRegex(ValidationError, "only round 4"):
+            authorize_tier3_round(
+                5,
+                CAP,
+                pr_comments=[self.comment(body=round_five)],
                 trusted_owner_ids=[OWNER],
                 round_started_at=ROUND_STARTED_AT,
             )
@@ -152,8 +170,72 @@ class Tier3OvercapGateTests(Fixture):
             "raw_body": body,
         }
 
-    def gate(self):
-        return gate_fixtures.ReviewTiers195GateTests._owner_gate(self)
+    def authenticated_approval(self, registry, *, body=GATE_CANONICAL,
+                               actor_id=OWNER,
+                               created_at="2026-09-09T11:58:00Z",
+                               round_started_at="2026-09-09T11:59:00Z"):
+        approval = self.approval(
+            body=body, actor_id=actor_id, created_at=created_at,
+        )
+        producer_id = next(iter(registry))
+        registration = registry[producer_id]
+        collector = copy.deepcopy(next(
+            run for run in self.bundle["runs"] if run["role"] == "collector"
+        ))
+        collector.update(
+            record_id=str(uuid.uuid4()), run_id=str(uuid.uuid4()),
+            context_id=str(uuid.uuid4()), producer_id=producer_id,
+        )
+        self.bundle["runs"].append(collector)
+        comment_url = (
+            f"{self.bundle['candidate']['host']}/"
+            f"{self.bundle['candidate']['repository']}/pull/"
+            f"{self.bundle['candidate']['pr_number']}"
+            f"#issuecomment-{approval['comment_id']}"
+        )
+        provider_response = canonical({
+            "id": approval["comment_id"],
+            "html_url": comment_url,
+            "user": {"id": approval["actor_id"]},
+            "created_at": approval["created_at"],
+            "updated_at": approval["updated_at"],
+            "body": approval["raw_body"],
+        })
+        approval.update(
+            source="host_observation",
+            observed_at=gate_fixtures.NOW,
+            producer_id=producer_id,
+            run_id=collector["run_id"],
+            provider_kind="github",
+            comment_url=comment_url,
+            round_started_at=round_started_at,
+            provider_response_bytes={
+                "encoding": "base64",
+                "data": base64.b64encode(provider_response).decode("ascii"),
+            },
+            provider_response_sha256=sha256(provider_response),
+            collector_receipt_sha256="0" * 64,
+        )
+        basis = copy.deepcopy(approval)
+        basis["collector_receipt_sha256"] = "0" * 64
+        receipt = overcap_approval_collector_receipt_sha256(
+            approval, sha256(canonical(basis)), registration,
+        )
+        approval["collector_receipt_sha256"] = receipt
+        registration["receipts"][collector["run_id"]] = receipt
+        return approval
+
+    def gate(self, approval_factory=None):
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
+        self._owner_review()
+        self._refresh_owner_posting_receipt(registry)
+        if approval_factory is not None:
+            self.bundle["overcap_approvals"] = [approval_factory(registry)]
+        return evaluate(
+            self.config, definition(), self.bundle, self.contracts,
+            gate_fixtures.NOW, posting_collector_registry=registry,
+        )
 
     def _owner_review(self, *, provider_evidence=True):
         return gate_fixtures.ReviewTiers195GateTests._owner_review(
@@ -166,8 +248,7 @@ class Tier3OvercapGateTests(Fixture):
         )
 
     def test_final_gate_admits_canonical_owner_approved_round_four(self):
-        self.bundle["overcap_approvals"] = [self.approval()]
-        gate = self.gate()
+        gate = self.gate(self.authenticated_approval)
         self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", gate["conclusion"])
         self.assertIn(
             "urn:awf:input:overcap_approvals:"
@@ -178,11 +259,52 @@ class Tier3OvercapGateTests(Fixture):
     def test_final_gate_refuses_missing_or_wrong_candidate_approval(self):
         with self.assertRaisesRegex(ValidationError, "canonical owner approval"):
             self.gate()
-        wrong_pr = self.approval()
-        wrong_pr["pr_number"] += 1
-        self.bundle["overcap_approvals"] = [wrong_pr]
-        with self.assertRaisesRegex(ValidationError, "canonical owner approval"):
+
+        def wrong_pr(registry):
+            approval = self.authenticated_approval(registry)
+            approval["pr_number"] += 1
+            return approval
+
+        with self.assertRaisesRegex(ValidationError, "provider observation"):
+            self.gate(wrong_pr)
+
+    def test_final_gate_rejects_bundle_only_approval_assertion(self):
+        self.bundle["overcap_approvals"] = [self.approval()]
+        with self.assertRaises(ValidationError):
             self.gate()
+
+    def test_final_gate_verifies_every_approval_field_against_provider_bytes(self):
+        mutations = {
+            "comment id": lambda value: value.__setitem__("comment_id", 42),
+            "actor": lambda value: value.__setitem__("actor_id", 9999),
+            "created timestamp": lambda value: value.__setitem__(
+                "created_at", "2026-09-09T11:57:30Z"),
+            "updated timestamp": lambda value: value.__setitem__(
+                "updated_at", "2026-09-09T11:57:30Z"),
+            "body": lambda value: value.__setitem__("raw_body", "forged"),
+            "round start": lambda value: value.__setitem__(
+                "round_started_at", "2026-09-09T11:58:30Z"),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                def tampered(registry, mutate=mutate):
+                    approval = self.authenticated_approval(registry)
+                    mutate(approval)
+                    return approval
+
+                with self.assertRaisesRegex(ValidationError, "provider observation"):
+                    self.gate(tampered)
+
+    def test_final_gate_uses_authenticated_round_start_not_verdict_time(self):
+        def posted_after_start(registry):
+            return self.authenticated_approval(
+                registry,
+                created_at="2026-09-09T11:59:30Z",
+                round_started_at="2026-09-09T11:59:00Z",
+            )
+
+        with self.assertRaisesRegex(ValidationError, "before the round starts"):
+            self.gate(posted_after_start)
 
 
 if __name__ == "__main__":
