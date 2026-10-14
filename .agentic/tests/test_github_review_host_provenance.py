@@ -12,10 +12,149 @@ sys.path.insert(0, str(ROOT / '.agentic/lib'))
 
 from agentic import ValidationError
 from agentic.providers.github_review_host import HostDriver
+from agentic.provenance import (record_owner_override,
+                                verify_provider_owner_override,
+                                render_owner_override)
+from agentic.safeio import run_bounded
 
 
 CODEX_THREAD_ID = '01a1317f-dadb-7071-80de-12832161734c'
 CONTROLLER_RUN_ID = '3dd68622-6223-48bc-b236-8ed6df9a55c2'
+
+
+class ProviderProvenanceTests(unittest.TestCase):
+    def driver(self):
+        driver = HostDriver.__new__(HostDriver)
+        driver.c = {'repository': 'fixture/project', 'repository_id': 12,
+                    'pr': 7, 'base_branch': 'main', 'config_hash': 'f' * 64,
+                    'trusted_owner_ids': [101],
+                    'provenance': {'require_run_logs': False,
+                        'default_ref': 'refs/heads/main',
+                        'generated_paths': [], 'generators': {}}}
+        return driver
+
+    def test_provenance_collector_binds_repository_pr_base_head_and_refs(self):
+        driver = self.driver()
+        pr = {'number': 7, 'updated_at': '2026-10-13T20:00:00Z', 'body': 'body',
+              'labels': [{'name': 'fallback: bot-written'}],
+              'head': {'sha': 'a' * 40, 'ref': 'codex/test', 'repo': {'id': 12}},
+              'base': {'sha': 'b' * 40, 'ref': 'main', 'repo': {'id': 12}}}
+        def api(suffix):
+            if suffix == '':
+                return {'id': 12}
+            if suffix == 'pulls/7':
+                return deepcopy(pr)
+            return []
+        from copy import deepcopy
+        driver.api = api
+        observed = driver.collect_provenance_observation()
+        self.assertEqual((12, 7, 'a' * 40, 'b' * 40, 'codex/test', 'main'),
+                         (observed['repository_id'], observed['pr'],
+                          observed['head'], observed['base'],
+                          observed['head_ref'], observed['base_ref']))
+        self.assertEqual([101], observed['trusted_owner_ids'])
+
+    def test_provider_labels_comments_pagination_caps_and_ambiguity(self):
+        driver = self.driver()
+        rows = [{'id': index + 1, 'body': 'comment',
+                 'user': {'id': 101},
+                 'html_url': f'https://github.com/fixture/project/issues/7#{index + 1}'}
+                for index in range(100)]
+        def api(suffix):
+            if suffix == '':
+                return {'id': 12}
+            if suffix == 'pulls/7':
+                return {'number': 7, 'updated_at': 'same', 'body': '', 'labels': [],
+                    'head': {'sha': 'a' * 40, 'ref': 'codex/test', 'repo': {'id': 12}},
+                    'base': {'sha': 'b' * 40, 'ref': 'main', 'repo': {'id': 12}}}
+            if 'issues/7/comments' in suffix and 'page=1' in suffix:
+                return rows
+            if 'issues/7/comments' in suffix and 'page=2' in suffix:
+                return [rows[0]]
+            return []
+        driver.api = api
+        with self.assertRaisesRegex(ValidationError, 'duplicate'):
+            driver.collect_provenance_observation()
+
+    def test_critic_carrier_is_published_and_bound_to_fresh_provider_artifact(self):
+        driver = self.driver()
+        binding = {'head_sha': 'a' * 40, 'result_sha256': 'b' * 64,
+                   'critic_run_carrier': 'Critic run: ' + CODEX_THREAD_ID}
+        body = ('AWF critic evidence v1\nHead: ' + 'a' * 40
+                + '\nResult sha256: ' + 'b' * 64 + '\n\n'
+                + binding['critic_run_carrier'])
+        created = {'id': 91, 'body': body, 'user': {'id': 7001},
+                   'html_url': 'https://github.com/fixture/project/issues/7#issuecomment-91'}
+        driver.api_post = lambda suffix, payload: created
+        driver.collect_provenance_observation = lambda: {
+            'head': 'a' * 40,
+            'comments': [{'kind': 'issue', 'id': 91, 'actor_id': 7001,
+                          'url': created['html_url'], 'body': body,
+                          'body_sha256': __import__('hashlib').sha256(
+                              body.encode()).hexdigest()}],
+        }
+        observed = driver.publish_critic_evidence(binding)
+        self.assertEqual((91, 7001),
+                         (observed['provider_comment_id'],
+                          observed['provider_actor_id']))
+        self.assertRegex(observed['provider_body_sha256'], r'^[0-9a-f]{64}$')
+
+    def test_override_authority_comes_from_reviewed_config_and_observed_actor(self):
+        record = record_owner_override(
+            {}, who=101, when='2026-10-13T20:00:00Z', why='Reviewed fallback',
+            pr=7, covered_shas=['a' * 40], trusted_owner_ids=[101])
+        body = render_owner_override(record)
+        observation = {'version': 1, 'repository_id': 12, 'pr': 7,
+                       'labels': ['fallback: bot-written'],
+                       'trusted_owner_ids': [101],
+                       'config_sha256': 'f' * 64,
+                       'comments': [{'kind': 'issue', 'id': 91,
+                                     'actor_id': 101, 'url': 'https://github.com/fixture/project/issues/7#issuecomment-91',
+                                     'body': body,
+                                     'body_sha256': __import__('hashlib').sha256(
+                                         body.encode()).hexdigest()}]}
+        verified = verify_provider_owner_override(
+            record, observation=observation, repository_id=12,
+            config_sha256='f' * 64)
+        self.assertEqual(91, verified['provider_comment_id'])
+        forged = dict(observation)
+        forged['trusted_owner_ids'] = ['101']
+        with self.assertRaises(ValidationError):
+            verify_provider_owner_override(
+                record, observation=forged, repository_id=12,
+                config_sha256='f' * 64)
+
+    def test_host_api_output_is_stream_bounded_before_decode(self):
+        sentinel = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        try:
+            with self.assertRaisesRegex(ValidationError, 'STDERR_LIMIT'):
+                run_bounded([sys.executable, '-c',
+                             'import sys; sys.stderr.buffer.write(b"x" * 4097)'],
+                            stdout_limit=1024, stderr_limit=4096, timeout=10)
+            self.assertIsNone(sentinel.poll())
+        finally:
+            sentinel.terminate()
+            sentinel.wait(timeout=10)
+
+    def test_child_result_file_is_capped_while_owned_process_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = Path(directory) / 'result.json'
+            sentinel = subprocess.Popen(
+                [sys.executable, '-c', 'import time; time.sleep(30)'])
+            try:
+                program = ('from pathlib import Path; import time; '
+                           'Path("result.json").write_bytes(b"x" * 4097); '
+                           'time.sleep(30)')
+                with self.assertRaisesRegex(ValidationError,
+                                            'RESULT_FILE_LIMIT'):
+                    run_bounded([sys.executable, '-c', program],
+                                watched_files=[result],
+                                watched_file_limit=4096, timeout=10,
+                                cwd=directory)
+                self.assertIsNone(sentinel.poll())
+            finally:
+                sentinel.terminate()
+                sentinel.wait(timeout=10)
 
 
 class CodexIdentityTests(unittest.TestCase):
@@ -125,10 +264,20 @@ class AmendmentWriterTests(unittest.TestCase):
         self.driver.preflight = lambda candidate: None
         self.driver.repository_git_controls = lambda checkout: {}
         self.driver.api = lambda suffix: {'body': 'Synthetic amendment body'}
+        self.driver.collect_provenance_observation = lambda: {
+            'version': 1, 'repository_id': 12, 'pr': 7,
+            'head': self.head, 'base': self.base, 'labels': [],
+            'comments': [], 'trusted_owner_ids': [],
+        }
+        self.driver.validate_local_provenance = lambda *args, **kwargs: {'status': 'PASS'}
 
-        def git_adapter(checkout, *args):
+        def git_adapter(checkout, *args, **kwargs):
             if args and args[0] == 'push':
                 args = ('-c', 'protocol.file.allow=always', *args)
+            if kwargs.get('binary'):
+                return subprocess.run(
+                    [git, '-C', str(checkout), *args], check=True,
+                    input=kwargs.get('input_bytes'), capture_output=True).stdout
             return command(checkout, *args)
         self.driver.git = git_adapter
         self.driver.snapshot = lambda: {

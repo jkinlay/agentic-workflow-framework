@@ -839,6 +839,49 @@ class PublicationRewriteTests(unittest.TestCase):
                              for call in git_call.call_args_list))
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
 
+    def test_rewrite_uses_shared_message_contract_before_commit_tree(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        message.write_bytes(("subject\u2028body\n\nWriter: codex/"
+                             + CODEX_RUN_ID).encode("utf-8"))
+        with mock.patch.object(publication, "_git", wraps=publication._git) as observed:
+            with self.assertRaisesRegex(ValidationError, "unsupported"):
+                rewrite_unpublished(
+                    self.repo.path, self.repo.base, "awf/EX-6-publication", 1,
+                    message, mapping_path=self.mapping)
+        self.assertFalse(any(call.args[1:2] == ("commit-tree",)
+                             for call in observed.call_args_list))
+
+    def test_rewrite_message_encoding_controls_caps_and_round_trip(self):
+        for payload in (b"\xef\xbb\xbfsubject",
+                        b"subject\x00body",
+                        b"x" * (1024 * 1024 + 1)):
+            with self.subTest(size=len(payload)):
+                self.reset_subtest_repository()
+                self.contaminate_then_remove()
+                message = Path(self.temp.name) / "message.txt"
+                message.write_bytes(payload)
+                with mock.patch.object(publication, "_git", wraps=publication._git) as observed:
+                    with self.assertRaises(ValidationError):
+                        rewrite_unpublished(
+                            self.repo.path, self.repo.base,
+                            "awf/EX-6-publication", 1, message,
+                            mapping_path=self.mapping)
+                self.assertFalse(any(call.args[1:2] == ("commit-tree",)
+                                     for call in observed.call_args_list))
+
+    def test_rewrite_inputs_are_safe_frozen_and_identity_bounded(self):
+        self.contaminate_then_remove()
+        message = Path(self.temp.name) / "message.txt"
+        self.write_rewrite_message(message)
+        with mock.patch.object(publication, "_git", wraps=publication._git) as observed:
+            with self.assertRaisesRegex(ValidationError, "Rewrite base"):
+                rewrite_unpublished(
+                    self.repo.path, "HEAD~1", "awf/EX-6-publication", 1,
+                    message, mapping_path=self.mapping)
+        self.assertFalse(any(call.args[1:2] == ("commit-tree",)
+                             for call in observed.call_args_list))
+
     def test_awf49_rewrite_refuses_missing_or_malformed_codex_run_id(self):
         for content in (
                 "replacement without provenance",

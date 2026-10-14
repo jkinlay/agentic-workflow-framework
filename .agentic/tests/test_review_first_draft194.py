@@ -83,6 +83,45 @@ def pin_passing_qualification(value):
 
 
 class FirstDraftTests(unittest.TestCase):
+    def test_invalid_title_never_stages_commits_or_pushes(self):
+        calls = []
+        class NoMutationGit:
+            def run(self, *args):
+                calls.append(args)
+                raise AssertionError('invalid message reached Git')
+        with self.assertRaises(ValidationError):
+            publish_tested_tree(
+                Path('.'), 'a' * 40, 'codex/test', {}, body='body\n',
+                commit_message='subject\u2028body', codex_run_id=CODEX_THREAD_ID,
+                git=NoMutationGit(), allowed_paths={'a.txt'},
+                prepare_plan=lambda _plan: calls.append(('plan',)),
+                prepare_publication=lambda _value: calls.append(('publication',)))
+        self.assertEqual([], calls)
+
+    def test_worker_receipt_paths_tree_counts_and_text_are_canonical_bounded(self):
+        receipt = {'outcome': 'CHANGED',
+                   'changes': [{'path': 'a.txt', 'action': 'modified'}],
+                   'tested_tree': 'a' * 40, 'ignored_untracked': [],
+                   'summary': 'x' * 4097}
+        with self.assertRaisesRegex(ValidationError, 'summary'):
+            validate_worker_receipt(receipt, allowed_paths={'a.txt'})
+        receipt['summary'] = 'changed'
+        receipt['tested_tree'] = 'A' * 40
+        with self.assertRaisesRegex(ValidationError, 'tested_tree'):
+            validate_worker_receipt(receipt, allowed_paths={'a.txt'})
+
+    def test_first_draft_body_fields_are_bounded_escaped_and_digest_stable(self):
+        body = render_first_draft_body(
+            'Trusted **contract**\n', risk_tier='Tier 3',
+            worker_model='model`<x>', reasoning_effort='high',
+            branch='codex/test', tested_tree='a' * 40)
+        self.assertIn('model&#96;&lt;x&gt;', body)
+        self.assertTrue(body.endswith('\n'))
+        self.assertFalse(body.endswith('\n\n'))
+        self.assertEqual(body, render_first_draft_body(
+            'Trusted **contract**\n', risk_tier='Tier 3',
+            worker_model='model`<x>', reasoning_effort='high',
+            branch='codex/test', tested_tree='a' * 40))
     @skip_unless_source_repo()
     def test_generator_reproduces_first_draft_worker_schema(self):
         spec = importlib.util.spec_from_file_location('awf_generate_review_loop',
@@ -155,7 +194,7 @@ class FirstDraftTests(unittest.TestCase):
                         return run(*args)
                     raise AssertionError('publisher must stop before Git mutation')
             with self.assertRaises(ValidationError):
-                publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
+                publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body\n',
                                     commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
                                     git=NoPush(), allowed_paths={'a.txt'})
 
@@ -185,7 +224,7 @@ class FirstDraftTests(unittest.TestCase):
                         raise AssertionError('scan must withhold push')
                     return run(*args)
             with self.assertRaises(ValidationError):
-                publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
+                publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body\n',
                                     commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
                                     git=Adapter(), allowed_paths={'a.txt'})
             self.assertEqual(pushes, [])
@@ -217,7 +256,7 @@ class FirstDraftTests(unittest.TestCase):
                     return command(root, *args)
             with self.assertRaisesRegex(ValidationError,
                                         'non-mechanical commit requires a Codex run id'):
-                publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
+                publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body\n',
                                     commit_message='first draft', git=Adapter(),
                                     allowed_paths={'a.txt'})
             self.assertEqual(command(root, 'rev-parse', 'HEAD'), base)
@@ -254,7 +293,7 @@ class FirstDraftTests(unittest.TestCase):
                 def run(self, *args):
                     return command(root, *args)
             published = publish_tested_tree(
-                root, base, 'codex/awf-30', receipt, body='body',
+                root, base, 'codex/awf-30', receipt, body='body\n',
                 commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
                 git=Adapter(), allowed_paths={'a.txt'})
             self.assertEqual(published['head_tree'], tree.tested_tree)
@@ -313,7 +352,7 @@ class FirstDraftTests(unittest.TestCase):
                         raise OSError('record unavailable')
                     record_first_draft_publication(store, config, publication)
                 return publish_tested_tree(
-                    root, base, 'codex/awf-30', value, body='body',
+                    root, base, 'codex/awf-30', value, body='body\n',
                     commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
                     git=Adapter(), allowed_paths={'a.txt'},
                     publication_plan=saved.get('first_draft_publication_plan'),
@@ -380,12 +419,12 @@ class FirstDraftTests(unittest.TestCase):
                        'tested_tree': tree.tested_tree, 'ignored_untracked': [],
                        'summary': 'changed'}
             with self.assertRaisesRegex(ValidationError, 'ignored_untracked inventory'):
-                publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body',
+                publish_tested_tree(root, base, 'codex/awf-30', receipt, body='body\n',
                     commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
                     git=Adapter(), allowed_paths={'a.txt'})
             receipt['ignored_untracked'] = ['local.secret']
             published = publish_tested_tree(root, base, 'codex/awf-30', receipt,
-                body='body', commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
+                    body='body\n', commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
                 git=Adapter(),
                 allowed_paths={'a.txt'})
             self.assertEqual(published['ignored_untracked'], ['local.secret'])
@@ -613,11 +652,24 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
                            'evidence_sha256': 'CHANGE_ME', 'max_age_seconds': 604800,
                            'sandbox_verified': False, 'credentials_isolated': False,
                            'branch_owned': False, 'single_host_database': False})
+        value['provenance']['require_run_logs'] = False
         value['executables']['git'] = {'path': git, 'sha256': sha256(Path(git).read_bytes())}
         pin_passing_qualification(value)
         self.config_path.write_text(json.dumps(value), encoding='utf-8')
         self.config = load_config(self.config_path, ROOT)
         self.driver = RecordedGitHubDriver(self.config, ROOT, command, self.base_sha)
+        self.driver.provenance_registry = {
+            'generators': {},
+            'run_log_verifier': lambda run_id, commit_sha, entries: {
+                'version': 1,
+                'status': 'ABSENT',
+                'run_id': run_id,
+                'commit_sha': commit_sha,
+                'entries': entries,
+                'evidence_sha256': None,
+                'reason_code': 'RUN_LOG_ABSENT',
+            },
+        }
         self.driver.remote = self.remote
         self.driver.url = str(self.remote)
         real_git = self.driver.git
@@ -640,6 +692,16 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
                 redirect_stdout(stdout), redirect_stderr(stderr):
             code = module.main(['--config', str(self.config_path), *args])
         return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_first_draft_cli_title_uses_provenance_subject_grammar(self):
+        calls_before = list(self.driver.calls)
+        code, _, error = self.cli('first-draft', '--title',
+                                  'subject\u2028injected')
+        self.assertEqual(code, 2)
+        self.assertIn('unsupported', error)
+        self.assertEqual(calls_before, self.driver.calls)
+        with self.assertRaises(ValidationError):
+            self.state('12:0')
 
     def state(self, key):
         store = LoopStore(self.base / 'state')

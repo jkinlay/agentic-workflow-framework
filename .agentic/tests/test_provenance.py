@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
+import agentic.provenance as provenance
 from agentic.canonical import fingerprint
 from agentic.gittree import candidate_tree
 from agentic.interaction import writer_commit_message
@@ -33,6 +34,210 @@ from agentic.review_first_draft import publish_codex_tested_tree
 RUN_A = "11111111-1111-4111-8111-111111111111"
 RUN_B = "22222222-2222-4222-8222-222222222222"
 NOW = "2026-10-12T12:00:00Z"
+
+
+class R13InputContractTests(unittest.TestCase):
+    """One independently reported acceptance test for every R13 input row."""
+
+    def assert_row(self, number, *, authority, failure, cap):
+        row = provenance.PROVENANCE_INPUT_CONTRACT[f"IN-{number:02d}"]
+        self.assertEqual(authority, row["authority"])
+        self.assertEqual(failure, row["failure"])
+        self.assertEqual(cap, row["cap"])
+        self.assertRegex(row["reason_code"], r"^[A-Z][A-Z0-9_]+$")
+
+    def test_in_01_repository_root(self):
+        self.assert_row(1, authority="git", failure="operation", cap="one repository")
+
+    def test_in_02_range_endpoints(self):
+        self.assert_row(2, authority="frozen git refs", failure="operation", cap="10000 commits/32 MiB")
+
+    def test_in_03_origin_main(self):
+        self.assert_row(3, authority="reviewed config + provider", failure="operation", cap="one frozen OID")
+
+    def test_in_04_raw_commit_object(self):
+        self.assert_row(4, authority="git object database", failure="commit", cap="1 MiB message/32 MiB object")
+
+    def test_in_05_commit_message(self):
+        self.assert_row(5, authority="raw commit bytes", failure="commit", cap="1 MiB/65536 lines")
+
+    def test_in_06_line_boundaries(self):
+        self.assert_row(6, authority="raw commit bytes", failure="commit", cap="LF or CRLF")
+
+    def test_in_07_writer_lines(self):
+        self.assert_row(7, authority="raw commit bytes", failure="commit", cap="256 trailer-like lines")
+
+    def test_in_08_codex_uuid(self):
+        self.assert_row(8, authority="observed Codex thread", failure="commit", cap="one non-nil UUID")
+
+    def test_in_09_script_id(self):
+        self.assert_row(9, authority="reviewed generator registry", failure="commit", cap="64 ASCII bytes")
+
+    def test_in_10_emitter_input(self):
+        self.assert_row(10, authority="shared grammar", failure="operation", cap="1 MiB output")
+
+    def test_in_11_publisher_message(self):
+        self.assert_row(11, authority="raw created commit", failure="operation", cap="one canonical message")
+
+    def test_in_12_git_path_bytes(self):
+        self.assert_row(12, authority="raw git output", failure="commit", cap="32 MiB")
+
+    def test_in_13_path_syntax(self):
+        self.assert_row(13, authority="raw git output", failure="commit", cap="100000 records")
+
+    def test_in_14_renames(self):
+        self.assert_row(14, authority="--raw -z --no-renames", failure="commit", cap="delete + add")
+
+    def test_in_15_entry_types(self):
+        self.assert_row(15, authority="raw git output", failure="commit", cap="100000 records")
+
+    def test_in_16_generated_paths(self):
+        self.assert_row(16, authority="reviewed generator registry", failure="operation", cap="100000 paths")
+
+    def test_in_17_generator_bytes(self):
+        self.assert_row(17, authority="registered reproducer", failure="commit", cap="32 MiB each/512 MiB total")
+
+    def test_in_18_merge_tree(self):
+        self.assert_row(18, authority="isolated git plumbing", failure="commit", cap="32 MiB")
+
+    def test_in_19_run_log(self):
+        self.assert_row(19, authority="registered verifier", failure="commit", cap="closed evidence record")
+
+    def test_in_20_controller_run_id(self):
+        self.assert_row(20, authority="controller", failure="operation", cap="one non-nil UUID")
+
+    def test_in_21_codex_jsonl(self):
+        self.assert_row(21, authority="pinned file handle", failure="operation", cap="64 MiB/1 MiB event")
+
+    def test_in_22_codex_result(self):
+        self.assert_row(22, authority="pinned file handle", failure="operation", cap="1 MiB")
+
+    def test_in_23_identity_record(self):
+        self.assert_row(23, authority="pinned file handle", failure="operation", cap="16 KiB")
+
+    def test_in_24_critic_verdict(self):
+        self.assert_row(24, authority="observed critic artifact", failure="operation", cap="1 MiB")
+
+    def test_in_25_critic_line(self):
+        self.assert_row(25, authority="critic artifact carrier", failure="operation", cap="one final line")
+
+    def test_in_26_override_record(self):
+        self.assert_row(26, authority="observed owner comment", failure="operation", cap="4 KiB reason/255-byte owner")
+
+    def test_in_27_override_shas(self):
+        self.assert_row(27, authority="frozen range", failure="operation", cap="256 SHAs")
+
+    def test_in_28_override_chain(self):
+        self.assert_row(28, authority="digest-linked records", failure="operation", cap="32 records")
+
+    def test_in_29_trusted_owners(self):
+        self.assert_row(29, authority="reviewed host config", failure="operation", cap="positive numeric IDs")
+
+    def test_in_30_pr_and_label(self):
+        self.assert_row(30, authority="fresh provider observation", failure="operation", cap="one PR/100 labels")
+
+    def test_in_31_provider_identity(self):
+        self.assert_row(31, authority="fresh provider observation", failure="operation", cap="one coherent tuple")
+
+    def test_in_32_pr_body(self):
+        self.assert_row(32, authority="fresh provider observation", failure="operation", cap="1 MiB")
+
+    def test_in_33_provider_comments(self):
+        self.assert_row(33, authority="fully paged provider observation", failure="operation", cap="1000 comments/8 MiB wire")
+
+    def test_in_34_host_stdout(self):
+        self.assert_row(34, authority="owned subprocess", failure="operation", cap="8 MiB stdout")
+
+    def test_in_35_worker_receipt(self):
+        self.assert_row(35, authority="tested-tree receipt", failure="operation", cap="100000 paths")
+
+    def test_in_36_publisher_paths(self):
+        self.assert_row(36, authority="raw git output", failure="operation", cap="32 MiB/100000 records")
+
+    def test_in_37_first_draft_title(self):
+        self.assert_row(37, authority="shared grammar", failure="operation", cap="4 KiB subject")
+
+    def test_in_38_first_draft_body(self):
+        self.assert_row(38, authority="trusted template + escaped scalars", failure="operation", cap="1 MiB")
+
+    def test_in_39_rewrite_message(self):
+        self.assert_row(39, authority="pinned file handle", failure="operation", cap="1 MiB")
+
+    def test_in_40_rewrite_refs_identity(self):
+        self.assert_row(40, authority="frozen git refs + local identity", failure="operation", cap="4 KiB identity fields")
+
+    def test_in_41_external_file_reads(self):
+        self.assert_row(41, authority="manifest/config pins", failure="operation", cap="channel-specific before allocation")
+
+    def test_in_42_diagnostics(self):
+        self.assert_row(42, authority="stable reason codes", failure="operation", cap="256 reasons/4 KiB each")
+
+    def test_in_43_raw_commit_headers(self):
+        self.assert_row(43, authority="raw git object", failure="commit", cap="32 MiB/65536 header lines")
+
+    def test_in_44_repository_git_config(self):
+        self.assert_row(44, authority="isolated explicit git config", failure="operation", cap="closed keys")
+
+    def test_in_45_require_run_logs(self):
+        self.assert_row(45, authority="reviewed host config", failure="operation", cap="one Boolean")
+
+    def test_in_46_generator_identity(self):
+        self.assert_row(46, authority="reviewed generator registry", failure="operation", cap="closed script mapping")
+
+    def test_in_47_publication_recovery(self):
+        self.assert_row(47, authority="durable CAS record", failure="operation", cap="1 MiB record")
+
+    def test_in_48_subprocess_stderr(self):
+        self.assert_row(48, authority="owned subprocess", failure="operation", cap="8 MiB host/32 MiB git")
+
+    def test_in_49_rewrite_remote_inputs(self):
+        self.assert_row(49, authority="frozen refs + remote readback", failure="operation", cap="32 MiB response")
+
+
+class R13MessageAndPathAcceptanceTests(unittest.TestCase):
+    def test_awf49a_r12_056_001_emitter_parser_totality(self):
+        for separator in ("\u2028", "\u2029", "\x85", "\v", "\f", "\x1c", "\x1d", "\x1e", "\r"):
+            with self.subTest(separator=ascii(separator)), self.assertRaises(ValidationError):
+                writer_commit_message("subject" + separator + "body", codex_run_id=RUN_A)
+        emitted = writer_commit_message("subject\r\n\r\nbody", codex_run_id=RUN_A)
+        self.assertNotIn("\r", emitted)
+        self.assertEqual(RUN_A, parse_writer_trailer(emitted)["identity"])
+
+    def test_commit_message_grammar_and_caps_matrix(self):
+        invalid = ("\ufeffsubject", "subject\x7f", "subject\x80", "subject\u200b", " \t\n")
+        for value in invalid:
+            with self.subTest(value=ascii(value)), self.assertRaises(ValidationError):
+                provenance.validate_commit_message(value)
+        self.assertEqual("subject\nbody", provenance.validate_commit_message("subject\r\nbody"))
+        with self.assertRaises(ValidationError):
+            provenance.validate_commit_message("x" * (1024 * 1024 + 1))
+
+    def test_writer_line_count_position_case_whitespace_and_lookalikes(self):
+        variants = (" writer:", "writer:", "WRITER:", "Writer :", "Ｗriter:", "Writer：")
+        for key in variants:
+            with self.subTest(key=key), self.assertRaises(ValidationError):
+                parse_writer_trailer(f"subject\n\n{key} codex/{RUN_A}")
+
+    def test_critic_run_line_count_position_case_whitespace_and_lookalikes(self):
+        carrier = f"APPROVE\n\nCritic run: {RUN_A}"
+        self.assertEqual(RUN_A, provenance.parse_critic_run_carrier(carrier)["run_id"])
+        for value in (carrier + "\n" + carrier.splitlines()[-1],
+                      f"Critic Run: {RUN_A}", f"Critic-run: {RUN_A}",
+                      f" Critic run: {RUN_A}"):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                provenance.parse_critic_run_carrier(value)
+
+    def test_awf49a_r12_056_002_undecodable_path_is_sanitized(self):
+        with self.assertRaisesRegex(ValidationError, r"PATH_UTF8.*ordinal=2.*sha256=") as caught:
+            provenance.decode_git_paths(b"ok\0bad\xff\0", failure="commit")
+        self.assertNotIn("bad", str(caught.exception))
+
+    def test_safe_ref_grammar_rejects_revision_expressions(self):
+        for value in ("HEAD~1", "main^", "@", "@{-1}", "main:path", "origin/main"):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                provenance.validate_ref_locator(value)
+        self.assertEqual("refs/heads/main", provenance.validate_ref_locator("refs/heads/main"))
+        self.assertEqual("a" * 40, provenance.validate_ref_locator("a" * 40))
 
 
 class TrailerParsingTests(unittest.TestCase):
@@ -315,6 +520,9 @@ class RepositoryRangeTests(unittest.TestCase):
             "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
         }
         self.git_run("init", "--quiet", "--initial-branch=main")
+        self.git_run("config", "user.name", "Fixture Writer")
+        self.git_run("config", "user.email", "fixture@example.invalid")
+        self.git_run("config", "commit.gpgsign", "false")
         self.write("README.md", "base\n")
         self.base = self.commit("base", f"Writer: codex/{RUN_A}")
 
@@ -356,6 +564,37 @@ class RepositoryRangeTests(unittest.TestCase):
         finally:
             message_path.unlink()
         return self.git_run("rev-parse", "HEAD")
+
+    def test_awf49a_r12_056_002_undecodable_path_is_per_commit_refusal(self):
+        blob = subprocess.run(
+            [self.git, '-C', str(self.root), 'hash-object', '-w', '--stdin'],
+            input=b'hostile\n', capture_output=True, check=True,
+            env=self.environment).stdout.strip()
+        index_row = b'100644 ' + blob + b'\tbad\xff\0'
+        subprocess.run(
+            [self.git, '-C', str(self.root), 'update-index', '-z', '--index-info'],
+            input=index_row, capture_output=True, check=True, env=self.environment)
+        tree = subprocess.run(
+            [self.git, '-C', str(self.root), 'write-tree'], capture_output=True,
+            check=True, env=self.environment).stdout.strip()
+        hostile = subprocess.run(
+            [self.git, '-C', str(self.root), 'commit-tree', tree.decode('ascii'),
+             '-p', self.base],
+            input=f"hostile path\n\nWriter: codex/{RUN_A}".encode(),
+            capture_output=True, check=True, env=self.environment).stdout.decode().strip()
+        later = subprocess.run(
+            [self.git, '-C', str(self.root), 'commit-tree', tree.decode('ascii'),
+             '-p', hostile],
+            input=f"later safe commit\n\nWriter: codex/{RUN_B}".encode(),
+            capture_output=True, check=True, env=self.environment).stdout.decode().strip()
+
+        result = check_commit_range(self.root, self.base, later)
+
+        self.assertEqual('REFUSE', result['status'])
+        self.assertEqual(hostile, result['refusals'][0]['sha'])
+        self.assertRegex(result['refusals'][0]['reason'], r'PATH_UTF8.*ordinal=1.*sha256=')
+        self.assertNotIn('bad', result['refusals'][0]['reason'])
+        self.assertEqual('PASS', result['commits'][1]['status'])
 
     def make_override_recovery_range(self):
         affected = []
@@ -447,7 +686,7 @@ class RepositoryRangeTests(unittest.TestCase):
             self.base,
             "main",
             receipt,
-            body="Safe body",
+            body="Safe body\n",
             commit_message="Implement feature",
             codex_run_id=RUN_B,
             git=Adapter(),
@@ -528,6 +767,44 @@ class RepositoryRangeTests(unittest.TestCase):
         )
         self.assertIn("does not match", mismatch["refusals"][0]["reason"])
 
+    def test_run_log_record_is_closed_bounded_and_candidate_bound(self):
+        self.write("src/bound.py", "value = 2\n")
+        head = self.commit("bound", f"Writer: codex/{RUN_B}")
+        policy = {'require_run_logs': False,
+                  'default_ref': 'refs/heads/main',
+                  'generated_paths': [], 'generators': {}}
+        observation = {'version': 1, 'base': self.base, 'base_ref': 'main',
+                       'pr': 49, 'labels': [], 'trusted_owner_ids': []}
+
+        def closed(run_id, commit_sha, entries):
+            return {'version': 1, 'status': 'ABSENT', 'run_id': run_id,
+                    'commit_sha': commit_sha, 'entries': entries,
+                    'evidence_sha256': None,
+                    'reason_code': 'RUN_LOG_ABSENT'}
+
+        accepted = check_commit_range(
+            self.root, self.base, head, reviewed_policy=policy,
+            provider_observation=observation,
+            runtime_registry={'run_log_verifier': closed, 'generators': {}})
+        self.assertEqual('PASS', accepted['status'])
+        for registry in ({'run_log_verifier': lambda *_: True, 'generators': {}},
+                         {'generators': {}}):
+            with self.subTest(registry=registry):
+                refused = check_commit_range(
+                    self.root, self.base, head, reviewed_policy=policy,
+                    provider_observation=observation,
+                    runtime_registry=registry)
+                self.assertEqual('REFUSE', refused['status'])
+                self.assertRegex(refused['refusals'][0]['reason'],
+                                 r'^RUN_LOG_(?:RECORD_INVALID|VERIFIER_UNREGISTERED)$')
+
+        required = {**policy, 'require_run_logs': True}
+        refused = check_commit_range(
+            self.root, self.base, head, require_run_logs=False,
+            reviewed_policy=required, provider_observation=observation,
+            runtime_registry={'run_log_verifier': closed, 'generators': {}})
+        self.assertEqual('REFUSE', refused['status'])
+
     def test_range_accepts_reproducible_origin_main_merge(self):
         self.git_run("checkout", "--quiet", "-b", "feature")
         self.write("feature.txt", "feature\n")
@@ -544,7 +821,7 @@ class RepositoryRangeTests(unittest.TestCase):
             "Sync origin/main\n\nWriter: script/sync-merge",
         )
         head = self.git_run("rev-parse", "HEAD")
-        real_run = subprocess.run
+        real_run = provenance.run_bounded
         merge_environments = []
 
         def observe_run(*args, **kwargs):
@@ -553,7 +830,7 @@ class RepositoryRangeTests(unittest.TestCase):
                 merge_environments.append(dict(kwargs.get("env", {})))
             return real_run(*args, **kwargs)
 
-        with patch("agentic.provenance.subprocess.run", side_effect=observe_run):
+        with patch("agentic.provenance.run_bounded", side_effect=observe_run):
             result = check_commit_range(
                 self.root, self.base, head, origin_main="origin/main"
             )

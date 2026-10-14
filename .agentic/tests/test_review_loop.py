@@ -25,6 +25,14 @@ ROOT = Path(__file__).resolve().parents[2]
 CANDIDATE = {'repository_id':12,'pr':7,'head':'a'*40,'base':'b'*40,'head_ref':'codex/test','base_ref':'main'}
 FINDING = {'id':'F1','severity':'MAJOR','status':'OPEN','file':'src/a.py','message':'Missing error handling','evidence':'','basis':'criterion:AC1'}
 CODEX_THREAD_ID = '01a1317f-dadb-7071-80de-12832161734c'
+RUN_LOCAL = '11111111-1111-4111-8111-111111111111'
+RUN_ESCAPE = '22222222-2222-4222-8222-222222222222'
+RUN_COMMIT = '33333333-3333-4333-8333-333333333333'
+RUN_CONFIG = '44444444-4444-4444-8444-444444444444'
+RUN_SOURCE = '55555555-5555-4555-8555-555555555555'
+RUN_REVIEW = '66666666-6666-4666-8666-666666666666'
+RUN_WORKER = '77777777-7777-4777-8777-777777777777'
+RUN_LEGACY = '88888888-8888-4888-8888-888888888888'
 
 
 def record_fixture_codex_identity(driver, run_id):
@@ -97,6 +105,8 @@ def pin_passing_qualification(value):
 
 
 class FakeDriver:
+    requires_critic_binding = True
+
     def __init__(self):
         self.current = deepcopy(CANDIDATE)
         self.calls = []
@@ -120,7 +130,15 @@ class FakeDriver:
             for finding in findings:
                 finding.update(status='RESOLVED',evidence='Inspected current fix and test in src/a.py')
             verdict = 'APPROVE'
-        return {'candidate':deepcopy(candidate),'verdict':verdict,'reviewed_files':files,'findings':findings,'summary':'Full review completed'}
+        report = {'candidate':deepcopy(candidate),'verdict':verdict,'reviewed_files':files,'findings':findings,'summary':'Full review completed'}
+        self.last_critic_binding = {
+            'controller_run_id': run_id,
+            'critic_run_id': CODEX_THREAD_ID,
+            'head_sha': candidate['head'],
+            'result_sha256': sha256(json.dumps(report, sort_keys=True).encode()),
+            'critic_run_carrier': 'Critic run: ' + CODEX_THREAD_ID,
+        }
+        return report
 
     def amend(self, candidate, findings, run_id):
         self.calls.append(('worker',run_id,candidate['head']))
@@ -198,6 +216,26 @@ class CycleTests(unittest.TestCase):
             return report
         self.driver.review = stale
         self.assertEqual(self.step()['phase'],'PAUSED')
+
+    def test_live_critic_verdict_binds_observed_thread_result_and_head(self):
+        state = self.step()
+        binding = state['last_review']['critic_binding']
+        self.assertEqual(binding['controller_run_id'],
+                         state['last_review']['run_id'])
+        self.assertEqual(binding['head_sha'], CANDIDATE['head'])
+        self.assertEqual(binding['critic_run_carrier'],
+                         'Critic run: ' + CODEX_THREAD_ID)
+        self.assertRegex(binding['result_sha256'], r'^[0-9a-f]{64}$')
+
+    def test_mismatched_host_critic_binding_fails_before_state_advance(self):
+        original = self.driver.review
+        def mismatched(*args):
+            report = original(*args)
+            self.driver.last_critic_binding['head_sha'] = 'f' * 40
+            return report
+        self.driver.review = mismatched
+        self.assertEqual(self.step()['phase'], 'PAUSED')
+        self.assertIsNone(self.store.get('12:7')['last_review'])
 
     def test_base_change_automatically_invalidates_ready_review(self):
         for _ in range(4): self.step()
@@ -354,10 +392,10 @@ class HostTests(unittest.TestCase):
         config=self.config(); driver=HostDriver(config,ROOT)
         driver.url=str(remote)
         real_git=driver.git
-        def local_git(checkout,*args):
+        def local_git(checkout,*args,**kwargs):
             if args[0] in {'fetch','push'}:
                 args=('-c','protocol.file.allow=always',*args)
-            return real_git(checkout,*args)
+            return real_git(checkout,*args,**kwargs)
         driver.git=local_git  # Explicit local transport seam; production forbids it.
         candidate={**CANDIDATE,'head':head,'base':base}
         driver.snapshot=lambda: {**candidate,'head':command('--git-dir',str(remote),'rev-parse','refs/heads/codex/test')}
@@ -372,6 +410,12 @@ class HostTests(unittest.TestCase):
             return {'number': 7, 'body': 'Synthetic local amendment fixture'}
         driver.api=local_provider_api
         driver.local_api_calls=api_calls
+        driver.collect_provenance_observation = lambda: {
+            'version': 1, 'repository_id': 12, 'pr': 7,
+            'head': candidate['head'], 'base': candidate['base'],
+            'labels': [], 'comments': [], 'trusted_owner_ids': [],
+        }
+        driver.validate_local_provenance = lambda *args, **kwargs: {'status': 'PASS'}
         def agent(role,current,findings,run_id,files=None):
             (worker/'src/a.py').write_text('value = 3\n')
             record_fixture_codex_identity(driver, run_id)
@@ -381,7 +425,7 @@ class HostTests(unittest.TestCase):
 
     def test_real_local_git_amendment_commits_and_pushes_one_child(self):
         driver,candidate,command=self.local_git_driver()
-        amended=driver.amend(candidate,[FINDING],'fixture-local')
+        amended=driver.amend(candidate,[FINDING],RUN_LOCAL)
         self.assertNotEqual(amended['head'],candidate['head'])
         self.assertEqual(driver.snapshot(),amended)
         self.assertEqual(command('-C',str(driver.worker),'rev-parse','HEAD^'),candidate['head'])
@@ -450,7 +494,7 @@ class HostTests(unittest.TestCase):
             (driver.worker/'outside.txt').write_text('out of scope')
             return agent(*args)
         driver.agent=escaped
-        with self.assertRaisesRegex(ValidationError,'outside exact enrolled scope'): driver.amend(candidate,[FINDING],'fixture-escape')
+        with self.assertRaisesRegex(ValidationError,'outside exact enrolled scope'): driver.amend(candidate,[FINDING],RUN_ESCAPE)
         self.assertEqual(driver.snapshot(),candidate)
         self.assertEqual(command('-C',str(driver.worker),'rev-parse','HEAD'),candidate['head'])
 
@@ -462,7 +506,7 @@ class HostTests(unittest.TestCase):
             command('-C',str(driver.worker),'commit','-am','unauthorized worker commit')
             return result
         driver.agent=committed
-        with self.assertRaisesRegex(ValidationError,'changed Git HEAD/branch'): driver.amend(candidate,[FINDING],'fixture-commit')
+        with self.assertRaisesRegex(ValidationError,'changed Git HEAD/branch'): driver.amend(candidate,[FINDING],RUN_COMMIT)
         self.assertEqual(driver.snapshot(),candidate)
 
     def test_real_local_git_worker_cannot_redirect_push(self):
@@ -473,7 +517,7 @@ class HostTests(unittest.TestCase):
             command('-C',str(driver.worker),'config','remote.origin.pushurl','https://example.invalid/other.git')
             return result
         driver.agent=redirected
-        with self.assertRaisesRegex(ValidationError,'changed Git configuration'): driver.amend(candidate,[FINDING],'fixture-config')
+        with self.assertRaisesRegex(ValidationError,'changed Git configuration'): driver.amend(candidate,[FINDING],RUN_CONFIG)
         self.assertEqual(driver.snapshot(),candidate)
 
     def test_unconfigured_example_cannot_launch(self):
@@ -576,7 +620,7 @@ class HostTests(unittest.TestCase):
                 return CANDIDATE['head']
             if args[:2] == ('symbolic-ref', '--short'):
                 return CANDIDATE['head_ref']
-            return ''
+            return b'' if kwargs.get('binary') else ''
         driver.git = downstream_git
         with patch('agentic.providers.github_review_host.is_source_repository', return_value=True):
             self.assertEqual(driver.files(CANDIDATE), ['.agentic/a.py'])
@@ -592,7 +636,7 @@ class HostTests(unittest.TestCase):
                     'summary': 'Synthetic source amendment'}
         driver.agent = source_agent
         with patch('agentic.providers.github_review_host.is_source_repository', return_value=True):
-            amended = driver.amend(candidate, [FINDING], 'fixture-source-amend')
+            amended = driver.amend(candidate, [FINDING], RUN_SOURCE)
         self.assertNotEqual(amended['head'], candidate['head'])
         self.assertEqual(driver.last_amendment_paths, ['.agentic/a.py'])
         self.assertEqual(command('-C', str(driver.worker), 'rev-parse', 'HEAD^'), candidate['head'])
@@ -604,12 +648,12 @@ class HostTests(unittest.TestCase):
         driver.prepare_critic = lambda candidate: None
         def downstream_git(checkout, *args, **kwargs):
             if args[:3] == ('diff', '--no-ext-diff', '--name-only'):
-                return '.agentic/a.py\0'
+                return b'.agentic/a.py\0' if kwargs.get('binary') else '.agentic/a.py\0'
             if args[:2] == ('rev-parse', 'HEAD'):
                 return CANDIDATE['head']
             if args[:2] == ('symbolic-ref', '--short'):
                 return CANDIDATE['head_ref']
-            return ''
+            return b'' if kwargs.get('binary') else ''
         driver.git = downstream_git
         with patch('agentic.providers.github_review_host.is_source_repository', return_value=False):
             with self.assertRaisesRegex(ValidationError, 'Protected governance'):
@@ -619,7 +663,7 @@ class HostTests(unittest.TestCase):
             driver.snapshot = lambda: deepcopy(CANDIDATE)
             driver.agent = lambda *args, **kwargs: {'candidate': CANDIDATE, 'outcome': 'CHANGED', 'summary': 'fixture'}
             with self.assertRaisesRegex(ValidationError, 'Unsafe/protected amendment'):
-                driver.amend(CANDIDATE, [], 'fixture-amend')
+                driver.amend(CANDIDATE, [], '99999999-9999-4999-8999-999999999999')
 
     def test_strict_structured_output_schemas_require_all_declared_properties(self):
         def check(schema):
@@ -669,16 +713,16 @@ class HostTests(unittest.TestCase):
             }) + '\n', encoding='utf-8')
             return ''
         driver.run = run
-        driver.agent('critic',CANDIDATE,[],'fixture-review',['src/a.py'])
-        driver.agent('worker',CANDIDATE,[],'fixture-worker',['src/a.py'])
+        driver.agent('critic',CANDIDATE,[],RUN_REVIEW,['src/a.py'])
+        driver.agent('worker',CANDIDATE,[],RUN_WORKER,['src/a.py'])
         command = captured[0]
         self.assertEqual(command, ['exec','--ephemeral','--ignore-user-config','--sandbox','read-only',
             '-c','approval_policy="never"','-c','sandbox_workspace_write.network_access=false',
             '-c','model_reasoning_effort=ultra','-c','windows.sandbox="elevated"','--model','fixture-critic',
             '--cd',str(self.base/'critic'),'--output-schema',str(ROOT/'.agentic/review-loop/critic-result.schema.json'),
-            '--output-last-message',str(self.base/'state/runs/fixture-review/result.json'),'--json','-'])
+            '--output-last-message',str(self.base/'state/runs'/RUN_REVIEW/'result.json'),'--json','-'])
         self.assertFalse(any('bypass' in x for x in command))
-        effective = json.loads((self.base/'state/runs/fixture-review/effective-config.json').read_text())
+        effective = json.loads((self.base/'state/runs'/RUN_REVIEW/'effective-config.json').read_text())
         self.assertEqual(effective['sandbox'], 'read-only')
         self.assertEqual(effective['cli_sandbox'], 'read-only')
         self.assertEqual(effective['codex_config_overrides']['windows.sandbox'], 'elevated')
@@ -687,7 +731,7 @@ class HostTests(unittest.TestCase):
             '-c','approval_policy="never"','-c','sandbox_workspace_write.network_access=false',
             '-c','model_reasoning_effort=ultra','-c','windows.sandbox="elevated"','--model','fixture-worker',
             '--cd',str(self.base/'worker'),'--output-schema',str(ROOT/'.agentic/review-loop/worker-result.schema.json'),
-            '--output-last-message',str(self.base/'state/runs/fixture-worker/result.json'),'--json','-'])
+            '--output-last-message',str(self.base/'state/runs'/RUN_WORKER/'result.json'),'--json','-'])
 
     def test_qualification_agents_use_production_sandboxes_and_no_network(self):
         self.value['codex_config_overrides'] = {'windows.sandbox':'elevated'}
@@ -753,11 +797,14 @@ class HostTests(unittest.TestCase):
             captured.append(args)
             output = Path(args[args.index('--output-last-message')+1])
             output.write_text(json.dumps({'candidate':CANDIDATE,'verdict':'APPROVE','reviewed_files':['src/a.py'],'findings':[],'summary':'Fixture only'}))
+            Path(kwargs['log']).write_text(json.dumps({
+                'type': 'thread.started', 'thread_id': CODEX_THREAD_ID,
+            }) + '\n', encoding='utf-8')
             return ''
         driver.run = run
-        driver.agent('critic',CANDIDATE,[],'fixture-legacy',['src/a.py'])
+        driver.agent('critic',CANDIDATE,[],RUN_LEGACY,['src/a.py'])
         self.assertNotIn('model_reasoning_effort', ' '.join(captured[0]))
-        effective = json.loads((self.base/'state/runs/fixture-legacy/effective-config.json').read_text())
+        effective = json.loads((self.base/'state/runs'/RUN_LEGACY/'effective-config.json').read_text())
         self.assertIsNone(effective['reasoning_effort'])
         self.assertEqual(effective['sandbox'], 'read-only')
         self.assertEqual(effective['codex_config_overrides'], {})
