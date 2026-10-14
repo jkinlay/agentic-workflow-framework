@@ -157,63 +157,22 @@ def _mapping_identity(locator):
     return sha256(normalized.encode("utf-8"))
 
 
-def _windows_system_directory():
-    """Return the Windows system directory without consulting process PATH."""
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    get_system_directory = kernel32.GetSystemDirectoryW
-    get_system_directory.argtypes = [wintypes.LPWSTR, wintypes.UINT]
-    get_system_directory.restype = wintypes.UINT
-    size = 32768
-    buffer = ctypes.create_unicode_buffer(size)
-    length = get_system_directory(buffer, size)
-    if length == 0 or length >= size:
-        return None
-    directory = Path(buffer.value)
-    return directory if directory.is_absolute() else None
-
-
-def _verified_absolute_executable(candidate):
-    if candidate is None:
-        return None
-    try:
-        if candidate.is_absolute() and candidate.is_file():
-            return str(candidate)
-    except (OSError, TypeError, ValueError):
-        pass
-    return None
-
-
 def _powershell_executable():
     """Resolve PowerShell before the child receives its sanitized environment."""
     if os.name != "nt":
         return "powershell"
-    system_directory = _windows_system_directory()
-    if system_directory is not None:
-        executable = _verified_absolute_executable(
-            system_directory / "WindowsPowerShell" / "v1.0" / "powershell.exe")
-        if executable is not None:
-            return executable
-
-    environment = {key.upper(): value for key, value in os.environ.items()}
-    for variable in ("SYSTEMROOT", "WINDIR"):
-        system_root = environment.get(variable)
-        if system_root:
-            executable = _verified_absolute_executable(
-                Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" /
-                "powershell.exe")
-            if executable is not None:
-                return executable
-
-    for name in ("pwsh.exe", "powershell.exe"):
-        discovered = shutil.which(name)
-        if discovered is not None:
-            executable = _verified_absolute_executable(Path(discovered))
-            if executable is not None:
-                return executable
-    raise OSError("no verified absolute PowerShell executable is available")
+    core = shutil.which("pwsh.exe")
+    if core is not None:
+        return str(Path(core).resolve())
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
+    if system_root:
+        windows_powershell = (
+            Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        )
+        if windows_powershell.is_file():
+            return str(windows_powershell.resolve())
+    legacy = shutil.which("powershell.exe")
+    return str(Path(legacy).resolve()) if legacy is not None else "powershell.exe"
 
 
 def _command_payload(declaration, mapping):
