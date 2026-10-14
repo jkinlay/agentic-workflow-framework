@@ -271,6 +271,96 @@ def posting_collector_receipt_sha256(observation, observation_binding_sha256, re
     return fingerprint("production-posting-collector-receipt", payload)
 
 
+def overcap_approval_collector_receipt_sha256(observation, observation_binding_sha256,
+                                              registration):
+    """Bind one fetched owner comment and the runtime-observed round start."""
+    payload = {
+        "collector_id": observation["producer_id"],
+        "collector_run_id": observation["run_id"],
+        "provider_kind": registration["provider_kind"],
+        "implementation_sha256": registration["implementation_sha256"],
+        "release_sha256": registration["release_sha256"],
+        "repository_id": observation["repository_id"],
+        "pr_number": observation["pr_number"],
+        "provider_response_sha256": observation["provider_response_sha256"],
+        "observation_binding_sha256": observation_binding_sha256,
+        "comment_id": observation["comment_id"],
+        "comment_url": observation["comment_url"],
+        "actor_id": observation["actor_id"],
+        "created_at": observation["created_at"],
+        "updated_at": observation["updated_at"],
+        "body_sha256": sha256(observation["raw_body"].encode("utf-8")),
+        "round_started_at": observation["round_started_at"],
+        "observed_at": observation["observed_at"],
+    }
+    return fingerprint("overcap-approval-collector-receipt", payload)
+
+
+def verified_overcap_approvals(config, approvals, candidate, runs,
+                               trusted_posting_collectors):
+    """Authenticate approval fields and admission time through a registered collector."""
+    configured_collectors = set(config["merge_gate"].get(
+        "production_posting_collector_ids", []))
+    verified = []
+    for approval in approvals:
+        run = runs.get(approval.get("run_id"))
+        registration = trusted_posting_collectors.get(approval.get("producer_id"))
+        registration_shape_ok = (isinstance(registration, dict)
+            and set(registration) == {"provider_kind", "implementation_sha256",
+                                      "release_sha256", "repository_ids", "receipts"}
+            and registration.get("provider_kind") == approval.get("provider_kind")
+            and re.fullmatch(r"[0-9a-f]{64}", registration.get("implementation_sha256", ""))
+            and re.fullmatch(r"[0-9a-f]{64}", registration.get("release_sha256", ""))
+            and candidate["repository_id"] in registration.get("repository_ids", [])
+            and isinstance(registration.get("receipts"), dict))
+        try:
+            provider_bytes = decode_base64_bytes(
+                approval.get("provider_response_bytes"), "provider_response_bytes")
+            provider = loads(provider_bytes.decode("utf-8"))
+            timestamp(approval.get("observed_at"))
+            timestamp(approval.get("round_started_at"))
+        except (UnicodeError, ValidationError):
+            provider = None
+            provider_bytes = b""
+        basis = dict(approval)
+        basis["collector_receipt_sha256"] = "0" * 64
+        binding_sha256 = sha256(canonical(basis))
+        expected_receipt = (overcap_approval_collector_receipt_sha256(
+            approval, binding_sha256, registration)
+            if registration_shape_ok else None)
+        expected_url = (
+            f"{candidate['host']}/{candidate['repository']}/pull/"
+            f"{candidate['pr_number']}#issuecomment-{approval.get('comment_id')}"
+        )
+        expected_provider = {
+            "id": approval.get("comment_id"),
+            "html_url": expected_url,
+            "user": {"id": approval.get("actor_id")},
+            "created_at": approval.get("created_at"),
+            "updated_at": approval.get("updated_at"),
+            "body": approval.get("raw_body"),
+        }
+        if (approval.get("source") != "host_observation"
+                or run is None or run.get("role") != "collector"
+                or run.get("producer_id") != approval.get("producer_id")
+                or not registration_shape_ok
+                or (configured_collectors
+                    and approval.get("producer_id") not in configured_collectors)
+                or registration["receipts"].get(approval.get("run_id")) != expected_receipt
+                or approval.get("collector_receipt_sha256") != expected_receipt
+                or approval.get("repository_id") != candidate["repository_id"]
+                or approval.get("pr_number") != candidate["pr_number"]
+                or approval.get("comment_url") != expected_url
+                or approval.get("provider_response_sha256") != sha256(provider_bytes)
+                or provider is None or canonical(provider) != provider_bytes
+                or provider != expected_provider):
+            raise ValidationError(
+                "Tier 3 over-cap approval lacks a matching authenticated provider observation"
+            )
+        verified.append(approval)
+    return verified
+
+
 def review_round_receipt_sha256(receipt):
     """Hash the exact canonical retained round receipt bytes."""
     return sha256(canonical(receipt))
@@ -430,6 +520,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         raise ValidationError("Every consumed review round needs a current posted verdict record")
     overcap_approvals = bundle.get("overcap_approvals", [])
     unique(overcap_approvals, "comment_id", "Tier 3 over-cap approval comment")
+    overcap_approvals = verified_overcap_approvals(
+        config, overcap_approvals, candidate, runs, trusted_posting_collectors)
     unique(verdicts, "round", "review verdict round")
     expected_rounds = set(range(1, max(v["round"] for v in verdicts) + 1))
     if {v["round"] for v in verdicts} != expected_rounds:
@@ -479,11 +571,32 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         if verdict["round"] == terminal_round:
             round_kwargs = ({"assignment_record": assignment_record}
                             if assignment_record is not None else {"config": config})
+        round_started_at = None
+        if verdict["tier"] == 3:
+            from .policy import parse_overcap_approval
+            matching_approvals = []
+            for approval in overcap_approvals:
+                try:
+                    parsed_approval = parse_overcap_approval(approval["raw_body"])
+                except ValidationError:
+                    continue
+                if parsed_approval["round"] == verdict["round"]:
+                    matching_approvals.append(approval)
+            if len(matching_approvals) > 1:
+                raise ValidationError(
+                    "Tier 3 review round has multiple authenticated over-cap approvals"
+                )
+            if matching_approvals:
+                round_started_at = matching_approvals[0]["round_started_at"]
+                if timestamp(round_started_at) >= timestamp(verdict["created_at"]):
+                    raise ValidationError(
+                        "Authenticated Tier 3 round start must precede its verdict"
+                    )
         validate_round(verdict["tier"], verdict["round"],
                        owner_cap_disposition=bundle.get("cap_disposition"),
                        overcap_approvals=overcap_approvals,
                        trusted_owner_ids=config["merge_gate"]["trusted_owner_ids"],
-                       round_started_at=verdict["created_at"],
+                       round_started_at=round_started_at,
                        repository_id=candidate["repository_id"],
                        pr_number=candidate["pr_number"],
                        **round_kwargs)

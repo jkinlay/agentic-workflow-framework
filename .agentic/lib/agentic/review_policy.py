@@ -64,6 +64,10 @@ def authorize_tier3_round(round_number, cap, *, pr_comments, trusted_owner_ids,
         raise ValidationError("Tier 3 review cap must be between 1 and the mandatory maximum of 3")
     if round_number <= cap:
         return True
+    if round_number != cap + 1:
+        raise ValidationError(
+            f"Tier 3 review cap is {cap}; only round {cap + 1} may be owner-approved"
+        )
 
     if not pr_comments or round_started_at is None:
         raise ValidationError(

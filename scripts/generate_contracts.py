@@ -96,13 +96,23 @@ REVIEW_ROUND_RECEIPT = obj({
 REVIEW_ROUND_RECEIPT["required"].remove("result_json")
 OVERCAP_APPROVAL = obj({
     "channel": const("github_pr_comment"),
+    "source": const("host_observation"),
     "comment_id": integer(1),
+    "comment_url": text(format="uri"),
     "repository_id": integer(1),
     "pr_number": integer(1),
     "actor_id": integer(1),
     "created_at": TIME,
     "updated_at": TIME,
     "raw_body": text(),
+    "observed_at": TIME,
+    "producer_id": text(),
+    "run_id": UUID,
+    "provider_kind": const("github"),
+    "round_started_at": TIME,
+    "provider_response_bytes": BASE64_BYTES,
+    "provider_response_sha256": DIGEST,
+    "collector_receipt_sha256": DIGEST,
 })
 JIRA_PROVIDER = obj({"cloud_id": text(), "site": text(format="uri"), "project_id": text(),
                      "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),

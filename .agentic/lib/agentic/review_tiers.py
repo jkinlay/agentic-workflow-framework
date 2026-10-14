@@ -210,6 +210,10 @@ def validate_round(tier, round_number, *, owner_cap_disposition=None, config=Non
     if type(round_number) is not int or round_number < 1:
         raise ValidationError("review round must be a positive integer")
     if tier == TIER_3 and round_number > cap:
+        if round_number != cap + 1:
+            raise ValidationError(
+                f"Tier 3 review cap is {cap}; only round {cap + 1} may be owner-approved"
+            )
         authorize_tier3_round(
             round_number,
             cap,
