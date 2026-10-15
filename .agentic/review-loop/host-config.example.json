@@ -8,10 +8,10 @@
   "pr": 0,
   "head_branch": "codex/CHANGE_ME",
   "base_branch": "main",
-  "state_dir": "C:/awf-state",
-  "worker_checkout": "C:/awf-worker",
-  "critic_checkout": "C:/awf-critic",
-  "contract_path": "C:/awf-state/contract.md",
+  "state_dir": "/srv/awf/state",
+  "worker_checkout": "/srv/awf/worker",
+  "critic_checkout": "/srv/awf/critic",
+  "contract_path": "/srv/awf/state/contract.md",
   "contract_sha256": "CHANGE_ME",
   "runtime_manifest_sha256": "CHANGE_ME",
   "executables": {
@@ -35,6 +35,18 @@
   "reasoning_effort": null,
   "approved_model_effort_pairs": {},
   "codex_config_overrides": {},
+  "trusted_owner_ids": [],
+  "provenance": {
+    "require_run_logs": true,
+    "default_ref": "refs/heads/main",
+    "generated_paths": ["MANIFEST.json", "MANIFEST.md"],
+    "generators": {
+      "manifest-regen": {
+        "paths": ["MANIFEST.json", "MANIFEST.md"],
+        "reproducer_sha256": "229eddb630925c8d5a34a523b51c68db51ee41da433c92efc9ad167caf6ee9c4"
+      }
+    }
+  },
   "governed_source_paths": [],
   "risk_tier": "Tier 3",
   "allowed_paths": [

@@ -18,8 +18,9 @@ from agentic.canonical import load, fingerprint
 from agentic.contracts import Contracts
 from agentic.gates import evaluate
 from agentic.interaction import (ROUTINE, decide_action, gate_handoff, loop_next_step,
-    next_step, render_markdown, status_report)
+    next_step, render_markdown, status_report, writer_commit_message)
 from agentic.lifecycle import definition
+from agentic.provenance import parse_writer_trailer
 from agentic.review_loop import LoopStore
 from test_review_policy import (RuntimeAssignedGateConfig,
                                 bind_production_posting_fixture,
@@ -30,6 +31,23 @@ NOW='2026-09-09T12:00:00Z'
 
 
 class AutonomyTests(unittest.TestCase):
+    def test_interaction_writer_message_round_trips_authoritative_parser(self):
+        run_id = '12345678-1234-4234-8234-123456789abc'
+        for emitted, expected in [
+                (writer_commit_message('subject\r\nbody', codex_run_id=run_id),
+                 ('codex', run_id)),
+                (writer_commit_message('subject', mechanical=True,
+                                       script_name='manifest-regen'),
+                 ('script', 'manifest-regen'))]:
+            self.assertNotIn('\r', emitted)
+            parsed = parse_writer_trailer(emitted)
+            self.assertEqual((parsed['kind'], parsed['identity']), expected)
+        for hostile in ['subject\u2028body', 'subject\nwriter: codex/' + run_id,
+                        'subject\nWriter\uff1a codex/' + run_id]:
+            with self.subTest(hostile=repr(hostile)):
+                with self.assertRaises(ValidationError):
+                    writer_commit_message(hostile, codex_run_id=run_id)
+
     def test_all_routine_in_scope_actions_continue_without_prompt(self):
         for action in ROUTINE:
             with self.subTest(action=action):

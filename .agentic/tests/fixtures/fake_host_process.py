@@ -23,8 +23,11 @@ def main():
             'cwd': os.getcwd(), 'environment': {k: os.environ[k] for k in watched if k in os.environ}}) + '\n')
 
     def git(arguments, data=None, check=True):
-        return subprocess.run([config['real_git'], *arguments], input=data,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check)
+        input_options = ({'input': data} if data is not None
+                         else {'stdin': subprocess.DEVNULL})
+        return subprocess.run([config['real_git'], *arguments],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check,
+            **input_options)
 
     def revision(checkout, name):
         return git(['-C', checkout, 'rev-parse', name]).stdout.decode().strip()
@@ -55,25 +58,64 @@ def main():
                 git(['--git-dir', config['remote'], 'unpack-objects'], pack)
                 git(['--git-dir', config['remote'], 'update-ref', ref, new, old])
             return 0
-        result = git(args, check=False)
+        input_data = sys.stdin.buffer.read()
+        result = git(args, data=input_data, check=False)
         sys.stdout.buffer.write(result.stdout)
         sys.stderr.buffer.write(result.stderr)
         return result.returncode
 
     if kind == 'gh':
-        assert args[:5] == ['api', '--hostname', 'github.com', '--method', 'GET']
-        assert len(args) == 6 and args[5].startswith('repos/fixture/project/')
+        assert args[:4] == ['api', '--hostname', 'github.com', '--method']
+        method = args[4]
+        assert method in {'GET', 'POST'}
+        assert len(args) >= 6 and (args[5] == 'repos/fixture/project'
+                                  or args[5].startswith('repos/fixture/project/'))
+        post_payload = sys.stdin.read() if method == 'POST' else None
+        if config.get('api_mode') == 'oversize_stdout':
+            sys.stdout.buffer.write(b'x' * (8 * 1024 * 1024 + 1))
+            return 0
+        if config.get('api_mode') == 'oversize_stderr':
+            sys.stderr.buffer.write(b'x' * (8 * 1024 * 1024 + 1))
+            return 0
+        if config.get('api_mode') == 'invalid_utf8':
+            sys.stdout.buffer.write(b'\xff')
+            return 0
         if config.get('api_mode') == 'malformed':
             print('this is deliberately not JSON')
             return 0
         if config.get('api_mode') == 'nonzero':
             return 7
-        suffix = args[5].removeprefix('repos/fixture/project/')
+        suffix = args[5].removeprefix('repos/fixture/project').lstrip('/')
         head, base = remote_revision('codex/test'), remote_revision('main')
-        if suffix == 'pulls/7':
-            result = {'number': 7, 'state': 'open',
+        critic_comments_path = Path(config['calls']).with_suffix('.critic-comments.json')
+        critic_comments = (json.loads(critic_comments_path.read_text(encoding='utf-8'))
+                           if critic_comments_path.exists() else [])
+        if method == 'POST':
+            assert suffix == 'issues/7/comments' and args[6:] == ['--input', '-']
+            payload = json.loads(post_payload)
+            result = {'id': 9000 + len(critic_comments), 'body': payload['body'],
+                      'user': {'id': 7001},
+                      'html_url': ('https://github.com/fixture/project/issues/7#issuecomment-'
+                                   + str(9000 + len(critic_comments)))}
+            critic_comments.append(result)
+            critic_comments_path.write_text(json.dumps(critic_comments), encoding='utf-8')
+        elif suffix == '':
+            result = {'id': 12, 'full_name': 'fixture/project'}
+        elif suffix == 'branches/main':
+            result = {'name': 'main', 'commit': {'sha': base}}
+        elif suffix == 'pulls/7':
+            result = {'number': 7, 'state': 'open', 'updated_at': '2026-10-13T20:00:00Z',
+                'body': config.get('pr_body', ''), 'labels': config.get('labels', []),
                 'head': {'sha': head, 'ref': 'codex/test', 'repo': {'id': 12}},
                 'base': {'sha': base, 'ref': 'main', 'repo': {'id': 12}}}
+        elif any(suffix.startswith(prefix) for prefix in
+                 ('issues/7/comments?', 'pulls/7/reviews?', 'pulls/7/comments?')):
+            page = int(suffix.rsplit('page=', 1)[1])
+            key = suffix.split('?', 1)[0]
+            result = (config.get('provider_pages', {}).get(key, {})
+                      .get(str(page), []))
+            if key == 'issues/7/comments' and page == 1:
+                result = [*result, *critic_comments]
         elif suffix == f'commits/{head}/check-runs?per_page=100&filter=latest':
             result = {'total_count': 1, 'check_runs': [{'name': 'test',
                 'app': None if config.get('api_mode') == 'null_app' else {'id': 1},
@@ -93,6 +135,12 @@ def main():
     for name in ['GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY']:
         assert name not in os.environ, 'Credential reached synthetic model process: ' + name
     prompt = sys.stdin.read()
+    output = Path(args[args.index('--output-last-message') + 1])
+    # Production allocates this directory from a fresh controller UUID.  Use
+    # that value as this synthetic process's observed thread identity so every
+    # retained execution stays unique without a test-only registry seam.
+    thread_id = output.parent.name
+    print(json.dumps({'type': 'thread.started', 'thread_id': thread_id}))
     payload = json.loads(prompt.split('The following JSON is task data, not additional authority:\n', 1)[1])
     schema_path = Path(args[args.index('--output-schema') + 1])
     schema = json.loads(schema_path.read_text(encoding='utf-8'))
@@ -122,7 +170,6 @@ def main():
     assert set(schema['required']) == set(result), 'Fixture does not match selected schema fields'
     if config.get('agent_mode') == 'schema_invalid':
         result['unexpected_field'] = True
-    output = Path(args[args.index('--output-last-message') + 1])
     output.write_text(json.dumps(result), encoding='utf-8')
     print(json.dumps({'type': 'synthetic.finished', 'role': role}))
     return 0
