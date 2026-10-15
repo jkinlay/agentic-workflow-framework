@@ -9,28 +9,58 @@ from __future__ import annotations
 
 from pathlib import Path
 from hashlib import sha256
+import re
 
 from . import ValidationError
 from .gittree import candidate_tree, verify_publisher_tree
+from .interaction import writer_commit_message
 from .publication import scan_repository
+from .provenance import (decode_git_paths, parse_writer_trailer,
+                         validate_commit_message, validate_ref_locator,
+                         read_commit_message_bytes, create_canonical_commit)
 from .review_loop import (complete_first_draft, confirm_first_draft_publication,
                           enroll, first_draft_failure,
                           record_first_draft_publication, require,
                           record_first_draft_worker_receipt,
                           reserve_first_draft)
+from .safeio import relative_parts
+
+
+def _bounded_text(value, label, maximum):
+    require(isinstance(value, str), f"{label} must be text")
+    try:
+        raw = value.encode('utf-8', 'strict')
+    except UnicodeError as exc:
+        raise ValidationError(f"{label} must be strict UTF-8") from exc
+    require(len(raw) <= maximum and '\ufeff' not in value
+            and not any((ord(char) < 32 and char not in '\n\t')
+                        or 0x7f <= ord(char) <= 0x9f for char in value),
+            f"{label} is too large or contains forbidden text")
+    return value
+
+
+def _markdown_scalar(value, label):
+    value = _bounded_text(value, label, 4096)
+    require('\n' not in value and '\r' not in value and value.strip(),
+            f"{label} must be one nonempty line")
+    return (value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            .replace('`', '&#96;'))
 
 
 def render_first_draft_body(contract, *, risk_tier, worker_model, reasoning_effort,
                             branch, tested_tree):
     """Render the immutable contract facts recorded in the draft PR body."""
-    require(isinstance(contract, str) and contract.strip(), "First-draft contract is empty")
+    contract = _bounded_text(contract, "First-draft contract", 512 * 1024)
+    contract = contract.replace('\r\n', '\n')
+    require(contract.strip() and '\r' not in contract and '\ufeff' not in contract,
+            "First-draft contract is empty or noncanonical")
     require(risk_tier in {1, 2, 3, "Tier 1", "Tier 2", "Tier 3"},
             "First-draft PR requires a reviewed Tier 1, Tier 2 or Tier 3 risk tier")
-    require(isinstance(worker_model, str) and worker_model.strip(), "Worker model is missing")
-    require(isinstance(reasoning_effort, str) and reasoning_effort.strip(), "Worker reasoning effort is missing")
-    require(isinstance(branch, str) and branch.strip() and isinstance(tested_tree, str),
-            "First-draft publication identity is incomplete")
-    return ("## AWF first draft\n\n"
+    worker_model = _markdown_scalar(worker_model, "Worker model")
+    reasoning_effort = _markdown_scalar(reasoning_effort, "Worker reasoning effort")
+    branch = _markdown_scalar(branch, "First-draft branch")
+    tested_tree = _markdown_scalar(tested_tree, "First-draft tested tree")
+    rendered = ("## AWF first draft\n\n"
             f"- Risk tier: {risk_tier}\n"
             f"- Worker model: `{worker_model}`\n"
             f"- Reasoning effort: `{reasoning_effort}`\n"
@@ -38,7 +68,9 @@ def render_first_draft_body(contract, *, risk_tier, worker_model, reasoning_effo
             f"- Tested tree: `{tested_tree}`\n\n"
             "The first-draft worker run is charged to `max_agent_runs`; amendment "
             "cycles start at zero. The scheduled review loop enrolls this draft "
-            "after its observed creation.\n\n" + contract.strip() + "\n")
+            "after its observed creation.\n\n" + contract.rstrip('\n') + "\n")
+    _bounded_text(rendered, "First-draft body", 1024 * 1024)
+    return rendered
 
 
 def validate_worker_receipt(receipt, *, allowed_paths):
@@ -47,18 +79,22 @@ def validate_worker_receipt(receipt, *, allowed_paths):
     require(set(receipt) == {"outcome", "changes", "tested_tree", "ignored_untracked", "summary"},
             "First-draft worker receipt has unsupported or missing fields")
     require(receipt["outcome"] == "CHANGED", "First-draft worker did not produce a changed tree")
-    require(isinstance(receipt["summary"], str) and receipt["summary"].strip(),
+    require(isinstance(receipt["summary"], str) and receipt["summary"].strip()
+            and len(receipt["summary"].encode('utf-8', 'strict')) <= 4096,
             "First-draft worker summary is empty")
-    require(isinstance(receipt["tested_tree"], str) and len(receipt["tested_tree"]) in {40, 64},
+    require(isinstance(receipt["tested_tree"], str)
+            and re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', receipt["tested_tree"]),
             "First-draft receipt has no valid tested_tree")
     changes = receipt["changes"]
     require(isinstance(changes, list) and changes, "First-draft receipt has no declared changes")
     paths = []
+    require(len(changes) <= 100000, "First-draft receipt has too many changes")
     for change in changes:
         require(isinstance(change, dict) and set(change) == {"path", "action"},
                 "First-draft changes must contain path and action")
         require(isinstance(change["path"], str) and change["path"] in allowed_paths,
                 "First-draft worker changed a path outside its exact scope")
+        relative_parts(change["path"])
         require(change["action"] in {"added", "modified", "deleted"},
                 "First-draft change has an unsupported action")
         paths.append(change["path"])
@@ -66,7 +102,8 @@ def validate_worker_receipt(receipt, *, allowed_paths):
     ignored = receipt["ignored_untracked"]
     require(isinstance(ignored, list) and len(ignored) == len(set(ignored)),
             "First-draft receipt must retain the excluded ignored_untracked inventory")
-    require(all(isinstance(path, str) and path and path not in paths for path in ignored),
+    require(len(ignored) <= 100000 and all(isinstance(path, str) and path
+            and not relative_parts(path) is None and path not in paths for path in ignored),
             "ignored_untracked must contain distinct paths excluded from the published tree")
     return receipt
 
@@ -79,7 +116,8 @@ def publication_scan(root, base, head, body, *, mapping_path=None):
 
 
 def _split_git_paths(value):
-    return {path for path in value.split("\0") if path}
+    raw = value.encode('utf-8', 'strict') if isinstance(value, str) else value
+    return set(decode_git_paths(raw, require_terminal_nul=bool(raw)))
 
 
 def excluded_worktree_inventory(git, changes):
@@ -91,15 +129,62 @@ def excluded_worktree_inventory(git, changes):
     return sorted((ordinary | ignored) - declared_additions)
 
 
+def publish_codex_tested_tree(root, base, branch, receipt, *, body,
+                              commit_message, codex_run_id, git,
+                              allowed_paths, mapping_path=None, title=None,
+                              prepare_publication=None, prepare_plan=None,
+                              publication_plan=None, git_guard=None,
+                              provenance_check=None):
+    """Publish a Codex-written first draft with its required Writer trailer."""
+    return publish_tested_tree(
+        root, base, branch, receipt,
+        body=body,
+        commit_message=commit_message,
+        codex_run_id=codex_run_id,
+        git=git,
+        allowed_paths=allowed_paths,
+        mapping_path=mapping_path,
+        title=title,
+        prepare_publication=prepare_publication,
+        prepare_plan=prepare_plan,
+        publication_plan=publication_plan,
+        git_guard=git_guard,
+        provenance_check=provenance_check,
+    )
+
+
 def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
+                        codex_run_id=None,
                         git, allowed_paths, mapping_path=None, title=None,
                         prepare_publication=None, prepare_plan=None,
-                        publication_plan=None, git_guard=None):
+                        publication_plan=None, git_guard=None,
+                        provenance_check=None):
     """Commit/push exactly a worker-tested tree, then return a publication receipt.
 
     ``git`` is a narrow host adapter with ``run(*args)``.  It is intentionally
     injected so tests can prove scan denial and tree mismatch without a remote.
     """
+    # This is the commit boundary, not merely a convenience wrapper.  Format
+    # the message here so every caller must supply the authenticated Codex
+    # execution identity before any Git mutation can occur.
+    plain_commit_message = commit_message
+    commit_message = writer_commit_message(commit_message,
+                                           codex_run_id=codex_run_id)
+    normalized_plain = validate_commit_message(plain_commit_message)
+    commit_title = normalized_plain.split('\n')[0]
+    require(len(commit_title.encode('utf-8')) <= 4096,
+            "First-draft commit subject exceeds 4 KiB")
+    if title is not None:
+        title = validate_commit_message(title)
+        require('\n' not in title and len(title.encode('utf-8')) <= 4096,
+                "First-draft PR title must be one line within 4 KiB")
+    _bounded_text(body, "First-draft body", 1024 * 1024)
+    require('\r' not in body and body.endswith('\n') and not body.endswith('\n\n'),
+            "First-draft body must use LF and exactly one trailing LF")
+    validate_ref_locator(base, "First-draft base")
+    require(isinstance(branch, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]*', branch)
+            and '..' not in branch and not branch.endswith(('.', '.lock')),
+            "First-draft branch is unsafe")
     receipt = validate_worker_receipt(receipt, allowed_paths=set(allowed_paths))
     if git_guard:
         git_guard()
@@ -114,7 +199,7 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
             "Worker ignored_untracked inventory does not match the candidate tree")
     plan = {"base": base, "head_tree": receipt["tested_tree"], "branch": branch,
             "body_sha256": sha256(body.encode()).hexdigest(),
-            "title": title or commit_message, "commit_message": commit_message,
+            "title": title or commit_title, "commit_message": commit_message,
             "ignored_untracked": excluded}
     require(publication_plan is None or publication_plan == plan,
             "First-draft publication plan changed during recovery")
@@ -132,7 +217,7 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
         require(git.run("symbolic-ref", "--short", "HEAD") == branch
                 and git.run("rev-parse", "HEAD") == base,
                 "First-draft HEAD or branch changed before publisher commit")
-        git.run("commit", "-m", commit_message)
+        create_canonical_commit(root, base, branch, commit_message)
         if git_guard:
             git_guard()
     else:
@@ -148,6 +233,10 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
                 "Retained first-draft publisher commit title changed during recovery")
     actual = verify_publisher_tree(root, receipt["tested_tree"])
     head = git.run("rev-parse", "HEAD")
+    committed_message = read_commit_message_bytes(root, head)
+    require(committed_message == commit_message.encode('utf-8'),
+            "Created commit message bytes differ from the canonical emitter output")
+    parse_writer_trailer(committed_message.decode('utf-8', 'strict'))
     parents = git.run("rev-list", "--parents", "-n", "1", head).split()
     require(len(parents) == 2 and parents == [head, base],
             "First-draft publisher commit is not a single child of the provider base")
@@ -156,8 +245,10 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
     publication = {"base": base, "head": head, "head_tree": actual,
                    "branch": branch, "body": body,
                    "body_sha256": sha256(body.encode()).hexdigest(),
-                   "title": title or commit_message,
+                   "title": title or commit_title,
                    "ignored_untracked": excluded}
+    if provenance_check is not None:
+        provenance_check(base, head)
     if prepare_publication:
         prepare_publication(publication)
     scan = publication_scan(root, base, head, body, mapping_path=mapping_path)

@@ -13,16 +13,21 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
 from agentic import VERSION
 from agentic.canonical import now_text, sha256
+from agentic.providers.github_review_host import HostDriver
 from agentic.review_qualification import host_binding_sha256
+from agentic.safeio import run_bounded
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = Path(__file__).parent / 'fixtures/fake_host_process.py'
+CANDIDATE_CODEX_RUN_ID = 'c3628c1e-f4f9-4f70-a31b-a037bea2ad77'
+CANDIDATE_CONTROLLER_RUN_ID = '9b53f4c6-11c5-4cb2-9ef8-fd8f07e56bde'
 
 
 def pin_synthetic_qualification(config, state, head):
@@ -109,6 +114,13 @@ class HostProcessTests(unittest.TestCase):
             # This native launcher preserves stdin/out/err and exit code. The
             # Python fixture is test code, never a production host adapter mode.
             source = cls.launchers / 'launcher.cs'
+            reporter = cls.launchers / 'stdin-report.py'
+            reporter.write_text(
+                'import hashlib, json, sys\n'
+                'raw = sys.stdin.buffer.read()\n'
+                'print(json.dumps({"prefix": raw[:16].hex(), "length": len(raw), '
+                '"sha256": hashlib.sha256(raw).hexdigest()}))\n',
+                encoding='utf-8')
             def literal(value):
                 return '@"' + str(value).replace('"', '""') + '"'
             source.write_text('''using System;
@@ -130,19 +142,21 @@ class Launcher {
   }
   static int Main(string[] args) {
     string kind = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]).Replace("fake-", "");
-    string argv = "-B " + Quote(FIXTURE) + " " + Quote(kind);
-    foreach (string arg in args) argv += " " + Quote(arg);
+    bool reportStdin = kind == "gh" && args.Length == 1 && args[0] == "--awf-report-stdin";
+    string argv = reportStdin
+      ? "-B " + Quote(REPORTER)
+      : "-B " + Quote(FIXTURE) + " " + Quote(kind);
+    if (!reportStdin) foreach (string arg in args) argv += " " + Quote(arg);
     var info = new ProcessStartInfo(PYTHON, argv);
     info.UseShellExecute = false; info.CreateNoWindow = true;
-    info.RedirectStandardInput = true; info.RedirectStandardOutput = true; info.RedirectStandardError = true;
+    info.RedirectStandardInput = false; info.RedirectStandardOutput = true; info.RedirectStandardError = true;
     var child = Process.Start(info);
     var stdout = Task.Factory.StartNew(() => child.StandardOutput.BaseStream.CopyTo(Console.OpenStandardOutput()));
     var stderr = Task.Factory.StartNew(() => child.StandardError.BaseStream.CopyTo(Console.OpenStandardError()));
-    if (kind == "codex") Console.OpenStandardInput().CopyTo(child.StandardInput.BaseStream);
-    child.StandardInput.Close(); child.WaitForExit(); Task.WaitAll(stdout, stderr); return child.ExitCode;
+    child.WaitForExit(); Task.WaitAll(stdout, stderr); return child.ExitCode;
   }
 }
-'''.replace('FIXTURE', literal(FIXTURE)).replace('PYTHON', literal(sys.executable)), encoding='utf-8')
+'''.replace('REPORTER', literal(reporter)).replace('FIXTURE', literal(FIXTURE)).replace('PYTHON', literal(sys.executable)), encoding='utf-8')
             compiled = cls.launchers / 'launcher.exe'
             result = subprocess.run([str(compiler), '/nologo', '/target:exe', '/out:' + str(compiled), str(source)],
                 capture_output=True, text=True, encoding='utf-8', timeout=60)
@@ -180,7 +194,8 @@ class Launcher {
         self.command('-C', str(self.worker), 'commit', '-m', 'synthetic baseline')
         self.command('-C', str(self.worker), 'checkout', '-b', 'codex/test')
         (self.worker / 'src/a.py').write_text('value = 2\n', encoding='utf-8')
-        self.command('-C', str(self.worker), 'commit', '-am', 'synthetic candidate')
+        self.command('-C', str(self.worker), 'commit', '-am',
+                     'synthetic candidate\n\nWriter: codex/' + CANDIDATE_CODEX_RUN_ID)
         self.remote = self.base / 'remote.git'
         self.command('clone', '--bare', str(self.worker), str(self.remote))
         self.command('clone', '--branch', 'codex/test', str(self.remote), str(self.critic))
@@ -188,6 +203,25 @@ class Launcher {
         self.command('-C', str(self.worker), 'remote', 'add', 'origin', origin)
         self.command('-C', str(self.critic), 'remote', 'set-url', 'origin', origin)
         self.head = self.command('-C', str(self.worker), 'rev-parse', 'HEAD').strip()
+        # This is production-shaped retained controller evidence.  The real CLI
+        # must discover and register it through HostDriver; the test never
+        # injects a verifier or a provenance result.
+        retained = self.state / 'runs' / CANDIDATE_CONTROLLER_RUN_ID
+        retained.mkdir(parents=True)
+        log_raw = (json.dumps({'type': 'thread.started',
+                               'thread_id': CANDIDATE_CODEX_RUN_ID})
+                   + '\n').encode('utf-8')
+        result_raw = b'{"outcome":"CHANGED"}\n'
+        (retained / 'codex.jsonl').write_bytes(log_raw)
+        (retained / 'result.json').write_bytes(result_raw)
+        registrar = HostDriver.__new__(HostDriver)
+        registrar.state = self.state
+        registrar.worker = self.worker
+        registrar._record_codex_identity(
+            CANDIDATE_CONTROLLER_RUN_ID, retained, retained,
+            retained / 'result.json')
+        registrar.register_commit_run_log(
+            CANDIDATE_CONTROLLER_RUN_ID, self.head)
         # A measured miniature runtime uses the production modules and CLI, with
         # its own exact source inventory. No integrity function is monkeypatched.
         shutil.copytree(ROOT / '.agentic/lib', self.runtime / '.agentic/lib', ignore=shutil.ignore_patterns('__pycache__'))
@@ -243,6 +277,18 @@ class Launcher {
         values = [json.loads(line) for line in self.calls.read_text(encoding='utf-8').splitlines()]
         return [value for value in values if kind is None or value['kind'] == kind]
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows launcher regression')
+    def test_windows_launcher_preserves_stdin_bytes_without_bom(self):
+        payload = '{"body":"café π 漢字 🚀"}\n'.encode('utf-8')
+        result = run_bounded(
+            [str(self.launchers / 'fake-gh.exe'), '--awf-report-stdin'],
+            stdin=payload, cwd=self.base, env=self.env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+        report = json.loads(result.stdout.decode('utf-8'))
+        self.assertNotEqual(report['prefix'][:6], 'efbbbf', report)
+        self.assertEqual(report['length'], len(payload), report)
+        self.assertEqual(report['sha256'], sha256(payload), report)
+
     def test_production_cli_check_enroll_tick_real_process_amendment_cycle(self):
         self.assertEqual(self.cli('check')['status'], 'PREFLIGHT_PASSED')
         self.assertEqual(self.cli('enroll')['phase'], 'REVIEW')
@@ -254,6 +300,22 @@ class Launcher {
         self.assertNotEqual(new, self.head)
         self.assertEqual(self.command('-C', str(self.worker), 'rev-parse', 'HEAD^').strip(), self.head)
         self.assertEqual(self.command('-C', str(self.worker), 'status', '--porcelain'), '')
+        initial_message = self.command('-C', str(self.worker), 'show', '-s',
+                                       '--format=%B', self.head)
+        self.assertIn('Writer: codex/' + CANDIDATE_CODEX_RUN_ID,
+                      initial_message)
+        self.assertEqual(uuid.UUID(CANDIDATE_CODEX_RUN_ID).version, 4)
+        amendment_message = self.command('-C', str(self.worker), 'show', '-s',
+                                         '--format=%B', new)
+        writer_id = amendment_message.rsplit('Writer: codex/', 1)[1].strip()
+        worker_bindings = []
+        for path in (self.state / 'runs').glob('*/codex-identity.json'):
+            binding = json.loads(path.read_text(encoding='utf-8'))
+            result_path = path.parent / binding['result']
+            result = json.loads(result_path.read_text(encoding='utf-8'))
+            if result.get('outcome') == 'CHANGED':
+                worker_bindings.append(binding['codex_run_id'])
+        self.assertIn(writer_id, worker_bindings)
         models = self.observations('codex')
         self.assertEqual(len(models), 3)
         for call in models:
@@ -273,7 +335,14 @@ class Launcher {
                 self.assertIn('core.fsmonitor=false', call['argv'])
                 self.assertTrue(any(x.startswith('core.hooksPath=') for x in call['argv']))
             elif call['kind'] == 'gh':
-                self.assertEqual(call['argv'][:5], ['api', '--hostname', 'github.com', '--method', 'GET'])
+                self.assertEqual(call['argv'][:4],
+                                 ['api', '--hostname', 'github.com', '--method'])
+                if call['argv'][4] == 'POST':
+                    self.assertEqual(call['argv'][5:],
+                                     ['repos/fixture/project/issues/7/comments',
+                                      '--input', '-'])
+                else:
+                    self.assertEqual(call['argv'][4], 'GET')
                 self.assertEqual(call['environment']['GH_TOKEN'], 'synthetic-not-a-secret')
         self.assertTrue(any('show' in call['argv'] for call in self.observations('git')))
 

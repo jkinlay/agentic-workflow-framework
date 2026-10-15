@@ -604,11 +604,28 @@ def tick(store, config, driver):
             store.save(state)
             if phase == 'REVIEW':
                 files = driver.files(current)
+                if getattr(driver, 'requires_critic_binding', False):
+                    driver.last_critic_binding = None
                 report = driver.review(current, deepcopy(state['findings']), run_id, files)
                 require(driver.snapshot() == current, 'PR moved during review')
+                critic_binding = getattr(driver, 'last_critic_binding', None)
+                if getattr(driver, 'requires_critic_binding', False):
+                    require(isinstance(critic_binding, dict)
+                            and critic_binding.get('controller_run_id') == run_id,
+                            'Critic result lacks the host-observed execution binding')
+                if critic_binding is not None:
+                    from .provenance import validate_critic_run_binding
+                    validate_critic_run_binding({
+                        'run_id': critic_binding.get('critic_run_id'),
+                        'head_sha': critic_binding.get('head_sha'),
+                        'result_sha256': critic_binding.get('result_sha256'),
+                        'critic_run_carrier': critic_binding.get('critic_run_carrier'),
+                    }, reviewed_head=current['head'])
                 findings = validate_review(report, current, state['findings'], files)
                 state['findings'] = findings
-                state['last_review'] = {'run_id': run_id, 'candidate': current, 'report': report, 'completed_at': now_text()}
+                state['last_review'] = {'run_id': run_id, 'candidate': current,
+                    'report': report, 'critic_binding': deepcopy(critic_binding),
+                    'completed_at': now_text()}
                 if report['verdict'] == 'BLOCKED':
                     state.update(phase='PAUSED', reason='Critic blocked: '+report['summary'][:4000])
                 elif report['verdict'] == 'CHANGES_REQUESTED':
