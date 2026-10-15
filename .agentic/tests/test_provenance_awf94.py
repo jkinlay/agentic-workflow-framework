@@ -108,6 +108,18 @@ class AWF94MessageGrammarTests(unittest.TestCase):
                             ValidationError, r"^EMITTER_WRITER_AMBIGUOUS:"):
                         writer_commit_message(body, codex_run_id=RUN_ID)
 
+    def test_c195_003_writer_emitter_rejects_colon_lookalikes(self):
+        separators = (
+            "\ua789", "\u2236", "\ufe55", "\u02d0", "\ufe13", "\u0589",
+            "\u05c3", "\u2e35", "\ua4fd", "\u1361", "\u16ec", "\u205d",
+        )
+        for separator in separators:
+            with self.subTest(separator=ascii(separator)):
+                body = f"subject\n\nWriter{separator} codex/{RUN_ID}"
+                with self.assertRaisesRegex(
+                        ValidationError, r"^EMITTER_WRITER_AMBIGUOUS:"):
+                    writer_commit_message(body, codex_run_id=RUN_ID)
+
 
 class AWF94CriticBindingTests(unittest.TestCase):
     def test_in_24_result_digest_and_nested_bindings_are_mandatory(self):
@@ -170,6 +182,19 @@ class AWF94CriticBindingTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValidationError,
                                                 r"^CRITIC_LINE_INVALID:"):
                         provenance.parse_critic_run_carrier(carrier)
+
+    def test_c195_003_critic_parser_rejects_colon_lookalikes(self):
+        separators = (
+            "\ua789", "\u2236", "\ufe55", "\u02d0", "\ufe13", "\u0589",
+            "\u05c3", "\u2e35", "\ua4fd", "\u1361", "\u16ec", "\u205d",
+        )
+        for separator in separators:
+            with self.subTest(separator=ascii(separator)):
+                carrier = (f"Critic run{separator} {RUN_ID}"
+                           f"\nCritic run: {RUN_ID}")
+                with self.assertRaisesRegex(ValidationError,
+                                            r"^CRITIC_LINE_INVALID:"):
+                    provenance.parse_critic_run_carrier(carrier)
 
 
 class AWF94FirstDraftTests(unittest.TestCase):
