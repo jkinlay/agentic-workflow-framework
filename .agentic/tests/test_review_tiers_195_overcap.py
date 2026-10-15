@@ -13,7 +13,7 @@ from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, sha256
 from agentic.gates import (evaluate,
                            overcap_approval_collector_receipt_sha256)
-from agentic.lifecycle import definition
+from agentic.lifecycle import definition, review_round_transition
 from agentic.review_policy import authorize_tier3_round
 from agentic.review_tiers import review_decision
 from test_review_policy import (Fixture, bind_production_posting_fixture,
@@ -74,6 +74,16 @@ class Tier3OvercapApprovalTests(unittest.TestCase):
             round_started_at=ROUND_STARTED_AT,
         )
         self.assertEqual("OWNER_REVIEW_REQUIRED", result["status"])
+
+    def test_lifecycle_refuses_caller_constructed_approval_context(self):
+        with self.assertRaisesRegex(ValidationError, "authenticated.*approval context"):
+            review_round_transition(
+                3,
+                ROUND,
+                overcap_approvals=[self.comment()],
+                trusted_owner_ids=[OWNER],
+                round_started_at=ROUND_STARTED_AT,
+            )
 
     def test_record_allows_only_its_named_round(self):
         with self.assertRaisesRegex(ValidationError, "only round 4"):
@@ -246,6 +256,23 @@ class Tier3OvercapGateTests(Fixture):
         return gate_fixtures.ReviewTiers195GateTests._refresh_owner_posting_receipt(
             self, registry,
         )
+
+    def test_lifecycle_admits_provider_authenticated_approval_context(self):
+        bind_review_admission(self.bundle)
+        registry = bind_production_posting_fixture(self.config, self.bundle)
+        approval = self.authenticated_approval(registry)
+        result = review_round_transition(
+            3,
+            ROUND,
+            overcap_approval_context={
+                "config": self.config,
+                "approvals": [approval],
+                "candidate": self.bundle["candidate"],
+                "runs": {run["run_id"]: run for run in self.bundle["runs"]},
+                "trusted_posting_collectors": registry,
+            },
+        )
+        self.assertEqual("OWNER_REVIEW_REQUIRED", result["status"])
 
     def test_final_gate_admits_canonical_owner_approved_round_four(self):
         gate = self.gate(self.authenticated_approval)
