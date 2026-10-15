@@ -62,6 +62,11 @@ BUDGET_KEYS = frozenset({
     "max_tokens_per_project_day", "max_cost_microusd_per_ticket",
     "max_cost_microusd_per_project_day",
 })
+ROUTING_REFERENCE = ".agentic/routing.yaml"
+ROUTING_PROJECT_POLICY_KEYS = frozenset({
+    "high_risk_flags", "agent_overrides", "ticket_overrides", "escalation",
+    "budgets", "adaptive", "reconciliation",
+})
 
 
 def _reconciliation_defaults():
@@ -114,10 +119,8 @@ def _default_routing_path():
     return source
 
 
-def load_routing(path=None):
-    """Load and validate the closed JSON-compatible routing schema."""
-    path = Path(path) if path is not None else _default_routing_path()
-
+def load_routing_content(raw, source):
+    """Validate routing bytes already bound to an immutable source object."""
     def unique_object(pairs):
         result = {}
         for key, value in pairs:
@@ -130,51 +133,64 @@ def load_routing(path=None):
         raise ValueError("non-JSON numeric constant " + value)
 
     try:
-        raw = path.read_text(encoding="utf-8")
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        if not isinstance(raw, str):
+            raise TypeError("routing content must be text or bytes")
         value = json.loads(raw, object_pairs_hook=unique_object,
                            parse_constant=reject_constant)
-    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
-        _routing_failure(path, "$", "cannot read valid JSON-compatible YAML: " + str(exc))
-    _routing_object(path, value, "$", ROUTING_TOP_LEVEL_KEYS)
+    except (UnicodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        _routing_failure(source, "$", "cannot read valid JSON-compatible YAML: " + str(exc))
+    _routing_object(source, value, "$", ROUTING_TOP_LEVEL_KEYS)
     if type(value["schema_version"]) is not int or value["schema_version"] != 1:
-        _routing_failure(path, "schema_version", "supported value is 1")
+        _routing_failure(source, "schema_version", "supported value is 1")
 
     catalog = value["catalog"]
     if not isinstance(catalog, dict) or not catalog:
-        _routing_failure(path, "catalog", "must be a nonempty object")
+        _routing_failure(source, "catalog", "must be a nonempty object")
     for model, metadata in catalog.items():
         key = "catalog." + str(model)
         if not isinstance(model, str) or not model or model.strip() != model:
-            _routing_failure(path, key, "model must be a nonempty trimmed string")
-        _routing_object(path, metadata, key, {"efforts"})
+            _routing_failure(source, key, "model must be a nonempty trimmed string")
+        _routing_object(source, metadata, key, {"efforts"})
         efforts = metadata["efforts"]
         if (not isinstance(efforts, list) or not efforts
                 or any(not isinstance(effort, str) or effort not in EFFORTS for effort in efforts)
                 or len(efforts) != len(set(efforts))):
-            _routing_failure(path, key + ".efforts",
+            _routing_failure(source, key + ".efforts",
                              "must be a nonempty list of unique known efforts")
 
     tiers = value["tiers"]
-    _routing_object(path, tiers, "tiers", set(ROUTING_TIERS))
+    _routing_object(source, tiers, "tiers", set(ROUTING_TIERS))
     for tier in ROUTING_TIERS:
         key = "tiers." + tier
-        _routing_object(path, tiers[tier], key, {"writer", "critic"})
+        _routing_object(source, tiers[tier], key, {"writer", "critic"})
         for role in ("writer", "critic"):
-            _routing_pair(path, tiers[tier][role], key + "." + role, catalog)
+            _routing_pair(source, tiers[tier][role], key + "." + role, catalog)
 
     defaults = value["role_defaults"]
-    _routing_object(path, defaults, "role_defaults", set(ROLES))
+    _routing_object(source, defaults, "role_defaults", set(ROLES))
     for role in ROLES:
-        _routing_pair(path, defaults[role], "role_defaults." + role, catalog)
+        _routing_pair(source, defaults[role], "role_defaults." + role, catalog)
     for field in ("simple_worker", "review_floor", "risk_route"):
-        _routing_pair(path, value[field], field, catalog)
+        _routing_pair(source, value[field], field, catalog)
 
     model_order = list(catalog)
     risk, floor = value["risk_route"], value["review_floor"]
     if (model_order.index(risk["model"]) < model_order.index(floor["model"])
             or EFFORTS.index(risk["effort"]) < EFFORTS.index(floor["effort"])):
-        _routing_failure(path, "risk_route", "must meet model and effort review_floor")
+        _routing_failure(source, "risk_route", "must meet model and effort review_floor")
     return value
+
+
+def load_routing(path=None):
+    """Load and validate the closed JSON-compatible routing schema."""
+    path = Path(path) if path is not None else _default_routing_path()
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        _routing_failure(path, "$", "cannot read valid JSON-compatible YAML: " + str(exc))
+    return load_routing_content(raw, path)
 
 
 def __getattr__(name):
@@ -347,8 +363,17 @@ def policy_from_config(config):
     _require(isinstance(config.get("execution"), dict), "execution configuration must be an object")
     execution = config["execution"]
     configured = execution.get("model_routing")
-    if configured == {"routing": ".agentic/routing.yaml"}:
+    if isinstance(configured, dict) and "routing" in configured:
+        _require(configured["routing"] == ROUTING_REFERENCE,
+                 "model_routing.routing must be .agentic/routing.yaml")
+        unexpected = sorted(set(configured) - ({"routing"} | ROUTING_PROJECT_POLICY_KEYS))
+        if unexpected:
+            raise ValidationError(
+                "unexpected model_routing reference field: " + unexpected[0])
         policy = default_policy()
+        for key in ROUTING_PROJECT_POLICY_KEYS:
+            if key in configured:
+                policy[key] = deepcopy(configured[key])
     else:
         policy = deepcopy(configured)
     validate_policy(policy)

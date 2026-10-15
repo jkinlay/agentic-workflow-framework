@@ -116,10 +116,28 @@ def reviewed_model_effort_pairs(root, revision, git_runner=None):
                 return {}
             raise
         value = loads(policy)
-        models = value['execution']['model_routing']['models']
+        configured = value['execution']['model_routing']
+        if not isinstance(configured, dict):
+            return {}
+        if 'routing' in configured:
+            if configured['routing'] != '.agentic/routing.yaml':
+                return {}
+            try:
+                raw_routing = git_runner(
+                    Path(root), 'show', f'{revision}:.agentic/routing.yaml')
+            except ValidationError as error:
+                if str(error).startswith('git failed with exit '):
+                    return {}
+                raise
+            from ..model_routing import load_routing_content
+            routing = load_routing_content(
+                raw_routing, f'{revision}:.agentic/routing.yaml')
+            return {model: details['efforts']
+                    for model, details in routing['catalog'].items()}
+        models = configured['models']
         return {model: details['reasoning_efforts'] for model, details in models.items()
                 if isinstance(details, dict) and isinstance(details.get('reasoning_efforts'), list)}
-    except (OSError, UnicodeError, KeyError, TypeError, ValueError):
+    except (OSError, UnicodeError, KeyError, TypeError, ValueError, ValidationError):
         return {}
 
 

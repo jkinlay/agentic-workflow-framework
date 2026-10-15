@@ -181,7 +181,43 @@
       "resources": {}
     },
     "model_routing": {
-      "routing": ".agentic/routing.yaml"
+      "routing": ".agentic/routing.yaml",
+      "high_risk_flags": [
+        "security",
+        "permissions",
+        "schema_or_migration",
+        "data_loss",
+        "concurrency",
+        "production",
+        "public_api",
+        "architecture"
+      ],
+      "agent_overrides": {},
+      "ticket_overrides": {},
+      "escalation": {
+        "enabled": true,
+        "max_escalations_per_ticket": 2,
+        "max_reasoning_failures_per_phase": 3,
+        "effort_ceiling": "high"
+      },
+      "budgets": {
+        "max_runs_per_ticket": 16,
+        "max_runs_per_project_day": 250,
+        "max_tokens_per_ticket": 2000000,
+        "max_tokens_per_project_day": 30000000,
+        "max_cost_microusd_per_ticket": null,
+        "max_cost_microusd_per_project_day": null
+      },
+      "adaptive": {
+        "mode": "shadow",
+        "min_reviewed_samples": 20,
+        "min_success_rate_percent": 95
+      },
+      "reconciliation": {
+        "enabled": false,
+        "authorized_operator_ids": [],
+        "max_reconciled_incident_retries_per_ticket": 2
+      }
     }
   },
   "validation": {

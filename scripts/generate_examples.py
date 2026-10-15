@@ -5,6 +5,7 @@ import argparse
 import base64
 import copy
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import subprocess
@@ -169,7 +170,13 @@ def config(example=True):
         "portfolio": {"read_only": True, "cross_project_dispatch": False}}
     from agentic.model_routing import default_policy
     routing = default_policy()
-    result["execution"]["model_routing"] = {"routing": ".agentic/routing.yaml"}
+    result["execution"]["model_routing"] = {
+        "routing": ".agentic/routing.yaml",
+        **{key: copy.deepcopy(routing[key]) for key in (
+            "high_risk_flags", "agent_overrides", "ticket_overrides",
+            "escalation", "budgets", "adaptive", "reconciliation",
+        )},
+    }
     project_role_defaults = {
         "controller": ("gpt-5.6-sol", "high"),
         "worker": ("gpt-5.6-luna", "medium"),
@@ -410,7 +417,11 @@ def sample(schema, schemas, document=None):
 def generate(output_root, source_root=ROOT):
     output_root = Path(output_root)
     source_root = Path(source_root)
-    schemas = catalog()
+    # AWF-115 adds the explicit draft-only selector. Keep this branch
+    # compatible with the current catalog until that held lane lands.
+    schemas = (catalog(include_ticket_plan=False)
+               if "include_ticket_plan" in inspect.signature(catalog).parameters
+               else catalog())
     write(output_root / ".agentic/examples/reference-controller-adapter.json", controller_adapter_config())
     from agentic.operating import default_operating
     operating = default_operating()
@@ -421,7 +432,10 @@ def generate(output_root, source_root=ROOT):
     source_config = config(False)
     write(output_root / ".agentic/PROJECT_CONFIG.yaml", source_config)
     write(output_root / ".agentic/templates/source-config/PROJECT_CONFIG.yaml", source_config)
-    write(output_root / ".agentic/examples/unconfigured-project.yaml", config(False))
+    unconfigured = config(False)
+    from agentic.model_routing import default_policy
+    unconfigured["execution"]["model_routing"] = default_policy()
+    write(output_root / ".agentic/examples/unconfigured-project.yaml", unconfigured)
     write(output_root / ".agentic/workflow-version.yaml", {"template": {"name": "generic-agentic-development-workflow", "version": VERSION, "schema_revision": 3},
         "installation": {"install_id": None, "last_operation": None, "operation_at": None, "source_manifest_sha256": None, "profile": "manual_reference"}})
     cfg = config(True)
