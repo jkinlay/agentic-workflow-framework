@@ -190,7 +190,7 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
     """Validate owner dispositions before any of them can change a gate."""
     from .authorization import verify_owner_record
     head = bundle["candidate"]["head_sha"]
-    dispositions, comments = [], set()
+    dispositions, comments, request_ids = [], set(), set()
     records = [("finding-disposition", r) for r in bundle.get("finding_dispositions", [])]
     cap = bundle.get("cap_disposition")
     if cap is not None:
@@ -205,6 +205,12 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
         if comment in comments:
             raise ValidationError(f"{schema}: owner comment {comment} already signs another record")
         comments.add(comment)
+        request_id = record["authorization_request_id"]
+        if request_id in request_ids:
+            raise ValidationError(
+                f"{schema}: authorization request {request_id} already signs another record"
+            )
+        request_ids.add(request_id)
         if schema == "finding-disposition":
             dispositions.append(record)
     if cap is not None:
@@ -259,6 +265,39 @@ def review_verdict_json(verdict):
     """Canonical retained verdict bytes; provider observation is separate."""
     return canonical({key: value for key, value in verdict.items()
                       if key != "posting_observation"}).decode("utf-8")
+
+
+def verify_disposition_review_binding(record, schema, verdict, contracts, head_sha):
+    """Bind a critic-driven owner disposition to one native review verdict."""
+    if schema not in {"finding-disposition", "review-cap-disposition"}:
+        raise ValidationError("This owner disposition type is not driven by a critic verdict")
+    contracts.validate("review-verdict", verdict)
+    artifact = verdict["critic_artifact_binding"]
+    if (verdict["owner_review"] is not False
+            or verdict["head_sha"] != head_sha
+            or artifact["critic_run_id"] != verdict["run_id"]
+            or artifact["head_sha"] != verdict["head_sha"]
+            or artifact["round"] != verdict["round"]):
+        raise ValidationError(
+            "Disposition requires an AWF-native critic review-verdict for the exact candidate head"
+        )
+    if schema == "review-cap-disposition":
+        from .authorization import cap_disposition_record_id
+        expected_sha256 = sha256(review_verdict_json(verdict).encode("utf-8"))
+        if (record.get("critic_artifact_binding") != artifact
+                or record.get("review_verdict_record_id") != verdict["record_id"]
+                or record.get("review_verdict_sha256") != expected_sha256
+                or record.get("record_id") != cap_disposition_record_id(record)):
+            raise ValidationError(
+                "Review cap disposition does not bind the exact AWF review-verdict and critic artifact"
+            )
+    return {
+        "review_verdict_record_id": verdict["record_id"],
+        "review_verdict_sha256": sha256(review_verdict_json(verdict).encode("utf-8")),
+        "critic_artifact_binding": artifact,
+        "head_sha": head_sha,
+        "execution_authority": False,
+    }
 
 
 def posting_collector_receipt_sha256(observation, observation_binding_sha256, registration):
@@ -385,11 +424,8 @@ def review_round_receipt_sha256(receipt):
 
 def cap_disposition_record_id(record):
     """Content-address cap binding fields through the signed owner record ID."""
-    return fingerprint("review-cap-artifact-binding", {
-        "critic_artifact_binding": record["critic_artifact_binding"],
-        "review_verdict_record_id": record["review_verdict_record_id"],
-        "review_verdict_sha256": record["review_verdict_sha256"],
-    })
+    from .authorization import cap_disposition_record_id as authorization_record_id
+    return authorization_record_id(record)
 
 
 def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_registry=None,
@@ -839,6 +875,15 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         critic_run_ids.add(verdict["run_id"])
         if not verdict["evidence"] or not set(verdict["evidence"]).issubset(evidence_ids):
             raise ValidationError("Review verdict evidence must resolve through the evidence registry")
+    registered_critic_run_ids = {
+        run["run_id"] for run in runs.values() if run["role"] == "critic"
+    }
+    if critic_run_ids != registered_critic_run_ids:
+        missing = sorted(registered_critic_run_ids - critic_run_ids)
+        raise ValidationError(
+            "Every registered critic run must emit one AWF-native review-verdict "
+            f"with a critic_artifact_binding; missing verdicts for {missing}"
+        )
     if critic["coverage"]["file_manifest_sha256"] != fingerprint("file-manifest", pr["file_manifest"]):
         raise ValidationError("Critic file manifest does not match PR")
     required_domains = tier1_specialist_domains(config, tier, specialist_domains(config, contract, file_paths,

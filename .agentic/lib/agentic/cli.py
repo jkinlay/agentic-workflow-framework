@@ -113,6 +113,24 @@ def main(argv=None, default_root=None):
     record_parser.add_argument("type")
     record_parser.add_argument("file", type=Path)
     record_parser.add_argument("--head", default=None, help="Candidate head SHA an owner record was signed against (cap dispositions); finding dispositions carry their own head_sha; tier/closure records sign '-'")
+    disposition_parser = sub.add_parser(
+        "disposition-request",
+        help="Create an owner-signable AWF1.2 DISPOSE request; never posts or grants authority",
+    )
+    disposition_parser.add_argument(
+        "type",
+        choices=["finding-disposition", "review-cap-disposition", "tier-reassignment", "owner-closure"],
+    )
+    disposition_parser.add_argument("file", type=Path, help="Unsigned disposition fields JSON")
+    disposition_parser.add_argument("--head", required=True,
+                                    help="Exact candidate head, or '-' for tier/closure records")
+    disposition_parser.add_argument("--config", type=Path)
+    disposition_parser.add_argument("--request-id",
+                                    help="Pre-issued canonical UUID; generated when omitted")
+    disposition_parser.add_argument(
+        "--review-verdict", type=Path,
+        help="Required AWF review-verdict for finding/cap disposition requests",
+    )
     gate_parser = sub.add_parser("evaluate")
     gate_parser.add_argument("bundle", type=Path)
     gate_parser.add_argument("--config", type=Path)
@@ -146,6 +164,8 @@ def main(argv=None, default_root=None):
     cap_parser.add_argument("--cycles", type=int, required=True)
     cap_parser.add_argument("--extensions", type=int, default=0)
     cap_parser.add_argument("--head", required=True, help="Candidate head SHA the owner signed against")
+    cap_parser.add_argument("--review-verdict", type=Path, required=True,
+                            help="Exact AWF review-verdict bound by this disposition")
     cap_parser.add_argument("--config", type=Path)
     cap_parser.add_argument(
         "--assignment-state", type=Path, required=True,
@@ -368,6 +388,28 @@ def main(argv=None, default_root=None):
                         require_enablement_config(config, workflow, contracts)
                         output['enablement_configuration_valid'] = True
                         output['adapter_qualification_still_required'] = True
+                elif args.command == "disposition-request":
+                    from .authorization import make_owner_disposition_request
+                    config = load(args.config or root / ".agentic/PROJECT_CONFIG.yaml")
+                    disposition = load(args.file)
+                    if args.type in {"finding-disposition", "review-cap-disposition"}:
+                        if args.review_verdict is None:
+                            raise ValidationError(
+                                "Critic-driven disposition requests require --review-verdict"
+                            )
+                        from .gates import verify_disposition_review_binding
+                        verify_disposition_review_binding(
+                            disposition, args.type, load(args.review_verdict),
+                            contracts, args.head,
+                        )
+                    elif args.review_verdict is not None:
+                        raise ValidationError(
+                            "Tier and closure disposition requests do not consume critic rounds"
+                        )
+                    output = make_owner_disposition_request(
+                        disposition, args.type, config, head_sha=args.head,
+                        authorization_request_id=args.request_id,
+                    )
                 elif args.command == "validate-record":
                     value = load(args.file)
                     contracts.validate(args.type, value)
@@ -408,11 +450,17 @@ def main(argv=None, default_root=None):
                     from .authorization import verify_owner_record
                     verify_owner_record(disposition, "review-cap-disposition", config, contracts, now_text(), head_sha=args.head,
                                         binding=disposition["binding"])
+                    from .gates import verify_disposition_review_binding
+                    output_binding = verify_disposition_review_binding(
+                        disposition, "review-cap-disposition",
+                        load(args.review_verdict), contracts, args.head,
+                    )
                     findings = [f for f in load(args.findings) if f["status"] != "RESOLVED" and f["severity"] in set(config["critic"]["blocking_severities"])]
                     output = cap_disposition_plan(
                         config, disposition, args.cycles, args.extensions, findings,
                         risk_tier=assignment["tier"], assignment_record=assignment,
                     )
+                    output["review_verdict_binding"] = output_binding
                     output["execution_authority"] = False
                 elif args.command == "evaluate":
                     config = load(args.config or root / ".agentic/PROJECT_CONFIG.yaml")
