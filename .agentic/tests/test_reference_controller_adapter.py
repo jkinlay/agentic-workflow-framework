@@ -896,6 +896,23 @@ enabled = true
         self.assertEqual(tickets[1]["disposition"], "BLOCKED")
         self.assertIn("malformed ticket record", tickets[1]["reason"].lower())
 
+    def test_non_object_json_body_blocks_ticket_but_valid_sibling_survives(self):
+        for body in ('[{}]', '7', 'true', 'false', 'null', '"ticket text"'):
+            with self.subTest(body=body):
+                runner = FakeRunner(inventory=[
+                    _issue(_ticket(), number=32),
+                    _issue(number=89, body=body),
+                ])
+                adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+                    {**self.config, "_runner": runner, "_clock": FakeClock()})
+
+                tickets = adapters["observe_inventory"](NOW)["tickets"]
+
+                self.assertEqual(len(tickets), 2)
+                self.assertEqual(tickets[0]["disposition"], "ELIGIBLE")
+                self.assertEqual(tickets[1]["disposition"], "BLOCKED")
+                self.assertIn("malformed ticket record", tickets[1]["reason"].lower())
+
     def test_corrupt_authenticated_inventory_blocks_entire_cycle(self):
         corrupt = _issue(_ticket(), number=32)
         corrupt.pop("node_id")
