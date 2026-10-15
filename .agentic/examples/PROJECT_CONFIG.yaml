@@ -130,7 +130,8 @@
           "gpt-5.6-sol",
           "gpt-6-luna",
           "gpt-6-sol",
-          "gpt-6-astra"
+          "gpt-6-astra",
+          "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
         "network_allowlist": []
@@ -145,7 +146,8 @@
           "gpt-5.6-sol",
           "gpt-6-luna",
           "gpt-6-sol",
-          "gpt-6-astra"
+          "gpt-6-astra",
+          "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
         "network_allowlist": []
@@ -160,7 +162,8 @@
           "gpt-5.6-sol",
           "gpt-6-luna",
           "gpt-6-sol",
-          "gpt-6-astra"
+          "gpt-6-astra",
+          "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
         "network_allowlist": []
@@ -175,7 +178,8 @@
           "gpt-5.6-sol",
           "gpt-6-luna",
           "gpt-6-sol",
-          "gpt-6-astra"
+          "gpt-6-astra",
+          "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
         "network_allowlist": []
@@ -203,7 +207,8 @@
         "gpt-5.6-sol",
         "gpt-6-luna",
         "gpt-6-sol",
-        "gpt-6-astra"
+        "gpt-6-astra",
+        "gpt-6.1-sol"
       ],
       "models": {
         "gpt-5.6-luna": {
@@ -263,6 +268,12 @@
             "max",
             "ultra"
           ]
+        },
+        "gpt-6.1-sol": {
+          "reasoning_efforts": [
+            "medium",
+            "high"
+          ]
         }
       },
       "role_defaults": {
@@ -290,7 +301,8 @@
           "gpt-5.6-sol",
           "gpt-6-luna",
           "gpt-6-sol",
-          "gpt-6-astra"
+          "gpt-6-astra",
+          "gpt-6.1-sol"
         ],
         "worker": [
           "gpt-5.6-luna",
@@ -298,7 +310,8 @@
           "gpt-5.6-sol",
           "gpt-6-luna",
           "gpt-6-sol",
-          "gpt-6-astra"
+          "gpt-6-astra",
+          "gpt-6.1-sol"
         ],
         "critic": [
           "gpt-5.6-luna",
@@ -306,7 +319,8 @@
           "gpt-5.6-sol",
           "gpt-6-luna",
           "gpt-6-sol",
-          "gpt-6-astra"
+          "gpt-6-astra",
+          "gpt-6.1-sol"
         ],
         "specialist": [
           "gpt-5.6-luna",
@@ -314,7 +328,8 @@
           "gpt-5.6-sol",
           "gpt-6-luna",
           "gpt-6-sol",
-          "gpt-6-astra"
+          "gpt-6-astra",
+          "gpt-6.1-sol"
         ]
       },
       "simple_worker": {

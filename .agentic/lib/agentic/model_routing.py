@@ -20,7 +20,7 @@ ROLES = ("controller", "worker", "critic", "specialist")
 RUN_ROLES = ("controller", "worker", "fix", "critic", "specialist")
 PROVENANCE_RUN_KINDS = ("writer", "critic", "design", "spec_review", "specialist")
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
-MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra")
+MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gpt-6.1-sol")
 RISK_FLAGS = ("security", "permissions", "schema_or_migration", "data_loss",
               "concurrency", "production", "public_api", "architecture")
 REASONING_FAILURES = ("reasoning", "implementation", "validation")
@@ -53,7 +53,9 @@ def default_policy():
         "schema_version": 1,
         "profile": "balanced",
         "model_order": list(MODELS),
-        "models": {m: {"reasoning_efforts": list(EFFORTS if m not in ("gpt-5.6-luna", "gpt-6-luna") else EFFORTS[:-1])}
+        "models": {m: {"reasoning_efforts": list(("medium", "high") if m == "gpt-6.1-sol"
+                                                  else EFFORTS if m not in ("gpt-5.6-luna", "gpt-6-luna")
+                                                  else EFFORTS[:-1])}
                    for m in MODELS},
         # 1.9.3 defaults (7 Oct ruling): writers use gpt-5.6-luna; the reviewer,
         # controller, specialist and floors use gpt-5.6-sol / high. gpt-6-*
