@@ -191,12 +191,7 @@ def _verify_owner_record_candidate(record, kind, head_sha):
 
 def make_owner_disposition_request(record, schema, config, *, head_sha,
                                    authorization_request_id=None):
-    """Create one owner-signable request without claiming provider verification.
-
-    The caller persists ``disposition_fields`` and later adds the immutable
-    provider ``owner_source``. This helper intentionally neither posts the
-    comment nor turns its output into merge/close/extension authority.
-    """
+    """Render non-authoritative fields for later provider verification."""
     kind = OWNER_KINDS.get(schema)
     if kind is None:
         raise ValidationError("Not an owner disposition record type")
@@ -490,7 +485,8 @@ def verify_owner_record(record, schema, config, contracts, now, *, head_sha, bin
         raise ValidationError(f"{schema}: comment postdates its record")
     if source.get("updated_at", source["created_at"]) != source["created_at"]:
         raise ValidationError(f"{schema}: edited owner comments are invalid; record a new comment")
-    fresh(record["created_at"], now, config["validation"]["max_evidence_age_seconds"])
+    if not historical_finding:
+        fresh(record["created_at"], now, config["validation"]["max_evidence_age_seconds"])
     if runs is not None:
         run = runs.get(record["run_id"])
         if run is None or run["role"] != "verifier" or run["producer_id"] != record["producer_id"]:

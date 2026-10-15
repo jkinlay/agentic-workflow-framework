@@ -493,7 +493,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         if (not historical_review_record and not historical_finding_record
                 and record["binding"] != binding):
             raise ValidationError(f"Cross-record binding mismatch: {record['record_id']}")
-        if not historical_review_record:
+        if not historical_review_record and not historical_finding_record:
             fresh(record["created_at"], now, config["validation"]["max_evidence_age_seconds"])
     unique(bundle["runs"], "run_id", "run ID")
     runs = {run["run_id"]: run for run in bundle["runs"]}
