@@ -574,9 +574,9 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
             round_kwargs = ({"assignment_record": assignment_record}
                             if assignment_record is not None else {"config": config})
         round_started_at = None
+        matching_approvals = []
         if verdict["tier"] == 3:
             from .policy import parse_overcap_approval
-            matching_approvals = []
             for approval in overcap_approvals:
                 try:
                     parsed_approval = parse_overcap_approval(approval["raw_body"])

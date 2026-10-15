@@ -89,7 +89,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
 | `.agentic/lib/agentic/external_resources.py` | `f2b33d973519a0905a5112279916060103668e692d0f346de059c8096b717fc0` |
 | `.agentic/lib/agentic/five_slot_acceleration.py` | `7fed880d1828ece267592e357313cc08fbb15279310479da8e60c5139acebbee` |
-| `.agentic/lib/agentic/gates.py` | `52beb880dd3355a2e91ac547060f2214eb634743eb772bbd191a2595dc17149a` |
+| `.agentic/lib/agentic/gates.py` | `2c1ef68cd5da0d89add4aff88a2f05467bff98bb8fce10b57cba5f07aa39d277` |
 | `.agentic/lib/agentic/git_isolation.py` | `43b3258f19a9942a399a85ff21f78a26b45306b415a532ca9df3ec926cf91d26` |
 | `.agentic/lib/agentic/gittree.py` | `f1df153bf9f3e87cd95552aaf102fd0c6b0cd6f3a49bf51b6ef29c923340ff67` |
 | `.agentic/lib/agentic/handoff.py` | `8cc194abe6e6dbcdb857fa3dce8cde679c06f2651b310dd907ccf06943ca9904` |
@@ -373,7 +373,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_review_tiers_195_evidence_binding.py` | `11eeb7f9bcb129de1722f1224730f085f58cedb4e9d9e613c32012e205b9c016` |
 | `.agentic/tests/test_review_tiers_195_final.py` | `e1c1b2c768b0847899b4469d5349dc187ed7665731cccec28412858f2099aa66` |
 | `.agentic/tests/test_review_tiers_195_gates.py` | `ca366d33c47ac4824dcf4280b9079edda56879296864fafb28d9c728c03a9c53` |
-| `.agentic/tests/test_review_tiers_195_overcap.py` | `1e85954c00756fca359882c16da12ac2b53fee68f7fc3d76ae8387cb50517e7a` |
+| `.agentic/tests/test_review_tiers_195_overcap.py` | `b0c0336e6f5dfd1e7b6fa8c0cc00cf4f8706c49a21624cd66e787f6d4d2973e7` |
 | `.agentic/tests/test_review_tiers_195_record.py` | `51628a36fbe0c578741565b874dc9f9acfa14483bdc38abe75515b03fcf986d2` |
 | `.agentic/tests/test_routine_publication.py` | `49a27d2afd91c4c5283ef9b55671bd74633fe4a5420505e0479fbcd19cb5fd3d` |
 | `.agentic/tests/test_routing_cli.py` | `9c5dc0f01397a4f0dcbf2878e03cba003c5e5b9b4a85763d08bde2bbf24ce83a` |
