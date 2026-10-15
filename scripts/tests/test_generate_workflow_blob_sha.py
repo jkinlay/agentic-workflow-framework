@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +23,37 @@ from agentic.operating import default_operating  # noqa: E402
 
 
 class WorkflowBlobGenerationTests(unittest.TestCase):
+    def test_routing_only_switch_does_not_change_generated_artifacts(self):
+        fixture = ROOT / ".agentic/tests/fixtures/routing/valid.yaml"
+        original = fixture.read_text(encoding="utf-8")
+        switched = original.replace(
+            '"worker": {"model": "gpt-5.6-luna", "effort": "medium"}',
+            '"worker": {"model": "gpt-5.6-sol", "effort": "medium"}',
+            1,
+        )
+        with tempfile.TemporaryDirectory(prefix="awf-routing-generation-") as raw:
+            root = Path(raw)
+            routing = root / "routing.yaml"
+            before = root / "before"
+            after = root / "after"
+            routing.write_text(original, encoding="utf-8")
+            with patch("agentic.model_routing._default_routing_path", return_value=routing):
+                generate_examples.generate(before, ROOT)
+            routing.write_text(switched, encoding="utf-8")
+            switched_model = default_policy(routing)["role_defaults"]["worker"]["model"]
+            with patch("agentic.model_routing._default_routing_path", return_value=routing):
+                generate_examples.generate(after, ROOT)
+            before_files = {
+                path.relative_to(before).as_posix(): path.read_bytes()
+                for path in before.rglob("*") if path.is_file()
+            }
+            after_files = {
+                path.relative_to(after).as_posix(): path.read_bytes()
+                for path in after.rglob("*") if path.is_file()
+            }
+        self.assertEqual("gpt-5.6-sol", switched_model)
+        self.assertEqual(before_files, after_files)
+
     def test_generated_config_and_operating_defaults_follow_routing_file(self):
         policy = default_policy()
         generated = generate_examples.config(False)

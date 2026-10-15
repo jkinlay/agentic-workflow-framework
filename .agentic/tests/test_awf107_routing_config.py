@@ -15,8 +15,9 @@ import source_only  # noqa: E402,F401
 from agentic import ValidationError
 from agentic.model_routing import (RoutingConfigError, default_policy,
                                    load_routing, policy_from_config,
-                                   validate_policy)
+                                   select_route, validate_policy)
 from agentic.installer import OPERATOR_CONFIG_PATHS, managed
+from agentic.operating import validate_operating
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / ".agentic/tests/fixtures/routing"
@@ -108,6 +109,50 @@ class RoutingConfigTests(unittest.TestCase):
         self.assertEqual("gpt-5.6-sol", after["role_defaults"]["worker"]["model"])
         self.assertEqual("gpt-5.6-luna", before_policy["role_defaults"]["worker"]["model"])
         self.assertEqual("gpt-5.6-sol", after_policy["role_defaults"]["worker"]["model"])
+
+    def test_one_line_switch_reaches_unpinned_default_operating_worker(self):
+        original = (FIXTURES / "valid.yaml").read_text(encoding="utf-8")
+        switched = original.replace(
+            '"worker": {"model": "gpt-5.6-luna", "effort": "medium"}',
+            '"worker": {"model": "gpt-5.6-sol", "effort": "medium"}',
+            1,
+        )
+        governance = json.loads(
+            (ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+        operating = json.loads(
+            (ROOT / "OPERATING_CONFIG.yaml").read_text(encoding="utf-8"))
+        request = {
+            "ticket_id": "AWF-107",
+            "agent_id": "writer-a",
+            "phase": "implementation",
+            "task_class": "ordinary",
+            "role": "worker",
+            "complexity": "medium",
+            "risk": "medium",
+            "uncertainty": "medium",
+            "verification": "strong",
+            "risk_flags": [],
+            "stream": "A",
+        }
+        with tempfile.TemporaryDirectory(prefix="awf-routing-switch-") as temporary:
+            path = Path(temporary) / "routing.yaml"
+            path.write_text(switched, encoding="utf-8")
+            with patch("agentic.model_routing._default_routing_path", return_value=path):
+                policy = policy_from_config(governance)
+                snapshot = validate_operating(operating, governance)
+                capabilities = {
+                    "models": {
+                        model: metadata["reasoning_efforts"]
+                        for model, metadata in policy["models"].items()
+                    }
+                }
+                route = select_route(
+                    policy, request, capabilities,
+                    operating=snapshot, governance=governance)
+        self.assertEqual(
+            ("gpt-5.6-sol", "medium"),
+            (route["model"], route["reasoning_effort"]),
+        )
 
     def test_one_line_switch_does_not_change_rules_policy_or_manifest_check(self):
         generator = load_script("awf107_generate_rules", "scripts/generate_rules_activation.py")
