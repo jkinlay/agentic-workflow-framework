@@ -93,10 +93,12 @@ class ReviewTiers194Tests(unittest.TestCase):
                  "candidate_binding": {"repository_id": 1, "pr_number": 1,
                                         "base_sha": "a" * 40, "head_sha": "b" * 40},
                  }
-        self.assertEqual("QUALIFIED", review_decision(
+        refusal = review_decision(
             3, 3, latest_pass=True, owner_review=owner,
             configured_owner_ids=[1001],
-            expected_candidate_binding=owner["candidate_binding"])["status"])
+            expected_candidate_binding=owner["candidate_binding"])
+        self.assertEqual("OWNER_REVIEW_REQUIRED", refusal["status"])
+        self.assertEqual("provider-verified owner review required", refusal["reason"])
         self.assertEqual("OWNER_REVIEW_REQUIRED", review_decision(
             3, 3, latest_pass=True, owner_review={**owner, "owner_id": 999},
             configured_owner_ids=[1001],

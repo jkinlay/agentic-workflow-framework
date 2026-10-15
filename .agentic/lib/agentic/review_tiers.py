@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from dataclasses import dataclass
 
 from . import ValidationError
 from .review_policy import authorize_tier3_round, is_boundary
@@ -275,11 +274,16 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
     # always consult the shared predicate first.
     if any(is_boundary(f) or f.get("boundary") or f.get("boundary_code") for f in findings):
         return {"status": "BLOCKED", "reason": "boundary finding blocks in every tier", "cap": cap}
-    if tier == TIER_3 and (configured_owner_ids is None or expected_candidate_binding is None
-                           or not _owner_review_valid(owner_review,
-                                                      configured_owner_ids=configured_owner_ids,
-                                                      expected_candidate_binding=expected_candidate_binding)):
-        return {"status": "OWNER_REVIEW_REQUIRED", "cap": cap}
+    if tier == TIER_3:
+        # This policy-only helper has no enrolled review host or trusted
+        # evidence registry.  Caller-supplied booleans, mappings, digests and
+        # wrapper objects therefore can never complete Tier 3 qualification.
+        # The final gate performs provider observation and registry retention.
+        return {
+            "status": "OWNER_REVIEW_REQUIRED",
+            "reason": "provider-verified owner review required",
+            "cap": cap,
+        }
     if tier == TIER_2 and rounds >= cap and p1:
         return {"status": "ROUTE_TO_OWNER", "reason": "P1 remains open at Tier 2 cap", "cap": cap}
     if tier == TIER_2 and p2:
@@ -290,34 +294,9 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
         if not ids.issubset(mapped):
             return {"status": "TICKET_P2", "ticket_required": sorted(ids), "cap": cap}
         p2 = []
-    if latest_pass and not p1 and (tier != TIER_3 or owner_review):
+    if latest_pass and not p1:
         return {"status": "QUALIFIED", "cap": cap}
     return {"status": "CONTINUE", "cap": cap}
-
-
-def _owner_review_valid(value, *, configured_owner_ids=None, expected_candidate_binding=None):
-    """Require a retained, structured owner-review assertion, never a boolean.
-
-    Provider verification is the AWF-41 successor scope.  This policy layer
-    only checks that the recorded assertion is bound to the current review.
-    """
-    if not isinstance(value, dict):
-        return False
-    binding = value.get("candidate_binding")
-    valid = (value.get("owner_review") is True
-            and isinstance(value.get("record_id"), str)
-            and isinstance(value.get("run_id"), str)
-            and isinstance(value.get("producer_id"), str)
-            and isinstance(value.get("owner_id"), int)
-            and isinstance(binding, dict)
-            and value.get("verdict") == "PASS")
-    if not valid:
-        return False
-    if configured_owner_ids is not None and value.get("owner_id") not in set(configured_owner_ids):
-        return False
-    if expected_candidate_binding is not None and binding != expected_candidate_binding:
-        return False
-    return True
 
 
 def diff_effect(previous_diff_sha, current_diff_sha, *, base_only=False):
