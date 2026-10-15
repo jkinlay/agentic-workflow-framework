@@ -63,6 +63,7 @@ BUDGET_KEYS = frozenset({
     "max_cost_microusd_per_project_day",
 })
 ROUTING_REFERENCE = ".agentic/routing.yaml"
+RELEASE_ROUTING_SOURCE = Path(__file__).resolve().parents[2] / "tests/fixtures/routing/valid.yaml"
 ROUTING_PROJECT_POLICY_KEYS = frozenset({
     "high_risk_flags", "agent_overrides", "ticket_overrides", "escalation",
     "budgets", "adaptive", "reconciliation",
@@ -625,11 +626,34 @@ def _select_route(policy, request, capabilities, operating_config):
     simple = all(request[x] == "low" for x in ("risk", "complexity", "uncertainty")) and request["verification"] == "strong" and not risk_flags
     selected = deepcopy(policy["role_defaults"][policy_role])
     reasons = ["balanced role default"]
+    default_operating = bool(operating_config and operating_config.get("source") == "default")
+    release_defaults = default_policy(RELEASE_ROUTING_SOURCE) if default_operating else None
+
+    def effective_default(route, policy_route, released_route):
+        """Resolve generated, unpinned defaults through the current routing policy."""
+        released_pair = bool(default_operating and route is not None and all(
+            route.get(key) == released_route[key]
+            for key in ("model", "reasoning_effort")
+        ))
+        if (default_operating and released_pair
+                and not route.get("pinned", False)):
+            return deepcopy(policy_route)
+        return route
+
     role_route = operating_config.get(role) if operating_config and role in ("controller", "specialist") else None
+    role_route = effective_default(
+        role_route, policy["role_defaults"][policy_role],
+        release_defaults["role_defaults"][policy_role] if release_defaults else {})
     if role_route:
         selected = {k: role_route[k] for k in ("model", "reasoning_effort")}
         reasons = ["operating role default"]
     simple_route = operating_config["simple_worker"] if operating_config else policy["simple_worker"]
+    if (default_operating
+            and all(simple_route.get(key) == release_defaults["simple_worker"][key]
+                    for key in ("model", "reasoning_effort"))
+            and not simple_route.get("pinned", False)):
+        simple_route = {"enabled": simple_route.get("enabled", True),
+                        **deepcopy(policy["simple_worker"])}
     simple_enabled = simple_route.get("enabled", True)
     if role in ("worker", "fix") and simple and simple_enabled:
         selected = {k: simple_route[k] for k in ("model", "reasoning_effort")}
@@ -647,6 +671,10 @@ def _select_route(policy, request, capabilities, operating_config):
         stream_route = (_critic_route(operating_config.get("critic"), stream_config.get("reviewer"))
                         if role == "critic" else stream_config.get("worker"))
         _require(stream_route is not None, "Requested stream has no retained operating route; reconcile stream ownership")
+        stream_route = effective_default(
+            stream_route, policy["role_defaults"][policy_role],
+            release_defaults["role_defaults"][policy_role]
+            if release_defaults else {})
         # An ordinary unpinned stream route is the normal-work default. Keeping
         # the simple option effective avoids overriding Luna with default Terra.
         ordinary_default = all(stream_route[k] == policy["role_defaults"][policy_role][k]

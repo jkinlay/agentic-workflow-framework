@@ -130,10 +130,10 @@ def _stream(policy=None):
     return {"worker": deepcopy(policy["role_defaults"]["worker"])}
 
 
-def default_operating():
-    from .model_routing import default_policy
+def default_operating(policy=None):
+    from .model_routing import default_policy, validate_policy
 
-    policy = default_policy()
+    policy = default_policy() if policy is None else validate_policy(deepcopy(policy))
     defaults = policy["role_defaults"]
     stream = _stream(policy)
     return {"version": 1, "source": "default",
