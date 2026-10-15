@@ -519,7 +519,11 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
                    "actor": "critic", "next_action": "review", "role": "critic",
                    "lifecycle_stage": "independent_review",
                    "overlap_sync_evidence": [{"gate_id": "gate-1",
-                                                "diff_sha256": "d" * 64}]}
+                                                "post_sync_heads": ["3" * 40, "2" * 40],
+                                                "diff": "diff --git a/a.py b/a.py\n+resolved\n",
+                                                "diff_sha256": hashlib.sha256(
+                                                    b"diff --git a/a.py b/a.py\n+resolved\n"
+                                                ).hexdigest()}]}
         receipt = adapters["dispatch_ticket"](payload)
         self.assertEqual((receipt["role"], receipt["lifecycle_stage"], receipt["session_id"]),
                          ("critic", "independent_review", "session-critic-1"))
@@ -527,7 +531,15 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertIn("critic-model", argv)
         self.assertIn("Mandatory overlap-sync diff evidence", runner.prompts[-1])
-        self.assertIn("d" * 64, runner.prompts[-1])
+        self.assertIn("+resolved", runner.prompts[-1])
+        self.assertIn("3" * 40, runner.prompts[-1])
+        incomplete = dict(payload)
+        incomplete["dispatch_id"] = "critic-incomplete"
+        incomplete["dispatch_nonce"] = "critic-incomplete-nonce"
+        incomplete["overlap_sync_evidence"] = [{"gate_id": "gate-1",
+                                                  "diff_sha256": "d" * 64}]
+        with self.assertRaisesRegex(ValidationError, "verified diff|post-sync heads"):
+            adapters["dispatch_ticket"](incomplete)
         adapters["dispatch_ticket"](_dispatch_payload("probe-1", "probe"))
         probe_argv = runner.launches[-1][0]
         self.assertEqual(probe_argv[probe_argv.index("--sandbox") + 1], "read-only")

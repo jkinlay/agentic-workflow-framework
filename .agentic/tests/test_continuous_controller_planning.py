@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import sys
 import unittest
@@ -48,18 +49,18 @@ def ticket(name, priority, *, role="writer", stage="implementation"):
     }
 
 
-def observation(items):
-    return {"source": "host_observation", "observed_at": NOW, "binding": dict(BINDING),
+def observation(items, observed_at=NOW):
+    return {"source": "host_observation", "observed_at": observed_at, "binding": dict(BINDING),
             "complete": True, "inventory_sha256": fingerprint(
                 "controller-inventory", {"binding": BINDING, "tickets": items}),
             "tickets": items}
 
 
-def receipt(payload):
+def receipt(payload, observed_at=NOW):
     keys = ["dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce",
             "prepared_at", "begun_at", "role", "lifecycle_stage"]
     return {key: payload[key] for key in keys} | {
-        "status": "ACCEPTED", "observed_at": NOW,
+        "status": "ACCEPTED", "observed_at": observed_at,
         "session_id": "session-" + payload["ticket"],
     }
 
@@ -87,7 +88,7 @@ def allowance_observation(request=None, **overrides):
         "provider_observed_at": provider_time, "observation_etag": '"cycle-etag"',
         "comment": {
             "id": request["comment_id"], "node_id": "IC_kwDO-provider-comment",
-            "actor_id": 7001, "actor_login": "owner", "author_association": "OWNER",
+            "actor_id": 7002, "actor_login": "owner", "author_association": "OWNER",
             "created_at": "2026-10-15T07:55:00Z", "updated_at": "2026-10-15T07:55:00Z",
             "body": overlap_allowance_command(request), "etag": '"comment-etag"',
             "provider_observed_at": provider_time,
@@ -221,6 +222,13 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "replay"):
             self.store.register_overlap_allowance(copied, NOW)
 
+    def test_authenticated_automation_actor_is_not_owner_authority(self):
+        observed = allowance_observation()
+        observed["comment"]["actor_id"] = OWNER_CONFIG["github"]["expected_actor_id"]
+        observed["comment"]["actor_login"] = "automation-account"
+        with self.assertRaisesRegex(ValidationError, "configured owner"):
+            self.validate(observation=observed)
+
     def test_foreign_repo_stale_head_file_drift_and_ownership_forgery_fail_closed(self):
         mutations = {}
         foreign = allowance_observation()
@@ -283,30 +291,151 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
             allowance["allowance_id"], "2026-10-15T08:32:00Z")
         conflict = {**no_conflict, "gate_id": second["gate_id"],
                     "status": "CONFIRMED_CONFLICT", "etag": '"merge-tree-2"'}
+        diff = "diff --git a/src/shared.py b/src/shared.py\n+resolved\n"
+        post_sync_heads = ["3" * 40, "2" * 40]
         def sync(payload):
             calls.append(payload)
-            return {**payload, "status": "COMPLETED", "diff_sha256": "d" * 64,
+            return {**payload, "status": "COMPLETED",
+                    "post_sync_heads": post_sync_heads,
+                    "diff": diff,
+                    "diff_sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
                     "changed_files": ["src/shared.py"],
                     "observed_at": "2026-10-15T08:32:01Z"}
-        completed = conflict_store.execute_overlap_sync_gate(
+        synced = conflict_store.execute_overlap_sync_gate(
             second["gate_id"], conflict, sync, "2026-10-15T08:32:00Z")
         again = conflict_store.execute_overlap_sync_gate(
             second["gate_id"], conflict, sync, "2026-10-15T08:32:02Z")
-        self.assertEqual("EXECUTED", completed["status"])
-        self.assertEqual(completed, again)
+        self.assertEqual("SYNCED", synced["status"])
+        self.assertEqual(synced, again)
         self.assertEqual(1, len(calls))
+        refreshed = allowance_inventory()
+        refreshed[0]["exact_tuple"] = "base:a/head:" + post_sync_heads[0] + "/tree:c"
+        refreshed[1]["exact_tuple"] = "base:a/head:" + post_sync_heads[1] + "/tree:c"
+        completed = conflict_store.confirm_overlap_sync_inventory(
+            second["gate_id"], refreshed,
+            inventory_sha256="e" * 64,
+            observed_at="2026-10-15T08:32:02Z")
+        self.assertEqual("EXECUTED", completed["status"])
         evidence = conflict_store.critic_overlap_evidence("AWF-101")
-        self.assertEqual("d" * 64, evidence[0]["diff_sha256"])
+        self.assertEqual(diff, evidence[0]["diff"])
+        self.assertEqual(post_sync_heads, evidence[0]["post_sync_heads"])
+        self.assertEqual(post_sync_heads[0],
+                         evidence[0]["post_sync_inventory"][0]["head_sha"])
         critic = ticket("AWF-101", 1, role="critic", stage="independent_review")
         conflict_store.schedule([critic], "2026-10-15T08:32:02Z", 1)
         dispatch = conflict_store.prepare_dispatches("2026-10-15T08:32:02Z")[0]["payload"]
-        self.assertEqual("d" * 64,
-                         dispatch["overlap_sync_evidence"][0]["diff_sha256"])
+        self.assertEqual(diff, dispatch["overlap_sync_evidence"][0]["diff"])
+
+    def test_cycle_sweeps_persisted_expiry_without_request_resubmission(self):
+        allowance = self.validate()
+        self.store.register_overlap_allowance(allowance, NOW)
+        restarted = ContinuousControllerStore(self.path, ["A", "B"])
+        expired_at = "2026-10-15T08:31:00Z"
+        items = allowance_inventory()
+
+        with patch("agentic.continuous_controller.canonical_repository_paths",
+                   side_effect=lambda values, *_: (values, {
+                       "repository_root": "/fixture", "head_sha": "a" * 40,
+                       "tree_sha": "b" * 40, "git_path_count": 0})):
+            result = production_controller_cycle(
+                restarted, now=expired_at, host_capacity=2, inventory_binding=BINDING,
+                **REPOSITORY,
+                observe_inventory=lambda: observation(items, expired_at),
+                dispatch_ticket=lambda payload: self.fail("expired allowance dispatched"),
+                observe_dispatch=lambda payload: self.fail("unexpected reconciliation"),
+                deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                                                "status": "DELIVERED",
+                                                "observed_at": expired_at},
+                publication_config=publication_config(),
+                observe_publication=lambda item: publication_observation(
+                    item["ticket"], expired_at),
+                overlap_allowance_requests=[])
+
+        swept = [item for item in result["overlap_allowances"]
+                 if item["phase"] == "SWEEP_EXPIRED"]
+        self.assertEqual(1, len(swept))
+        self.assertEqual("PENDING", swept[0]["status"])
+        self.assertEqual("EXPIRED",
+                         restarted.overlap_allowance(allowance["allowance_id"])["status"])
+        self.assertEqual("PENDING",
+                         restarted.overlap_sync_gate(swept[0]["gate_id"])["status"])
+        self.assertTrue(all(stream["state"] != "WORKING" for stream in result["streams"]))
+
+    def test_cycle_refreshes_inventory_after_sync_and_dispatches_post_sync_tuple(self):
+        allowance = self.validate()
+        self.store.register_overlap_allowance(allowance, NOW)
+        restarted = ContinuousControllerStore(self.path, ["A", "B"])
+        expired_at = "2026-10-15T08:31:00Z"
+        pre_sync = allowance_inventory()
+        for item, head in zip(pre_sync, ["1" * 40, "2" * 40]):
+            item["dispatch_role"] = "critic"
+            item["lifecycle_stage"] = "independent_review"
+            item["exact_tuple"] = "base:a/head:" + head + "/tree:before"
+        post_sync = deepcopy(pre_sync)
+        post_sync_heads = ["3" * 40, "2" * 40]
+        post_sync[0]["exact_tuple"] = "base:a/head:" + post_sync_heads[0] + "/tree:after"
+        diff = "diff --git a/src/shared.py b/src/shared.py\n+resolved\n"
+        inventory_calls = []
+        dispatched = []
+
+        def observe_inventory():
+            items = pre_sync if not inventory_calls else post_sync
+            inventory_calls.append(deepcopy(items))
+            return observation(items, expired_at)
+
+        def observe_conflict(gate):
+            return {key: deepcopy(gate[key]) for key in (
+                "gate_id", "repository_id", "cycle_id", "path", "tickets",
+                "pull_requests", "heads")} | {
+                    "status": "CONFIRMED_CONFLICT",
+                    "provider_observed_at": expired_at, "etag": '"conflict"'}
+
+        def sync(payload):
+            return {**payload, "status": "COMPLETED",
+                    "post_sync_heads": post_sync_heads,
+                    "diff": diff,
+                    "diff_sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
+                    "changed_files": ["src/shared.py"],
+                    "observed_at": expired_at}
+
+        with patch("agentic.continuous_controller.canonical_repository_paths",
+                   side_effect=lambda values, *_: (values, {
+                       "repository_root": "/fixture", "head_sha": "a" * 40,
+                       "tree_sha": "b" * 40, "git_path_count": 0})), \
+                patch("agentic.codex_skill.observe_codex_awf_skills",
+                      return_value={"format": "awf-codex-skill-selection-1",
+                                    "expected_version": "1.9.4",
+                                    "project_root": "/fixture",
+                                    "pinned_skill_path": "/fixture/skill",
+                                    "launch_directory": "/fixture",
+                                    "visible_skills": ["awf"], "status": "PASS",
+                                    "problems": []}):
+            result = production_controller_cycle(
+                restarted, now=expired_at, host_capacity=1, inventory_binding=BINDING,
+                **REPOSITORY, observe_inventory=observe_inventory,
+                dispatch_ticket=lambda payload: dispatched.append(deepcopy(payload)) or
+                    receipt(payload, expired_at),
+                observe_dispatch=lambda payload: self.fail("unexpected reconciliation"),
+                deliver_status=lambda digest: {"delivery_id": digest["delivery_id"],
+                                                "status": "DELIVERED",
+                                                "observed_at": expired_at},
+                publication_config=publication_config(),
+                observe_publication=lambda item: publication_observation(
+                    item["ticket"], expired_at),
+                overlap_allowance_requests=[],
+                observe_overlap_conflict=observe_conflict, sync_writer=sync)
+
+        self.assertEqual(2, len(inventory_calls))
+        self.assertEqual(1, len(dispatched), result)
+        self.assertEqual(post_sync[0]["exact_tuple"], dispatched[0]["exact_tuple"])
+        evidence = dispatched[0]["overlap_sync_evidence"][0]
+        self.assertEqual(diff, evidence["diff"])
+        self.assertEqual(post_sync_heads, evidence["post_sync_heads"])
 
     def test_production_cycle_rechecks_at_plan_and_lane_start(self):
         cfg = publication_config()
         cfg["github"]["repository_id"] = 101
-        cfg.setdefault("merge_gate", {})["trusted_owner_ids"] = [7001]
+        cfg.setdefault("merge_gate", {})["trusted_owner_ids"] = [7002]
         items = allowance_inventory()
         phases, dispatched = [], []
 
