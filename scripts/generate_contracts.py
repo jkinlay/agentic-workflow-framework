@@ -94,6 +94,26 @@ REVIEW_ROUND_RECEIPT = obj({
 # Legacy receipts stay schema-readable only so the semantic evaluator can
 # return NOT_READY for absent retained bytes.  Current exports always include it.
 REVIEW_ROUND_RECEIPT["required"].remove("result_json")
+OVERCAP_APPROVAL = obj({
+    "channel": const("github_pr_comment"),
+    "source": const("host_observation"),
+    "comment_id": integer(1),
+    "comment_url": text(format="uri"),
+    "repository_id": integer(1),
+    "pr_number": integer(1),
+    "actor_id": integer(1),
+    "created_at": TIME,
+    "updated_at": TIME,
+    "raw_body": text(),
+    "observed_at": TIME,
+    "producer_id": text(),
+    "run_id": UUID,
+    "provider_kind": const("github"),
+    "round_started_at": TIME,
+    "provider_response_bytes": BASE64_BYTES,
+    "provider_response_sha256": DIGEST,
+    "collector_receipt_sha256": DIGEST,
+})
 JIRA_PROVIDER = obj({"cloud_id": text(), "site": text(format="uri"), "project_id": text(),
                      "project_key": text(pattern="^[A-Z][A-Z0-9]*$"),
                      "controller_actor_id": text()})
@@ -706,6 +726,7 @@ def catalog():
         "prior_findings": arr(FINDING), "finding_dispositions": arr(ref("finding-disposition")),
         "cap_disposition": nullable(ref("review-cap-disposition")), "publication_scan": ref("publication-scan"),
         "tier_classification": nullable(ref("risk-classification")), "review_verdicts": arr(ref("review-verdict"), 1),
+        "overcap_approvals": arr(OVERCAP_APPROVAL),
         "review_round_receipts": arr(REVIEW_ROUND_RECEIPT),
         "ticketed_p2_records": arr(obj({"finding_id": text(), "ticket_key": text()})),
         "owner_review": nullable(ref("review-verdict")),
@@ -713,6 +734,7 @@ def catalog():
             "producer_id": text(), "retained_until": TIME}), 1),
         "provenance_mode": enum("offline_fixture", "production_observation")})
     schemas["evidence-bundle"]["required"].remove("owner_review")
+    schemas["evidence-bundle"]["required"].remove("overcap_approvals")
     schemas["evidence-bundle"]["required"].remove("review_round_receipts")
     role_policy = obj({"model": text(), "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
         "fallback": const("deny"), "approved_model_ids": arr(text(), 1, uniqueItems=True),
