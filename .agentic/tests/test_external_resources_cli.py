@@ -1,4 +1,6 @@
 """The external-resource CLI is parseable and fails closed."""
+from contextlib import redirect_stderr
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
 from agentic import external_resources
+from agentic.contracts import Contracts
 from agentic.external_resources import admit_resource
 
 
@@ -20,6 +23,30 @@ SCRIPT = ROOT / ".agentic/scripts/external_resources.py"
 
 
 class ExternalResourceCliTests(unittest.TestCase):
+    @staticmethod
+    def synthetic_resource():
+        registry = {
+            "format": "awf-external-resource-registry-1", "resources": {
+                "raw_estate": {"access": "read_only", "required_by": ["AWF-8"],
+                               "host_mapping": "operator_local", "sensitivity": "restricted",
+                               "probe": {"sample_relative_path": "sample.bin", "listing_limit": 2,
+                                         "timeout_seconds": 5}}}}
+        mappings = {
+            "format": "awf-external-resource-mapping-1", "resources": {
+                "raw_estate": {"local_path": "/synthetic/estate",
+                               "canonical_locator": "urn:awf:synthetic:raw-estate",
+                               "mapping_kind": "local"}}}
+        return registry, mappings
+
+    @staticmethod
+    def successful_probe():
+        return {
+            "diagnostic_category": "OK", "exit_code": 0,
+            "probe": {"observed_locator": "urn:awf:synthetic:raw-estate",
+                      "listing_count": 1, "sample_size": 1,
+                      "sample_mtime": "2026-10-09T12:00:00Z", "bytes_read": 1},
+        }
+
     def run_cli(self, *args, code=0, env=None):
         environment = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
         if env is not None:
@@ -80,6 +107,186 @@ class ExternalResourceCliTests(unittest.TestCase):
               patch.object(external_resources.shutil, "which",
                            side_effect=AssertionError("PATH discovery must not run"))):
             self.assertEqual(external_resources._powershell_executable(), "powershell")
+
+    def test_awf124_failed_start_emits_safe_diagnostics_to_stderr(self):
+        registry = {
+            "format": "awf-external-resource-registry-1", "resources": {
+                "raw_estate": {"access": "read_only", "required_by": ["AWF-8"],
+                               "host_mapping": "operator_local", "sensitivity": "restricted",
+                               "probe": {"sample_relative_path": "sample.bin", "listing_limit": 2,
+                                         "timeout_seconds": 5}}}}
+        mappings = {
+            "format": "awf-external-resource-mapping-1", "resources": {
+                "raw_estate": {"local_path": "/synthetic/estate",
+                               "canonical_locator": "urn:awf:synthetic:raw-estate",
+                               "mapping_kind": "local"}}}
+        failure = {
+            "diagnostic_category": "EXECUTION_UNAVAILABLE", "exit_code": None,
+            "output": "OSError: synthetic start failure",
+            "cleanup_errors": ["job_close:WinError6"],
+            "resource_cleanup_complete": False,
+        }
+        environment = {
+            "PATH": "", "SYSTEMROOT": "/windows", "COMSPEC": "/windows/system32/cmd.exe",
+            "TEMP": "/tmp/user", "TMP": "/tmp/user", "PATHEXT": ".EXE;.CMD",
+            "API_SECRET": "must-not-appear",
+        }
+        stderr = io.StringIO()
+        with (patch.dict(external_resources.os.environ, environment, clear=True),
+              redirect_stderr(stderr)):
+            receipt = admit_resource(
+                registry, mappings, "raw_estate", task_id="AWF-8", principal="worker-A",
+                session_id="session-1", now="2026-10-09T12:00:00Z",
+                execute=lambda command, cwd=None: failure)
+
+        self.assertEqual(receipt["state"], "PROCESS_START_FAILED")
+        self.assertNotIn("start_diagnostics", receipt["attempts"][0])
+        diagnostics = json.loads(stderr.getvalue().split("=", 1)[1])
+        self.assertEqual(diagnostics["diagnostic_category"], "EXECUTION_UNAVAILABLE")
+        self.assertEqual(diagnostics["captured_output"], "OSError: synthetic start failure")
+        self.assertEqual(diagnostics["cleanup_errors"], ["job_close:WinError6"])
+        self.assertIs(type(diagnostics["elapsed_milliseconds"]), int)
+        self.assertGreaterEqual(diagnostics["elapsed_milliseconds"], 0)
+        snapshot = diagnostics["child_environment"]
+        self.assertEqual(snapshot["variable_names"], sorted(snapshot["variable_names"]))
+        self.assertIn("API_SECRET", snapshot["variable_names"])
+        self.assertEqual(snapshot["selected_values"], {
+            "PATH": "", "SYSTEMROOT": "/windows", "WINDIR": None,
+            "COMSPEC": "/windows/system32/cmd.exe", "TEMP": "/tmp/user",
+            "TMP": "/tmp/user", "PATHEXT": ".EXE;.CMD",
+        })
+        self.assertNotIn("must-not-appear", json.dumps(receipt) + stderr.getvalue())
+        self.assertEqual(external_resources.public_evidence(receipt)["result"],
+                         "PROCESS_START_FAILED")
+
+    def test_awf131_success_and_failure_receipts_satisfy_contract(self):
+        registry = {
+            "format": "awf-external-resource-registry-1", "resources": {
+                "raw_estate": {"access": "read_only", "required_by": ["AWF-8"],
+                               "host_mapping": "operator_local", "sensitivity": "restricted",
+                               "probe": {"sample_relative_path": "sample.bin", "listing_limit": 2,
+                                         "timeout_seconds": 5}}}}
+        mappings = {
+            "format": "awf-external-resource-mapping-1", "resources": {
+                "raw_estate": {"local_path": "/synthetic/estate",
+                               "canonical_locator": "urn:awf:synthetic:raw-estate",
+                               "mapping_kind": "local"}}}
+        success = {
+            "diagnostic_category": "OK", "exit_code": 0,
+            "probe": {"observed_locator": "urn:awf:synthetic:raw-estate",
+                      "listing_count": 1, "sample_size": 1,
+                      "sample_mtime": "2026-10-09T12:00:00Z", "bytes_read": 1},
+        }
+        failure = {
+            "diagnostic_category": "EXECUTION_UNAVAILABLE", "exit_code": None,
+            "output": "OSError: synthetic start failure", "cleanup_errors": [],
+        }
+
+        def receipt(result):
+            with redirect_stderr(io.StringIO()):
+                return admit_resource(
+                    registry, mappings, "raw_estate", task_id="AWF-131",
+                    principal="worker-A", session_id="session-1",
+                    now="2026-10-09T12:00:00Z",
+                    execute=lambda command, cwd=None: result)
+
+        contracts = Contracts(ROOT / ".agentic" / "schemas")
+        contracts.validate("external-resource-receipt", receipt(success))
+        contracts.validate("external-resource-receipt", receipt(failure))
+
+    def test_awf131_h1_runner_receives_verified_absolute_powershell_with_empty_path(self):
+        class PortablePath:
+            def __init__(self, value):
+                self.value = value.rstrip("/")
+
+            def __truediv__(self, value):
+                return PortablePath(self.value + "/" + value)
+
+            def is_absolute(self):
+                return self.value.startswith("/")
+
+            def is_file(self):
+                return self.value.endswith("/WindowsPowerShell/v1.0/powershell.exe")
+
+            def __str__(self):
+                return self.value
+
+        registry, mappings = self.synthetic_resource()
+        commands = []
+
+        def execute(command, cwd=None):
+            commands.append(command)
+            return self.successful_probe()
+
+        with (patch.object(external_resources.os, "name", "nt"),
+              patch.dict(external_resources.os.environ,
+                         {"PATH": "", "PATHEXT": ""}, clear=True),
+              patch.object(external_resources, "_windows_system_directory",
+                           return_value=PortablePath("/windows/System32")),
+              patch.object(external_resources.shutil, "which",
+                           side_effect=AssertionError("PATH fallback must not run"))):
+            receipt = admit_resource(
+                registry, mappings, "raw_estate", task_id="AWF-131",
+                principal="worker-A", session_id="session-1",
+                now="2026-10-09T12:00:00Z", execute=execute)
+
+        self.assertEqual(receipt["state"], "READ_VERIFIED")
+        self.assertEqual(commands[0][0],
+                         "/windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+
+    def test_awf131_h2_timeout_is_not_classified_as_process_start_failure(self):
+        registry, mappings = self.synthetic_resource()
+        stderr = io.StringIO()
+        timeouts = []
+
+        def execute(command, *, cwd=None, timeout_seconds=None):
+            timeouts.append(timeout_seconds)
+            return {
+                "diagnostic_category": "TIMEOUT", "exit_code": None,
+                "output": "child exceeded 5-second deadline",
+                "cleanup_errors": [], "resource_cleanup_complete": True,
+            }
+
+        with (patch.object(external_resources, "_default_execute", side_effect=execute),
+              redirect_stderr(stderr)):
+            receipt = admit_resource(
+                registry, mappings, "raw_estate", task_id="AWF-131",
+                principal="worker-A", session_id="session-1",
+                now="2026-10-09T12:00:00Z")
+
+        self.assertEqual(timeouts, [5])
+        self.assertEqual(receipt["state"], "COMMAND_NONZERO")
+        self.assertEqual(receipt["error_layer"], "COMMAND_TIMEOUT")
+        self.assertEqual(json.loads(stderr.getvalue().split("=", 1)[1])
+                         ["diagnostic_category"], "TIMEOUT")
+        Contracts(ROOT / ".agentic" / "schemas").validate(
+            "external-resource-receipt", receipt)
+
+    def test_awf131_h3_missing_child_variables_are_visible_in_diagnostics(self):
+        registry, mappings = self.synthetic_resource()
+        environment = {"PATH": "", "TEMP": "/tmp/user", "TMP": "/tmp/user"}
+        stderr = io.StringIO()
+        with (patch.dict(external_resources.os.environ, environment, clear=True),
+              redirect_stderr(stderr)):
+            receipt = admit_resource(
+                registry, mappings, "raw_estate", task_id="AWF-131",
+                principal="worker-A", session_id="session-1",
+                now="2026-10-09T12:00:00Z",
+                execute=lambda command, cwd=None: {
+                    "diagnostic_category": "EXECUTION_UNAVAILABLE", "exit_code": None,
+                    "output": "synthetic environment-sensitive start failure",
+                    "cleanup_errors": [], "resource_cleanup_complete": True,
+                })
+
+        self.assertEqual(receipt["state"], "PROCESS_START_FAILED")
+        selected = json.loads(stderr.getvalue().split("=", 1)[1])[
+            "child_environment"]["selected_values"]
+        self.assertEqual(selected["PATH"], "")
+        for name in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"):
+            self.assertIsNone(selected[name])
+        self.assertNotIn("child_environment", json.dumps(receipt))
+        Contracts(ROOT / ".agentic" / "schemas").validate(
+            "external-resource-receipt", receipt)
 
     def test_validate_registry_and_bounded_scan(self):
         with tempfile.TemporaryDirectory(prefix="awf-resource-cli-") as temporary:
