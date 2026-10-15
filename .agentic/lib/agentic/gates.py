@@ -900,6 +900,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
     owner = bundle.get("owner_review")
     owner_run = runs.get(owner.get("run_id")) if owner is not None else None
+    owner_provider_receipt_uri = f"urn:awf:review-round-receipt:{terminal_round}"
     owner_review_ok = tier != 3 or (owner is not None
                                     and owner.get("owner_review") is True
                                     and owner.get("verdict") == "PASS"
@@ -915,6 +916,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
                                         "base_sha": candidate["target_base_sha"],
                                          "head_sha": candidate["head_sha"]}
                                      and owner.get("record_id") in {v.get("record_id") for v in records}
+                                     and owner_provider_receipt_uri in evidence_ids
                                      and posting_evidence_ok
                                      and owner_approval_evidence_matches(
                                          owner, terminal_verdict, candidate))
@@ -1006,12 +1008,21 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         "local_ci_parity": ["worker", "ci", "contract"],
         "publication_safety": ["publication_scan", "candidate", "pr"],
     }
+    if owner is not None:
+        # Preserve the exact verified owner record as a content-addressed final
+        # gate input.  Its provider observation remains separately retained in
+        # the terminal round receipt from the evidence registry.
+        inputs["critic_current_tuple"].append("owner_review")
+        inputs["verdict_posting"].append("owner_review")
     refs = {name: ["urn:awf:input:" + key + ":" + fingerprint("gate-input", bundle[key]) for key in keys]
             for name, keys in inputs.items()}
     refs["critic_current_tuple"].append(
         "urn:awf:input:overcap_approvals:"
         + fingerprint("gate-input", overcap_approvals)
     )
+    if tier == 3 and owner_review_ok:
+        refs["critic_current_tuple"].append(owner_provider_receipt_uri)
+        refs["verdict_posting"].append(owner_provider_receipt_uri)
     expires = timestamp(now) + timedelta(seconds=config["merge_gate"]["authorization_ttl_seconds"])
     gate = {"schema_version": 3, "record_id": str(uuid.uuid4()), "created_at": now,
         "producer_id": "offline-reference-evaluator", "run_id": str(uuid.uuid4()), "binding": binding,

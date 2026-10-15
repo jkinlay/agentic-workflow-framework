@@ -275,11 +275,19 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
     # always consult the shared predicate first.
     if any(is_boundary(f) or f.get("boundary") or f.get("boundary_code") for f in findings):
         return {"status": "BLOCKED", "reason": "boundary finding blocks in every tier", "cap": cap}
-    if tier == TIER_3 and (configured_owner_ids is None or expected_candidate_binding is None
-                           or not _owner_review_valid(owner_review,
-                                                      configured_owner_ids=configured_owner_ids,
-                                                      expected_candidate_binding=expected_candidate_binding)):
-        return {"status": "OWNER_REVIEW_REQUIRED", "cap": cap}
+    owner_review_valid = tier != TIER_3
+    if tier == TIER_3:
+        owner_review_valid = (
+            configured_owner_ids is not None
+            and expected_candidate_binding is not None
+            and _owner_review_valid(
+                owner_review,
+                configured_owner_ids=configured_owner_ids,
+                expected_candidate_binding=expected_candidate_binding,
+            )
+        )
+        if not owner_review_valid:
+            return {"status": "OWNER_REVIEW_REQUIRED", "cap": cap}
     if tier == TIER_2 and rounds >= cap and p1:
         return {"status": "ROUTE_TO_OWNER", "reason": "P1 remains open at Tier 2 cap", "cap": cap}
     if tier == TIER_2 and p2:
@@ -290,7 +298,7 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
         if not ids.issubset(mapped):
             return {"status": "TICKET_P2", "ticket_required": sorted(ids), "cap": cap}
         p2 = []
-    if latest_pass and not p1 and (tier != TIER_3 or owner_review):
+    if latest_pass and not p1 and owner_review_valid:
         return {"status": "QUALIFIED", "cap": cap}
     return {"status": "CONTINUE", "cap": cap}
 
