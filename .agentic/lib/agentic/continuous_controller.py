@@ -105,6 +105,7 @@ def _blocking_overlap(first_ticket, first_paths, second_ticket, second_paths, al
 	return any((left != right or (left, pair) not in allowed for left, right in collisions))
 OVERLAP_ALLOWANCE_MAX_SECONDS = 24 * 60 * 60
 OVERLAP_OBSERVATION_MAX_AGE_SECONDS = 5 * 60
+OVERLAP_PROVIDER_CLOCK_SKEW_SECONDS = 5
 OVERLAP_SYNC_DIFF_MAX_BYTES = 512 * 1024
 
 def _exact_overlap_path(path):
@@ -162,7 +163,14 @@ def _provider_fresh(value, now, label):
 	observed = timestamp(value['provider_observed_at'])
 	current = timestamp(now)
 	age = (current - observed).total_seconds()
-	_require(0 <= age <= OVERLAP_OBSERVATION_MAX_AGE_SECONDS, label + ' is not a fresh provider observation')
+	_require(-OVERLAP_PROVIDER_CLOCK_SKEW_SECONDS <= age <= OVERLAP_OBSERVATION_MAX_AGE_SECONDS, label + ' is not a fresh provider observation')
+
+def _post_provider_controller_time(clock, previous):
+	_require(callable(clock), 'Provider observation needs a post-observation controller clock')
+	observed = clock()
+	_require(isinstance(observed, str), 'Post-observation controller time is malformed')
+	_require(timestamp(observed) >= timestamp(previous), 'Controller clock moved backwards during provider observation')
+	return observed
 
 def validate_overlap_allowance_observation(config, request, observation, inventory, *, now, expected_repository_id, expected_cycle_id, allow_expired=False):
 	from .canonical import fingerprint
@@ -341,6 +349,15 @@ def canonical_repository_paths(tickets, repository_root, head_sha, tree_sha):
 		result.append(admitted)
 	binding = {'repository_root': str(root), 'head_sha': head_sha, 'tree_sha': tree_sha, 'git_path_count': len(modes)}
 	return (result, binding)
+
+def _validated_overlap_sync_receipt(gate, payload, receipt, not_before):
+	required_receipt = set(payload) | {'status', 'post_sync_heads', 'diff', 'diff_sha256', 'changed_files', 'observed_at'}
+	diff = receipt.get('diff') if isinstance(receipt, dict) else None
+	diff_bytes = diff.encode('utf-8') if isinstance(diff, str) else b''
+	_require(isinstance(receipt, dict) and set(receipt) == required_receipt and all((receipt[key] == payload[key] for key in payload)) and (receipt['status'] == 'COMPLETED') and isinstance(receipt['post_sync_heads'], list) and (len(receipt['post_sync_heads']) == len(gate['heads'])) and all((isinstance(head, str) and re.fullmatch('[0-9a-f]{40}', head) is not None for head in receipt['post_sync_heads'])) and (receipt['post_sync_heads'] != gate['heads']) and isinstance(diff, str) and diff.strip() and (len(diff_bytes) <= OVERLAP_SYNC_DIFF_MAX_BYTES) and (receipt['diff_sha256'] == hashlib.sha256(diff_bytes).hexdigest()) and isinstance(receipt['changed_files'], list) and (receipt['changed_files'] == sorted(receipt['changed_files'])) and (len(receipt['changed_files']) == len(set(receipt['changed_files']))) and (gate['path'] in receipt['changed_files']) and (timestamp(receipt['observed_at']) >= timestamp(not_before)), 'Overlap synchronization executor receipt is missing or mismatched')
+	for path in receipt['changed_files']:
+		_exact_overlap_path(path)
+	return deepcopy(receipt)
 
 class ContinuousControllerStore:
 
@@ -532,6 +549,39 @@ class ContinuousControllerStore:
 			row = db.execute('SELECT record_json FROM controller_overlap_sync_gate WHERE gate_id=?', (gate_id,)).fetchone()
 			return None if row is None else loads(row['record_json'])
 
+	def _finish_overlap_sync_receipt(self, gate_id, payload, receipt, *, expected_status, not_before):
+		from .canonical import fingerprint
+		with self.transaction() as db:
+			row = db.execute('SELECT status,record_json FROM controller_overlap_sync_gate WHERE gate_id=?', (gate_id,)).fetchone()
+			_require(row is not None and row['status'] == expected_status, 'Overlap synchronization gate changed during receipt processing')
+			gate = loads(row['record_json'])
+			_require(gate.get('execution') == payload, 'Overlap synchronization execution identity changed before receipt processing')
+			receipt = _validated_overlap_sync_receipt(gate, payload, receipt, not_before)
+			evidence = {'gate_id': gate_id, 'allowance_id': gate['allowance_id'], 'tickets': gate['tickets'], 'pull_requests': gate['pull_requests'], 'heads': gate['heads'], 'pre_sync_heads': gate['heads'], 'post_sync_heads': receipt['post_sync_heads'], 'path': gate['path'], 'diff': receipt['diff'], 'diff_sha256': receipt['diff_sha256'], 'changed_files': receipt['changed_files'], 'executor_receipt_sha256': fingerprint('controller-overlap-sync-receipt', receipt)}
+			gate['status'] = 'SYNCED'
+			gate['execution'] = deepcopy(receipt)
+			gate['critic_evidence'] = evidence
+			db.execute("UPDATE controller_overlap_sync_gate SET status='SYNCED',record_json=?,updated_at=? WHERE gate_id=?", (canonical(gate).decode(), receipt['observed_at'], gate_id))
+			revision = int(self._meta(db, 'revision')) + 1
+			db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
+			return deepcopy(gate)
+
+	def reconcile_overlap_sync_gate(self, gate_id, receipt_reader, now):
+		timestamp(now)
+		with self.connection() as db:
+			row = db.execute('SELECT status,record_json,updated_at FROM controller_overlap_sync_gate WHERE gate_id=?', (gate_id,)).fetchone()
+			_require(row is not None, 'Unknown overlap synchronization gate')
+			gate = loads(row['record_json'])
+			if row['status'] in {'CLEARED', 'SYNCED', 'EXECUTED'}:
+				return gate
+			_require(row['status'] == 'UNKNOWN', 'Only an unknown overlap synchronization outcome can be reconciled')
+			payload = gate.get('execution')
+			_require(isinstance(payload, dict) and payload.get('gate_id') == gate_id, 'Unknown overlap synchronization gate has no decided execution identity')
+			not_before = row['updated_at']
+		_require(callable(receipt_reader), 'Unknown overlap synchronization outcome needs a receipt-only reconciler')
+		receipt = receipt_reader(deepcopy(payload))
+		return self._finish_overlap_sync_receipt(gate_id, payload, receipt, expected_status='UNKNOWN', not_before=not_before)
+
 	def execute_overlap_sync_gate(self, gate_id, observation, sync_writer, now):
 		from .canonical import fingerprint
 		timestamp(now)
@@ -567,28 +617,12 @@ class ContinuousControllerStore:
 				db.execute("UPDATE controller_overlap_sync_gate SET status='UNKNOWN',record_json=?,updated_at=? WHERE gate_id=?", (canonical(gate).decode(), now, gate_id))
 			raise
 		try:
-			required_receipt = set(payload) | {'status', 'post_sync_heads', 'diff', 'diff_sha256', 'changed_files', 'observed_at'}
-			diff = receipt.get('diff') if isinstance(receipt, dict) else None
-			diff_bytes = diff.encode('utf-8') if isinstance(diff, str) else b''
-			_require(isinstance(receipt, dict) and set(receipt) == required_receipt and all((receipt[key] == payload[key] for key in payload)) and (receipt['status'] == 'COMPLETED') and isinstance(receipt['post_sync_heads'], list) and (len(receipt['post_sync_heads']) == len(gate['heads'])) and all((isinstance(head, str) and re.fullmatch('[0-9a-f]{40}', head) is not None for head in receipt['post_sync_heads'])) and (receipt['post_sync_heads'] != gate['heads']) and isinstance(diff, str) and diff.strip() and (len(diff_bytes) <= OVERLAP_SYNC_DIFF_MAX_BYTES) and (receipt['diff_sha256'] == hashlib.sha256(diff_bytes).hexdigest()) and isinstance(receipt['changed_files'], list) and (receipt['changed_files'] == sorted(receipt['changed_files'])) and (len(receipt['changed_files']) == len(set(receipt['changed_files']))) and (gate['path'] in receipt['changed_files']) and (timestamp(receipt['observed_at']) >= timestamp(now)), 'Overlap synchronization executor receipt is missing or mismatched')
-			for path in receipt['changed_files']:
-				_exact_overlap_path(path)
+			return self._finish_overlap_sync_receipt(gate_id, payload, receipt, expected_status='IN_FLIGHT', not_before=now)
 		except Exception:
 			with self.transaction() as db:
 				gate['status'] = 'UNKNOWN'
 				db.execute("UPDATE controller_overlap_sync_gate SET status='UNKNOWN',record_json=?,updated_at=? WHERE gate_id=? AND status='IN_FLIGHT'", (canonical(gate).decode(), now, gate_id))
 			raise
-		with self.transaction() as db:
-			current = db.execute('SELECT status FROM controller_overlap_sync_gate WHERE gate_id=?', (gate_id,)).fetchone()
-			_require(current is not None and current['status'] == 'IN_FLIGHT', 'Overlap synchronization gate changed during execution')
-			evidence = {'gate_id': gate_id, 'allowance_id': gate['allowance_id'], 'tickets': gate['tickets'], 'pull_requests': gate['pull_requests'], 'heads': gate['heads'], 'pre_sync_heads': gate['heads'], 'post_sync_heads': receipt['post_sync_heads'], 'path': gate['path'], 'diff': receipt['diff'], 'diff_sha256': receipt['diff_sha256'], 'changed_files': receipt['changed_files'], 'executor_receipt_sha256': fingerprint('controller-overlap-sync-receipt', receipt)}
-			gate['status'] = 'SYNCED'
-			gate['execution'] = deepcopy(receipt)
-			gate['critic_evidence'] = evidence
-			db.execute("UPDATE controller_overlap_sync_gate SET status='SYNCED',record_json=?,updated_at=? WHERE gate_id=?", (canonical(gate).decode(), receipt['observed_at'], gate_id))
-			revision = int(self._meta(db, 'revision')) + 1
-			db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
-			return deepcopy(gate)
 
 	def confirm_overlap_sync_inventory(self, gate_id, inventory, *, inventory_sha256, observed_at, provider_observation):
 		timestamp(observed_at)
@@ -1152,10 +1186,18 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
 	return (tickets, repository_binding, observation)
 
-def production_controller_cycle(store, *, now, host_capacity, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None):
+def production_controller_cycle(store, *, now, host_capacity, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, controller_clock=None):
 	_require(isinstance(store, ContinuousControllerStore), 'Production cycle needs a controller store')
 	_require(all((callable(adapter) for adapter in (observe_inventory, dispatch_ticket, observe_dispatch, deliver_status))), 'Production controller adapters must be callable')
 	timestamp(now)
+	controller_clock = now_text if controller_clock is None else controller_clock
+	provider_controller_time = now
+
+	def post_provider_time():
+		nonlocal provider_controller_time
+		provider_controller_time = _post_provider_controller_time(controller_clock, provider_controller_time)
+		return provider_controller_time
+
 	_require(dispatch_role is None or dispatch_role in {'writer', 'critic'}, 'Compatibility dispatch role must be writer or critic')
 	store.recover_dispatches(now)
 	_require(isinstance(inventory_binding, dict) and set(inventory_binding) == {'project_id', 'repository_id', 'scope_sha256'} and all((isinstance(value, str) and value for value in inventory_binding.values())), 'Production inventory needs immutable project, repository, and scope bindings')
@@ -1175,10 +1217,11 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 		try:
 			request = _allowance_request(raw_request, inventory_binding['repository_id'], cycle_id)
 			plan_observation = observe_overlap_allowance(deepcopy(request), 'PLAN')
-			record = validate_overlap_allowance_observation(publication_config, request, plan_observation, tickets, now=now, expected_repository_id=inventory_binding['repository_id'], expected_cycle_id=cycle_id, allow_expired=True)
-			store.register_overlap_allowance(record, now)
-			if timestamp(now) >= timestamp(record['expires_at']):
-				gate = store.expire_overlap_allowance(record['allowance_id'], now)
+			plan_now = post_provider_time()
+			record = validate_overlap_allowance_observation(publication_config, request, plan_observation, tickets, now=plan_now, expected_repository_id=inventory_binding['repository_id'], expected_cycle_id=cycle_id, allow_expired=True)
+			store.register_overlap_allowance(record, plan_now)
+			if timestamp(plan_now) >= timestamp(record['expires_at']):
+				gate = store.expire_overlap_allowance(record['allowance_id'], plan_now)
 				allowance_audit.append({'allowance_id': record['allowance_id'], 'phase': 'EXPIRED', 'status': gate['status'], 'gate_id': gate['gate_id']})
 			else:
 				allowance_plans.append((request, record))
@@ -1196,7 +1239,21 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 	for gate in unresolved:
 		if gate['status'] == 'SYNCED':
 			continue
-		if gate['status'] in {'IN_FLIGHT', 'UNKNOWN'}:
+		if gate['status'] == 'UNKNOWN':
+			try:
+				_require(callable(reconcile_overlap_sync), 'Unknown overlap synchronization outcome needs a receipt-only reconciler')
+				reconciled = store.reconcile_overlap_sync_gate(gate['gate_id'], reconcile_overlap_sync, now)
+				allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'SYNC_RECEIPT_RECONCILIATION', 'status': reconciled['status'], 'gate_id': gate['gate_id']})
+				if reconciled['status'] == 'SYNCED':
+					newly_synced.append(reconciled)
+				continue
+			except Exception as exc:
+				allowance_blocked_tickets.update(gate['tickets'])
+				reason = str(exc) if isinstance(exc, ValidationError) else type(exc).__name__
+				allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'SYNC_RECEIPT_RECONCILIATION', 'status': 'UNKNOWN', 'gate_id': gate['gate_id'], 'reason': reason})
+				errors.append({'operation': 'overlap_sync_reconciliation', 'state': 'BLOCKED', 'reason': reason})
+				continue
+		if gate['status'] == 'IN_FLIGHT':
 			allowance_blocked_tickets.update(gate['tickets'])
 			reason = 'Overlap synchronization executor outcome is unresolved'
 			allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'SYNC_DECISION', 'status': gate['status'], 'gate_id': gate['gate_id'], 'reason': reason})
@@ -1264,8 +1321,9 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 	for request, planned in allowance_plans:
 		try:
 			lane_observation = observe_overlap_allowance(deepcopy(request), 'LANE_START')
-			current = validate_overlap_allowance_observation(publication_config, request, lane_observation, tickets, now=now, expected_repository_id=inventory_binding['repository_id'], expected_cycle_id=cycle_id)
-			store.recheck_overlap_allowance(planned['allowance_id'], current, now)
+			lane_now = post_provider_time()
+			current = validate_overlap_allowance_observation(publication_config, request, lane_observation, tickets, now=lane_now, expected_repository_id=inventory_binding['repository_id'], expected_cycle_id=cycle_id)
+			store.recheck_overlap_allowance(planned['allowance_id'], current, lane_now)
 			active_allowances.append({'allowance_id': current['allowance_id'], 'path': current['binding']['path'], 'tickets': current['binding']['tickets']})
 			allowance_audit.append({'allowance_id': current['allowance_id'], 'phase': 'LANE_START', 'status': 'ACTIVE'})
 		except Exception as exc:

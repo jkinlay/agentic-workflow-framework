@@ -185,7 +185,7 @@ def main(argv=None, default_root=ROOT):
 			overlap_requests = load(args.overlap_allowances)
 			names.add('observe_overlap_allowance')
 		calls = _require_adapters(adapters, names)
-		for name in ('observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'observe_dispatch_quiescence'):
+		for name in ('observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_dispatch_quiescence'):
 			if callable(adapters.get(name)):
 				calls[name] = adapters[name]
 		output = production_controller_cycle(store, now=args.now, host_capacity=args.host_capacity, inventory_binding=load(args.inventory_binding), repository_root=args.repository_root, repository_head_sha=args.repository_head_sha, repository_tree_sha=args.repository_tree_sha, publication_config=config, cycle_id=args.cycle_id, overlap_allowance_requests=overlap_requests, **calls)

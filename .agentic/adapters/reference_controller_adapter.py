@@ -889,6 +889,16 @@ def _build(config):
 		receipt = {**payload, 'status': 'COMPLETED', 'post_sync_heads': after['heads'], 'diff': diff, 'diff_sha256': hashlib.sha256(diff_bytes).hexdigest(), 'changed_files': changed_files, 'observed_at': _clock_text(clock)}
 		_write_record(record_path, {'format': 'awf-overlap-sync-operation-1', 'status': 'COMPLETED', 'payload': payload, 'receipt': receipt})
 		return receipt
+
+	def reconcile_overlap_sync(payload):
+		required = {'gate_id', 'execution_id', 'repository_id', 'cycle_id', 'path', 'tickets', 'pull_requests', 'heads', 'conflict_sha256'}
+		_require(isinstance(payload, dict) and set(payload) == required and re.fullmatch('[0-9a-f]{64}', payload.get('execution_id', '')) and (str(payload['repository_id']) == str(github['repository_id'])), 'Overlap sync reconciliation payload is malformed')
+		record_path = record_dir / ('overlap-sync-' + payload['execution_id'] + '.json')
+		_require(record_path.is_file(), 'Overlap sync reconciliation has no retained executor record')
+		retained = _read_record(record_path)
+		_require(retained.get('format') == 'awf-overlap-sync-operation-1' and retained.get('payload') == payload, 'Overlap sync reconciliation identity differs from the retained operation')
+		_require(retained.get('status') == 'COMPLETED' and isinstance(retained.get('receipt'), dict), 'Overlap sync reconciliation has no completed receipt and will not reissue the mutation')
+		return deepcopy(retained['receipt'])
 	if default_runner:
 		runner.bind_overlap_operations(observe_overlap_conflict=production_overlap_conflict, sync_writer=production_sync_writer, observe_overlap_sync_inventory=production_overlap_sync_inventory)
 
@@ -1206,7 +1216,7 @@ def _build(config):
 		complete = next_cursor is None
 		observed_at = snapshot['observed_at']
 		return {'items': items, 'next_cursor': next_cursor, 'complete': complete, 'snapshot_id': snapshot_id, 'scope_sha256': scope_sha, 'observed_at': observed_at}
-	return {'observe_inventory': observe_inventory, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'observe_provider_identity': provider_identity, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation}
+	return {'observe_inventory': observe_inventory, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation}
 
 def build_adapters(config):
 	return _build(config)

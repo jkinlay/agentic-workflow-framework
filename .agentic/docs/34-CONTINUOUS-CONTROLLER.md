@@ -29,22 +29,20 @@ Reviewer counts balance; completed tickets become absent or terminal before refi
 
 ## Exact overlap allowances
 
-With `--cycle-id` and `--overlap-allowances`, only an unedited
-`AWF-OVERLAP-ALLOWANCE 1` canonical comment by
-`merge_gate.trusted_owner_ids` authorizes 24 hours; `github.expected_actor_id`
-grants none. Fresh Date/ETag binds repository, PRs, heads, files and ticket
-branches at plan and lane start. Paths use exact, case-sensitive NFC Git `/`
-spelling without globs.
+With `--cycle-id` and `--overlap-allowances`, only an unedited canonical
+`AWF-OVERLAP-ALLOWANCE 1` comment by `merge_gate.trusted_owner_ids` authorizes
+24 hours; `github.expected_actor_id` grants none. Plan/lane-start Date/ETag
+binds repository, PRs, heads, files and branches. Freshness/expiry use
+post-read controller UTC; Date may lead five seconds for clock skew but never
+extends expiry. Paths are exact case-sensitive NFC Git `/`, without globs.
 
-Expiry persists a gate. Dispatches need terminal proof before conflict;
-otherwise it stays `PENDING` after restart. A confirmed
-conflict runs the idempotent shipped sync writer. `SYNCED` binds post-sync
-heads, sorted files and a nonempty hash-matched diff (maximum 512 KiB).
-`EXECUTED` also needs fresh Date/ETag heads and inventory whose parsed,
-`head` field equals the live 40-hex SHA. The
-adapter executes/replays a first-into-second GitHub merge; its diff reaches the
-next critic. Ambiguity blocks and `UNKNOWN` is
-never reissued.
+Expiry persists a pair gate. Dispatches require terminal proof before conflict;
+otherwise `PENDING` survives restart. Confirmed conflict runs idempotent sync.
+`SYNCED` binds heads, sorted files and a nonempty hash-matched diff (maximum
+512 KiB). `EXECUTED` adds fresh Date/ETag heads and inventory `head` matching
+live 40-hex SHA. First-into-second diff reaches the next critic.
+`UNKNOWN` reads only its durable `COMPLETED` execution receipt; otherwise it
+blocks without reissuing the mutation.
 
 ## Dispatch and cadence
 
