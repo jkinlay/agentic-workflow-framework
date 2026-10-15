@@ -75,9 +75,14 @@ class _SubprocessRunner:
 		return operation(gate)
 	_WATCHER = '\nimport json\nimport os\nimport subprocess\nimport sys\nimport tempfile\nimport threading\nimport time\n\nspec_path = sys.argv[1]\nwith open(spec_path, "r", encoding="utf-8") as stream:\n    spec = json.load(stream)\n\ndef durable(path, value):\n    directory = os.path.dirname(path) or "."\n    fd, temporary = tempfile.mkstemp(prefix=".awf-durable-", dir=directory)\n    try:\n        with os.fdopen(fd, "w", encoding="utf-8", newline="\\n") as stream:\n            json.dump(value, stream, sort_keys=True, separators=(",", ":"))\n            stream.write("\\n")\n            stream.flush()\n            os.fsync(stream.fileno())\n        os.replace(temporary, path)\n    finally:\n        try:\n            os.unlink(temporary)\n        except FileNotFoundError:\n            pass\n\npid = os.getpid()\nnonce = spec["launch_nonce"]\nhandoff = spec["handoff_path"]\nproof = spec["terminal_proof_path"]\nstartup_proof = spec["startup_proof_path"]\ndurable(handoff, {"pid": pid, "launch_nonce": nonce, "status": "LAUNCHED"})\nstartup_lock = threading.Lock()\nstartup_recorded = False\nsession_id = None\n\ndef publish_startup(value):\n    global startup_recorded\n    with startup_lock:\n        if startup_recorded:\n            return\n        durable(startup_proof, value)\n        startup_recorded = True\n\ncode = None\nstatus = "COMPLETED"\ndiagnostic = None\ntry:\n    child = subprocess.Popen(spec["argv"], cwd=spec["cwd"], env=spec["env"],\n                             shell=False, stdin=subprocess.PIPE,\n                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n    stderr_tail = bytearray()\n    stderr_limit = spec["max_stderr_bytes"]\n    markers = ("setup refresh had errors", "helper_unknown_error", "os error 32",\n               "winerror 32", "invalid transport", "being used by another process")\n\n    def drain_stderr():\n        while True:\n            chunk = child.stderr.read1(8192)\n            if not chunk:\n                return\n            stderr_tail.extend(chunk)\n            if len(stderr_tail) > stderr_limit:\n                del stderr_tail[:-stderr_limit]\n            lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()\n            if any(marker in lowered for marker in markers):\n                publish_startup({"pid": pid, "launch_nonce": nonce,\n                                 "status": "FAILED", "terminal": False,\n                                 "diagnostic": "SANDBOX_SETUP_CONFIG_ERROR",\n                                 "config_source": spec["config_source"]})\n\n    def drain_stdout():\n        global session_id\n        while True:\n            line = child.stdout.readline(spec["max_output_bytes"] + 1)\n            if not line:\n                return\n            if len(line) > spec["max_output_bytes"]:\n                continue\n            try:\n                event = json.loads(line.decode("utf-8", "strict"))\n            except (UnicodeDecodeError, json.JSONDecodeError):\n                continue\n            # Codex JSON mode emits this only after isolated configuration has\n            # been accepted and the execution thread has been initialized.\n            if (isinstance(event, dict) and event.get("type") == "thread.started"\n                    and isinstance(event.get("thread_id"), str) and event["thread_id"].strip()):\n                session_id = event["thread_id"]\n                publish_startup({"pid": pid, "launch_nonce": nonce,\n                                 "status": "STARTED", "terminal": False,\n                                 "session_id": session_id})\n\n    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)\n    stdout_thread = threading.Thread(target=drain_stdout, daemon=True)\n    stderr_thread.start()\n    stdout_thread.start()\n    try:\n        try:\n            child.stdin.write(spec["stdin"].encode("utf-8"))\n        except BrokenPipeError:\n            pass\n        finally:\n            child.stdin.close()\n        child.wait(timeout=spec["timeout"])\n        code = child.returncode\n        stderr_thread.join()\n        stdout_thread.join()\n        lowered = bytes(stderr_tail).decode("utf-8", "replace").casefold()\n        if code and any(marker in lowered for marker in markers):\n            diagnostic = "SANDBOX_SETUP_CONFIG_ERROR"\n    except subprocess.TimeoutExpired:\n        status = "TIMED_OUT"\n        child.kill()\n        child.wait()\n        stderr_thread.join()\n        stdout_thread.join()\nexcept Exception:\n    status = "FAILED"\nvalue = {"pid": pid, "launch_nonce": nonce, "status": status,\n         "returncode": code, "terminal": True}\nif session_id is not None:\n    value["session_id"] = session_id\nif diagnostic is not None:\n    value["diagnostic"] = diagnostic\n    value["config_source"] = spec["config_source"]\ndurable(proof, value)\npublish_startup(value)\n'
 
-	def run(self, argv, *, cwd, env, timeout, max_bytes):
+	def run(self, argv, *, cwd, env, timeout, max_bytes, stdin=None):
+		_require(stdin is None or isinstance(stdin, str), 'External command stdin is invalid')
+		input_bytes = None if stdin is None else stdin.encode('utf-8')
+		_require(input_bytes is None or len(input_bytes) <= 2 * MAX_OUTPUT, 'External command stdin exceeded its byte bound')
 		try:
-			result = subprocess.run(argv, cwd=str(cwd), env=env, shell=False, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+			result = subprocess.run(argv, cwd=str(cwd), env=env, shell=False,
+				stdin=subprocess.DEVNULL if input_bytes is None else None, input=input_bytes,
+				capture_output=True, timeout=timeout)
 		except (OSError, subprocess.TimeoutExpired) as exc:
 			raise ValidationError('External command failed or timed out') from exc
 		if result.returncode != 0:
@@ -659,9 +664,12 @@ def _build(config):
 		argv = [str(executable['path']), *[str(item) for item in args]]
 		_require(all((isinstance(item, str) and item for item in argv)), 'External argv is invalid')
 		env = _safe_env(token_env)
+		kwargs = {}
 		if stdin is not None:
+			_require(isinstance(stdin, str) and len(stdin.encode('utf-8')) <= 2 * MAX_OUTPUT, 'External command stdin exceeded its byte bound')
 			env['AWF_ADAPTER_STDIN_SHA256'] = hashlib.sha256(stdin.encode('utf-8')).hexdigest()
-		result = _invoke(runner, 'run', argv, cwd=cwd or worktree_root, env=env, timeout=timeout if timeout_override is None else timeout_override, max_bytes=MAX_OUTPUT)
+			kwargs['stdin'] = stdin
+		result = _invoke(runner, 'run', argv, cwd=cwd or worktree_root, env=env, timeout=timeout if timeout_override is None else timeout_override, max_bytes=MAX_OUTPUT, **kwargs)
 		if isinstance(result, (dict, list)):
 			return result
 		return _normalize_command_result(result)
@@ -935,12 +943,12 @@ def _build(config):
 		target_ref = github['branch_pattern'].format(ticket=target_ticket, slug=target_slug)
 		_write_record(record_path, {'format': 'awf-overlap-sync-operation-1', 'status': 'IN_FLIGHT', 'payload': payload})
 		mutation = 'mutation($repository:String!,$branch:String!,$head:GitObjectID!,$path:String!,$contents:Base64String!,$message:String!){createCommitOnBranch(input:{branch:{repositoryNameWithOwner:$repository,branchName:$branch},expectedHeadOid:$head,message:{headline:$message},fileChanges:{additions:[{path:$path,contents:$contents}]}}){commit{oid}}}'
-		update = _json_output(command(gh_executable, ['api', '--hostname', 'github.com', 'graphql',
-			'--raw-field', 'query=' + mutation, '--raw-field', 'repository=' + github['repository'],
-			'--raw-field', 'branch=' + target_ref, '--raw-field', 'head=' + payload['heads'][1],
-			'--raw-field', 'path=' + payload['path'],
-			'--raw-field', 'contents=' + base64.b64encode(resolved['content']).decode('ascii'),
-			'--raw-field', 'message=AWF overlap sync ' + payload['execution_id']]))
+		mutation_input = json.dumps({'query': mutation, 'variables': {
+			'repository': github['repository'], 'branch': target_ref, 'head': payload['heads'][1],
+			'path': payload['path'], 'contents': base64.b64encode(resolved['content']).decode('ascii'),
+			'message': 'AWF overlap sync ' + payload['execution_id']}}, sort_keys=True, separators=(',', ':'))
+		update = _json_output(command(gh_executable,
+			['api', '--hostname', 'github.com', 'graphql', '--input', '-'], stdin=mutation_input))
 		created = update.get('data', {}).get('createCommitOnBranch', {}) if isinstance(update, dict) else {}
 		merge_sha = created.get('commit', {}).get('oid') if isinstance(created, dict) else None
 		_require(isinstance(merge_sha, str) and re.fullmatch('[0-9a-f]{40}', merge_sha), 'GitHub overlap resolution did not return a commit identity')
