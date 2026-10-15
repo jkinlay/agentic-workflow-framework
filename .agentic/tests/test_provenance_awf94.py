@@ -90,6 +90,13 @@ class AWF94MessageGrammarTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, r"^PUBLISHED_MESSAGE_INVALID:"):
                 provenance.create_canonical_commit(".", HEAD, "topic", "subject")
 
+    def test_c195_004_trailer_like_cap_applies_without_writer_line(self):
+        message = "subject\n\n" + "\n".join(
+            f"Key{index}: value" for index in range(257))
+        with self.assertRaisesRegex(ValidationError,
+                                    r"^WRITER_TRAILER_LIMIT:"):
+            provenance.parse_writer_trailer(message)
+
 
 class AWF94CriticBindingTests(unittest.TestCase):
     def test_in_24_result_digest_and_nested_bindings_are_mandatory(self):
@@ -111,6 +118,35 @@ class AWF94CriticBindingTests(unittest.TestCase):
                                  encoding="utf-8"))
         self.assertEqual("#/$defs/criticBinding/properties/critic_run_carrier",
                          schema["x-awf-sole-critic-run-carrier"])
+
+    def test_c195_001_compact_persistence_binding_is_accepted(self):
+        binding = {
+            "run_id": RUN_ID,
+            "head_sha": HEAD,
+            "result_sha256": DIGEST,
+            "critic_run_carrier": f"Critic run: {RUN_ID}",
+        }
+        self.assertEqual(
+            DIGEST,
+            provenance.validate_critic_run_binding(
+                binding, reviewed_head=HEAD)["result_sha256"])
+
+    def test_c195_002_artifact_digest_must_match_verdict_digest(self):
+        verdict = complete_critic_verdict()
+        verdict["critic_artifact_binding"]["result_sha256"] = "c" * 64
+        with self.assertRaisesRegex(ValidationError,
+                                    r"^CRITIC_BINDING_INVALID:"):
+            provenance.validate_critic_run_binding(verdict, reviewed_head=HEAD)
+
+    def test_c195_003_non_ascii_critic_key_lookalike_is_counted(self):
+        # The second i is CYRILLIC SMALL LETTER BYELORUSSIAN-UKRAINIAN I.
+        for colon in (":", "\uff1a"):
+            with self.subTest(colon=colon):
+                carrier = (f"Critic run{colon} {RUN_ID}".replace(
+                    "i", "\u0456", 1) + f"\nCritic run: {RUN_ID}")
+                with self.assertRaisesRegex(ValidationError,
+                                            r"^CRITIC_LINE_INVALID:"):
+                    provenance.parse_critic_run_carrier(carrier)
 
 
 class AWF94FirstDraftTests(unittest.TestCase):
@@ -141,13 +177,34 @@ class AWF94RewriteTests(unittest.TestCase):
                 publication.rewrite_unpublished(
                     temporary, HEAD, "topic.lock", 1, Path(temporary) / "message")
 
-    def test_in_49_boolean_commit_count_is_not_the_integer_one(self):
+    def test_boolean_commit_count_is_not_the_integer_one(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(
                 publication, "_repository_commit_identity",
                 side_effect=AssertionError("identity read reached")):
             with self.assertRaisesRegex(ValidationError, r"^REWRITE_ARGUMENT_INVALID:"):
                 publication.rewrite_unpublished(
                     temporary, HEAD, "topic", True, Path(temporary) / "message")
+
+    def test_in_49_remote_readback_is_bounded_and_attributed(self):
+        ref = "refs/heads/topic"
+        carrier = (HEAD + "\t" + ref + "\n").encode("ascii")
+        with patch.object(publication, "_git_bounded_stdout",
+                          return_value=carrier) as readback:
+            self.assertTrue(publication._remote_ref_readback(".", "remote", ref))
+        self.assertEqual(32 * 1024 * 1024, readback.call_args.kwargs["limit"])
+
+        with patch.object(publication, "_git_bounded_stdout",
+                          return_value=b"not-a-ref-carrier\n"):
+            with self.assertRaisesRegex(ValidationError,
+                                        r"^REMOTE_READBACK_INVALID:"):
+                publication._remote_ref_readback(".", "remote", ref)
+
+        with patch.object(
+                publication, "_git_bounded_stdout",
+                side_effect=ValidationError("synthetic response exceeded bound")):
+            with self.assertRaisesRegex(ValidationError,
+                                        r"^REMOTE_READBACK_INVALID:"):
+                publication._remote_ref_readback(".", "remote", ref)
 
 
 if __name__ == "__main__":
