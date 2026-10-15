@@ -31,14 +31,6 @@ class DispositionRequestCliTests(unittest.TestCase):
             "head_sha": head,
             "round": 3,
         }
-        verdict = {
-            "record_id": str(uuid.uuid4()),
-            "run_id": critic_run_id,
-            "head_sha": head,
-            "round": 3,
-            "owner_review": False,
-            "critic_artifact_binding": artifact,
-        }
         binding = {
             "project_id": "00000000-0000-0000-0000-000000000001",
             "repository_id": 123,
@@ -47,6 +39,15 @@ class DispositionRequestCliTests(unittest.TestCase):
             "contract_hash": "2" * 64,
             "policy_hash": "3" * 64,
             "candidate_id": "4" * 64,
+        }
+        verdict = {
+            "record_id": str(uuid.uuid4()),
+            "run_id": critic_run_id,
+            "binding": binding,
+            "head_sha": head,
+            "round": 3,
+            "owner_review": False,
+            "critic_artifact_binding": artifact,
         }
         disposition = {
             "schema_version": 3,

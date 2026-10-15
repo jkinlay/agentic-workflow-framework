@@ -80,7 +80,7 @@ class CliIntakeAssignmentTests(unittest.TestCase):
             "binding": {}, "decision": "PARK", "open_finding_ids": [],
             "successor_ticket": None,
         }), encoding="utf-8")
-        verdict_path.write_text("{}\n", encoding="utf-8")
+        verdict_path.write_text(json.dumps({"binding": {}}), encoding="utf-8")
         findings_path.write_text("[]\n", encoding="utf-8")
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch("agentic.authorization.verify_owner_record", return_value={"status": "VERIFIED"}), \

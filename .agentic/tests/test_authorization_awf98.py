@@ -94,6 +94,7 @@ class OwnerDispositionTests(unittest.TestCase):
         verdict = {
             "record_id": str(uuid.uuid4()),
             "run_id": self.record["critic_artifact_binding"]["critic_run_id"],
+            "binding": copy.deepcopy(self.binding),
             "head_sha": HEAD,
             "round": 3,
             "owner_review": False,
@@ -262,6 +263,25 @@ class OwnerDispositionTests(unittest.TestCase):
                 NoopContracts(),
                 HEAD,
             )
+
+    def test_cap_disposition_rejects_review_verdict_from_another_context(self):
+        for field, other in (
+                ("project_id", "00000000-0000-0000-0000-000000000002"),
+                ("issue_id", "AWF-99"),
+                ("policy_hash", "7" * 64),
+                ("candidate_id", "8" * 64)):
+            with self.subTest(field=field):
+                verdict = self._review_verdict()
+                self.record["binding"][field] = other
+
+                with self.assertRaisesRegex(ValidationError, "candidate context"):
+                    verify_disposition_review_binding(
+                        self.record,
+                        "review-cap-disposition",
+                        verdict,
+                        NoopContracts(),
+                        HEAD,
+                    )
 
 
 if __name__ == "__main__":
