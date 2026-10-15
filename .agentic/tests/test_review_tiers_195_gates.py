@@ -261,6 +261,13 @@ class ReviewTiers195GateTests(Fixture):
         self._owner_review(provider_evidence=provider_evidence)
         if provider_evidence:
             self._refresh_owner_posting_receipt(registry)
+        owner = self.bundle["owner_review"]
+        self.bundle["evidence_registry"].append({
+            "uri": f"urn:awf:owner-review:{owner['record_id']}",
+            "sha256": sha256(canonical(owner)),
+            "producer_id": owner["producer_id"],
+            "retained_until": "2027-01-01T00:00:00Z",
+        })
         return evaluate(
             self.config, definition(), self.bundle, self.contracts, NOW,
             posting_collector_registry=registry,
