@@ -114,7 +114,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/policy.py` | `a8d7f290569ba71329354ae52c4ddb74287bdbdcbfc7147564c7db89ffe9484c` |
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
-| `.agentic/lib/agentic/provenance.py` | `ec0c5125c1712002e093ac27c8ade259c13f86b0cf3c49a826dd8e53998b4a51` |
+| `.agentic/lib/agentic/provenance.py` | `39127272f9ae2fe9e4c462474fade6b28eb38d2d63cec7bb58b9289d45adc6fe` |
 | `.agentic/lib/agentic/provider_identity.py` | `d95ae1def1279357ca53b0c51151f4fe483a16ac5e8f8b843800afeb1176289c` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
 | `.agentic/lib/agentic/providers/github.py` | `0228ed2d7c57617052ef97209c6ae357b893d3151dd97df267ab2a86d4e2f12d` |
@@ -354,7 +354,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_posting_collector_awf60.py` | `96e691b4e29df8fef538fd8dd3ba22ebbdcd818bd07a86a7f13b1fb6c4ca7061` |
 | `.agentic/tests/test_private_deny_binary.py` | `b6da0ffbcce95cedece5c337106bb6f642f127180ae21ba14ec606da37ac6de1` |
 | `.agentic/tests/test_provenance.py` | `171b140e2492e39a70b22259600861dd1b28fd0aa61eaf0b333ba5ca97d3e38a` |
-| `.agentic/tests/test_provenance_awf94.py` | `baaf3d77af52174a049ffd099f1faf751dc278e3d49c4f9d919fc9d7628d3783` |
+| `.agentic/tests/test_provenance_awf94.py` | `88286473aa73ad8681a8a4cfd552d519b36cd14eb2cf4fab242549c53341059c` |
 | `.agentic/tests/test_provider_identity.py` | `a276d68b89dfb6e65513f62732dd3fddab93419b04f20cc59bbec7c8a0e2fc2b` |
 | `.agentic/tests/test_publication.py` | `add2fb41f68d682cd8fa52ebb726bd8497524d9b73e090f47ca1b48dc1758275` |
 | `.agentic/tests/test_publication_readiness.py` | `4c2e48395f0a3a26c86625cf49e62b2b71353ff9bb33cb9c2bedcb7c40431354` |

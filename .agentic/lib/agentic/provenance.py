@@ -45,6 +45,13 @@ _GENERATED_BLOB_LIMIT = 32 * 1024 * 1024
 _GENERATED_TOTAL_LIMIT = 512 * 1024 * 1024
 _REASON_LIMIT = 4096
 
+# Unicode confusables whose names and NFKC forms do not identify their visual
+# colon role.  NFKC and Unicode character names cover the general case below;
+# this fixed fallback keeps the remaining reviewed confusables auditable.
+_COLON_CONFUSABLES = frozenset({
+    0x0589, 0x05C3, 0x1361, 0x16EC, 0xA4FD,
+})
+
 # Fixed Unicode 15 format-control inventory.  This deliberately does not use
 # ``unicodedata.category``: grammar decisions must not drift when the runtime's
 # Unicode database changes.  U+FEFF has its own more specific refusal code.
@@ -209,25 +216,46 @@ def _ascii_fold_key(value):
     return "".join(folded)
 
 
+def _colon_like(char):
+    """Return whether one character can visually carry a reserved-key colon."""
+    if char == ":" or unicodedata.normalize("NFKC", char) == ":":
+        return True
+    if ord(char) <= 127:
+        return False
+    name = unicodedata.name(char, "")
+    return ("COLON" in name or "RATIO" in name
+            or ord(char) in _COLON_CONFUSABLES)
+
+
+def _fold_reserved_key(value):
+    """Fold spacing, dashes, fullwidth ASCII, and colon confusables."""
+    ascii_folded = _ascii_fold_key(value)
+    return "".join(":" if _colon_like(original) else folded
+                   for original, folded in zip(value, ascii_folded))
+
+
 def _writer_like(line):
-    candidate = _ascii_fold_key(line)
+    candidate = _fold_reserved_key(line)
     # Search the entire physical line, including indented occurrences.  This
     # intentionally treats prose/code examples as ambiguous rather than proof.
-    return re.search(r"(?i)(?:^|[ \t])writer[ \t]*[:：]", candidate) is not None
+    return re.search(r"(?i)(?:^|[ \t])writer[ \t]*:", candidate) is not None
 
 
 def _writer_key_lookalike(line):
-    """Detect deterministic non-ASCII Writer-key confusables.
+    """Detect deterministic non-ASCII Writer-key and colon confusables.
 
     A six-character key in which each position is either the expected ASCII
-    Writer letter or a non-ASCII substitution is reserved.  This catches the
-    ambiguity without depending on a runtime Unicode confusables database.
+    Writer letter or a non-ASCII substitution is reserved, as is a canonical
+    key followed by a colon lookalike.  This catches the ambiguity without
+    depending on a runtime Unicode confusables database.
     """
-    candidate = _ascii_fold_key(line)
-    for matched in re.finditer(r"(?:^|[ \t])([^ \t:：]+)[ \t]*[:：]", candidate):
+    candidate = _fold_reserved_key(line)
+    for matched in re.finditer(r"(?:^|[ \t])([^ \t:]+)[ \t]*(:)", candidate):
         key = matched.group(1)
         if len(key) != len("writer"):
             continue
+        if key.casefold() == "writer" and line[matched.start(2)] != ":":
+            return True
         substitutions = False
         for actual, expected in zip(key, "writer"):
             if ord(actual) > 127:
@@ -254,18 +282,19 @@ def _confusable_ascii_token(actual, expected):
 
 
 def _critic_key_lookalike(line):
-    """Detect non-ASCII substitutions in the reserved ``Critic run`` key."""
-    candidate = _ascii_fold_key(line)
-    expression = r"(?:^|[ \t])([^ \t\uff1a:-]+)[ \t-]+([^ \t\uff1a:]+)[ \t]*[\uff1a:]"
+    """Detect non-ASCII substitutions or colons in ``Critic run`` keys."""
+    candidate = _fold_reserved_key(line)
+    expression = r"(?:^|[ \t])([^ \t:-]+)[ \t-]+([^ \t:]+)[ \t]*(:)"
     for matched in re.finditer(expression, candidate):
-        first, second = matched.groups()
+        first, second, _ = matched.groups()
         first_matches = (first.casefold() == "critic" or
                          _confusable_ascii_token(first, "critic"))
         second_matches = (second.casefold() in {"run", "runs"} or
                           _confusable_ascii_token(second, "run") or
                           _confusable_ascii_token(second, "runs"))
-        if first_matches and second_matches and any(
-                ord(character) > 127 for character in first + second):
+        separator_is_lookalike = line[matched.start(3)] != ":"
+        if first_matches and second_matches and (separator_is_lookalike or any(
+                ord(character) > 127 for character in first + second)):
             return True
     return False
 
@@ -339,7 +368,8 @@ def parse_critic_run_carrier(carrier):
     _require(not any(_critic_key_lookalike(line) for line in lines),
              "CRITIC_LINE_INVALID: non-ASCII Critic-run key lookalike is ambiguous")
     like = [index for index, line in enumerate(lines)
-            if re.search(r"(?i)critic[ \t-]*runs?[ \t]*[:：]", _ascii_fold_key(line))]
+            if re.search(r"(?i)critic[ \t-]*runs?[ \t]*:",
+                         _fold_reserved_key(line))]
     _require(len(like) == 1 and like[0] == len(lines) - 1,
              "CRITIC_LINE_INVALID: exactly one final Critic run line is required")
     matched = re.fullmatch(r"Critic run: ([0-9a-f-]+)", lines[-1])
