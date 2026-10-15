@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from dataclasses import dataclass
 
 from . import ValidationError
-from .canonical import canonical, loads, sha256
 from .review_policy import authorize_tier3_round, is_boundary
 
 TIER_1 = 1
@@ -27,45 +25,6 @@ _TIER3_FLAGS = {"permissions", "release", "merge_gate", "ci_gate",
                 "schema_or_migration", "data_loss", "concurrency", "production",
                 "public_api", "high_complexity", "high_uncertainty"}
 _OBSERVED_FLAGS = _TIER3_FLAGS | {"security"}
-_OWNER_REVIEW_SEAL = object()
-
-
-@dataclass(frozen=True)
-class _VerifiedOwnerReview:
-    """Opaque result of the final-gate provider/registry verification.
-
-    A schema-shaped mapping is evidence to validate, not a validation result.
-    Only the gate-side verifier seals this context after resolving the provider
-    observation and the content-addressed registry entry.
-    """
-
-    _record_json: bytes
-    registry_uri: str
-    registry_sha256: str
-    _seal: object
-
-    def __post_init__(self):
-        if self._seal is not _OWNER_REVIEW_SEAL:
-            raise ValidationError(
-                "Verified owner review contexts must come from provider evidence validation"
-            )
-
-    @property
-    def record(self):
-        return loads(self._record_json.decode("utf-8"))
-
-
-def _seal_verified_owner_review(record, registry_uri, registry_sha256):
-    """Create the policy context after gate-side provider validation succeeds."""
-    record_json = canonical(record)
-    if sha256(record_json) != registry_sha256:
-        raise ValidationError("Owner review registry digest does not match the record")
-    return _VerifiedOwnerReview(
-        record_json,
-        registry_uri,
-        registry_sha256,
-        _OWNER_REVIEW_SEAL,
-    )
 
 
 def _matches(path, patterns):
@@ -315,23 +274,16 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
     # always consult the shared predicate first.
     if any(is_boundary(f) or f.get("boundary") or f.get("boundary_code") for f in findings):
         return {"status": "BLOCKED", "reason": "boundary finding blocks in every tier", "cap": cap}
-    owner_review_valid = tier != TIER_3
     if tier == TIER_3:
-        owner_review_valid = (
-            configured_owner_ids is not None
-            and expected_candidate_binding is not None
-            and _owner_review_valid(
-                owner_review,
-                configured_owner_ids=configured_owner_ids,
-                expected_candidate_binding=expected_candidate_binding,
-            )
-        )
-        if not owner_review_valid:
-            return {
-                "status": "OWNER_REVIEW_REQUIRED",
-                "reason": "provider-verified owner review required",
-                "cap": cap,
-            }
+        # This policy-only helper has no enrolled review host or trusted
+        # evidence registry.  Caller-supplied booleans, mappings, digests and
+        # wrapper objects therefore can never complete Tier 3 qualification.
+        # The final gate performs provider observation and registry retention.
+        return {
+            "status": "OWNER_REVIEW_REQUIRED",
+            "reason": "provider-verified owner review required",
+            "cap": cap,
+        }
     if tier == TIER_2 and rounds >= cap and p1:
         return {"status": "ROUTE_TO_OWNER", "reason": "P1 remains open at Tier 2 cap", "cap": cap}
     if tier == TIER_2 and p2:
@@ -342,33 +294,9 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
         if not ids.issubset(mapped):
             return {"status": "TICKET_P2", "ticket_required": sorted(ids), "cap": cap}
         p2 = []
-    if latest_pass and not p1 and owner_review_valid:
+    if latest_pass and not p1:
         return {"status": "QUALIFIED", "cap": cap}
     return {"status": "CONTINUE", "cap": cap}
-
-
-def _owner_review_valid(value, *, configured_owner_ids=None, expected_candidate_binding=None):
-    """Require a provider-verified, registry-bound context, never a mapping."""
-    if not isinstance(value, _VerifiedOwnerReview):
-        return False
-    record = value.record
-    binding = record.get("candidate_binding")
-    valid = (record.get("owner_review") is True
-            and isinstance(record.get("record_id"), str)
-            and isinstance(record.get("run_id"), str)
-            and isinstance(record.get("producer_id"), str)
-            and isinstance(record.get("owner_id"), int)
-            and isinstance(binding, dict)
-            and record.get("verdict") == "PASS"
-            and value.registry_uri == f"urn:awf:owner-review:{record.get('record_id')}"
-            and value.registry_sha256 == sha256(canonical(record)))
-    if not valid:
-        return False
-    if configured_owner_ids is not None and record.get("owner_id") not in set(configured_owner_ids):
-        return False
-    if expected_candidate_binding is not None and binding != expected_candidate_binding:
-        return False
-    return True
 
 
 def diff_effect(previous_diff_sha, current_diff_sha, *, base_only=False):

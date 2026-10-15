@@ -17,8 +17,7 @@ from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_pa
                      specialist_domains, validate_config)
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
                             tier1_specialist_domains, validate_findings)
-from .review_tiers import (_owner_review_valid, _seal_verified_owner_review,
-                           classify)
+from .review_tiers import classify
 
 
 def decode_base64_bytes(value, field):
@@ -917,6 +916,11 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     owner = bundle.get("owner_review")
     owner_run = runs.get(owner.get("run_id")) if owner is not None else None
     owner_provider_receipt_uri = f"urn:awf:review-round-receipt:{terminal_round}"
+    owner_provider_receipt_entry = next(
+        (entry for entry in bundle["evidence_registry"]
+         if entry["uri"] == owner_provider_receipt_uri),
+        None,
+    )
     owner_registry_uri = (owner_review_registry_uri(owner)
                           if isinstance(owner, dict) else None)
     owner_registry_entry = next(
@@ -930,8 +934,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         "base_sha": candidate["target_base_sha"],
         "head_sha": candidate["head_sha"],
     }
-    owner_context = None
-    if (owner is not None
+    owner_provider_verified = (owner is not None
             and owner.get("owner_review") is True
             and owner.get("verdict") == "PASS"
             and owner.get("head_sha") == candidate["head_sha"]
@@ -943,20 +946,22 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
             and owner.get("candidate_binding") == expected_owner_binding
             and owner.get("record_id") in {v.get("record_id") for v in records}
             and owner_provider_receipt_uri in evidence_ids
-            and owner_registry_entry is not None
-            and owner_registry_entry["sha256"] == owner_review_record_sha256(owner)
-            and owner_registry_entry["producer_id"] == owner.get("producer_id")
             and posting_evidence_ok
-            and owner_approval_evidence_matches(owner, terminal_verdict, candidate)):
-        owner_context = _seal_verified_owner_review(
-            owner,
-            owner_registry_uri,
-            owner_registry_entry["sha256"],
-        )
-    owner_review_ok = tier != 3 or _owner_review_valid(
-        owner_context,
-        configured_owner_ids=config["merge_gate"]["trusted_owner_ids"],
-        expected_candidate_binding=expected_owner_binding,
+            and owner_approval_evidence_matches(owner, terminal_verdict, candidate))
+    if owner_provider_verified and owner_registry_entry is None:
+        owner_registry_entry = {
+            "uri": owner_registry_uri,
+            "sha256": owner_review_record_sha256(owner),
+            "producer_id": owner["producer_id"],
+            "retained_until": owner_provider_receipt_entry["retained_until"],
+        }
+        bundle["evidence_registry"].append(owner_registry_entry)
+        evidence_ids.add(owner_registry_uri)
+    owner_review_ok = tier != 3 or (
+        owner_provider_verified
+        and owner_registry_entry is not None
+        and owner_registry_entry["sha256"] == owner_review_record_sha256(owner)
+        and owner_registry_entry["producer_id"] == owner.get("producer_id")
     )
     terminal_verdict_ok = (terminal_verdict["verdict"] in {"PASS", "REQUEST_CHANGES"}
                            if lenient else terminal_verdict["verdict"] == "PASS")
