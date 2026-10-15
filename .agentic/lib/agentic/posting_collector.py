@@ -11,13 +11,17 @@ The only other accepted form is ``<a name="review-verdict-<round>-<record_id>"><
 from __future__ import annotations
 
 import base64
+import copy
 import json
 from pathlib import Path
 import re
+import uuid
 
 from . import ValidationError
 from .canonical import canonical, sha256
-from .gates import posting_collector_receipt_sha256
+from .gates import (overcap_approval_collector_receipt_sha256,
+                    posting_collector_receipt_sha256)
+from .policy import parse_overcap_approval
 from .providers.github_review_host import HostDriver, load_config
 
 
@@ -546,6 +550,169 @@ def _retained_mismatch(expected, retained):
                   "retained observation shape or observation time differs")
 
 
+def _overcap_comments(review_host, candidate):
+    """Return every issue comment, refusing an incomplete provider listing."""
+    comments = []
+    for page in range(1, 101):
+        value = review_host.api(
+            f"issues/{candidate['pr_number']}/comments?per_page=100&page={page}"
+        )
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            _mismatch("OVERCAP_APPROVAL_MISMATCH",
+                      "GitHub PR comments response is malformed")
+        comments.extend(value)
+        if len(value) < 100:
+            return comments
+    _mismatch("OVERCAP_APPROVAL_MISMATCH",
+              "GitHub PR comments exceed the bounded complete listing")
+
+
+def _overcap_collector_run(bundle, comment_id, observed_at):
+    """Create a deterministic runtime collector run for one approval receipt."""
+    candidate = bundle["candidate"]
+    identity = (
+        f"{candidate['repository_id']}:{candidate['pr_number']}:"
+        f"{candidate['head_sha']}:{comment_id}"
+    )
+    run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "awf-overcap-run:" + identity))
+    existing = next(
+        (item for item in bundle.get("runs", []) if item.get("run_id") == run_id),
+        None,
+    )
+    if existing is not None:
+        return existing, False
+    template = next(
+        (item for item in reversed(bundle.get("runs", []))
+         if item.get("role") == "collector" and item.get("producer_id") == COLLECTOR_ID),
+        None,
+    )
+    if template is None:
+        _mismatch("OVERCAP_APPROVAL_MISMATCH",
+                  "no runtime-owned production collector run is available")
+    run = copy.deepcopy(template)
+    run.update(
+        record_id=str(uuid.uuid5(
+            uuid.NAMESPACE_URL, "awf-overcap-record:" + identity)),
+        run_id=run_id,
+        context_id=str(uuid.uuid5(
+            uuid.NAMESPACE_URL, "awf-overcap-context:" + identity)),
+        producer_id=COLLECTOR_ID,
+        binding=copy.deepcopy(bundle["review_verdicts"][-1]["binding"]),
+        created_at=observed_at,
+    )
+    return run, True
+
+
+def _collect_overcap_approvals(review_host, bundle, pull, registration):
+    """Discover and record canonical approvals for retained over-cap rounds."""
+    candidate = bundle["candidate"]
+    overcap_verdicts = {
+        item["round"]: item for item in bundle.get("review_verdicts", [])
+        if item.get("tier") == 3 and item.get("round", 0) > 3
+    }
+    if not overcap_verdicts:
+        return [], []
+    head = pull.get("head") if isinstance(pull, dict) else None
+    base = pull.get("base") if isinstance(pull, dict) else None
+    base_repository = base.get("repo") if isinstance(base, dict) else None
+    if (not isinstance(head, dict) or not isinstance(base, dict)
+            or not isinstance(base_repository, dict)
+            or head.get("sha") != candidate["head_sha"]
+            or base.get("sha") != candidate["target_base_sha"]
+            or base_repository.get("id") != candidate["repository_id"]):
+        _mismatch("OVERCAP_APPROVAL_HEAD_MISMATCH",
+                  "live pull request head/base differs from the approval candidate")
+
+    runs = {item.get("run_id"): item for item in bundle.get("runs", [])
+            if isinstance(item, dict)}
+    terminal = max(bundle["review_verdicts"], key=lambda item: item["round"])
+    observation = terminal.get("posting_observation", {})
+    observed_at = observation.get("observed_at")
+    if not isinstance(observed_at, str):
+        _mismatch("OVERCAP_APPROVAL_MISMATCH",
+                  "terminal posting observation has no collection time")
+    prefix = (
+        f"{candidate['host']}/{candidate['repository']}/pull/"
+        f"{candidate['pr_number']}"
+    )
+    approvals = []
+    added_runs = []
+    for listed in _overcap_comments(review_host, candidate):
+        body = listed.get("body")
+        try:
+            parsed = parse_overcap_approval(body)
+        except ValidationError:
+            continue
+        verdict = overcap_verdicts.get(parsed["round"])
+        if verdict is None:
+            continue
+        comment_id = listed.get("id")
+        if type(comment_id) is not int or comment_id <= 0:
+            _mismatch("OVERCAP_APPROVAL_MISMATCH",
+                      "canonical approval has no immutable comment id")
+        comment = review_host.api(f"issues/comments/{comment_id}")
+        expected_url = f"{prefix}#issuecomment-{comment_id}"
+        user = comment.get("user") if isinstance(comment, dict) else None
+        if (not isinstance(comment, dict) or comment.get("id") != comment_id
+                or comment.get("html_url") != expected_url
+                or not isinstance(user, dict) or type(user.get("id")) is not int
+                or comment.get("created_at") != listed.get("created_at")
+                or comment.get("updated_at") != listed.get("updated_at")
+                or comment.get("body") != body):
+            _mismatch("OVERCAP_APPROVAL_MISMATCH",
+                      "listed approval differs from its immutable GitHub comment")
+        round_run = runs.get(verdict.get("run_id"))
+        if round_run is None or not isinstance(round_run.get("created_at"), str):
+            _mismatch("OVERCAP_APPROVAL_MISMATCH",
+                      "approval round has no registered critic-run start")
+        collector_run, is_new = _overcap_collector_run(
+            bundle, comment_id, observed_at
+        )
+        provider = {
+            "id": comment_id,
+            "html_url": expected_url,
+            "user": {"id": user["id"]},
+            "created_at": comment.get("created_at"),
+            "updated_at": comment.get("updated_at"),
+            "body": body,
+            "head_sha": candidate["head_sha"],
+        }
+        provider_bytes = canonical(provider)
+        approval = {
+            "channel": "github_pr_comment",
+            "source": "host_observation",
+            "comment_id": comment_id,
+            "comment_url": expected_url,
+            "repository_id": candidate["repository_id"],
+            "pr_number": candidate["pr_number"],
+            "actor_id": user["id"],
+            "created_at": comment.get("created_at"),
+            "updated_at": comment.get("updated_at"),
+            "raw_body": body,
+            "observed_at": observed_at,
+            "producer_id": COLLECTOR_ID,
+            "run_id": collector_run["run_id"],
+            "provider_kind": PROVIDER_KIND,
+            "round_started_at": round_run["created_at"],
+            "provider_response_bytes": {
+                "encoding": "base64",
+                "data": base64.b64encode(provider_bytes).decode("ascii"),
+            },
+            "provider_response_sha256": sha256(provider_bytes),
+            "collector_receipt_sha256": "0" * 64,
+        }
+        binding_sha256 = sha256(canonical(approval))
+        receipt = overcap_approval_collector_receipt_sha256(
+            approval, binding_sha256, _gate_entry(registration)
+        )
+        approval["collector_receipt_sha256"] = receipt
+        registration["receipts"][collector_run["run_id"]] = receipt
+        approvals.append(approval)
+        if is_new:
+            added_runs.append(collector_run)
+    return approvals, added_runs
+
+
 def registry_from_review_host(review_host, bundle, *, release_sha256):
     """Re-observe every retained round and return the trusted gate registry."""
     candidate = bundle.get("candidate", {})
@@ -592,6 +759,12 @@ def registry_from_review_host(review_host, bundle, *, release_sha256):
             _mismatch("OWNER_APPROVAL_MISMATCH",
                       "owner record does not carry the registered provider observation")
         merged["receipts"].update(collected["registration"]["receipts"])
+    approval_pull = review_host.api(f"pulls/{candidate['pr_number']}")
+    approvals, added_runs = _collect_overcap_approvals(
+        review_host, bundle, approval_pull, merged
+    )
+    bundle["overcap_approvals"] = approvals
+    bundle.setdefault("runs", []).extend(added_runs)
     if not merged["receipts"]:
         _mismatch("POSTING_OBSERVATION_MISMATCH", "no review verdict postings were observed")
     return {COLLECTOR_ID: _gate_entry(merged)}
