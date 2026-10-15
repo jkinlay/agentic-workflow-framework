@@ -45,6 +45,18 @@ _GENERATED_BLOB_LIMIT = 32 * 1024 * 1024
 _GENERATED_TOTAL_LIMIT = 512 * 1024 * 1024
 _REASON_LIMIT = 4096
 
+# Fixed Unicode 15 format-control inventory.  This deliberately does not use
+# ``unicodedata.category``: grammar decisions must not drift when the runtime's
+# Unicode database changes.  U+FEFF has its own more specific refusal code.
+_FORMAT_CONTROLS = frozenset({
+    0x00AD, *range(0x0600, 0x0606), 0x061C, 0x06DD, 0x070F,
+    0x0890, 0x0891, 0x08E2, 0x180E, *range(0x200B, 0x2010),
+    *range(0x202A, 0x202F), *range(0x2060, 0x2065),
+    *range(0x2066, 0x2070), *range(0xFFF9, 0xFFFC), 0x110BD, 0x110CD,
+    *range(0x13430, 0x13440), *range(0x1BCA0, 0x1BCA4),
+    *range(0x1D173, 0x1D17B), 0xE0001, *range(0xE0020, 0xE0080),
+})
+
 
 def _contract(authority, failure, cap, code):
     return {"authority": authority, "failure": failure, "cap": cap,
@@ -113,31 +125,33 @@ def _require(condition, reason):
 
 def _run_id(value, field="run id"):
     _require(isinstance(value, str) and value == value.strip(),
-             f"{field} must be a canonical UUID")
+             f"RUN_ID_INVALID: {field} must be a canonical UUID")
     try:
         parsed = uuid.UUID(value)
     except (ValueError, AttributeError, TypeError) as exc:
-        raise ValidationError(f"{field} must be a canonical UUID") from exc
-    _require(str(parsed) == value, f"{field} must be a canonical lowercase UUID")
-    _require(parsed.int != 0, f"{field} must not be the nil UUID")
+        raise ValidationError(f"RUN_ID_INVALID: {field} must be a canonical UUID") from exc
+    _require(str(parsed) == value,
+             f"RUN_ID_INVALID: {field} must be a canonical lowercase UUID")
+    _require(parsed.int != 0, f"RUN_ID_INVALID: {field} must not be the nil UUID")
     return value
 
 
 def _sha(value, field="Git SHA"):
     _require(isinstance(value, str) and _SHA.fullmatch(value) is not None,
-             f"{field} must be a full lowercase Git object id")
+             f"OID_INVALID: {field} must be a full lowercase Git object id")
     return value
 
 
 def format_writer_trailer(kind, identity):
     """Return one canonical Writer trailer after validating its namespace."""
-    _require(kind in {"codex", "script"}, "Writer kind must be codex or script")
+    _require(kind in {"codex", "script"},
+             "WRITER_KIND_INVALID: Writer kind must be codex or script")
     if kind == "codex":
         identity = _run_id(identity, "Codex run id")
     else:
         _require(isinstance(identity, str) and len(identity) <= 64
                  and _SCRIPT.fullmatch(identity) is not None,
-                 "Writer script name must be a lowercase portable identifier")
+                 "SCRIPT_ID_INVALID: Writer script name must be a lowercase portable identifier")
     return f"Writer: {kind}/{identity}"
 
 
@@ -161,19 +175,17 @@ def validate_commit_message(message):
              "MESSAGE_SIZE: commit message exceeds 1 MiB")
     _require("\ufeff" not in message, "MESSAGE_BOM: U+FEFF is forbidden")
     _require("\x00" not in message, "MESSAGE_NUL: NUL is forbidden")
+    _require(not re.search(r"[\v\f\x1c-\x1e\x85\u2028\u2029]|\r(?!\n)", message),
+             "MESSAGE_SEPARATOR: unsupported line separator; only LF and CRLF are accepted")
     # C0 permits HT/LF/CR only; CR is checked as part of CRLF below.  C1,
-    # DEL and the fixed Unicode separator/format set are always forbidden.
+    # DEL and the fixed Unicode format-control set are always forbidden.
     for char in message:
         code = ord(char)
         if ((code < 32 and char not in "\t\n\r") or 0x7F <= code <= 0x9F
-                or code in {0x2028, 0x2029, 0x200B, 0x200C, 0x200D, 0x2060,
-                            0x061C, 0x200E, 0x200F}
-                or 0x202A <= code <= 0x202E or 0x2066 <= code <= 0x2069):
+                or code in _FORMAT_CONTROLS):
             raise ValidationError(
-                "MESSAGE_CONTROL: unsupported line or paragraph separator/control"
+                "MESSAGE_CONTROL: unsupported control or Unicode format character"
             )
-    _require(not re.search(r"\r(?!\n)", message),
-             "MESSAGE_SEPARATOR: unsupported separator; CR is accepted only as CRLF")
     normalized = message.replace("\r\n", "\n")
     lines = normalized.split("\n")
     _require(len(lines) <= _MESSAGE_LINE_LIMIT,
@@ -187,7 +199,11 @@ def _ascii_fold_key(value):
     folded = []
     for char in value:
         code = ord(char)
-        if 0xFF01 <= code <= 0xFF5E:
+        if code > 127 and unicodedata.category(char) in {"Zs", "Pd"}:
+            # Reserved provenance keys treat every Unicode space/dash as a
+            # visual separator, without changing the original message bytes.
+            char = " "
+        elif 0xFF01 <= code <= 0xFF5E:
             char = chr(code - 0xFEE0)
         folded.append(char)
     return "".join(folded)
@@ -198,6 +214,60 @@ def _writer_like(line):
     # Search the entire physical line, including indented occurrences.  This
     # intentionally treats prose/code examples as ambiguous rather than proof.
     return re.search(r"(?i)(?:^|[ \t])writer[ \t]*[:：]", candidate) is not None
+
+
+def _writer_key_lookalike(line):
+    """Detect deterministic non-ASCII Writer-key confusables.
+
+    A six-character key in which each position is either the expected ASCII
+    Writer letter or a non-ASCII substitution is reserved.  This catches the
+    ambiguity without depending on a runtime Unicode confusables database.
+    """
+    candidate = _ascii_fold_key(line)
+    for matched in re.finditer(r"(?:^|[ \t])([^ \t:：]+)[ \t]*[:：]", candidate):
+        key = matched.group(1)
+        if len(key) != len("writer"):
+            continue
+        substitutions = False
+        for actual, expected in zip(key, "writer"):
+            if ord(actual) > 127:
+                substitutions = True
+            elif actual.lower() != expected:
+                break
+        else:
+            if substitutions:
+                return True
+    return False
+
+
+def _confusable_ascii_token(actual, expected):
+    """Return whether a token reserves ``expected`` via non-ASCII substitution."""
+    if len(actual) != len(expected):
+        return False
+    substituted = False
+    for character, canonical in zip(actual, expected):
+        if ord(character) > 127:
+            substituted = True
+        elif character.lower() != canonical:
+            return False
+    return substituted
+
+
+def _critic_key_lookalike(line):
+    """Detect non-ASCII substitutions in the reserved ``Critic run`` key."""
+    candidate = _ascii_fold_key(line)
+    expression = r"(?:^|[ \t])([^ \t\uff1a:-]+)[ \t-]+([^ \t\uff1a:]+)[ \t]*[\uff1a:]"
+    for matched in re.finditer(expression, candidate):
+        first, second = matched.groups()
+        first_matches = (first.casefold() == "critic" or
+                         _confusable_ascii_token(first, "critic"))
+        second_matches = (second.casefold() in {"run", "runs"} or
+                          _confusable_ascii_token(second, "run") or
+                          _confusable_ascii_token(second, "runs"))
+        if first_matches and second_matches and any(
+                ord(character) > 127 for character in first + second):
+            return True
+    return False
 
 
 def validate_ref_locator(value, field="Git revision"):
@@ -266,6 +336,8 @@ def parse_critic_run_carrier(carrier):
     lines = normalized.split("\n")
     while lines and lines[-1] == "":
         lines.pop()
+    _require(not any(_critic_key_lookalike(line) for line in lines),
+             "CRITIC_LINE_INVALID: non-ASCII Critic-run key lookalike is ambiguous")
     like = [index for index, line in enumerate(lines)
             if re.search(r"(?i)critic[ \t-]*runs?[ \t]*[:：]", _ascii_fold_key(line))]
     _require(len(like) == 1 and like[0] == len(lines) - 1,
@@ -288,14 +360,17 @@ def parse_writer_trailer(message):
     this prevents body text and duplicate trailers from becoming authority.
     """
     lines = _split_git_message_lines(message)
+    _require(not any(_writer_key_lookalike(line) for line in lines),
+             "WRITER_LOOKALIKE: non-ASCII Writer-key lookalike is ambiguous")
+    _require(sum(1 for line in lines if ":" in line or "\uff1a" in line)
+             <= _TRAILER_LIKE_LIMIT,
+             "WRITER_TRAILER_LIMIT: Commit message exceeds 256 trailer-like lines")
     writer_lines = [(index, line) for index, line in enumerate(lines)
                     if _writer_like(line)]
     if not writer_lines:
         return None
-    _require(len(writer_lines) == 1, "Commit message must contain exactly one Writer trailer")
-    _require(sum(1 for line in lines if ":" in line or "：" in line)
-             <= _TRAILER_LIKE_LIMIT,
-             "Commit message exceeds 256 trailer-like lines")
+    _require(len(writer_lines) == 1,
+             "WRITER_COUNT: Commit message must contain exactly one Writer trailer")
     index, line = writer_lines[0]
     last = len(lines) - 1
     while last >= 0 and lines[last] == "":
@@ -306,56 +381,67 @@ def parse_writer_trailer(message):
     block_start += 1
     separated = block_start == 0 or lines[block_start - 1] == ""
     _require(separated and block_start <= index <= last,
-             "Writer provenance must be in the final trailer block")
+             "WRITER_POSITION: Writer provenance must be in the final trailer block")
     matched = _WRITER_LINE.fullmatch(line)
-    _require(matched is not None, "Writer trailer key must be exactly 'Writer'")
+    _require(matched is not None,
+             "WRITER_KEY: Writer trailer key must be exactly 'Writer'")
     value = matched.group(1)
-    _require(value.count("/") == 1, "Writer trailer must be codex/<run id> or script/<name>")
+    _require(value.count("/") == 1,
+             "WRITER_VALUE: Writer trailer must be codex/<run id> or script/<name>")
     kind, identity = value.split("/", 1)
     canonical = format_writer_trailer(kind, identity)
-    _require(line == canonical, "Writer trailer is not in canonical form")
+    _require(line == canonical, "WRITER_CANONICAL: Writer trailer is not in canonical form")
     return {"kind": kind, "identity": identity, "value": value, "trailer": canonical}
 
 
 def validate_critic_run_binding(verdict, *, reviewed_head=None):
-    """Bind a critic verdict's run UUID to exactly one reviewed head."""
-    _require(isinstance(verdict, dict), "Critic verdict must be an object")
+    """Bind a compact persistence handoff or full verdict to one result/head."""
+    _require(isinstance(verdict, dict),
+             "CRITIC_BINDING_INVALID: Critic verdict must be an object")
     run_id = verdict.get("run_id")
-    _require(run_id is not None, "Critic verdict is missing its critic run id")
+    _require(run_id is not None,
+             "CRITIC_BINDING_INVALID: Critic verdict is missing its critic run id")
     _run_id(run_id, "Critic run id")
     head = verdict.get("head_sha")
-    _require(head is not None, "Critic verdict is missing its reviewed head")
+    _require(head is not None,
+             "CRITIC_BINDING_INVALID: Critic verdict is missing its reviewed head")
     _sha(head, "Critic reviewed head")
     if reviewed_head is not None:
         _sha(reviewed_head, "Expected reviewed head")
-        _require(head == reviewed_head, "Critic verdict names a different reviewed head")
-    candidate = verdict.get("candidate_binding")
-    if candidate is not None:
+        _require(head == reviewed_head,
+                 "CRITIC_BINDING_INVALID: Critic verdict names a different reviewed head")
+    digest = verdict.get("result_sha256")
+    _require(isinstance(digest, str) and _DIGEST.fullmatch(digest),
+             "CRITIC_BINDING_INVALID: Critic result digest is missing or invalid")
+    nested_names = {"candidate_binding", "critic_artifact_binding", "critic_review"}
+    if nested_names & set(verdict):
+        candidate = verdict.get("candidate_binding")
         _require(isinstance(candidate, dict) and candidate.get("head_sha") == head,
-                 "Candidate binding disagrees with the verdict reviewed head")
-    artifact = verdict.get("critic_artifact_binding")
-    if artifact is not None:
+                 "CRITIC_BINDING_INVALID: Candidate binding disagrees with the verdict reviewed head")
+        artifact = verdict.get("critic_artifact_binding")
         _require(isinstance(artifact, dict)
                  and artifact.get("critic_run_id") == run_id
                  and artifact.get("head_sha") == head,
-                 "Critic artifact binding disagrees with the verdict run or reviewed head")
-    review = verdict.get("critic_review")
-    if review is not None:
+                 "CRITIC_BINDING_INVALID: Critic artifact binding disagrees with the verdict run or reviewed head")
+        if "result_sha256" in artifact:
+            _require(artifact.get("result_sha256") == digest,
+                     "CRITIC_BINDING_INVALID: Critic artifact binding disagrees with the verdict result digest")
+        review = verdict.get("critic_review")
         _require(isinstance(review, dict) and review.get("run_id") == run_id
                  and review.get("head_sha") == head,
-                 "Embedded critic review disagrees with the verdict run or reviewed head")
-    digest = verdict.get("result_sha256")
-    if digest is not None:
-        _require(isinstance(digest, str) and _DIGEST.fullmatch(digest),
-                 "Critic result digest is invalid")
-    carrier = verdict.get("critic_run_carrier", f"Critic run: {run_id}")
+                 "CRITIC_BINDING_INVALID: Embedded critic review disagrees with the verdict run or reviewed head")
+        if "result_sha256" in review:
+            _require(review.get("result_sha256") == digest,
+                     "CRITIC_BINDING_INVALID: Embedded critic review disagrees with the verdict result digest")
+    carrier = verdict.get("critic_run_carrier")
+    _require(carrier is not None,
+             "CRITIC_LINE_INVALID: Critic run carrier must be explicit")
     parsed = parse_critic_run_carrier(carrier)
     _require(parsed["run_id"] == run_id,
-             "Critic run carrier disagrees with the verdict run")
+             "CRITIC_LINE_INVALID: Critic run carrier disagrees with the verdict run")
     result = {"critic_run_id": run_id, "head_sha": head,
               "trailer": parsed["line"]}
-    if digest is not None:
-        result["result_sha256"] = digest
+    result["result_sha256"] = digest
     return result
 
 
@@ -808,6 +894,12 @@ def create_canonical_commit(root, parent, branch, message):
              'Publication branch moved before commit creation')
     canonical = validate_commit_message(message)
     _require(canonical == message, 'EMITTER_INVALID: commit message is not LF-canonical')
+    try:
+        writer = parse_writer_trailer(canonical)
+    except ValidationError as exc:
+        raise ValidationError('PUBLISHED_MESSAGE_INVALID: ' + str(exc)) from exc
+    _require(writer is not None,
+             'PUBLISHED_MESSAGE_INVALID: canonical publisher message has no Writer trailer')
     tree = git.text('write-tree')
     created = git.run('commit-tree', tree, '-p', parent, binary=True,
                       input_bytes=message.encode('utf-8')).stdout

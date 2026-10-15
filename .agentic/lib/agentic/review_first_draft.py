@@ -17,7 +17,8 @@ from .interaction import writer_commit_message
 from .publication import scan_repository
 from .provenance import (decode_git_paths, parse_writer_trailer,
                          validate_commit_message, validate_ref_locator,
-                         read_commit_message_bytes, create_canonical_commit)
+                         read_commit_message_bytes, create_canonical_commit,
+                         _FORMAT_CONTROLS)
 from .review_loop import (complete_first_draft, confirm_first_draft_publication,
                           enroll, first_draft_failure,
                           record_first_draft_publication, require,
@@ -34,32 +35,77 @@ def _bounded_text(value, label, maximum):
         raise ValidationError(f"{label} must be strict UTF-8") from exc
     require(len(raw) <= maximum and '\ufeff' not in value
             and not any((ord(char) < 32 and char not in '\n\t')
-                        or 0x7f <= ord(char) <= 0x9f for char in value),
+                        or 0x7f <= ord(char) <= 0x9f
+                        or ord(char) in _FORMAT_CONTROLS
+                        or ord(char) in {0x2028, 0x2029}
+                        for char in value),
             f"{label} is too large or contains forbidden text")
     return value
 
 
 def _markdown_scalar(value, label):
-    value = _bounded_text(value, label, 4096)
-    require('\n' not in value and '\r' not in value and value.strip(),
-            f"{label} must be one nonempty line")
+    try:
+        value = _bounded_text(value, label, 4096)
+        require('\n' not in value and '\r' not in value and value.strip(),
+                f"{label} must be one nonempty line")
+    except (UnicodeError, ValidationError) as exc:
+        raise ValidationError(f"BODY_SCALAR_INVALID: {label} is not canonical task data") from exc
     return (value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             .replace('`', '&#96;'))
+
+
+def canonical_first_draft_title(value):
+    """Return the one-line title admitted before any worker reservation."""
+    try:
+        value = validate_commit_message(value)
+        require('\n' not in value and len(value.encode('utf-8')) <= 4096,
+                'title must be one line within 4 KiB')
+    except (UnicodeError, ValidationError) as exc:
+        raise ValidationError(
+            'TITLE_INVALID: first-draft title is not canonical: ' + str(exc)) from exc
+    return value
+
+
+def validate_first_draft_body_inputs(contract, *, risk_tier, worker_model,
+                                     reasoning_effort, branch, tested_tree=None):
+    """Validate static body fields before reservation and dynamic tree later."""
+    try:
+        require(isinstance(contract, str), "contract must be text")
+        contract = contract.replace('\r\n', '\n')
+        contract = _bounded_text(contract, "First-draft contract", 512 * 1024)
+        require(contract.strip() and '\r' not in contract,
+                "contract must be nonempty LF text")
+    except (UnicodeError, ValidationError) as exc:
+        raise ValidationError(
+            'BODY_CONTRACT_INVALID: trusted first-draft contract is not canonical') from exc
+    require(risk_tier in {1, 2, 3, "Tier 1", "Tier 2", "Tier 3"},
+            "BODY_TIER_INVALID: First-draft PR requires a reviewed Tier 1, Tier 2 or Tier 3 risk tier")
+    values = {
+        "contract": contract,
+        "risk_tier": risk_tier,
+        "worker_model": _markdown_scalar(worker_model, "Worker model"),
+        "reasoning_effort": _markdown_scalar(reasoning_effort, "Worker reasoning effort"),
+        "branch": _markdown_scalar(branch, "First-draft branch"),
+    }
+    if tested_tree is not None:
+        values["tested_tree"] = _markdown_scalar(
+            tested_tree, "First-draft tested tree")
+    return values
 
 
 def render_first_draft_body(contract, *, risk_tier, worker_model, reasoning_effort,
                             branch, tested_tree):
     """Render the immutable contract facts recorded in the draft PR body."""
-    contract = _bounded_text(contract, "First-draft contract", 512 * 1024)
-    contract = contract.replace('\r\n', '\n')
-    require(contract.strip() and '\r' not in contract and '\ufeff' not in contract,
-            "First-draft contract is empty or noncanonical")
-    require(risk_tier in {1, 2, 3, "Tier 1", "Tier 2", "Tier 3"},
-            "First-draft PR requires a reviewed Tier 1, Tier 2 or Tier 3 risk tier")
-    worker_model = _markdown_scalar(worker_model, "Worker model")
-    reasoning_effort = _markdown_scalar(reasoning_effort, "Worker reasoning effort")
-    branch = _markdown_scalar(branch, "First-draft branch")
-    tested_tree = _markdown_scalar(tested_tree, "First-draft tested tree")
+    values = validate_first_draft_body_inputs(
+        contract, risk_tier=risk_tier, worker_model=worker_model,
+        reasoning_effort=reasoning_effort, branch=branch,
+        tested_tree=tested_tree)
+    contract = values["contract"]
+    risk_tier = values["risk_tier"]
+    worker_model = values["worker_model"]
+    reasoning_effort = values["reasoning_effort"]
+    branch = values["branch"]
+    tested_tree = values["tested_tree"]
     rendered = ("## AWF first draft\n\n"
             f"- Risk tier: {risk_tier}\n"
             f"- Worker model: `{worker_model}`\n"
@@ -175,9 +221,7 @@ def publish_tested_tree(root, base, branch, receipt, *, body, commit_message,
     require(len(commit_title.encode('utf-8')) <= 4096,
             "First-draft commit subject exceeds 4 KiB")
     if title is not None:
-        title = validate_commit_message(title)
-        require('\n' not in title and len(title.encode('utf-8')) <= 4096,
-                "First-draft PR title must be one line within 4 KiB")
+        title = canonical_first_draft_title(title)
     _bounded_text(body, "First-draft body", 1024 * 1024)
     require('\r' not in body and body.endswith('\n') and not body.endswith('\n\n'),
             "First-draft body must use LF and exactly one trailing LF")
