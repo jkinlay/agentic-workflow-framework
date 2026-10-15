@@ -210,7 +210,6 @@ class Tier3OvercapGateTests(Fixture):
             "created_at": approval["created_at"],
             "updated_at": approval["updated_at"],
             "body": approval["raw_body"],
-            "head_sha": self.bundle["candidate"]["head_sha"],
         })
         approval.update(
             source="host_observation",

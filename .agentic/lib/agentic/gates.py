@@ -339,12 +339,10 @@ def verified_overcap_approvals(config, approvals, candidate, runs,
             "created_at": approval.get("created_at"),
             "updated_at": approval.get("updated_at"),
             "body": approval.get("raw_body"),
-            "head_sha": candidate["head_sha"],
         }
         if (approval.get("source") != "host_observation"
                 or run is None or run.get("role") != "collector"
                 or run.get("producer_id") != approval.get("producer_id")
-                or run.get("created_at") != approval.get("observed_at")
                 or not registration_shape_ok
                 or (configured_collectors
                     and approval.get("producer_id") not in configured_collectors)
@@ -687,11 +685,7 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
             and isinstance(critic_receipt, dict)
             and run is not None
             and run_binding_matches
-            and (run.get("created_at") == verdict["created_at"]
-                 or (len(matching_approvals) == 1
-                     and run.get("created_at") == round_started_at
-                     and timestamp(run.get("created_at"))
-                         < timestamp(verdict["created_at"])))
+            and run.get("created_at") == verdict["created_at"]
             and critic_receipt.get("run_id") == verdict["run_id"]
             and critic_receipt.get("round") == verdict["round"]
             and critic_receipt.get("head_sha") == verdict["head_sha"]

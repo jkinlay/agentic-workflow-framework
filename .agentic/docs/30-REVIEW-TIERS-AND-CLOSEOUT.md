@@ -1,19 +1,20 @@
 # Review tiers, cap dispositions and closeout
 
-Version 1.9.4; AWF-16 ships in 1.9.5. Code and [lifecycle](23-TICKET-LIFECYCLE.md) are authoritative; this document grants no authority.
+Version 1.9.4 runtime; AWF-16 revision ships in 1.9.5. The code and [lifecycle](23-TICKET-LIFECYCLE.md) are authoritative; this document grants no execution authority.
 
 ## Risk tiers
 
-Contracts declare `risk_tier` (1, 2 or 3) and justification; uncertain is Tier 2. Tier 1 needs eligible, unprotected paths and no true `risk_flags`. The gate recomputes the highest match. Only an owner-signed `tier-reassignment` plus re-issued contract changes it; all records rebind.
+Every contract declares `risk_tier` (1, 2 or 3) and justification; uncertain is Tier 2. Tier 1 needs eligible paths, no protected paths and no true `risk_flags`. The gate recomputes the highest match. Only an owner-signed `tier-reassignment` and re-issued contract changes it; all records rebind.
 
 Tier 1 uses one critic; findings advise. Tier 2 has three rounds; at cap, ticket P2s and route P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, defaults to a mandatory maximum of three, and requires candidate-bound owner review. Boundaries always block.
 
-Each `critic_artifact_binding` identifies its run, canonical `result.json`, head
-and round; its receipt retains those bytes and frozen completion identities. The
-gate reparses artifacts; copied fields cannot substitute. Unchanged diffs retain
-history; changed diffs require a current round. Tier 2 exceeds its cap only by
-authenticated owner disposition. Tier 3 exceeds it for round N only when a PR
-comment from the posting actor's trusted owner predates that round and is exactly:
+Each round's `critic_artifact_binding` contains critic run ID, retained canonical
+UTF-8 `result.json` SHA-256, head and round. Its receipt retains those bytes and
+frozen completion identities. The gate reparses artifacts and derives findings;
+copied fields cannot substitute. Unchanged diffs keep history; changed diffs need
+a current round. Tier 2 exceeds its cap only through authenticated owner
+disposition. Tier 3 may exceed its cap for round N only when a PR comment from
+the posting actor's trusted owner id predates that round and consists exactly of:
 
 `AWF-OVERCAP-APPROVAL: round N of cap M, approver <owner>, ruling <time>`
 
@@ -27,14 +28,9 @@ and per-run receipt (schema/template). Configured IDs narrow it;
 bundle/config/environment/fixtures never register. Mismatches stay `NOT_READY`
 with a reason.
 
-For Tier 3 rounds above cap, production collection completely lists PR comments,
-re-fetches canonical approvals by immutable ID, and binds each receipt to the
-live repository/PR/head/base, exact comment and critic-run start. Other or stale
-heads refuse registration; no qualifying record keeps the gate closed.
-
 ## Bases, lineage and dispositions
 
-BLOCKER/MAJOR findings carry `{criterion_id}` or `{boundary_code}` from `PROTECTED_PATH`, `SCOPE_ESCAPE`, `CREDENTIAL_EXPOSURE`, `UNSAFE_PATH`, `UNREGISTERED_PRODUCER`, `CI_BINDING`, `INDEPENDENCE`; missing bases are refused. A new serious finding at an existing path/basis names `supersedes_finding_id`. Out-of-closure defects are MINOR successor-ticket proposals, never new rounds.
+BLOCKER/MAJOR findings carry contract `{criterion_id}` or `{boundary_code}` from `PROTECTED_PATH`, `SCOPE_ESCAPE`, `CREDENTIAL_EXPOSURE`, `UNSAFE_PATH`, `UNREGISTERED_PRODUCER`, `CI_BINDING`, `INDEPENDENCE`; missing bases are refused. A new serious finding at an existing path/basis names `supersedes_finding_id`. An out-of-closure defect is a MINOR successor-ticket proposal, never a new round.
 
 `finding-disposition` `ACCEPT_RISK` or `NOT_A_DEFECT` makes a non-boundary finding non-blocking for the exact `head_sha` and copies it into `residual_risks`; `REQUIRE_FIX` keeps it open; `HEAD_CHANGED` voids it.
 
@@ -42,7 +38,7 @@ BLOCKER/MAJOR findings carry `{criterion_id}` or `{boundary_code}` from `PROTECT
 
 ## Closure standard
 
-`closure_standard.kind` is `FULL` or `DECLARED_LIMITATIONS` (with an attributed limitation), frozen under `contract_hash`; changes are `REQUIREMENTS_CHANGED`. `worker-result` and `critic-review` record `closure.result`; the `acceptance_criteria` gate needs `MET` from both.
+`closure_standard.kind` is `FULL` or `DECLARED_LIMITATIONS` (at least one attributed limitation), frozen under `contract_hash` before review; changing it is `REQUIREMENTS_CHANGED`. `worker-result` and `critic-review` each record `closure.result`; the `acceptance_criteria` gate needs `MET` from both.
 
 ## The amendment cap
 

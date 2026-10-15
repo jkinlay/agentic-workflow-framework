@@ -35,6 +35,9 @@ except ImportError:  # pragma: no cover - exercised on older Python runtimes
 from . import ValidationError
 from .child_process import child_env
 from .gittree import verify_publisher_tree
+from .interaction import writer_commit_message
+from .provenance import (parse_writer_trailer, validate_commit_message,
+                         validate_ref_locator)
 
 
 DEFAULT_MAPPING = Path(".agentic-state/publication-deny.json")
@@ -42,6 +45,7 @@ MAX_TEXT_BYTES = 32 * 1024 * 1024
 MAX_REWRITE_PROOF_OBJECT_BYTES = 32 * 1024 * 1024
 MAX_REWRITE_PROOF_TOTAL_BYTES = 512 * 1024 * 1024
 MAX_REWRITE_PROOF_OBJECTS = 100_000
+MAX_REWRITE_MESSAGE_BYTES = 1024 * 1024
 MAX_REGEX_ENTRIES = 64
 MAX_REGEX_CHARS = 256
 MAX_REGEX_REPEAT = 64
@@ -217,6 +221,8 @@ def _git_bounded_stdout(root, *args, input_bytes=None, extra_env=None,
         except OSError:
             overflow.set()
             process.kill()
+        finally:
+            stream.close()
 
     out_thread = threading.Thread(target=drain, args=(process.stdout, stdout, limit), daemon=True)
     err_thread = threading.Thread(target=drain, args=(process.stderr, stderr, 300), daemon=True)
@@ -1201,6 +1207,10 @@ def _repository_commit_identity(root):
             raise ValidationError(
                 "IDENTITY_REQUIRED: repository-local user.name and user.email are required; "
                 "global Git configuration is intentionally not inherited")
+        if len(value.encode('utf-8')) > 4096 or any(
+                ord(char) < 32 or 0x7f <= ord(char) <= 0x9f for char in value):
+            raise ValidationError(
+                "IDENTITY_REQUIRED: repository-local identity exceeds 4 KiB or contains controls")
         values[environment_name] = value
     values["GIT_COMMITTER_NAME"] = values["GIT_AUTHOR_NAME"]
     values["GIT_COMMITTER_EMAIL"] = values["GIT_AUTHOR_EMAIL"]
@@ -2225,6 +2235,27 @@ def _remote_urls(root, remote):
     return sorted(values)
 
 
+def _writer_emitted_rewrite_message(message):
+    """Require the exact non-mechanical message shape emitted for a Codex run."""
+    reason = "Rewrite message must be produced by the Writer emitter with a valid Codex run id"
+    try:
+        text = message.decode("utf-8")
+        text = validate_commit_message(text)
+        trailer = parse_writer_trailer(text)
+        if trailer is None or trailer["kind"] != "codex":
+            raise ValidationError(reason)
+        suffix = "\n\n" + trailer["trailer"]
+        if not text.endswith(suffix):
+            raise ValidationError(reason)
+        body = text[:-len(suffix)]
+        emitted = writer_commit_message(body, codex_run_id=trailer["identity"])
+        if emitted != text:
+            raise ValidationError(reason)
+    except (UnicodeDecodeError, ValidationError) as exc:
+        raise ValidationError(reason + ": " + str(exc)) from exc
+    return emitted.encode("utf-8")
+
+
 def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_path=None, config_path=None):
     """Atomically squash one unpublished branch after scanning the replacement history."""
     root = Path(root).resolve()
@@ -2232,6 +2263,7 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
         raise ValidationError("Only --commits 1 is supported; another count is refused, never approximated")
     if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", branch or "") or ".." in branch or "@{" in branch:
         raise ValidationError("Unsafe branch name")
+    validate_ref_locator(base, "Rewrite base")
     commit_identity = _repository_commit_identity(root)
     ref = "refs/heads/" + branch
     old_head = _git(root, "rev-parse", "--verify", ref + "^{commit}").stdout.decode("ascii").strip()
@@ -2272,13 +2304,14 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
     if claimant is not None:
         raise ValidationError("PRE_CAS_STALE_TIP: " + _stale_tip_detail(claimant))
     message = _bounded_regular_file(
-        message_file, MAX_REWRITE_PROOF_OBJECT_BYTES, "Rewrite message")
+        message_file, MAX_REWRITE_MESSAGE_BYTES, "Rewrite message")
     if not message or b"\0" in message:
         raise ValidationError("Rewrite message file must contain a non-NUL commit message")
     try:
         message.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValidationError("Rewrite message file must be strict UTF-8") from exc
+    message = _writer_emitted_rewrite_message(message)
     old_tree = _git(root, "rev-parse", old_head + "^{tree}").stdout.decode("ascii").strip()
     verify_publisher_tree(root, old_tree)
     with tempfile.TemporaryDirectory(prefix="awf-publication-rewrite-") as temporary:

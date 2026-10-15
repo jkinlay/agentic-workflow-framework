@@ -15,11 +15,13 @@ from agentic.review_loop import (LoopStore, complete_first_draft,
     confirm_first_draft_publication, enroll, pause, record_first_draft_publication,
     record_first_draft_publication_plan, require_first_draft_config_binding,
     resume, resume_first_draft, tick, require)
-from agentic.review_first_draft import (publish_tested_tree, render_first_draft_body,
-    republish_prepared_tree, run_first_draft)
+from agentic.review_first_draft import (publish_codex_tested_tree,
+    publish_tested_tree, render_first_draft_body, republish_prepared_tree,
+    run_first_draft)
 from agentic.review_qualification import collect_qualification
 from agentic.providers.github_review_host import HostDriver, load_config
 from agentic.interaction import loop_next_step, next_step, render_markdown, rejected_next_step
+from agentic.provenance import validate_commit_message
 
 
 def main(argv=None):
@@ -45,8 +47,16 @@ def main(argv=None):
         digest = verify_installed(ROOT)
         config = load_config(args.config, ROOT,
                              require_qualification=args.command != 'qualify')
+        if args.command == 'first-draft':
+            canonical_title = validate_commit_message(args.title)
+            require('\n' not in canonical_title
+                    and len(canonical_title.encode('utf-8')) <= 4096,
+                    'first-draft title must be one canonical line within 4 KiB')
+            args.title = canonical_title
         require(config['runtime_manifest_sha256'] == digest, 'Runtime is not the enrolled approved release')
         driver = HostDriver(config,ROOT)
+        if args.command != 'qualify':
+            driver.register_provenance_runtime()
         store = LoopStore(config['state_dir'])
         if args.command == 'qualify':
             value = collect_qualification(
@@ -79,6 +89,8 @@ def main(argv=None):
             reserved = store.db.execute('SELECT 1 FROM prs WHERE key=?',
                                         (f"{config['repository_id']}:0",)).fetchone()
             prior = None
+            writer_reservation_id = None
+            writer_codex_run_id = None
             if reserved:
                 reserved_state = store.get(f"{config['repository_id']}:0")
                 require_first_draft_config_binding(
@@ -90,6 +102,11 @@ def main(argv=None):
                 prior = reserved_state.get('first_draft_publication')
                 prior_receipt = reserved_state.get('first_draft_worker_receipt')
                 prior_plan = reserved_state.get('first_draft_publication_plan')
+                inflight = reserved_state.get('inflight')
+                if isinstance(inflight, dict):
+                    writer_reservation_id = inflight.get('id')
+                    if prior_receipt is not None:
+                        writer_codex_run_id = driver.codex_run_id(writer_reservation_id)
             else:
                 git_controls = driver.first_draft_git_controls()
                 prior_receipt = None
@@ -108,14 +125,29 @@ def main(argv=None):
                         'First-draft worker HEAD does not equal the provider base')
             driver.bind_reviewed_policy({'base': provider_base})
             def worker(run_id=None):
-                return driver.first_draft_worker(run_id=run_id,
-                                                 expected_git_controls=git_controls)
+                nonlocal writer_reservation_id, writer_codex_run_id
+                writer_reservation_id = run_id
+                receipt = driver.first_draft_worker(
+                    run_id=run_id, expected_git_controls=git_controls)
+                writer_codex_run_id = driver.codex_run_id(run_id)
+                return receipt
             def git_guard():
                 driver.require_first_draft_git_controls(git_controls)
+            def provenance_check(base, head):
+                require(writer_reservation_id is not None,
+                        'First-draft provenance has no reserved controller run id')
+                driver.register_commit_run_log(writer_reservation_id, head)
+                return driver.validate_local_provenance(
+                    base, head,
+                    observation=driver.collect_default_branch_observation())
             class GitAdapter:
                 def run(self, *git_args):
                     return driver.git(driver.worker, *git_args)
             def publisher(receipt):
+                require(writer_reservation_id is not None,
+                        'First-draft publisher has no reserved controller run id')
+                require(writer_codex_run_id is not None,
+                        'First-draft publisher has no authenticated Codex execution identity')
                 body = render_first_draft_body(contract, risk_tier=tier,
                     worker_model=config['models']['worker'],
                     reasoning_effort=(config.get('reasoning_effort') or {}).get('worker', 'default'),
@@ -123,12 +155,14 @@ def main(argv=None):
                 git_guard()
                 current_provider_base = driver.provider_base()
                 require(current_provider_base == provider_base, 'Provider base branch moved during first-draft execution')
-                return publish_tested_tree(driver.worker, provider_base,
+                return publish_codex_tested_tree(driver.worker, provider_base,
                     config['head_branch'], receipt, body=body, commit_message=args.title,
+                    codex_run_id=writer_codex_run_id,
                     git=GitAdapter(), allowed_paths=config['allowed_paths'],
                     mapping_path=Path(config['state_dir']) / 'publication-deny.json',
                     title=args.title, git_guard=git_guard,
                     publication_plan=prior_plan,
+                    provenance_check=provenance_check,
                     prepare_plan=lambda plan:
                         record_first_draft_publication_plan(store, config, plan),
                     prepare_publication=lambda publication:
