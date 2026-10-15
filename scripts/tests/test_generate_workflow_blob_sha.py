@@ -17,9 +17,30 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import generate_contracts  # noqa: E402
 import generate_examples  # noqa: E402
 from agentic.contracts import Contracts  # noqa: E402
+from agentic.model_routing import default_policy  # noqa: E402
+from agentic.operating import default_operating  # noqa: E402
 
 
 class WorkflowBlobGenerationTests(unittest.TestCase):
+    def test_generated_config_and_operating_defaults_follow_routing_file(self):
+        policy = default_policy()
+        generated = generate_examples.config(False)
+        self.assertEqual(
+            {"routing": ".agentic/routing.yaml"},
+            generated["execution"]["model_routing"],
+        )
+        operating = default_operating()
+        for role in ("controller", "critic", "specialist"):
+            self.assertEqual(policy["role_defaults"][role], operating[role])
+        self.assertEqual(
+            policy["role_defaults"]["worker"],
+            operating["streams"]["A"]["worker"],
+        )
+        self.assertEqual(
+            {"enabled": True, **policy["simple_worker"]},
+            operating["simple_worker"],
+        )
+
     def test_project_schema_accepts_optional_workflow_blob_sha(self):
         check = generate_contracts.catalog()["project-config"]["properties"][
             "validation"
