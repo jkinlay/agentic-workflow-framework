@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path, PurePath
 import re
 import shutil
+import sys
+import time
 from typing import Callable
 
 from . import ValidationError
@@ -44,6 +47,9 @@ POWERSHELL_EXIT_STATES = {
     42: ("ACCESS_DENIED", "WINDOWS_ACCESS"),
     43: ("COMMAND_NONZERO", "COMMAND_EXIT"),
 }
+DIAGNOSTIC_ENVIRONMENT_VALUES = (
+    "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "PATHEXT",
+)
 
 
 def _utc(value=None):
@@ -271,6 +277,62 @@ def _default_execute(command, *, cwd=None, timeout_seconds=None):
     return run(list(command), cwd=cwd, timeout_seconds=timeout_seconds)
 
 
+def _child_environment_snapshot():
+    """Describe the probe child environment without exposing arbitrary values."""
+    from .child_process import child_env
+
+    environment = {
+        key: value for key, value in os.environ.items()
+        if not key.upper().startswith("GIT_")
+    }
+    environment.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+    environment = child_env(environment)
+    values_by_upper_name = {key.upper(): value for key, value in environment.items()}
+    return {
+        "variable_names": sorted(environment),
+        "selected_values": {
+            name: values_by_upper_name.get(name)
+            for name in DIAGNOSTIC_ENVIRONMENT_VALUES
+        },
+    }
+
+
+def _execute_observed(runner, command, *, cwd=None):
+    environment = _child_environment_snapshot()
+    started = time.monotonic_ns()
+    result = runner(command, cwd=cwd)
+    elapsed_seconds = (time.monotonic_ns() - started) / 1_000_000_000
+    if not isinstance(result, dict):
+        return result
+    observed = dict(result)
+    observed["elapsed_seconds"] = elapsed_seconds
+    observed["child_environment"] = environment
+    return observed
+
+
+def _start_diagnostics(result):
+    cleanup_errors = result.get("cleanup_errors", [])
+    if not isinstance(cleanup_errors, list):
+        cleanup_errors = [str(cleanup_errors)]
+    environment = result.get("child_environment")
+    if environment is None:
+        environment = _child_environment_snapshot()
+    diagnostics = {
+        "diagnostic_category": result.get("diagnostic_category") or "UNSPECIFIED",
+        "captured_output": result.get("output") or "",
+        "cleanup_errors": cleanup_errors,
+        "elapsed_seconds": result.get("elapsed_seconds", 0.0),
+        "child_environment": environment,
+    }
+    print(
+        "external_resource_start_diagnostics=" + json.dumps(
+            diagnostics, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        file=sys.stderr,
+        flush=True,
+    )
+    return diagnostics
+
+
 def classify_probe_result(result):
     """Classify a trusted-host execution observation at its actual failure layer."""
     if not isinstance(result, dict):
@@ -312,13 +374,16 @@ def classify_probe_result(result):
 
 def _attempt(result, digest, attempted_at):
     state, layer, observation = classify_probe_result(result)
-    return {
+    attempt = {
         "attempted_at": _timestamp(attempted_at),
         "command_sha256": digest,
         "state": state,
         "error_layer": layer,
         "exit_code": result.get("exit_code"),
-    }, observation
+    }
+    if state == "PROCESS_START_FAILED" or result.get("diagnostic_category") not in {None, "OK"}:
+        attempt["start_diagnostics"] = _start_diagnostics(result)
+    return attempt, observation
 
 
 def _permission(scope, expires_at, source):
@@ -363,7 +428,7 @@ def admit_resource(registry, mappings, resource_alias, *, task_id, principal, se
             value, cwd=cwd, timeout_seconds=declaration["probe"]["timeout_seconds"])
     else:
         runner = execute
-    first_result = runner(command, cwd=cwd)
+    first_result = _execute_observed(runner, command, cwd=cwd)
     first, observation = _attempt(first_result, digest, observed_at)
     attempts = [first]
     permission = _permission(permission_scope, permission_expires_at, "existing_grant")
@@ -384,7 +449,7 @@ def admit_resource(registry, mappings, resource_alias, *, task_id, principal, se
             if retry_command != command or command_sha256(retry_command) != digest:
                 raise ValidationError("exact-command retry changed after approval")
             retry_time = _utc(decision.get("approved_at", observed_at))
-            retry_result = runner(retry_command, cwd=cwd)
+            retry_result = _execute_observed(runner, retry_command, cwd=cwd)
             retried, observation = _attempt(retry_result, digest, retry_time)
             attempts.append(retried)
             permission = _permission(decision.get("scope", "one_command"),
@@ -494,8 +559,10 @@ def _validate_receipt_shape(receipt):
     if not isinstance(attempts, list) or not 1 <= len(attempts) <= 2:
         raise ValidationError("external-resource receipt must contain one or two attempts")
     for attempt in attempts:
+        attempt_fields = {"attempted_at", "command_sha256", "state", "error_layer", "exit_code"}
         if (not isinstance(attempt, dict) or
-                set(attempt) != {"attempted_at", "command_sha256", "state", "error_layer", "exit_code"}):
+                frozenset(attempt) not in {frozenset(attempt_fields),
+                                           frozenset(attempt_fields | {"start_diagnostics"})}):
             raise ValidationError("external-resource receipt has a malformed attempt")
         _utc(attempt["attempted_at"])
         _text(attempt["error_layer"], "receipt.attempt.error_layer")
@@ -503,6 +570,35 @@ def _validate_receipt_shape(receipt):
                 attempt["state"] not in RESOURCE_STATES or
                 (attempt["exit_code"] is not None and type(attempt["exit_code"]) is not int)):
             raise ValidationError("external-resource receipt attempt is not bound to the probe")
+        diagnostics = attempt.get("start_diagnostics")
+        if diagnostics is not None:
+            diagnostic_fields = {
+                "diagnostic_category", "captured_output", "cleanup_errors",
+                "elapsed_seconds", "child_environment",
+            }
+            if not isinstance(diagnostics, dict) or set(diagnostics) != diagnostic_fields:
+                raise ValidationError("external-resource receipt has malformed start diagnostics")
+            _text(diagnostics["diagnostic_category"],
+                  "receipt.attempt.start_diagnostics.diagnostic_category")
+            if (not isinstance(diagnostics["captured_output"], str) or
+                    not isinstance(diagnostics["cleanup_errors"], list) or
+                    not all(isinstance(item, str) for item in diagnostics["cleanup_errors"]) or
+                    type(diagnostics["elapsed_seconds"]) not in {int, float} or
+                    not math.isfinite(diagnostics["elapsed_seconds"]) or
+                    diagnostics["elapsed_seconds"] < 0):
+                raise ValidationError("external-resource receipt has invalid start diagnostics")
+            environment = diagnostics["child_environment"]
+            if (not isinstance(environment, dict) or
+                    set(environment) != {"variable_names", "selected_values"} or
+                    not isinstance(environment["variable_names"], list) or
+                    environment["variable_names"] != sorted(environment["variable_names"]) or
+                    len(environment["variable_names"]) != len(set(environment["variable_names"])) or
+                    not all(isinstance(name, str) for name in environment["variable_names"]) or
+                    not isinstance(environment["selected_values"], dict) or
+                    set(environment["selected_values"]) != set(DIAGNOSTIC_ENVIRONMENT_VALUES) or
+                    not all(value is None or isinstance(value, str)
+                            for value in environment["selected_values"].values())):
+                raise ValidationError("external-resource receipt has invalid child-environment diagnostics")
     if len(attempts) == 2 and (
             attempts[0]["state"] != "SANDBOX_BLOCKED" or
             permission["source"] != "narrow_approval"):
