@@ -138,6 +138,15 @@ class IN01RepositoryIdentityTests(_RepositoryCase):
         with self.assertRaisesRegex(ValidationError, "GIT_ALTERNATES_UNSAFE"):
             provenance.check_commit_range(alternate_root, self.base, self.base)
 
+    def test_in_01_repository_metadata_cap_at_n_and_n_plus_one(self):
+        metadata = self.scratch / "repository-metadata"
+        with patch.object(provenance, "_REPOSITORY_FILE_LIMIT", 4):
+            metadata.write_bytes(b"1234")
+            self.assertEqual(b"1234", provenance._Git._file_bytes(metadata))
+            metadata.write_bytes(b"12345")
+            with self.assertRaisesRegex(ValidationError, "REPOSITORY_METADATA_SIZE"):
+                provenance._Git._file_bytes(metadata)
+
 
 class IN02RangeEndpointTests(_RepositoryCase):
     def test_in_02_one_ref_grammar_and_commit_cap_at_n_and_n_plus_one(self):
@@ -201,6 +210,49 @@ class IN04RawCommitObjectTests(_RepositoryCase):
         )
         refused = provenance.check_commit_range(self.root, self.base, encoded)
         self.assertRegex(refused["refusals"][0]["reason"], "COMMIT_ENCODING")
+
+    def test_in_04_commit_object_and_header_caps_at_n_and_n_plus_one(self):
+        def details(raw):
+            digest = provenance.hashlib.sha1(
+                f"commit {len(raw)}\0".encode("ascii") + raw,
+            ).hexdigest()
+
+            class CommitGit:
+                object_format = "sha1"
+                oid_length = 40
+
+                @staticmethod
+                def run(command, *arguments, **_kwargs):
+                    output = raw if command == "cat-file" else b""
+                    return subprocess.CompletedProcess(
+                        [command, *arguments], 0, output, b"",
+                    )
+
+            return provenance._commit_details(CommitGit(), digest)
+
+        headers = [
+            f"tree {self.empty_tree}",
+            f"parent {self.base}",
+            "author Fixture Writer <fixture@example.invalid> 1 +0000",
+            "committer Fixture Writer <fixture@example.invalid> 1 +0000",
+            "gpgsig fixture",
+        ]
+        at_header_cap = "\n".join(headers).encode("ascii") + b"\n\n" + self.message()
+        over_header_cap = (
+            "\n".join([*headers, " continuation"]).encode("ascii")
+            + b"\n\n" + self.message()
+        )
+
+        with patch.object(provenance, "_GIT_OUTPUT_LIMIT", len(at_header_cap)):
+            self.assertEqual(self.base, details(at_header_cap)["parents"][0])
+        with patch.object(provenance, "_GIT_OUTPUT_LIMIT", len(at_header_cap) - 1):
+            with self.assertRaisesRegex(ValidationError, "COMMIT_OBJECT_SIZE"):
+                details(at_header_cap)
+
+        with patch.object(provenance, "_MESSAGE_LINE_LIMIT", len(headers)):
+            self.assertEqual(self.base, details(at_header_cap)["parents"][0])
+            with self.assertRaisesRegex(ValidationError, "COMMIT_HEADER_LINES"):
+                details(over_header_cap)
 
 
 class IN12UndecodablePathTests(_RepositoryCase):
@@ -360,6 +412,17 @@ class IN18MergeTreeTests(_RepositoryCase):
                     ValidationError, "MERGE_TREE_"):
                 provenance._decode_merge_tree_output(output, 40)
 
+    def test_in_18_merge_tree_output_cap_at_n_and_n_plus_one(self):
+        output = b"a" * 40 + b"\0"
+        with patch.object(provenance, "_GIT_OUTPUT_LIMIT", len(output)):
+            self.assertEqual(
+                ("a" * 40, []),
+                provenance._decode_merge_tree_output(output, 40),
+            )
+        with patch.object(provenance, "_GIT_OUTPUT_LIMIT", len(output) - 1):
+            with self.assertRaisesRegex(ValidationError, "MERGE_TREE_SIZE"):
+                provenance._decode_merge_tree_output(output, 40)
+
 
 class IN43RawHeaderTests(_RepositoryCase):
     def test_in_43_raw_commit_headers_refuse_unknown_and_wrong_format_oids(self):
@@ -424,6 +487,16 @@ class IN44RepositoryConfigTests(_RepositoryCase):
                 shallow_root, second, head,
             )["status"],
         )
+
+    def test_in_44_submodule_diff_configuration_is_closed(self):
+        for key in ("diff.ignoreSubmodules", "submodule.foreign.ignore"):
+            with self.subTest(key=key):
+                self.git("config", "--local", key, "all")
+                try:
+                    with self.assertRaisesRegex(ValidationError, "GIT_CONFIG_UNSAFE"):
+                        provenance.check_commit_range(self.root, self.base, self.base)
+                finally:
+                    self.git("config", "--local", "--unset-all", key)
 
 
 class IN46GeneratorIdentityTests(_RepositoryCase):
