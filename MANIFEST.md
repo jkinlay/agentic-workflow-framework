@@ -102,7 +102,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/interaction.py` | `1d0147cae333a0053d99e7c32767cb91f4253d3003e13db3ceb7be8c6a084370` |
 | `.agentic/lib/agentic/jira_lifecycle.py` | `2eec1374e5f850ba1bc3a5ff31c6c28f000aff6e5cbbb04767443b05fffad00b` |
 | `.agentic/lib/agentic/launch_surfaces.py` | `441dc8afea45d36ab404a762ebd01959652d44c7b7d3353e4c444cfb1d163c4d` |
-| `.agentic/lib/agentic/lifecycle.py` | `6bd3a6dcf6c9a7dd27890aea08e7aada4e6797033b257df47e8634beb1d811e2` |
+| `.agentic/lib/agentic/lifecycle.py` | `9762dd91259b04ed017bee27213fac13447b4db5160e190bbd091a41cdfca0ba` |
 | `.agentic/lib/agentic/model_routing.py` | `d0a8d82cf4700117a23b6a22e859b339aecaf130d7b020989e8cb8047a6f3a13` |
 | `.agentic/lib/agentic/operating.py` | `80218a2b77afc238176cfde70346018f5cde3b406e60ebbd047b1e42c6544ecd` |
 | `.agentic/lib/agentic/operating_status.py` | `d10c1289dd3172034adf6b5b52399e0f3dc590f9c601a6ebdfa71d8e703eb17d` |
@@ -366,7 +366,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_review_tiers_195_evidence_binding.py` | `11eeb7f9bcb129de1722f1224730f085f58cedb4e9d9e613c32012e205b9c016` |
 | `.agentic/tests/test_review_tiers_195_final.py` | `e1c1b2c768b0847899b4469d5349dc187ed7665731cccec28412858f2099aa66` |
 | `.agentic/tests/test_review_tiers_195_gates.py` | `ca366d33c47ac4824dcf4280b9079edda56879296864fafb28d9c728c03a9c53` |
-| `.agentic/tests/test_review_tiers_195_overcap.py` | `34534ea69ffb063cf4ceb699bf148646b737b205895bbee91474ad3e9d38ef92` |
+| `.agentic/tests/test_review_tiers_195_overcap.py` | `6e02e7f0f2eeda3b9fed48182a3de9245d2629099e45fa4916cd01b4edd34223` |
 | `.agentic/tests/test_review_tiers_195_record.py` | `51628a36fbe0c578741565b874dc9f9acfa14483bdc38abe75515b03fcf986d2` |
 | `.agentic/tests/test_routine_publication.py` | `49a27d2afd91c4c5283ef9b55671bd74633fe4a5420505e0479fbcd19cb5fd3d` |
 | `.agentic/tests/test_routing_cli.py` | `710ce05b2cf67ff49657a55079f3f8d32df18a2ce7ce297f997cfc3a3f6d2536` |
