@@ -74,14 +74,17 @@ class CliIntakeAssignmentTests(unittest.TestCase):
     def _cap_plan(self, runtime, config_path, state_path, cycles):
         base = state_path.parent
         disposition_path = base / f"disposition-{cycles}.json"
+        verdict_path = base / f"review-verdict-{cycles}.json"
         findings_path = base / f"findings-{cycles}.json"
         disposition_path.write_text(json.dumps({
             "binding": {}, "decision": "PARK", "open_finding_ids": [],
             "successor_ticket": None,
         }), encoding="utf-8")
+        verdict_path.write_text("{}\n", encoding="utf-8")
         findings_path.write_text("[]\n", encoding="utf-8")
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch("agentic.authorization.verify_owner_record", return_value={"status": "VERIFIED"}), \
+                mock.patch("agentic.gates.verify_disposition_review_binding", return_value={"status": "VERIFIED"}), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             code = workflow_main([
                 "--root", str(runtime), "cap-plan",
@@ -89,6 +92,7 @@ class CliIntakeAssignmentTests(unittest.TestCase):
                 "--findings", str(findings_path),
                 "--cycles", str(cycles),
                 "--head", "a" * 40,
+                "--review-verdict", str(verdict_path),
                 "--config", str(config_path),
                 "--assignment-state", str(state_path),
                 "--ticket", "EX-1",
