@@ -862,7 +862,8 @@ class PublicationRewriteTests(unittest.TestCase):
                 message = Path(self.temp.name) / "message.txt"
                 message.write_bytes(payload)
                 with mock.patch.object(publication, "_git", wraps=publication._git) as observed:
-                    with self.assertRaises(ValidationError):
+                    with self.assertRaisesRegex(
+                            ValidationError, r"^REWRITE_MESSAGE_INVALID:"):
                         rewrite_unpublished(
                             self.repo.path, self.repo.base,
                             "awf/EX-6-publication", 1, message,
@@ -2428,7 +2429,8 @@ class PublicationRewriteTests(unittest.TestCase):
         message = Path(self.temp.name) / "message.bin"
         message.write_bytes(b"clean-\xff")
         head = git(self.repo.path, "rev-parse", "HEAD")
-        with self.assertRaisesRegex(ValidationError, "strict UTF-8"):
+        with self.assertRaisesRegex(ValidationError,
+                                    r"^REWRITE_MESSAGE_INVALID:"):
             rewrite_unpublished(self.repo.path, self.repo.base, "awf/EX-6-publication", 1, message,
                                 mapping_path=self.mapping)
         self.assertEqual(head, git(self.repo.path, "rev-parse", "HEAD"))
