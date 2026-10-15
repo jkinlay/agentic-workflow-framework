@@ -876,14 +876,15 @@ class _Git:
             raise ValidationError("GIT_CONFIG_UNSAFE: local config key is not ASCII") from exc
         unsafe_exact = {
             "core.attributesfile", "core.alternaterefscommand",
-            "core.usereplacerefs", "diff.external", "merge.default",
-            "merge.renormalize",
+            "core.usereplacerefs", "diff.external", "diff.ignoresubmodules",
+            "merge.default", "merge.renormalize",
         }
         unsafe = [key for key in keys if (
             key in unsafe_exact
             or key.startswith(("include.", "includeif."))
             or re.fullmatch(r"diff\..+\.(?:command|textconv)", key)
             or re.fullmatch(r"merge\..+\.(?:driver|recursive)", key)
+            or re.fullmatch(r"submodule\..+\.ignore", key)
         )]
         _require(not unsafe,
                  "GIT_CONFIG_UNSAFE: repository-local Git behavior is not closed")
@@ -1080,11 +1081,12 @@ def _commit_details(git, commit):
     parents = [value.decode("ascii") for value in values(b"parent")]
     if parents:
         changed = git.run("diff", "--raw", "-r", "-z", "--no-renames",
-                          "--no-abbrev", parents[0], commit, binary=True).stdout
+                          "--ignore-submodules=none", "--no-abbrev",
+                          parents[0], commit, binary=True).stdout
     else:
         changed = git.run("diff-tree", "--root", "--no-commit-id", "--raw",
-                          "-r", "-z", "--no-renames", "--no-abbrev", commit,
-                          binary=True).stdout
+                          "-r", "-z", "--no-renames", "--ignore-submodules=none",
+                          "--no-abbrev", commit, binary=True).stdout
     entries = _parse_raw_diff(changed, git.oid_length)
     return {"sha": commit, "tree": values(b"tree")[0].decode("ascii"),
             "parents": parents, "message": message,
