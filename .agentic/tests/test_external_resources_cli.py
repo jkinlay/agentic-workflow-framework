@@ -17,6 +17,7 @@ from agentic.external_resources import admit_resource
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / ".agentic/scripts/external_resources.py"
+WINDOWS_SANITIZED_PATH_TIMEOUT_SECONDS = 15
 
 
 class ExternalResourceCliTests(unittest.TestCase):
@@ -80,6 +81,39 @@ class ExternalResourceCliTests(unittest.TestCase):
               patch.object(external_resources.shutil, "which",
                            side_effect=AssertionError("PATH discovery must not run"))):
             self.assertEqual(external_resources._powershell_executable(), "powershell")
+
+    def test_awf124_sanitized_path_fixture_covers_slow_windows_start(self):
+        registry = {
+            "format": "awf-external-resource-registry-1", "resources": {
+                "raw_estate": {"access": "read_only", "required_by": ["AWF-8"],
+                               "host_mapping": "operator_local", "sensitivity": "restricted",
+                               "probe": {"sample_relative_path": "sample.bin", "listing_limit": 2,
+                                         "timeout_seconds": WINDOWS_SANITIZED_PATH_TIMEOUT_SECONDS}}}}
+        mappings = {
+            "format": "awf-external-resource-mapping-1", "resources": {
+                "raw_estate": {"local_path": "/synthetic/estate",
+                               "canonical_locator": "urn:awf:synthetic:raw-estate",
+                               "mapping_kind": "local"}}}
+
+        def delayed_windows_start(command, *, cwd=None, timeout_seconds=None):
+            if timeout_seconds <= 5:
+                return {"diagnostic_category": "TIMEOUT", "exit_code": None, "output": ""}
+            return {
+                "diagnostic_category": "OK", "exit_code": 0,
+                "probe": {"observed_locator": "urn:awf:synthetic:raw-estate",
+                          "listing_count": 1, "sample_size": 1,
+                          "sample_mtime": "2026-10-09T12:00:00Z", "bytes_read": 1}}
+
+        with (patch.object(external_resources, "_powershell_executable",
+                           return_value="/system/powershell.exe"),
+              patch.object(external_resources, "_default_execute",
+                           side_effect=delayed_windows_start)):
+            receipt = admit_resource(
+                registry, mappings, "raw_estate", task_id="AWF-8", principal="worker-A",
+                session_id="session-1", now="2026-10-09T12:00:00Z")
+
+        self.assertEqual(receipt["state"], "READ_VERIFIED")
+        self.assertEqual(receipt["evidence"]["bytes_read"], 1)
 
     def test_validate_registry_and_bounded_scan(self):
         with tempfile.TemporaryDirectory(prefix="awf-resource-cli-") as temporary:
@@ -190,7 +224,8 @@ class ExternalResourceCliTests(unittest.TestCase):
                     "raw_estate": {"access": "read_only", "required_by": ["AWF-8"],
                                    "host_mapping": "operator_local", "sensitivity": "restricted",
                                    "probe": {"sample_relative_path": "sample.bin", "listing_limit": 2,
-                                             "timeout_seconds": 5}}}}), encoding="utf-8")
+                                             "timeout_seconds": WINDOWS_SANITIZED_PATH_TIMEOUT_SECONDS}}}}),
+                                encoding="utf-8")
             mapping = base / "private-mapping.json"
             mapping.write_text(json.dumps({
                 "format": "awf-external-resource-mapping-1", "resources": {
