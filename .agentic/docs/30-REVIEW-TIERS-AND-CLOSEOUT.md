@@ -1,18 +1,18 @@
 # Review tiers, cap dispositions and closeout
 
-Version 1.9.4; AWF-16 ships in 1.9.5. Code/[lifecycle](23-TICKET-LIFECYCLE.md) are authoritative.
+Version 1.9.4; AWF-16 ships in 1.9.5. Code and [lifecycle](23-TICKET-LIFECYCLE.md) are authoritative.
 
 ## Risk tiers
 
 Contracts declare justified `risk_tier` 1-3; uncertain is Tier 2. Tier 1 requires eligible, unprotected paths and no true `risk_flags`. The gate recomputes it. Changes require owner-signed `tier-reassignment`, re-issued contract and rebound records.
 
-Tier 1 uses one critic; findings advise. Tier 2 has three rounds, then tickets P2s and routes P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI gates, is capped at three, and requires candidate-bound owner review. Boundaries always block.
+Tier 1 uses one critic; findings advise. Tier 2 has three rounds, then tickets P2s and routes P1s to the owner. Tier 3 covers governance, release, merge/qualification and CI, is capped at three, and requires candidate-bound owner review. Boundaries always block.
 
-Each `critic_artifact_binding` identifies run, canonical `result.json`, head and round; its receipt retains those bytes and frozen completion identities. Gates reparse artifacts; copied fields cannot substitute. Unchanged diffs retain history; changed diffs require a current round. Tier 2 over-cap needs authenticated owner disposition. Tier 3 round N needs a preceding PR comment from the posting actor's trusted owner exactly:
+Each `critic_artifact_binding` identifies run, canonical `result.json`, head and round; its receipt retains those bytes and frozen completion identities. Gates reparse artifacts. Unchanged diffs retain history; changed diffs require a current round. Tier 2 over-cap needs authenticated owner disposition. Tier 3 round N needs this preceding PR comment from the posting actor's trusted owner:
 
 `AWF-OVERCAP-APPROVAL: round N of cap M, approver <owner>, ruling <time>`
 
-Wrong-round, malformed, untrusted or late records fail. Verdict/observation bind verdict/digest, repository/PR, immutable comment ID/URL, exact bodies, anchor and run/time. The GitHub collector re-reads both through the review host; its runtime registry is pinned to implementation, release, repository and per-run receipt. Configured IDs only narrow it; bundle/config/environment/fixtures cannot register. Mismatches are `NOT_READY`.
+Wrong-round, malformed, untrusted or late records fail. Verdict/observation bind verdict/digest, repository/PR, immutable comment ID/URL, exact bodies, anchor and run/time. The GitHub collector re-reads both; its runtime registry is pinned to implementation, release, repository and receipt. Configured IDs only narrow it; bundle/config/environment/fixtures cannot register. Mismatches are `NOT_READY`.
 
 Above-cap Tier 3 collection lists all PR comments, re-fetches approvals by immutable ID and binds each receipt to live repository/PR/head/base, exact comment and critic-run start. Other/stale heads or absent approval keep the gate closed.
 
@@ -22,15 +22,15 @@ BLOCKER/MAJOR findings carry `{criterion_id}` or `{boundary_code}` from `PROTECT
 
 `finding-disposition` `ACCEPT_RISK` or `NOT_A_DEFECT` makes a non-boundary finding non-blocking for the exact `head_sha` and copies it into `residual_risks`; `REQUIRE_FIX` keeps it open; `HEAD_CHANGED` voids it.
 
-`authorization.verify_owner_record` requires an exact `AWF1.2 DISPOSE` comment, trusted actor, one unedited comment per record, and a verifier independent of worker/critic. Cap dispositions sign `cycles/extensions:ids`; tier/closure records sign `head=-`.
+`authorization.verify_owner_record` requires exact `AWF1.2 DISPOSE`, a trusted actor, one unedited comment per record, and a verifier independent of worker/critic. Cap dispositions sign `cycles/extensions:ids`; tier/closure records sign `head=-`.
 
-Every critic run needs one AWF-native `review-verdict` plus `critic_artifact_binding`. `disposition-request` verifies its head/bytes, creates a distinct `authorization_request_id` and prints `AWF1.2 DISPOSE`. Output is non-authoritative; only the unedited comment from `merge_gate.trusted_owner_ids` supports close/extend/merge. `cap-plan` also requires that verdict.
+Every lane review critic run needs an AWF-native `review-verdict` and `critic_artifact_binding`; auxiliary critic-role analyses are not review rounds. `disposition-request` verifies head/bytes, creates a distinct `authorization_request_id` and prints `AWF1.2 DISPOSE`. Output is non-authoritative; only an unedited comment from `merge_gate.trusted_owner_ids` supports close/extend/merge. `cap-plan` requires that verdict and an identical project, ticket, policy and candidate binding.
 
 Release 1.9.5 adds project `merge_gate.trusted_owner_ids` immediately after #154; until then tests inject it and live dispositions remain unavailable.
 
 ## Automation account separation
 
-Use a least-privilege bot/App for publication/collection. Keep its credential only in the host secret store, never worktrees or records. Observe that the bot actor is configured and absent from `trusted_owner_ids`; ambiguity refuses. Owner credentials stay human-held for comments/manual merge. Automation never uses or impersonates the owner account.
+Use a least-privilege bot/App for publication/collection. Keep its credential in the host secret store, never worktrees or records. Observe that the configured bot is absent from `trusted_owner_ids`; ambiguity refuses. Owner credentials remain human-held. Automation never uses or impersonates the owner account.
 
 ## Closure standard
 

@@ -453,7 +453,9 @@ def parse_owner_text(raw):
     return values
 
 
-def verify_owner_record(record, schema, config, contracts, now, *, head_sha, binding, runs=None, excluded_contexts=(), excluded_producers=()):
+def verify_owner_record(record, schema, config, contracts, now, *, head_sha, binding,
+                        runs=None, excluded_contexts=(), excluded_producers=(),
+                        allow_historical_finding=False):
     """Authenticate the shape, digest, grammar, trusted actor and producer of an owner record.
 
     Offline verification establishes consistency; the trusted host verifies the live comment.
@@ -462,16 +464,27 @@ def verify_owner_record(record, schema, config, contracts, now, *, head_sha, bin
     if kind is None:
         raise ValidationError("Not an owner record schema")
     contracts.validate(schema, record)
-    if record["binding"] != binding:
+    historical_finding = (allow_historical_finding and kind == "finding"
+                          and record.get("head_sha") != head_sha)
+    historical_binding_matches = (historical_finding
+        and all(record["binding"].get(key) == value
+                for key, value in binding.items() if key != "candidate_id"))
+    if record["binding"] != binding and not historical_binding_matches:
         raise ValidationError(f"{schema} binding differs from the evaluated candidate")
-    _verify_owner_record_candidate(record, kind, head_sha)
+    signed_head = head_sha
+    if historical_finding:
+        # A head change voids a finding disposition; it does not erase the
+        # authenticated historical record.  Verify the exact head the owner
+        # signed, then let review_policy.effective_dispositions ignore it.
+        signed_head = record.get("head_sha")
+    _verify_owner_record_candidate(record, kind, signed_head)
     source = record["owner_source"]
     if source["actor_id"] not in trusted_owner_ids(config):
         raise ValidationError(f"{schema}: untrusted numeric owner identity {source['actor_id']}")
     if sha256(source["raw_body"].encode("utf-8")) != source["raw_body_sha256"]:
         raise ValidationError(f"{schema}: raw-body digest mismatch")
     fields = parse_owner_text(source["raw_body"])
-    if fields != owner_fields(record, kind, head_sha):
+    if fields != owner_fields(record, kind, signed_head):
         raise ValidationError(f"{schema}: raw owner text and recorded fields disagree")
     if timestamp(source["created_at"]) > timestamp(record["created_at"]):
         raise ValidationError(f"{schema}: comment postdates its record")

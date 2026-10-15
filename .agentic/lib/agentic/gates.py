@@ -197,7 +197,9 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
         records.append(("review-cap-disposition", cap))
     for schema, record in records:
         verify_owner_record(record, schema, config, contracts, now, head_sha=head, binding=binding,
-                            runs=runs, excluded_contexts=excluded_contexts, excluded_producers=excluded_producers)
+                            runs=runs, excluded_contexts=excluded_contexts,
+                            excluded_producers=excluded_producers,
+                            allow_historical_finding=True)
         if schema == "review-cap-disposition" and record["record_id"] != cap_disposition_record_id(record):
             raise ValidationError(
                 "Review cap disposition record ID does not authenticate its critic artifact and verdict binding")
@@ -272,6 +274,10 @@ def verify_disposition_review_binding(record, schema, verdict, contracts, head_s
     if schema not in {"finding-disposition", "review-cap-disposition"}:
         raise ValidationError("This owner disposition type is not driven by a critic verdict")
     contracts.validate("review-verdict", verdict)
+    if record.get("binding") != verdict.get("binding"):
+        raise ValidationError(
+            "Disposition and review verdict must bind the same candidate context"
+        )
     artifact = verdict["critic_artifact_binding"]
     if (verdict["owner_review"] is not False
             or verdict["head_sha"] != head_sha
@@ -478,7 +484,14 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     for record in records:
         historical_review_record = (record.get("run_id") in historical_review_run_ids
                                     and record in bundle.get("runs", []))
-        if not historical_review_record and record["binding"] != binding:
+        historical_finding_record = (
+            record in bundle.get("finding_dispositions", [])
+            and record.get("head_sha") != candidate["head_sha"]
+            and all(record["binding"].get(key) == value
+                    for key, value in binding.items() if key != "candidate_id")
+        )
+        if (not historical_review_record and not historical_finding_record
+                and record["binding"] != binding):
             raise ValidationError(f"Cross-record binding mismatch: {record['record_id']}")
         if not historical_review_record:
             fresh(record["created_at"], now, config["validation"]["max_evidence_age_seconds"])
@@ -875,14 +888,12 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         critic_run_ids.add(verdict["run_id"])
         if not verdict["evidence"] or not set(verdict["evidence"]).issubset(evidence_ids):
             raise ValidationError("Review verdict evidence must resolve through the evidence registry")
-    registered_critic_run_ids = {
-        run["run_id"] for run in runs.values() if run["role"] == "critic"
-    }
-    if critic_run_ids != registered_critic_run_ids:
-        missing = sorted(registered_critic_run_ids - critic_run_ids)
+    lane_critic_run_id = critic["run_id"]
+    if lane_critic_run_id not in critic_run_ids:
         raise ValidationError(
-            "Every registered critic run must emit one AWF-native review-verdict "
-            f"with a critic_artifact_binding; missing verdicts for {missing}"
+            "Every lane critic run must emit one AWF-native review-verdict "
+            "with a critic_artifact_binding; missing verdicts for "
+            f"{[lane_critic_run_id]}"
         )
     if critic["coverage"]["file_manifest_sha256"] != fingerprint("file-manifest", pr["file_manifest"]):
         raise ValidationError("Critic file manifest does not match PR")

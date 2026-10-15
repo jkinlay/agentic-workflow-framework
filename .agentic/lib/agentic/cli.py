@@ -447,13 +447,14 @@ def main(argv=None, default_root=None):
                         config, args.assignment_state, args.ticket
                     )
                     disposition = load(args.disposition)
+                    review_verdict = load(args.review_verdict)
                     from .authorization import verify_owner_record
                     verify_owner_record(disposition, "review-cap-disposition", config, contracts, now_text(), head_sha=args.head,
-                                        binding=disposition["binding"])
+                                        binding=review_verdict["binding"])
                     from .gates import verify_disposition_review_binding
                     output_binding = verify_disposition_review_binding(
                         disposition, "review-cap-disposition",
-                        load(args.review_verdict), contracts, args.head,
+                        review_verdict, contracts, args.head,
                     )
                     findings = [f for f in load(args.findings) if f["status"] != "RESOLVED" and f["severity"] in set(config["critic"]["blocking_severities"])]
                     output = cap_disposition_plan(
