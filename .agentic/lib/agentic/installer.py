@@ -151,7 +151,8 @@ def _recover_pending_runtime_update(tree, journal, journal_raw, marker):
             sha256(journal_raw) != marker["journal_sha256"]):
         return journal
     runtime = _validated_runtime_journal(journal)
-    if (journal["format"] != "awf-install-journal-3" or journal["phase"] != "active" or
+    if (journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"} or
+            journal["phase"] != "active" or
             runtime is None or runtime["new_sha256"] is not None):
         return journal
     stage = tree.root / runtime["stage"]
@@ -272,8 +273,65 @@ def _verify_managed_inventory(tree, expected, context):
         raise ValidationError(f"Managed-file inventory changed {context}: {detail}")
 
 
+def _managed_inventory_sha256(inventory):
+    """Bind one complete inventory without retaining every entry in the journal."""
+    _validate_inventory(inventory)
+    return sha256(json_bytes(inventory))
+
+
+def _compact_journal(journal):
+    return journal["format"] == "awf-install-journal-4"
+
+
+def _managed_inventory_at_old_state(journal, observed):
+    """Normalize journalled paths to old state, leaving all other entries exact."""
+    normalized = {item["path"]: item for item in observed}
+    for item in journal["files"]:
+        path = item["path"]
+        if not _inventory_managed(path):
+            continue
+        if item["old"] is None:
+            normalized.pop(path, None)
+        else:
+            old = base64.b64decode(item["old"], validate=True)
+            normalized[path] = {"path": path, "mode": item["old_mode"], "sha256": sha256(old)}
+    return sorted(normalized.values(), key=lambda item: item["path"].casefold())
+
+
+def _verify_compact_unchanged_inventory(journal, observed, context):
+    normalized = _managed_inventory_at_old_state(journal, observed)
+    if _managed_inventory_sha256(normalized) != journal["managed_before_sha256"]:
+        raise ValidationError(f"Managed-file inventory changed {context}")
+
+
+def _verify_journal_managed_state(tree, journal, which, context):
+    if not _compact_journal(journal):
+        _verify_managed_inventory(tree, journal[f"managed_{which}"], context)
+        return
+    expected = journal[f"managed_{which}_sha256"]
+    if expected is None or _managed_inventory_sha256(_managed_file_inventory(tree)) != expected:
+        raise ValidationError(f"Managed-file inventory changed {context}")
+
+
 def _capture_managed_after(tree, journal):
     """Validate planned membership/bytes and bind the resulting file modes."""
+    if _compact_journal(journal):
+        observed = _managed_file_inventory(tree)
+        observed_map = {item["path"]: item for item in observed}
+        for item in journal["files"]:
+            if item["new_sha256"] is None:
+                if item["path"] in observed_map:
+                    raise ValidationError("Managed-file membership differs from the authenticated transaction plan")
+                continue
+            info = tree.inspect(item["path"])
+            if info is None or not stat.S_ISREG(info.st_mode):
+                raise ValidationError("Transaction output is not a regular file: " + item["path"])
+            if sha256(tree.read(item["path"])) != item["new_sha256"]:
+                raise ValidationError("Managed-file bytes differ from the authenticated transaction plan: " + item["path"])
+            item["new_mode"] = stat.S_IMODE(info.st_mode)
+        _verify_compact_unchanged_inventory(journal, observed, "while capturing the installed state")
+        journal["managed_after_sha256"] = _managed_inventory_sha256(observed)
+        return
     before = {item["path"]: item for item in journal["managed_before"]}
     expected = dict(before)
     changed = {}
@@ -660,11 +718,15 @@ def _validated_runtime_journal(journal):
         if set(journal) != {"format", "transaction_id", "phase", "files", "runtime",
                             "managed_before", "managed_after"}:
             raise ValidationError("Invalid recovery journal")
+    elif journal["format"] == "awf-install-journal-4":
+        if set(journal) != {"format", "transaction_id", "phase", "files", "runtime",
+                            "managed_before_sha256", "managed_after_sha256"}:
+            raise ValidationError("Invalid recovery journal")
     else:
         raise ValidationError("Invalid recovery journal")
     transaction_id = str(uuid.UUID(journal["transaction_id"]))
     runtime = journal["runtime"]
-    if journal["format"] == "awf-install-journal-3" and runtime is None:
+    if journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"} and runtime is None:
         return None
     base_runtime_keys = {"path", "previous_sha256", "new_sha256", "stage", "backup"}
     proof_keys = {"cleanup_identity", "cleanup_members"}
@@ -718,16 +780,25 @@ def _validate_transaction_journal(journal):
     if transaction_id != journal["transaction_id"]:
         raise ValidationError("Non-canonical recovery transaction identity")
     _validated_runtime_journal(journal)
-    if journal["format"] == "awf-install-journal-3":
+    if journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}:
         if journal["phase"] not in {"active", "commit_cleanup", "commit_cleanup_authenticated"}:
             raise ValidationError("Invalid recovery journal phase")
-        _validate_inventory(journal["managed_before"])
-        _validate_inventory(journal["managed_after"], optional=True)
+        if _compact_journal(journal):
+            digest_pattern = r"[0-9a-f]{64}"
+            if (not isinstance(journal["managed_before_sha256"], str) or
+                    re.fullmatch(digest_pattern, journal["managed_before_sha256"]) is None or
+                    (journal["managed_after_sha256"] is not None and (
+                        not isinstance(journal["managed_after_sha256"], str) or
+                        re.fullmatch(digest_pattern, journal["managed_after_sha256"]) is None))):
+                raise ValidationError("Invalid managed recovery inventory digest")
+        else:
+            _validate_inventory(journal["managed_before"])
+            _validate_inventory(journal["managed_after"], optional=True)
     if not isinstance(journal["files"], list) or len(journal["files"]) > 10000:
         raise ValidationError("Invalid recovery file inventory")
     seen = set()
     backup_prefix = f".agentic-backup/{transaction_id}/"
-    version3 = journal["format"] == "awf-install-journal-3"
+    version3 = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
     for item in journal["files"]:
         expected_keys = {"path", "old", "new_sha256", "old_mode", "new_mode"} if version3 else {
             "path", "old", "new_sha256"}
@@ -806,7 +877,7 @@ def rollback(tree, journal):
     _validate_transaction_journal(journal)
     runtime = _validated_runtime_journal(journal)
     backup_prefix = f".agentic-backup/{journal['transaction_id']}/"
-    version3 = journal["format"] == "awf-install-journal-3"
+    version3 = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
     # Do not clobber edits that were neither the old nor proposed installer bytes.
     for item in journal["files"]:
         current = _exists_read(tree, item["path"])
@@ -826,7 +897,7 @@ def rollback(tree, journal):
                          item["new_sha256"] == sha256(current) and mode == INSTALLER_WRITE_MODE)
             if expected_mode is not None and mode != expected_mode and not own_write:
                 raise ValidationError(f"Recovery found an external mode edit at {item['path']}; marker retained")
-    if version3:
+    if journal["format"] == "awf-install-journal-3":
         before = {item["path"]: item for item in journal["managed_before"]}
         after = ({item["path"]: item for item in journal["managed_after"]}
                  if journal["managed_after"] is not None else {})
@@ -842,6 +913,10 @@ def rollback(tree, journal):
         for path, expected in before.items():
             if path not in changed and observed.get(path) != expected:
                 raise ValidationError("Recovery found external drift in an unchanged managed file; marker retained: " + path)
+    elif _compact_journal(journal):
+        observed = _managed_file_inventory(tree)
+        _verify_compact_unchanged_inventory(journal, observed,
+                                            "during rollback; marker retained")
     expected_backups = {item["path"] for item in journal["files"]
                         if item["path"].startswith(backup_prefix)}
     backup_root = tree.root / backup_prefix.rstrip("/")
@@ -874,7 +949,7 @@ def rollback(tree, journal):
     if backup_root.exists():
         shutil.rmtree(backup_root)
     if version3:
-        _verify_managed_inventory(tree, journal["managed_before"], "after rollback")
+        _verify_journal_managed_state(tree, journal, "before", "after rollback")
     tree.unlink(MARKER)
     tree.unlink(JOURNAL)
 
@@ -930,7 +1005,7 @@ class _RuntimeInstallTransaction:
 
 
 def _verify_file_state(tree, journal, which):
-    version3 = journal["format"] == "awf-install-journal-3"
+    version3 = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
     for item in journal["files"]:
         if which == "old":
             expected = base64.b64decode(item["old"], validate=True) if item["old"] is not None else None
@@ -1027,14 +1102,14 @@ def _cleanup_committed_runtime(tree, journal):
 
 
 def _verify_committed_payload(tree, journal, context):
-    _verify_managed_inventory(tree, journal["managed_after"], context)
+    _verify_journal_managed_state(tree, journal, "after", context)
     _verify_file_state(tree, journal, "new")
     _verify_runtime_state(tree, _validated_runtime_journal(journal), "new")
 
 
 def _verify_outer_commit_state(tree, journal, transaction):
     """Jointly re-prove every governed surface before durable commit intent."""
-    _verify_managed_inventory(tree, journal["managed_after"], "immediately before outer commit")
+    _verify_journal_managed_state(tree, journal, "after", "immediately before outer commit")
     _verify_file_state(tree, journal, "new")
     transaction.verify_committed()
 
@@ -1049,15 +1124,15 @@ def _finalize_committed(tree, journal):
 def _finalize_journal_only(tree, journal):
     """Resolve a one-artifact endpoint without trusting it to rewrite state."""
     _validate_transaction_journal(journal)
-    if journal["format"] != "awf-install-journal-3":
+    if journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"}:
         raise ValidationError("Legacy journal-only recovery failed closed")
     if journal["phase"] == "active":
-        _verify_managed_inventory(tree, journal["managed_before"], "at journal-only rollback endpoint")
+        _verify_journal_managed_state(tree, journal, "before", "at journal-only rollback endpoint")
         _verify_file_state(tree, journal, "old")
         _verify_runtime_state(tree, _validated_runtime_journal(journal), "old", require_cleanup=True)
         status = "ROLLED_BACK"
     else:
-        _verify_managed_inventory(tree, journal["managed_after"], "at journal-only commit endpoint")
+        _verify_journal_managed_state(tree, journal, "after", "at journal-only commit endpoint")
         _verify_file_state(tree, journal, "new")
         _verify_runtime_state(tree, _validated_runtime_journal(journal), "new", require_cleanup=True)
         status = "COMMITTED"
@@ -1072,13 +1147,15 @@ def complete_runtime_transaction(destination, transaction_id, builder):
     with Tree(destination) as tree, install_lock(tree):
         journal, _raw, _marker = _read_bound_journal(tree)
         runtime = _validated_runtime_journal(journal)
-        if (journal["format"] != "awf-install-journal-3" or runtime is None or
+        if (journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"} or
+                runtime is None or
                 journal["transaction_id"] != str(transaction_id) or journal["phase"] != "active" or
-                journal["managed_after"] is None):
+                (journal["managed_after_sha256"] if _compact_journal(journal)
+                 else journal["managed_after"]) is None):
             raise ValidationError("Bootstrap runtime transaction identity or state changed")
         transaction = _RuntimeInstallTransaction(tree, journal)
         try:
-            _verify_managed_inventory(tree, journal["managed_after"], "before canonical runtime creation")
+            _verify_journal_managed_state(tree, journal, "after", "before canonical runtime creation")
             transaction.verify_initial()
             result = builder(transaction)
             transaction.verify_committed()
@@ -1136,7 +1213,7 @@ def recover(destination):
             return {"status": _finalize_journal_only(tree, journal)}
         journal, bound_raw, bound_marker = _read_bound_journal(tree)
         journal = _recover_pending_runtime_update(tree, journal, bound_raw, bound_marker)
-        if journal["format"] == "awf-install-journal-3" and journal["phase"] in {
+        if journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"} and journal["phase"] in {
                 "commit_cleanup", "commit_cleanup_authenticated"}:
             _verify_committed_payload(tree, journal, "before resumed runtime backup cleanup")
             cleanup = _cleanup_committed_runtime(tree, journal)
@@ -1438,16 +1515,18 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                         "old_mode": stat.S_IMODE(info.st_mode) if info is not None else None,
                         "new_sha256": new_digest, "new_mode": None}
 
-            journal = {"format": "awf-install-journal-3",
+            changed_planned = [(path, data) for path, data in sorted(planned.items())
+                               if originals[path] != data]
+            journal = {"format": "awf-install-journal-4",
                 "transaction_id": transaction_id,
                 "phase": "active",
                 "files": [recovery_entry(path, originals[path], sha256(data))
-                          for path, data in sorted(planned.items())]
+                          for path, data in changed_planned]
                           + [recovery_entry(path, originals[path], None) for path in deletions]
                           + [recovery_entry(path, None, sha256(data))
                              for path, data in sorted(backup_plan.items())],
-                "managed_before": managed_before,
-                "managed_after": None,
+                "managed_before_sha256": _managed_inventory_sha256(managed_before),
+                "managed_after_sha256": None,
                 "runtime": None}
             if defer_runtime:
                 journal["runtime"] = _runtime_journal(destination, transaction_id)
@@ -1487,7 +1566,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                         (destination / Path(path)).chmod(stat.S_IREAD)
                 _capture_managed_after(dst, journal)
                 _write_bound_journal_update(dst, journal)
-                _verify_managed_inventory(dst, journal["managed_after"], "after managed writes")
+                _verify_journal_managed_state(dst, journal, "after", "after managed writes")
                 # Bootstrap keeps the same journal/marker until the canonical
                 # runtime has been staged, swapped and validated.
                 if not defer_runtime:
