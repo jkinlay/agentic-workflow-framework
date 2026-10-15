@@ -334,8 +334,11 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                             owner_review=False, ticketed_p2_records=(), owner_cap_disposition=None,
                             owner_cap_verified=False, owner_cap_context=None,
                             configured_owner_ids=None, expected_candidate_binding=None,
-                            previous_diff_sha=None, current_diff_sha=None, base_only=False, config=None):
-    """Lifecycle-facing review policy API; provider posting remains AWF-29."""
+                            previous_diff_sha=None, current_diff_sha=None, base_only=False, config=None,
+                            overcap_approvals=(), trusted_owner_ids=(), round_started_at=None,
+                            repository_id=None, pr_number=None,
+                            overcap_approval_context=None):
+    """Lifecycle-facing review policy API with provider-authenticated authority."""
     if previous_diff_sha is not None and current_diff_sha is not None:
         diff = diff_effect(previous_diff_sha, current_diff_sha, base_only=base_only)
     else:
@@ -359,8 +362,55 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                             runs=owner_cap_context.get("runs"),
                             excluded_contexts=owner_cap_context.get("excluded_contexts", ()),
                             excluded_producers=owner_cap_context.get("excluded_producers", ()))
+    if overcap_approvals or trusted_owner_ids or round_started_at is not None:
+        raise ValidationError(
+            "Lifecycle does not trust caller-supplied over-cap approval fields; "
+            "an authenticated over-cap approval context is required"
+        )
+    if overcap_approval_context is not None:
+        if not isinstance(overcap_approval_context, dict):
+            raise ValidationError("Lifecycle requires an authenticated over-cap approval context")
+        required = {"config", "approvals", "candidate", "runs",
+                    "trusted_posting_collectors"}
+        if not required.issubset(overcap_approval_context):
+            raise ValidationError("Lifecycle requires an authenticated over-cap approval context")
+        approval_config = overcap_approval_context["config"]
+        candidate = overcap_approval_context["candidate"]
+        runs = overcap_approval_context["runs"]
+        collectors = overcap_approval_context["trusted_posting_collectors"]
+        if (not isinstance(approval_config, dict) or not isinstance(candidate, dict)
+                or not isinstance(runs, dict) or not isinstance(collectors, dict)):
+            raise ValidationError("Lifecycle requires an authenticated over-cap approval context")
+        from .gates import verified_overcap_approvals
+        overcap_approvals = verified_overcap_approvals(
+            approval_config, overcap_approval_context["approvals"], candidate,
+            runs, collectors,
+        )
+        from .policy import parse_overcap_approval
+        matching_approvals = []
+        for approval in overcap_approvals:
+            try:
+                parsed_approval = parse_overcap_approval(approval["raw_body"])
+            except (KeyError, ValidationError):
+                continue
+            if parsed_approval["round"] == round_number:
+                matching_approvals.append(approval)
+        if len(matching_approvals) > 1:
+            raise ValidationError(
+                "Tier 3 review round has multiple authenticated over-cap approvals"
+            )
+        round_started_at = (matching_approvals[0]["round_started_at"]
+                            if matching_approvals else None)
+        trusted_owner_ids = approval_config["merge_gate"]["trusted_owner_ids"]
+        repository_id = candidate["repository_id"]
+        pr_number = candidate["pr_number"]
+        config = approval_config
     validate_round(tier, round_number,
-                   owner_cap_disposition=owner_cap_disposition, config=config)
+                   owner_cap_disposition=owner_cap_disposition, config=config,
+                   overcap_approvals=overcap_approvals,
+                   trusted_owner_ids=trusted_owner_ids,
+                   round_started_at=round_started_at,
+                   repository_id=repository_id, pr_number=pr_number)
     if diff["invalidate"]:
         return {"status": "REVIEW_REQUIRED", "round": round_number, "history_preserved": True,
                 "invalidated": True, "diff": diff}
@@ -370,6 +420,9 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                                ticketed_p2_records=ticketed_p2_records,
                                configured_owner_ids=configured_owner_ids,
                                expected_candidate_binding=expected_candidate_binding,
-                               config=config)
+                               config=config, overcap_approvals=overcap_approvals,
+                               trusted_owner_ids=trusted_owner_ids,
+                               round_started_at=round_started_at,
+                               repository_id=repository_id, pr_number=pr_number)
     return {**decision, "round": round_number, "history_preserved": True,
             "invalidated": False, "diff": diff, "verdict": verdict}
