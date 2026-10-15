@@ -257,6 +257,13 @@ class Tier3OvercapGateTests(Fixture):
         registry = bind_production_posting_fixture(self.config, self.bundle)
         self._owner_review()
         self._refresh_owner_posting_receipt(registry)
+        owner = self.bundle["owner_review"]
+        self.bundle["evidence_registry"].append({
+            "uri": f"urn:awf:owner-review:{owner['record_id']}",
+            "sha256": sha256(canonical(owner)),
+            "producer_id": owner["producer_id"],
+            "retained_until": "2027-01-01T00:00:00Z",
+        })
         if approval_factory is not None:
             self.bundle["overcap_approvals"] = [approval_factory(registry)]
         return evaluate(

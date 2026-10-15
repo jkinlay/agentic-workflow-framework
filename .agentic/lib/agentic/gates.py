@@ -17,7 +17,8 @@ from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_pa
                      specialist_domains, validate_config)
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
                             tier1_specialist_domains, validate_findings)
-from .review_tiers import classify
+from .review_tiers import (_owner_review_valid, _seal_verified_owner_review,
+                           classify)
 
 
 def decode_base64_bytes(value, field):
@@ -69,6 +70,21 @@ def owner_approval_evidence_matches(owner, terminal_verdict, candidate):
     expected_url = f"{prefix}#pullrequestreview-{approval['id']}"
     return (approval.get("html_url") == expected_url
             and owner.get("pr_comment_url") == expected_url)
+
+
+def owner_review_registry_uri(owner):
+    """Return the stable registry identity for one exact owner-review record."""
+    record_id = owner.get("record_id") if isinstance(owner, dict) else None
+    if not isinstance(record_id, str) or not record_id:
+        raise ValidationError("Owner review needs a record_id before registration")
+    return f"urn:awf:owner-review:{record_id}"
+
+
+def owner_review_record_sha256(owner):
+    """Content address the complete canonical owner-review record."""
+    if not isinstance(owner, dict):
+        raise ValidationError("Owner review must be an object")
+    return sha256(canonical(owner))
 
 
 def resource_overlaps(runs, limits):
@@ -901,25 +917,47 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     owner = bundle.get("owner_review")
     owner_run = runs.get(owner.get("run_id")) if owner is not None else None
     owner_provider_receipt_uri = f"urn:awf:review-round-receipt:{terminal_round}"
-    owner_review_ok = tier != 3 or (owner is not None
-                                    and owner.get("owner_review") is True
-                                    and owner.get("verdict") == "PASS"
-                                    and owner.get("head_sha") == candidate["head_sha"]
-                                     and owner_run is not None
-                                     and owner_run["role"] == "verifier"
-                                     and owner_run["producer_id"] == owner.get("producer_id")
-                                     and owner.get("owner_id") in config["merge_gate"]["trusted_owner_ids"]
-                                     and owner.get("binding") == binding
-                                     and owner.get("candidate_binding") == {
-                                        "repository_id": candidate["repository_id"],
-                                        "pr_number": candidate["pr_number"],
-                                        "base_sha": candidate["target_base_sha"],
-                                         "head_sha": candidate["head_sha"]}
-                                     and owner.get("record_id") in {v.get("record_id") for v in records}
-                                     and owner_provider_receipt_uri in evidence_ids
-                                     and posting_evidence_ok
-                                     and owner_approval_evidence_matches(
-                                         owner, terminal_verdict, candidate))
+    owner_registry_uri = (owner_review_registry_uri(owner)
+                          if isinstance(owner, dict) else None)
+    owner_registry_entry = next(
+        (entry for entry in bundle["evidence_registry"]
+         if entry["uri"] == owner_registry_uri),
+        None,
+    )
+    expected_owner_binding = {
+        "repository_id": candidate["repository_id"],
+        "pr_number": candidate["pr_number"],
+        "base_sha": candidate["target_base_sha"],
+        "head_sha": candidate["head_sha"],
+    }
+    owner_context = None
+    if (owner is not None
+            and owner.get("owner_review") is True
+            and owner.get("verdict") == "PASS"
+            and owner.get("head_sha") == candidate["head_sha"]
+            and owner_run is not None
+            and owner_run["role"] == "verifier"
+            and owner_run["producer_id"] == owner.get("producer_id")
+            and owner.get("owner_id") in config["merge_gate"]["trusted_owner_ids"]
+            and owner.get("binding") == binding
+            and owner.get("candidate_binding") == expected_owner_binding
+            and owner.get("record_id") in {v.get("record_id") for v in records}
+            and owner_provider_receipt_uri in evidence_ids
+            and owner_registry_entry is not None
+            and owner_registry_entry["sha256"] == owner_review_record_sha256(owner)
+            and owner_registry_entry["producer_id"] == owner.get("producer_id")
+            and posting_evidence_ok
+            and owner_approval_evidence_matches(owner, terminal_verdict, candidate)):
+        owner_context = _seal_verified_owner_review(
+            owner,
+            owner_registry_uri,
+            owner_registry_entry["sha256"],
+        )
+    owner_review_ok = tier != 3 or _owner_review_valid(
+        owner_context,
+        configured_owner_ids=config["merge_gate"]["trusted_owner_ids"],
+        expected_candidate_binding=expected_owner_binding,
+    )
     terminal_verdict_ok = (terminal_verdict["verdict"] in {"PASS", "REQUEST_CHANGES"}
                            if lenient else terminal_verdict["verdict"] == "PASS")
     critic_ok = (no_blockers and p2_ticketing_ok and critic_artifacts_ok
@@ -1023,6 +1061,8 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     if tier == 3 and owner_review_ok:
         refs["critic_current_tuple"].append(owner_provider_receipt_uri)
         refs["verdict_posting"].append(owner_provider_receipt_uri)
+        refs["critic_current_tuple"].append(owner_registry_uri)
+        refs["verdict_posting"].append(owner_registry_uri)
     expires = timestamp(now) + timedelta(seconds=config["merge_gate"]["authorization_ttl_seconds"])
     gate = {"schema_version": 3, "record_id": str(uuid.uuid4()), "created_at": now,
         "producer_id": "offline-reference-evaluator", "run_id": str(uuid.uuid4()), "binding": binding,

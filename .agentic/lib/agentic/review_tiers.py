@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 
 from . import ValidationError
+from .canonical import canonical, loads, sha256
 from .review_policy import authorize_tier3_round, is_boundary
 
 TIER_1 = 1
@@ -26,6 +27,45 @@ _TIER3_FLAGS = {"permissions", "release", "merge_gate", "ci_gate",
                 "schema_or_migration", "data_loss", "concurrency", "production",
                 "public_api", "high_complexity", "high_uncertainty"}
 _OBSERVED_FLAGS = _TIER3_FLAGS | {"security"}
+_OWNER_REVIEW_SEAL = object()
+
+
+@dataclass(frozen=True)
+class _VerifiedOwnerReview:
+    """Opaque result of the final-gate provider/registry verification.
+
+    A schema-shaped mapping is evidence to validate, not a validation result.
+    Only the gate-side verifier seals this context after resolving the provider
+    observation and the content-addressed registry entry.
+    """
+
+    _record_json: bytes
+    registry_uri: str
+    registry_sha256: str
+    _seal: object
+
+    def __post_init__(self):
+        if self._seal is not _OWNER_REVIEW_SEAL:
+            raise ValidationError(
+                "Verified owner review contexts must come from provider evidence validation"
+            )
+
+    @property
+    def record(self):
+        return loads(self._record_json.decode("utf-8"))
+
+
+def _seal_verified_owner_review(record, registry_uri, registry_sha256):
+    """Create the policy context after gate-side provider validation succeeds."""
+    record_json = canonical(record)
+    if sha256(record_json) != registry_sha256:
+        raise ValidationError("Owner review registry digest does not match the record")
+    return _VerifiedOwnerReview(
+        record_json,
+        registry_uri,
+        registry_sha256,
+        _OWNER_REVIEW_SEAL,
+    )
 
 
 def _matches(path, patterns):
@@ -287,7 +327,11 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
             )
         )
         if not owner_review_valid:
-            return {"status": "OWNER_REVIEW_REQUIRED", "cap": cap}
+            return {
+                "status": "OWNER_REVIEW_REQUIRED",
+                "reason": "provider-verified owner review required",
+                "cap": cap,
+            }
     if tier == TIER_2 and rounds >= cap and p1:
         return {"status": "ROUTE_TO_OWNER", "reason": "P1 remains open at Tier 2 cap", "cap": cap}
     if tier == TIER_2 and p2:
@@ -304,24 +348,23 @@ def review_decision(tier, rounds, *, latest_pass=False, open_findings=(), owner_
 
 
 def _owner_review_valid(value, *, configured_owner_ids=None, expected_candidate_binding=None):
-    """Require a retained, structured owner-review assertion, never a boolean.
-
-    Provider verification is the AWF-41 successor scope.  This policy layer
-    only checks that the recorded assertion is bound to the current review.
-    """
-    if not isinstance(value, dict):
+    """Require a provider-verified, registry-bound context, never a mapping."""
+    if not isinstance(value, _VerifiedOwnerReview):
         return False
-    binding = value.get("candidate_binding")
-    valid = (value.get("owner_review") is True
-            and isinstance(value.get("record_id"), str)
-            and isinstance(value.get("run_id"), str)
-            and isinstance(value.get("producer_id"), str)
-            and isinstance(value.get("owner_id"), int)
+    record = value.record
+    binding = record.get("candidate_binding")
+    valid = (record.get("owner_review") is True
+            and isinstance(record.get("record_id"), str)
+            and isinstance(record.get("run_id"), str)
+            and isinstance(record.get("producer_id"), str)
+            and isinstance(record.get("owner_id"), int)
             and isinstance(binding, dict)
-            and value.get("verdict") == "PASS")
+            and record.get("verdict") == "PASS"
+            and value.registry_uri == f"urn:awf:owner-review:{record.get('record_id')}"
+            and value.registry_sha256 == sha256(canonical(record)))
     if not valid:
         return False
-    if configured_owner_ids is not None and value.get("owner_id") not in set(configured_owner_ids):
+    if configured_owner_ids is not None and record.get("owner_id") not in set(configured_owner_ids):
         return False
     if expected_candidate_binding is not None and binding != expected_candidate_binding:
         return False
