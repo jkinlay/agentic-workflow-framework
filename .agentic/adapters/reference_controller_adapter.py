@@ -680,7 +680,7 @@ def _validate_ticket_records(items):
             ticket = {**parsed, "dispatch_role": role, "lifecycle_stage": stage}
             try:
                 validate_ticket_record(ticket)
-            except ValidationError as exc:
+            except (ValidationError, TypeError) as exc:
                 problem = str(exc)
         if problem is not None:
             ticket = _blocked_ticket_record(record, parsed, role, stage, problem)

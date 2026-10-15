@@ -10,7 +10,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/NOTICE` | `778aa28d13e57cd0626adeb12099588fe0cf5e3eaa40e059b2409e855931ac57` |
 | `.agentic/PROJECT_CONFIG.yaml` | `8789562378cb9b2c49b706d5a1c19227be095a7eca43017efdeef3875263516d` |
 | `.agentic/SPECIFICATION.md` | `47a6af8f38a3d50b642c4ab84f0c4f7f86e2364ebd2294b321a02eedcea893eb` |
-| `.agentic/adapters/reference_controller_adapter.py` | `133b8b1ac006e8e24524295414379f512b70d526586ecb9058e056d54db2b765` |
+| `.agentic/adapters/reference_controller_adapter.py` | `f4c7730c936e895e6c1abb322ba63cdd326278f10d456f8e311bb62e441ea31a` |
 | `.agentic/benchmarks/native/EVALUATION-v1.8.2.md` | `4de70e8687980cf62c2073afc1bd3013b5c55dfd0c5d10474a5ec61f20740cc2` |
 | `.agentic/benchmarks/native/EVALUATION-v1.8.3.md` | `631acffd01864f7ceba3d838b4bb85a796fa80a42dbb38879c57598ddee79166` |
 | `.agentic/benchmarks/native/EVALUATION-v1.8.4.md` | `6985d13fe6731f60235e77bd5acbf8b6ab43063cec6cb66a54208ae7b186ee12` |
@@ -354,7 +354,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_publication_sync_merge_history.py` | `ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e` |
 | `.agentic/tests/test_ready_authorization.py` | `fa9d1fe9c4e1cc3f286f16d0da0bb18e4af62e212c597363d1463f589f5f551d` |
 | `.agentic/tests/test_reference.py` | `5a4167d1dba2d0033040e01e496d4d8633283802cfd7cdcc53c0ab18221537cf` |
-| `.agentic/tests/test_reference_controller_adapter.py` | `556bffbd588c1f095b32117b61012d21c6bca7ed6e6a3396b0de44c05dcaee0a` |
+| `.agentic/tests/test_reference_controller_adapter.py` | `9c38b905a2b0b7ce8afab72eea705b97b12a8236347d3fe4fa8aed120fa0b64b` |
 | `.agentic/tests/test_release_trust.py` | `5ee524663da11f15a04ed83c19ffcc7a951f5d89715784610799ce4709c0eed4` |
 | `.agentic/tests/test_repository_rules.py` | `c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68` |
 | `.agentic/tests/test_retry_authority.py` | `139ac0066214be7dbd8d468ae016f7f116b756621ee295d03d646ef94eaae3bf` |
