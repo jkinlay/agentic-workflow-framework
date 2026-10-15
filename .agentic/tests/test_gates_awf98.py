@@ -1,6 +1,3 @@
-"""AWF-98 gate regressions for critic and owner-disposition records."""
-from __future__ import annotations
-
 import copy
 import sys
 import unittest
@@ -85,7 +82,7 @@ class HistoricalFindingDispositionTests(unittest.TestCase):
         self.fixture = BasisAndDispositionTests(methodName="runTest")
         self.fixture.setUp()
 
-    def test_stale_head_disposition_is_verified_then_voided(self):
+    def test_expired_stale_head_disposition_is_verified_then_voided(self):
         self.fixture.tier1_bundle()
         self.fixture.bundle["critic"].update(
             verdict="REQUEST_CHANGES",
@@ -96,17 +93,20 @@ class HistoricalFindingDispositionTests(unittest.TestCase):
         )
         self.fixture.sync_critic_artifact()
         stale_head = "9" * 40
-        stale = sign(
-            self.fixture.record(
-                finding_id="F1",
-                decision="ACCEPT_RISK",
-                rationale="Superseded candidate head.",
-                head_sha=stale_head,
-                **signed(),
-            ),
-            "finding",
-            stale_head,
+        stale = self.fixture.record(
+            finding_id="F1",
+            decision="ACCEPT_RISK",
+            rationale="Superseded candidate head.",
+            head_sha=stale_head,
+            **signed(),
         )
+        expired_at = "2026-10-15T18:00:00Z"
+        stale["created_at"] = expired_at
+        stale["owner_source"].update(
+            created_at=expired_at,
+            updated_at=expired_at,
+        )
+        stale = sign(stale, "finding", stale_head)
         stale["binding"]["candidate_id"] = "8" * 64
         self.fixture.bundle["finding_dispositions"] = [stale]
 
