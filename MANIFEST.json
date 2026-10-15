@@ -317,7 +317,7 @@
     ".agentic/tests/test_handoff.py": "c76eb1c485e516ab771764cff82ffddeac13e1342752442f5dcbad2932fea157",
     ".agentic/tests/test_heavy_validation.py": "fb89a68095c82f96c2f31f38fd4322426193fd094599ef6429944342d3d165bb",
     ".agentic/tests/test_host_preflight_split_root.py": "71d996b32ae2ef3744786fee6bc56c65cd4fc71ec0299706ead251df6a320d89",
-    ".agentic/tests/test_host_process.py": "4e36b554a93929423d9df4cfa6a539a5798edb7ba6dca85448f64c93b3000d3a",
+    ".agentic/tests/test_host_process.py": "0da0de3462d0568a363058476e672b10e7a1e2dba45a31d541c473c33b71776a",
     ".agentic/tests/test_intake_assignment.py": "c518d8bdd68af2f5fbdd7c2a5e60b4c7697df3e89f53bfdc7a2e9566dc459a11",
     ".agentic/tests/test_integration_queue.py": "8cacfe0d44a0f685533f74f7fae905ab1d7b9edda6dc817d97a57641c1e18541",
     ".agentic/tests/test_integration_queue_closeout.py": "8977a6af02e4b7dbd6554b0ad80c540fc1fd008f83b7c4bced40581cec98fa31",

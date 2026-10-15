@@ -22,6 +22,7 @@ from agentic import VERSION
 from agentic.canonical import now_text, sha256
 from agentic.providers.github_review_host import HostDriver
 from agentic.review_qualification import host_binding_sha256
+from agentic.safeio import run_bounded
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = Path(__file__).parent / 'fixtures/fake_host_process.py'
@@ -113,6 +114,13 @@ class HostProcessTests(unittest.TestCase):
             # This native launcher preserves stdin/out/err and exit code. The
             # Python fixture is test code, never a production host adapter mode.
             source = cls.launchers / 'launcher.cs'
+            reporter = cls.launchers / 'stdin-report.py'
+            reporter.write_text(
+                'import hashlib, json, sys\n'
+                'raw = sys.stdin.buffer.read()\n'
+                'print(json.dumps({"prefix": raw[:16].hex(), "length": len(raw), '
+                '"sha256": hashlib.sha256(raw).hexdigest()}))\n',
+                encoding='utf-8')
             def literal(value):
                 return '@"' + str(value).replace('"', '""') + '"'
             source.write_text('''using System;
@@ -134,19 +142,21 @@ class Launcher {
   }
   static int Main(string[] args) {
     string kind = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]).Replace("fake-", "");
-    string argv = "-B " + Quote(FIXTURE) + " " + Quote(kind);
-    foreach (string arg in args) argv += " " + Quote(arg);
+    bool reportStdin = kind == "gh" && args.Length == 1 && args[0] == "--awf-report-stdin";
+    string argv = reportStdin
+      ? "-B " + Quote(REPORTER)
+      : "-B " + Quote(FIXTURE) + " " + Quote(kind);
+    if (!reportStdin) foreach (string arg in args) argv += " " + Quote(arg);
     var info = new ProcessStartInfo(PYTHON, argv);
     info.UseShellExecute = false; info.CreateNoWindow = true;
-    info.RedirectStandardInput = true; info.RedirectStandardOutput = true; info.RedirectStandardError = true;
+    info.RedirectStandardInput = false; info.RedirectStandardOutput = true; info.RedirectStandardError = true;
     var child = Process.Start(info);
     var stdout = Task.Factory.StartNew(() => child.StandardOutput.BaseStream.CopyTo(Console.OpenStandardOutput()));
     var stderr = Task.Factory.StartNew(() => child.StandardError.BaseStream.CopyTo(Console.OpenStandardError()));
-    Console.OpenStandardInput().CopyTo(child.StandardInput.BaseStream);
-    child.StandardInput.Close(); child.WaitForExit(); Task.WaitAll(stdout, stderr); return child.ExitCode;
+    child.WaitForExit(); Task.WaitAll(stdout, stderr); return child.ExitCode;
   }
 }
-'''.replace('FIXTURE', literal(FIXTURE)).replace('PYTHON', literal(sys.executable)), encoding='utf-8')
+'''.replace('REPORTER', literal(reporter)).replace('FIXTURE', literal(FIXTURE)).replace('PYTHON', literal(sys.executable)), encoding='utf-8')
             compiled = cls.launchers / 'launcher.exe'
             result = subprocess.run([str(compiler), '/nologo', '/target:exe', '/out:' + str(compiled), str(source)],
                 capture_output=True, text=True, encoding='utf-8', timeout=60)
@@ -266,6 +276,18 @@ class Launcher {
     def observations(self, kind=None):
         values = [json.loads(line) for line in self.calls.read_text(encoding='utf-8').splitlines()]
         return [value for value in values if kind is None or value['kind'] == kind]
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows launcher regression')
+    def test_windows_launcher_preserves_stdin_bytes_without_bom(self):
+        payload = '{"body":"café π 漢字 🚀"}\n'.encode('utf-8')
+        result = run_bounded(
+            [str(self.launchers / 'fake-gh.exe'), '--awf-report-stdin'],
+            stdin=payload, cwd=self.base, env=self.env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+        report = json.loads(result.stdout.decode('utf-8'))
+        self.assertNotEqual(report['prefix'][:6], 'efbbbf', report)
+        self.assertEqual(report['length'], len(payload), report)
+        self.assertEqual(report['sha256'], sha256(payload), report)
 
     def test_production_cli_check_enroll_tick_real_process_amendment_cycle(self):
         self.assertEqual(self.cli('check')['status'], 'PREFLIGHT_PASSED')
