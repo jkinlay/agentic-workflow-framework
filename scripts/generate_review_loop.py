@@ -61,6 +61,7 @@ def main():
     critic = {
         '$comment':'The raw critic result is wrapped by the host in the v2 critic binding envelope below; authority never comes from model-supplied binding fields.',
         'x-awf-host-envelope-version':2,
+        'x-awf-sole-critic-run-carrier':'#/$defs/criticBinding/properties/critic_run_carrier',
         '$defs':{'criticBinding':critic_binding},
         **critic,
     }

@@ -2237,7 +2237,8 @@ def _remote_urls(root, remote):
 
 def _writer_emitted_rewrite_message(message):
     """Require the exact non-mechanical message shape emitted for a Codex run."""
-    reason = "Rewrite message must be produced by the Writer emitter with a valid Codex run id"
+    reason = ("REWRITE_MESSAGE_INVALID: Rewrite message must be produced by "
+              "the Writer emitter with a valid Codex run id")
     try:
         text = message.decode("utf-8")
         text = validate_commit_message(text)
@@ -2259,11 +2260,18 @@ def _writer_emitted_rewrite_message(message):
 def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_path=None, config_path=None):
     """Atomically squash one unpublished branch after scanning the replacement history."""
     root = Path(root).resolve()
-    if commits != 1:
-        raise ValidationError("Only --commits 1 is supported; another count is refused, never approximated")
-    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", branch or "") or ".." in branch or "@{" in branch:
-        raise ValidationError("Unsafe branch name")
-    validate_ref_locator(base, "Rewrite base")
+    if type(commits) is not int or commits != 1:
+        raise ValidationError(
+            "REWRITE_ARGUMENT_INVALID: Only --commits 1 (the integer) is supported")
+    try:
+        if not isinstance(branch, str):
+            raise ValidationError("branch must be text")
+        validate_ref_locator("refs/heads/" + branch, "Rewrite branch")
+        validate_ref_locator(base, "Rewrite base")
+    except ValidationError as exc:
+        raise ValidationError(
+            "REWRITE_REF_INVALID: rewrite branch/base is not a safe frozen ref or OID: "
+            + str(exc)) from exc
     commit_identity = _repository_commit_identity(root)
     ref = "refs/heads/" + branch
     old_head = _git(root, "rev-parse", "--verify", ref + "^{commit}").stdout.decode("ascii").strip()
