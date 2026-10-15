@@ -296,7 +296,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/templates/tier-reassignment.yaml` | `458f60fe38cc8ef940874bf50c251264e4d29d6523b0fd7483ed8325a76d964d` |
 | `.agentic/templates/work-dispatch.yaml` | `b5f2fc50348d04c7c1b217f3d842941df02833f8c9398bdfee3a23ae3f92cfdc` |
 | `.agentic/templates/worker-result.yaml` | `d770c07863bcd51bbb3dd1d913251e07e13099fd41580b2c8597c1f799bda569` |
-| `.agentic/tests/fixtures/fake_host_process.py` | `dc27729152743ee875dcd3353da3e1bc76a962ffd173f2a0f1b3b1d114c64383` |
+| `.agentic/tests/fixtures/fake_host_process.py` | `21cfb6ed2311d402481a511ecc4c7e96e09cdc9aae305c6e7a12168f002f9115` |
 | `.agentic/tests/fixtures/planning/step1.json` | `6ea62e40eb57cc803bd0edc10871cedca7c8e7b40e121bc66bd54b752541f150` |
 | `.agentic/tests/review_admission_fixture.py` | `4ece32c0f91c1f1c7b4a6ec6f5789c046121ae59dc720075477925acea22389f` |
 | `.agentic/tests/source_only.py` | `93b4366ac2d7250b28f608cff82d655e6840b20a6a871229c4d8e282c3b41bb9` |

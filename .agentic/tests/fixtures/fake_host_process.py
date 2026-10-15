@@ -23,8 +23,11 @@ def main():
             'cwd': os.getcwd(), 'environment': {k: os.environ[k] for k in watched if k in os.environ}}) + '\n')
 
     def git(arguments, data=None, check=True):
-        return subprocess.run([config['real_git'], *arguments], input=data,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check)
+        input_options = ({'input': data} if data is not None
+                         else {'stdin': subprocess.DEVNULL})
+        return subprocess.run([config['real_git'], *arguments],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check,
+            **input_options)
 
     def revision(checkout, name):
         return git(['-C', checkout, 'rev-parse', name]).stdout.decode().strip()
@@ -55,7 +58,8 @@ def main():
                 git(['--git-dir', config['remote'], 'unpack-objects'], pack)
                 git(['--git-dir', config['remote'], 'update-ref', ref, new, old])
             return 0
-        result = git(args, check=False)
+        input_data = sys.stdin.buffer.read()
+        result = git(args, data=input_data, check=False)
         sys.stdout.buffer.write(result.stdout)
         sys.stderr.buffer.write(result.stderr)
         return result.returncode
@@ -66,6 +70,7 @@ def main():
         assert method in {'GET', 'POST'}
         assert len(args) >= 6 and (args[5] == 'repos/fixture/project'
                                   or args[5].startswith('repos/fixture/project/'))
+        post_payload = sys.stdin.read() if method == 'POST' else None
         if config.get('api_mode') == 'oversize_stdout':
             sys.stdout.buffer.write(b'x' * (8 * 1024 * 1024 + 1))
             return 0
@@ -87,7 +92,7 @@ def main():
                            if critic_comments_path.exists() else [])
         if method == 'POST':
             assert suffix == 'issues/7/comments' and args[6:] == ['--input', '-']
-            payload = json.loads(sys.stdin.read())
+            payload = json.loads(post_payload)
             result = {'id': 9000 + len(critic_comments), 'body': payload['body'],
                       'user': {'id': 7001},
                       'html_url': ('https://github.com/fixture/project/issues/7#issuecomment-'
