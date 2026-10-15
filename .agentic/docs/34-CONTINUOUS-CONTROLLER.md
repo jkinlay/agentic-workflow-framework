@@ -12,35 +12,32 @@ python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --s
 ```
 
 `cycle` observes inventory, persists nonce-bound intent, reconciles uncertainty
-and delivers status. The single-link adapter is at most
-1 MiB, exports `build_adapters(config)` and matches its SHA-256; unsafe or
-missing operations fail closed. `jira-lifecycle` is read/write/readback,
-`merge-observed` validates before counting, and `snapshot` is read-only.
-Protected state stays outside worktrees; link aliases are rejected.
+and delivers status. The SHA-256-pinned adapter is at most 1 MiB, exports
+`build_adapters(config)`, and fails closed. Protected state stays outside
+worktrees; link aliases are rejected.
+
+Each issue needs one authenticated `awf-stage:implementation` or
+`awf-stage:independent-review` label, deriving `writer` or `critic`. Body role
+fields, including `code_needed`, are refused. Malformed bodies block their
+ticket; corrupt provider identity/stage metadata blocks the cycle. Receipts bind
+the observed Codex session; reused or mismatched identities fail closed.
 
 ## No silent idle state
 
-Streams are `WORKING`, `PAUSED_INPUT`, `BLOCKED` or `COMPLETE`; rows retain all
-ticket, action, tuple, gate, review and Jira state. `COMPLETE` means no scoped
-action remains. After dependency, budget, cap, independence and capacity
-checks, priority then ticket identity select. One writer owns overlapping
-physical paths; other streams continue. Each cycle pins one absolute Git
-worktree/head/tree. Git spelling is canonical; directory descendants, case
-aliases and hardlinks share ownership. Uncertain identity/parent, collisions,
-links, nested repositories, junctions, reparses or rebinding fail closed.
-Require `required = completed + outstanding` and `completed = acceptable +
-failed + stale`; contradictions fail before effects. Revalidate running work,
-and require completed tickets to become absent or terminal before refill.
+Streams are `WORKING`, `PAUSED_INPUT`, `BLOCKED` or `COMPLETE`; `COMPLETE` means
+no scoped action remains. Dependency, budget, cap, independence and capacity
+precede priority selection. Overlapping physical paths have one writer. Each
+cycle pins the Git worktree/head/tree; aliases, links, nested repositories and
+rebinding fail closed. Reviewer counts must balance. Revalidate running work;
+completed tickets must become absent or terminal before refill.
 
 ## Dispatch and cadence
 
 Persist intents before calls. `PENDING`, `IN_FLIGHT` and `UNKNOWN` reserve the
 ticket; the latter consume capacity. Preflight cancels unbegun ineligible
-intents. UNKNOWN affects only its stream/ticket/tuple. Cadence is 600 seconds;
-only `--migrate-status-cadence` changes it. Mismatch and clock rollback fail.
-`--disable-periodic-status` leaves event digests enabled. Outbox readback,
-deadlines and delivery survive restart; digests include every stream/gate and
-unresolved UNKNOWN identity/detached flag.
+intents. Cadence is 600 seconds; only `--migrate-status-cadence` changes it.
+Clock rollback fails. Disabling periodic status retains event digests. Outbox
+delivery survives restart and reports unresolved `UNKNOWN` identities.
 
 ## Jira lifecycle and merge progress
 
@@ -155,7 +152,8 @@ $project | ConvertTo-Json -Depth 100 | Set-Content (Join-Path $STATE_DIR "PROJEC
 
 $ticket=@{ticket="$JIRA_KEY-$JIRA_ISSUE";priority=1;disposition="ELIGIBLE";actor="owner";reason="disposable controller example";next_action="implement the disposable ticket";resume_trigger="owner input";paths=@("README.md");dependencies_satisfied=$true;budget_available=$true;cap_available=$true;review_independent=$true;exact_tuple="base:$HEAD/head:$HEAD/tree:$TREE/contract:example/review:pending";activity="example implementation";verification_gate="PENDING";reviewer_completion=@{required=0;completed=0;acceptable=0;failed=0;stale=0;outstanding=0};open_findings=0;jira_status="Ready"}
 & $GH_EXE label create awf-controller --repo $REPOSITORY --color 5319e7 --force
-& $GH_EXE issue create --repo $REPOSITORY --title "Controller example $($ticket.ticket)" --label awf-controller --body ($ticket | ConvertTo-Json -Depth 10 -Compress)
+& $GH_EXE label create awf-stage:implementation --repo $REPOSITORY --color 1d76db --force
+& $GH_EXE issue create --repo $REPOSITORY --title "Controller example $($ticket.ticket)" --label awf-controller --label awf-stage:implementation --body ($ticket | ConvertTo-Json -Depth 10 -Compress)
 if ($LASTEXITCODE) { throw "disposable inventory issue creation failed" }
 ```
 
@@ -180,7 +178,7 @@ function Invoke-ControllerCycle {
   $NOW=New-ObservationTime
   $head=(git -C $WORKTREE_ROOT rev-parse HEAD).Trim()
   $tree=(git -C $WORKTREE_ROOT rev-parse "HEAD^{tree}").Trim()
-  $text=& $PYTHON @COMMON cycle --inventory-binding (Join-Path $STATE_DIR "inventory-binding.json") --repository-root $WORKTREE_ROOT --repository-head-sha $head --repository-tree-sha $tree --now $NOW --host-capacity 3 --dispatch-role writer | Out-String
+  $text=& $PYTHON @COMMON cycle --inventory-binding (Join-Path $STATE_DIR "inventory-binding.json") --repository-root $WORKTREE_ROOT --repository-head-sha $head --repository-tree-sha $tree --now $NOW --host-capacity 3 | Out-String
   if ($LASTEXITCODE) { throw "controller cycle failed" }
   $cycle=$text | ConvertFrom-Json
   if (@($cycle.dispatch_receipts).Count -eq 0 -or @($cycle.errors).Count -ne 0) { throw "cycle did not prove dispatch" }
