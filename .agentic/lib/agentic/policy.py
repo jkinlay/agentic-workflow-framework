@@ -1,9 +1,10 @@
 """Baseline policy invariants and deterministic scope/trigger classification."""
 from __future__ import annotations
 import fnmatch
+import re
 
 from . import CapabilityUnavailable, ValidationError
-from .canonical import fingerprint, unique
+from .canonical import fingerprint, timestamp, unique
 
 BOUNDARY_CODES = ("PROTECTED_PATH", "SCOPE_ESCAPE", "CREDENTIAL_EXPOSURE", "UNSAFE_PATH",
                   "UNREGISTERED_PRODUCER", "CI_BINDING", "INDEPENDENCE")
@@ -18,6 +19,34 @@ CAPABILITIES = {
     "owner": {"authorize_candidate", "deny_candidate", "revoke_authorization"},
     "verifier": {"read_evidence", "verify_source_event"},
 }
+
+OVERCAP_APPROVAL_PREFIX = "AWF-OVERCAP-APPROVAL"
+_OVERCAP_APPROVAL = re.compile(
+    r"AWF-OVERCAP-APPROVAL: round ([1-9][0-9]*) of cap ([1-9][0-9]*), "
+    r"approver ([^,\s]+), ruling "
+    r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2}))"
+)
+
+
+def parse_overcap_approval(value):
+    """Parse one exact canonical over-cap approval line.
+
+    Provider identity and posting time are deliberately checked by the review
+    policy layer; parsing text alone never authenticates an owner record.
+    """
+    if not isinstance(value, str):
+        raise ValidationError(f"{OVERCAP_APPROVAL_PREFIX} record must be text")
+    matched = _OVERCAP_APPROVAL.fullmatch(value)
+    if matched is None:
+        raise ValidationError(f"Malformed {OVERCAP_APPROVAL_PREFIX} record")
+    round_number, cap, approver, ruling_at = matched.groups()
+    timestamp(ruling_at)
+    return {
+        "round": int(round_number),
+        "cap": int(cap),
+        "approver": approver,
+        "ruling_at": ruling_at,
+    }
 
 
 def require_reference_capability(action):
