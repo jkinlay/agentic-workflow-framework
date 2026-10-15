@@ -143,8 +143,71 @@ GATE_NAMES = ["review_completion", "verdict_posting", "acceptance_criteria", "sc
               "publication_safety"]
 
 
-def catalog():
+def catalog(*, include_ticket_plan=False):
+    """Return contracts used by generic draft-form generation.
+
+    Ticket plans are deterministic planner output, not operator-authored draft
+    forms.  ``render_catalog`` opts them into the generated schema catalog,
+    while the no-argument form remains suitable for ``generate_examples``.
+    """
     schemas = {}
+    ticket_key = text(pattern="^[A-Z][A-Z0-9_]*-[1-9][0-9]*$")
+    idle_lane_reason = nullable(enum(
+        "NO_READY_TICKET", "PREDECESSOR_UNMERGED", "FILE_CLASH",
+        "OWNERSHIP_CONFLICT", "GENERATOR_ORDER_BUSY", "START_GAP_PENDING",
+        "HOLD", "CAP_REACHED", "PLAN_UNREADABLE",
+    ))
+    owner_review_window = nullable(obj({
+        "opens_at_minute": integer(),
+        "closes_at_minute": integer(),
+    }))
+    ticket_plan_item = obj({
+        "key": ticket_key,
+        "dependencies": arr(ticket_key, uniqueItems=True),
+        "write_paths": arr(text(), 1, uniqueItems=True),
+        "duration_minutes": integer(1),
+        "risk_tier": integer(1, maximum=3),
+        "round_cap": integer(1),
+        "owner_review_window": owner_review_window,
+        "earliest_start_minute": integer(),
+        "critical_path": BOOL,
+        "critical_path_position": nullable(integer(1)),
+        "serial_path_id": text(),
+        "serial_predecessor": nullable(ticket_key),
+        "lane_class": enum("critical", "feeder", "controller"),
+        "independent": BOOL,
+        "generator_order_slot": nullable(integer(1)),
+        "owner_lane": text(),
+        "idle_lane_reason": idle_lane_reason,
+        "phase": text(),
+        "status": text(),
+        "in_lane": BOOL,
+    }, allOf=[
+        {
+            "if": {"properties": {"critical_path": const(True)}},
+            "then": {"properties": {"critical_path_position": integer(1)}},
+            "else": {"properties": {"critical_path_position": {"type": "null"}}},
+        },
+    ])
+    if include_ticket_plan:
+        schemas["ticket-plan"] = obj({
+            "format": const("awf-ticket-plan-1"),
+            "schema_version": const(1),
+            "lane_cap": integer(1),
+            "start_gap_minutes": integer(),
+            "tier3_round_cap": integer(1),
+            "generator_order": arr(ticket_key, uniqueItems=True),
+            "critical_path": arr(ticket_key, 1, uniqueItems=True),
+            "duration_minutes": integer(1),
+            "tickets": arr(ticket_plan_item, 1),
+            "edges": arr(obj({
+                "from": ticket_key,
+                "to": ticket_key,
+                "kind": enum("dependency", "file_overlap", "generator_order"),
+                "paths": arr(text(), uniqueItems=True),
+            })),
+            "mermaid": text(),
+        })
     operating_model = obj({
         "model": text(maxLength=256),
         "reasoning_effort": enum("low", "medium", "high", "xhigh", "max", "ultra"),
@@ -993,7 +1056,7 @@ def catalog():
 
 def render_catalog():
     return {name: (json.dumps(schema, indent=2) + "\n").encode("utf-8")
-            for name, schema in catalog().items()}
+            for name, schema in catalog(include_ticket_plan=True).items()}
 
 
 def main(argv=()):
