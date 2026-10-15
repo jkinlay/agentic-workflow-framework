@@ -36,13 +36,15 @@ grants none. Fresh Date/ETag binds repository, PRs, heads, files and ticket
 branches at plan and lane start. Paths use exact, case-sensitive NFC Git `/`
 spelling without globs.
 
-Every cycle sweeps persisted `ACTIVE` allowances. Expiry creates a durable
-pair/head gate. Only confirmed conflicts run the idempotent sync writer.
-`PENDING` becomes `SYNCED` when its receipt binds both post-sync heads, sorted
-files and a nonempty, hash-matched UTF-8 diff (maximum 512 KiB). `EXECUTED`
-requires fresh inventory binding those heads and ownership, collected again
-after same-cycle sync. The full evidence reaches the next critic; otherwise
-both tickets block and `UNKNOWN` is never reissued.
+Expiry persists a gate. Dispatches need terminal proof before conflict;
+otherwise it stays `PENDING` after restart. A confirmed
+conflict runs the idempotent shipped sync writer. `SYNCED` binds post-sync
+heads, sorted files and a nonempty hash-matched diff (maximum 512 KiB).
+`EXECUTED` also needs fresh Date/ETag heads and inventory whose parsed,
+`head` field equals the live 40-hex SHA. The
+adapter executes/replays a first-into-second GitHub merge; its diff reaches the
+next critic. Ambiguity blocks and `UNKNOWN` is
+never reissued.
 
 ## Dispatch and cadence
 
