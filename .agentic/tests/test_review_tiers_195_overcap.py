@@ -157,6 +157,22 @@ class Tier3OvercapApprovalTests(unittest.TestCase):
             review_decision(2, 4)
 
 
+class NonTier3GateRegressionTests(Fixture):
+    def test_tier_two_mismatched_run_timestamp_fails_closed(self):
+        verdict = self.bundle["review_verdicts"][0]
+        self.assertEqual(2, verdict["tier"])
+        critic_run = next(
+            run for run in self.bundle["runs"]
+            if run["run_id"] == verdict["run_id"]
+        )
+        critic_run["created_at"] = "2026-09-09T11:56:00Z"
+
+        gate = self.gate()
+
+        self.assertEqual("NOT_READY", gate["conclusion"])
+        self.assertEqual("FAIL", gate["gates"]["critic_current_tuple"]["result"])
+
+
 class Tier3OvercapGateTests(Fixture):
     """Exercise the production final-gate round-admission call path."""
 
@@ -210,6 +226,7 @@ class Tier3OvercapGateTests(Fixture):
             "created_at": approval["created_at"],
             "updated_at": approval["updated_at"],
             "body": approval["raw_body"],
+            "head_sha": self.bundle["candidate"]["head_sha"],
         })
         approval.update(
             source="host_observation",
