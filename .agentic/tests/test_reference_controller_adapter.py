@@ -17,7 +17,7 @@ from source_only import skip_unless_source_repo
 from agentic.canonical import canonical, fingerprint, sha256
 from agentic.contracts import Contracts
 from agentic.continuous_controller import (
-    ContinuousControllerStore, production_controller_cycle,
+    ContinuousControllerStore, overlap_allowance_command, production_controller_cycle,
     production_jira_lifecycle, production_merge_observed,
 )
 from agentic.lifecycle import definition
@@ -266,9 +266,82 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
                                          "read_current_status", "write_transition", "read_transition",
                                          "reconcile_merged_ticket", "fetch_scope_page",
                                          "observe_accepted_project_config", "observe_closeout_record",
-                                         "observe_jira_reconciliation"})
+                                     "observe_jira_reconciliation", "observe_overlap_allowance",
+                                     "observe_overlap_conflict", "sync_writer"})
         with self.assertRaisesRegex(ValidationError, "SHA-256 pin"):
             loader._load_reviewed_adapters(self.adapter, "0" * 64, config_path)
+
+    def test_overlap_observer_derives_comment_pr_heads_files_and_freshness(self):
+        request = {
+            "repository_id": "101", "cycle_id": "cycle-1", "comment_id": 9001,
+            "path": "src/shared.py", "expires_at": "2026-10-09T08:30:00Z",
+            "pull_requests": [
+                {"number": 11, "ticket": "AWF-32", "head_sha": "1" * 40,
+                 "changed_files": ["src/left.py", "src/shared.py"]},
+                {"number": 12, "ticket": "AWF-33", "head_sha": "2" * 40,
+                 "changed_files": ["src/right.py", "src/shared.py"]},
+            ],
+        }
+
+        class HeaderRunner(FakeRunner):
+            def response(self, body, etag):
+                return {"headers": {"ETag": etag,
+                                     "Date": "Fri, 09 Oct 2026 08:00:00 GMT"},
+                        "body": body}
+
+            def run(self, argv, *, cwd, env, timeout, max_bytes):
+                path = argv[-1]
+                if "/issues/comments/9001" in path:
+                    return self.response({
+                        "id": 9001, "node_id": "comment-node-9001",
+                        "user": {"id": 7001, "login": "owner"},
+                        "author_association": "OWNER",
+                        "created_at": "2026-10-09T07:55:00Z",
+                        "updated_at": "2026-10-09T07:55:00Z",
+                        "body": overlap_allowance_command(request),
+                    }, '"comment"')
+                match = __import__("re").search(r"/pulls/(11|12)$", path)
+                if match:
+                    number = int(match.group(1))
+                    item = request["pull_requests"][number - 11]
+                    slug = item["ticket"].lower()
+                    return self.response({
+                        "number": number, "state": "open", "merged": False,
+                        "changed_files": 2,
+                        "head": {"sha": item["head_sha"],
+                                 "ref": "codex/" + item["ticket"] + "-" + slug,
+                                 "repo": {"id": 101}},
+                        "base": {"repo": {"id": 101}},
+                    }, '"pr-%s"' % number)
+                match = __import__("re").search(r"/pulls/(11|12)/files", path)
+                if match:
+                    number = int(match.group(1))
+                    files = request["pull_requests"][number - 11]["changed_files"]
+                    return self.response([{"filename": name} for name in files],
+                                         '"files-%s"' % number)
+                return super().run(argv, cwd=cwd, env=env, timeout=timeout,
+                                   max_bytes=max_bytes)
+
+            def observe_overlap_conflict(self, gate):
+                return {"gate": gate, "status": "observed"}
+
+            def sync_writer(self, payload):
+                return {"payload": payload, "status": "executed"}
+
+        runner = HeaderRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        observed = adapters["observe_overlap_allowance"](request, "PLAN")
+        self.assertEqual((101, 7001, "comment-node-9001"),
+                         (observed["repository_id"], observed["comment"]["actor_id"],
+                          observed["comment"]["node_id"]))
+        self.assertEqual(["1" * 40, "2" * 40],
+                         [item["head_sha"] for item in observed["pull_requests"]])
+        self.assertEqual(request["pull_requests"][0]["changed_files"],
+                         observed["pull_requests"][0]["changed_files"])
+        self.assertTrue(observed["observation_etag"])
+        self.assertEqual("observed", adapters["observe_overlap_conflict"]({"gate_id": "g"})["status"])
+        self.assertEqual("executed", adapters["sync_writer"]({"execution_id": "e"})["status"])
 
     def test_cycle_runs_end_to_end_through_real_adapter_and_strips_credentials(self):
         repository = self.root / "repository"
@@ -444,13 +517,17 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
                    "exact_tuple": "tuple", "dispatch_nonce": "critic-nonce",
                    "prepared_at": NOW, "begun_at": NOW, "paths": ["a.py"],
                    "actor": "critic", "next_action": "review", "role": "critic",
-                   "lifecycle_stage": "independent_review"}
+                   "lifecycle_stage": "independent_review",
+                   "overlap_sync_evidence": [{"gate_id": "gate-1",
+                                                "diff_sha256": "d" * 64}]}
         receipt = adapters["dispatch_ticket"](payload)
         self.assertEqual((receipt["role"], receipt["lifecycle_stage"], receipt["session_id"]),
                          ("critic", "independent_review", "session-critic-1"))
         argv = runner.launches[-1][0]
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertIn("critic-model", argv)
+        self.assertIn("Mandatory overlap-sync diff evidence", runner.prompts[-1])
+        self.assertIn("d" * 64, runner.prompts[-1])
         adapters["dispatch_ticket"](_dispatch_payload("probe-1", "probe"))
         probe_argv = runner.launches[-1][0]
         self.assertEqual(probe_argv[probe_argv.index("--sandbox") + 1], "read-only")
