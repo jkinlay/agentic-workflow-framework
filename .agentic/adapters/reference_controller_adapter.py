@@ -672,7 +672,8 @@ def _validate_ticket_records(items):
             except (ValueError, json.JSONDecodeError):
                 problem = "issue body is not valid JSON"
         if problem is None and (not isinstance(parsed, dict) or set(parsed) != _TICKET_BODY_FIELDS):
-            reserved = sorted(set(parsed or {}) & {"code_needed", "dispatch_role", "lifecycle_stage", "role"})
+            body_fields = set(parsed) if isinstance(parsed, dict) else set()
+            reserved = sorted(body_fields & {"code_needed", "dispatch_role", "lifecycle_stage", "role"})
             problem = (("forged body authority field(s) " + ", ".join(reserved)) if reserved
                        else "issue body does not match the ticket data contract")
         if problem is None:
