@@ -307,11 +307,19 @@ class CriticBindingTests(unittest.TestCase):
     def test_verdict_binds_critic_run_to_reviewed_head(self):
         head = "a" * 40
         binding = validate_critic_run_binding(
-            {"run_id": RUN_A, "head_sha": head}, reviewed_head=head
+            {"run_id": RUN_A, "head_sha": head,
+             "result_sha256": "b" * 64,
+             "critic_run_carrier": f"Critic run: {RUN_A}",
+             "candidate_binding": {"head_sha": head},
+             "critic_artifact_binding": {
+                 "critic_run_id": RUN_A, "head_sha": head},
+             "critic_review": {"run_id": RUN_A, "head_sha": head}},
+            reviewed_head=head
         )
         self.assertEqual(
             {"critic_run_id": RUN_A, "head_sha": head,
-             "trailer": f"Critic run: {RUN_A}"},
+             "trailer": f"Critic run: {RUN_A}",
+             "result_sha256": "b" * 64},
             binding,
         )
 
@@ -328,6 +336,8 @@ class CriticBindingTests(unittest.TestCase):
         verdict = {
             "run_id": RUN_A,
             "head_sha": head,
+            "result_sha256": "c" * 64,
+            "critic_run_carrier": f"Critic run: {RUN_A}",
             "candidate_binding": {
                 "repository_id": 1,
                 "pr_number": 49,
