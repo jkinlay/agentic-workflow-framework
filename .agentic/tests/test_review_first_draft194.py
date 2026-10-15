@@ -703,6 +703,15 @@ class FirstDraftHostIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.state('12:0')
 
+    def test_b26_static_body_fields_fail_before_worker_reservation(self):
+        with patch.object(self.driver, 'verified_contract_text',
+                          return_value='trusted\u2028contract'):
+            code, _, error = self.cli('first-draft', '--title', 'valid title')
+        self.assertEqual(code, 2)
+        self.assertIn('BODY_CONTRACT_INVALID', error)
+        with self.assertRaises(ValidationError):
+            self.state('12:0')
+
     def state(self, key):
         store = LoopStore(self.base / 'state')
         try:
