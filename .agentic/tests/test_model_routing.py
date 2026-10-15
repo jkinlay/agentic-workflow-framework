@@ -441,6 +441,11 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertEqual(retry["status"], "blocked")
         self.assertIn("ceiling", retry["reason"])
         self.policy["escalation"]["effort_ceiling"] = "xhigh"
+        for role, allowed in self.policy["role_allowed_models"].items():
+            self.policy["role_allowed_models"][role] = [
+                model for model in allowed
+                if "xhigh" in self.policy["models"][model]["reasoning_efforts"]
+            ]
         retry = self.reserve()
         self.assertEqual((retry["model"], retry["reasoning_effort"]), ("gpt-5.6-terra", "xhigh"))
 
@@ -449,13 +454,18 @@ class ModelRoutingTests(unittest.TestCase):
         work = request(risk="high", previous_route=previous, last_failure_kind="reasoning")
         self.assertEqual(select_route(self.policy, work, capabilities())["status"], "blocked")
         self.policy["escalation"]["effort_ceiling"] = "xhigh"
+        for role, allowed in self.policy["role_allowed_models"].items():
+            self.policy["role_allowed_models"][role] = [
+                model for model in allowed
+                if "xhigh" in self.policy["models"][model]["reasoning_efforts"]
+            ]
         retry = select_route(self.policy, work, capabilities())
         self.assertEqual((retry["model"], retry["reasoning_effort"]), ("gpt-5.6-sol", "xhigh"))
 
     def test_accepted_escalations_are_monotone_for_each_role_and_previous_pair(self):
         for role in ("controller", "worker", "critic", "specialist"):
             for model in MODELS:
-                for effort in ("low", "medium", "high", "xhigh"):
+                for effort in self.policy["models"][model]["reasoning_efforts"]:
                     work = request(role=role, worker_context_id="independent", previous_route={"model": model, "reasoning_effort": effort},
                                    last_failure_kind="reasoning")
                     route = select_route(self.policy, work, capabilities())
@@ -464,6 +474,14 @@ class ModelRoutingTests(unittest.TestCase):
                         self.assertGreaterEqual(("low", "medium", "high", "xhigh").index(route["reasoning_effort"]),
                                                 ("low", "medium", "high", "xhigh").index(effort))
                         self.assertIn(route["reasoning_effort"], ("low", "medium", "high"))
+
+    def test_gpt_6_1_sol_rejects_xhigh_policy(self):
+        self.policy["role_defaults"]["worker"] = {
+            "model": "gpt-6.1-sol", "reasoning_effort": "xhigh"
+        }
+        with self.assertRaisesRegex(ValidationError,
+                                    "unsupported policy model/effort combination"):
+            validate_policy(self.policy)
 
     def test_escalation_ceiling_must_be_supported_by_every_approved_model(self):
         self.policy["models"][MODELS[1]]["reasoning_efforts"] = ["low"]

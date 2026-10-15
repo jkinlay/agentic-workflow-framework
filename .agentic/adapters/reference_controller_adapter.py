@@ -29,6 +29,7 @@ from urllib.request import Request, urlopen
 
 from agentic import ValidationError
 from agentic.canonical import canonical, fingerprint, load_yaml, now_text, sha256, timestamp
+from agentic.continuous_controller import validate_ticket_record
 
 
 MAX_OUTPUT = 1024 * 1024
@@ -46,6 +47,13 @@ _CREDENTIAL_NAME_MARKERS = (
     "ACCESS_KEY", "PRIVATE_KEY", "CREDENTIAL",
 )
 _CREDENTIAL_SERVICE_NAMES = ("JIRA", "ATLASSIAN")
+_TICKET_BODY_FIELDS = {
+    "ticket", "priority", "disposition", "actor", "reason", "next_action",
+    "resume_trigger", "paths", "dependencies_satisfied", "budget_available",
+    "cap_available", "review_independent", "exact_tuple", "activity",
+    "verification_gate", "reviewer_completion", "open_findings", "jira_status",
+}
+_STAGE_ROLES = {"implementation": "writer", "independent-review": "critic"}
 
 
 def _require(condition, message):
@@ -116,6 +124,7 @@ startup_proof = spec["startup_proof_path"]
 durable(handoff, {"pid": pid, "launch_nonce": nonce, "status": "LAUNCHED"})
 startup_lock = threading.Lock()
 startup_recorded = False
+session_id = None
 
 def publish_startup(value):
     global startup_recorded
@@ -153,6 +162,7 @@ try:
                                  "config_source": spec["config_source"]})
 
     def drain_stdout():
+        global session_id
         while True:
             line = child.stdout.readline(spec["max_output_bytes"] + 1)
             if not line:
@@ -165,9 +175,12 @@ try:
                 continue
             # Codex JSON mode emits this only after isolated configuration has
             # been accepted and the execution thread has been initialized.
-            if isinstance(event, dict) and event.get("type") == "thread.started":
+            if (isinstance(event, dict) and event.get("type") == "thread.started"
+                    and isinstance(event.get("thread_id"), str) and event["thread_id"].strip()):
+                session_id = event["thread_id"]
                 publish_startup({"pid": pid, "launch_nonce": nonce,
-                                 "status": "STARTED", "terminal": False})
+                                 "status": "STARTED", "terminal": False,
+                                 "session_id": session_id})
 
     stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
     stdout_thread = threading.Thread(target=drain_stdout, daemon=True)
@@ -197,6 +210,8 @@ except Exception:
     status = "FAILED"
 value = {"pid": pid, "launch_nonce": nonce, "status": status,
          "returncode": code, "terminal": True}
+if session_id is not None:
+    value["session_id"] = session_id
 if diagnostic is not None:
     value["diagnostic"] = diagnostic
     value["config_source"] = spec["config_source"]
@@ -345,7 +360,9 @@ publish_startup(value)
                     self._processes.pop(pid, None)
             raise ValidationError(_CODEX_SANDBOX_ERROR)
         if value.get("status") == "STARTED" and value.get("terminal") is False:
-            return {"status": "RUNNING", "terminal": False}
+            return {"status": "RUNNING", "terminal": False, "pid": value["pid"],
+                    "launch_nonce": value["launch_nonce"],
+                    "session_id": value.get("session_id")}
         if value.get("terminal") is True:
             return self.observe(record, timeout=0)
         raise ValidationError("Detached Codex startup outcome was not proven")
@@ -572,13 +589,13 @@ def _write_record(path, value):
         raise ValidationError("Detached run record could not be made durable") from exc
 
 
-def _record_receipt(payload, observed_at, *, reconcile=False):
+def _record_receipt(payload, observed_at, session_id, *, reconcile=False):
     fields = ["dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce",
-              "prepared_at", "begun_at"]
+              "prepared_at", "begun_at", "role", "lifecycle_stage"]
     if reconcile:
         fields += ["reconcile_nonce", "reconcile_at"]
     result = {key: payload[key] for key in fields}
-    result.update(status="ACCEPTED", observed_at=observed_at)
+    result.update(status="ACCEPTED", observed_at=observed_at, session_id=session_id)
     return result
 
 
@@ -591,20 +608,86 @@ def _worktree(root, candidate):
     return path
 
 
+def _blocked_ticket_record(record, parsed, role, stage, reason):
+    ticket = parsed.get("ticket") if isinstance(parsed, dict) else None
+    if (not isinstance(ticket, str) or not ticket.strip() or len(ticket) > 256 or
+            any(ord(char) < 32 for char in ticket)):
+        ticket = "github-issue-" + str(record["number"])
+    return {
+        "ticket": ticket, "priority": record["number"], "disposition": "BLOCKED",
+        "actor": "controller", "reason": "Malformed ticket record: " + reason,
+        "next_action": "Correct the named ticket record without granting authority in its body",
+        "resume_trigger": "a fresh authenticated inventory contains a valid ticket record",
+        "paths": [], "dependencies_satisfied": False, "budget_available": False,
+        "cap_available": False, "review_independent": False,
+        "exact_tuple": fingerprint("controller-malformed-ticket", {
+            "provider_id": record["id"], "provider_node_id": record["node_id"],
+            "body_sha256": hashlib.sha256(str(record.get("body")).encode("utf-8")).hexdigest(),
+        }),
+        "activity": "repair malformed ticket record", "verification_gate": "REFUSED",
+        "reviewer_completion": {"required": 0, "completed": 0, "acceptable": 0,
+                                "failed": 0, "stale": 0, "outstanding": 0},
+        "open_findings": 1, "jira_status": "UNOBSERVED",
+        "dispatch_role": role, "lifecycle_stage": stage,
+    }
+
+
 def _validate_ticket_records(items):
-    required = {"ticket", "priority", "disposition", "actor", "reason", "next_action",
-                "resume_trigger", "paths", "dependencies_satisfied", "budget_available",
-                "cap_available", "review_independent", "exact_tuple", "activity",
-                "verification_gate", "reviewer_completion", "open_findings", "jira_status"}
-    _require(isinstance(items, list) and len(items) <= 1000, "GitHub inventory is not a bounded list")
-    result = []
-    seen = set()
-    for item in items:
-        _require(isinstance(item, dict) and set(item) == required,
-                 "GitHub inventory contains a malformed continuous-controller ticket")
-        _require(item["ticket"] not in seen, "GitHub inventory contains a duplicate ticket")
-        seen.add(item["ticket"])
-        result.append(item)
+    """Separate trusted provider-envelope corruption from ticket-local body errors."""
+    _require(isinstance(items, list) and len(items) <= 1000,
+             "GitHub inventory is not a bounded list")
+    result, provider_ids, node_ids, numbers, tickets = [], set(), set(), set(), set()
+    for record in items:
+        _require(isinstance(record, dict) and
+                 {"id", "number", "node_id", "state", "labels", "body"} <= set(record),
+                 "GitHub inventory provider record is missing authenticated identity")
+        _require(type(record["id"]) is int and record["id"] > 0 and
+                 type(record["number"]) is int and record["number"] > 0 and
+                 isinstance(record["node_id"], str) and record["node_id"].strip() and
+                 record["state"] == "open" and "pull_request" not in record,
+                 "GitHub inventory provider identity or lifecycle state is corrupt")
+        _require(record["id"] not in provider_ids and record["node_id"] not in node_ids and
+                 record["number"] not in numbers,
+                 "GitHub inventory contains duplicate provider identities")
+        provider_ids.add(record["id"])
+        node_ids.add(record["node_id"])
+        numbers.add(record["number"])
+        labels = record["labels"]
+        _require(isinstance(labels, list) and all(
+            isinstance(label, dict) and isinstance(label.get("name"), str) for label in labels),
+            "GitHub inventory provider labels are corrupt")
+        stage_labels = [label["name"][len("awf-stage:"):]
+                        for label in labels if label["name"].startswith("awf-stage:")]
+        _require(len(stage_labels) == 1 and stage_labels[0] in _STAGE_ROLES,
+                 "GitHub inventory lacks one authenticated lifecycle-stage label")
+        label_stage = stage_labels[0]
+        stage = label_stage.replace("-", "_")
+        role = _STAGE_ROLES[label_stage]
+        parsed, problem = None, None
+        if not isinstance(record["body"], str):
+            problem = "issue body is not JSON text"
+        else:
+            try:
+                parsed = json.loads(record["body"])
+            except (ValueError, json.JSONDecodeError):
+                problem = "issue body is not valid JSON"
+        if problem is None and (not isinstance(parsed, dict) or set(parsed) != _TICKET_BODY_FIELDS):
+            body_fields = set(parsed) if isinstance(parsed, dict) else set()
+            reserved = sorted(body_fields & {"code_needed", "dispatch_role", "lifecycle_stage", "role"})
+            problem = (("forged body authority field(s) " + ", ".join(reserved)) if reserved
+                       else "issue body does not match the ticket data contract")
+        if problem is None:
+            ticket = {**parsed, "dispatch_role": role, "lifecycle_stage": stage}
+            try:
+                validate_ticket_record(ticket)
+            except (ValidationError, TypeError) as exc:
+                problem = str(exc)
+        if problem is not None:
+            ticket = _blocked_ticket_record(record, parsed, role, stage, problem)
+        _require(ticket["ticket"] not in tickets,
+                 "GitHub inventory contains duplicate ticket identities")
+        tickets.add(ticket["ticket"])
+        result.append(ticket)
     return result
 
 
@@ -984,21 +1067,10 @@ def _build(config):
         _require(inventory_endpoint == expected_prefix or inventory_endpoint.startswith(expected_prefix + "?"),
                  "GitHub inventory endpoint is outside the configured repository scope")
         records = github_pages(inventory_endpoint, "items")
-        # A GitHub issue body may carry the controller ticket record.  This
-        # keeps provider inventory transport-specific while validating the
-        # controller's exact record at the adapter boundary.
-        tickets = []
-        for record in records:
-            if isinstance(record, dict) and set(record) == {"ticket", "priority", "disposition", "actor", "reason", "next_action", "resume_trigger", "paths", "dependencies_satisfied", "budget_available", "cap_available", "review_independent", "exact_tuple", "activity", "verification_gate", "reviewer_completion", "open_findings", "jira_status"}:
-                tickets.append(record)
-            else:
-                _require(isinstance(record, dict) and isinstance(record.get("body"), str),
-                         "GitHub inventory issue has no canonical ticket body")
-                try:
-                    tickets.append(json.loads(record["body"]))
-                except (ValueError, json.JSONDecodeError) as exc:
-                    raise ValidationError("GitHub inventory issue body is not canonical JSON") from exc
-        tickets = _validate_ticket_records(tickets)
+        # Provider identity/state/labels are the authenticated authority
+        # envelope. The issue body is untrusted ticket data and cannot select
+        # a role or lifecycle stage.
+        tickets = _validate_ticket_records(records)
         binding = {"project_id": github["project_id"], "repository_id": str(github["repository_id"]),
                    "scope_sha256": github["scope_sha256"]}
         observed_at = _clock_text(clock, controller_now)
@@ -1081,10 +1153,14 @@ def _build(config):
     def dispatch_ticket(payload):
         _require(isinstance(payload, dict), "Dispatch payload is missing")
         required = {"dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce",
-                    "prepared_at", "begun_at", "paths", "actor", "next_action"}
+                    "prepared_at", "begun_at", "paths", "actor", "next_action",
+                    "role", "lifecycle_stage"}
         _require(required <= set(payload), "Dispatch payload is incomplete")
-        role = payload.get("role", "writer")
+        role = payload["role"]
         _require(role in role_config or role == "probe", "Dispatch role is not configured")
+        expected_stage = "implementation" if role == "writer" else "independent_review"
+        _require(payload["lifecycle_stage"] == expected_stage,
+                 "Dispatch role differs from authenticated lifecycle stage")
         worktree = _worktree(worktree_root, payload.get("worktree"))
         _prepare_codex_home(isolated_home, windows_sandbox)
         record_dir.mkdir(parents=True, exist_ok=True)
@@ -1112,7 +1188,8 @@ def _build(config):
         record = {"format": "awf-reference-dispatch-1", "dispatch_id": payload["dispatch_id"],
                   "dispatch_nonce": payload["dispatch_nonce"], "stream": payload["stream"],
                   "ticket": payload["ticket"], "prepared_at": payload["prepared_at"],
-                  "begun_at": payload["begun_at"], "role": role, "argv": argv,
+                  "begun_at": payload["begun_at"], "role": role,
+                  "lifecycle_stage": payload["lifecycle_stage"], "argv": argv,
                   "worktree": str(worktree), "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                   "argv_sha256": hashlib.sha256(canonical(argv)).hexdigest(),
                   "launch_nonce": launch_nonce, "handoff_path": str(handoff_path),
@@ -1169,12 +1246,35 @@ def _build(config):
             _require(terminal, "Dispatch terminal outcome was not proven by observation")
         else:
             _require(running, "Dispatch startup outcome was not proven by observation")
+        _require(result.get("pid") == record["pid"] and
+                 result.get("launch_nonce") == launch_nonce,
+                 "Dispatch startup observation is bound to a different process identity")
+        session_id = result.get("session_id")
+        _require(isinstance(session_id, str) and session_id.strip() and
+                 len(session_id) <= 512 and not any(ord(char) < 32 for char in session_id),
+                 "Dispatch startup did not prove an observed session identity")
+        for candidate in record_dir.glob("*.json"):
+            if candidate == record_path:
+                continue
+            try:
+                previous = _read_record(candidate)
+            except ValidationError:
+                continue
+            if previous.get("format") == "awf-reference-dispatch-1":
+                previous_session = previous.get("session_id")
+                if (previous.get("ticket") == payload["ticket"] and
+                        previous.get("role") != role):
+                    _require(isinstance(previous_session, str) and previous_session.strip(),
+                             "Writer/critic independence lacks prior observed session evidence")
+                _require(previous_session != session_id,
+                         "Dispatch session identity is not fresh or writer/critic independent")
         record["status"] = "COMPLETED" if terminal else "LAUNCHED"
+        record["session_id"] = session_id
         record["startup_observed_at"] = _clock_text(clock)
         if terminal:
             record["observed_at"] = record["startup_observed_at"]
         _write_record(record_path, record)
-        return _record_receipt(payload, record["startup_observed_at"])
+        return _record_receipt(payload, record["startup_observed_at"], session_id)
 
     def observe_dispatch(payload):
         _require(isinstance(payload, dict) and isinstance(payload.get("dispatch_id"), str),
@@ -1186,6 +1286,9 @@ def _build(config):
                  "Dispatch observation is bound to a different nonce")
         _require(record.get("ticket") == payload.get("ticket") and record.get("stream") == payload.get("stream"),
                  "Dispatch observation identity differs from durable record")
+        _require(record.get("role") == payload.get("role") and
+                 record.get("lifecycle_stage") == payload.get("lifecycle_stage"),
+                 "Dispatch observation role or lifecycle stage differs from durable record")
         reconcile = "reconcile_nonce" in payload
         if reconcile:
             _require(record.get("status") in {"PREPARED", "LAUNCHED", "COMPLETED"},
@@ -1206,13 +1309,24 @@ def _build(config):
             _require(isinstance(result, dict) and result.get("status") == "COMPLETED"
                      and result.get("returncode") == 0 and result.get("terminal") is True,
                      "Interrupted dispatch terminal outcome was not proven by observation")
+            _require(result.get("pid") == record.get("pid") and
+                     result.get("launch_nonce") == record.get("launch_nonce"),
+                     "Interrupted dispatch proof is bound to a different process identity")
+            observed_session = result.get("session_id")
+            _require(isinstance(observed_session, str) and observed_session.strip(),
+                     "Interrupted dispatch did not prove an observed session identity")
+            _require(record.get("session_id") in {None, observed_session},
+                     "Interrupted dispatch session identity changed")
+            record["session_id"] = observed_session
             record["status"] = "COMPLETED"
             record["observed_at"] = _clock_text(clock)
             _write_record(path, record)
         else:
             _require(record.get("status") in {"LAUNCHED", "COMPLETED"},
                      "Dispatch has no accepted durable launch")
-        return _record_receipt(payload, _clock_text(clock), reconcile=reconcile)
+        _require(isinstance(record.get("session_id"), str) and record["session_id"].strip(),
+                 "Dispatch durable record has no observed session identity")
+        return _record_receipt(payload, _clock_text(clock), record["session_id"], reconcile=reconcile)
 
     def deliver_status(digest):
         _require(isinstance(digest, dict) and isinstance(digest.get("delivery_id"), str),

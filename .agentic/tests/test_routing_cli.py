@@ -218,6 +218,14 @@ class RoutingCLITests(unittest.TestCase):
         self.assertIn("ceiling", self.route(expected=2)["reason"])
         self.policy["escalation"]["effort_ceiling"] = "xhigh"
         self.document("config.json", self.config)
+        self.assertIn("gpt-6.1-sol", self.route(expected=2)["reason"])
+        self.policy["escalation"]["effort_ceiling"] = "high"
+        for role, allowed in self.policy["role_allowed_models"].items():
+            self.policy["role_allowed_models"][role] = [
+                model for model in allowed if model != "gpt-6.1-sol"
+            ]
+        self.policy["escalation"]["effort_ceiling"] = "xhigh"
+        self.document("config.json", self.config)
         result = self.route()
         self.assertEqual((result["model"], result["reasoning_effort"]), (MODELS[2], "xhigh"))
 

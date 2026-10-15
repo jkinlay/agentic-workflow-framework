@@ -25,6 +25,7 @@ from .controller_state import configure_database, protected_state_path, restrict
 
 STREAM_STATES = {"WORKING", "PAUSED_INPUT", "BLOCKED", "COMPLETE"}
 TICKET_STATES = {"ELIGIBLE", "PAUSED_INPUT", "BLOCKED", "COMPLETE"}
+LIFECYCLE_ROLES = {"implementation": "writer", "independent_review": "critic"}
 DEFAULT_STATUS_CADENCE_SECONDS = 10 * 60
 STATE_APPLICATION_ID = 0x41574631
 
@@ -43,6 +44,10 @@ CREATE TABLE IF NOT EXISTS controller_dispatch(
  dispatch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,ticket TEXT NOT NULL,
  exact_tuple TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,
  receipt_json TEXT,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS controller_ticket_authority(
+ ticket TEXT NOT NULL,exact_tuple TEXT NOT NULL,dispatch_role TEXT NOT NULL,
+ lifecycle_stage TEXT NOT NULL,observed_at TEXT NOT NULL,
+ PRIMARY KEY(ticket,exact_tuple));
 CREATE TABLE IF NOT EXISTS controller_jira_operation(
  operation_id TEXT PRIMARY KEY,issue_id TEXT NOT NULL,event TEXT NOT NULL,
  intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,
@@ -67,12 +72,15 @@ def _reviewer_counts(counts):
     return dict(counts)
 
 
-def _ticket(value):
+def validate_ticket_record(value):
     required = {"ticket", "priority", "disposition", "actor", "reason", "next_action", "resume_trigger",
                 "paths", "dependencies_satisfied", "budget_available", "cap_available", "review_independent",
-                "exact_tuple", "activity", "verification_gate", "reviewer_completion", "open_findings", "jira_status"}
+                "exact_tuple", "activity", "verification_gate", "reviewer_completion", "open_findings", "jira_status",
+                "dispatch_role", "lifecycle_stage"}
     _require(isinstance(value, dict) and set(value) == required, "Malformed continuous-controller ticket")
-    _require(isinstance(value["ticket"], str) and value["ticket"].strip(), "Ticket identity is required")
+    _require(isinstance(value["ticket"], str) and value["ticket"].strip() and
+             len(value["ticket"]) <= 256 and not any(ord(char) < 32 for char in value["ticket"]),
+             "Ticket identity is required")
     _require(type(value["priority"]) is int and value["priority"] >= 0, "Ticket priority must be nonnegative")
     _require(value["disposition"] in TICKET_STATES, "Unknown ticket scheduling disposition")
     _require(isinstance(value["paths"], list), "Ticket paths must be a list")
@@ -84,10 +92,17 @@ def _ticket(value):
     for key in ("actor", "reason", "next_action", "resume_trigger", "exact_tuple", "activity",
                 "verification_gate", "jira_status"):
         _require(isinstance(value[key], str) and value[key].strip(), f"{key} is required")
+    _require(value["lifecycle_stage"] in LIFECYCLE_ROLES,
+             "Ticket lifecycle stage is not an authenticated dispatch stage")
+    _require(value["dispatch_role"] == LIFECYCLE_ROLES[value["lifecycle_stage"]],
+             "Ticket dispatch role does not match its authenticated lifecycle stage")
     value["reviewer_completion"] = _reviewer_counts(value["reviewer_completion"])
     _require(type(value["open_findings"]) is int and value["open_findings"] >= 0,
              "Open finding count must be nonnegative")
     return value
+
+
+_ticket = validate_ticket_record
 
 
 def _owned_path(path):
@@ -142,7 +157,8 @@ def _git(root, *args):
         result = subprocess.run(
             ["git", "--no-replace-objects", "-c", "core.fsmonitor=false",
              "-c", "core.hooksPath=" + os.devnull, "-c", "core.quotePath=false",
-             "-c", "protocol.file.allow=never", "-C", str(root), *args],
+             "-c", "protocol.file.allow=never", "-c", "safe.directory=" + str(root),
+             "-C", str(root), *args],
             capture_output=True, timeout=30, check=False, env=child_env(environment))
     except (OSError, subprocess.SubprocessError) as exc:
         raise ValidationError(f"Git path inventory failed: {type(exc).__name__}") from exc
@@ -499,6 +515,17 @@ class ContinuousControllerStore:
     def _schedule(self, db, tickets, now, host_capacity):
         rows = db.execute("SELECT * FROM stream_status ORDER BY stream_id").fetchall()
         inventory = {item["ticket"]: item for item in tickets}
+        for item in tickets:
+            prior = db.execute(
+                "SELECT dispatch_role,lifecycle_stage FROM controller_ticket_authority "
+                "WHERE ticket=? AND exact_tuple=?", (item["ticket"], item["exact_tuple"])).fetchone()
+            _require(prior is None or (prior["dispatch_role"], prior["lifecycle_stage"]) ==
+                     (item["dispatch_role"], item["lifecycle_stage"]),
+                     "Ticket dispatch authority changed without a new exact tuple")
+            db.execute(
+                "INSERT OR IGNORE INTO controller_ticket_authority VALUES(?,?,?,?,?)",
+                (item["ticket"], item["exact_tuple"], item["dispatch_role"],
+                 item["lifecycle_stage"], now))
         # A durable dispatch intent reserves its ticket globally until the host
         # outcome is observed. Otherwise a priority change can move the same
         # ticket to another stream and create a second dispatch while the first
@@ -711,6 +738,13 @@ class ContinuousControllerStore:
                            "exact_tuple": row["exact_tuple"], "paths": loads(row["paths"]),
                            "actor": row["actor"], "next_action": row["next_action"],
                            "dispatch_nonce": str(uuid.uuid4()), "prepared_at": now}
+                authority = db.execute(
+                    "SELECT dispatch_role,lifecycle_stage FROM controller_ticket_authority "
+                    "WHERE ticket=? AND exact_tuple=?", (row["ticket"], row["exact_tuple"])).fetchone()
+                _require(authority is not None,
+                         "Scheduled ticket has no durable authenticated dispatch authority")
+                payload.update(role=authority["dispatch_role"],
+                               lifecycle_stage=authority["lifecycle_stage"])
                 dispatch_id = fingerprint("controller-dispatch", payload)
                 payload["dispatch_id"] = dispatch_id
                 db.execute("INSERT OR IGNORE INTO controller_dispatch VALUES(?,?,?,?,? ,?,NULL,?)",
@@ -792,12 +826,16 @@ class ContinuousControllerStore:
         """Accept only exact host readback; uncertain calls are never reissued."""
         timestamp(now)
         bound = {"dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce",
-                 "prepared_at", "begun_at"}
+                 "prepared_at", "begun_at", "role", "lifecycle_stage"}
         if reconcile:
             bound |= {"reconcile_nonce", "reconcile_at"}
-        required = bound | {"status", "observed_at"}
+        required = bound | {"status", "observed_at", "session_id"}
         _require(isinstance(receipt, dict) and set(receipt) == required and
                  receipt["status"] == "ACCEPTED", "Dispatch receipt is not an exact accepted readback")
+        _require(isinstance(receipt["session_id"], str) and receipt["session_id"].strip() and
+                 len(receipt["session_id"]) <= 512 and
+                 not any(ord(char) < 32 for char in receipt["session_id"]),
+                 "Dispatch receipt has no observed session identity")
         observed_at = timestamp(receipt["observed_at"])
         with self.transaction() as db:
             row = db.execute("SELECT * FROM controller_dispatch WHERE dispatch_id=?", (dispatch_id,)).fetchone()
@@ -810,6 +848,12 @@ class ContinuousControllerStore:
             boundary = timestamp(payload["reconcile_at"] if reconcile else payload["begun_at"])
             _require(observed_at >= boundary,
                      "Dispatch receipt is stale relative to the durable intent or reconciliation")
+            for accepted in db.execute(
+                    "SELECT dispatch_id,receipt_json FROM controller_dispatch "
+                    "WHERE status='ACCEPTED' AND dispatch_id<>?", (dispatch_id,)):
+                prior = loads(accepted["receipt_json"])
+                _require(prior.get("session_id") != receipt["session_id"],
+                         "Dispatch session identity is not fresh or writer/critic independent")
             db.execute("UPDATE controller_dispatch SET status='ACCEPTED',receipt_json=?,updated_at=? WHERE dispatch_id=?",
                        (canonical(receipt).decode(), now, dispatch_id))
             if reconcile:
@@ -1097,7 +1141,7 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                                 repository_root, repository_head_sha, repository_tree_sha,
                                 observe_inventory, dispatch_ticket, observe_dispatch, deliver_status,
                                 publication_config=None, observe_publication=None,
-                                dispatch_role="writer"):
+                                dispatch_role=None):
     """Run one real host-controller cycle through explicit reviewed adapters.
 
     Inventory is observed before scheduling.  Dispatch intent is durable before
@@ -1111,8 +1155,8 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                  (observe_inventory, dispatch_ticket, observe_dispatch, deliver_status)),
              "Production controller adapters must be callable")
     timestamp(now)
-    _require(dispatch_role in {"writer", "critic"},
-             "Production dispatch role must be writer or critic")
+    _require(dispatch_role is None or dispatch_role in {"writer", "critic"},
+             "Compatibility dispatch role must be writer or critic")
     store.recover_dispatches(now)
     _require(isinstance(inventory_binding, dict) and set(inventory_binding) == {
         "project_id", "repository_id", "scope_sha256"} and
@@ -1234,12 +1278,26 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                                    "state": "REFUSED", "reason": reason})
                     continue
                 payload = store.begin_dispatch(dispatch_id, now)
-                receipt = dispatch_ticket({**payload, "role": dispatch_role,
+                role = payload.get("role")
+                lifecycle_stage = payload.get("lifecycle_stage")
+                if role is None or lifecycle_stage is None:
+                    # Compatibility for unit doubles that replace the real
+                    # canonicalization/store. Real inventories and durable
+                    # intents always carry authenticated per-ticket authority.
+                    _require(dispatch_role is not None,
+                             "Dispatch intent is missing per-ticket role authority")
+                    role = dispatch_role
+                    lifecycle_stage = ("implementation" if role == "writer"
+                                       else "independent_review")
+                _require(dispatch_role is None or dispatch_role == role,
+                         "Cycle-wide compatibility role conflicts with per-ticket authority")
+                receipt = dispatch_ticket({**payload, "role": role,
+                                           "lifecycle_stage": lifecycle_stage,
                                            "worktree": str(launch_directory)})
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now))
             else:
                 payload = store.begin_dispatch_reconciliation(dispatch_id, now)
-                receipt = observe_dispatch({**payload, "role": dispatch_role})
+                receipt = observe_dispatch(payload)
                 dispatches.append(store.finish_dispatch(dispatch_id, receipt, now, reconcile=True))
         except Exception as exc:
             try:

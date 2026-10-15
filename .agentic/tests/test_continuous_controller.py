@@ -67,11 +67,12 @@ def inventory_observation(now, tickets):
 
 def dispatch_receipt(payload, observed_at):
     keys = ["dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce",
-            "prepared_at", "begun_at"]
+            "prepared_at", "begun_at", "role", "lifecycle_stage"]
     if "reconcile_nonce" in payload:
         keys += ["reconcile_nonce", "reconcile_at"]
     return {key: payload[key] for key in keys} | {
-        "status": "ACCEPTED", "observed_at": observed_at}
+        "status": "ACCEPTED", "observed_at": observed_at,
+        "session_id": "session-" + payload["dispatch_id"]}
 
 
 def jira_current(binding, status, observed_at):
@@ -112,6 +113,8 @@ def ticket(name, priority, disposition="ELIGIBLE", paths=None, **overrides):
         "reviewer_completion": dict(COUNTS),
         "open_findings": 0,
         "jira_status": "In Progress",
+        "dispatch_role": "writer",
+        "lifecycle_stage": "implementation",
     }
     value.update(overrides)
     return value
@@ -1416,10 +1419,10 @@ class JiraProgressTests(unittest.TestCase):
     def observe_publication(item):
         return config["publication"]
     def dispatch_ticket(payload):
-        keys = ["dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce", "prepared_at", "begun_at"]
+        keys = ["dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce", "prepared_at", "begun_at", "role", "lifecycle_stage"]
         if "reconcile_nonce" in payload:
             keys += ["reconcile_nonce", "reconcile_at"]
-        return {key: payload[key] for key in keys} | {"status": "ACCEPTED", "observed_at": now}
+        return {key: payload[key] for key in keys} | {"status": "ACCEPTED", "observed_at": now, "session_id": "session-" + payload["dispatch_id"]}
     def observe_dispatch(payload):
         return dispatch_ticket(payload)
     def deliver_status(digest):
