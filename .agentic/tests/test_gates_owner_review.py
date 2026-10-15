@@ -18,6 +18,7 @@ from agentic.gates import (  # noqa: E402
     owner_review_registry_uri,
 )
 from agentic.lifecycle import definition, review_round_transition  # noqa: E402
+from agentic import review_tiers  # noqa: E402
 from agentic.review_tiers import review_decision  # noqa: E402
 import test_review_tiers_195_gates as tier_fixture  # noqa: E402
 from test_review_policy import (  # noqa: E402
@@ -45,7 +46,6 @@ class OwnerReviewGateTests(unittest.TestCase):
         )
         self.fixture._owner_review()
         self.fixture._refresh_owner_posting_receipt(registry)
-        self.retain_owner_review()
         return registry
 
     def retain_owner_review(self):
@@ -114,7 +114,7 @@ class OwnerReviewGateTests(unittest.TestCase):
         self.assertEqual("NOT_READY", gate["conclusion"])
         self.assertEqual("FAIL", gate["gates"]["critic_current_tuple"]["result"])
 
-    def test_missing_owner_record_registry_entry_is_refused(self):
+    def test_provider_verified_owner_record_is_retained_automatically(self):
         bind_review_admission(self.fixture.bundle)
         registry = bind_production_posting_fixture(
             self.fixture.config, self.fixture.bundle
@@ -123,12 +123,21 @@ class OwnerReviewGateTests(unittest.TestCase):
         self.fixture._refresh_owner_posting_receipt(registry)
 
         gate = self.evaluate(registry)
+        owner = self.fixture.bundle["owner_review"]
+        owner_uri = owner_review_registry_uri(owner)
+        owner_entries = [
+            entry for entry in self.fixture.bundle["evidence_registry"]
+            if entry["uri"] == owner_uri
+        ]
 
-        self.assertEqual("NOT_READY", gate["conclusion"])
-        self.assertEqual("FAIL", gate["gates"]["critic_current_tuple"]["result"])
+        self.assertEqual("READY_FOR_OWNER_AUTHORIZATION", gate["conclusion"])
+        self.assertEqual(1, len(owner_entries))
+        self.assertEqual(owner_review_record_sha256(owner), owner_entries[0]["sha256"])
+        self.assertEqual(owner["producer_id"], owner_entries[0]["producer_id"])
 
     def test_forged_owner_registry_digest_is_refused(self):
         registry = self.prepared_gate()
+        self.retain_owner_review()
         owner_uri = owner_review_registry_uri(self.fixture.bundle["owner_review"])
         owner_entry = next(
             entry for entry in self.fixture.bundle["evidence_registry"]
@@ -189,6 +198,9 @@ class OwnerReviewPolicyTests(unittest.TestCase):
         )
 
         self.assertEqual("OWNER_REVIEW_REQUIRED", result["status"])
+
+    def test_policy_exposes_no_unchecked_owner_review_sealer(self):
+        self.assertFalse(hasattr(review_tiers, "_seal_verified_owner_review"))
 
     def test_structured_caller_record_without_provider_context_never_qualifies(self):
         class NoTruthiness(dict):
