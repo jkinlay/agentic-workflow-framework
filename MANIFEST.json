@@ -308,7 +308,7 @@
     ".agentic/tests/test_adoption_validation.py": "40ec9ae752eaa17a42aac78b10e83ccc89f1adb1ccedcca97a8f29855279f4cb",
     ".agentic/tests/test_approved_models_awf82.py": "4dba0411fc8a1fd7d4196dc1b37051aae39ae177301f083bca4d781c61fa3d67",
     ".agentic/tests/test_authorization_awf73.py": "a40a73c244805c86bdf5d9a8e3e7a4fcff21cd0f65b2074ba4f761a94c037375",
-    ".agentic/tests/test_awf107_routing_config.py": "323c73c1183c53ca35d44f6d7ce17c7e928a201d4036c2963f963b120cadc640",
+    ".agentic/tests/test_awf107_routing_config.py": "031ddf873c365b7524b8987f2586c1b14e74f7ce6a64096ba4bf3017cd791051",
     ".agentic/tests/test_awf110_collector_overcap.py": "2b71626e00c6ddadb15b8bd437b6b992fb7567d10bf601008cb060c55e8acbfd",
     ".agentic/tests/test_awf59_review_tier_yaml.py": "dce123fbd47c3ebc7c744c83fdbe7cfa4a2488c8b2c0dd294b948ba417e5f666",
     ".agentic/tests/test_bootstrap_configuration.py": "2a96e3b578b044417ff20deb164db75203ca9e7ccd54721974ac89ab1fcdebe2",

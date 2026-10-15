@@ -154,6 +154,7 @@ class RoutingConfigTests(unittest.TestCase):
             (route["model"], route["reasoning_effort"]),
         )
 
+    @source_only.skip_unless_source_repo(source_only.SOURCE_ONLY_REASON, "scripts/generate_rules_activation.py", "scripts/build_release.py")
     def test_one_line_switch_does_not_change_rules_policy_or_manifest_check(self):
         generator = load_script("awf107_generate_rules", "scripts/generate_rules_activation.py")
         builder = load_script("awf107_build_release", "scripts/build_release.py")
