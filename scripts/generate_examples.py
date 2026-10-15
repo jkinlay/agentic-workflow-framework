@@ -169,10 +169,16 @@ def config(example=True):
         "portfolio": {"read_only": True, "cross_project_dispatch": False}}
     from agentic.model_routing import default_policy
     routing = default_policy()
-    result["execution"]["model_routing"] = routing
-    for name, values in routing["role_defaults"].items():
+    result["execution"]["model_routing"] = {"routing": ".agentic/routing.yaml"}
+    project_role_defaults = {
+        "controller": ("gpt-5.6-sol", "high"),
+        "worker": ("gpt-5.6-luna", "medium"),
+        "critic": ("gpt-5.6-sol", "high"),
+        "specialist": ("gpt-5.6-sol", "high"),
+    }
+    for name, (model, effort) in project_role_defaults.items():
         result["execution"]["roles"][name].update(
-            model=values["model"], reasoning_effort=values["reasoning_effort"],
+            model=model, reasoning_effort=effort,
             approved_model_ids=routing["role_allowed_models"][name])
     return result
 
@@ -407,8 +413,10 @@ def generate(output_root, source_root=ROOT):
     schemas = catalog()
     write(output_root / ".agentic/examples/reference-controller-adapter.json", controller_adapter_config())
     from agentic.operating import default_operating
-    write(output_root / "OPERATING_CONFIG.yaml", default_operating())
-    write(output_root / ".agentic/examples/OPERATING_CONFIG.yaml", default_operating())
+    operating = default_operating()
+    write(output_root / "OPERATING_CONFIG.yaml", operating)
+    write(output_root / ".agentic/examples/OPERATING_CONFIG.yaml", operating)
+    write(output_root / ".agentic/templates/source-config/OPERATING_CONFIG.yaml", operating)
     write(output_root / ".agentic/workflow.yaml", definition())
     source_config = config(False)
     write(output_root / ".agentic/PROJECT_CONFIG.yaml", source_config)

@@ -20,7 +20,6 @@ ROLES = ("controller", "worker", "critic", "specialist")
 RUN_ROLES = ("controller", "worker", "fix", "critic", "specialist")
 PROVENANCE_RUN_KINDS = ("writer", "critic", "design", "spec_review", "specialist")
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
-MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gpt-6.1-sol")
 RISK_FLAGS = ("security", "permissions", "schema_or_migration", "data_loss",
               "concurrency", "production", "public_api", "architecture")
 REASONING_FAILURES = ("reasoning", "implementation", "validation")
@@ -47,27 +46,164 @@ def outcome_template(role):
     }
 
 
-def default_policy():
-    """Return an independent editable Balanced policy, without invented prices."""
+ROUTING_TOP_LEVEL_KEYS = frozenset({
+    "schema_version", "catalog", "tiers", "role_defaults",
+    "simple_worker", "review_floor", "risk_route",
+})
+ROUTING_TIERS = ("1", "2", "3")
+POLICY_KEYS = frozenset({
+    "schema_version", "profile", "model_order", "models", "role_defaults",
+    "role_allowed_models", "simple_worker", "review_floor", "risk_route",
+    "high_risk_flags", "agent_overrides", "ticket_overrides", "escalation",
+    "budgets", "adaptive", "reconciliation",
+})
+BUDGET_KEYS = frozenset({
+    "max_runs_per_ticket", "max_runs_per_project_day", "max_tokens_per_ticket",
+    "max_tokens_per_project_day", "max_cost_microusd_per_ticket",
+    "max_cost_microusd_per_project_day",
+})
+
+
+def _reconciliation_defaults():
+    return {"enabled": False, "authorized_operator_ids": [],
+            "max_reconciled_incident_retries_per_ticket": 2}
+
+
+class RoutingConfigError(ValidationError):
+    """An operator routing file is missing, unreadable, or invalid."""
+
+
+def _routing_failure(path, key, reason):
+    raise RoutingConfigError(f"{path}: {key}: {reason}")
+
+
+def _routing_object(path, value, key, expected):
+    if not isinstance(value, dict):
+        _routing_failure(path, key, "must be an object")
+    missing = sorted(set(expected) - set(value))
+    if missing:
+        child = missing[0]
+        _routing_failure(path, child if key == "$" else key + "." + child,
+                         "required key is missing")
+    extra = sorted(set(value) - set(expected))
+    if extra:
+        child = extra[0]
+        _routing_failure(path, child if key == "$" else key + "." + child,
+                         "unexpected key")
+
+
+def _routing_pair(path, value, key, catalog):
+    _routing_object(path, value, key, {"model", "effort"})
+    model, effort = value["model"], value["effort"]
+    if not isinstance(model, str) or model not in catalog:
+        _routing_failure(path, key + ".model", "model is not in catalog")
+    if not isinstance(effort, str) or effort not in catalog[model]["efforts"]:
+        _routing_failure(path, key + ".effort", "effort is not supported by model")
+
+
+def _default_routing_path():
+    """Find project routing in source and installed runtime layouts."""
+    source = Path(__file__).resolve().parents[2] / "routing.yaml"
+    candidates = [source]
+    current = Path.cwd().resolve()
+    candidates.extend(parent / ".agentic" / "routing.yaml"
+                      for parent in (current, *current.parents))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return source
+
+
+def load_routing(path=None):
+    """Load and validate the closed JSON-compatible routing schema."""
+    path = Path(path) if path is not None else _default_routing_path()
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate object key " + str(key))
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError("non-JSON numeric constant " + value)
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+        value = json.loads(raw, object_pairs_hook=unique_object,
+                           parse_constant=reject_constant)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        _routing_failure(path, "$", "cannot read valid JSON-compatible YAML: " + str(exc))
+    _routing_object(path, value, "$", ROUTING_TOP_LEVEL_KEYS)
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        _routing_failure(path, "schema_version", "supported value is 1")
+
+    catalog = value["catalog"]
+    if not isinstance(catalog, dict) or not catalog:
+        _routing_failure(path, "catalog", "must be a nonempty object")
+    for model, metadata in catalog.items():
+        key = "catalog." + str(model)
+        if not isinstance(model, str) or not model or model.strip() != model:
+            _routing_failure(path, key, "model must be a nonempty trimmed string")
+        _routing_object(path, metadata, key, {"efforts"})
+        efforts = metadata["efforts"]
+        if (not isinstance(efforts, list) or not efforts
+                or any(not isinstance(effort, str) or effort not in EFFORTS for effort in efforts)
+                or len(efforts) != len(set(efforts))):
+            _routing_failure(path, key + ".efforts",
+                             "must be a nonempty list of unique known efforts")
+
+    tiers = value["tiers"]
+    _routing_object(path, tiers, "tiers", set(ROUTING_TIERS))
+    for tier in ROUTING_TIERS:
+        key = "tiers." + tier
+        _routing_object(path, tiers[tier], key, {"writer", "critic"})
+        for role in ("writer", "critic"):
+            _routing_pair(path, tiers[tier][role], key + "." + role, catalog)
+
+    defaults = value["role_defaults"]
+    _routing_object(path, defaults, "role_defaults", set(ROLES))
+    for role in ROLES:
+        _routing_pair(path, defaults[role], "role_defaults." + role, catalog)
+    for field in ("simple_worker", "review_floor", "risk_route"):
+        _routing_pair(path, value[field], field, catalog)
+
+    model_order = list(catalog)
+    risk, floor = value["risk_route"], value["review_floor"]
+    if (model_order.index(risk["model"]) < model_order.index(floor["model"])
+            or EFFORTS.index(risk["effort"]) < EFFORTS.index(floor["effort"])):
+        _routing_failure(path, "risk_route", "must meet model and effort review_floor")
+    return value
+
+
+def __getattr__(name):
+    """Keep the historical import dynamic while removing its hard-coded table."""
+    if name == "MODELS":
+        return tuple(load_routing()["catalog"])
+    raise AttributeError(name)
+
+
+def default_policy(routing_path=None):
+    """Return an independent editable Balanced policy from operator routing."""
+    routing = load_routing(routing_path)
+    models = list(routing["catalog"])
+
+    def policy_pair(pair):
+        return _pair(pair["model"], pair["effort"])
+
     return {
         "schema_version": 1,
         "profile": "balanced",
-        "model_order": list(MODELS),
-        "models": {m: {"reasoning_efforts": list(("medium", "high") if m == "gpt-6.1-sol"
-                                                  else EFFORTS if m not in ("gpt-5.6-luna", "gpt-6-luna")
-                                                  else EFFORTS[:-1])}
-                   for m in MODELS},
-        # 1.9.3 defaults (7 Oct ruling): writers use gpt-5.6-luna; the reviewer,
-        # controller, specialist and floors use gpt-5.6-sol / high. gpt-6-*
-        # models stay in the catalog for explicitly configured routes only.
-        "role_defaults": {"controller": _pair(MODELS[2], "high"),
-                          "worker": _pair(MODELS[0], "medium"),
-                          "critic": _pair(MODELS[2], "high"),
-                          "specialist": _pair(MODELS[2], "high")},
-        "role_allowed_models": {role: list(MODELS) for role in ROLES},
-        "simple_worker": _pair(MODELS[0], "low"),
-        "review_floor": _pair(MODELS[2], "high"),
-        "risk_route": _pair(MODELS[2], "high"),
+        "model_order": models,
+        "models": {model: {"reasoning_efforts": list(metadata["efforts"])}
+                   for model, metadata in routing["catalog"].items()},
+        "role_defaults": {role: policy_pair(routing["role_defaults"][role])
+                          for role in ROLES},
+        "role_allowed_models": {role: list(models) for role in ROLES},
+        "simple_worker": policy_pair(routing["simple_worker"]),
+        "review_floor": policy_pair(routing["review_floor"]),
+        "risk_route": policy_pair(routing["risk_route"]),
         "high_risk_flags": list(RISK_FLAGS),
         "agent_overrides": {},
         "ticket_overrides": {},
@@ -80,8 +216,7 @@ def default_policy():
                     "max_cost_microusd_per_project_day": None},
         "adaptive": {"mode": "shadow", "min_reviewed_samples": 20,
                      "min_success_rate_percent": 95},
-        "reconciliation": {"enabled": False, "authorized_operator_ids": [],
-                           "max_reconciled_incident_retries_per_ticket": 2},
+        "reconciliation": _reconciliation_defaults(),
     }
 
 
@@ -131,7 +266,7 @@ def _valid_pair(policy, pair, label, allow_pin=False):
 def validate_policy(policy):
     """Validate complete policies; malformed or unsupported settings fail closed."""
     _object(policy, "model_routing")
-    required = set(default_policy()) - {"reconciliation"}
+    required = set(POLICY_KEYS) - {"reconciliation"}
     _require(required <= set(policy) <= required | {"reconciliation"},
              "model_routing requires " + ", ".join(sorted(required)) + "; only reconciliation is optional")
     _require(type(policy["schema_version"]) is int and policy["schema_version"] == 1, "unsupported routing schema_version")
@@ -179,7 +314,7 @@ def validate_policy(policy):
                 _require(escalation["effort_ceiling"] in models[model]["reasoning_efforts"],
                          "escalation.effort_ceiling is unsupported by approved " + role + " model " + model)
     budgets = policy["budgets"]
-    _require(isinstance(budgets, dict) and set(budgets) == set(default_policy()["budgets"]), "invalid budget fields")
+    _require(isinstance(budgets, dict) and set(budgets) == set(BUDGET_KEYS), "invalid budget fields")
     for field, value in budgets.items():
         _integer(value, field, 1, nullable="cost" in field)
     adaptive = policy["adaptive"]
@@ -188,7 +323,7 @@ def validate_policy(policy):
     _integer(adaptive["min_reviewed_samples"], "min_reviewed_samples", 1)
     _integer(adaptive["min_success_rate_percent"], "min_success_rate_percent", 1)
     _require(adaptive["min_success_rate_percent"] <= 100, "invalid min_success_rate_percent")
-    reconciliation = policy.get("reconciliation", default_policy()["reconciliation"])
+    reconciliation = policy.get("reconciliation", _reconciliation_defaults())
     reconciliation_required = {"enabled", "authorized_operator_ids"}
     reconciliation_optional = {"max_reconciled_incident_retries_per_ticket"}
     _require(isinstance(reconciliation, dict) and reconciliation_required <= set(reconciliation)
@@ -211,7 +346,11 @@ def policy_from_config(config):
     _object(config, "configuration")
     _require(isinstance(config.get("execution"), dict), "execution configuration must be an object")
     execution = config["execution"]
-    policy = deepcopy(execution.get("model_routing"))
+    configured = execution.get("model_routing")
+    if configured == {"routing": ".agentic/routing.yaml"}:
+        policy = default_policy()
+    else:
+        policy = deepcopy(configured)
     validate_policy(policy)
     caps = {"max_agent_runs_per_ticket": "max_runs_per_ticket",
             "max_tokens_per_ticket": "max_tokens_per_ticket",
@@ -263,7 +402,7 @@ def _equivalent_policy_hashes(policy):
         omitted_cap = deepcopy(effective)
         del omitted_cap["reconciliation"]["max_reconciled_incident_retries_per_ticket"]
         hashes.add(_raw_fingerprint(omitted_cap))
-        if settings == default_policy()["reconciliation"]:
+        if settings == _reconciliation_defaults():
             omitted_block = deepcopy(effective)
             del omitted_block["reconciliation"]
             hashes.add(_raw_fingerprint(omitted_block))
@@ -1040,7 +1179,7 @@ class RoutingLedger:
         for field in ("expected_limit", "new_limit"):
             _integer(observation[field], field)
         _require(observation["new_limit"] > observation["expected_limit"], "authorization must increase the expected ceiling")
-        settings = policy.get("reconciliation", default_policy()["reconciliation"])
+        settings = policy.get("reconciliation", _reconciliation_defaults())
         _require(settings["enabled"] and observation["operator_id"] in settings["authorized_operator_ids"],
                  "retry-limit authorization requires an operator in the host-reviewed reconciliation policy")
         _require(settings.get("max_reconciled_incident_retries_per_ticket", 2) == observation["new_limit"],
@@ -1209,7 +1348,7 @@ class RoutingLedger:
             _name(observation[field], field)
         _require(observation["host_stopped"] is True, "reconciliation requires verified host termination")
         _require(observation["remediation_verified"] is True, "reconciliation requires verified remediation")
-        settings = policy.get("reconciliation", default_policy()["reconciliation"])
+        settings = policy.get("reconciliation", _reconciliation_defaults())
         _require(settings["enabled"], "operator reconciliation is disabled by project policy")
         _require(observation["operator_id"] in settings["authorized_operator_ids"], "reconciliation operator is not authorized by project policy")
         binding = {"project_id": project_id, "run_id": run_id, "observation": observation}

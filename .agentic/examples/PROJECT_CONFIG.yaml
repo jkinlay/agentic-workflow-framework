@@ -126,11 +126,7 @@
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
@@ -142,11 +138,7 @@
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
@@ -158,11 +150,7 @@
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
@@ -174,11 +162,7 @@
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
@@ -199,187 +183,7 @@
       "resources": {}
     },
     "model_routing": {
-      "schema_version": 1,
-      "profile": "balanced",
-      "model_order": [
-        "gpt-5.6-luna",
-        "gpt-5.6-terra",
-        "gpt-5.6-sol",
-        "gpt-6-luna",
-        "gpt-6-sol",
-        "gpt-6-astra",
-        "gpt-6.1-sol"
-      ],
-      "models": {
-        "gpt-5.6-luna": {
-          "reasoning_efforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max"
-          ]
-        },
-        "gpt-5.6-terra": {
-          "reasoning_efforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultra"
-          ]
-        },
-        "gpt-5.6-sol": {
-          "reasoning_efforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultra"
-          ]
-        },
-        "gpt-6-luna": {
-          "reasoning_efforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max"
-          ]
-        },
-        "gpt-6-sol": {
-          "reasoning_efforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultra"
-          ]
-        },
-        "gpt-6-astra": {
-          "reasoning_efforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultra"
-          ]
-        },
-        "gpt-6.1-sol": {
-          "reasoning_efforts": [
-            "medium",
-            "high"
-          ]
-        }
-      },
-      "role_defaults": {
-        "controller": {
-          "model": "gpt-5.6-sol",
-          "reasoning_effort": "high"
-        },
-        "worker": {
-          "model": "gpt-5.6-luna",
-          "reasoning_effort": "medium"
-        },
-        "critic": {
-          "model": "gpt-5.6-sol",
-          "reasoning_effort": "high"
-        },
-        "specialist": {
-          "model": "gpt-5.6-sol",
-          "reasoning_effort": "high"
-        }
-      },
-      "role_allowed_models": {
-        "controller": [
-          "gpt-5.6-luna",
-          "gpt-5.6-terra",
-          "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
-          "gpt-6.1-sol"
-        ],
-        "worker": [
-          "gpt-5.6-luna",
-          "gpt-5.6-terra",
-          "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
-          "gpt-6.1-sol"
-        ],
-        "critic": [
-          "gpt-5.6-luna",
-          "gpt-5.6-terra",
-          "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
-          "gpt-6.1-sol"
-        ],
-        "specialist": [
-          "gpt-5.6-luna",
-          "gpt-5.6-terra",
-          "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
-          "gpt-6.1-sol"
-        ]
-      },
-      "simple_worker": {
-        "model": "gpt-5.6-luna",
-        "reasoning_effort": "low"
-      },
-      "review_floor": {
-        "model": "gpt-5.6-sol",
-        "reasoning_effort": "high"
-      },
-      "risk_route": {
-        "model": "gpt-5.6-sol",
-        "reasoning_effort": "high"
-      },
-      "high_risk_flags": [
-        "security",
-        "permissions",
-        "schema_or_migration",
-        "data_loss",
-        "concurrency",
-        "production",
-        "public_api",
-        "architecture"
-      ],
-      "agent_overrides": {},
-      "ticket_overrides": {},
-      "escalation": {
-        "enabled": true,
-        "max_escalations_per_ticket": 2,
-        "max_reasoning_failures_per_phase": 3,
-        "effort_ceiling": "high"
-      },
-      "budgets": {
-        "max_runs_per_ticket": 16,
-        "max_runs_per_project_day": 250,
-        "max_tokens_per_ticket": 2000000,
-        "max_tokens_per_project_day": 30000000,
-        "max_cost_microusd_per_ticket": null,
-        "max_cost_microusd_per_project_day": null
-      },
-      "adaptive": {
-        "mode": "shadow",
-        "min_reviewed_samples": 20,
-        "min_success_rate_percent": 95
-      },
-      "reconciliation": {
-        "enabled": false,
-        "authorized_operator_ids": [],
-        "max_reconciled_incident_retries_per_ticket": 2
-      }
+      "routing": ".agentic/routing.yaml"
     }
   },
   "validation": {

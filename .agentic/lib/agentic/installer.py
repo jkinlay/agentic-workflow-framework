@@ -23,6 +23,7 @@ MARKER = ".agentic/INSTALLING.json"
 INSTALLED = ".agentic/installed-manifest.json"
 CONFIG = ".agentic/PROJECT_CONFIG.yaml"
 PROVENANCE = ".agentic/workflow-version.yaml"
+ROUTING = ".agentic/routing.yaml"
 RUNTIME = ".agentic/.venv"
 CODEOWNERS = ".github/CODEOWNERS"
 GITIGNORE = ".gitignore"
@@ -33,6 +34,7 @@ SOURCE_CONFIG_PATHS = frozenset({
     PROVENANCE,
     "OPERATING_CONFIG.yaml",
 })
+OPERATOR_CONFIG_PATHS = frozenset({"OPERATING_CONFIG.yaml", ROUTING})
 INSTALL_GENERATED_PATHS = frozenset({
     MARKER,
     INSTALLED,
@@ -169,7 +171,9 @@ def _recover_pending_runtime_update(tree, journal, journal_raw, marker):
 
 
 def managed(path):
-    return path in {"AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md", CODEOWNERS} or path.startswith(".agentic/")
+    managed_path = (path in {"AGENTS.md", ".github/PULL_REQUEST_TEMPLATE.md", CODEOWNERS}
+                    or path.startswith(".agentic/"))
+    return managed_path and path not in OPERATOR_CONFIG_PATHS
 
 
 def install_owned_path(path):
@@ -356,7 +360,8 @@ def verify_release(tree, expected_digest=None, *, allow_source_checkout=False):
     for path, expected in manifest["files"].items():
         relative_parts(path)
         data = tree.read(path)
-        if expected != sha256(data):
+        if (not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)
+                or (path not in OPERATOR_CONFIG_PATHS and expected != sha256(data))):
             raise ValidationError(f"Source digest mismatch: {path}")
         content[path] = data
     return sha256(raw), content
@@ -607,6 +612,8 @@ def _verify_installed(root, expected_version):
         source_manifest = loads(source_raw)
         if source_manifest.get("format") != "awf-manifest-1" or source_manifest.get("template_version") != expected_version:
             raise ValidationError("Installed embedded source manifest is invalid")
+        if ROUTING in source_manifest.get("files", {}):
+            tree.read(ROUTING)  # Operator bytes may change, but the file must remain present.
         expected = {path: digest for path, digest in source_manifest["files"].items()
                     if managed(path) and path not in {CONFIG, PROVENANCE, CODEOWNERS}}
         if manifest["immutable_files"] != expected:
@@ -738,7 +745,7 @@ def _validate_transaction_journal(journal):
         valid_new = item["new_sha256"] is None or (
             isinstance(item["new_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", item["new_sha256"]))
         transaction_backup = item["path"].startswith(backup_prefix)
-        safe_path = (managed(item["path"]) or item["path"] in {GITIGNORE, "OPERATING_CONFIG.yaml"}
+        safe_path = (managed(item["path"]) or item["path"] in OPERATOR_CONFIG_PATHS | {GITIGNORE}
                      or state_path or transaction_backup)
         if (not safe_path or item["path"] == MARKER or item["path"].casefold() in seen or not valid_new or
                 (transaction_backup and (item["old"] is not None or item["new_sha256"] is None))):
@@ -1178,8 +1185,10 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
     if known_versions is not None and known_versions["target"] != VERSION:
         raise ValidationError("Known-versions table target differs from the release")
     planned = {path: data for path, data in content.items() if managed(path)}
+    if ROUTING in content:
+        planned[ROUTING] = content[ROUTING]
     release_immutable = {path: data for path, data in planned.items()
-                         if path not in {CONFIG, PROVENANCE, CODEOWNERS}}
+                         if path not in {CONFIG, PROVENANCE, CODEOWNERS} | OPERATOR_CONFIG_PATHS}
     if CODEOWNERS in planned:
         planned[CODEOWNERS] = planned[CODEOWNERS].replace(b"@maintainer", codeowner.encode("ascii"))
     owner_report = {"status": "SEEDED" if CODEOWNERS in planned else "NOT_IN_SOURCE",
@@ -1241,6 +1250,9 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
         if dst.inspect(JOURNAL) is not None or dst.inspect(MARKER) is not None:
             raise ValidationError("An interrupted installation requires --recover")
         existing_config = _exists_read(dst, CONFIG)
+        existing_routing = _exists_read(dst, ROUTING)
+        if existing_routing is not None and ROUTING in content:
+            planned[ROUTING] = existing_routing
         receipt_raw = _exists_read(dst, INSTALLED)
         try:
             existing_receipt = loads(receipt_raw.decode()) if receipt_raw is not None else None
