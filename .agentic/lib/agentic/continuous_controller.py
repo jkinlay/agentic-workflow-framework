@@ -6,6 +6,7 @@ authority, budget, independence, capacity, and readback checks.
 """
 from __future__ import annotations
 
+import hashlib
 import inspect
 from contextlib import contextmanager
 from copy import deepcopy
@@ -183,6 +184,7 @@ def _blocking_overlap(first_ticket, first_paths, second_ticket, second_paths,
 
 OVERLAP_ALLOWANCE_MAX_SECONDS = 24 * 60 * 60
 OVERLAP_OBSERVATION_MAX_AGE_SECONDS = 5 * 60
+OVERLAP_SYNC_DIFF_MAX_BYTES = 512 * 1024
 
 
 def _exact_overlap_path(path):
@@ -311,9 +313,6 @@ def validate_overlap_allowance_observation(config, request, observation, invento
              "Overlap allowance comment provider identity is malformed")
     _provider_fresh(comment, now, "Overlap allowance comment")
     trusted = set(config["merge_gate"].get("trusted_owner_ids", []))
-    configured_owner = config["github"].get("expected_actor_id")
-    if configured_owner is not None:
-        trusted.add(configured_owner)
     _require(comment["actor_id"] in trusted,
              "Overlap allowance comment author is not a configured owner")
     created = timestamp(comment["created_at"])
@@ -800,6 +799,24 @@ class ContinuousControllerStore:
                        (str(revision),))
             return deepcopy(gate)
 
+    def expire_due_overlap_allowances(self, now):
+        """Sweep every persisted ACTIVE allowance whose approved window ended."""
+        current = timestamp(now)
+        with self.connection() as db:
+            due = [row["allowance_id"] for row in db.execute(
+                "SELECT allowance_id,expires_at FROM controller_overlap_allowance "
+                "WHERE status='ACTIVE' ORDER BY rowid")
+                   if current >= timestamp(row["expires_at"])]
+        return [self.expire_overlap_allowance(allowance_id, now)
+                for allowance_id in due]
+
+    def unresolved_overlap_sync_gates(self):
+        """Return durable gates that still need a decision or fresh inventory."""
+        with self.connection() as db:
+            return [loads(row["record_json"]) for row in db.execute(
+                "SELECT record_json FROM controller_overlap_sync_gate "
+                "WHERE status IN ('PENDING','SYNCED','IN_FLIGHT','UNKNOWN') ORDER BY rowid")]
+
     def overlap_sync_gate(self, gate_id):
         with self.connection() as db:
             row = db.execute(
@@ -818,7 +835,7 @@ class ContinuousControllerStore:
                 (gate_id,)).fetchone()
             _require(row is not None, "Unknown overlap synchronization gate")
             gate = loads(row["record_json"])
-            if row["status"] in {"CLEARED", "EXECUTED"}:
+            if row["status"] in {"CLEARED", "SYNCED", "EXECUTED"}:
                 return gate
             _require(row["status"] == "PENDING",
                      "Overlap synchronization executor outcome is unresolved")
@@ -869,13 +886,25 @@ class ContinuousControllerStore:
             raise
         try:
             required_receipt = set(payload) | {
-                "status", "diff_sha256", "changed_files", "observed_at"}
+                "status", "post_sync_heads", "diff", "diff_sha256",
+                "changed_files", "observed_at"}
+            diff = receipt.get("diff") if isinstance(receipt, dict) else None
+            diff_bytes = diff.encode("utf-8") if isinstance(diff, str) else b""
             _require(isinstance(receipt, dict) and set(receipt) == required_receipt and
                      all(receipt[key] == payload[key] for key in payload) and
                      receipt["status"] == "COMPLETED" and
-                     re.fullmatch(r"[0-9a-f]{64}", receipt["diff_sha256"]) is not None and
+                     isinstance(receipt["post_sync_heads"], list) and
+                     len(receipt["post_sync_heads"]) == len(gate["heads"]) and
+                     all(isinstance(head, str) and
+                         re.fullmatch(r"[0-9a-f]{40}", head) is not None
+                         for head in receipt["post_sync_heads"]) and
+                     receipt["post_sync_heads"] != gate["heads"] and
+                     isinstance(diff, str) and diff.strip() and
+                     len(diff_bytes) <= OVERLAP_SYNC_DIFF_MAX_BYTES and
+                     receipt["diff_sha256"] == hashlib.sha256(diff_bytes).hexdigest() and
                      isinstance(receipt["changed_files"], list) and
                      receipt["changed_files"] == sorted(receipt["changed_files"]) and
+                     len(receipt["changed_files"]) == len(set(receipt["changed_files"])) and
                      gate["path"] in receipt["changed_files"] and
                      timestamp(receipt["observed_at"]) >= timestamp(now),
                      "Overlap synchronization executor receipt is missing or mismatched")
@@ -898,18 +927,75 @@ class ContinuousControllerStore:
             evidence = {
                 "gate_id": gate_id, "allowance_id": gate["allowance_id"],
                 "tickets": gate["tickets"], "pull_requests": gate["pull_requests"],
-                "heads": gate["heads"], "path": gate["path"],
+                "heads": gate["heads"], "pre_sync_heads": gate["heads"],
+                "post_sync_heads": receipt["post_sync_heads"], "path": gate["path"],
+                "diff": receipt["diff"],
                 "diff_sha256": receipt["diff_sha256"],
                 "changed_files": receipt["changed_files"],
                 "executor_receipt_sha256": fingerprint(
                     "controller-overlap-sync-receipt", receipt),
             }
-            gate["status"] = "EXECUTED"
+            gate["status"] = "SYNCED"
             gate["execution"] = deepcopy(receipt)
             gate["critic_evidence"] = evidence
             db.execute(
-                "UPDATE controller_overlap_sync_gate SET status='EXECUTED',record_json=?,updated_at=? "
+                "UPDATE controller_overlap_sync_gate SET status='SYNCED',record_json=?,updated_at=? "
                 "WHERE gate_id=?", (canonical(gate).decode(), receipt["observed_at"], gate_id))
+            revision = int(self._meta(db, "revision")) + 1
+            db.execute("UPDATE controller_meta SET value=? WHERE key='revision'",
+                       (str(revision),))
+            return deepcopy(gate)
+
+    def confirm_overlap_sync_inventory(self, gate_id, inventory, *,
+                                       inventory_sha256, observed_at):
+        """Complete a sync only after fresh inventory binds every post-sync head."""
+        timestamp(observed_at)
+        _require(isinstance(inventory_sha256, str) and
+                 re.fullmatch(r"[0-9a-f]{64}", inventory_sha256) is not None,
+                 "Post-sync inventory digest is malformed")
+        _require(isinstance(inventory, list),
+                 "Post-sync inventory must be a complete ticket list")
+        validated_inventory = [_ticket(item) for item in inventory]
+        tickets = {item["ticket"]: item for item in validated_inventory}
+        _require(len(tickets) == len(inventory),
+                 "Post-sync inventory contains duplicate tickets")
+        with self.transaction() as db:
+            row = db.execute(
+                "SELECT status,record_json FROM controller_overlap_sync_gate WHERE gate_id=?",
+                (gate_id,)).fetchone()
+            _require(row is not None, "Unknown overlap synchronization gate")
+            gate = loads(row["record_json"])
+            _require(row["status"] in {"SYNCED", "EXECUTED"},
+                     "Overlap synchronization has no completed executor receipt")
+            evidence = gate.get("critic_evidence")
+            _require(isinstance(evidence, dict) and
+                     isinstance(evidence.get("post_sync_heads"), list),
+                     "Overlap synchronization post-sync heads are unavailable")
+            post_sync_inventory = []
+            for ticket_name, head_sha in zip(gate["tickets"],
+                                             evidence["post_sync_heads"]):
+                ticket = tickets.get(ticket_name)
+                _require(ticket is not None and gate["path"] in ticket["paths"] and
+                         head_sha in ticket["exact_tuple"],
+                         "Fresh inventory does not bind the post-sync PR head and ownership")
+                post_sync_inventory.append({
+                    "ticket": ticket_name, "head_sha": head_sha,
+                    "exact_tuple": ticket["exact_tuple"],
+                })
+            if row["status"] == "EXECUTED":
+                _require(evidence.get("inventory_sha256") == inventory_sha256 and
+                         evidence.get("post_sync_inventory") == post_sync_inventory,
+                         "Post-sync inventory replay differs from completed evidence")
+                return gate
+            evidence["inventory_sha256"] = inventory_sha256
+            evidence["inventory_observed_at"] = observed_at
+            evidence["post_sync_inventory"] = post_sync_inventory
+            gate["status"] = "EXECUTED"
+            gate["critic_evidence"] = evidence
+            db.execute(
+                "UPDATE controller_overlap_sync_gate SET status='EXECUTED',record_json=?,updated_at=? "
+                "WHERE gate_id=? AND status='SYNCED'",
+                (canonical(gate).decode(), observed_at, gate_id))
             revision = int(self._meta(db, "revision")) + 1
             db.execute("UPDATE controller_meta SET value=? WHERE key='revision'",
                        (str(revision),))
@@ -1678,6 +1764,35 @@ def post_merge_jira_progress(*, jira_enabled, merged_ticket, scope, observed_at,
             "reason": "authoritative complete scoped Jira observation"}
 
 
+def _observe_controller_inventory(observe_inventory, *, now, inventory_binding,
+                                  repository_root, repository_head_sha,
+                                  repository_tree_sha):
+    """Collect and validate one complete inventory snapshot for this cycle."""
+    parameters = inspect.signature(observe_inventory).parameters
+    accepts_time = ("now" in parameters or "controller_now" in parameters or
+                    any(parameter.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                                           inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                        and parameter.default is inspect.Parameter.empty
+                        for parameter in parameters.values()))
+    observation = observe_inventory(now) if accepts_time else observe_inventory()
+    _require(isinstance(observation, dict) and set(observation) == {
+        "source", "observed_at", "binding", "complete", "inventory_sha256", "tickets"} and
+        observation["source"] == "host_observation" and observation["complete"] is True,
+        "Production inventory must be an exact authenticated host observation")
+    timestamp(observation["observed_at"])
+    _require(observation["observed_at"] == now,
+             "Production inventory observation time differs from this controller cycle")
+    from .canonical import fingerprint
+    _require(observation["binding"] == inventory_binding and
+             observation["inventory_sha256"] == fingerprint("controller-inventory", {
+                 "binding": inventory_binding, "tickets": observation["tickets"]}),
+             "Production inventory identity or digest differs from the configured scope")
+    tickets, repository_binding = canonical_repository_paths(
+        observation["tickets"], repository_root, repository_head_sha,
+        repository_tree_sha)
+    return tickets, repository_binding, observation
+
+
 def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                                 repository_root, repository_head_sha, repository_tree_sha,
                                 observe_inventory, dispatch_ticket, observe_dispatch, deliver_status,
@@ -1706,33 +1821,12 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
         "project_id", "repository_id", "scope_sha256"} and
         all(isinstance(value, str) and value for value in inventory_binding.values()),
         "Production inventory needs immutable project, repository, and scope bindings")
-    # The reviewed reference adapter accepts this boundary value and stamps
-    # the provider observation with it.  Keeping the timestamp controller-owned
-    # prevents a wall-clock race between inventory collection and validation.
-    # Retain compatibility with older test/adapter doubles that already
-    # returned the controller timestamp, while the shipped reference adapter
-    # receives the authoritative value explicitly.
-    parameters = inspect.signature(observe_inventory).parameters
-    accepts_time = ("now" in parameters or "controller_now" in parameters or
-                    any(parameter.kind in (inspect.Parameter.POSITIONAL_ONLY,
-                                           inspect.Parameter.POSITIONAL_OR_KEYWORD)
-                        and parameter.default is inspect.Parameter.empty
-                        for parameter in parameters.values()))
-    observation = observe_inventory(now) if accepts_time else observe_inventory()
-    _require(isinstance(observation, dict) and set(observation) == {
-        "source", "observed_at", "binding", "complete", "inventory_sha256", "tickets"} and
-        observation["source"] == "host_observation" and observation["complete"] is True,
-        "Production inventory must be an exact authenticated host observation")
-    timestamp(observation["observed_at"])
-    _require(observation["observed_at"] == now,
-             "Production inventory observation time differs from this controller cycle")
-    from .canonical import fingerprint
-    _require(observation["binding"] == inventory_binding and
-             observation["inventory_sha256"] == fingerprint("controller-inventory", {
-                 "binding": inventory_binding, "tickets": observation["tickets"]}),
-             "Production inventory identity or digest differs from the configured scope")
-    tickets, repository_binding = canonical_repository_paths(
-        observation["tickets"], repository_root, repository_head_sha, repository_tree_sha)
+    # The reviewed adapter receives the controller-owned time, while the
+    # returned inventory remains an authenticated complete provider snapshot.
+    tickets, repository_binding, observation = _observe_controller_inventory(
+        observe_inventory, now=now, inventory_binding=inventory_binding,
+        repository_root=repository_root, repository_head_sha=repository_head_sha,
+        repository_tree_sha=repository_tree_sha)
     store.bind_repository(repository_binding)
     from .publication_readiness import require_publication_readiness
     publication_reports, errors = {}, []
@@ -1761,17 +1855,9 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
             store.register_overlap_allowance(record, now)
             if timestamp(now) >= timestamp(record["expires_at"]):
                 gate = store.expire_overlap_allowance(record["allowance_id"], now)
-                if gate["status"] not in {"CLEARED", "EXECUTED"}:
-                    _require(callable(observe_overlap_conflict),
-                             "Expired overlap allowance needs a conflict observer")
-                    decision = observe_overlap_conflict(deepcopy(gate))
-                    gate = store.execute_overlap_sync_gate(
-                        gate["gate_id"], decision, sync_writer, now)
                 allowance_audit.append({
                     "allowance_id": record["allowance_id"], "phase": "EXPIRED",
                     "status": gate["status"], "gate_id": gate["gate_id"]})
-                if gate["status"] not in {"CLEARED", "EXECUTED"}:
-                    allowance_blocked_tickets.update(record["binding"]["tickets"])
             else:
                 allowance_plans.append((request, record))
                 allowance_audit.append({
@@ -1784,6 +1870,99 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
                                     "status": "REFUSED", "reason": reason})
             errors.append({"operation": "overlap_allowance", "state": "BLOCKED",
                            "reason": reason})
+
+    # Expiry is a persisted-state obligation, not a property of the caller's
+    # current request list. Sweep before scheduling on every cycle, including
+    # the first cycle after a controller restart.
+    for gate in store.expire_due_overlap_allowances(now):
+        allowance_audit.append({
+            "allowance_id": gate["allowance_id"], "phase": "SWEEP_EXPIRED",
+            "status": gate["status"], "gate_id": gate["gate_id"]})
+
+    unresolved = store.unresolved_overlap_sync_gates()
+    already_synced = [gate for gate in unresolved if gate["status"] == "SYNCED"]
+    newly_synced = []
+    for gate in unresolved:
+        if gate["status"] == "SYNCED":
+            continue
+        if gate["status"] in {"IN_FLIGHT", "UNKNOWN"}:
+            allowance_blocked_tickets.update(gate["tickets"])
+            reason = "Overlap synchronization executor outcome is unresolved"
+            allowance_audit.append({
+                "allowance_id": gate["allowance_id"], "phase": "SYNC_DECISION",
+                "status": gate["status"], "gate_id": gate["gate_id"],
+                "reason": reason})
+            errors.append({"operation": "overlap_sync", "state": "BLOCKED",
+                           "reason": reason})
+            continue
+        try:
+            _require(callable(observe_overlap_conflict),
+                     "Expired overlap allowance needs a conflict observer")
+            decision = observe_overlap_conflict(deepcopy(gate))
+            decided = store.execute_overlap_sync_gate(
+                gate["gate_id"], decision, sync_writer, now)
+            allowance_audit.append({
+                "allowance_id": gate["allowance_id"], "phase": "SYNC_DECISION",
+                "status": decided["status"], "gate_id": gate["gate_id"]})
+            if decided["status"] == "SYNCED":
+                newly_synced.append(decided)
+            elif decided["status"] not in {"CLEARED", "EXECUTED"}:
+                allowance_blocked_tickets.update(gate["tickets"])
+        except Exception as exc:
+            allowance_blocked_tickets.update(gate["tickets"])
+            reason = str(exc) if isinstance(exc, ValidationError) else type(exc).__name__
+            allowance_audit.append({
+                "allowance_id": gate["allowance_id"], "phase": "SYNC_DECISION",
+                "status": "REFUSED", "gate_id": gate["gate_id"],
+                "reason": reason})
+            errors.append({"operation": "overlap_sync", "state": "BLOCKED",
+                           "reason": reason})
+
+    # A SYNCED gate from an earlier interrupted cycle can use this cycle's
+    # initial fresh inventory. A sync executed above requires a second provider
+    # collection so no dispatch can reuse the pre-sync ticket/head state.
+    for gate in already_synced:
+        try:
+            completed = store.confirm_overlap_sync_inventory(
+                gate["gate_id"], tickets,
+                inventory_sha256=observation["inventory_sha256"],
+                observed_at=observation["observed_at"])
+            allowance_audit.append({
+                "allowance_id": gate["allowance_id"], "phase": "POST_SYNC_INVENTORY",
+                "status": completed["status"], "gate_id": gate["gate_id"]})
+        except Exception as exc:
+            allowance_blocked_tickets.update(gate["tickets"])
+            reason = str(exc) if isinstance(exc, ValidationError) else type(exc).__name__
+            errors.append({"operation": "overlap_sync_inventory", "state": "BLOCKED",
+                           "reason": reason})
+
+    if newly_synced:
+        try:
+            refreshed_tickets, refreshed_binding, refreshed_observation = (
+                _observe_controller_inventory(
+                    observe_inventory, now=now, inventory_binding=inventory_binding,
+                    repository_root=repository_root,
+                    repository_head_sha=repository_head_sha,
+                    repository_tree_sha=repository_tree_sha))
+            store.bind_repository(refreshed_binding)
+            tickets = refreshed_tickets
+            observation = refreshed_observation
+            for gate in newly_synced:
+                completed = store.confirm_overlap_sync_inventory(
+                    gate["gate_id"], tickets,
+                    inventory_sha256=observation["inventory_sha256"],
+                    observed_at=observation["observed_at"])
+                allowance_audit.append({
+                    "allowance_id": gate["allowance_id"],
+                    "phase": "POST_SYNC_INVENTORY",
+                    "status": completed["status"], "gate_id": gate["gate_id"]})
+        except Exception as exc:
+            for gate in newly_synced:
+                allowance_blocked_tickets.update(gate["tickets"])
+            reason = str(exc) if isinstance(exc, ValidationError) else type(exc).__name__
+            errors.append({"operation": "overlap_sync_inventory", "state": "BLOCKED",
+                           "reason": reason})
+
     for index, item in enumerate(tickets):
         if item["disposition"] != "ELIGIBLE":
             continue

@@ -21,48 +21,52 @@ provider metadata blocks the cycle. Receipts bind distinct observed sessions.
 
 ## No silent idle state
 
-Streams are `WORKING`, `PAUSED_INPUT`, `BLOCKED` or `COMPLETE`; `COMPLETE` means
+Streams are `WORKING`, `PAUSED_INPUT`, `BLOCKED` or `COMPLETE`; the last means
 no scoped action remains. Dependency, budget, cap, independence and capacity
-precede priority selection. Overlapping physical paths have one writer. Each
-cycle pins the Git worktree/head/tree; aliases, links, nested repositories and
-rebinding fail closed. Reviewer counts must balance. Revalidate running work;
-completed tickets must become absent or terminal before refill.
+precede priority. One writer owns overlapping paths. Each cycle pins the Git
+worktree/head/tree and rejects aliases, links, nested repositories or rebinding.
+Reviewer counts balance; completed tickets become absent or terminal before refill.
 
 ## Exact overlap allowances
 
-Use `--cycle-id` with `--overlap-allowances`. Only an unedited trusted-owner
-provider comment containing `AWF-OVERLAP-ALLOWANCE 1`, LF, canonical UTF-8 JSON,
-LF authorizes at most 24 hours. Provider Date/ETag and exact repository, PR,
-head, files and ticket branches are checked at plan and lane start. All platforms
-compare NFC repository-relative `/` Git file spelling case-sensitively; no
-globs/prefixes. Expiry persists a pair/head gate; confirmed conflict alone runs
-the idempotent sync writer, and its diff reaches the next critic.
+With `--cycle-id` and `--overlap-allowances`, only an unedited
+`AWF-OVERLAP-ALLOWANCE 1` canonical comment by
+`merge_gate.trusted_owner_ids` authorizes 24 hours; `github.expected_actor_id`
+grants none. Fresh Date/ETag binds repository, PRs, heads, files and ticket
+branches at plan and lane start. Paths use exact, case-sensitive NFC Git `/`
+spelling without globs.
+
+Every cycle sweeps persisted `ACTIVE` allowances. Expiry creates a durable
+pair/head gate. Only confirmed conflicts run the idempotent sync writer.
+`PENDING` becomes `SYNCED` when its receipt binds both post-sync heads, sorted
+files and a nonempty, hash-matched UTF-8 diff (maximum 512 KiB). `EXECUTED`
+requires fresh inventory binding those heads and ownership, collected again
+after same-cycle sync. The full evidence reaches the next critic; otherwise
+both tickets block and `UNKNOWN` is never reissued.
 
 ## Dispatch and cadence
 
 Persist intents before calls. `PENDING`, `IN_FLIGHT` and `UNKNOWN` reserve the
-ticket; the latter consume capacity. Preflight cancels unbegun ineligible
-intents. Cadence is 600 seconds; only `--migrate-status-cadence` changes it.
-Clock rollback fails. Disabling periodic status retains event digests. Outbox
-delivery survives restart and reports unresolved `UNKNOWN` identities.
+ticket and the latter consume capacity. Preflight cancels unbegun ineligible
+intents. Cadence is 600 seconds unless explicitly migrated. Clock rollback
+fails; event digests and unresolved outbox identities survive restart.
 
 ## Jira lifecycle and merge progress
 
-Disabled Jira performs no access. Otherwise provider, actor and issue bind every
-pre-read/write/readback. Reconcile `UNKNOWN`; never reissue it. After validated
-merge, reconcile the ticket, then count one digest-bound scope. Epics are
-excluded unless requested; incomplete evidence is `UNOBSERVED`.
+Disabled Jira performs no access. Otherwise provider, actor and issue bind each
+read/write/readback; reconcile, never reissue, `UNKNOWN`. After validated merge,
+reconcile the ticket before counting its digest-bound scope. Epics require
+explicit inclusion; incomplete evidence is `UNOBSERVED`.
 
 Final submission requires the [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
 ## Reference adapter (AWF-32)
 
 Use PowerShell 7 and disposable issues; owner publication is omitted. Set
-`AWF_JIRA_TOKEN` and a pre-provisioned `$AWF_CODEX_HOME` per [credential
-guidance](38-PROVIDER-IDENTITY-AND-CREDENTIALS.md). The adapter isolates all
-launches. Acceptance waits for nonce-bound terminal proof; on Windows the
-watcher PID binds handoff, run and proof. It drains stderr while retaining a
-1 MiB tail and names failures as `AWF isolated CODEX_HOME/config.toml`.
+`AWF_JIRA_TOKEN` and provision `$AWF_CODEX_HOME` per [credential
+guidance](38-PROVIDER-IDENTITY-AND-CREDENTIALS.md). Isolated launches require
+nonce-bound terminal proof; Windows also binds the watcher PID. Failures retain
+a 1 MiB stderr tail and identify `AWF isolated CODEX_HOME/config.toml`.
 
 ```powershell
 $SOURCE_ROOT=(Resolve-Path (git rev-parse --show-toplevel).Trim()).Path
@@ -201,9 +205,8 @@ if ((Read-Host "Type MERGE-OBSERVED after independent confirmation") -cne "MERGE
 if ($LASTEXITCODE) { throw "merge observation failed" }
 ```
 
-Run `Invoke-ControllerCycle` at the approved cadence. To stop, atomically write
-the marker; later calls refuse. Let a running cycle finish; observe, never
-replay, any `UNKNOWN`.
+Run `Invoke-ControllerCycle` at the approved cadence. Stop by atomically writing
+the marker; let a running cycle finish and never replay `UNKNOWN`.
 
 ```powershell
 $STATE_DIR=Read-Host "STATE_DIR printed by setup"

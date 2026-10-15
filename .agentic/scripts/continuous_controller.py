@@ -275,9 +275,15 @@ def main(argv=None, default_root=ROOT):
         overlap_requests = None
         if args.overlap_allowances is not None:
             overlap_requests = load(args.overlap_allowances)
-            names.update({"observe_overlap_allowance", "observe_overlap_conflict",
-                          "sync_writer"})
+            names.add("observe_overlap_allowance")
         calls = _require_adapters(adapters, names)
+        # Persisted expiry sweeping runs even without a newly supplied request.
+        # Optional sync operations are passed whenever this reviewed adapter
+        # implements them; if absent, the core still creates and retains the
+        # PENDING gate and reports the concrete blocker instead of losing it.
+        for name in ("observe_overlap_conflict", "sync_writer"):
+            if callable(adapters.get(name)):
+                calls[name] = adapters[name]
         output = production_controller_cycle(
             store, now=args.now, host_capacity=args.host_capacity,
             inventory_binding=load(args.inventory_binding), repository_root=args.repository_root,

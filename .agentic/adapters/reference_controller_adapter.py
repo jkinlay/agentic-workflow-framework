@@ -1307,7 +1307,21 @@ def _build(config):
                   + "\nAction: " + payload["next_action"] + "\nPaths: "
                   + ",".join(payload["paths"]))
         if role == "critic" and payload.get("overlap_sync_evidence") is not None:
-            evidence = canonical(payload["overlap_sync_evidence"]).decode("utf-8")
+            overlap_evidence = payload["overlap_sync_evidence"]
+            _require(isinstance(overlap_evidence, list) and overlap_evidence,
+                     "Critic overlap-sync evidence must be a nonempty list")
+            for item in overlap_evidence:
+                diff = item.get("diff") if isinstance(item, dict) else None
+                diff_bytes = diff.encode("utf-8") if isinstance(diff, str) else b""
+                heads = item.get("post_sync_heads") if isinstance(item, dict) else None
+                _require(isinstance(diff, str) and diff.strip() and
+                         item.get("diff_sha256") == hashlib.sha256(diff_bytes).hexdigest() and
+                         isinstance(heads, list) and len(heads) == 2 and
+                         all(isinstance(head, str) and
+                             re.fullmatch(r"[0-9a-f]{40}", head) is not None
+                             for head in heads),
+                         "Critic overlap-sync evidence lacks the verified diff or post-sync heads")
+            evidence = canonical(overlap_evidence).decode("utf-8")
             prompt += ("\nMandatory overlap-sync diff evidence for this review: " +
                        evidence)
         _require(len(prompt.encode("utf-8")) <= MAX_OUTPUT,
