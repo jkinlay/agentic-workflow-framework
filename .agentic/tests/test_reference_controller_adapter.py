@@ -39,11 +39,20 @@ def _ticket(path="tracked.txt"):
             "open_findings": 0, "jira_status": "Ready"}
 
 
+def _issue(value=None, *, number=32, stage="implementation", body=None):
+    value = _ticket() if value is None else value
+    return {"id": 10000 + number, "number": number, "node_id": "issue-node-" + str(number),
+            "state": "open", "labels": [{"name": "awf-controller"},
+                                         {"name": "awf-stage:" + stage}],
+            "body": json.dumps(value) if body is None else body}
+
+
 def _dispatch_payload(name="isolation", role="writer"):
     return {"dispatch_id": name, "stream": "A", "ticket": "AWF-51",
             "exact_tuple": "tuple", "dispatch_nonce": name + "-nonce",
             "prepared_at": NOW, "begun_at": NOW, "paths": ["fixture.txt"],
-            "actor": role, "next_action": "verify isolation", "role": role}
+            "actor": role, "next_action": "verify isolation", "role": role,
+            "lifecycle_stage": ("implementation" if role == "writer" else "independent_review")}
 
 
 class FakeClock:
@@ -68,7 +77,10 @@ class AdvancingClock(FakeClock):
 
 class FakeRunner:
     def __init__(self, *, inventory=None, partial=False, bad_repo=False, exit_code=0, error=None):
-        self.inventory = inventory or [_ticket()]
+        raw_inventory = inventory or [_ticket()]
+        self.inventory = [item if isinstance(item, dict) and "node_id" in item
+                          else _issue(item, number=32 + index)
+                          for index, item in enumerate(raw_inventory)]
         self.partial = partial
         self.bad_repo = bad_repo
         self.exit_code = exit_code
@@ -121,7 +133,9 @@ class FakeRunner:
 
     def observe(self, record, *, timeout):
         self.observations.append(dict(record))
-        return {"status": "COMPLETED", "returncode": 0, "terminal": True}
+        return {"status": "COMPLETED", "returncode": 0, "terminal": True,
+                "pid": record["pid"], "launch_nonce": record["launch_nonce"],
+                "session_id": "session-" + record["dispatch_id"]}
 
     def observe_startup(self, record, *, timeout):
         return self.observe(record, timeout=timeout)
@@ -303,7 +317,9 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         class ConcurrentRunner(FakeRunner):
             def observe_startup(self, record, *, timeout):
                 self.observations.append(dict(record))
-                return {"status": "RUNNING", "terminal": False}
+                return {"status": "RUNNING", "terminal": False,
+                        "pid": record["pid"], "launch_nonce": record["launch_nonce"],
+                        "session_id": "session-" + record["dispatch_id"]}
 
             def observe(self, record, *, timeout):
                 raise AssertionError("terminal observation would serialize dispatch")
@@ -427,8 +443,11 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         payload = {"dispatch_id": "critic-1", "stream": "A", "ticket": "AWF-32",
                    "exact_tuple": "tuple", "dispatch_nonce": "critic-nonce",
                    "prepared_at": NOW, "begun_at": NOW, "paths": ["a.py"],
-                   "actor": "critic", "next_action": "review", "role": "critic"}
-        adapters["dispatch_ticket"](payload)
+                   "actor": "critic", "next_action": "review", "role": "critic",
+                   "lifecycle_stage": "independent_review"}
+        receipt = adapters["dispatch_ticket"](payload)
+        self.assertEqual((receipt["role"], receipt["lifecycle_stage"], receipt["session_id"]),
+                         ("critic", "independent_review", "session-critic-1"))
         argv = runner.launches[-1][0]
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertIn("critic-model", argv)
@@ -437,6 +456,33 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
         self.assertEqual(probe_argv[probe_argv.index("--sandbox") + 1], "read-only")
         self.assertIn("critic-model", probe_argv)
         self.assertIn('windows.sandbox="elevated"', probe_argv)
+
+    def test_dispatch_rejects_reused_writer_critic_session_from_observed_startup(self):
+        class ReusedSessionRunner(FakeRunner):
+            def observe_startup(self, record, *, timeout):
+                return {"status": "RUNNING", "terminal": False,
+                        "pid": record["pid"], "launch_nonce": record["launch_nonce"],
+                        "session_id": "reused-session"}
+
+        runner = ReusedSessionRunner()
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+        first = adapters["dispatch_ticket"](_dispatch_payload("fresh-writer", "writer"))
+        self.assertEqual(first["session_id"], "reused-session")
+        with self.assertRaisesRegex(ValidationError, "fresh|session|independ"):
+            adapters["dispatch_ticket"](_dispatch_payload("reused-critic", "critic"))
+
+    def test_dispatch_rejects_mismatched_observed_startup_identity(self):
+        class MismatchedSessionRunner(FakeRunner):
+            def observe_startup(self, record, *, timeout):
+                return {"status": "RUNNING", "terminal": False,
+                        "pid": record["pid"] + 1, "launch_nonce": record["launch_nonce"],
+                        "session_id": "observed-session"}
+
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": MismatchedSessionRunner(), "_clock": FakeClock()})
+        with self.assertRaisesRegex(ValidationError, "identity|process|startup"):
+            adapters["dispatch_ticket"](_dispatch_payload("mismatched-startup"))
 
     def test_poisoned_user_config_is_not_loaded_by_writer_or_critic(self):
         user_home = self.root / "user-home"
@@ -602,15 +648,13 @@ enabled = true
                                launch_nonce=launch_nonce)
                 Path(terminal_proof_path).write_text(json.dumps({
                     "pid": 1234, "launch_nonce": launch_nonce,
-                    "status": "COMPLETED", "returncode": 0, "terminal": True}), encoding="utf-8")
+                    "status": "COMPLETED", "returncode": 0, "terminal": True,
+                    "session_id": "session-crash-1"}), encoding="utf-8")
                 raise RuntimeError("simulated persistence interruption")
         runner = CrashAfterLaunch()
         adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
             {**self.config, "_runner": runner, "_clock": FakeClock()})
-        payload = {"dispatch_id": "crash-1", "stream": "A", "ticket": "AWF-32",
-                   "exact_tuple": "tuple", "dispatch_nonce": "crash-nonce",
-                   "prepared_at": NOW, "begun_at": NOW, "paths": ["a.py"],
-                   "actor": "writer", "next_action": "continue"}
+        payload = _dispatch_payload("crash-1")
         with self.assertRaises(ValidationError):
             adapters["dispatch_ticket"](payload)
         class RestartObserver(FakeRunner):
@@ -631,10 +675,7 @@ enabled = true
         runner = BadOutcome()
         adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
             {**self.config, "_runner": runner, "_clock": FakeClock()})
-        payload = {"dispatch_id": "bad-1", "stream": "A", "ticket": "AWF-32",
-                   "exact_tuple": "tuple", "dispatch_nonce": "bad-nonce",
-                   "prepared_at": NOW, "begun_at": NOW, "paths": ["a.py"],
-                   "actor": "writer", "next_action": "continue"}
+        payload = _dispatch_payload("bad-1")
         with self.assertRaisesRegex(ValidationError, "terminal"):
             adapters["dispatch_ticket"](payload)
 
@@ -642,16 +683,14 @@ enabled = true
         runner = FakeRunner()
         cfg = {**self.config, "_runner": runner, "_clock": FakeClock()}
         adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](cfg)
-        payload = {"dispatch_id": "restart-proof", "stream": "A", "ticket": "AWF-32",
-                   "exact_tuple": "tuple", "dispatch_nonce": "restart-nonce",
-                   "prepared_at": NOW, "begun_at": NOW, "paths": ["a.py"],
-                   "actor": "writer", "next_action": "continue"}
+        payload = _dispatch_payload("restart-proof")
         adapters["dispatch_ticket"](payload)
         record_path = self.root / "runs" / "restart-proof.json"
         record = json.loads(record_path.read_text(encoding="utf-8"))
         Path(record["terminal_proof_path"]).write_text(json.dumps({
             "pid": 1234, "launch_nonce": record["launch_nonce"],
-            "status": "COMPLETED", "returncode": 0, "terminal": True}), encoding="utf-8")
+            "status": "COMPLETED", "returncode": 0, "terminal": True,
+            "session_id": record["session_id"]}), encoding="utf-8")
 
         class RestartRunner(FakeRunner):
             def observe(self, record, *, timeout):
@@ -821,6 +860,53 @@ enabled = true
         adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
             {**self.config, "_runner": runner, "_clock": SlowClock()})
         with self.assertRaisesRegex(ValidationError, "time bound"):
+            adapters["observe_inventory"](NOW)
+
+    def test_authenticated_stage_derives_role_and_forged_code_needed_blocks_only_ticket(self):
+        valid = _ticket()
+        forged = {**_ticket(), "ticket": "AWF-89", "code_needed": False}
+        runner = FakeRunner(inventory=[
+            _issue(valid, number=32, stage="independent-review"),
+            _issue(forged, number=89, stage="implementation"),
+        ])
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+
+        tickets = adapters["observe_inventory"](NOW)["tickets"]
+
+        accepted = next(item for item in tickets if item["ticket"] == "AWF-32")
+        refused = next(item for item in tickets if item["ticket"] == "AWF-89")
+        self.assertEqual((accepted["dispatch_role"], accepted["lifecycle_stage"]),
+                         ("critic", "independent_review"))
+        self.assertEqual(refused["disposition"], "BLOCKED")
+        self.assertIn("code_needed", refused["reason"])
+
+    def test_malformed_ticket_body_blocks_ticket_but_valid_sibling_survives(self):
+        runner = FakeRunner(inventory=[
+            _issue(_ticket(), number=32),
+            _issue(number=89, body="{not-json"),
+        ])
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+
+        tickets = adapters["observe_inventory"](NOW)["tickets"]
+
+        self.assertEqual(len(tickets), 2)
+        self.assertEqual(tickets[0]["disposition"], "ELIGIBLE")
+        self.assertEqual(tickets[1]["disposition"], "BLOCKED")
+        self.assertIn("malformed ticket record", tickets[1]["reason"].lower())
+
+    def test_corrupt_authenticated_inventory_blocks_entire_cycle(self):
+        corrupt = _issue(_ticket(), number=32)
+        corrupt.pop("node_id")
+        runner = FakeRunner(inventory=[corrupt])
+        # Bypass the test fake's convenience wrapping so the provider envelope
+        # itself, rather than its issue body, is what is malformed.
+        runner.inventory = [corrupt]
+        adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](
+            {**self.config, "_runner": runner, "_clock": FakeClock()})
+
+        with self.assertRaisesRegex(ValidationError, "inventory|provider|identity"):
             adapters["observe_inventory"](NOW)
 
     def test_foreign_inventory_endpoint_is_rejected_before_consumption(self):
@@ -1125,9 +1211,7 @@ enabled = true
         runner = FakeRunner()
         cfg = {**self.config, "_runner": runner, "_clock": FakeClock()}
         adapters = __import__("runpy").run_path(str(self.adapter))["build_adapters"](cfg)
-        payload = {"dispatch_id": "d1", "stream": "A", "ticket": "AWF-32", "exact_tuple": "tuple",
-                   "dispatch_nonce": "nonce", "prepared_at": NOW, "begun_at": NOW,
-                   "paths": ["a.py"], "actor": "writer", "next_action": "continue"}
+        payload = _dispatch_payload("d1")
         adapters["dispatch_ticket"](payload)
         receipt = adapters["observe_dispatch"]({**payload, "reconcile_nonce": "reconcile",
                                                   "reconcile_at": NOW})
