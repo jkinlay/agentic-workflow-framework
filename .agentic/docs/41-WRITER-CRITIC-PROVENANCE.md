@@ -73,12 +73,13 @@ same-handle hashing, and stable identity. Owned-child output is stream-capped
 
 ## Critic, provider and override
 
-The v2 critic envelope binds controller/thread UUIDs, head, raw-result digest,
-and one explicit final `Critic run:` line. The generated schema names its sole
-path at `#/$defs/criticBinding/properties/critic_run_carrier`; it is never
-synthesized. Candidate, artifact, and review bindings must agree before state
-change. Posted evidence is reread with immutable comment ID/URL, actor, body
-digest, and unchanged head; missing/variant channels refuse.
+The v2 critic envelope binds controller/thread UUIDs, head, result digest, and
+one explicit final `Critic run:` line at schema path
+`#/$defs/criticBinding/properties/critic_run_carrier`; it is never synthesized.
+Compact persistence validates run/head/result/carrier. Full-verdict candidate,
+artifact, and review bindings agree; nested digests match. Duplicate,
+misplaced, variant, or non-ASCII-lookalike keys refuse. Posted evidence binds
+immutable comment ID/URL, actor, body digest, and unchanged head.
 
 Provider evidence binds numeric repository/PR, refs/OIDs, body, labels, and
 three comment types. Caps: 1 MiB body/comment, 100 255-byte labels, 1,000
@@ -101,10 +102,12 @@ the 1 MiB LF body. Receipt/tree/paths precede Git mutation. Local proof precedes
 push/create and immediate readback; uncertain publication is recovered, not
 replayed, and pre-PR overrides do not exist. Amendment proves before push.
 
-Rewrite pinned-reads a 1 MiB canonical message before `commit-tree`. Count must
-be integer one (not Boolean); branch/base use the safe-ref grammar before
-repository reads. Bounded remote/`ls-remote`, reachability, exact-tree,
-quarantine, CAS, rollback, and recovery protections remain.
+Rewrite pinned-reads a 1 MiB canonical message before `commit-tree`. Count is
+integer one, not Boolean; branch/base use safe refs before repository reads.
+Exact-ref remote readback caps at 32 MiB; invalid readback is
+`REMOTE_READBACK_INVALID`. Message file or grammar failures are
+`REWRITE_MESSAGE_INVALID`. Reachability, exact-tree, quarantine, CAS, rollback,
+and recovery protections remain.
 
 V2 retains 1.9.4 `changed_files` and adds ordered `changed_entries`. Refusals
 start with stable ASCII codes. Fake-provider/Git/subprocess tests are offline;

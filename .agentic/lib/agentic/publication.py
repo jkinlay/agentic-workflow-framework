@@ -46,6 +46,7 @@ MAX_REWRITE_PROOF_OBJECT_BYTES = 32 * 1024 * 1024
 MAX_REWRITE_PROOF_TOTAL_BYTES = 512 * 1024 * 1024
 MAX_REWRITE_PROOF_OBJECTS = 100_000
 MAX_REWRITE_MESSAGE_BYTES = 1024 * 1024
+MAX_REMOTE_READBACK_BYTES = 32 * 1024 * 1024
 MAX_REGEX_ENTRIES = 64
 MAX_REGEX_CHARS = 256
 MAX_REGEX_REPEAT = 64
@@ -2223,16 +2224,41 @@ def _remote_urls(root, remote):
     """Return every distinct fetch and push endpoint configured for a remote."""
     values = set()
     for arguments in (("--all", remote), ("--push", "--all", remote)):
-        result = _git(root, "remote", "get-url", *arguments, check=False)
-        if result.returncode:
-            raise ValidationError("Remote URL inventory could not be verified; rewrite refused without changes")
         try:
-            values.update(line.decode("utf-8") for line in result.stdout.splitlines() if line)
-        except UnicodeDecodeError as exc:
-            raise ValidationError("Remote URL inventory is not UTF-8; rewrite refused without changes") from exc
+            output = _git_bounded_stdout(
+                root, "remote", "get-url", *arguments,
+                limit=MAX_REMOTE_READBACK_BYTES)
+            values.update(line.decode("utf-8", "strict")
+                          for line in output.splitlines() if line)
+        except (UnicodeDecodeError, ValidationError) as exc:
+            raise ValidationError(
+                "REMOTE_READBACK_INVALID: remote URL inventory could not be verified") from exc
     if not values:
-        raise ValidationError("Remote URL inventory is empty; rewrite refused without changes")
+        raise ValidationError(
+            "REMOTE_READBACK_INVALID: remote URL inventory is empty")
     return sorted(values)
+
+
+def _remote_ref_readback(root, url, ref):
+    """Bound and validate the exact remote carrier for one frozen branch ref."""
+    try:
+        validate_ref_locator(ref, "Remote branch ref")
+        output = _git_bounded_stdout(
+            root, "-c", "protocol.file.allow=always", "ls-remote", "--heads",
+            url, ref, limit=MAX_REMOTE_READBACK_BYTES, timeout=60)
+        text = output.decode("ascii", "strict")
+        lines = text.splitlines()
+        if len(lines) > 1:
+            raise ValidationError("remote returned more than one exact ref")
+        if not lines:
+            return False
+        matched = re.fullmatch(r"([0-9a-f]{40}|[0-9a-f]{64})\t(.+)", lines[0])
+        if matched is None or matched.group(2) != ref:
+            raise ValidationError("remote returned a malformed or mismatched ref carrier")
+        return True
+    except (UnicodeDecodeError, ValidationError) as exc:
+        raise ValidationError(
+            "REMOTE_READBACK_INVALID: exact remote branch readback failed") from exc
 
 
 def _writer_emitted_rewrite_message(message):
@@ -2291,34 +2317,35 @@ def rewrite_unpublished(root, base, branch, commits, message_file, *, mapping_pa
     upstream = _git(root, "for-each-ref", "--format=%(upstream)", ref).stdout.decode("utf-8").strip()
     if upstream:
         raise ValidationError("Published-history rewrite refused: branch has an upstream; owner decision is out of scope")
-    remotes = [line.decode("utf-8") for line in _git(root, "remote").stdout.splitlines()]
+    try:
+        remote_output = _git_bounded_stdout(
+            root, "remote", limit=MAX_REMOTE_READBACK_BYTES)
+        remotes = [line.decode("utf-8", "strict")
+                   for line in remote_output.splitlines()]
+    except (UnicodeDecodeError, ValidationError) as exc:
+        raise ValidationError(
+            "REMOTE_READBACK_INVALID: remote inventory could not be verified") from exc
     for remote in remotes:
         for url in _remote_urls(root, remote):
-            # Read-only local bare remotes are used by the refusal proof; no
-            # object transfer or sub-protocol is invoked by ls-remote.
-            probe = _git(root, "-c", "protocol.file.allow=always", "ls-remote", "--exit-code",
-                         "--heads", url, ref, check=False, timeout=60)
-            if probe.returncode == 0 and probe.stdout:
+            if _remote_ref_readback(root, url, ref):
                 raise ValidationError("Published-history rewrite refused: branch exists on a configured remote URL; owner decision is out of scope")
-            if probe.returncode == 2:
-                continue
-            local_present = _local_remote_has_ref(root, url, ref)
-            if local_present is True:
-                raise ValidationError("Published-history rewrite refused: branch exists on a configured remote URL; owner decision is out of scope")
-            if local_present is not False:
-                raise ValidationError("Remote publication state could not be verified; rewrite refused without changes")
     claimant = _old_commit_claimant(
         root, _rewrite_reachability_state(root), ref, old_commits)
     if claimant is not None:
         raise ValidationError("PRE_CAS_STALE_TIP: " + _stale_tip_detail(claimant))
-    message = _bounded_regular_file(
-        message_file, MAX_REWRITE_MESSAGE_BYTES, "Rewrite message")
-    if not message or b"\0" in message:
-        raise ValidationError("Rewrite message file must contain a non-NUL commit message")
     try:
-        message.decode("utf-8")
+        message = _bounded_regular_file(
+            message_file, MAX_REWRITE_MESSAGE_BYTES, "Rewrite message")
+    except ValidationError as exc:
+        raise ValidationError("REWRITE_MESSAGE_INVALID: " + str(exc)) from exc
+    if not message or b"\0" in message:
+        raise ValidationError(
+            "REWRITE_MESSAGE_INVALID: Rewrite message file must contain a non-NUL commit message")
+    try:
+        message.decode("utf-8", "strict")
     except UnicodeDecodeError as exc:
-        raise ValidationError("Rewrite message file must be strict UTF-8") from exc
+        raise ValidationError(
+            "REWRITE_MESSAGE_INVALID: Rewrite message file must be strict UTF-8") from exc
     message = _writer_emitted_rewrite_message(message)
     old_tree = _git(root, "rev-parse", old_head + "^{tree}").stdout.decode("ascii").strip()
     verify_publisher_tree(root, old_tree)

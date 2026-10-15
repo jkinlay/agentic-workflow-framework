@@ -50,7 +50,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/38-PROVIDER-IDENTITY-AND-CREDENTIALS.md` | `2d9442f8f7ba7b8cbfe796183078f28181c6d692fe52aafb8f11116f529acb10` |
 | `.agentic/docs/39-AWF-32-WINDOWS-SMOKE.md` | `93f4020e8e66254986ac3c3b240804614b7aed8cc83ecf12eeff84f229c3107d` |
 | `.agentic/docs/40-EXTERNAL-RESOURCES.md` | `39431036b0970d2c754af1f07981006d9100d90647202d899672a997baf2216e` |
-| `.agentic/docs/41-WRITER-CRITIC-PROVENANCE.md` | `a243b6e40642b867350cd2a0f71b0cb64893fb27f8866796f2861cd506a35086` |
+| `.agentic/docs/41-WRITER-CRITIC-PROVENANCE.md` | `e44b68b7bed6b15ba64d2f11b5ae3057a676ea2fdf7fec1c312344fe20510ba4` |
 | `.agentic/docs/42-PR-INTEGRATION-QUEUE.md` | `6645b3bc1b5568bcd2539562292f86ef40975e635fae6eb1971c0fded53933e7` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `73a25bafeaa92a93cd247a9d4e64fb9434e608dc9df583d3bfd2ce5acde47fc6` |
 | `.agentic/docs/evidence/awf28-u1-investigation.md` | `4521c3b869e7c68940d789ded091be90e358bd5c2353a123ece9694a7574bdc9` |
@@ -114,14 +114,14 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/policy.py` | `a8d7f290569ba71329354ae52c4ddb74287bdbdcbfc7147564c7db89ffe9484c` |
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
-| `.agentic/lib/agentic/provenance.py` | `bdac7694d457eb79a1878ba01c32fe832bb515aca64bb8cf68e506df6b3421de` |
+| `.agentic/lib/agentic/provenance.py` | `4cf0577e2bb704f868a15d13ed5e7dbdc5fff3d80f9eda6002ea8520c0d3c312` |
 | `.agentic/lib/agentic/provider_identity.py` | `d95ae1def1279357ca53b0c51151f4fe483a16ac5e8f8b843800afeb1176289c` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
 | `.agentic/lib/agentic/providers/github.py` | `0228ed2d7c57617052ef97209c6ae357b893d3151dd97df267ab2a86d4e2f12d` |
 | `.agentic/lib/agentic/providers/github_review_host.py` | `2a20f90c4ed846cb725892419fd807400ae3d697c511f98420704018b8db1202` |
 | `.agentic/lib/agentic/providers/github_reviewer_removal.py` | `6bdbe9065e3ffe29561113e5c267b4cb033b9e01855b4597e09ec8056f3cbf8e` |
 | `.agentic/lib/agentic/providers/github_status.py` | `69820fd9191039666142014b29c1e254218608ce33020a78cc6d133e99955776` |
-| `.agentic/lib/agentic/publication.py` | `2688677624e4cb8a324a8fbd7e7e91d4e6a28ea28ece620e730ffe188bea1d0e` |
+| `.agentic/lib/agentic/publication.py` | `01c12240a85363da631d5456a1796f88632beffda76d5f74d49c34c18fe891cc` |
 | `.agentic/lib/agentic/publication_readiness.py` | `cbc0a38cb74bc646bd77b81d914c088b7d2088ded6944c7d4a4cd631ca1e466e` |
 | `.agentic/lib/agentic/release_trust.py` | `a8d468759d1c974b5a06ae3855b7bf17ea2e1a937edf4d0c1c76a7bef8988896` |
 | `.agentic/lib/agentic/repository_rules.py` | `6c04a815378ced7163dc763e3fb9a93889f8adde5461c4a58d5df13c20a27fcc` |
@@ -353,9 +353,9 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_posting_collector_awf60.py` | `96e691b4e29df8fef538fd8dd3ba22ebbdcd818bd07a86a7f13b1fb6c4ca7061` |
 | `.agentic/tests/test_private_deny_binary.py` | `b6da0ffbcce95cedece5c337106bb6f642f127180ae21ba14ec606da37ac6de1` |
 | `.agentic/tests/test_provenance.py` | `171b140e2492e39a70b22259600861dd1b28fd0aa61eaf0b333ba5ca97d3e38a` |
-| `.agentic/tests/test_provenance_awf94.py` | `0910c7cb1fe031bcf230b1d9f6217b18d6dd4d512e8feafaefa3dcbaaee65380` |
+| `.agentic/tests/test_provenance_awf94.py` | `3ade7d6641be3cbedd432ec134ea8767636addf8f36db2ed4e27a71c7e9647ab` |
 | `.agentic/tests/test_provider_identity.py` | `a276d68b89dfb6e65513f62732dd3fddab93419b04f20cc59bbec7c8a0e2fc2b` |
-| `.agentic/tests/test_publication.py` | `1fc9eb512b4c6403b2d1af8bbd6a558dec0cb42066acc16a85468749cffbeede` |
+| `.agentic/tests/test_publication.py` | `add2fb41f68d682cd8fa52ebb726bd8497524d9b73e090f47ca1b48dc1758275` |
 | `.agentic/tests/test_publication_readiness.py` | `4c2e48395f0a3a26c86625cf49e62b2b71353ff9bb33cb9c2bedcb7c40431354` |
 | `.agentic/tests/test_publication_sync_merge.py` | `b522354cc6b31b50da5f6cf916d5204d14d4a52bbe9b872b0ba77160baed48af` |
 | `.agentic/tests/test_publication_sync_merge_history.py` | `ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e` |

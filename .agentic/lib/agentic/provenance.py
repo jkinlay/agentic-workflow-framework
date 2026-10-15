@@ -236,6 +236,36 @@ def _writer_key_lookalike(line):
     return False
 
 
+def _confusable_ascii_token(actual, expected):
+    """Return whether a token reserves ``expected`` via non-ASCII substitution."""
+    if len(actual) != len(expected):
+        return False
+    substituted = False
+    for character, canonical in zip(actual, expected):
+        if ord(character) > 127:
+            substituted = True
+        elif character.lower() != canonical:
+            return False
+    return substituted
+
+
+def _critic_key_lookalike(line):
+    """Detect non-ASCII substitutions in the reserved ``Critic run`` key."""
+    candidate = _ascii_fold_key(line)
+    expression = r"(?:^|[ \t])([^ \t\uff1a:-]+)[ \t-]+([^ \t\uff1a:]+)[ \t]*[\uff1a:]"
+    for matched in re.finditer(expression, candidate):
+        first, second = matched.groups()
+        first_matches = (first.casefold() == "critic" or
+                         _confusable_ascii_token(first, "critic"))
+        second_matches = (second.casefold() in {"run", "runs"} or
+                          _confusable_ascii_token(second, "run") or
+                          _confusable_ascii_token(second, "runs"))
+        if first_matches and second_matches and any(
+                ord(character) > 127 for character in first + second):
+            return True
+    return False
+
+
 def validate_ref_locator(value, field="Git revision"):
     """Accept only full lowercase OIDs or unambiguous fully-qualified refs."""
     _require(isinstance(value, str) and value == value.strip(),
@@ -302,6 +332,8 @@ def parse_critic_run_carrier(carrier):
     lines = normalized.split("\n")
     while lines and lines[-1] == "":
         lines.pop()
+    _require(not any(_critic_key_lookalike(line) for line in lines),
+             "CRITIC_LINE_INVALID: non-ASCII Critic-run key lookalike is ambiguous")
     like = [index for index, line in enumerate(lines)
             if re.search(r"(?i)critic[ \t-]*runs?[ \t]*[:：]", _ascii_fold_key(line))]
     _require(len(like) == 1 and like[0] == len(lines) - 1,
@@ -326,15 +358,15 @@ def parse_writer_trailer(message):
     lines = _split_git_message_lines(message)
     _require(not any(_writer_key_lookalike(line) for line in lines),
              "WRITER_LOOKALIKE: non-ASCII Writer-key lookalike is ambiguous")
+    _require(sum(1 for line in lines if ":" in line or "\uff1a" in line)
+             <= _TRAILER_LIKE_LIMIT,
+             "WRITER_TRAILER_LIMIT: Commit message exceeds 256 trailer-like lines")
     writer_lines = [(index, line) for index, line in enumerate(lines)
                     if _writer_like(line)]
     if not writer_lines:
         return None
     _require(len(writer_lines) == 1,
              "WRITER_COUNT: Commit message must contain exactly one Writer trailer")
-    _require(sum(1 for line in lines if ":" in line or "：" in line)
-             <= _TRAILER_LIKE_LIMIT,
-             "WRITER_TRAILER_LIMIT: Commit message exceeds 256 trailer-like lines")
     index, line = writer_lines[0]
     last = len(lines) - 1
     while last >= 0 and lines[last] == "":
@@ -359,7 +391,7 @@ def parse_writer_trailer(message):
 
 
 def validate_critic_run_binding(verdict, *, reviewed_head=None):
-    """Bind a critic verdict's run UUID to exactly one reviewed head."""
+    """Bind a compact persistence handoff or full verdict to one result/head."""
     _require(isinstance(verdict, dict),
              "CRITIC_BINDING_INVALID: Critic verdict must be an object")
     run_id = verdict.get("run_id")
@@ -374,21 +406,29 @@ def validate_critic_run_binding(verdict, *, reviewed_head=None):
         _sha(reviewed_head, "Expected reviewed head")
         _require(head == reviewed_head,
                  "CRITIC_BINDING_INVALID: Critic verdict names a different reviewed head")
-    candidate = verdict.get("candidate_binding")
-    _require(isinstance(candidate, dict) and candidate.get("head_sha") == head,
-             "CRITIC_BINDING_INVALID: Candidate binding disagrees with the verdict reviewed head")
-    artifact = verdict.get("critic_artifact_binding")
-    _require(isinstance(artifact, dict)
-             and artifact.get("critic_run_id") == run_id
-             and artifact.get("head_sha") == head,
-             "CRITIC_BINDING_INVALID: Critic artifact binding disagrees with the verdict run or reviewed head")
-    review = verdict.get("critic_review")
-    _require(isinstance(review, dict) and review.get("run_id") == run_id
-             and review.get("head_sha") == head,
-             "CRITIC_BINDING_INVALID: Embedded critic review disagrees with the verdict run or reviewed head")
     digest = verdict.get("result_sha256")
     _require(isinstance(digest, str) and _DIGEST.fullmatch(digest),
              "CRITIC_BINDING_INVALID: Critic result digest is missing or invalid")
+    nested_names = {"candidate_binding", "critic_artifact_binding", "critic_review"}
+    if nested_names & set(verdict):
+        candidate = verdict.get("candidate_binding")
+        _require(isinstance(candidate, dict) and candidate.get("head_sha") == head,
+                 "CRITIC_BINDING_INVALID: Candidate binding disagrees with the verdict reviewed head")
+        artifact = verdict.get("critic_artifact_binding")
+        _require(isinstance(artifact, dict)
+                 and artifact.get("critic_run_id") == run_id
+                 and artifact.get("head_sha") == head,
+                 "CRITIC_BINDING_INVALID: Critic artifact binding disagrees with the verdict run or reviewed head")
+        if "result_sha256" in artifact:
+            _require(artifact.get("result_sha256") == digest,
+                     "CRITIC_BINDING_INVALID: Critic artifact binding disagrees with the verdict result digest")
+        review = verdict.get("critic_review")
+        _require(isinstance(review, dict) and review.get("run_id") == run_id
+                 and review.get("head_sha") == head,
+                 "CRITIC_BINDING_INVALID: Embedded critic review disagrees with the verdict run or reviewed head")
+        if "result_sha256" in review:
+            _require(review.get("result_sha256") == digest,
+                     "CRITIC_BINDING_INVALID: Embedded critic review disagrees with the verdict result digest")
     carrier = verdict.get("critic_run_carrier")
     _require(carrier is not None,
              "CRITIC_LINE_INVALID: Critic run carrier must be explicit")
