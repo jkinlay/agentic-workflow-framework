@@ -25,10 +25,11 @@ class WorkflowBlobGenerationTests(unittest.TestCase):
     def test_generated_config_and_operating_defaults_follow_routing_file(self):
         policy = default_policy()
         generated = generate_examples.config(False)
-        self.assertEqual(
-            {"routing": ".agentic/routing.yaml"},
-            generated["execution"]["model_routing"],
-        )
+        configured = generated["execution"]["model_routing"]
+        self.assertEqual(".agentic/routing.yaml", configured["routing"])
+        for key in ("high_risk_flags", "agent_overrides", "ticket_overrides",
+                    "escalation", "budgets", "adaptive", "reconciliation"):
+            self.assertEqual(policy[key], configured[key])
         operating = default_operating()
         for role in ("controller", "critic", "specialist"):
             self.assertEqual(policy["role_defaults"][role], operating[role])
@@ -119,12 +120,16 @@ class WorkflowBlobGenerationTests(unittest.TestCase):
         for relative in (
             ".agentic/PROJECT_CONFIG.yaml",
             ".agentic/templates/source-config/PROJECT_CONFIG.yaml",
-            ".agentic/examples/unconfigured-project.yaml",
         ):
             with self.subTest(relative=relative):
                 actual = json.loads((ROOT / relative).read_text(encoding="utf-8"))
                 self.assertEqual(expected, actual)
                 self.assertEqual([], actual["validation"]["required_ci_checks"])
+        unconfigured = json.loads(
+            (ROOT / ".agentic/examples/unconfigured-project.yaml").read_text(
+                encoding="utf-8"))
+        self.assertEqual(default_policy(), unconfigured["execution"]["model_routing"])
+        self.assertEqual([], unconfigured["validation"]["required_ci_checks"])
 
     def test_generated_content_example_matches_and_check_mode_is_clean(self):
         expected = generate_examples.content_binding_config(ROOT)

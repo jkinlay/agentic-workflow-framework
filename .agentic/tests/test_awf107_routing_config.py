@@ -12,8 +12,10 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
+from agentic import ValidationError
 from agentic.model_routing import (RoutingConfigError, default_policy,
-                                   load_routing, validate_policy)
+                                   load_routing, policy_from_config,
+                                   validate_policy)
 from agentic.installer import OPERATOR_CONFIG_PATHS, managed
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -162,6 +164,31 @@ class RoutingConfigTests(unittest.TestCase):
         with patch("agentic.model_routing._default_routing_path",
                    return_value=FIXTURES / "absent.yaml"):
             self.assertIs(validate_policy(policy), policy)
+
+    def test_routing_reference_preserves_project_owned_non_route_policy(self):
+        policy = default_policy(FIXTURES / "valid.yaml")
+        configured = {
+            "routing": ".agentic/routing.yaml",
+            **{key: deepcopy(policy[key]) for key in (
+                "high_risk_flags", "agent_overrides", "ticket_overrides",
+                "escalation", "budgets", "adaptive", "reconciliation",
+            )},
+        }
+        configured["budgets"]["max_runs_per_ticket"] = 7
+        config = {"execution": {"model_routing": configured}}
+        with patch("agentic.model_routing._default_routing_path",
+                   return_value=FIXTURES / "valid.yaml"):
+            derived = policy_from_config(config)
+        self.assertEqual(7, derived["budgets"]["max_runs_per_ticket"])
+        self.assertEqual("gpt-6.1-sol", derived["role_defaults"]["critic"]["model"])
+
+    def test_routing_reference_rejects_unknown_project_policy_key(self):
+        config = {"execution": {"model_routing": {
+            "routing": ".agentic/routing.yaml", "unexpected": True}}}
+        with patch("agentic.model_routing._default_routing_path",
+                   return_value=FIXTURES / "valid.yaml"):
+            with self.assertRaisesRegex(ValidationError, "unexpected model_routing reference field"):
+                policy_from_config(config)
 
 
 if __name__ == "__main__":
