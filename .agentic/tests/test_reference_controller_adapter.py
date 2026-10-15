@@ -195,7 +195,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		config_path = self.root / 'config.json'
 		config_path.write_text(json.dumps(self.config), encoding='utf-8')
 		adapters, loader = _load_real(self.adapter, config_path)
-		self.assertEqual(set(adapters), {'observe_inventory', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer'})
+		self.assertEqual(set(adapters), {'observe_inventory', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync'})
 		with self.assertRaisesRegex(ValidationError, 'SHA-256 pin'):
 			loader._load_reviewed_adapters(self.adapter, '0' * 64, config_path)
 
@@ -280,9 +280,11 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 			self.assertEqual('CONFIRMED_CONFLICT', decision['status'])
 			receipt = adapters['sync_writer'](payload)
 			replay = adapters['sync_writer'](payload)
+			reconciled = adapters['reconcile_overlap_sync'](payload)
 			provider_heads = adapters['observe_overlap_sync_inventory'](gate)
 		self.assertEqual(['1' * 40, merge_sha], receipt['post_sync_heads'])
 		self.assertEqual(receipt, replay)
+		self.assertEqual(receipt, reconciled)
 		self.assertEqual(receipt['post_sync_heads'], provider_heads['heads'])
 		self.assertEqual(1, len(merge_calls))
 
