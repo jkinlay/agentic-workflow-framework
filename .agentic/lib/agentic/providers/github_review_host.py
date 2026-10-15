@@ -45,6 +45,27 @@ SOURCE_CONFIGS = {
 }
 
 
+def _redacted_stderr_tail(stderr, environment, limit=4096):
+    """Return a bounded diagnostic tail with credential material removed."""
+    text = stderr.decode('utf-8', errors='replace')
+    credential_values = sorted({
+        value for key, value in environment.items()
+        if (isinstance(key, str) and isinstance(value, str) and value
+            and (review_qualification.is_host_auth_environment_name(key)
+                 or review_qualification.CREDENTIAL_ENVIRONMENT_NAME.search(key)))
+    }, key=len, reverse=True)
+    if credential_values:
+        text = re.sub('|'.join(re.escape(value) for value in credential_values),
+                      '[REDACTED]', text)
+    text = re.sub(r'(?i)\bAuthorization\s*:\s*[^\r\n]*',
+                  'Authorization: [REDACTED]', text)
+    text = re.sub(r'(?i)\b(?:Bearer|token)\s+[^\s,;]+',
+                  '[REDACTED]', text)
+    text = re.sub(r'(?i)\b(?:gh[opusr]|github_pat)_[A-Za-z0-9_]+',
+                  '[REDACTED]', text)
+    return text.encode('utf-8')[-limit:].decode('utf-8', errors='replace')
+
+
 def protected(path):
     parts = Path(path).parts
     return path.casefold() == 'scripts/bootstrap_project.py' or any(x.casefold() in {p.casefold() for p in PROTECTED} for x in parts)
@@ -646,7 +667,12 @@ class HostDriver:
                 Path(log).with_suffix(Path(log).suffix + '.stderr').write_bytes(result.stderr)
             require(result.returncode == 0, f'{name} failed; inspect retained run log')
             return ''
-        require(result.returncode == 0, f'{name} failed with exit {result.returncode}; reconcile before retry')
+        failure_message = f'{name} failed with exit {result.returncode}; reconcile before retry'
+        if result.returncode != 0 and result.stderr:
+            stderr_tail = _redacted_stderr_tail(result.stderr, child_env(env))
+            if stderr_tail:
+                failure_message += f' | stderr tail: {stderr_tail}'
+        require(result.returncode == 0, failure_message)
         if binary:
             return result.stdout
         try:
