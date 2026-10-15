@@ -15,6 +15,8 @@ authorization evidence must be supplied by a separately qualified host.
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import os
@@ -1024,6 +1026,48 @@ def _build(config):
         output = command(gh_executable, [*args, path], timeout_override=MAX_SECONDS if paginate else None)
         return _json_output(output)
 
+    def gh_json_etag(path):
+        """Read one GitHub resource with provider Date and ETag headers."""
+        _text(path, "GitHub API path", maximum=2048)
+        _require(".." not in path and not path.startswith("http"),
+                 "GitHub API path is unsafe")
+        output = command(gh_executable, [
+            "api", "--hostname", "github.com", "--method", "GET", "--include", path])
+        if isinstance(output, dict) and set(output) == {"headers", "body"}:
+            headers, body = output["headers"], output["body"]
+            _require(isinstance(headers, dict),
+                     "GitHub provider headers are malformed")
+            lowered = {str(key).casefold(): value for key, value in headers.items()}
+            value = _json_output(body)
+        else:
+            _require(isinstance(output, str),
+                     "GitHub provider response with headers is unavailable")
+            normalized = output.replace("\r\n", "\n")
+            blocks = normalized.split("\n\n")
+            _require(len(blocks) >= 2, "GitHub provider headers are unavailable")
+            header_index = max(index for index, block in enumerate(blocks[:-1])
+                               if block.startswith("HTTP/"))
+            header_lines = blocks[header_index].splitlines()[1:]
+            lowered = {}
+            for line in header_lines:
+                if ":" in line:
+                    key, header_value = line.split(":", 1)
+                    lowered[key.strip().casefold()] = header_value.strip()
+            value = _json_output("\n\n".join(blocks[header_index + 1:]))
+        etag = lowered.get("etag")
+        date = lowered.get("date")
+        _require(isinstance(etag, str) and etag.strip() and isinstance(date, str),
+                 "GitHub provider Date/ETag freshness proof is missing")
+        try:
+            provider_date = parsedate_to_datetime(date)
+            _require(provider_date.tzinfo is not None,
+                     "GitHub provider Date is not timezone-aware")
+            provider_time = provider_date.isoformat().replace("+00:00", "Z")
+            timestamp(provider_time)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValidationError("GitHub provider Date is invalid") from exc
+        return value, etag, provider_time
+
     def github_pages(endpoint, key):
         endpoint = _text(endpoint, "GitHub endpoint", maximum=2048)
         started = _invoke(clock, "monotonic")
@@ -1150,6 +1194,96 @@ def _build(config):
                 "rules": {"state": rules_state, "evidence": rules_evidence},
                 "push_permitted": allowed, "draft_pr_permitted": allowed}
 
+    def observe_overlap_allowance(request, phase):
+        """Observe the immutable approval comment and both exact live PRs."""
+        from agentic.continuous_controller import overlap_allowance_command
+
+        _require(isinstance(request, dict) and phase in {"PLAN", "LANE_START"},
+                 "Overlap allowance observation request is invalid")
+        _require(str(request.get("repository_id")) == str(github["repository_id"]),
+                 "Overlap allowance request names a foreign repository")
+        # Render once here to reject malformed request shapes before provider access.
+        overlap_allowance_command(request)
+        base = "repos/" + github["repository"]
+        comment, comment_etag, comment_time = gh_json_etag(
+            base + "/issues/comments/" + str(request["comment_id"]))
+        _require(isinstance(comment, dict),
+                 "GitHub overlap approval comment is malformed")
+        observed_prs, resource_etags, resource_times = [], [comment_etag], [comment_time]
+        candidates = {}
+        for expected in request["pull_requests"]:
+            slug = re.sub(r"[^a-z0-9]+", "-", expected["ticket"].lower()).strip("-")
+            branch = github["branch_pattern"].format(ticket=expected["ticket"], slug=slug)
+            _require(branch not in candidates,
+                     "Overlap allowance ticket branches are not unique")
+            candidates[branch] = expected["ticket"]
+        for expected in request["pull_requests"]:
+            number = expected["number"]
+            pr, pr_etag, pr_time = gh_json_etag(base + "/pulls/" + str(number))
+            _require(isinstance(pr, dict) and type(pr.get("number")) is int and
+                     isinstance(pr.get("head"), dict) and isinstance(pr.get("base"), dict),
+                     "GitHub overlap pull request is malformed")
+            changed_count = pr.get("changed_files")
+            _require(type(changed_count) is int and 1 <= changed_count <= 3000,
+                     "GitHub overlap changed-file count is invalid")
+            files, file_etags, file_times = [], [], []
+            for page in range(1, (changed_count + 99) // 100 + 1):
+                page_value, page_etag, page_time = gh_json_etag(
+                    base + "/pulls/" + str(number) + "/files?per_page=100&page=" + str(page))
+                _require(isinstance(page_value, list) and
+                         all(isinstance(item, dict) and isinstance(item.get("filename"), str)
+                             for item in page_value),
+                         "GitHub overlap changed-file page is malformed")
+                files.extend(item["filename"] for item in page_value)
+                file_etags.append(page_etag)
+                file_times.append(page_time)
+            _require(len(files) == changed_count and len(files) == len(set(files)),
+                     "GitHub overlap changed-file observation is incomplete or duplicated")
+            head = pr["head"]
+            base_ref = pr["base"]
+            head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+            base_repo = base_ref.get("repo") if isinstance(base_ref.get("repo"), dict) else {}
+            head_ref = head.get("ref")
+            ticket = candidates.get(head_ref)
+            _require(ticket is not None,
+                     "GitHub overlap PR head does not prove ticket ownership")
+            resource_etags.extend([pr_etag, *file_etags])
+            resource_times.extend([pr_time, *file_times])
+            observed_prs.append({
+                "number": pr["number"], "ticket": ticket,
+                "head_sha": head.get("sha"), "changed_files": sorted(files),
+                "state": str(pr.get("state", "")).upper(),
+                "merged": pr.get("merged") is True,
+                "head_repository_id": head_repo.get("id"),
+                "base_repository_id": base_repo.get("id"), "head_ref": head_ref,
+                "etag": fingerprint("github-overlap-pr-etags", [pr_etag, *file_etags]),
+                "provider_observed_at": min([pr_time, *file_times]),
+            })
+        observed_prs.sort(key=lambda item: item["number"])
+        return {
+            "source": "github.com", "repository_id": github["repository_id"],
+            "provider_observed_at": min(resource_times),
+            "observation_etag": fingerprint("github-overlap-observation-etags", resource_etags),
+            "comment": {
+                "id": comment.get("id"), "node_id": comment.get("node_id"),
+                "actor_id": comment.get("user", {}).get("id"),
+                "actor_login": comment.get("user", {}).get("login"),
+                "author_association": comment.get("author_association"),
+                "created_at": comment.get("created_at"),
+                "updated_at": comment.get("updated_at"), "body": comment.get("body"),
+                "etag": comment_etag, "provider_observed_at": comment_time,
+            },
+            "pull_requests": observed_prs,
+        }
+
+    def observe_overlap_conflict(gate):
+        """Delegate read-only, head-bound conflict proof to the qualified runner."""
+        return _invoke(runner, "observe_overlap_conflict", deepcopy(gate))
+
+    def sync_writer(payload):
+        """Delegate the decided idempotent sync operation to the qualified runner."""
+        return _invoke(runner, "sync_writer", deepcopy(payload))
+
     def dispatch_ticket(payload):
         _require(isinstance(payload, dict), "Dispatch payload is missing")
         required = {"dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce",
@@ -1172,6 +1306,10 @@ def _build(config):
         prompt = ("AWF continuous-controller role=" + role + "\nTicket: " + payload["ticket"]
                   + "\nAction: " + payload["next_action"] + "\nPaths: "
                   + ",".join(payload["paths"]))
+        if role == "critic" and payload.get("overlap_sync_evidence") is not None:
+            evidence = canonical(payload["overlap_sync_evidence"]).decode("utf-8")
+            prompt += ("\nMandatory overlap-sync diff evidence for this review: " +
+                       evidence)
         _require(len(prompt.encode("utf-8")) <= MAX_OUTPUT,
                  "Codex task prompt exceeded its byte bound")
         argv = ["exec", "--ephemeral", "--ignore-user-config", "--sandbox", sandbox,
@@ -1536,6 +1674,9 @@ def _build(config):
     return {"observe_inventory": observe_inventory, "dispatch_ticket": dispatch_ticket,
             "observe_dispatch": observe_dispatch, "deliver_status": deliver_status,
             "observe_publication": observe_publication,
+            "observe_overlap_allowance": observe_overlap_allowance,
+            "observe_overlap_conflict": observe_overlap_conflict,
+            "sync_writer": sync_writer,
             "observe_provider_identity": provider_identity,
             "read_current_status": read_current_status, "write_transition": write_transition,
             "read_transition": read_transition, "reconcile_merged_ticket": reconcile_merged_ticket,

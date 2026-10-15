@@ -206,6 +206,10 @@ def main(argv=None, default_root=ROOT):
     cycle.add_argument("--repository-tree-sha", required=True)
     cycle.add_argument("--now", required=True)
     cycle.add_argument("--host-capacity", type=int, required=True)
+    cycle.add_argument("--cycle-id",
+                       help="immutable controller cycle bound by overlap approvals")
+    cycle.add_argument("--overlap-allowances", type=Path,
+                       help="JSON list of exact provider-comment allowance requests")
 
 
     jira = sub.add_parser("jira-lifecycle", help="Read, optionally write once, and read back Jira lifecycle state")
@@ -266,13 +270,20 @@ def main(argv=None, default_root=ROOT):
     elif args.command == "owner-publication-status":
         output = store.snapshot(args.batch, config)
     elif args.command == "cycle":
-        calls = _require_adapters(adapters, {"observe_inventory", "dispatch_ticket",
-                                             "observe_dispatch", "deliver_status", "observe_publication"})
+        names = {"observe_inventory", "dispatch_ticket", "observe_dispatch",
+                 "deliver_status", "observe_publication"}
+        overlap_requests = None
+        if args.overlap_allowances is not None:
+            overlap_requests = load(args.overlap_allowances)
+            names.update({"observe_overlap_allowance", "observe_overlap_conflict",
+                          "sync_writer"})
+        calls = _require_adapters(adapters, names)
         output = production_controller_cycle(
             store, now=args.now, host_capacity=args.host_capacity,
             inventory_binding=load(args.inventory_binding), repository_root=args.repository_root,
             repository_head_sha=args.repository_head_sha,
-            repository_tree_sha=args.repository_tree_sha, publication_config=config, **calls)
+            repository_tree_sha=args.repository_tree_sha, publication_config=config,
+            cycle_id=args.cycle_id, overlap_allowance_requests=overlap_requests, **calls)
 
     elif args.command == "jira-lifecycle":
         calls = _require_adapters(adapters, {"observe_provider_identity", "read_current_status", "write_transition",

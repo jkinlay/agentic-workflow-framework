@@ -11,16 +11,13 @@ Use only this entry point:
 python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --stream A --stream B --stream C --worktree-root ABSOLUTE_WORKTREE --project-config PROJECT_CONFIG --adapter-module REVIEWED_ADAPTER.py --adapter-sha256 PIN --adapter-config ADAPTER_CONFIG cycle --inventory-binding INVENTORY_BINDING --repository-root ABSOLUTE_REPOSITORY --repository-head-sha FULL_HEAD --repository-tree-sha FULL_TREE --now TIME --host-capacity N
 ```
 
-`cycle` observes inventory, persists nonce-bound intent, reconciles uncertainty
-and delivers status. The SHA-256-pinned adapter is at most 1 MiB, exports
-`build_adapters(config)`, and fails closed. Protected state stays outside
-worktrees; link aliases are rejected.
+`cycle` observes inventory, persists intent, reconciles uncertainty and delivers
+status through a fail-closed, 1 MiB, SHA-256-pinned adapter. Protected state is
+outside worktrees; aliases are rejected.
 
-Each issue needs one authenticated `awf-stage:implementation` or
-`awf-stage:independent-review` label, deriving `writer` or `critic`. Body role
-fields, including `code_needed`, are refused. Malformed bodies block their
-ticket; corrupt provider identity/stage metadata blocks the cycle. Receipts bind
-the observed Codex session; reused or mismatched identities fail closed.
+One authenticated stage label derives each issue's `writer` or `critic` role;
+body role fields are refused. Malformed bodies block that ticket; corrupt
+provider metadata blocks the cycle. Receipts bind distinct observed sessions.
 
 ## No silent idle state
 
@@ -30,6 +27,16 @@ precede priority selection. Overlapping physical paths have one writer. Each
 cycle pins the Git worktree/head/tree; aliases, links, nested repositories and
 rebinding fail closed. Reviewer counts must balance. Revalidate running work;
 completed tickets must become absent or terminal before refill.
+
+## Exact overlap allowances
+
+Use `--cycle-id` with `--overlap-allowances`. Only an unedited trusted-owner
+provider comment containing `AWF-OVERLAP-ALLOWANCE 1`, LF, canonical UTF-8 JSON,
+LF authorizes at most 24 hours. Provider Date/ETag and exact repository, PR,
+head, files and ticket branches are checked at plan and lane start. All platforms
+compare NFC repository-relative `/` Git file spelling case-sensitively; no
+globs/prefixes. Expiry persists a pair/head gate; confirmed conflict alone runs
+the idempotent sync writer, and its diff reaches the next critic.
 
 ## Dispatch and cadence
 
@@ -41,15 +48,10 @@ delivery survives restart and reports unresolved `UNKNOWN` identities.
 
 ## Jira lifecycle and merge progress
 
-Disabled Jira performs no access. Otherwise cloud/site/project/key, actor and
-issue bind receipts. Recover `UNKNOWN` work by reading and reconciling before
-planning. IDs survive restart; persist `IN_FLIGHT` before mutation. Never
-reissue a lost response: matching readback completes it, otherwise stop that
-ticket's writes. Every write needs exact pre-read/receipt/readback; identity or
-time mismatch fails closed without stopping other streams. After validated
-merge, reconcile the ticket, then page one digest-bound scope. Stable-ID counts
-exclude Epics unless requested; incomplete or mismatched evidence is
-`UNOBSERVED`.
+Disabled Jira performs no access. Otherwise provider, actor and issue bind every
+pre-read/write/readback. Reconcile `UNKNOWN`; never reissue it. After validated
+merge, reconcile the ticket, then count one digest-bound scope. Epics are
+excluded unless requested; incomplete evidence is `UNOBSERVED`.
 
 Final submission requires the [review barrier](33-REVIEW-COMPLETION-BARRIER.md).
 
