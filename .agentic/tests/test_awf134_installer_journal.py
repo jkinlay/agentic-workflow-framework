@@ -71,7 +71,11 @@ class CompactInstallerJournalTests(unittest.TestCase):
         )
         captured = {}
 
+        original_update = installer._write_bound_journal_update
+
         def capture(tree, journal):
+            if journal["phase"] != "active" or journal["managed_after_sha256"] is not None:
+                return original_update(tree, journal)
             captured["journal"] = json.loads(installer.json_bytes(journal))
             captured["raw"] = installer.json_bytes(journal)
             captured["objects"] = {
@@ -82,7 +86,7 @@ class CompactInstallerJournalTests(unittest.TestCase):
             raise CapturedIntent
 
         with patch.object(installer, "verify_release", return_value=(pin, content)), \
-                patch.object(installer, "_publish_initial_intent", side_effect=capture), \
+                patch.object(installer, "_write_bound_journal_update", side_effect=capture), \
                 self.assertRaises(CapturedIntent):
             installer.install(source, destination, pin, conflict="backup")
         return captured["journal"], captured["raw"], captured["objects"]
