@@ -13,9 +13,13 @@ import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic.model_routing import (RoutingLedger, default_policy,
+                                   load_routing,
                                    require_reviewer_route,
                                    require_routing_switch_provenance,
                                    review_route_requires_fresh_review)
+
+ROOT = Path(__file__).resolve().parents[2]
+MODELS = tuple(load_routing(ROOT / ".agentic/tests/fixtures/routing/valid.yaml")["catalog"])
 
 
 def provenance(**updates):
@@ -90,7 +94,7 @@ class ModelRoutingProvenanceTests(unittest.TestCase):
     def test_r1_reviewer_cannot_be_weaker_and_equal_route_is_allowed(self):
         writer = {"model": "gpt-5.6-sol", "reasoning_effort": "high"}
         self.assertEqual(require_reviewer_route(self.policy, writer, deepcopy(writer)), writer)
-        for reviewer in ({"model": "gpt-5.6-terra", "reasoning_effort": "high"},
+        for reviewer in ({"model": MODELS[0], "reasoning_effort": "high"},
                          {"model": "gpt-5.6-sol", "reasoning_effort": "medium"}):
             with self.subTest(reviewer=reviewer), self.assertRaisesRegex(ValidationError, "weaker"):
                 require_reviewer_route(self.policy, writer, reviewer)
@@ -106,7 +110,7 @@ class ModelRoutingProvenanceTests(unittest.TestCase):
         prior = {"model": "gpt-5.6-sol", "reasoning_effort": "high"}
         self.assertFalse(review_route_requires_fresh_review(self.policy, prior, deepcopy(prior)))
         self.assertTrue(review_route_requires_fresh_review(
-            self.policy, prior, {"model": "gpt-6-sol", "reasoning_effort": "high"}))
+            self.policy, prior, {"model": MODELS[2], "reasoning_effort": "high"}))
         self.assertTrue(review_route_requires_fresh_review(
             self.policy, prior, {"model": "gpt-5.6-sol", "reasoning_effort": "xhigh"}))
 
@@ -136,7 +140,7 @@ class ModelRoutingProvenanceTests(unittest.TestCase):
             self.ledger.require_routing_switch_provenance(
                 "project-1", self.policy, prior, new, "absent-run")
         mismatch = self.ledger.record_run_provenance(
-            "project-1", provenance(run_id="mismatch", requested_model="gpt-5.6-terra"))
+            "project-1", provenance(run_id="mismatch", requested_model=MODELS[0]))
         with self.assertRaisesRegex(ValidationError, "requested route"):
             require_routing_switch_provenance(
                 self.ledger, self.policy, prior, new, mismatch)
