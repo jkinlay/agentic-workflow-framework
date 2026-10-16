@@ -138,6 +138,19 @@ class IN01RepositoryIdentityTests(_RepositoryCase):
         with self.assertRaisesRegex(ValidationError, "GIT_ALTERNATES_UNSAFE"):
             provenance.check_commit_range(alternate_root, self.base, self.base)
 
+    def test_in_01_linked_worktree_commondir_control_is_frozen(self):
+        linked = self.scratch / "linked-commondir"
+        self.git("worktree", "add", "--quiet", "--detach", str(linked), self.base)
+        inspected = provenance._Git(linked)
+        commondir = inspected.git_dir / "commondir"
+        self.assertTrue(commondir.is_file())
+
+        # Keep the target unchanged while changing the control bytes.  Identity
+        # verification must freeze the indirection itself, not only its target.
+        commondir.write_bytes(b"../../.\n")
+        with self.assertRaisesRegex(ValidationError, "REPOSITORY_IDENTITY_CHANGED"):
+            inspected.text("rev-parse", "--git-common-dir")
+
     def test_in_01_repository_metadata_cap_at_n_and_n_plus_one(self):
         metadata = self.scratch / "repository-metadata"
         with patch.object(provenance, "_REPOSITORY_FILE_LIMIT", 4):
@@ -492,6 +505,29 @@ class IN44RepositoryConfigTests(_RepositoryCase):
         for key in ("diff.ignoreSubmodules", "submodule.foreign.ignore"):
             with self.subTest(key=key):
                 self.git("config", "--local", key, "all")
+                try:
+                    with self.assertRaisesRegex(ValidationError, "GIT_CONFIG_UNSAFE"):
+                        provenance.check_commit_range(self.root, self.base, self.base)
+                finally:
+                    self.git("config", "--local", "--unset-all", key)
+
+    def test_in_44_merge_tree_configuration_is_closed(self):
+        controls = (
+            ("merge.conflictStyle", "diff3"),
+            ("merge.default", "binary"),
+            ("merge.directoryRenames", "true"),
+            ("merge.fixture.driver", "false"),
+            ("merge.fixture.recursive", "binary"),
+            ("merge.renameLimit", "1"),
+            ("merge.renames", "false"),
+            ("merge.renormalize", "true"),
+            ("merge.verbosity", "5"),
+            ("diff.renameLimit", "1"),
+            ("diff.renames", "false"),
+        )
+        for key, value in controls:
+            with self.subTest(key=key):
+                self.git("config", "--local", key, value)
                 try:
                     with self.assertRaisesRegex(ValidationError, "GIT_CONFIG_UNSAFE"):
                         provenance.check_commit_range(self.root, self.base, self.base)
