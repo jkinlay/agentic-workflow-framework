@@ -124,11 +124,7 @@
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
@@ -140,11 +136,7 @@
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
@@ -156,11 +148,7 @@
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
@@ -172,11 +160,7 @@
         "fallback": "deny",
         "approved_model_ids": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "permission_profile": "documented-reference-profile",
@@ -201,11 +185,7 @@
       "profile": "balanced",
       "model_order": [
         "gpt-5.6-luna",
-        "gpt-5.6-terra",
         "gpt-5.6-sol",
-        "gpt-6-luna",
-        "gpt-6-sol",
-        "gpt-6-astra",
         "gpt-6.1-sol"
       ],
       "models": {
@@ -218,46 +198,7 @@
             "max"
           ]
         },
-        "gpt-5.6-terra": {
-          "reasoning_efforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultra"
-          ]
-        },
         "gpt-5.6-sol": {
-          "reasoning_efforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultra"
-          ]
-        },
-        "gpt-6-luna": {
-          "reasoning_efforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max"
-          ]
-        },
-        "gpt-6-sol": {
-          "reasoning_efforts": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-            "ultra"
-          ]
-        },
-        "gpt-6-astra": {
           "reasoning_efforts": [
             "low",
             "medium",
@@ -276,57 +217,41 @@
       },
       "role_defaults": {
         "controller": {
-          "model": "gpt-5.6-sol",
-          "reasoning_effort": "high"
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "medium"
         },
         "worker": {
           "model": "gpt-5.6-luna",
           "reasoning_effort": "medium"
         },
         "critic": {
-          "model": "gpt-5.6-sol",
-          "reasoning_effort": "high"
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "medium"
         },
         "specialist": {
-          "model": "gpt-5.6-sol",
-          "reasoning_effort": "high"
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "medium"
         }
       },
       "role_allowed_models": {
         "controller": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "worker": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "critic": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ],
         "specialist": [
           "gpt-5.6-luna",
-          "gpt-5.6-terra",
           "gpt-5.6-sol",
-          "gpt-6-luna",
-          "gpt-6-sol",
-          "gpt-6-astra",
           "gpt-6.1-sol"
         ]
       },
@@ -335,12 +260,12 @@
         "reasoning_effort": "low"
       },
       "review_floor": {
-        "model": "gpt-5.6-sol",
-        "reasoning_effort": "high"
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "medium"
       },
       "risk_route": {
-        "model": "gpt-5.6-sol",
-        "reasoning_effort": "high"
+        "model": "gpt-6.1-sol",
+        "reasoning_effort": "medium"
       },
       "high_risk_flags": [
         "security",

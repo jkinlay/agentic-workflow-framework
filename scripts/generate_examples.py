@@ -5,6 +5,7 @@ import argparse
 import base64
 import copy
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import subprocess
@@ -113,7 +114,7 @@ def workflow_blob_sha(repository):
     return derived
 
 
-def config(example=True):
+def config(example=True, routing_policy=None):
     role = {"model": "fixture-model" if example else "CHANGE_ME_APPROVED_MODEL", "reasoning_effort": "high",
             "fallback": "deny", "approved_model_ids": ["fixture-model" if example else "CHANGE_ME_APPROVED_MODEL"],
             "permission_profile": "documented-reference-profile", "network_allowlist": []}
@@ -168,25 +169,38 @@ def config(example=True):
         "audit": {"store_must_be_outside_worktrees": True, "retention_days": 90, "redact_secrets": True},
         "portfolio": {"read_only": True, "cross_project_dispatch": False}}
     from agentic.model_routing import default_policy
-    routing = default_policy()
-    result["execution"]["model_routing"] = routing
-    for name, values in routing["role_defaults"].items():
+    routing = (default_policy() if routing_policy is None
+               else copy.deepcopy(routing_policy))
+    result["execution"]["model_routing"] = {
+        "routing": ".agentic/routing.yaml",
+        **{key: copy.deepcopy(routing[key]) for key in (
+            "high_risk_flags", "agent_overrides", "ticket_overrides",
+            "escalation", "budgets", "adaptive", "reconciliation",
+        )},
+    }
+    project_role_defaults = {
+        "controller": ("gpt-5.6-sol", "high"),
+        "worker": ("gpt-5.6-luna", "medium"),
+        "critic": ("gpt-5.6-sol", "high"),
+        "specialist": ("gpt-5.6-sol", "high"),
+    }
+    for name, (model, effort) in project_role_defaults.items():
         result["execution"]["roles"][name].update(
-            model=values["model"], reasoning_effort=values["reasoning_effort"],
+            model=model, reasoning_effort=effort,
             approved_model_ids=routing["role_allowed_models"][name])
     return result
 
 
-def content_binding_config(repository=ROOT):
+def content_binding_config(repository=ROOT, routing_policy=None):
     """Return a separate schema example without changing the legacy fixture."""
-    result = config(True)
+    result = config(True, routing_policy)
     check = result["validation"]["required_ci_checks"][0]
     check["workflow_path"] = WORKFLOW_PATH
     check["workflow_blob_sha"] = workflow_blob_sha(repository)
     return result
 
 
-def example_bundle(cfg):
+def example_bundle(cfg, operating=None):
     ac = [{"id": "AC1", "text": "Return the requested label.", "validation": "Assert the output label."},
           {"id": "AC2", "text": "Reject empty input.", "validation": "Assert empty input raises an error."}]
     snapshot = {"schema_version": 3, "issue_id": "2001", "project_key": "EX", "summary": "Validate a label", "description": "Offline illustrative fixture only.",
@@ -222,7 +236,8 @@ def example_bundle(cfg):
         lease={"required": True, "lease_id": uid("lease"), "fencing_token": 1, "expires_at": "2026-09-09T12:15:00Z"},
         collision_check="PASS", collision_evidence=evidence, disposition="PERMITTED", control_generation=1, required_resources=[])
     from agentic.operating import default_operating, validate_operating
-    dispatch["operating_hash"] = validate_operating(default_operating(), cfg).operating_hash
+    operating = default_operating() if operating is None else copy.deepcopy(operating)
+    dispatch["operating_hash"] = validate_operating(operating, cfg).operating_hash
     results = [{"id": item["id"], "verdict": "PASS", "evidence": evidence} for item in ac]
     worker = record("worker-result", "worker", status="COMPLETE", commit_route="WORKER", dispatch_id=dispatch["record_id"], files_changed=["src/example.py"],
         tested_tree=candidate["head_tree_sha"], changes=[{"path": "src/example.py", "action": "modified"}], ignored_untracked=[], acceptance_criteria=results,
@@ -404,23 +419,34 @@ def sample(schema, schemas, document=None):
 def generate(output_root, source_root=ROOT):
     output_root = Path(output_root)
     source_root = Path(source_root)
-    schemas = catalog()
+    # AWF-115 adds the explicit draft-only selector. Keep this branch
+    # compatible with the current catalog until that held lane lands.
+    schemas = (catalog(include_ticket_plan=False)
+               if "include_ticket_plan" in inspect.signature(catalog).parameters
+               else catalog())
+    from agentic.model_routing import default_policy
+    generation_policy = default_policy(
+        source_root / ".agentic/tests/fixtures/routing/valid.yaml")
     write(output_root / ".agentic/examples/reference-controller-adapter.json", controller_adapter_config())
     from agentic.operating import default_operating
-    write(output_root / "OPERATING_CONFIG.yaml", default_operating())
-    write(output_root / ".agentic/examples/OPERATING_CONFIG.yaml", default_operating())
+    operating = default_operating(generation_policy)
+    write(output_root / "OPERATING_CONFIG.yaml", operating)
+    write(output_root / ".agentic/examples/OPERATING_CONFIG.yaml", operating)
+    write(output_root / ".agentic/templates/source-config/OPERATING_CONFIG.yaml", operating)
     write(output_root / ".agentic/workflow.yaml", definition())
-    source_config = config(False)
+    source_config = config(False, generation_policy)
     write(output_root / ".agentic/PROJECT_CONFIG.yaml", source_config)
     write(output_root / ".agentic/templates/source-config/PROJECT_CONFIG.yaml", source_config)
-    write(output_root / ".agentic/examples/unconfigured-project.yaml", config(False))
+    unconfigured = config(False, generation_policy)
+    unconfigured["execution"]["model_routing"] = copy.deepcopy(generation_policy)
+    write(output_root / ".agentic/examples/unconfigured-project.yaml", unconfigured)
     write(output_root / ".agentic/workflow-version.yaml", {"template": {"name": "generic-agentic-development-workflow", "version": VERSION, "schema_revision": 3},
         "installation": {"install_id": None, "last_operation": None, "operation_at": None, "source_manifest_sha256": None, "profile": "manual_reference"}})
-    cfg = config(True)
+    cfg = config(True, generation_policy)
     write(output_root / ".agentic/examples/PROJECT_CONFIG.yaml", cfg)
     write(output_root / ".agentic/examples/workflow-content-binding-project.yaml",
-          content_binding_config(source_root))
-    bundle = example_bundle(cfg)
+          content_binding_config(source_root, generation_policy))
+    bundle = example_bundle(cfg, operating)
     write(output_root / ".agentic/examples/evidence-bundle.json", bundle)
     write(output_root / ".agentic/examples/controller-status-digest.json", {
         "schema_version": 3, "observed_at": NOW, "kind": "REGULAR", "cadence_seconds": 600,

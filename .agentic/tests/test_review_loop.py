@@ -858,8 +858,10 @@ class HostTests(unittest.TestCase):
         write_awf_source_fixture(driver.worker)
         (driver.worker/'.agentic/SPECIFICATION.md').write_text('source marker')
         (driver.worker/'.agentic/PROJECT_CONFIG.yaml').write_text(json.dumps(
-            {'execution': {'model_routing': {'models': {
-                'fixture-critic': {'reasoning_efforts': ['ultra']}}}}}))
+            {'execution': {'model_routing': {
+                'routing': '.agentic/routing.yaml'}}}))
+        (driver.worker/'.agentic/routing.yaml').write_bytes(
+            (ROOT/'.agentic/tests/fixtures/routing/valid.yaml').read_bytes())
         driver.git(driver.worker, 'add', '.')
         driver.git(driver.worker, 'commit', '-m', 'source markers and routing policy')
         revision = driver.git(driver.worker, 'rev-parse', 'HEAD')
@@ -869,4 +871,8 @@ class HostTests(unittest.TestCase):
         with patch.dict(os.environ, {'PATH': str(decoy) + os.pathsep + path}):
             self.assertTrue(is_source_repository(driver.worker, revision, git_runner=driver.git))
             self.assertEqual(reviewed_model_effort_pairs(driver.worker, revision, git_runner=driver.git),
-                             {'fixture-critic': ['ultra']})
+                             {
+                                 'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
+                                 'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+                                 'gpt-6.1-sol': ['medium', 'high'],
+                             })

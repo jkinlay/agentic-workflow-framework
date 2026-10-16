@@ -89,32 +89,32 @@ class OperatingRoutingTests(unittest.TestCase):
         self.value["simple_worker"]["enabled"] = False
         self.assertEqual(self.route(complexity="low")["model"], MODELS[2])
         self.assertEqual((self.route(role="controller")["model"], self.route(role="controller")["reasoning_effort"]),
-                         (MODELS[2], "high"))
-        self.value["controller"] = {"model": MODELS[3], "reasoning_effort": "high"}
+                         (MODELS[2], "medium"))
+        self.value["controller"] = {"model": MODELS[1], "reasoning_effort": "high"}
         self.assertEqual((self.route(role="controller")["model"], self.route(role="controller")["reasoning_effort"]),
-                         (MODELS[3], "high"))
+                         (MODELS[1], "high"))
         self.assertEqual((self.route(role="critic", worker_context_id="independent")["model"],
-                          self.route(role="critic", worker_context_id="independent")["reasoning_effort"]), (MODELS[2], "high"))
+                          self.route(role="critic", worker_context_id="independent")["reasoning_effort"]), (MODELS[2], "medium"))
 
     def test_pinned_global_and_epic_stream_reviewers_override_critic_defaults(self):
         self.value["streams"]["A"]["reviewer"] = {
-            "model": MODELS[5], "reasoning_effort": "ultra", "pinned": True}
+            "model": MODELS[2], "reasoning_effort": "high", "pinned": True}
 
         global_route = self.route(role="critic", worker_context_id="independent")
 
-        self.assertEqual((global_route["model"], global_route["reasoning_effort"]), (MODELS[5], "ultra"))
+        self.assertEqual((global_route["model"], global_route["reasoning_effort"]), (MODELS[2], "high"))
         self.assertTrue(global_route["pinned"])
         self.assertIn("operating stream route pinned by user", " ".join(global_route["reasons"]))
 
         self.value["epic_overrides"] = {"DEMO-1": {
-            "critic": {"model": MODELS[5], "reasoning_effort": "high"},
+            "critic": {"model": MODELS[2], "reasoning_effort": "medium"},
             "streams": {"A": {"reviewer": {
-                "model": MODELS[5], "reasoning_effort": "ultra", "pinned": True}}}}}
+                "model": MODELS[2], "reasoning_effort": "high", "pinned": True}}}}}
 
         epic_route = self.route(role="critic", worker_context_id="independent",
                                 epic_id="DEMO-1", epic_risk_flags=[])
 
-        self.assertEqual((epic_route["model"], epic_route["reasoning_effort"]), (MODELS[5], "ultra"))
+        self.assertEqual((epic_route["model"], epic_route["reasoning_effort"]), (MODELS[2], "high"))
         self.assertTrue(epic_route["pinned"])
         self.assertIn("operating Epic-scoped route pinned by user", " ".join(epic_route["reasons"]))
 
@@ -139,20 +139,20 @@ class OperatingRoutingTests(unittest.TestCase):
 
     def test_epic_route_changes_only_matching_epic_and_preserves_safety_floor(self):
         self.value["epic_overrides"] = {"DEMO-1": {"streams": {"A": {"worker": {
-            "model": MODELS[2], "reasoning_effort": "xhigh", "pinned": True}}}}}
+            "model": MODELS[1], "reasoning_effort": "high", "pinned": True}}}}}
         scoped = self.route(epic_id="DEMO-1", epic_risk_flags=[], complexity="low")
-        self.assertEqual((scoped["model"], scoped["reasoning_effort"]), (MODELS[2], "xhigh"))
+        self.assertEqual((scoped["model"], scoped["reasoning_effort"]), (MODELS[1], "high"))
         self.assertTrue(scoped["pinned"])
         other = self.route(epic_id="DEMO-2", epic_risk_flags=[], complexity="low")
         self.assertEqual(other["model"], MODELS[0])
         self.assertEqual(self.route(complexity="low")["model"], MODELS[0])
         risky = self.route(epic_id="DEMO-1", epic_risk_flags=["concurrency"])
-        self.assertEqual((risky["model"], risky["reasoning_effort"]), (MODELS[2], "xhigh"))
+        self.assertEqual((risky["model"], risky["reasoning_effort"]), (MODELS[2], "high"))
 
     def test_mandatory_epic_risk_floor_wins_over_pin_without_lowering_effort(self):
-        self.value["streams"]["A"]["worker"] = {"model": MODELS[0], "reasoning_effort": "max", "pinned": True}
+        self.value["streams"]["A"]["worker"] = {"model": MODELS[0], "reasoning_effort": "high", "pinned": True}
         route = self.route(epic_id="DEMO-1", epic_risk_flags=["security"])
-        self.assertEqual((route["model"], route["reasoning_effort"]), (MODELS[2], "max"))
+        self.assertEqual((route["model"], route["reasoning_effort"]), (MODELS[2], "high"))
         self.assertTrue(route["pinned"])
         self.assertTrue(route["high_risk"])
         self.assertIn("mandatory risk/review floor", " ".join(route["reasons"]))
@@ -169,7 +169,7 @@ class OperatingRoutingTests(unittest.TestCase):
         self.assertEqual(self.route()["model"], MODELS[0])
         self.assertEqual(self.route(risk="high")["model"], MODELS[2])
         review = self.route(role="critic", worker_context_id="other")
-        self.assertEqual((review["model"], review["reasoning_effort"]), (MODELS[2], "high"))
+        self.assertEqual((review["model"], review["reasoning_effort"]), (MODELS[2], "medium"))
 
     def test_pin_blocks_optional_escalation_but_unavailable_floor_never_falls_back(self):
         self.value["streams"]["A"]["worker"]["pinned"] = True
@@ -327,26 +327,26 @@ class OperatingRecommendationRoutingTests(unittest.TestCase):
 
     def test_adoption_preserves_pins_until_explicit_custom_reversal(self):
         op.set_operating(self.root, self.governance, "Pin A to Sol/high", ["A.worker=gpt-5.6-sol/high"])
-        scoped = op.set_operating(self.root, self.governance, "DEMO-1 A worker Astra/xhigh",
-                                  ["A.worker=gpt-6-astra/xhigh"], epic_id="DEMO-1")
+        scoped = op.set_operating(self.root, self.governance, "DEMO-1 A worker review/high",
+                                  ["A.worker=gpt-6.1-sol/high"], epic_id="DEMO-1")
         record, snapshot = self.adopt()
         self.assertEqual(scoped.config["epic_overrides"], snapshot.config["epic_overrides"])
         kept = next(row for row in record["rows"] if row["path"] == "streams.A.worker")
         self.assertEqual(kept["current"], kept["recommended"])
         self.assertIn("Keeps your pin", kept["reason"])
-        self.assertEqual(MODELS[2], self.route(snapshot, complexity="low")["model"])
-        self.assertEqual(MODELS[5], self.route(snapshot, complexity="low", epic_id="DEMO-1", epic_risk_flags=[])["model"])
+        self.assertEqual(MODELS[1], self.route(snapshot, complexity="low")["model"])
+        self.assertEqual(MODELS[2], self.route(snapshot, complexity="low", epic_id="DEMO-1", epic_risk_flags=[])["model"])
         self.assertEqual("blocked", self.route(snapshot, last_failure_kind="reasoning",
-                         previous_route={"model": MODELS[2], "reasoning_effort": "high"})["status"])
+                         previous_route={"model": MODELS[1], "reasoning_effort": "high"})["status"])
         risky = self.route(snapshot, risk="high")
         self.assertEqual(MODELS[2], risky["model"])
         self.assertTrue(risky["pinned"])
-        changed = op.set_operating(self.root, self.governance, "Set A worker back to Terra/medium",
-                                   ["A.worker=gpt-5.6-terra/medium"])
+        changed = op.set_operating(self.root, self.governance, "Set A worker to Sol/medium",
+                                   ["A.worker=gpt-5.6-sol/medium"])
         self.assertTrue(changed.config["streams"]["A"]["worker"]["pinned"])
         changed = op.set_operating(self.root, self.governance, "Unpin A's default worker", ["A.worker.pinned=false"])
         self.assertEqual(MODELS[1], self.route(changed, complexity="low")["model"])
-        self.assertEqual(MODELS[5], self.route(changed, complexity="low", epic_id="DEMO-1", epic_risk_flags=[])["model"])
+        self.assertEqual(MODELS[2], self.route(changed, complexity="low", epic_id="DEMO-1", epic_risk_flags=[])["model"])
         with self.assertRaisesRegex(op.OperatingError, "stale"):
             op.set_operating(self.root, self.governance, "adopt previous", recommendation_id=record["id"], accept="all")
 
