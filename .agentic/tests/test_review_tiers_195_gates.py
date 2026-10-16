@@ -291,8 +291,10 @@ class ReviewTiers195GateTests(Fixture):
                                          "head_sha": "b" * 40, "round": 2},
             "review_verdict_record_id": str(uuid.uuid4()),
             "review_verdict_sha256": "c" * 64,
+            "authorization_request_id": str(uuid.uuid4()),
             "cycles": 2,
             "cap_extensions": 0,
+            "successor_ticket": None,
             "owner_source": {"comment_id": 99},
         }
         cap["record_id"] = cap_disposition_record_id(cap)
@@ -311,8 +313,10 @@ class ReviewTiers195GateTests(Fixture):
                                          "head_sha": "b" * 40, "round": 2},
             "review_verdict_record_id": str(uuid.uuid4()),
             "review_verdict_sha256": "c" * 64,
+            "authorization_request_id": str(uuid.uuid4()),
             "cycles": 2,
             "cap_extensions": 0,
+            "successor_ticket": None,
             "owner_source": {"comment_id": 99},
         }
         cap["record_id"] = cap_disposition_record_id(cap)

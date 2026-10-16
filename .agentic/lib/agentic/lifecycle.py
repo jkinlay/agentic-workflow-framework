@@ -354,6 +354,7 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
         if owner_cap_context is None:
             raise ValidationError("Lifecycle requires an authenticated owner cap-disposition context")
         from .authorization import verify_owner_record
+        from .gates import verify_disposition_review_binding
         verify_owner_record(owner_cap_disposition, "review-cap-disposition",
                             owner_cap_context["config"], owner_cap_context["contracts"],
                             owner_cap_context["now"],
@@ -362,6 +363,15 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
                             runs=owner_cap_context.get("runs"),
                             excluded_contexts=owner_cap_context.get("excluded_contexts", ()),
                             excluded_producers=owner_cap_context.get("excluded_producers", ()))
+        try:
+            review_verdict = owner_cap_context["review_verdict"]
+        except (KeyError, TypeError) as exc:
+            raise ValidationError(
+                "Lifecycle requires the exact AWF review-verdict for a cap disposition"
+            ) from exc
+        verify_disposition_review_binding(
+            owner_cap_disposition, "review-cap-disposition", review_verdict,
+            owner_cap_context["contracts"], owner_cap_context["head_sha"])
     if overcap_approvals or trusted_owner_ids or round_started_at is not None:
         raise ValidationError(
             "Lifecycle does not trust caller-supplied over-cap approval fields; "
