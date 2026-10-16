@@ -461,6 +461,32 @@ class IN43RawHeaderTests(_RepositoryCase):
 
 
 class IN44RepositoryConfigTests(_RepositoryCase):
+    def test_in_44_missing_base_beyond_shallow_boundary_is_named(self):
+        first = self.commit(
+            self.tree_with(("one", b"one", "100644")), self.base,
+            self.message("first"),
+        )
+        head = self.commit(
+            self.tree_with(("two", b"two", "100644")), first,
+            self.message("head"),
+        )
+        self.git("update-ref", "refs/heads/main", head)
+        shallow_root = self.scratch / "missing-base-shallow"
+        clone = subprocess.run(
+            ["git", "clone", "--quiet", "--depth=1", self.root.resolve().as_uri(),
+             str(shallow_root)], capture_output=True, env=self.environment, timeout=60,
+        )
+        if clone.returncode:
+            self.fail(clone.stderr.decode("utf-8", "replace"))
+        missing = subprocess.run(
+            ["git", "-C", str(shallow_root), "cat-file", "-e", f"{first}^{{commit}}"],
+            capture_output=True, env=self.environment, timeout=60,
+        )
+        self.assertNotEqual(0, missing.returncode, "fixture base must be unavailable")
+
+        with self.assertRaisesRegex(ValidationError, "SHALLOW_RANGE_BOUNDARY"):
+            provenance.check_commit_range(shallow_root, first, head)
+
     def test_in_44_unsafe_local_config_refuses_and_shallow_boundary_is_named(self):
         self.git("config", "merge.fixture.driver", "false")
         with self.assertRaisesRegex(ValidationError, "GIT_CONFIG_UNSAFE"):
