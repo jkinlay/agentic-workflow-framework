@@ -54,7 +54,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/42-PR-INTEGRATION-QUEUE.md` | `6645b3bc1b5568bcd2539562292f86ef40975e635fae6eb1971c0fded53933e7` |
 | `.agentic/docs/43-MERGE-TRAIN.md` | `758f4650fa561bd494f645c115c42223e21f51f9faf6914a43f618f40fe8da72` |
 | `.agentic/docs/44-AWF91-DISPATCH-STATE-TEST-PLAN.md` | `9aa3f29e2472ccac2b6cb63441f9a5a37b064ed9680a67b2fb4cfa6eeadb5cc5` |
-| `.agentic/docs/47-AWF54B-TEST-PLAN.md` | `8975ac25f81e00ab6ea292705f07758a074354037bddf90f3631864a746e2455` |
+| `.agentic/docs/47-AWF54B-TEST-PLAN.md` | `fe6059f9a8b49e1b67ff873a9ad88ca3ef84a4110666a73de8bd9e4561079d2b` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `73a25bafeaa92a93cd247a9d4e64fb9434e608dc9df583d3bfd2ce5acde47fc6` |
 | `.agentic/docs/evidence/awf28-u1-investigation.md` | `4521c3b869e7c68940d789ded091be90e358bd5c2353a123ece9694a7574bdc9` |
 | `.agentic/examples/OPERATING_CONFIG.yaml` | `77dd1812782ef4ee7aeb5a53336da92fc8841cc9c621db3d21f17b00be4b64fe` |

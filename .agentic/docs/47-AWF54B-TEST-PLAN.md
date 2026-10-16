@@ -1,12 +1,12 @@
 # AWF-54B merge-train tests-first plan
 
-Design basis: `main` at `0cf694097853ea8311bf3c6746a974e25a35af14`.
-This design-only Tier 3/`FULL` slice adds no runtime, schema, or tests.
-54B starts only from accepted 54A/PR #174 and grants no merge authority.
+`main` basis: `0cf694097853ea8311bf3c6746a974e25a35af14`.
+This Tier 3/`FULL` design adds no runtime, schema, or tests.
+54B requires accepted 54A/PR #174 and grants no merge authority.
 
 ## Decisions and acceptance mapping
 
-Jonathan's rulings are fixed: Q1=A, so a fresh provider-observed exact-head
+Fixed rulings: Q1=A, so a fresh provider-observed exact-head
 owner review admits a source only and is never batch authorization; Q2=B keeps
 adopters on and this AWF repository off; Q3=A delivers sequential 54A then 54B
 PRs; Q4=B requires source owner review only when its tier's normal final gate
@@ -41,7 +41,7 @@ network. Targets: `P=.agentic/tests/test_merge_train_publication.py`,
 | T3 `test_push_pr_creation_orphan_race_is_recovered_without_replay` | Push succeeds; PR response is lost; restart observes provider. | No recovery state. | Durable intent is reconciled once; no duplicate push/PR. | P |
 | T4 `test_batch_final_gate_requires_full_exact_head_ci_and_frozen_reviews` | Draft CI, stale/full CI, changed head, reviewer set, and gate. | No batch gate. | Only full CI and complete frozen reviews for the exact batch pass. | L |
 | T5 `test_batch_mark_ready_requires_authenticated_exact_head_authorization` | Draft batch PR and forged/stale/mismatched approval. | No batch lifecycle. | Logged provider-observed approval precedes mark-ready; refusal keeps draft. | L |
-| T6 `test_source_review_cannot_authorize_batch_merge` | Valid source reviews plus batch authorization variants. | 54A only rejects a direct record. | Final gate accepts only fresh batch-bound owner authorization and human merge. | L |
+| T6 `test_source_review_cannot_authorize_batch_merge` | Valid source reviews plus batch authorization variants. | 54A only rejects a direct record. | Exact-head final gate precedes fresh batch-bound owner authorization permitting human-merge handoff; gate consumes neither authorization nor merge-observation. | L |
 | T7 `test_failed_source_is_ejected_and_generation_rebuilt_from_frozen_target` | Three sources; middle local prefix fails. | 54A returns policy only. | Middle/dependents are ejected as specified; rebuilt prefixes start at the same frozen target. | M |
 | T8 `test_each_batch_audit_record_is_immutable` | External store; retry, collision, attempted rewrite/delete. | No batch ledger. | One candidate-bound record appends per batch; retry is stable and mutation refuses. | L |
 | T9 `test_ordinary_closeout_refuses_batch_constituent` | Constituent and ordinary merge evidence. | No batch closeout. | Ordinary closeout refuses before Jira access. | C |
