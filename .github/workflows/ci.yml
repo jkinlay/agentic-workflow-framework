@@ -3,6 +3,7 @@ name: ci
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -101,10 +102,9 @@ jobs:
     if: >-
       always() && (github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
-      (needs.windows_runtime_paths.result != 'success' ||
-      needs.windows_runtime_paths.outputs.runtime_changed != 'false' ||
-      (github.base_ref == 'main' &&
-      startsWith(github.head_ref, 'release/')))))
+      ((github.base_ref == 'main' &&
+      startsWith(github.head_ref, 'release/')) ||
+      github.event.pull_request.draft == false)))
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
