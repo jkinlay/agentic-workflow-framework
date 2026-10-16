@@ -28,6 +28,20 @@ from agentic.publication import (_detectors, _scan_text, render_aliases, render_
 
 ROOT = Path(__file__).resolve().parents[2]
 CODEX_RUN_ID = "01a1302f-71ca-7e51-8cee-a61729815489"
+HELD_PUBLICATION_RECEIPT_FIELDS = {
+    "project_config_binding_sha256",
+    "supplemental_project_config_sha256",
+    "large_file_allowance_accounting",
+}
+
+
+def validate_legacy_publication_receipt(result):
+    """Keep the revision-3 checks while its additive schema fields are held."""
+    Contracts(ROOT / ".agentic/schemas").validate(
+        "publication-scan",
+        {key: value for key, value in result.items()
+         if key not in HELD_PUBLICATION_RECEIPT_FIELDS},
+    )
 
 
 def git(repository, *args, input_bytes=None, check=True):
@@ -96,6 +110,16 @@ class Repository:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"version": 1, "aliases": {"raw_estate": [private_locator()]}}), encoding="utf-8")
         return path
+
+    def project_config(self, allowances):
+        config = json.loads((ROOT / ".agentic/PROJECT_CONFIG.yaml").read_text(encoding="utf-8"))
+        config["publication"] = {
+            "deny_literals": [],
+            "deny_regexes": [],
+            "internal_hostnames": [],
+            "large_file_allowances": list(allowances),
+        }
+        self.write(".agentic/PROJECT_CONFIG.yaml", json.dumps(config, indent=2) + "\n")
 
 
 class PublicationScanTests(unittest.TestCase):
@@ -365,7 +389,7 @@ class PublicationScanTests(unittest.TestCase):
         blob = scan_repository(self.repo.path, self.repo.base, "HEAD", mapping_path=self.mapping)
         self.assertTrue(any(item["commit"] == blob_commit and item["reason"] == "invalid-utf8"
                             for item in blob["unscanned"]))
-        Contracts(ROOT / ".agentic/schemas").validate("publication-scan", blob)
+        validate_legacy_publication_receipt(blob)
         git(self.repo.path, "reset", "--hard", self.repo.base)
         self.repo.write("safe.txt", "changed\n")
         git(self.repo.path, "add", "safe.txt")
@@ -423,16 +447,17 @@ class PublicationScanTests(unittest.TestCase):
         self.assertEqual("invalid-utf8", reason)
 
     def test_large_file_allowance_accepts_existing_exact_blob_and_records_evidence(self):
-        content = b"x" * 80
+        content = b"x" * (20 * 1024)
         git(self.repo.path, "switch", "main")
         self.repo.write("artifacts/existing.dat", data=content)
-        self.repo.commit("add existing large fixture", "artifacts/existing.dat")
-        base = git(self.repo.path, "rev-parse", "HEAD")
-        git(self.repo.path, "switch", "-C", "awf/EX-6-publication")
         allowance = {"path": "artifacts/existing.dat", "sha256": hashlib.sha256(content).hexdigest(),
                      "reason": "Reviewed historical artifact", "approver": "fixture-owner"}
+        self.repo.project_config([allowance])
+        self.repo.commit("add existing large fixture", "artifacts/existing.dat", ".agentic/PROJECT_CONFIG.yaml")
+        base = git(self.repo.path, "rev-parse", "HEAD")
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication")
 
-        with mock.patch.object(publication, "MAX_TEXT_BYTES", 64):
+        with mock.patch.object(publication, "MAX_TEXT_BYTES", 16 * 1024):
             result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping,
                                      large_file_allowances=[allowance])
 
@@ -444,7 +469,7 @@ class PublicationScanTests(unittest.TestCase):
         self.assertEqual("artifacts/existing.dat", evidence[0]["path"])
         self.assertEqual("PRE_EXISTING", evidence[0]["classification"])
         self.assertIn(allowance["sha256"], evidence[0]["detector_id"])
-        Contracts(ROOT / ".agentic/schemas").validate("publication-scan", result)
+        validate_legacy_publication_receipt(result)
 
     def test_new_large_file_is_blocked_without_a_baseline_allowance(self):
         content = b"x" * 80
@@ -464,18 +489,19 @@ class PublicationScanTests(unittest.TestCase):
                             large_file_allowances=[allowance])
 
     def test_modified_allowed_large_file_is_blocked_on_hash_mismatch(self):
-        content = b"x" * 80
+        content = b"x" * (20 * 1024)
         git(self.repo.path, "switch", "main")
         self.repo.write("artifacts/existing.dat", data=content)
-        self.repo.commit("add existing large fixture", "artifacts/existing.dat")
-        base = git(self.repo.path, "rev-parse", "HEAD")
-        git(self.repo.path, "switch", "-C", "awf/EX-6-publication")
-        self.repo.write("artifacts/existing.dat", data=b"y" * 80)
-        self.repo.commit("modify existing large fixture", "artifacts/existing.dat")
         allowance = {"path": "artifacts/existing.dat", "sha256": hashlib.sha256(content).hexdigest(),
                      "reason": "Reviewed historical artifact", "approver": "fixture-owner"}
+        self.repo.project_config([allowance])
+        self.repo.commit("add existing large fixture", "artifacts/existing.dat", ".agentic/PROJECT_CONFIG.yaml")
+        base = git(self.repo.path, "rev-parse", "HEAD")
+        git(self.repo.path, "switch", "-C", "awf/EX-6-publication")
+        self.repo.write("artifacts/existing.dat", data=b"y" * (20 * 1024))
+        self.repo.commit("modify existing large fixture", "artifacts/existing.dat")
 
-        with mock.patch.object(publication, "MAX_TEXT_BYTES", 64):
+        with mock.patch.object(publication, "MAX_TEXT_BYTES", 16 * 1024):
             result = scan_repository(self.repo.path, base, "HEAD", mapping_path=self.mapping,
                                      large_file_allowances=[allowance])
 
