@@ -4,10 +4,13 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic import publication
