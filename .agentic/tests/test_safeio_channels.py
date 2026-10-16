@@ -9,6 +9,9 @@ import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_only  # noqa: E402,F401
+
 from agentic import ValidationError
 from agentic import child_process
 from agentic import safeio
