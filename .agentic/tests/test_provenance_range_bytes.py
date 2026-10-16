@@ -487,6 +487,29 @@ class IN44RepositoryConfigTests(_RepositoryCase):
         with self.assertRaisesRegex(ValidationError, "SHALLOW_RANGE_BOUNDARY"):
             provenance.check_commit_range(shallow_root, first, head)
 
+    def test_in_44_malformed_base_refusal_is_independent_of_repository_depth(self):
+        head = self.commit(
+            self.tree_with(("head", b"head", "100644")), self.base,
+            self.message("head"),
+        )
+        self.git("update-ref", "refs/heads/main", head)
+        shallow_root = self.scratch / "malformed-base-shallow"
+        clone = subprocess.run(
+            ["git", "clone", "--quiet", "--depth=1", self.root.resolve().as_uri(),
+             str(shallow_root)], capture_output=True, env=self.environment, timeout=60,
+        )
+        if clone.returncode:
+            self.fail(clone.stderr.decode("utf-8", "replace"))
+
+        malformed = (None, 7, "", "main", "refs/tags/v1", "refs/heads/a..b")
+        for base in malformed:
+            with self.subTest(base=base):
+                with self.assertRaisesRegex(ValidationError, "^REF_INVALID") as full:
+                    provenance.check_commit_range(self.root, base, head)
+                with self.assertRaisesRegex(ValidationError, "^REF_INVALID") as shallow:
+                    provenance.check_commit_range(shallow_root, base, head)
+                self.assertEqual(str(full.exception), str(shallow.exception))
+
     def test_in_44_unsafe_local_config_refuses_and_shallow_boundary_is_named(self):
         self.git("config", "merge.fixture.driver", "false")
         with self.assertRaisesRegex(ValidationError, "GIT_CONFIG_UNSAFE"):
