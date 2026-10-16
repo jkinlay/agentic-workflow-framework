@@ -318,6 +318,9 @@ class Fixture(unittest.TestCase):
         self.config = RuntimeAssignedGateConfig(
             copy.deepcopy(self.config0), self
         )
+        # The shared evidence bundle is illustrative data, so derive its
+        # policy/candidate bindings from the current reviewed example config.
+        self.rebind()
 
     def gate(self):
         bind_review_admission(self.bundle)
@@ -398,6 +401,11 @@ class Fixture(unittest.TestCase):
             verdict["binding"] = copy.deepcopy(binding)
             verdict["tier"] = classification["tier"]
         self.sync_critic_artifact()
+        bind_review_admission(self.bundle)
+        terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
+        bind_review_round_receipt(
+            self.bundle, terminal, self.bundle["critic"],
+            self.bundle["review_submission"]["completion_snapshot"])
         return binding
 
     def sync_critic_artifact(self):

@@ -127,7 +127,7 @@ READY_AUTHORIZATION_ROLES = {"manager", "owner"}
 READY_AUTHORIZATION_ORDER = ["request", "action", "role", "repoid", "pr", "head", "requested", "expires"]
 
 
-def trusted_owner_ids(config, *, allow_registered_legacy_overlap=False):
+def trusted_owner_ids(config):
     """Return the reviewed numeric owner allowlist or fail closed."""
     try:
         owners = config["merge_gate"]["trusted_owner_ids"]
@@ -149,7 +149,7 @@ def trusted_owner_ids(config, *, allow_registered_legacy_overlap=False):
         raise ValidationError(
             "$.github.expected_actor_id: configure one positive numeric automation actor ID"
         )
-    if automation_actor in owners and not allow_registered_legacy_overlap:
+    if automation_actor in owners:
         raise ValidationError(
             "The configured automation actor must not be a trusted owner"
         )
@@ -490,11 +490,7 @@ def verify_owner_record(record, schema, config, contracts, now, *, head_sha, bin
         signed_head = record.get("head_sha")
     _verify_owner_record_candidate(record, kind, signed_head)
     source = record["owner_source"]
-    # A registered verifier run can re-evaluate retained legacy evidence for a
-    # fail-closed gate result. New request issuance and standalone disposition
-    # verification never permit the automation/owner overlap.
-    if source["actor_id"] not in trusted_owner_ids(
-            config, allow_registered_legacy_overlap=runs is not None):
+    if source["actor_id"] not in trusted_owner_ids(config):
         raise ValidationError(f"{schema}: untrusted numeric owner identity {source['actor_id']}")
     if sha256(source["raw_body"].encode("utf-8")) != source["raw_body_sha256"]:
         raise ValidationError(f"{schema}: raw-body digest mismatch")
