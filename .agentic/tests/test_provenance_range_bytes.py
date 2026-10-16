@@ -504,11 +504,18 @@ class IN44RepositoryConfigTests(_RepositoryCase):
         malformed = (None, 7, "", "main", "refs/tags/v1", "refs/heads/a..b")
         for base in malformed:
             with self.subTest(base=base):
+                expected = (
+                    "REF_INVALID: Range base must be canonical"
+                    if not isinstance(base, str)
+                    else "REF_INVALID: Range base must be a full OID or "
+                         "refs/heads|remotes name"
+                )
                 with self.assertRaisesRegex(ValidationError, "^REF_INVALID") as full:
                     provenance.check_commit_range(self.root, base, head)
                 with self.assertRaisesRegex(ValidationError, "^REF_INVALID") as shallow:
                     provenance.check_commit_range(shallow_root, base, head)
-                self.assertEqual(str(full.exception), str(shallow.exception))
+                self.assertEqual(expected, str(full.exception))
+                self.assertEqual(expected, str(shallow.exception))
 
     def test_in_44_malformed_base_refuses_before_repository_inspection(self):
         missing_root = self.scratch / "not-a-repository"

@@ -370,7 +370,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_private_deny_binary.py` | `b6da0ffbcce95cedece5c337106bb6f642f127180ae21ba14ec606da37ac6de1` |
 | `.agentic/tests/test_provenance.py` | `171b140e2492e39a70b22259600861dd1b28fd0aa61eaf0b333ba5ca97d3e38a` |
 | `.agentic/tests/test_provenance_awf94.py` | `88286473aa73ad8681a8a4cfd552d519b36cd14eb2cf4fab242549c53341059c` |
-| `.agentic/tests/test_provenance_range_bytes.py` | `57abc84fea0496516aa9505011c6114aca95169e9dd8167175417f3c4e684022` |
+| `.agentic/tests/test_provenance_range_bytes.py` | `5ddb7e1b15714b5092f6ff513bfa04a43ed04073bdc6465e7f2dd8744367c65f` |
 | `.agentic/tests/test_provider_identity.py` | `a276d68b89dfb6e65513f62732dd3fddab93419b04f20cc59bbec7c8a0e2fc2b` |
 | `.agentic/tests/test_publication.py` | `add2fb41f68d682cd8fa52ebb726bd8497524d9b73e090f47ca1b48dc1758275` |
 | `.agentic/tests/test_publication_readiness.py` | `4c2e48395f0a3a26c86625cf49e62b2b71353ff9bb33cb9c2bedcb7c40431354` |
