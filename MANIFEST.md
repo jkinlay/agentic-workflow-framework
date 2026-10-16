@@ -52,6 +52,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/40-EXTERNAL-RESOURCES.md` | `39431036b0970d2c754af1f07981006d9100d90647202d899672a997baf2216e` |
 | `.agentic/docs/41-WRITER-CRITIC-PROVENANCE.md` | `e44b68b7bed6b15ba64d2f11b5ae3057a676ea2fdf7fec1c312344fe20510ba4` |
 | `.agentic/docs/42-PR-INTEGRATION-QUEUE.md` | `6645b3bc1b5568bcd2539562292f86ef40975e635fae6eb1971c0fded53933e7` |
+| `.agentic/docs/43-MERGE-TRAIN.md` | `758f4650fa561bd494f645c115c42223e21f51f9faf6914a43f618f40fe8da72` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `73a25bafeaa92a93cd247a9d4e64fb9434e608dc9df583d3bfd2ce5acde47fc6` |
 | `.agentic/docs/evidence/awf28-u1-investigation.md` | `4521c3b869e7c68940d789ded091be90e358bd5c2353a123ece9694a7574bdc9` |
 | `.agentic/examples/OPERATING_CONFIG.yaml` | `77dd1812782ef4ee7aeb5a53336da92fc8841cc9c621db3d21f17b00be4b64fe` |
