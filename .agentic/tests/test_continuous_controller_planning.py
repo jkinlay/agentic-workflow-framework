@@ -224,7 +224,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			 {'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.4',
 			  'project_root': '/fixture', 'pinned_skill_path': '/fixture/skill',
 			  'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []}),
-			('agentic.continuous_controller.canonical_reservation_sources', lambda *_: [])):
+			('agentic.continuous_controller.canonical_reservation_sources', lambda *_args, **_kwargs: [])):
 			mock = patch(target, side_effect=value) if callable(value) else patch(target, return_value=value)
 			mock.start()
 			self.addCleanup(mock.stop)
@@ -622,6 +622,44 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 		self.assertEqual([], dispatched, result)
 		self.assertTrue(any(row['phase'] == 'LANE_START' and row['status'] == 'REFUSED'
 							for row in result['overlap_allowances']), result)
+
+	def test_inventory_refresh_reobserves_reservations_before_scheduling(self):
+		cfg = publication_config()
+		cfg['github']['repository_id'] = 101
+		cfg.setdefault('merge_gate', {})['trusted_owner_ids'] = [7002]
+		planned = allowance_inventory()
+		refreshed = deepcopy(planned) + [ticket('AWF-PARK', 3) | {'disposition': 'PAUSED_INPUT', 'reason': 'parked input', 'paths': ['src/shared.py']}]
+		inventory_calls, reservation_calls, dispatched = ([], [], [])
+
+		def observe_inventory(controller_now=None):
+			items = planned if not inventory_calls else refreshed
+			inventory_calls.append(deepcopy(items))
+			return observation(items, controller_now or NOW)
+
+		def observe_reservations(request):
+			reservation_calls.append(deepcopy(request))
+			sources = []
+			if len(reservation_calls) == 2:
+				parked = {'schema_version': 1, 'kind': 'parked', 'source': 'github.com', 'repository_id': '101', 'head_sha': 'a' * 40, 'tree_sha': 'b' * 40, 'artifact_id': 'parked-after-refresh', 'observed_at': request['observed_at'], 'authenticated': True, 'complete': True, 'paths': ['src/shared.py']}
+				parked['evidence_sha256'] = fingerprint('controller-reservation-source', parked)
+				sources.append(parked)
+			return {'inventory_sha256': request['inventory_sha256'], 'sources': sources}
+
+		def observe_allowance(request, _phase):
+			value = allowance_observation(request)
+			for item in value['pull_requests']:
+				item['head_ref'] = 'codex/' + item['ticket'] + '-' + item['ticket'].lower()
+			return value
+
+		with patch('agentic.continuous_controller.canonical_reservation_sources', side_effect=lambda raw, *_args, **_kwargs: raw['sources']):
+			result = self.cycle(planned, publication=cfg, observe_inventory=observe_inventory,
+				dispatch_ticket=lambda payload: dispatched.append(payload['ticket']) or receipt(payload),
+				observe_reservations=observe_reservations, cycle_id='cycle-17',
+				overlap_allowance_requests=[allowance_request()], observe_overlap_allowance=observe_allowance)
+		self.assertEqual(2, len(inventory_calls), result)
+		self.assertEqual(2, len(reservation_calls), result)
+		self.assertEqual(observation(refreshed)['inventory_sha256'], reservation_calls[1]['inventory_sha256'])
+		self.assertEqual([], dispatched, result)
 
 	def test_post_expiry_provider_reads_use_post_read_controller_times(self):
 		allowance = self.validate()

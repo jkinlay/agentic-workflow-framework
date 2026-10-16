@@ -86,7 +86,7 @@ def reservation_observation(request):
 		diff={'schema_version':1,'kind':'worktree_diff','source':'git','repository_id':request['repository_id'],'head_sha':request['head_sha'],'tree_sha':request['tree_sha'],'artifact_id':fingerprint('controller-worktree-diff',{'head_sha':request['head_sha'],'tree_sha':request['tree_sha'],'paths':paths}),'observed_at':request['observed_at'],'authenticated':True,'complete':True,'paths':paths}
 		diff['evidence_sha256']=fingerprint('controller-reservation-source',diff)
 		sources.append(diff)
-	envelope={'schema_version':1,'source':'host_observation','repository_id':request['repository_id'],'head_sha':request['head_sha'],'tree_sha':request['tree_sha'],'observed_at':request['observed_at'],'authenticated':True,'complete':True,'sources':sources}
+	envelope={'schema_version':1,'source':'host_observation','repository_id':request['repository_id'],'head_sha':request['head_sha'],'tree_sha':request['tree_sha'],'inventory_sha256':request['inventory_sha256'],'observed_at':request['observed_at'],'authenticated':True,'complete':True,'sources':sources}
 	envelope['observation_sha256']=fingerprint('controller-reservation-observation',envelope)
 	return envelope
 
@@ -129,7 +129,7 @@ def replan_trigger(name,prior_sha,next_sha,dispatch_ids,observed_at):
 	return trigger
 
 class ContinuousControllerTests(unittest.TestCase):
-	def _legacy_dispatch_store(self, path, rows):
+	def _legacy_dispatch_store(self, path, rows, *, prior_inventory_sha256=None):
 		db=sqlite3.connect(path)
 		try:
 			db.executescript(LEGACY_194_DDL)
@@ -137,6 +137,8 @@ class ContinuousControllerTests(unittest.TestCase):
 			db.execute('PRAGMA user_version=1')
 			for key,value in (('streams',json.dumps(['A','B','C'],separators=(',',':'))),('cadence_seconds','600'),('revision','0'),('last_regular_digest',''),('last_digest_revision','-1')):
 				db.execute('INSERT INTO controller_meta VALUES(?,?)',(key,value))
+			if prior_inventory_sha256 is not None:
+				db.execute("INSERT INTO controller_meta VALUES('last_inventory_sha256',?)", (prior_inventory_sha256,))
 			for stream in ('A','B','C'):
 				db.execute('INSERT INTO stream_status VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(stream,'COMPLETE',None,'controller','No scoped work has been scheduled','Observe the scoped backlog','an eligible scoped ticket appears','UNOBSERVED','No active action','UNOBSERVED',json.dumps({'required':0,'completed':0,'acceptable':0,'failed':0,'stale':0,'outstanding':0},separators=(',',':')),0,'UNOBSERVED','[]',NOW))
 			for status, payload in rows:
@@ -162,12 +164,23 @@ class ContinuousControllerTests(unittest.TestCase):
 		with tempfile.TemporaryDirectory(prefix='awf91-legacy-') as scratch:
 			path = Path(scratch) / 'controller.sqlite3'
 			rows = [(state, self._legacy_payload(state.lower(), state, chr(65 + index))) for index, state in enumerate(('PENDING', 'IN_FLIGHT', 'UNKNOWN'))]
-			self._legacy_dispatch_store(path, rows)
+			self._legacy_dispatch_store(path, rows, prior_inventory_sha256='b' * 64)
 			reopened = ContinuousControllerStore(path, ['A', 'B', 'C'])
 			with reopened.connection() as db:
 				migrated = [(row['status'], json.loads(row['payload_json'])) for row in db.execute('SELECT status,payload_json FROM controller_dispatch ORDER BY rowid')]
 			self.assertEqual([state for state, _ in migrated], ['PENDING', 'IN_FLIGHT', 'UNKNOWN'])
 			self.assertTrue(all(payload['dispatch_schema_version'] == 2 for _, payload in migrated))
+			self.assertEqual(reopened.replan_context()['prior_inventory_sha256'], 'b' * 64)
+
+	def test_legacy_nonterminal_without_inventory_binding_is_atomically_refused(self):
+		with tempfile.TemporaryDirectory(prefix='awf91-legacy-boundary-') as scratch:
+			path = Path(scratch) / 'controller.sqlite3'
+			rows = [(state, self._legacy_payload('boundary-' + state.lower(), state, chr(65 + index))) for index, state in enumerate(('PENDING', 'IN_FLIGHT', 'UNKNOWN'))]
+			self._legacy_dispatch_store(path, rows)
+			before = self._database_before_image(path)
+			with self.assertRaisesRegex(ValidationError, '(?i)legacy.*prior inventory|prior inventory.*legacy'):
+				ContinuousControllerStore(path, ['A', 'B', 'C'])
+			self.assertEqual(self._database_before_image(path), before)
 
 	def test_legacy_194_mixed_migration_is_atomic(self):
 		with tempfile.TemporaryDirectory(prefix='awf91-legacy-atomic-') as scratch:
@@ -183,7 +196,7 @@ class ContinuousControllerTests(unittest.TestCase):
 	def test_legacy_194_late_initialization_refusal_preserves_complete_before_image(self):
 		with tempfile.TemporaryDirectory(prefix='awf91-legacy-late-refusal-') as scratch:
 			path=Path(scratch)/'controller.sqlite3'
-			self._legacy_dispatch_store(path,[('PENDING',self._legacy_payload('valid','PENDING','A'))])
+			self._legacy_dispatch_store(path,[('PENDING',self._legacy_payload('valid','PENDING','A'))], prior_inventory_sha256='b' * 64)
 			before=self._database_before_image(path)
 			with self.assertRaisesRegex(ValidationError,'Configured stream set changed'):
 				ContinuousControllerStore(path,['A','B'])
@@ -207,6 +220,12 @@ class ContinuousControllerTests(unittest.TestCase):
 			diff['evidence_sha256'] = fingerprint('controller-reservation-source', diff)
 			accepted = canonical_reservation_sources([parked, diff], repository, head, tree, '101', NOW)
 			self.assertEqual([item['kind'] for item in accepted], ['parked', 'worktree_diff'])
+			inventory_sha256 = 'd' * 64
+			envelope = {'schema_version': 1, 'source': 'host_observation', 'repository_id': '101', 'head_sha': head, 'tree_sha': tree, 'inventory_sha256': inventory_sha256, 'observed_at': NOW, 'authenticated': True, 'complete': True, 'sources': [parked, diff]}
+			envelope['observation_sha256'] = fingerprint('controller-reservation-observation', envelope)
+			self.assertEqual(len(canonical_reservation_sources(envelope, repository, head, tree, '101', NOW, inventory_sha256=inventory_sha256)), 2)
+			with self.assertRaisesRegex(ValidationError, 'different inventory'):
+				canonical_reservation_sources(envelope, repository, head, tree, '101', NOW, inventory_sha256='e' * 64)
 			for mutation in ({'authenticated': False}, {'repository_id': '999'}, {'head_sha': '0' * 40}, {'paths': ['../shared.py']}, {'paths': ['SHARED.py']}):
 				bad = dict(parked); bad.update(mutation); bad['evidence_sha256'] = fingerprint('controller-reservation-source', {key: value for key, value in bad.items() if key != 'evidence_sha256'})
 				with self.assertRaises(ValidationError):
@@ -262,6 +281,26 @@ class ContinuousControllerTests(unittest.TestCase):
 					store.seal_round_boundary_replan(valid,NOW)
 				with store.connection() as db:
 					self.assertEqual(db.execute("SELECT COUNT(*) FROM controller_replan_seal WHERE status='SEALED'").fetchone()[0],0)
+
+	def test_terminal_quiescence_updates_versioned_receipt_before_reopen(self):
+		with tempfile.TemporaryDirectory(prefix='awf91-terminal-reopen-') as scratch:
+			path = Path(scratch) / 'controller.sqlite3'
+			store = ContinuousControllerStore(path, ['A'])
+			store.schedule([ticket('AWF-LAUNCHED', 1)], NOW, 1, inventory_sha256='a' * 64)
+			operation = store.prepare_dispatches(NOW)[0]
+			payload = store.begin_dispatch(operation['dispatch_id'], NOW)
+			launched = dispatch_receipt(payload, NOW) | {'dispatch_state': 'LAUNCHED', 'terminal': False}
+			store.finish_dispatch(operation['dispatch_id'], launched, NOW)
+			observation = {'dispatch_id': operation['dispatch_id'], 'ticket': payload['ticket'], 'exact_tuple': payload['exact_tuple'], 'session_id': launched['session_id'], 'status': 'QUIESCENT', 'terminal': True, 'observed_at': NOW}
+			store.confirm_dispatch_quiescence(operation['dispatch_id'], observation, NOW)
+			reopened = ContinuousControllerStore(path, ['A'])
+			with reopened.connection() as db:
+				row = db.execute('SELECT status,receipt_json FROM controller_dispatch WHERE dispatch_id=?', (operation['dispatch_id'],)).fetchone()
+			self.assertEqual(row['status'], 'TERMINAL')
+			receipt = json.loads(row['receipt_json'])
+			self.assertEqual(receipt['dispatch_state'], 'TERMINAL')
+			self.assertIs(receipt['terminal'], True)
+			self.assertEqual(receipt['observed_at'], observation['observed_at'])
 
 	def test_publication_failure_blocks_before_dispatch_while_other_streams_continue(self):
 		calls=[]
@@ -1106,7 +1145,7 @@ class JiraProgressTests(unittest.TestCase):
 		transition_id=str(uuid.UUID(int=25))
 		closeout={'schema_version':3,'record_id':str(uuid.UUID(int=20)),'created_at':NOW,'producer_id':'fixture-controller','run_id':str(uuid.UUID(int=21)),'binding':{'project_id':project_config['project']['id'],'repository_id':project_config['github']['repository_id'],'issue_id':'QA-CLI','requirements_hash':'a'*64,'contract_hash':'b'*64,'policy_hash':policy_hash(project_config,definition()),'candidate_id':'c'*64},'pr_number':42,'reviewed_head_sha':merged_head,'base_sha':merged_head,'merge_commit_sha':merged_head,'merge_tree_sha':merged_tree,'bound_files':[{'path':bound_path,'blob_sha':bound_blob,'sha256':sha256(bound_bytes)}],'gate_record_id':str(uuid.UUID(int=22)),'review_record_ids':[str(uuid.UUID(int=23))],'jira_transition_record_id':transition_id,'evidence':['urn:awf:fixture:cli-closeout']}
 		transition={'schema_version':3,'record_id':transition_id,'created_at':NOW,'producer_id':'fixture-controller','run_id':str(uuid.UUID(int=26)),'binding':closeout['binding'],'operation_id':str(uuid.UUID(int=27)),'merge_result_id':merge_result_id,'jira_provider':{'cloud_id':'fixture-cloud','site':'https://jira.example.invalid','project_id':'fixture-project','project_key':'EX','controller_actor_id':'fixture-controller'},'lifecycle_event':'JIRA_RECONCILED','from_status_id':'In Review','to_status_id':'Done','transition_id':'31','status':'SUCCEEDED','evidence':['urn:awf:fixture:cli-jira-transition'],'read_back':{'observed_status':'Done','observed_actor':'fixture-controller','observed_at':NOW}}
-		reservation_envelope={'schema_version':1,'source':'host_observation','repository_id':INVENTORY_BINDING['repository_id'],'head_sha':merged_head,'tree_sha':merged_tree,'observed_at':NOW,'authenticated':True,'complete':True,'sources':[]}
+		reservation_envelope={'schema_version':1,'source':'host_observation','repository_id':INVENTORY_BINDING['repository_id'],'head_sha':merged_head,'tree_sha':merged_tree,'inventory_sha256':inventory_observation(NOW,inventory)['inventory_sha256'],'observed_at':NOW,'authenticated':True,'complete':True,'sources':[]}
 		reservation_envelope['observation_sha256']=fingerprint('controller-reservation-observation',reservation_envelope)
 		adapter_config={'reservations':reservation_envelope,'inventory':inventory_observation(NOW,inventory),'publication':publication_observation('EX-42',NOW),'jira_now':NOW,'jira_before':'Ready','jira_after':'In Progress','reconcile_receipt':{'ticket':'QA-CLI','issue_id':'10001',**jira_binding,'status':'RECONCILED','operation_id':str(uuid.UUID(int=9)),'before_status_id':'3','after_status_id':'10002','observed_at':NOW},'jira_page':{'items':[{'id':'10001','issue_type':'TASK','status_category':'TERMINAL'}],'next_cursor':None,'complete':True,'snapshot_id':'snapshot-cli','scope_sha256':scope_sha256,'observed_at':NOW},'project_config_observation':{'raw_bytes_base64':base64.b64encode(project_config_bytes).decode('ascii'),'config_sha256':sha256(project_config_bytes),'policy_sha256':policy_hash(project_config,definition()),'path':'.agentic/PROJECT_CONFIG.yaml','repository':project_config['github']['repository'],'repository_id':project_config['github']['repository_id'],'ref':'refs/heads/'+project_config['github']['base_branch'],'blob_sha':'e'*40,'acceptance':{'status':'ACCEPTED','receipt_id':'cli-acceptance','workflow_version':project_config['template']['expected_workflow_version']}},'closeout_observation':{'record':closeout,'merge_result_id':merge_result_id,'merge_observed_at':NOW},'jira_reconciliation_observation':{'record':transition}}
 		adapter_source='def build_adapters(config):\n    now = config["jira_now"]\n    def observe_inventory():\n        return config["inventory"]\n    def observe_reservations(request):\n        return config["reservations"]\n    def observe_publication(item):\n        return config["publication"]\n    def dispatch_ticket(payload):\n        keys = ["dispatch_schema_version", "dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce", "prepared_at", "begun_at", "role", "lifecycle_stage", "lane_start_waivers"]\n        if "reconcile_nonce" in payload:\n            keys += ["reconcile_nonce", "reconcile_at"]\n        return {key: payload[key] for key in keys} | {"status": "ACCEPTED", "dispatch_state": "TERMINAL", "terminal": True, "observed_at": now, "session_id": "session-" + payload["dispatch_id"]}\n    def observe_dispatch(payload):\n        return dispatch_ticket(payload)\n    def deliver_status(digest):\n        return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": now}\n    def observe_provider_identity():\n        return {"cloud_id": "fixture-cloud", "site": "https://jira.example.invalid",\n                "project_id": "fixture-project", "project_key": "EX",\n                "controller_actor_id": "fixture-controller"}\n    def read_current_status(binding):\n        return {"issue_id": binding["issue_id"], "status_id": config["jira_before"], "observed_at": now, "jira_provider": binding["jira_provider"]}\n    def write_transition(record):\n        return {"operation_id": record["operation_id"], "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED", "observed_at": now, "jira_provider": record["jira_provider"]}\n    def read_transition(record, operation):\n        return {"issue_id": record["binding"]["issue_id"], "status": config["jira_after"], "actor": record["producer_id"], "observed_at": now, "jira_provider": record["jira_provider"]}\n    def reconcile_merged_ticket(ticket):\n        value = dict(config["reconcile_receipt"])\n        value["ticket"] = ticket\n        return value\n    def fetch_scope_page(scope, cursor):\n        return config["jira_page"]\n    def observe_accepted_project_config(request):\n        return {"observed_at": now, "result": config["project_config_observation"]}\n    def observe_closeout_record(request):\n        return {"observed_at": now, "result": config["closeout_observation"]}\n    def observe_jira_reconciliation(request):\n        return {"observed_at": now, "result": config["jira_reconciliation_observation"]}\n    return {name: value for name, value in locals().items() if callable(value) and name != "build_adapters"}\n'
