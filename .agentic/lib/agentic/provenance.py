@@ -790,6 +790,7 @@ class _Git:
         watched = {
             self.common_dir / "config",
             self.git_dir / "config.worktree",
+            self.git_dir / "commondir",
             self.common_dir / "shallow",
             self.git_dir / "shallow",
             self.objects_dir / "info" / "alternates",
@@ -877,13 +878,12 @@ class _Git:
         unsafe_exact = {
             "core.attributesfile", "core.alternaterefscommand",
             "core.usereplacerefs", "diff.external", "diff.ignoresubmodules",
-            "merge.default", "merge.renormalize",
+            "diff.renamelimit", "diff.renames",
         }
         unsafe = [key for key in keys if (
             key in unsafe_exact
-            or key.startswith(("include.", "includeif."))
+            or key.startswith(("include.", "includeif.", "merge."))
             or re.fullmatch(r"diff\..+\.(?:command|textconv)", key)
-            or re.fullmatch(r"merge\..+\.(?:driver|recursive)", key)
             or re.fullmatch(r"submodule\..+\.ignore", key)
         )]
         _require(not unsafe,
