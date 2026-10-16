@@ -23,6 +23,96 @@ def _python(source, *arguments):
 
 
 class BoundedProcessTests(unittest.TestCase):
+    def test_job_setup_failure_closes_already_pinned_watched_outputs(self):
+        class RecordingWatcher:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        watcher = RecordingWatcher()
+        with mock.patch.object(safeio, "_PinnedWatchedOutput", return_value=watcher), \
+                mock.patch.object(safeio.os, "name", "nt"), \
+                mock.patch.object(safeio, "_WindowsJob", side_effect=OSError("job setup")):
+            with self.assertRaisesRegex(OSError, "job setup"):
+                safeio.run_bounded(_python("pass"), watched_files=["watched"])
+        self.assertTrue(watcher.closed)
+
+    def test_thread_start_failure_reaps_child_and_closes_owned_resources(self):
+        class RecordingStream:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        class RecordingProcess:
+            def __init__(self):
+                self.pid = 12345
+                self.stdout = RecordingStream()
+                self.stderr = RecordingStream()
+                self.stdin = None
+                self.returncode = None
+                self.killed = False
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -1
+
+            def wait(self):
+                if self.returncode is None:
+                    self.returncode = 0
+                return self.returncode
+
+        class RecordingJob:
+            creationflags = 0
+
+            def attach_and_resume(self, _process):
+                pass
+
+            def close(self):
+                pass
+
+        class FailingThread:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("thread start")
+
+            def join(self, timeout=None):
+                pass
+
+        class RecordingWatcher:
+            snapshot = None
+
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        process = RecordingProcess()
+        watcher = RecordingWatcher()
+        with mock.patch.object(safeio, "_PinnedWatchedOutput", return_value=watcher), \
+                mock.patch.object(safeio, "_WindowsJob", return_value=RecordingJob()), \
+                mock.patch.object(safeio.subprocess, "Popen", return_value=process), \
+                mock.patch.object(safeio.threading, "Thread", FailingThread), \
+                mock.patch.object(
+                    safeio, "_terminate_owned_tree",
+                    side_effect=lambda owned, _job: owned.kill(),
+                ):
+            with self.assertRaisesRegex(RuntimeError, "thread start"):
+                safeio.run_bounded(_python("pass"), watched_files=["watched"])
+        self.assertTrue(process.killed)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        self.assertTrue(watcher.closed)
+
     def test_stdin_has_an_independent_bound(self):
         with self.assertRaisesRegex(ValidationError, "SUBPROCESS_STDIN_LIMIT"):
             safeio.run_bounded(

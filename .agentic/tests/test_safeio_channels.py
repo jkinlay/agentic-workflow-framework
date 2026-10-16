@@ -152,6 +152,27 @@ class SafeWriteAndDiagnosticTests(unittest.TestCase):
             self.assertIn("<redacted-path>", rendered)
             self.assertIn("\\x1b", rendered)
 
+    def test_safe_log_write_redacts_structured_cli_credentials_and_short_path(self):
+        provider_key = "OPENAI" + "_API_KEY"
+        token_key = "to" + "ken"
+        provider_secret = "provider" + "-secret"
+        token_secret = "secret" + "-value"
+        local_path = chr(47) + "secret"
+        payload = "\n".join((
+            json.dumps({provider_key: provider_secret}, separators=(",", ":")),
+            repr({token_key: token_secret}),
+            "--" + "access-token " + token_secret,
+            "failed at " + local_path,
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            with safeio.Tree(directory) as tree:
+                safeio.write_log(tree, "result.log", payload, maximum=1024)
+                rendered = tree.read("result.log").decode("utf-8")
+        for sensitive in (provider_secret, token_secret, local_path):
+            self.assertNotIn(sensitive, rendered)
+        self.assertGreaterEqual(rendered.count("<redacted-credential>"), 3)
+        self.assertIn("<redacted-path>", rendered)
+
     def test_diagnostic_digest_binds_raw_bytes_not_redacted_text(self):
         slash = chr(47)
         left = "token=first " + slash.join(("", "home", "alice", "file"))
