@@ -10,7 +10,7 @@ import source_only  # noqa: E402,F401
 from agentic import ValidationError
 from agentic.canonical import load
 from agentic.contracts import Contracts
-from agentic.model_routing import policy_from_config, select_route
+from agentic.model_routing import load_routing, policy_from_config, select_route
 
 ROOT = Path(__file__).resolve().parents[2]
 MODEL = "gpt-6.1-sol"
@@ -40,6 +40,7 @@ class ApprovedModelsAwf82Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.config = load(ROOT / ".agentic" / "PROJECT_CONFIG.yaml")
+        cls.routing = load_routing(ROOT / ".agentic/tests/fixtures/routing/valid.yaml")
         Contracts(ROOT / ".agentic" / "schemas").validate("project-config", cls.config)
 
     def policy(self):
@@ -47,13 +48,14 @@ class ApprovedModelsAwf82Tests(unittest.TestCase):
 
     def test_shipped_config_accepts_gpt_6_1_sol_at_medium_and_high(self):
         execution = self.config["execution"]
-        routing = execution["model_routing"]
-        self.assertIn(MODEL, routing["model_order"])
-        self.assertEqual(["medium", "high"], routing["models"][MODEL]["reasoning_efforts"])
+        policy = self.policy()
+        self.assertIn(MODEL, self.routing["catalog"])
+        self.assertEqual(self.routing["catalog"][MODEL]["efforts"],
+                         policy["models"][MODEL]["reasoning_efforts"])
         for role in ROLES:
             with self.subTest(role=role):
                 self.assertIn(MODEL, execution["roles"][role]["approved_model_ids"])
-                self.assertIn(MODEL, routing["role_allowed_models"][role])
+                self.assertIn(MODEL, policy["role_allowed_models"][role])
 
         for effort in ("medium", "high"):
             with self.subTest(effort=effort):
@@ -88,7 +90,8 @@ class ApprovedModelsAwf82Tests(unittest.TestCase):
 
     def test_gpt_5_6_sol_remains_allowed_and_defaults_are_unchanged(self):
         execution = self.config["execution"]
-        routing = execution["model_routing"]
+        policy = self.policy()
+        self.assertIn(ROLLBACK_MODEL, self.routing["catalog"])
         expected_defaults = {
             "controller": (ROLLBACK_MODEL, "high"),
             "worker": ("gpt-5.6-luna", "medium"),
@@ -98,14 +101,10 @@ class ApprovedModelsAwf82Tests(unittest.TestCase):
         for role, expected in expected_defaults.items():
             with self.subTest(role=role):
                 self.assertIn(ROLLBACK_MODEL, execution["roles"][role]["approved_model_ids"])
-                self.assertIn(ROLLBACK_MODEL, routing["role_allowed_models"][role])
+                self.assertIn(ROLLBACK_MODEL, policy["role_allowed_models"][role])
                 self.assertEqual(expected, (
                     execution["roles"][role]["model"],
                     execution["roles"][role]["reasoning_effort"],
-                ))
-                self.assertEqual(expected, (
-                    routing["role_defaults"][role]["model"],
-                    routing["role_defaults"][role]["reasoning_effort"],
                 ))
 
 

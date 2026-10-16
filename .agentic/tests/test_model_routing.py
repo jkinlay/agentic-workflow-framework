@@ -17,10 +17,12 @@ import source_only  # noqa: E402,F401
 
 from agentic import ValidationError
 from agentic.contracts import Contracts
-from agentic.model_routing import (MODELS, RoutingLedger, default_policy,
+from agentic.model_routing import (RoutingLedger, default_policy, load_routing,
                                    policy_from_config, select_route, validate_policy)
 
 ROOT = Path(__file__).resolve().parents[2]
+ROUTING = load_routing(ROOT / ".agentic/tests/fixtures/routing/valid.yaml")
+MODELS = tuple(ROUTING["catalog"])
 
 
 def request(**updates):
@@ -58,8 +60,8 @@ class ModelRoutingTests(unittest.TestCase):
         return self.ledger.reserve("project-1", self.policy, request(**updates), capabilities())
 
     def test_balanced_roles_and_simple_worker(self):
-        expected = {"controller": ("gpt-5.6-sol", "high"), "worker": ("gpt-5.6-luna", "medium"),
-                    "critic": ("gpt-5.6-sol", "high"), "specialist": ("gpt-5.6-sol", "high")}
+        expected = {role: (pair["model"], pair["effort"])
+                    for role, pair in ROUTING["role_defaults"].items()}
         for role, pair in expected.items():
             route = select_route(self.policy, request(role=role, worker_context_id="other"), capabilities())
             self.assertEqual((route["model"], route["reasoning_effort"]), pair)
@@ -72,28 +74,30 @@ class ModelRoutingTests(unittest.TestCase):
         first = select_route(self.policy, request(), capabilities())
         self.assertEqual((first["model"], first["reasoning_effort"]), ("gpt-5.6-luna", "medium"))
         second = select_route(self.policy, request(last_failure_kind="implementation", previous_route={k:first[k] for k in ("model", "reasoning_effort")}), capabilities())
-        self.assertEqual((second["model"], second["reasoning_effort"]), ("gpt-5.6-terra", "high"))
+        self.assertEqual((second["model"], second["reasoning_effort"]), (MODELS[1], "high"))
         third = select_route(self.policy, request(last_failure_kind="implementation", previous_route={k:second[k] for k in ("model", "reasoning_effort")}), capabilities())
-        self.assertEqual((third["model"], third["reasoning_effort"]), ("gpt-5.6-sol", "high"))
+        self.assertEqual((third["model"], third["reasoning_effort"]), (MODELS[2], "high"))
 
     def test_complex_risky_and_uncertain_work_uses_observed_sol_default(self):
         for facts in ({"complexity": "high"}, {"risk": "high"}, {"uncertainty": "high"}, {"risk_flags": ["permissions"]}):
             route = select_route(self.policy, request(**facts), capabilities())
-            self.assertEqual(route["model"], "gpt-5.6-sol")
+            self.assertEqual(route["model"], ROUTING["risk_route"]["model"])
 
     def test_review_independence_and_floor(self):
         with self.assertRaisesRegex(ValidationError, "independent"):
             select_route(self.policy, request(role="critic", worker_context_id="context-1"), capabilities())
         self.policy["ticket_overrides"] = {"EX-10": {"critic": {"model": MODELS[0], "reasoning_effort": "low"}}}
         route = select_route(self.policy, request(role="critic", worker_context_id="worker-context"), capabilities())
-        self.assertEqual((route["model"], route["reasoning_effort"]), ("gpt-5.6-sol", "high"))
+        self.assertEqual((route["model"], route["reasoning_effort"]),
+                         (ROUTING["review_floor"]["model"], ROUTING["review_floor"]["effort"]))
 
     def test_override_precedence_and_risk_floor(self):
         self.policy["agent_overrides"] = {"worker-1": {"worker": {"model": MODELS[2], "reasoning_effort": "high"}}}
         self.policy["ticket_overrides"] = {"EX-10": {"worker": {"model": MODELS[1], "reasoning_effort": "high"}}}
         route = select_route(self.policy, request(), capabilities())
         self.assertEqual(route["model"], MODELS[1])
-        self.assertEqual(select_route(self.policy, request(risk="high"), capabilities())["model"], "gpt-5.6-sol")
+        self.assertEqual(select_route(self.policy, request(risk="high"), capabilities())["model"],
+                         ROUTING["risk_route"]["model"])
 
     def test_unavailable_model_or_effort_has_no_silent_fallback(self):
         for host in ({"models": {MODELS[0]: ["low"]}}, {"models": {MODELS[1]: ["low"]}}):
@@ -139,11 +143,11 @@ class ModelRoutingTests(unittest.TestCase):
         self.ledger.settle(first["run_id"], outcome(first, success=False, failure_kind="implementation", validation_passed=False))
         # Caller cannot erase failures or reset by selecting a new agent identity.
         second = self.reserve(agent_id="new-worker", reasoning_failures=0, previous_route=None)
-        self.assertEqual(second["model"], "gpt-5.6-terra")
+        self.assertEqual(second["model"], MODELS[1])
         self.assertTrue(second["escalated"])
         self.ledger.settle(second["run_id"], outcome(second, success=False, failure_kind="reasoning", validation_passed=False))
         third = RoutingLedger(self.path).reserve("project-1", self.policy, request(), capabilities())
-        self.assertEqual(third["model"], "gpt-5.6-sol")
+        self.assertEqual(third["model"], MODELS[2])
         self.ledger.settle(third["run_id"], outcome(third, success=False, failure_kind="reasoning", validation_passed=False))
         self.assertEqual(self.reserve()["status"], "blocked")
 
@@ -430,7 +434,7 @@ class ModelRoutingTests(unittest.TestCase):
         self.ledger.settle(first["run_id"], outcome(first, success=False, failure_kind="implementation"))
         retry = self.reserve(risk="high")
         self.assertEqual(retry["status"], "reserved")
-        self.assertEqual(retry["model"], "gpt-5.6-sol")
+        self.assertEqual(retry["model"], ROUTING["risk_route"]["model"])
         self.assertTrue(retry["escalated"])
 
     def test_escalation_blocks_instead_of_lowering_previous_effort_above_ceiling(self):
@@ -447,10 +451,12 @@ class ModelRoutingTests(unittest.TestCase):
                 if "xhigh" in self.policy["models"][model]["reasoning_efforts"]
             ]
         retry = self.reserve()
-        self.assertEqual((retry["model"], retry["reasoning_effort"]), ("gpt-5.6-terra", "xhigh"))
+        self.assertEqual((retry["model"], retry["reasoning_effort"]), (MODELS[1], "xhigh"))
 
     def test_new_risk_preserves_previous_effort_and_respects_ceiling(self):
-        previous = {"model": MODELS[1], "reasoning_effort": "xhigh"}
+        self.policy["review_floor"] = {"model": MODELS[1], "reasoning_effort": "high"}
+        self.policy["risk_route"] = {"model": MODELS[1], "reasoning_effort": "high"}
+        previous = {"model": MODELS[0], "reasoning_effort": "xhigh"}
         work = request(risk="high", previous_route=previous, last_failure_kind="reasoning")
         self.assertEqual(select_route(self.policy, work, capabilities())["status"], "blocked")
         self.policy["escalation"]["effort_ceiling"] = "xhigh"
@@ -460,7 +466,7 @@ class ModelRoutingTests(unittest.TestCase):
                 if "xhigh" in self.policy["models"][model]["reasoning_efforts"]
             ]
         retry = select_route(self.policy, work, capabilities())
-        self.assertEqual((retry["model"], retry["reasoning_effort"]), ("gpt-5.6-sol", "xhigh"))
+        self.assertEqual((retry["model"], retry["reasoning_effort"]), (MODELS[1], "xhigh"))
 
     def test_accepted_escalations_are_monotone_for_each_role_and_previous_pair(self):
         for role in ("controller", "worker", "critic", "specialist"):

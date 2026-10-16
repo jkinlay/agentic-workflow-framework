@@ -50,7 +50,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(3, value["streams"]["count"])
         self.assertEqual({"count", "A", "B", "C"}, set(value["streams"]))
         self.assertEqual("gpt-5.6-luna", value["streams"]["A"]["worker"]["model"])
-        self.assertEqual("gpt-5.6-sol", value["critic"]["model"])
+        self.assertEqual(default_policy()["role_defaults"]["critic"]["model"], value["critic"]["model"])
         self.assertNotIn("reviewer", value["streams"]["A"])
         snapshot = op.validate_operating(value, self.gov)
         current = canonical(self.gov)
@@ -75,12 +75,12 @@ class ValidationTests(unittest.TestCase):
         value = op.default_operating()
         value.pop("critic")
         for label in "ABC":
-            value["streams"][label]["worker"] = op._pair("gpt-5.6-terra", "medium")
-            value["streams"][label]["reviewer"] = op._pair("gpt-6-astra", "high")
-        value["epic_overrides"] = {"FIX-1": {"critic": op._pair("gpt-6-astra", "high")}}
+            value["streams"][label]["worker"] = op._pair("gpt-5.6-sol", "medium")
+            value["streams"][label]["reviewer"] = op._pair("gpt-6.1-sol", "high")
+        value["epic_overrides"] = {"FIX-1": {"critic": op._pair("gpt-6.1-sol", "high")}}
         snapshot = op.validate_operating(value, self.gov)
         self.assertEqual(value, snapshot.config)
-        self.assertEqual(op._pair("gpt-6-astra", "high"), snapshot.config["epic_overrides"]["FIX-1"]["critic"])
+        self.assertEqual(op._pair("gpt-6.1-sol", "high"), snapshot.config["epic_overrides"]["FIX-1"]["critic"])
 
     def test_missing_shared_critic_requires_a_legacy_reviewer_for_every_active_stream(self):
         value = op.default_operating()
@@ -167,7 +167,7 @@ class ValidationTests(unittest.TestCase):
         value["streams"]["C"]["worker"]["reasoning_effort"] = "invalid"
         self.refuse(value, "$.streams.C.worker.reasoning_effort", "$.execution.model_routing.models.gpt-5.6-luna.reasoning_efforts")
         value = op.default_operating()
-        value["critic"] = op._pair("gpt-6-sol", "medium")
+        value["critic"] = op._pair("gpt-5.6-sol", "medium")
         self.refuse(value, "$.critic", "$.execution.model_routing.review_floor")
 
     def test_all_routes_support_explicit_pin_and_inactive_routes_survive(self):
@@ -197,20 +197,20 @@ class ValidationTests(unittest.TestCase):
 
     def test_epic_routes_obey_both_allowlists_and_review_floor(self):
         value = op.default_operating()
-        value["epic_overrides"] = {"FIX-1": {"streams": {"B": {"worker": op._pair("gpt-6-astra", "xhigh")}},
-                                            "specialist": op._pair("gpt-6-astra", "high")}}
+        value["epic_overrides"] = {"FIX-1": {"streams": {"B": {"worker": op._pair("gpt-5.6-sol", "xhigh")}},
+                                            "specialist": op._pair("gpt-6.1-sol", "high")}}
         op.validate_operating(value, self.gov)
         for section, binding in ((self.gov["execution"]["model_routing"]["role_allowed_models"],
                                   "$.execution.model_routing.role_allowed_models.worker"),
                                  (self.gov["execution"]["roles"], "$.execution.roles.worker.approved_model_ids")):
             allowed = section["worker"] if isinstance(section["worker"], list) else section["worker"]["approved_model_ids"]
-            allowed.remove("gpt-6-astra")
+            allowed.remove("gpt-5.6-sol")
             self.refuse(value, "$.epic_overrides.FIX-1.streams.B.worker.model", binding)
-            allowed.append("gpt-6-astra")
-        value["epic_overrides"]["FIX-1"]["streams"]["B"]["reviewer"] = op._pair("gpt-5.6-terra", "medium")
+            allowed.append("gpt-5.6-sol")
+        value["epic_overrides"]["FIX-1"]["streams"]["B"]["reviewer"] = op._pair("gpt-5.6-sol", "medium")
         self.refuse(value, "$.epic_overrides.FIX-1.streams.B.reviewer", "$.execution.model_routing.review_floor")
         value["epic_overrides"]["FIX-1"]["streams"]["B"].pop("reviewer")
-        value["epic_overrides"]["FIX-1"]["specialist"] = op._pair("gpt-5.6-terra", "medium")
+        value["epic_overrides"]["FIX-1"]["specialist"] = op._pair("gpt-5.6-sol", "medium")
         self.refuse(value, "$.epic_overrides.FIX-1.specialist", "$.execution.model_routing.review_floor")
 
     def test_epic_schema_refuses_ambiguous_id_partial_routes_and_extra_scope(self):
@@ -259,7 +259,7 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(first, self.recommend(epics))
         rows = {r["path"]: r["recommended"] for r in first["rows"]}
         self.assertEqual(4, rows["streams.count"])
-        self.assertEqual("gpt-5.6-sol", rows["streams.B.worker"]["model"])
+        self.assertEqual(default_policy()["risk_route"]["model"], rows["streams.B.worker"]["model"])
         self.assertNotIn("critic", rows)  # shared Sol/high route already satisfies the floor
         self.assertIn("streams.D.worker", rows)
         self.assertFalse(first["execution_authority"])
@@ -285,7 +285,7 @@ class RecommendationTests(unittest.TestCase):
         rows = {row["path"]: row["recommended"] for row in expected}
         self.assertEqual(4, rows["streams.count"])
         self.assertNotIn("critic", rows)  # already Sol/high
-        self.assertEqual("gpt-5.6-sol", rows["streams.D.worker"]["model"])
+        self.assertEqual(default_policy()["risk_route"]["model"], rows["streams.D.worker"]["model"])
 
     def test_unknown_scope_reason_identifies_epic_and_value(self):
         windows_root = "C:" + "/root"
@@ -329,26 +329,26 @@ class RecommendationTests(unittest.TestCase):
     def test_defaults_follow_reviewed_policy_without_pins_or_weaker_floors(self):
         policy = self.gov["execution"]["model_routing"]
         policy["role_defaults"]["worker"] = op._pair("gpt-5.6-sol", "medium")
-        policy["role_defaults"]["controller"] = op._pair("gpt-5.6-terra", "high")
-        policy["role_defaults"]["specialist"] = op._pair("gpt-5.6-sol", "high")
-        policy["role_defaults"]["critic"] = op._pair("gpt-5.6-sol", "xhigh")
+        policy["role_defaults"]["controller"] = op._pair("gpt-5.6-sol", "high")
+        policy["role_defaults"]["specialist"] = op._pair("gpt-6.1-sol", "high")
+        policy["role_defaults"]["critic"] = op._pair("gpt-6.1-sol", "high")
         self.snapshot = op.validate_operating(op.default_operating(), self.gov)
         rows = {row["path"]: row for row in self.recommend([epic(1, ["data/**"])])["rows"]}
         for path, role in (("streams.A.worker", "worker"), ("critic", "critic"),
                            ("controller", "controller")):
             expected = {**policy["role_defaults"][role], "pinned": False}
             self.assertEqual(expected, rows[path]["recommended"])
-        self.assertNotIn("specialist", rows)
-        self.assertEqual("gpt-5.6-sol", self.snapshot.config["specialist"]["model"])
+        self.assertEqual({**policy["role_defaults"]["specialist"], "pinned": False},
+                         rows["specialist"]["recommended"])
         risky = self.recommend([epic(1, ["data/**"], risk_flags=["security"])])
         reviewer = next(row["recommended"] for row in risky["rows"] if row["path"] == "critic")
-        self.assertEqual(op._pair("gpt-5.6-sol", "xhigh"), {k: reviewer[k] for k in ("model", "reasoning_effort")})
+        self.assertEqual(op._pair("gpt-6.1-sol", "high"), {k: reviewer[k] for k in ("model", "reasoning_effort")})
 
     def test_explicit_stream_role_and_epic_pins_are_displayed_and_preserved(self):
         current = self.snapshot.config
         current["streams"]["A"]["worker"] = {**op._pair("gpt-5.6-sol", "high"), "pinned": True}
         current["controller"]["pinned"] = True
-        scoped = {**op._pair("gpt-6-astra", "xhigh"), "pinned": True}
+        scoped = {**op._pair("gpt-6.1-sol", "high"), "pinned": True}
         current["epic_overrides"] = {"FIX-1": {"streams": {"A": {"worker": scoped}}}}
         self.snapshot = op.validate_operating(current, self.gov)
         record = self.recommend([epic(1, ["data/**"])])
@@ -362,7 +362,7 @@ class RecommendationTests(unittest.TestCase):
     def test_legacy_pinned_reviewers_survive_recommendation_and_router_selection(self):
         current = self.snapshot.config
         current.pop("critic")
-        pinned = {**op._pair("gpt-6-astra", "high"), "pinned": True}
+        pinned = {**op._pair("gpt-6.1-sol", "high"), "pinned": True}
         for label in "ABC":
             current["streams"][label]["reviewer"] = deepcopy(pinned)
         self.snapshot = op.validate_operating(current, self.gov)
@@ -381,7 +381,7 @@ class RecommendationTests(unittest.TestCase):
             "stream": "A", "reservation_tokens": 1000, "reservation_cost_microusd": None},
             {"models": {model: info["reasoning_efforts"] for model, info in default_policy()["models"].items()}},
             operating=self.snapshot, governance=self.gov)
-        self.assertEqual((route["model"], route["reasoning_effort"]), ("gpt-6-astra", "high"))
+        self.assertEqual((route["model"], route["reasoning_effort"]), ("gpt-6.1-sol", "high"))
         self.assertTrue(route["pinned"])
 
     def test_scoped_pin_rows_fit_schema_beyond_the_original_global_only_limit(self):
@@ -409,8 +409,8 @@ class RecommendationTests(unittest.TestCase):
         record = self.recommend([epic(i, ["infra/" if i == 1 else f"component{i}/"]) for i in range(1, 7)])
         rows = {r["path"]: r["recommended"] for r in record["rows"]}
         self.assertEqual(6, rows["streams.count"])
-        self.assertEqual("high", self.snapshot.config["controller"]["reasoning_effort"])
-        self.assertEqual("gpt-5.6-sol", rows["streams.A.worker"]["model"])
+        self.assertEqual("high", rows["controller"]["reasoning_effort"])
+        self.assertEqual(default_policy()["risk_route"]["model"], rows["streams.A.worker"]["model"])
 
     def test_rendered_state_is_supplied_not_invented(self):
         table = op.render_operating(self.snapshot, self.gov, state="UNVERIFIED", version="1.8.9")
@@ -429,7 +429,7 @@ class RecommendationTests(unittest.TestCase):
                                         now=value["inventory"]["captured_at"])
         self.assertEqual(sha256(raw), record["inputs"]["inventory"])
         self.assertEqual(4, record["ticket_count"])
-        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == "gpt-5.6-sol" for row in record["rows"]))
+        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == default_policy()["risk_route"]["model"] for row in record["rows"]))
         value["project"]["repository"] = "other/repository"
         with self.assertRaises(op.OperatingError):
             op.recommend_operating(epic_bytes(epics), snapshot, self.gov, inventory_raw=canonical(value),
@@ -444,9 +444,9 @@ class RecommendationTests(unittest.TestCase):
             item["risk_flags"] = ["concurrency"]
         record = op.recommend_operating(epic_bytes(epics), op.validate_operating(op.default_operating(), self.gov), self.gov,
                                         inventory_raw=canonical(value), now=value["inventory"]["captured_at"])
-        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == "gpt-5.6-sol"
+        self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == default_policy()["risk_route"]["model"]
                             for row in record["rows"]), record["rows"])
-        self.assertEqual(op._pair("gpt-5.6-sol", "high"), self.snapshot.config["critic"])
+        self.assertEqual(default_policy()["role_defaults"]["critic"], self.snapshot.config["critic"])
 
     def test_sparse_inventory_epics_preserve_observed_simple_markers(self):
         value = load(ROOT / ".agentic/examples/stream-input.json")
@@ -475,7 +475,7 @@ class RecommendationTests(unittest.TestCase):
             record = op.recommend_operating(epic_bytes(epics), op.validate_operating(op.default_operating(), self.gov), self.gov,
                                             inventory_raw=canonical(value), now=value["inventory"]["captured_at"])
             with self.subTest(source=source):
-                self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == "gpt-5.6-sol"
+                self.assertTrue(any(row["path"].endswith("worker") and row["recommended"]["model"] == default_policy()["risk_route"]["model"]
                                     and "Specialist triggers" in row["reason"] for row in record["rows"]), record["rows"])
 
     def test_planner_completed_inventory_recommends_no_new_work(self):
@@ -491,22 +491,22 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual([], record["rows"])
 
     def test_higher_review_floor_and_invalid_recommendations_are_not_clamped(self):
-        self.gov["execution"]["model_routing"]["review_floor"]["reasoning_effort"] = "xhigh"
-        self.gov["execution"]["model_routing"]["risk_route"]["reasoning_effort"] = "xhigh"
+        self.gov["execution"]["model_routing"]["review_floor"]["reasoning_effort"] = "high"
+        self.gov["execution"]["model_routing"]["risk_route"]["reasoning_effort"] = "high"
         current = op.default_operating()
         for label in "ABC":
-            current["critic"]["reasoning_effort"] = "xhigh"
-        current["specialist"]["reasoning_effort"] = "xhigh"
+            current["critic"]["reasoning_effort"] = "high"
+        current["specialist"]["reasoning_effort"] = "high"
         self.snapshot = op.validate_operating(current, self.gov)
         record = self.recommend([epic(1, ["data/"], risk_flags=["concurrency"])])
         rows = {row["path"]: row["recommended"] for row in record["rows"]}
         self.assertNotIn("critic", rows)
-        self.assertEqual("xhigh", self.snapshot.config["critic"]["reasoning_effort"])
+        self.assertEqual("high", self.snapshot.config["critic"]["reasoning_effort"])
         self.assertNotIn("specialist", rows)
         # A governed recommendation still refuses an unavailable risk route;
         # it cannot substitute a weaker allowed model to produce an offer.
-        self.gov["execution"]["roles"]["worker"]["approved_model_ids"].remove("gpt-5.6-sol")
-        self.gov["execution"]["model_routing"]["role_allowed_models"]["worker"].remove("gpt-5.6-sol")
+        self.gov["execution"]["roles"]["worker"]["approved_model_ids"].remove("gpt-6.1-sol")
+        self.gov["execution"]["model_routing"]["role_allowed_models"]["worker"].remove("gpt-6.1-sol")
         self.snapshot = op.validate_operating(current, self.gov)
         with self.assertRaises(op.OperatingError) as caught:
             self.recommend([epic(1, ["data/"], risk_flags=["concurrency"])])
@@ -710,16 +710,16 @@ class OperatingFileTests(unittest.TestCase):
         output = io.StringIO()
         with patch("sys.stdout", output):
             code = op.main(["--root", str(self.root), "set", "--instruction", instruction,
-                            "--epic", "FIX-2", "--set", "B.worker=gpt-6-astra/xhigh", "--json"])
+                "--epic", "FIX-2", "--set", "B.worker=gpt-6.1-sol/high", "--json"])
         self.assertEqual(0, code, output.getvalue())
         result = json.loads(output.getvalue())
         current = op.load_operating(self.root, self.gov)
         scoped = current.config["epic_overrides"]["FIX-2"]
-        self.assertEqual({"streams": {"B": {"worker": {**op._pair("gpt-6-astra", "xhigh"), "pinned": True}}}}, scoped)
+        self.assertEqual({"streams": {"B": {"worker": {**op._pair("gpt-6.1-sol", "high"), "pinned": True}}}}, scoped)
         self.assertEqual(self.initial.config["streams"], current.config["streams"])
         self.assertNotEqual(self.initial.operating_hash, current.operating_hash)
         self.assertIn("Epic FIX-2 overrides", result["table"])
-        self.assertIn("gpt-6-astra / xhigh (pinned)", result["table"])
+        self.assertIn("gpt-6.1-sol / high (pinned)", result["table"])
         event = next(e for e in self.events() if e["id"] == current.last_change_id)
         self.assertEqual(instruction, event["instruction"])
         self.assertEqual(self.initial.operating_hash, event["before_hash"])
@@ -727,40 +727,40 @@ class OperatingFileTests(unittest.TestCase):
         self.assertIn("epic_overrides.FIX-2.streams.B.worker", {change["path"] for change in event["changes"]})
 
     def test_scoped_roles_pin_only_existing_routes_and_do_not_broaden(self):
-        result = op.set_operating(self.root, self.gov, "FIX-1 controller and specialist", ["controller=gpt-6-astra/high",
-                                 "specialist=gpt-6-astra/xhigh"], epic_id="FIX-1")
+        result = op.set_operating(self.root, self.gov, "FIX-1 controller and specialist", ["controller=gpt-6.1-sol/high",
+                             "specialist=gpt-6.1-sol/high"], epic_id="FIX-1")
         self.assertTrue(result.config["epic_overrides"]["FIX-1"]["controller"]["pinned"])
         self.assertEqual(self.initial.config["controller"], result.config["controller"])
         result = op.set_operating(self.root, self.gov, "Unpin FIX-1 controller", ["controller.pinned=false"], epic_id="FIX-1")
         self.assertFalse(result.config["epic_overrides"]["FIX-1"]["controller"]["pinned"])
         before, events = (self.root / op.CONFIG).read_bytes(), self.events()
-        for identifier, assignment in (("this Epic", "B.worker=gpt-6-astra/xhigh"), ("FIX-2", "B.worker.pinned=false"),
+        for identifier, assignment in (("this Epic", "B.worker=gpt-6.1-sol/high"), ("FIX-2", "B.worker.pinned=false"),
                                        ("FIX-1", "streams.count=4"), ("FIX-1", "simple_worker.enabled=false"),
-                                       ("FIX-1", "B.reviewer=gpt-5.6-terra/medium")):
+                                       ("FIX-1", "B.reviewer=gpt-5.6-sol/medium")):
             with self.subTest(identifier=identifier, assignment=assignment), self.assertRaises(op.OperatingError):
                 op.set_operating(self.root, self.gov, "scoped instruction", [assignment], epic_id=identifier)
         self.assertEqual(before, (self.root / op.CONFIG).read_bytes())
         self.assertEqual(events, self.events())
 
     def test_atomic_repair_of_global_and_epic_routes_after_governance_change(self):
-        op.set_operating(self.root, self.gov, "FIX-1 worker Terra", ["B.worker=gpt-5.6-terra/medium"], epic_id="FIX-1")
+        op.set_operating(self.root, self.gov, "FIX-1 worker Sol", ["B.worker=gpt-5.6-sol/medium"], epic_id="FIX-1")
         gov = deepcopy(self.gov)
-        gov["execution"]["roles"]["worker"]["approved_model_ids"].remove("gpt-5.6-terra")
-        gov["execution"]["model_routing"]["role_allowed_models"]["worker"].remove("gpt-5.6-terra")
+        gov["execution"]["roles"]["worker"]["approved_model_ids"].remove("gpt-5.6-sol")
+        gov["execution"]["model_routing"]["role_allowed_models"]["worker"].remove("gpt-5.6-sol")
         (self.root / op.GOVERNANCE).write_bytes(op._json(gov))
-        repaired = op.set_operating(self.root, gov, "Fix Epic", ["B.worker=gpt-5.6-sol/high"], epic_id="FIX-1")
-        self.assertEqual("gpt-5.6-sol", repaired.config["epic_overrides"]["FIX-1"]["streams"]["B"]["worker"]["model"])
-        assignments = ["streams." + label + ".worker=gpt-5.6-sol/high" for label in "ABC"]
-        assignments.append("epic_overrides.FIX-1.streams.B.worker=gpt-5.6-sol/high")
+        repaired = op.set_operating(self.root, gov, "Fix Epic", ["B.worker=gpt-6.1-sol/high"], epic_id="FIX-1")
+        self.assertEqual("gpt-6.1-sol", repaired.config["epic_overrides"]["FIX-1"]["streams"]["B"]["worker"]["model"])
+        assignments = ["streams." + label + ".worker=gpt-6.1-sol/high" for label in "ABC"]
+        assignments.append("epic_overrides.FIX-1.streams.B.worker=gpt-6.1-sol/high")
         result = op.set_operating(self.root, gov, "Repair global and FIX-1 workers under the accepted policy", assignments)
-        self.assertEqual("gpt-5.6-sol", result.config["epic_overrides"]["FIX-1"]["streams"]["B"]["worker"]["model"])
+        self.assertEqual("gpt-6.1-sol", result.config["epic_overrides"]["FIX-1"]["streams"]["B"]["worker"]["model"])
         for label in "ABC":
-            self.assertEqual("gpt-5.6-sol", result.config["streams"][label]["worker"]["model"])
+            self.assertEqual("gpt-6.1-sol", result.config["streams"][label]["worker"]["model"])
         with self.assertRaises(op.OperatingError):
             op.set_operating(self.root, gov, "Ambiguous scopes", [assignments[-1]], epic_id="FIX-2")
 
     def test_reduction_retains_route_and_unpin_is_explicit(self):
-        op.set_operating(self.root, self.gov, "D Astra high", ["streams.count=4", "streams.D.worker=gpt-6-astra/high"])
+        op.set_operating(self.root, self.gov, "D review high", ["streams.count=4", "streams.D.worker=gpt-6.1-sol/high"])
         result = op.set_operating(self.root, self.gov, "drop to two", ["streams.count=2"])
         self.assertTrue(result.config["streams"]["D"]["worker"]["pinned"])
         result = op.set_operating(self.root, self.gov, "unpin D", ["streams.D.worker.pinned=false"])
@@ -770,7 +770,7 @@ class OperatingFileTests(unittest.TestCase):
         raw = (self.root / op.CONFIG).read_bytes()
         events = self.events()
         with self.assertRaises(op.OperatingError):
-            op.set_operating(self.root, self.gov, "four and cheap reviewer", ["streams.count=4", "streams.C.reviewer=gpt-5.6-terra/medium"])
+            op.set_operating(self.root, self.gov, "four and cheap reviewer", ["streams.count=4", "streams.C.reviewer=gpt-5.6-sol/medium"])
         self.assertEqual(raw, (self.root / op.CONFIG).read_bytes())
         self.assertEqual(events, self.events())
         self.assertFalse((self.root / op.JOURNAL).exists())
@@ -863,7 +863,7 @@ class OperatingFileTests(unittest.TestCase):
         value = self.initial.config
         value["epic_overrides"] = {"FIX-" + str(i): {"streams": {label: op._stream() for label in op.stream_labels(6)}}
                                    for i in range(1, 1001)}
-        value["epic_overrides"] = {f"FIX-{i}": {"streams": {label: {"worker": op._pair("gpt-6-astra", "xhigh"), "reviewer": op._pair("gpt-6-astra", "xhigh")} for label in op.stream_labels(6)}} for i in range(1,1001)}
+        value["epic_overrides"] = {f"FIX-{i}": {"streams": {label: {"worker": op._pair("gpt-6.1-sol", "high"), "reviewer": op._pair("gpt-6.1-sol", "high")} for label in op.stream_labels(6)}} for i in range(1,1001)}
         self.assertGreater(len(op._json(value)), op.MAX_BYTES)
         with op.Tree(self.root) as tree, op._lock(tree), self.assertRaises(op.OperatingError) as caught:
             op._commit(tree, self.gov, before, value, "Synthetic oversized scoped fixture", [], "chat")
