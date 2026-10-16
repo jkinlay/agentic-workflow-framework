@@ -15,7 +15,7 @@ import uuid
 from . import ValidationError
 from .child_process import child_env
 from .canonical import canonical, loads, now_text, timestamp
-from .controller_state import configure_database, protected_state_path, restrict_state_permissions
+from .controller_state import STATE_SCHEMA_VERSION, configure_database, protected_state_path, restrict_state_permissions
 STREAM_STATES = {'WORKING', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 TICKET_STATES = {'ELIGIBLE', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 LIFECYCLE_ROLES = {'implementation': 'writer', 'independent_review': 'critic'}
@@ -508,7 +508,8 @@ class ContinuousControllerStore:
 		_require(type(migrate_cadence) is bool, 'Cadence migration choice must be boolean')
 		self.periodic_status_enabled = periodic_status_enabled
 		self.path.parent.mkdir(parents=True, exist_ok=True)
-		with self.connection() as db:
+		with self._initialization_connection() as db:
+			self._validate_database_before_initialization(db)
 			db.execute('BEGIN IMMEDIATE')
 			try:
 				if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='controller_dispatch'").fetchone() is not None:
@@ -537,7 +538,22 @@ class ContinuousControllerStore:
 			except BaseException:
 				db.execute('ROLLBACK')
 				raise
+			configure_database(db, self.path, STATE_APPLICATION_ID)
 		restrict_state_permissions(self.path)
+
+	@staticmethod
+	def _validate_database_before_initialization(db):
+		"""Validate existing state without changing its journal or identity bytes."""
+		try:
+			integrity = db.execute('PRAGMA quick_check').fetchone()
+			_require(integrity is not None and integrity[0] == 'ok', 'Controller state integrity check failed')
+			observed_app = db.execute('PRAGMA application_id').fetchone()[0]
+			observed_version = db.execute('PRAGMA user_version').fetchone()[0]
+			uninitialized = observed_app == 0 and observed_version == 0
+			_require(uninitialized or observed_app == STATE_APPLICATION_ID, 'Controller state application identity is wrong or tampered')
+			_require(uninitialized or observed_version == STATE_SCHEMA_VERSION, 'Controller state schema version is unsupported or tampered')
+		except sqlite3.DatabaseError as exc:
+			raise ValidationError('Controller state is unreadable or corrupt') from exc
 
 	@staticmethod
 	def _migrate_dispatch_rows(db, *, apply=True):
@@ -584,14 +600,19 @@ class ContinuousControllerStore:
 			db.execute("INSERT OR REPLACE INTO controller_meta VALUES('dispatch_schema_version',?)", (str(DISPATCH_SCHEMA_VERSION),))
 
 	@contextmanager
-	def connection(self):
+	def _initialization_connection(self):
 		db = sqlite3.connect(str(self.path), timeout=10, isolation_level=None)
 		try:
 			db.row_factory = sqlite3.Row
-			configure_database(db, self.path, STATE_APPLICATION_ID)
 			yield db
 		finally:
 			db.close()
+
+	@contextmanager
+	def connection(self):
+		with self._initialization_connection() as db:
+			configure_database(db, self.path, STATE_APPLICATION_ID)
+			yield db
 
 	@contextmanager
 	def transaction(self):
