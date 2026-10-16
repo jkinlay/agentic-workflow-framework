@@ -787,9 +787,9 @@ def _build(config):
 		return {'source': 'github.com', 'repository_id': github['repository_id'], 'provider_observed_at': provider_time, 'observation_etag': comment_etag, 'comment': {'id': comment.get('id'), 'node_id': comment.get('node_id'), 'actor_id': comment.get('user', {}).get('id'), 'actor_login': comment.get('user', {}).get('login'), 'author_association': comment.get('author_association'), 'created_at': comment.get('created_at'), 'updated_at': comment.get('updated_at'), 'body': comment.get('body'), 'etag': comment_etag, 'provider_observed_at': provider_time}}
 
 	def observe_reservations(request):
-		_require(isinstance(request, dict) and set(request) == {'repository_id', 'repository_root', 'head_sha', 'tree_sha', 'observed_at'}, 'Reservation observation request is malformed')
+		_require(isinstance(request, dict) and set(request) == {'repository_id', 'repository_root', 'head_sha', 'tree_sha', 'inventory_sha256', 'observed_at'}, 'Reservation observation request is malformed')
 		_require(str(request['repository_id']) == str(github['repository_id']) and re.fullmatch('[0-9a-f]{40}', request['head_sha']) and re.fullmatch('[0-9a-f]{40}', request['tree_sha']), 'Reservation observation request names a foreign or malformed repository tuple')
-		_require(inventory_cache.get('binding', {}).get('repository_id') == str(request['repository_id']), 'Parked reservations require the current authenticated inventory')
+		_require(inventory_cache.get('binding', {}).get('repository_id') == str(request['repository_id']) and inventory_cache.get('inventory_sha256') == request['inventory_sha256'], 'Parked reservations require the exact current authenticated inventory')
 		reservation_root = _absolute(request['repository_root'], 'reservation repository root').resolve(strict=True)
 		observed_at = _clock_text(clock)
 		result = []
@@ -809,7 +809,7 @@ def _build(config):
 			diff = {'schema_version': 1, 'kind': 'worktree_diff', 'source': 'git', 'repository_id': str(request['repository_id']), 'head_sha': request['head_sha'], 'tree_sha': request['tree_sha'], 'artifact_id': fingerprint('controller-worktree-diff', {'head_sha': request['head_sha'], 'tree_sha': request['tree_sha'], 'paths': dirty}), 'observed_at': observed_at, 'authenticated': True, 'complete': True, 'paths': dirty}
 			diff['evidence_sha256'] = fingerprint('controller-reservation-source', diff)
 			result.append(diff)
-		envelope = {'schema_version': 1, 'source': 'host_observation', 'repository_id': str(request['repository_id']), 'head_sha': request['head_sha'], 'tree_sha': request['tree_sha'], 'observed_at': observed_at, 'authenticated': True, 'complete': True, 'sources': result}
+		envelope = {'schema_version': 1, 'source': 'host_observation', 'repository_id': str(request['repository_id']), 'head_sha': request['head_sha'], 'tree_sha': request['tree_sha'], 'inventory_sha256': request['inventory_sha256'], 'observed_at': observed_at, 'authenticated': True, 'complete': True, 'sources': result}
 		envelope['observation_sha256'] = fingerprint('controller-reservation-observation', envelope)
 		return envelope
 

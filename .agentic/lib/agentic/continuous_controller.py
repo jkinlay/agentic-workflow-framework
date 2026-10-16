@@ -299,13 +299,15 @@ def _reservation_record(value):
 	_require(value['evidence_sha256'] == fingerprint('controller-reservation-source', seed), 'Reservation source digest is missing or mismatched')
 	return {**deepcopy(value), 'paths': paths}
 
-def canonical_reservation_sources(sources, repository_root, head_sha, tree_sha, repository_id, now):
+def canonical_reservation_sources(sources, repository_root, head_sha, tree_sha, repository_id, now, *, inventory_sha256=None):
 	"""Authenticate and Git-canonicalize parked and dirty-worktree reservations."""
 	from .canonical import fingerprint
 	envelope = None
 	if isinstance(sources, dict):
-		required = {'schema_version', 'source', 'repository_id', 'head_sha', 'tree_sha', 'observed_at', 'authenticated', 'complete', 'sources', 'observation_sha256'}
+		required = {'schema_version', 'source', 'repository_id', 'head_sha', 'tree_sha', 'inventory_sha256', 'observed_at', 'authenticated', 'complete', 'sources', 'observation_sha256'}
 		_require(set(sources) == required and sources['schema_version'] == 1 and sources['source'] == 'host_observation' and sources['authenticated'] is True and sources['complete'] is True, 'Reservation observation envelope is not authenticated and complete')
+		_require(re.fullmatch('[0-9a-f]{64}', sources['inventory_sha256'] or '') is not None, 'Reservation observation inventory binding is malformed')
+		_require(inventory_sha256 is None or sources['inventory_sha256'] == inventory_sha256, 'Reservation observation is bound to a different inventory')
 		seed = {key: deepcopy(value) for key, value in sources.items() if key != 'observation_sha256'}
 		_require(sources['observation_sha256'] == fingerprint('controller-reservation-observation', seed), 'Reservation observation envelope digest is mismatched')
 		envelope = sources
@@ -573,6 +575,9 @@ class ContinuousControllerStore:
 			migrated['dispatch_schema_version'] = DISPATCH_SCHEMA_VERSION
 			migrated['lane_start_waivers'] = []
 			migrations.append((canonical(migrated).decode(), row['dispatch_id']))
+		if migrations:
+			prior_inventory = db.execute("SELECT value FROM controller_meta WHERE key='last_inventory_sha256'").fetchone()
+			_require(prior_inventory is not None and re.fullmatch('[0-9a-f]{64}', prior_inventory[0]) is not None, 'Legacy non-terminal dispatch has no durable prior inventory binding; explicit boundary recovery is required')
 		if apply:
 			for encoded, dispatch_id in migrations:
 				db.execute('UPDATE controller_dispatch SET payload_json=? WHERE dispatch_id=?', (encoded, dispatch_id))
@@ -723,7 +728,9 @@ class ContinuousControllerStore:
 			prior = payload.get('terminal_observation')
 			_require(prior is None or prior == observation, 'Dispatch quiescence replay differs from retained proof')
 			payload['terminal_observation'] = deepcopy(observation)
-			db.execute("UPDATE controller_dispatch SET status='TERMINAL',payload_json=?,updated_at=? WHERE dispatch_id=?", (canonical(payload).decode(), observation['observed_at'], dispatch_id))
+			terminal_receipt = deepcopy(receipt)
+			terminal_receipt.update(dispatch_state='TERMINAL', terminal=True, observed_at=observation['observed_at'])
+			db.execute("UPDATE controller_dispatch SET status='TERMINAL',payload_json=?,receipt_json=?,updated_at=? WHERE dispatch_id=?", (canonical(payload).decode(), canonical(terminal_receipt).decode(), observation['observed_at'], dispatch_id))
 			return deepcopy(observation)
 
 	def overlap_sync_gate(self, gate_id):
@@ -1546,18 +1553,22 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 	_require(dispatch_role is None or dispatch_role in {'writer', 'critic'}, 'Compatibility dispatch role must be writer or critic')
 	store.recover_dispatches(now)
 	_require(isinstance(inventory_binding, dict) and set(inventory_binding) == {'project_id', 'repository_id', 'scope_sha256'} and all((isinstance(value, str) and value for value in inventory_binding.values())), 'Production inventory needs immutable project, repository, and scope bindings')
-	tickets, repository_binding, observation = _observe_controller_inventory(observe_inventory, now=now, inventory_binding=inventory_binding, repository_root=repository_root, repository_head_sha=repository_head_sha, repository_tree_sha=repository_tree_sha)
-	store.bind_repository(repository_binding)
-	if callable(observe_reservations):
-		raw_reservations = observe_reservations({'repository_id': inventory_binding['repository_id'], 'repository_root': str(Path(repository_root).resolve(strict=True)), 'head_sha': repository_head_sha, 'tree_sha': repository_tree_sha, 'observed_at': now})
-		_require(isinstance(raw_reservations, dict), 'Reservation observer must return one authenticated complete envelope')
-		reservations = canonical_reservation_sources(raw_reservations, repository_root, repository_head_sha, repository_tree_sha, inventory_binding['repository_id'], now)
-	else:
+
+	def observe_current_reservations(observed_at, current_inventory_sha256):
+		if callable(observe_reservations):
+			_require(re.fullmatch('[0-9a-f]{64}', current_inventory_sha256 or '') is not None, 'Reservation observation requires the exact current inventory digest')
+			raw = observe_reservations({'repository_id': inventory_binding['repository_id'], 'repository_root': str(Path(repository_root).resolve(strict=True)), 'head_sha': repository_head_sha, 'tree_sha': repository_tree_sha, 'inventory_sha256': current_inventory_sha256, 'observed_at': observed_at})
+			_require(isinstance(raw, dict), 'Reservation observer must return one authenticated complete envelope')
+			return canonical_reservation_sources(raw, repository_root, repository_head_sha, repository_tree_sha, inventory_binding['repository_id'], observed_at, inventory_sha256=current_inventory_sha256)
 		# Contract-only mock stores cannot authenticate provider/Git sources. Real
 		# protected stores always fail closed, and the production CLI always wires
 		# the reviewed reservation observer.
 		_require(type(store) is not ContinuousControllerStore, 'Authenticated parked and worktree-diff reservation observation is required')
-		reservations = []
+		return []
+
+	tickets, repository_binding, observation = _observe_controller_inventory(observe_inventory, now=now, inventory_binding=inventory_binding, repository_root=repository_root, repository_head_sha=repository_head_sha, repository_tree_sha=repository_tree_sha)
+	store.bind_repository(repository_binding)
+	reservations = observe_current_reservations(now, observation['inventory_sha256'])
 	if replan_request is not None:
 		_require(isinstance(replan_request, dict) and set(replan_request) == {'comment_id'} and type(replan_request['comment_id']) is int and replan_request['comment_id'] > 0, 'Replan request must contain one provider comment locator')
 		_require(callable(observe_replan_trigger), 'Replan requires the reviewed authenticated trigger observer')
@@ -1659,10 +1670,12 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 			errors.append({'operation': 'overlap_sync_inventory', 'state': 'BLOCKED', 'reason': reason})
 	if newly_synced:
 		try:
+			reservations = None
 			refreshed_tickets, refreshed_binding, refreshed_observation = _observe_controller_inventory(observe_inventory, now=provider_controller_time, inventory_binding=inventory_binding, repository_root=repository_root, repository_head_sha=repository_head_sha, repository_tree_sha=repository_tree_sha)
 			store.bind_repository(refreshed_binding)
 			tickets = refreshed_tickets
 			observation = refreshed_observation
+			reservations = observe_current_reservations(provider_controller_time, observation['inventory_sha256'])
 			for gate in newly_synced:
 				_require(callable(observe_overlap_sync_inventory), 'Post-sync inventory requires a fresh provider PR-head observer')
 				provider_heads = observe_overlap_sync_inventory(deepcopy(gate))
@@ -1677,8 +1690,10 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 	lane_allowance_plans = allowance_plans
 	if allowance_plans:
 		try:
+			reservations = None
 			tickets, lane_binding, observation = _observe_controller_inventory(observe_inventory, now=provider_controller_time, inventory_binding=inventory_binding, repository_root=repository_root, repository_head_sha=repository_head_sha, repository_tree_sha=repository_tree_sha)
 			store.bind_repository(lane_binding)
+			reservations = observe_current_reservations(provider_controller_time, observation['inventory_sha256'])
 		except Exception as exc:
 			lane_allowance_plans = []
 			for _request, planned in allowance_plans:
@@ -1714,6 +1729,7 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 		for index, item in enumerate(tickets):
 			if item['ticket'] in allowance_blocked_tickets:
 				tickets[index] = {**item, 'disposition': 'BLOCKED', 'reason': 'Overlap allowance or post-expiry synchronization gate is not current', 'next_action': 'Restore exact provider-bound allowance or complete its durable sync gate', 'resume_trigger': 'a fresh plan and lane-start recheck pass'}
+	_require(isinstance(reservations, list), 'Authenticated reservations were not refreshed for the inventory being scheduled')
 	ticket_by_id = {item['ticket']: item for item in tickets}
 	round_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
 	streams = store.schedule(tickets, now, host_capacity, active_allowances, reservations=reservations, inventory_sha256=observation['inventory_sha256'])

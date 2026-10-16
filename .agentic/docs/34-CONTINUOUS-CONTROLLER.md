@@ -14,13 +14,14 @@ mutations.
 ## Dispatch state and round boundaries
 
 Dispatch payloads and receipts use closed schema version 2. Opening protected
-state atomically creates any new schema, migrates unambiguous 1.9.4 `PENDING`,
-`IN_FLIGHT`, and `UNKNOWN` rows, and completes every initialization validation
-without changing their identities or states. An unsupported state, receipt,
-field, mixed ambiguous payload, or later initialization refusal rolls back the
-schema and data transaction and preserves the complete 1.9.4 before-image. The
-reference adapter refuses legacy calls and records before preparing or
-launching a runner.
+state atomically creates any new schema and migrates unambiguous 1.9.4
+`PENDING`, `IN_FLIGHT`, and `UNKNOWN` rows only when protected state already
+contains their durable prior-inventory digest. A legacy non-terminal set without
+that boundary binding is explicitly refused before any schema or row change.
+An unsupported state, receipt, field, mixed ambiguous payload, or later
+initialization refusal rolls back the schema and data transaction and preserves
+the complete 1.9.4 before-image. The reference adapter refuses legacy calls and
+records before preparing or launching a runner.
 
 `PENDING`, `IN_FLIGHT`, `UNKNOWN`, and adapter `LAUNCHED` are non-terminal.
 A successor inventory cannot refill a round while any of those operations
@@ -48,7 +49,10 @@ must carry the same digest and never relaunch the session.
 Authenticated parked and worktree-diff sources are independent reservations,
 not overlap allowances. Every production cycle asks the reviewed adapter for
 the complete provider-bound paused inventory and the complete Git diff at the
-pinned repository head/tree. The controller rejects foreign, stale, partial,
+pinned repository head/tree, and repeats that complete observation immediately
+after every inventory replacement before scheduling. A failed refresh
+invalidates the earlier reservation set and blocks scheduling. The controller
+rejects foreign, stale, partial,
 non-NFC, case/separator/traversal, symlink, and non-canonical Git paths. A valid
 reservation blocks every overlapping start even when an exact owner allowance
 exists; unrelated paths continue when capacity permits.
