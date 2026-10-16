@@ -44,6 +44,17 @@ class JournalMarkerValidationOrderTests(unittest.TestCase):
         marker["format"] = "awf-install-marker-3"
         self.assert_marker_error(marker, "Unsupported installation recovery marker")
 
+    def test_incomplete_marker_with_unknown_string_format_is_invalid(self):
+        for marker in (
+                {"format": "awf-install-marker-3"},
+                {
+                    "format": "awf-install-marker-3",
+                    "transaction_id": self.marker["transaction_id"],
+                },
+        ):
+            with self.subTest(marker=marker):
+                self.assert_marker_error(marker, "Invalid installation recovery marker")
+
 
 if __name__ == "__main__":
     unittest.main()
