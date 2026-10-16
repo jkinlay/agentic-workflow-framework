@@ -73,9 +73,9 @@ class CompactInstallerJournalTests(unittest.TestCase):
 
         original_update = installer._write_bound_journal_update
 
-        def capture(tree, journal):
+        def capture(tree, journal, update_kind=None):
             if journal["phase"] != "active" or journal["managed_after_sha256"] is not None:
-                return original_update(tree, journal)
+                return original_update(tree, journal, update_kind)
             captured["journal"] = json.loads(installer.json_bytes(journal))
             captured["raw"] = installer.json_bytes(journal)
             captured["objects"] = {

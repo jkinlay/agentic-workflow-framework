@@ -89,14 +89,14 @@ class SideStoreLifecycleTests(unittest.TestCase):
         before = self.snapshot_project(destination)
         original_update = installer._write_bound_journal_update
 
-        def interrupt_rollback_phase(tree, journal):
+        def interrupt_rollback_phase(tree, journal, update_kind=None):
             if journal["phase"] != "rollback_cleanup":
-                return original_update(tree, journal)
+                return original_update(tree, journal, update_kind)
             current, current_raw, _marker = installer._read_bound_journal(tree)
             updated_raw = installer.json_bytes(journal)
             tree.write(installer.MARKER, installer.json_bytes(installer._journal_marker(
                 current["transaction_id"], installer.sha256(current_raw),
-                installer.sha256(updated_raw))))
+                installer.sha256(updated_raw), "rollback_cleanup")))
             raise CapturedIntent
 
         with patch.object(installer, "verify_release", return_value=(pin, content)), \
@@ -112,6 +112,7 @@ class SideStoreLifecycleTests(unittest.TestCase):
             (destination / installer.JOURNAL).read_text(encoding="utf-8"))
         self.assertEqual("active", journal["phase"])
         self.assertIsNotNone(marker["pending_journal_sha256"])
+        self.assertEqual("rollback_cleanup", marker["pending_update_kind"])
 
         self.assertEqual({"status": "ROLLED_BACK"}, installer.recover(destination))
         self.assertEqual(before, self.snapshot_project(destination))
