@@ -1,6 +1,7 @@
 """AWF-115 generated ticket-plan contract regressions."""
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -8,8 +9,10 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
 
 import generate_contracts  # noqa: E402
+from agentic.publication import UNC  # noqa: E402
 
 
 class TicketPlanGenerationTests(unittest.TestCase):
@@ -23,6 +26,46 @@ class TicketPlanGenerationTests(unittest.TestCase):
     def test_ticket_plan_uses_the_release_schema_revision(self):
         schema = generate_contracts.catalog()["ticket-plan"]
         self.assertEqual(3, schema["properties"]["schema_version"]["const"])
+
+    def test_exact_path_patterns_are_scan_safe_without_changing_semantics(self):
+        schema = generate_contracts.catalog()["ticket-plan"]
+        patterns = (
+            schema["properties"]["tickets"]["items"]["properties"]
+            ["write_paths"]["items"]["pattern"],
+            schema["properties"]["edges"]["items"]["properties"]
+            ["paths"]["items"]["pattern"],
+        )
+        separator = chr(92)
+        invalid_paths = (
+            "src" + separator + "file.py",
+            separator * 2 + "server" + separator + "share" + separator + "file.py",
+            "C" + chr(58) + "/repo/file.py",
+            "../file.py",
+            "src/../file.py",
+            "src/./file.py",
+            "src/*.py",
+            "src/?.py",
+            "src/[ab].py",
+            "src/{a,b}.py",
+            "src/" + chr(0) + "file.py",
+            "src/" + chr(31) + "file.py",
+            "src/" + chr(127) + "file.py",
+        )
+
+        for pattern in patterns:
+            with self.subTest(pattern=pattern, check="publication-scan"):
+                self.assertIsNone(UNC.search(json.dumps(pattern)))
+            for path in (
+                "src/file.py",
+                ".agentic/schemas/ticket-plan.schema.json",
+                "README",
+                "docs/file name.md",
+            ):
+                with self.subTest(pattern=pattern, path=path, valid=True):
+                    self.assertIsNotNone(re.fullmatch(pattern, path))
+            for path in invalid_paths:
+                with self.subTest(pattern=pattern, path=repr(path), valid=False):
+                    self.assertIsNone(re.fullmatch(pattern, path))
 
     def test_checked_in_schema_is_generator_output(self):
         expected = generate_contracts.render_catalog()["ticket-plan"]

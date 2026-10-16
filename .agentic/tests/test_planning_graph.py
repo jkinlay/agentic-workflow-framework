@@ -150,6 +150,28 @@ class PlanningGraphValidationTests(unittest.TestCase):
         malformed_plan["tickets"][0]["round_cap"] = 4
         self.assertTrue(list(Draft202012Validator(schema).iter_errors(malformed_plan)))
 
+    def test_tier1_and_tier2_caps_fail_closed_in_runtime_and_schema(self):
+        module = implementation()
+        schema = json.loads(
+            (ROOT / ".agentic/schemas/ticket-plan.schema.json").read_text(encoding="utf-8")
+        )
+        for risk_tier, invalid_cap in ((1, 2), (2, 3)):
+            with self.subTest(risk_tier=risk_tier, layer="runtime"):
+                value = fixture()
+                value["tickets"][0]["risk_tier"] = risk_tier
+                value["tickets"][0]["round_cap"] = invalid_cap
+                with self.assertRaises(module.PlanningGraphError) as caught:
+                    build(value)
+                self.assertEqual("TIER_ROUND_CAP_VIOLATION", caught.exception.reason)
+
+            with self.subTest(risk_tier=risk_tier, layer="schema"):
+                malformed_plan = build()
+                malformed_plan["tickets"][0]["risk_tier"] = risk_tier
+                malformed_plan["tickets"][0]["round_cap"] = invalid_cap
+                self.assertTrue(
+                    list(Draft202012Validator(schema).iter_errors(malformed_plan))
+                )
+
     def test_tier_round_cap_cycle_and_dangling_dependency_have_named_reasons(self):
         module = implementation()
         value = fixture()
@@ -265,6 +287,39 @@ class PlanningGraphSchedulingTests(unittest.TestCase):
         generator_value["tickets"][0]["write_paths"] = ["Scripts/Generate_Contracts.py"]
         generator_plan = build(generator_value)
         self.assertEqual(1, generator_plan["tickets"][0]["generator_order_slot"])
+
+    def test_non_exact_footprints_fail_closed_before_overlap_scheduling(self):
+        module = implementation()
+        value = fixture()
+        left = deepcopy(value["tickets"][2])
+        left.update(key="AWF-1", write_paths=["src/*.py"], in_lane=False)
+        right = deepcopy(value["tickets"][2])
+        right.update(key="AWF-2", write_paths=["src/foo.py"], in_lane=False)
+        value.update(tickets=[left, right], lane_cap=2, start_gap_minutes=0)
+        with self.assertRaises(module.PlanningGraphError) as caught:
+            build(value)
+        self.assertEqual("INVALID_FIELD", caught.exception.reason)
+
+        schema = json.loads(
+            (ROOT / ".agentic/schemas/ticket-plan.schema.json").read_text(encoding="utf-8")
+        )
+        for invalid_path in (
+            "src/*.py", "src/?.py", "src/[ab].py", "src/{a,b}.py",
+            "src/bad\0name.py", "src/",
+        ):
+            with self.subTest(invalid_path=repr(invalid_path), layer="runtime"):
+                value = fixture()
+                value["tickets"][0]["write_paths"] = [invalid_path]
+                with self.assertRaises(module.PlanningGraphError) as caught:
+                    build(value)
+                self.assertEqual("INVALID_FIELD", caught.exception.reason)
+
+            with self.subTest(invalid_path=repr(invalid_path), layer="schema"):
+                malformed_plan = build()
+                malformed_plan["tickets"][0]["write_paths"] = [invalid_path]
+                self.assertTrue(
+                    list(Draft202012Validator(schema).iter_errors(malformed_plan))
+                )
 
     def test_overlap_orientation_uses_evolving_precedence_without_creating_a_cycle(self):
         value = fixture()
@@ -599,6 +654,31 @@ class LaneFillAcceptanceTests(unittest.TestCase):
         self.assertEqual("OK", status["status_verdict"])
         self.assertEqual([], status["ready_tickets"])
         self.assertEqual(["PREDECESSOR_UNMERGED"], status["idle_lane_reasons"])
+
+    def test_merged_predecessor_clears_idle_gate_and_exposes_ready_work(self):
+        value = fixture()
+        predecessor = deepcopy(value["tickets"][2])
+        predecessor.update(
+            key="AWF-2", dependencies=[], write_paths=["src/predecessor.py"],
+            owner_lane="completed-owner", status="merged", in_lane=False,
+        )
+        waiting = deepcopy(value["tickets"][2])
+        waiting.update(
+            key="AWF-1", dependencies=["AWF-2"], write_paths=["src/waiting.py"],
+            owner_lane="idle-owner", blockers=[], idle_lane_reason=None, in_lane=False,
+        )
+        value.update(tickets=[predecessor, waiting], lane_cap=1, start_gap_minutes=0)
+
+        plan = build(
+            value,
+            observed_minute=11,
+            lane_observations=[{"owner_lane": "idle-owner", "idle_since_minute": 0}],
+        )
+
+        status = plan["lane_status"][0]
+        self.assertEqual("FAIL", status["status_verdict"])
+        self.assertEqual(["AWF-1"], status["ready_tickets"])
+        self.assertEqual(["PLAN_UNREADABLE"], status["idle_lane_reasons"])
 
     def test_output_is_byte_deterministic_and_mermaid_is_stable(self):
         module = implementation()
