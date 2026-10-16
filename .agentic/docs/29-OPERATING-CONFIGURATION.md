@@ -10,9 +10,17 @@ Show JSON/text, status and newly prepared `operating.state` share `effective_cei
 
 `effective_ceiling_governance_path` names the binding project/broker path, preferring project on ties. `effective_ceiling_sources` lists every tied path, including the schema's six-stream maximum. When only that structural limit binds, the governance path is null. Native planning separately considers observed host slots, ownership and spawn depth. Malformed inputs are refused.
 
-Project-owned `OPERATING_CONFIG.yaml` holds choices within governance. New AWF 1.9.4 defaults seed three `gpt-5.6-luna` / medium workers, one shared `gpt-5.6-sol` / high critic/adversarial handler, a `gpt-5.6-sol` / high controller and specialist, and `gpt-5.6-luna` / low simple work. The controller, critic and workers use five slots. Existing files are preserved byte-for-byte; legacy per-stream reviewer routes remain accepted and are not silently migrated. This file is mutable and unprotected. Missing/invalid choices prevent CONFIGURED; preserve evidence and follow the remedy.
+Planning-resource observations have one in-code producer:
+`produce_planning_resource_observation`. The closed shape refuses unknown or
+missing fields, invalid types, negatives, values above 1000 and stale digests.
+Consumers provide independently pinned implementation digest, binding and
+cycle time; self-digests and operator dictionaries do not authenticate.
+Capacity is bounded 0–1000; zero yields `safe_lane_count == 0`
+and selects no lane.
 
-New governance declares `independent_reviewers.allocation: shared_critic`; the shared reviewer pool has one slot, with candidate reviews scheduled through that handler. Legacy `one_per_stream` allocation and fixed counts remain valid and binding. Bootstrap preserves existing allocation and counts; `--propose-operating-capacity` only proposes a ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
+`OPERATING_CONFIG.yaml` holds unprotected project choices. AWF 1.9.4 defaults to three `gpt-5.6-luna` / medium workers, one shared `gpt-5.6-sol` / high critic/adversarial handler, `gpt-5.6-sol` / high controller and specialist routes, and `gpt-5.6-luna` / low simple work. Existing bytes and legacy per-stream routes are preserved. Missing/invalid choices prevent CONFIGURED; follow the remedy.
+
+New governance uses `independent_reviewers.allocation: shared_critic` with one reviewer slot. Legacy `one_per_stream` allocation and fixed counts remain binding and are preserved. `--propose-operating-capacity` only proposes a ceiling change. Follow [adoption](20-NEW-PROJECT-SETUP.md) mode/conflict arguments.
 
 ## Apply the user's choices
 
@@ -26,7 +34,7 @@ Show the result. User-chosen routes are pinned against optional escalation; mand
 
 Refusals exit 2, naming the path, binding governance value and remedy. Never clamp or partially apply mixed valid/invalid changes.
 
-An existing count above an enabled broker cap is rejected after upgrade. Repair an audited count of four under cap three with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Use three streams" --set streams.count=3`; governance stays unchanged and surplus streams drain.
+An upgraded count above an enabled broker cap is rejected. Repair four streams under cap three with `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Use three streams" --set streams.count=3`; governance remains unchanged and surplus streams drain.
 
 For “Stream B's worker on Sol/high for this Epic”, bind the exact observed Epic ID, echo it, then run:
 
@@ -34,7 +42,7 @@ For “Stream B's worker on Sol/high for this Epic”, bind the exact observed E
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Stream B's worker on Sol/high for this Epic" --epic PROJ-123 --set streams.B.worker=gpt-5.6-sol/high
 ```
 
-This pins `epic_overrides.PROJ-123.streams.B.worker` without changing global routes. Scoped worker/reviewer/controller/specialist routes obey the same allowlists/floors. Show lists them; only matching observed `epic_id` selects them, after global routes and before agent/ticket overrides. Never infer/broaden Epic identity. Scoped counts, simple switches and project recommendations with `--epic` are unsupported. Unpinning needs an existing complete route.
+This pins `epic_overrides.PROJ-123.streams.B.worker` without changing global routes. Scoped routes obey the same allowlists/floors; only the matching observed `epic_id` selects them, after global and before agent/ticket overrides. Never broaden Epic identity. Scoped counts, simple switches and project recommendations with `--epic` are unsupported. Unpinning needs an existing complete route.
 
 Fully qualified `--set epic_overrides.PROJ-123.streams.B.worker=...` works without `--epic`; combine global/scoped paths for atomic repair after governance changes.
 

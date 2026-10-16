@@ -359,6 +359,36 @@ def validate_planning_resource_observation(
     return copy.deepcopy(observation)
 
 
+def produce_planning_resource_observation(
+        *, binding, observed_at, host_capacity, resources,
+        producer_implementation_sha256):
+    """Produce the one closed planning-resource observation shape.
+
+    This is the sole in-code constructor for the reviewed controller adapter.
+    Consumers still supply the independently pinned implementation digest,
+    controller-known binding, and cycle time to validation; the record's
+    self-hash does not authenticate caller-authored values.
+    """
+    body = {
+        "format": "awf-planning-resource-observation-1",
+        "complete": True,
+        "producer": {
+            "kind": "reviewed_controller_adapter",
+            "operation": "observe_planning_resources",
+            "implementation_sha256": producer_implementation_sha256,
+        },
+        "observed_at": observed_at,
+        "binding": copy.deepcopy(binding),
+        "host_capacity": host_capacity,
+        "resources": copy.deepcopy(resources),
+    }
+    body["observation_sha256"] = fingerprint("planning_resource_observation", body)
+    return validate_planning_resource_observation(
+        body, expected_binding=binding,
+        expected_producer_sha256=producer_implementation_sha256,
+        now=observed_at)
+
+
 def _sealed_capacity_inputs(config, observation, expected_binding,
                             expected_producer_sha256, operating_snapshot, now):
     """Bind authenticated capacity inputs before lane selection or override."""
