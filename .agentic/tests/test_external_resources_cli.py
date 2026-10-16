@@ -262,6 +262,10 @@ class ExternalResourceCliTests(unittest.TestCase):
                          ["diagnostic_category"], "TIMEOUT")
         Contracts(ROOT / ".agentic" / "schemas").validate(
             "external-resource-receipt", receipt)
+        evidence = external_resources.public_evidence(receipt)
+        Contracts(ROOT / ".agentic" / "schemas").validate(
+            "external-resource-evidence", evidence)
+        self.assertEqual(evidence["result"], "COMMAND_NONZERO")
 
     def test_awf131_h3_missing_child_variables_are_visible_in_diagnostics(self):
         registry, mappings = self.synthetic_resource()
