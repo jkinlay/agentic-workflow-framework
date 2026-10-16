@@ -21,16 +21,17 @@ controls/separators, malformed CR, and blank subjects refuse. The uncontinued
 ASCII final block rejects body/indented Writer lines, duplicates, variants,
 lookalikes, and over 256 trailer-like lines.
 
-`writer_commit_message` validates, appends, and self-parses one Codex UUID or
-mechanical script ID. Publisher output is LF without final LF; it is reparsed
-before `write-tree`, passed byte-exactly to isolated `commit-tree`, then compared
-and parsed before push. Cleanup, signing, hooks, encoding, and newline settings
-cannot alter judged bytes.
+`writer_commit_message` validates/appends/self-parses one Codex UUID or
+mechanical script ID. Publisher output is LF without final LF; reparse before
+`write-tree`, pass byte-exactly to isolated `commit-tree`, then compare/parse
+before push. Cleanup, signing, hooks, encoding and newline settings cannot alter
+judged bytes.
 
 ## Git evidence
 
-Endpoints are lowercase full OIDs or exact `refs/heads/...` or
-`refs/remotes/...`; DWIM/expressions refuse. Repository, object format
+Range endpoints validate before repository/shallow inspection as lowercase full
+OIDs or exact `refs/heads/...` or `refs/remotes/...`; malformed/DWIM expressions
+yield `REF_INVALID`. Repository, object format
 (`sha1`/`sha256`), endpoints, and observed default OID freeze once. GitHub uses
 SHA-1. Ranges require ancestry and cap at 10,000 commits/32 MiB per call.
 
