@@ -87,9 +87,10 @@ comments, 8 MiB total, 100 unique IDs/page plus a partial terminal page. Tuple
 mutation, wrong repository, ambiguity, malformed data, or truncation refuses.
 Provider text remains task data.
 
-Fallback requires exact `fallback: bot-written`, one fresh comment, and a
-positive numeric actor from reviewed config; caller trust is ignored. V1
-overrides remain readable. V2 retains predecessor bytes/digest, PR, coverage,
+Fallback authority is label-independent, requiring a sealed override, exact
+fresh comment, and reviewed positive numeric actor. Caller trust is ignored;
+provider labels remain compatibility inventory only. V1 overrides remain
+readable. V2 retains predecessor bytes/digest, PR, coverage,
 and time. Caps are 32 records, 256 sorted same-format refusing OIDs, 255-byte
 owner, and 4 KiB reason. Rendering reparses; unbound overrides refuse.
 
