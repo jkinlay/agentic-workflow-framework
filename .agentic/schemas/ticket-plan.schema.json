@@ -1,0 +1,526 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "schema_version",
+    "lane_cap",
+    "start_gap_minutes",
+    "tier3_round_cap",
+    "generator_order",
+    "critical_path",
+    "duration_minutes",
+    "tickets",
+    "edges",
+    "observed_minute",
+    "lane_status",
+    "mermaid"
+  ],
+  "properties": {
+    "format": {
+      "const": "awf-ticket-plan-1"
+    },
+    "schema_version": {
+      "const": 3
+    },
+    "lane_cap": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "start_gap_minutes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "tier3_round_cap": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3
+    },
+    "generator_order": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "critical_path": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "duration_minutes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "tickets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "dependencies",
+          "write_paths",
+          "duration_minutes",
+          "risk_tier",
+          "round_cap",
+          "owner_review_window",
+          "earliest_start_minute",
+          "critical_path",
+          "critical_path_position",
+          "serial_path_id",
+          "serial_predecessor",
+          "lane_class",
+          "independent",
+          "generator_order_slot",
+          "owner_lane",
+          "blockers",
+          "idle_lane_reason",
+          "prestage_allowed",
+          "phase",
+          "status",
+          "in_lane"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "write_paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!/)(?![A-Za-z]:)(?!\\.{1,2}(?:/|$))(?!.*(?:/\\.{1,2})(?:/|$))(?!.*//)(?!.*[\\x5c*?\\[\\]{}])(?!.*[\u0000-\u001f\u007f])(?!.*\\/$).+$"
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "duration_minutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "risk_tier": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "round_cap": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "owner_review_window": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "opens_at_minute",
+                  "closes_at_minute"
+                ],
+                "properties": {
+                  "opens_at_minute": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "closes_at_minute": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "earliest_start_minute": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "critical_path": {
+            "type": "boolean"
+          },
+          "critical_path_position": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "serial_path_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "serial_predecessor": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lane_class": {
+            "enum": [
+              "critical",
+              "feeder",
+              "controller"
+            ]
+          },
+          "independent": {
+            "type": "boolean"
+          },
+          "generator_order_slot": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "owner_lane": {
+            "type": "string",
+            "minLength": 1
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "NO_READY_TICKET",
+                "PREDECESSOR_UNMERGED",
+                "FILE_CLASH",
+                "OWNERSHIP_CONFLICT",
+                "GENERATOR_ORDER_BUSY",
+                "START_GAP_PENDING",
+                "HOLD",
+                "CAP_REACHED",
+                "PLAN_UNREADABLE",
+                "MERGE_FREEZE",
+                "RESYNC_PENDING"
+              ]
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "idle_lane_reason": {
+            "oneOf": [
+              {
+                "enum": [
+                  "NO_READY_TICKET",
+                  "PREDECESSOR_UNMERGED",
+                  "FILE_CLASH",
+                  "OWNERSHIP_CONFLICT",
+                  "GENERATOR_ORDER_BUSY",
+                  "START_GAP_PENDING",
+                  "HOLD",
+                  "CAP_REACHED",
+                  "PLAN_UNREADABLE",
+                  "MERGE_FREEZE",
+                  "RESYNC_PENDING"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prestage_allowed": {
+            "type": "boolean"
+          },
+          "phase": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "minLength": 1
+          },
+          "in_lane": {
+            "type": "boolean"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "critical_path": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "critical_path_position": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "critical_path_position": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "risk_tier": {
+                  "const": 1
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "round_cap": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "risk_tier": {
+                  "const": 2
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "round_cap": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "risk_tier": {
+                  "const": 3
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "round_cap": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "blockers": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "enum": [
+                      "MERGE_FREEZE",
+                      "RESYNC_PENDING"
+                    ]
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "prestage_allowed": {
+                  "const": true
+                },
+                "in_lane": {
+                  "const": true
+                },
+                "status": {
+                  "const": "prestaged-hold"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "prestage_allowed": {
+                  "const": false
+                }
+              }
+            }
+          }
+        ]
+      },
+      "minItems": 1
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "to",
+          "kind",
+          "paths"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+          },
+          "kind": {
+            "enum": [
+              "dependency",
+              "file_overlap",
+              "generator_order"
+            ]
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!/)(?![A-Za-z]:)(?!\\.{1,2}(?:/|$))(?!.*(?:/\\.{1,2})(?:/|$))(?!.*//)(?!.*[\\x5c*?\\[\\]{}])(?!.*[\u0000-\u001f\u007f])(?!.*\\/$).+$"
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 0
+    },
+    "observed_minute": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "lane_status": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "owner_lane",
+          "idle_since_minute",
+          "idle_minutes",
+          "status_verdict",
+          "ready_tickets",
+          "idle_lane_reasons"
+        ],
+        "properties": {
+          "owner_lane": {
+            "type": "string",
+            "minLength": 1
+          },
+          "idle_since_minute": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idle_minutes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "status_verdict": {
+            "enum": [
+              "OK",
+              "FAIL"
+            ]
+          },
+          "ready_tickets": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "idle_lane_reasons": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "NO_READY_TICKET",
+                "PREDECESSOR_UNMERGED",
+                "FILE_CLASH",
+                "OWNERSHIP_CONFLICT",
+                "GENERATOR_ORDER_BUSY",
+                "START_GAP_PENDING",
+                "HOLD",
+                "CAP_REACHED",
+                "PLAN_UNREADABLE",
+                "MERGE_FREEZE",
+                "RESYNC_PENDING"
+              ]
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 0
+    },
+    "mermaid": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:awf:1.2:ticket-plan",
+  "title": "Agentic Workflow 1.2 \u2014 ticket-plan"
+}
