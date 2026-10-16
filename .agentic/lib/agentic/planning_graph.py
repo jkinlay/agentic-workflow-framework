@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
+import heapq
 import json
 import re
 
@@ -223,19 +224,25 @@ def _generator_ticket(ticket):
 
 def _assert_acyclic(keys, adjacency):
     state = {}
-
-    def visit(key):
-        if state.get(key) == 1:
-            _fail("DEPENDENCY_CYCLE", f"cycle includes {key}")
-        if state.get(key) == 2:
-            return
-        state[key] = 1
-        for dependent in sorted(adjacency[key]):
-            visit(dependent)
-        state[key] = 2
-
-    for key in sorted(keys):
-        visit(key)
+    for root in sorted(keys):
+        if state.get(root) == 2:
+            continue
+        state[root] = 1
+        pending = [(root, iter(sorted(adjacency[root])))]
+        while pending:
+            key, dependents = pending[-1]
+            try:
+                dependent = next(dependents)
+            except StopIteration:
+                state[key] = 2
+                pending.pop()
+                continue
+            if state.get(dependent) == 1:
+                _fail("DEPENDENCY_CYCLE", f"cycle includes {dependent}")
+            if state.get(dependent) == 2:
+                continue
+            state[dependent] = 1
+            pending.append((dependent, iter(sorted(adjacency[dependent]))))
 
 
 def _reachable(start, target, adjacency):
@@ -311,20 +318,28 @@ def _predecessors(keys, adjacency):
 def _critical_path(by_key, adjacency):
     scores = {}
     choices = {}
-
-    def score(key):
-        if key not in scores:
-            if adjacency[key]:
-                chosen = min(adjacency[key], key=lambda item: (-score(item), item))
-                downstream = score(chosen)
-            else:
-                downstream, chosen = 0, None
-            scores[key] = by_key[key]["duration_minutes"] + downstream
-            choices[key] = chosen
-        return scores[key]
-
-    for key in sorted(by_key):
-        score(key)
+    predecessors = _predecessors(by_key, adjacency)
+    remaining_dependents = {
+        key: len(adjacency[key])
+        for key in by_key
+    }
+    ready = [key for key, count in remaining_dependents.items() if count == 0]
+    heapq.heapify(ready)
+    while ready:
+        key = heapq.heappop(ready)
+        if adjacency[key]:
+            chosen = min(adjacency[key], key=lambda item: (-scores[item], item))
+            downstream = scores[chosen]
+        else:
+            downstream, chosen = 0, None
+        scores[key] = by_key[key]["duration_minutes"] + downstream
+        choices[key] = chosen
+        for predecessor in predecessors[key]:
+            remaining_dependents[predecessor] -= 1
+            if remaining_dependents[predecessor] == 0:
+                heapq.heappush(ready, predecessor)
+    if len(scores) != len(by_key):
+        _fail("DEPENDENCY_CYCLE", "critical-path graph contains a cycle")
     start = min(by_key, key=lambda key: (-scores[key], key))
     path = []
     while start is not None:
