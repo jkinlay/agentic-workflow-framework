@@ -115,14 +115,15 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
                 watcher.close()
             raise ValidationError("SUBPROCESS_OPERATION_BUDGET: operation cap exceeded") from exc
 
-    job = _WindowsJob() if os.name == "nt" else None
-    popen_arguments = {}
-    if os.name == "nt":
-        popen_arguments["creationflags"] = job.creationflags
-    else:
-        popen_arguments["start_new_session"] = True
+    job = None
+    process = None
     try:
-        process = None
+        job = _WindowsJob() if os.name == "nt" else None
+        popen_arguments = {}
+        if os.name == "nt":
+            popen_arguments["creationflags"] = job.creationflags
+        else:
+            popen_arguments["start_new_session"] = True
         process = subprocess.Popen(
             list(argv), cwd=cwd, env=child_env(env), shell=False, close_fds=True,
             stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
@@ -205,21 +206,27 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
             except OSError:
                 pass
 
-    threads = [
-        threading.Thread(target=drain, args=("stdout", process.stdout, stdout_limit), daemon=True),
-        threading.Thread(target=drain, args=("stderr", process.stderr, stderr_limit), daemon=True),
-    ]
+    threads = []
+    started_threads = []
     input_thread = None
-    if input_bytes is not None:
-        input_thread = threading.Thread(target=write_stdin, daemon=True)
-    for thread in threads:
-        thread.start()
-    if input_thread is not None:
-        input_thread.start()
-
+    input_thread_started = False
     deadline = time.monotonic() + timeout
     reason = None
     try:
+        threads = [
+            threading.Thread(
+                target=drain, args=("stdout", process.stdout, stdout_limit), daemon=True),
+            threading.Thread(
+                target=drain, args=("stderr", process.stderr, stderr_limit), daemon=True),
+        ]
+        if input_bytes is not None:
+            input_thread = threading.Thread(target=write_stdin, daemon=True)
+        for thread in threads:
+            thread.start()
+            started_threads.append(thread)
+        if input_thread is not None:
+            input_thread.start()
+            input_thread_started = True
         while process.poll() is None:
             if stop.wait(0.01):
                 reason = issues[0]
@@ -255,17 +262,27 @@ def run_bounded(argv, *, stdin=None, cwd=None, env=None, timeout=60,
                 if reason is None:
                     reason = "watch"
     finally:
-        if process.poll() is None:
-            _terminate_owned_tree(process, job)
-            process.wait()
-        if input_thread is not None:
-            input_thread.join(timeout=5)
-        for thread in threads:
-            thread.join(timeout=5)
-        if job is not None:
-            job.close()
-        for watcher in watchers:
-            watcher.close()
+        try:
+            if process.poll() is None:
+                _terminate_owned_tree(process, job)
+                process.wait()
+            if input_thread_started:
+                input_thread.join(timeout=5)
+            for thread in started_threads:
+                thread.join(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+        finally:
+            try:
+                if job is not None:
+                    job.close()
+            finally:
+                for watcher in watchers:
+                    watcher.close()
 
     if reason is None and issues:
         reason = issues[0]

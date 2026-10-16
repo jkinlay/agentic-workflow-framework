@@ -167,17 +167,21 @@ class OperationBudget:
 _CREDENTIAL_PATTERNS = (
     re.compile(r"(?i)(\bauthorization\s*:\s*(?:bearer|token|basic)\s+)[^\s,;]+"),
     re.compile(
-        r"(?i)(\b(?:(?:[a-z0-9]+[_-])*api[_-]?key|access[_-]?token|"
+        r"(?i)((?<![a-z0-9_])[\"']?(?:(?:[a-z0-9]+[_-])*api[_-]?key|access[_-]?token|"
         r"refresh[_-]?token|private[_-]?token|client[_-]?secret|password|"
         r"passwd|secret|token)"
-        r"\s*[=:]\s*)[^\s,;&]+"),
+        r"[\"']?\s*[=:]\s*[\"']?)[^\s,;&\"']+"),
+    re.compile(
+        r"(?i)((?<![a-z0-9_])--(?:(?:[a-z0-9]+[_-])*api[_-]?key|access[_-]?token|"
+        r"refresh[_-]?token|private[_-]?token|client[_-]?secret|password|"
+        r"passwd|secret|token)(?:=|\s+))[^\s,;&\"']+"),
     re.compile(r"(?i)(https?://)[^/@\s]+@"),
     re.compile(r"(?i)\b(?:github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]+"),
 )
 _LOCAL_PATH_PATTERNS = (
     re.compile(r"\\\\[^\\\s]+\\[^\\\s]+(?:\\[^\s:;,]*)*"),
     re.compile(r"(?i)\b[A-Z]:[\\/](?:[^\\/\s:;,]+[\\/])*[^\\/\s:;,]*"),
-    re.compile(r"(?<![:/\w])/(?:[^/\s:;,]+/)+[^/\s:;,]+"),
+    re.compile(r"(?<![:/\w])/(?:[^/\s:;,\"'\[\]{}()]+/)*[^/\s:;,\"'\[\]{}()]+"),
 )
 
 
