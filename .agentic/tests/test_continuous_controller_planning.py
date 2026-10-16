@@ -10,7 +10,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only
 from agentic import ValidationError
-from agentic.canonical import MAX_DOCUMENT_BYTES, fingerprint, timestamp
+from agentic.canonical import MAX_DOCUMENT_BYTES, fingerprint, sha256, timestamp
+import agentic.installer as installer
 from agentic.continuous_controller import ContinuousControllerStore, overlap_allowance_command, production_controller_cycle, validate_overlap_allowance_observation
 from test_publication_readiness import publication_config, publication_observation
 NOW = '2026-10-15T08:00:00Z'
@@ -70,13 +71,32 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 
 	def test_managed_source_payload_preserves_install_journal_headroom(self):
 		root = Path(__file__).resolve().parents[2]
-		manifest = json.loads((root / 'MANIFEST.json').read_text(encoding='utf-8'))
-		managed = [path for path in manifest['files']
-				   if path in {'AGENTS.md', '.github/PULL_REQUEST_TEMPLATE.md', '.github/CODEOWNERS'}
-				   or path.startswith('.agentic/')]
-		encoded_bytes = sum(4 * ((len((root / path).read_bytes()) + 2) // 3) for path in managed)
-		self.assertLessEqual(encoded_bytes + 520 * 1024, MAX_DOCUMENT_BYTES,
-			'embedded managed-file recovery bytes leave insufficient journal metadata headroom')
+		manifest_raw = (root / installer.MANIFEST).read_bytes()
+		manifest = json.loads(manifest_raw)
+		content = {path: (root / path).read_bytes() for path in manifest['files']}
+		captured = {}
+
+		class JournalCaptured(BaseException):
+			pass
+
+		def capture_journal(_tree, journal, _update_kind=None):
+			if journal['phase'] == 'active' and journal['managed_after_sha256'] is None:
+				captured['raw'] = installer._journal_bytes(journal)
+				raise JournalCaptured
+			raise AssertionError('unexpected journal phase before active intent')
+
+		with tempfile.TemporaryDirectory(prefix='awf150-journal-') as destination, \
+				patch.object(installer, 'verify_release',
+							 return_value=(sha256(manifest_raw), content)), \
+				patch.object(installer, '_write_bound_journal_update',
+							 side_effect=capture_journal), \
+				self.assertRaises(JournalCaptured):
+			installer.install(root, destination, sha256(manifest_raw), conflict='backup')
+
+		self.assertLessEqual(len(captured['raw']), installer.INSTALL_JOURNAL_MAX_BYTES)
+		self.assertLessEqual(len(captured['raw']) + installer.INSTALL_JOURNAL_HEADROOM_BYTES,
+						 MAX_DOCUMENT_BYTES,
+			'compact managed-file recovery metadata leaves insufficient journal headroom')
 
 	def setUp(self):
 		temporary = tempfile.TemporaryDirectory(prefix='awf89-planning-')
