@@ -110,6 +110,20 @@ class FirstDraftTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, 'tested_tree'):
             validate_worker_receipt(receipt, allowed_paths={'a.txt'})
 
+    def test_in35_receipt_rejects_nfc_aliases_and_aggregate_path_overflow(self):
+        receipt = {'outcome': 'CHANGED',
+                   'changes': [{'path': 'caf\u00e9.txt', 'action': 'modified'}],
+                   'tested_tree': 'a' * 40,
+                   'ignored_untracked': ['cafe\u0301.txt'],
+                   'summary': 'changed'}
+        with self.assertRaisesRegex(ValidationError, 'WORKER_RECEIPT_INVALID'):
+            validate_worker_receipt(receipt, allowed_paths={'caf\u00e9.txt'})
+
+        receipt['ignored_untracked'] = [f'ignored/{index:06d}'
+                                        for index in range(100000)]
+        with self.assertRaisesRegex(ValidationError, 'WORKER_RECEIPT_INVALID'):
+            validate_worker_receipt(receipt, allowed_paths={'caf\u00e9.txt'})
+
     def test_first_draft_body_fields_are_bounded_escaped_and_digest_stable(self):
         body = render_first_draft_body(
             'Trusted **contract**\n', risk_tier='Tier 3',
@@ -429,6 +443,51 @@ class FirstDraftTests(unittest.TestCase):
                 allowed_paths={'a.txt'})
             self.assertEqual(published['ignored_untracked'], ['local.secret'])
             self.assertTrue((root / 'local.secret').is_file())
+
+    def test_in36_publisher_rejects_combined_git_path_inventory_over_100000(self):
+        git = shutil.which('git')
+        if not git:
+            self.skipTest('Git unavailable')
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            def command(*args):
+                return subprocess.run([git, '-C', str(root), *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            subprocess.run([git, 'init', '-b', 'main', str(root)], check=True,
+                           capture_output=True)
+            command('config', 'user.name', 'fixture')
+            command('config', 'user.email', 'fixture@example.invalid')
+            command('config', 'core.autocrlf', 'false')
+            (root / 'a.txt').write_text('safe\n', encoding='utf-8')
+            command('add', 'a.txt')
+            command('commit', '-m', 'base')
+            base = command('rev-parse', 'HEAD')
+            command('checkout', '-b', 'codex/awf-30')
+            (root / 'a.txt').write_text('changed\n', encoding='utf-8')
+            changes = [{'path': 'a.txt', 'action': 'modified'}]
+            tree = candidate_tree(root, base, changes)
+            receipt = {'outcome': 'CHANGED', 'changes': changes,
+                       'tested_tree': tree.tested_tree,
+                       'ignored_untracked': [], 'summary': 'changed'}
+            mutations = []
+            ordinary = ''.join(f'ordinary/{index:05d}\0' for index in range(50000))
+            ignored = ''.join(f'ignored/{index:05d}\0' for index in range(50001))
+            class Adapter:
+                def run(self, *args):
+                    if args == ('ls-files', '--others', '--exclude-standard', '-z'):
+                        return ordinary
+                    if args == ('ls-files', '--others', '--ignored',
+                                '--exclude-standard', '-z'):
+                        return ignored
+                    if args[0] in {'add', 'push'}:
+                        mutations.append(args)
+                    return command(*args)
+            with self.assertRaisesRegex(ValidationError, 'PUBLISHER_PATH_INVALID'):
+                publish_tested_tree(
+                    root, base, 'codex/awf-30', receipt, body='body\n',
+                    commit_message='first draft', codex_run_id=CODEX_THREAD_ID,
+                    git=Adapter(), allowed_paths={'a.txt'})
+            self.assertEqual(mutations, [])
 
     def test_enrollment_charges_first_draft_but_not_amendment_cycles(self):
         with tempfile.TemporaryDirectory() as name:
