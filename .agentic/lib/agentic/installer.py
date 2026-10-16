@@ -12,7 +12,7 @@ from pathlib import Path
 import uuid
 
 from . import ValidationError, VERSION
-from .canonical import load_yaml, loads, now_text, sha256
+from .canonical import MAX_DOCUMENT_BYTES, load_yaml, loads, now_text, sha256
 from .safeio import Tree, relative_parts
 from .providers.github import load_observation_report, validate_codeowner
 
@@ -71,6 +71,8 @@ RELEASE_EXCLUDED_PATHS = frozenset({
 
 # safeio.Tree.write creates files with this mode before replacing the target.
 INSTALLER_WRITE_MODE = 0o600
+INSTALL_JOURNAL_HEADROOM_BYTES = 520 * 1024
+INSTALL_JOURNAL_MAX_BYTES = MAX_DOCUMENT_BYTES - INSTALL_JOURNAL_HEADROOM_BYTES
 PENDING_UPDATE_KINDS = frozenset({
     "activate",
     "managed_after",
@@ -84,6 +86,17 @@ _UNSPECIFIED_UPDATE_KIND = object()
 
 def json_bytes(value):
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+
+
+def _journal_bytes(journal):
+    """Serialize a new compact journal without consuming parser headroom."""
+    raw = json_bytes(journal)
+    if (isinstance(journal, dict) and
+            journal.get("format") == "awf-install-journal-4" and
+            len(raw) > INSTALL_JOURNAL_MAX_BYTES):
+        raise ValidationError(
+            "Compact installation recovery journal leaves insufficient parser headroom")
+    return raw
 
 
 def _journal_marker(transaction_id, journal_digest, pending_digest=None,
@@ -149,7 +162,7 @@ def _validate_journal_marker(marker, journal_raw):
 def _publish_initial_intent(tree, journal):
     """Create recoverable intent before any destination payload can change."""
     _validate_transaction_journal(journal)
-    journal_raw = json_bytes(journal)
+    journal_raw = _journal_bytes(journal)
     tree.write(JOURNAL, journal_raw)
     tree.write(MARKER, json_bytes(_journal_marker(journal["transaction_id"], sha256(journal_raw))))
 
@@ -175,7 +188,7 @@ def _write_bound_journal_update(tree, journal, update_kind=None):
     current, current_raw, _marker = _read_bound_journal(tree)
     if current["transaction_id"] != journal["transaction_id"]:
         raise ValidationError("Installation recovery journal identity changed during update")
-    updated_raw = json_bytes(journal)
+    updated_raw = _journal_bytes(journal)
     updated_digest = sha256(updated_raw)
     current_digest = sha256(current_raw)
     if updated_digest == current_digest:
