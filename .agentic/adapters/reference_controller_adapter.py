@@ -123,22 +123,17 @@ class _SubprocessRunner:
 		terminal_path = Path(terminal_proof_path)
 		startup_path = terminal_path.with_name(terminal_path.name.removesuffix('.terminal.json') + '.startup.json')
 		_write_record(spec_path, {'argv': list(argv), 'cwd': str(cwd), 'env': dict(env), 'stdin': stdin, 'timeout': timeout, 'max_output_bytes': MAX_OUTPUT, 'max_stderr_bytes': MAX_OUTPUT, 'config_source': _CODEX_CONFIG_SOURCE, 'launch_nonce': launch_nonce, 'handoff_path': str(handoff_path), 'startup_proof_path': str(startup_path), 'terminal_proof_path': str(terminal_proof_path)})
+		watcher_executable = getattr(sys, '_base_executable', sys.executable) if os.name == 'nt' else sys.executable
 		try:
-			process = subprocess.Popen([sys.executable, '-B', '-c', self._WATCHER, str(spec_path)], cwd=str(cwd), env=env, shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+			process = subprocess.Popen([watcher_executable, '-B', '-c', self._WATCHER, str(spec_path)], cwd=str(cwd), env=env, shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 		except OSError as exc:
 			raise ValidationError('Codex detached launch failed') from exc
-		deadline = time.monotonic() + min(timeout, 10)
-		handoff = None
-		while time.monotonic() <= deadline:
-			try:
-				candidate = _read_record(Path(handoff_path))
-			except ValidationError:
-				candidate = None
-			if isinstance(candidate, dict) and candidate.get('status') == 'LAUNCHED' and (candidate.get('launch_nonce') == launch_nonce) and (type(candidate.get('pid')) is int) and (candidate['pid'] > 0):
-				handoff = candidate
-				break
-			time.sleep(0.01)
-		_require(handoff is not None, 'Codex detached watcher did not produce a durable launch handoff')
+		_require(type(process.pid) is int and process.pid > 0, 'Codex detached launch returned no process identity')
+		handoff = {'pid': process.pid, 'launch_nonce': launch_nonce, 'status': 'LAUNCHED'}
+		# Popen has already established the watcher identity, so persist it
+		# without depending on child scheduling. The watcher makes the same
+		# write on entry to preserve recovery if the parent stops first.
+		_write_record(Path(handoff_path), handoff)
 		self._processes[handoff['pid']] = process
 		return {'pid': handoff['pid'], 'launch_nonce': launch_nonce, 'handoff_path': str(handoff_path), 'startup_proof_path': str(startup_path), 'terminal_proof_path': str(terminal_proof_path), 'status': 'LAUNCHED'}
 
@@ -879,34 +874,86 @@ def _build(config):
 		live['times'].append(provider_time)
 		versions, blobs = ({}, {})
 		for ref in (merge_base_sha, *live['heads']):
-			content, content_etag, content_time = gh_json_etag(
-				base + '/contents/' + quote(gate['path'], safe='/') + '?ref=' + ref)
-			_require(isinstance(content, dict) and content.get('type') == 'file' and
-					 isinstance(content.get('sha'), str) and re.fullmatch('[0-9a-f]{40}', content['sha']) and
+			commit, commit_etag, commit_time = gh_json_etag(base + '/git/commits/' + ref)
+			tree_sha = commit.get('tree', {}).get('sha') if isinstance(commit, dict) else None
+			_require(isinstance(commit, dict) and commit.get('sha') == ref and
+					 isinstance(tree_sha, str) and re.fullmatch('[0-9a-f]{40}', tree_sha),
+					 'Overlap commit tree observation is incomplete')
+			parts = gate['path'].split('/')
+			_require(0 < len(parts) <= 64 and all((part not in {'', '.', '..'} for part in parts)),
+					 'Overlap path cannot be traversed safely')
+			entry = None
+			missing = False
+			live['etags'].append(commit_etag)
+			live['times'].append(commit_time)
+			for index, part in enumerate(parts):
+				tree, tree_etag, tree_time = gh_json_etag(base + '/git/trees/' + tree_sha)
+				entries = tree.get('tree') if isinstance(tree, dict) else None
+				_require(isinstance(tree, dict) and tree.get('sha') == tree_sha and tree.get('truncated') is False and
+						 isinstance(entries, list), 'Overlap commit tree observation is incomplete or truncated')
+				matches = [item for item in entries if isinstance(item, dict) and item.get('path') == part]
+				_require(len(matches) <= 1, 'Overlap commit tree contains duplicate path entries')
+				live['etags'].append(tree_etag)
+				live['times'].append(tree_time)
+				if not matches:
+					missing = True
+					break
+				entry = matches[0]
+				if index < len(parts) - 1:
+					_require(entry.get('type') == 'tree' and entry.get('mode') == '040000' and
+							 isinstance(entry.get('sha'), str) and re.fullmatch('[0-9a-f]{40}', entry['sha']),
+							 'Overlap path parent is not a directory tree')
+					tree_sha = entry['sha']
+			if missing:
+				versions[ref], blobs[ref] = (None, None)
+				continue
+			blob_sha = entry.get('sha')
+			_require(entry.get('type') == 'blob' and entry.get('mode') in {'100644', '100755'} and
+					 isinstance(blob_sha, str) and re.fullmatch('[0-9a-f]{40}', blob_sha),
+					 'Overlap path is not a regular file blob')
+			content, content_etag, content_time = gh_json_etag(base + '/git/blobs/' + blob_sha)
+			_require(isinstance(content, dict) and content.get('sha') == blob_sha and
 					 content.get('encoding') == 'base64' and isinstance(content.get('content'), str),
-					 'Overlap path content observation is incomplete')
+					 'Overlap path blob observation is incomplete')
 			try:
 				raw = base64.b64decode(''.join(content['content'].split()), validate=True)
 			except (ValueError, TypeError) as exc:
 				raise ValidationError('Overlap path content is not canonical base64') from exc
 			_require(len(raw) <= MAX_OUTPUT, 'Overlap path content exceeded its byte bound')
-			versions[ref], blobs[ref] = (raw, content['sha'])
+			versions[ref], blobs[ref] = (raw, blob_sha)
 			live['etags'].append(content_etag)
 			live['times'].append(content_time)
 		return {'live': live, 'merge_base': merge_base_sha, 'versions': versions, 'blobs': blobs}
 
+	def overlap_merge_decision(inputs, *, resolve):
+		"""Classify or resolve one path, preserving absence as a tree state."""
+		base_ref = inputs['merge_base']
+		left_ref, right_ref = inputs['live']['heads']
+		base_blob, left_blob, right_blob = (inputs['blobs'][ref] for ref in (base_ref, left_ref, right_ref))
+		base_value, left_value, right_value = (inputs['versions'][ref] for ref in (base_ref, left_ref, right_ref))
+		if left_blob == right_blob:
+			return {'status': 'MERGEABLE', 'present': left_blob is not None, 'content': left_value}
+		if left_blob == base_blob:
+			return {'status': 'MERGEABLE', 'present': right_blob is not None, 'content': right_value}
+		if right_blob == base_blob:
+			return {'status': 'MERGEABLE', 'present': left_blob is not None, 'content': left_value}
+		if None in {base_blob, left_blob, right_blob}:
+			if not resolve:
+				return {'status': 'CONFLICT', 'present': False, 'content': None}
+			# A one-path commit can resolve add/add or modify/delete only by
+			# making the target branch match the left branch's tree entry.
+			return {'status': 'RESOLVED', 'present': left_blob is not None, 'content': left_value}
+		merged = _invoke(runner, 'merge_file', right_value, base_value, left_value, union=resolve)
+		_require(isinstance(merged, dict) and set(merged) == {'status', 'content'} and
+				 merged['status'] in {'MERGEABLE', 'CONFLICT'} and isinstance(merged['content'], bytes),
+				 'Three-way overlap merge returned a malformed decision')
+		return {'status': 'RESOLVED' if resolve else merged['status'], 'present': True, 'content': merged['content']}
+
 	def production_overlap_conflict(gate):
 		inputs = overlap_merge_inputs(gate, gate['heads'])
-		live, heads = inputs['live'], inputs['live']['heads']
-		if inputs['blobs'][heads[0]] == inputs['blobs'][heads[1]]:
-			status = 'NO_CONFLICT'
-		else:
-			merged = _invoke(runner, 'merge_file', inputs['versions'][heads[1]],
-							 inputs['versions'][inputs['merge_base']], inputs['versions'][heads[0]], union=False)
-			_require(isinstance(merged, dict) and set(merged) == {'status', 'content'} and
-					 merged['status'] in {'MERGEABLE', 'CONFLICT'} and isinstance(merged['content'], bytes),
-					 'Three-way overlap merge returned a malformed decision')
-			status = 'NO_CONFLICT' if merged['status'] == 'MERGEABLE' else 'CONFIRMED_CONFLICT'
+		live = inputs['live']
+		decision = overlap_merge_decision(inputs, resolve=False)
+		status = 'NO_CONFLICT' if decision['status'] == 'MERGEABLE' else 'CONFIRMED_CONFLICT'
 		return {key: deepcopy(gate[key]) for key in ('gate_id', 'repository_id', 'cycle_id', 'path', 'tickets', 'pull_requests', 'heads')} | {'status': status, 'provider_observed_at': min(live['times']), 'etag': fingerprint('github-overlap-conflict-etags', live['etags'])}
 
 	def production_overlap_sync_inventory(gate):
@@ -929,24 +976,29 @@ def _build(config):
 		gate = {key: deepcopy(payload[key]) for key in ('gate_id', 'repository_id', 'cycle_id', 'path', 'tickets', 'pull_requests', 'heads')}
 		inputs = overlap_merge_inputs(gate, payload['heads'])
 		before = inputs['live']
-		confirmed = _invoke(runner, 'merge_file', inputs['versions'][payload['heads'][1]],
-						  inputs['versions'][inputs['merge_base']], inputs['versions'][payload['heads'][0]], union=False)
-		_require(isinstance(confirmed, dict) and confirmed.get('status') == 'CONFLICT',
+		confirmed = overlap_merge_decision(inputs, resolve=False)
+		_require(confirmed['status'] == 'CONFLICT',
 				 'Overlap sync executor requires a current genuine three-way conflict')
-		resolved = _invoke(runner, 'merge_file', inputs['versions'][payload['heads'][1]],
-						 inputs['versions'][inputs['merge_base']], inputs['versions'][payload['heads'][0]], union=True)
-		_require(isinstance(resolved, dict) and set(resolved) == {'status', 'content'} and
-				 resolved['status'] in {'MERGEABLE', 'CONFLICT'} and isinstance(resolved['content'], bytes) and
-				 resolved['content'], 'Overlap sync resolver did not return reviewable resolved bytes')
+		resolved = overlap_merge_decision(inputs, resolve=True)
+		_require(resolved['status'] == 'RESOLVED' and isinstance(resolved['present'], bool) and
+				 ((resolved['present'] and isinstance(resolved['content'], bytes)) or
+				  ((not resolved['present']) and resolved['content'] is None)),
+				 'Overlap sync resolver did not return a reviewable path state')
+		target_value = inputs['versions'][payload['heads'][1]]
+		_require((resolved['present'] != (target_value is not None)) or resolved['content'] != target_value,
+				 'Overlap sync resolution would not change the target path')
 		target_ticket = payload['tickets'][1]
 		target_slug = re.sub('[^a-z0-9]+', '-', target_ticket.lower()).strip('-')
 		target_ref = github['branch_pattern'].format(ticket=target_ticket, slug=target_slug)
 		_write_record(record_path, {'format': 'awf-overlap-sync-operation-1', 'status': 'IN_FLIGHT', 'payload': payload})
-		mutation = 'mutation($repository:String!,$branch:String!,$head:GitObjectID!,$path:String!,$contents:Base64String!,$message:String!){createCommitOnBranch(input:{branch:{repositoryNameWithOwner:$repository,branchName:$branch},expectedHeadOid:$head,message:{headline:$message},fileChanges:{additions:[{path:$path,contents:$contents}]}}){commit{oid}}}'
-		mutation_input = json.dumps({'query': mutation, 'variables': {
-			'repository': github['repository'], 'branch': target_ref, 'head': payload['heads'][1],
-			'path': payload['path'], 'contents': base64.b64encode(resolved['content']).decode('ascii'),
-			'message': 'AWF overlap sync ' + payload['execution_id']}}, sort_keys=True, separators=(',', ':'))
+		variables = {'repository': github['repository'], 'branch': target_ref, 'head': payload['heads'][1],
+				 'path': payload['path'], 'message': 'AWF overlap sync ' + payload['execution_id']}
+		if resolved['present']:
+			mutation = 'mutation($repository:String!,$branch:String!,$head:GitObjectID!,$path:String!,$contents:Base64String!,$message:String!){createCommitOnBranch(input:{branch:{repositoryNameWithOwner:$repository,branchName:$branch},expectedHeadOid:$head,message:{headline:$message},fileChanges:{additions:[{path:$path,contents:$contents}]}}){commit{oid}}}'
+			variables['contents'] = base64.b64encode(resolved['content']).decode('ascii')
+		else:
+			mutation = 'mutation($repository:String!,$branch:String!,$head:GitObjectID!,$path:String!,$message:String!){createCommitOnBranch(input:{branch:{repositoryNameWithOwner:$repository,branchName:$branch},expectedHeadOid:$head,message:{headline:$message},fileChanges:{deletions:[{path:$path}]}}){commit{oid}}}'
+		mutation_input = json.dumps({'query': mutation, 'variables': variables}, sort_keys=True, separators=(',', ':'))
 		update = _json_output(command(gh_executable,
 			['api', '--hostname', 'github.com', 'graphql', '--input', '-'], stdin=mutation_input))
 		created = update.get('data', {}).get('createCommitOnBranch', {}) if isinstance(update, dict) else {}
