@@ -13,6 +13,8 @@ import os
 from pathlib import Path, PurePath
 import re
 import shutil
+import sys
+import time
 from typing import Callable
 
 from . import ValidationError
@@ -28,7 +30,7 @@ CLAIM_FORMAT = "awf-external-resource-claim-1"
 
 RESOURCE_STATES = {
     "UNOBSERVED", "SANDBOX_BLOCKED", "PROCESS_START_FAILED",
-    "COMMAND_NONZERO", "MAPPING_MISSING", "PATH_NOT_FOUND",
+    "TIMEOUT", "COMMAND_NONZERO", "MAPPING_MISSING", "PATH_NOT_FOUND",
     "ACCESS_DENIED", "INVALID_OUTPUT", "READ_VERIFIED", "STALE",
     "MAPPING_CHANGED",
 }
@@ -44,6 +46,9 @@ POWERSHELL_EXIT_STATES = {
     42: ("ACCESS_DENIED", "WINDOWS_ACCESS"),
     43: ("COMMAND_NONZERO", "COMMAND_EXIT"),
 }
+DIAGNOSTIC_ENVIRONMENT_VALUES = (
+    "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "PATHEXT",
+)
 
 
 def _utc(value=None):
@@ -271,6 +276,61 @@ def _default_execute(command, *, cwd=None, timeout_seconds=None):
     return run(list(command), cwd=cwd, timeout_seconds=timeout_seconds)
 
 
+def _child_environment_snapshot():
+    """Describe the probe child environment without exposing arbitrary values."""
+    from .child_process import child_env
+
+    environment = {
+        key: value for key, value in os.environ.items()
+        if not key.upper().startswith("GIT_")
+    }
+    environment.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+    environment = child_env(environment)
+    values_by_upper_name = {key.upper(): value for key, value in environment.items()}
+    return {
+        "variable_names": sorted(environment),
+        "selected_values": {
+            name: values_by_upper_name.get(name)
+            for name in DIAGNOSTIC_ENVIRONMENT_VALUES
+        },
+    }
+
+
+def _execute_observed(runner, command, *, cwd=None):
+    environment = _child_environment_snapshot()
+    started = time.monotonic_ns()
+    result = runner(command, cwd=cwd)
+    elapsed_milliseconds = (time.monotonic_ns() - started) // 1_000_000
+    if not isinstance(result, dict):
+        return result
+    observed = dict(result)
+    observed["elapsed_milliseconds"] = elapsed_milliseconds
+    observed["child_environment"] = environment
+    return observed
+
+
+def _start_diagnostics(result):
+    cleanup_errors = result.get("cleanup_errors", [])
+    if not isinstance(cleanup_errors, list):
+        cleanup_errors = [str(cleanup_errors)]
+    environment = result.get("child_environment")
+    if environment is None:
+        environment = _child_environment_snapshot()
+    diagnostics = {
+        "diagnostic_category": result.get("diagnostic_category") or "UNSPECIFIED",
+        "captured_output": result.get("output") or "",
+        "cleanup_errors": cleanup_errors,
+        "elapsed_milliseconds": result.get("elapsed_milliseconds", 0),
+        "child_environment": environment,
+    }
+    print(
+        "external_resource_start_diagnostics=" + json.dumps(
+            diagnostics, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def classify_probe_result(result):
     """Classify a trusted-host execution observation at its actual failure layer."""
     if not isinstance(result, dict):
@@ -279,6 +339,8 @@ def classify_probe_result(result):
     exit_code = result.get("exit_code")
     if diagnostic == "SANDBOX_BLOCKED":
         return "SANDBOX_BLOCKED", "SANDBOX", None
+    if diagnostic == "TIMEOUT":
+        return "TIMEOUT", "COMMAND_TIMEOUT", None
     if exit_code is None:
         return "PROCESS_START_FAILED", "PROCESS_START", None
     observation = result.get("probe")
@@ -312,13 +374,16 @@ def classify_probe_result(result):
 
 def _attempt(result, digest, attempted_at):
     state, layer, observation = classify_probe_result(result)
-    return {
+    attempt = {
         "attempted_at": _timestamp(attempted_at),
         "command_sha256": digest,
         "state": state,
         "error_layer": layer,
         "exit_code": result.get("exit_code"),
-    }, observation
+    }
+    if state == "PROCESS_START_FAILED" or result.get("diagnostic_category") not in {None, "OK"}:
+        _start_diagnostics(result)
+    return attempt, observation
 
 
 def _permission(scope, expires_at, source):
@@ -363,7 +428,7 @@ def admit_resource(registry, mappings, resource_alias, *, task_id, principal, se
             value, cwd=cwd, timeout_seconds=declaration["probe"]["timeout_seconds"])
     else:
         runner = execute
-    first_result = runner(command, cwd=cwd)
+    first_result = _execute_observed(runner, command, cwd=cwd)
     first, observation = _attempt(first_result, digest, observed_at)
     attempts = [first]
     permission = _permission(permission_scope, permission_expires_at, "existing_grant")
@@ -384,7 +449,7 @@ def admit_resource(registry, mappings, resource_alias, *, task_id, principal, se
             if retry_command != command or command_sha256(retry_command) != digest:
                 raise ValidationError("exact-command retry changed after approval")
             retry_time = _utc(decision.get("approved_at", observed_at))
-            retry_result = runner(retry_command, cwd=cwd)
+            retry_result = _execute_observed(runner, retry_command, cwd=cwd)
             retried, observation = _attempt(retry_result, digest, retry_time)
             attempts.append(retried)
             permission = _permission(decision.get("scope", "one_command"),
@@ -443,11 +508,16 @@ def admit_resource(registry, mappings, resource_alias, *, task_id, principal, se
 def public_evidence(receipt):
     """Return the deliberately small tracked view of a private receipt."""
     _validate_receipt_shape(receipt)
+    # TIMEOUT is a private diagnostic refinement.  The tracked contract keeps
+    # the established public state vocabulary and reports it as an
+    # unsuccessful command rather than falsely classifying it as a start
+    # failure.
+    result = "COMMAND_NONZERO" if receipt["state"] == "TIMEOUT" else receipt["state"]
     return {
         "format": PUBLIC_EVIDENCE_FORMAT,
         "resource_alias": receipt["resource_alias"],
         "observed_at": receipt["observed_at"],
-        "result": receipt["state"],
+        "result": result,
         "execution_authority": False,
     }
 

@@ -87,7 +87,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/contracts.py` | `608011b68fd03da49340fe96cef754a22440363717490c613cef6c9280da356b` |
 | `.agentic/lib/agentic/controller_state.py` | `08f533e320c4a6bb4563a040fa9b6df06c7efddadb0ddb9af8155512f07047ff` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
-| `.agentic/lib/agentic/external_resources.py` | `f2b33d973519a0905a5112279916060103668e692d0f346de059c8096b717fc0` |
+| `.agentic/lib/agentic/external_resources.py` | `f3fdfa2b1933d34a321a84668de93fe2b999168c0486063a797cc54287bc7747` |
 | `.agentic/lib/agentic/five_slot_acceleration.py` | `7fed880d1828ece267592e357313cc08fbb15279310479da8e60c5139acebbee` |
 | `.agentic/lib/agentic/gates.py` | `5d3bc03609e2ee6c091a9a8ece7b1b2fa7ba701d1c7dc1fe1c5ee054d754a919` |
 | `.agentic/lib/agentic/git_isolation.py` | `43b3258f19a9942a399a85ff21f78a26b45306b415a532ca9df3ec926cf91d26` |
@@ -170,7 +170,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/schemas/external-resource-claim.schema.json` | `09f04c7d38372ba6088c4e85ef4049ff6486fb18a1679d13cd2e2bbfa05ff645` |
 | `.agentic/schemas/external-resource-evidence.schema.json` | `3bcd8b9e2d7a745510bd2187e3a108b3aa8c8f0e4bffe88c36311a03caa3e80f` |
 | `.agentic/schemas/external-resource-mapping.schema.json` | `8fce8f3d0f653a69fbfbcb336885094a52d30c5442956449d871a7e2298d0816` |
-| `.agentic/schemas/external-resource-receipt.schema.json` | `fa87e0e6c9d2052dfb4d70130927b626dcec8d682287e0f0894dd1706553df59` |
+| `.agentic/schemas/external-resource-receipt.schema.json` | `fe340ffdd6c3c3362ed28e0abdc08b3594278f7d425755c2e027efd02fa9ecda` |
 | `.agentic/schemas/external-resource-registry.schema.json` | `f2025c79690ae2be9de25181b8ecd3c8d61e168979b46324be91be15e0de6de7` |
 | `.agentic/schemas/external-resource-scan.schema.json` | `48a9be3c8383a0c9d32e68ea4375c1ef8d7bca4d9a67b0af4737e9f241b99d4a` |
 | `.agentic/schemas/failure.schema.json` | `26f8b625849912ee6f69d9d98ea7865fbc0ddf8456850e38e3281100cf28f627` |
@@ -333,7 +333,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_continuous_controller.py` | `27926fc014fcaddf1885646384a9cd0c5c9881aaccc6dac0d6201d00c9b1881d` |
 | `.agentic/tests/test_continuous_controller_planning.py` | `8de8b73841754c18a55e8a32ebdacc91c8843e70e29edf5c12148041a80f7980` |
 | `.agentic/tests/test_external_resources.py` | `fd70b11e804bb3a07c4f8adab48e0a9674bea5ac83718925ff6181530c8f371e` |
-| `.agentic/tests/test_external_resources_cli.py` | `6be3021c6d4525915813a3d9d4d8df39b9aaf1b7ac35efdf9988d151da513533` |
+| `.agentic/tests/test_external_resources_cli.py` | `71a8c08a47ca96cd8c8ade49aa5e866a84d44e5e034f285e70efe1728c4370ff` |
 | `.agentic/tests/test_five_slot_acceleration.py` | `35b3f99410481c16f91e5be438d44ccb6e61e429e1b869fd18ac184a238bbb98` |
 | `.agentic/tests/test_gates_owner_review.py` | `b9d1e54e25e7281ba7c2e745b1b594d5a9593e12a02247b83307ce3cd3a11096` |
 | `.agentic/tests/test_gates_workflow_sha.py` | `1d82cfe03fec326046d4992168ce3c30cc4ad0e72bc491efcf5ea4dd949ce363` |
@@ -502,7 +502,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/bootstrap_project.py` | `d072d1a02183eba4eb967a90f65ae3bdcb67396f685e11fc72623a1bf006ce56` |
 | `scripts/build_release.py` | `9e4fe036247a99f6f1b15a13579a25bebfc16eda8ce97d6812ec2041edcdefc5` |
 | `scripts/build_skill_distribution.py` | `744cdb75f1814ae89586b0020f201dd8a25bdbc1694eb1409611c23cb3daa6d8` |
-| `scripts/generate_contracts.py` | `10bf7a56e4970f4cc10d3f0d9163f7bc8db2d018a533917299e0ef353a6de529` |
+| `scripts/generate_contracts.py` | `73410b8017c71e1f2cd1c62240328dbcd2847e8daa5685ac0c9251dbc0a4ac7b` |
 | `scripts/generate_examples.py` | `273fdecd4ac63a1d8dd9109930b22afd3a32f546c7560fe02eb071ef7ab7a66c` |
 | `scripts/generate_interaction.py` | `5067de4cd3cbc313122739db16ee43374a5e5fbea65787303ded251716d379cb` |
 | `scripts/generate_prompts.py` | `27f7023e321b441bf267d26e6521d110b7efe60b0b0541b2917d6d4533116c1f` |
