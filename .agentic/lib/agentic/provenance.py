@@ -1537,6 +1537,7 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
     else:
         registry = {}
     _require(type(require_run_logs) is bool, "require_run_logs must be Boolean")
+    base = validate_ref_locator(base, "Range base")
     git = _Git(root)
     raw_base_may_be_shallow = bool(git.shallow_boundaries) and not base.startswith("refs/")
     base_sha = git.resolve(
