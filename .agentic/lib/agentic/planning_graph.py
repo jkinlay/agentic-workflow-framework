@@ -23,6 +23,8 @@ PRESTAGE_BLOCKERS = {"MERGE_FREEZE", "RESYNC_PENDING"}
 LANE_CLASSES = {"critical", "feeder", "controller"}
 STATUS_VERDICTS = {"OK", "FAIL"}
 MAX_SAFE_INTEGER = 9007199254740991
+ROUND_CAP_BY_TIER = {1: 1, 2: 2}
+NON_EXACT_PATH_CHARACTERS = frozenset("*?[]{}")
 INPUT_FIELDS = {
     "key", "dependencies", "write_paths", "duration_minutes", "risk_tier",
     "round_cap", "owner_review_window", "lane_class", "owner_lane",
@@ -112,8 +114,13 @@ def _check_blockers(value):
 def _check_path(value):
     if (not isinstance(value, str) or not value or "\\" in value
             or value.startswith("/") or re.match(r"^[A-Za-z]:", value)
-            or any(part in {"", ".", ".."} for part in value.split("/"))):
-        _fail("INVALID_FIELD", "write_paths must contain portable repository-relative paths")
+            or any(part in {"", ".", ".."} for part in value.split("/"))
+            or any(character in NON_EXACT_PATH_CHARACTERS for character in value)
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)):
+        _fail(
+            "INVALID_FIELD",
+            "write_paths must contain exact portable repository-relative file paths",
+        )
 
 
 def _path_identity(value):
@@ -181,8 +188,12 @@ def _normalize_ticket(raw, tier3_round_cap):
         _fail("INVALID_RISK_TIER", "risk_tier must be 1, 2, or 3")
     if not _is_int(ticket["round_cap"], 1):
         _fail("TIER_ROUND_CAP_VIOLATION", "round_cap must be a positive integer")
-    if ticket["risk_tier"] == 3 and ticket["round_cap"] > tier3_round_cap:
-        _fail("TIER_ROUND_CAP_VIOLATION", "Tier 3 round_cap exceeds the reviewed cap")
+    tier_cap = ROUND_CAP_BY_TIER.get(ticket["risk_tier"], tier3_round_cap)
+    if ticket["round_cap"] > tier_cap:
+        _fail(
+            "TIER_ROUND_CAP_VIOLATION",
+            f"Tier {ticket['risk_tier']} round_cap exceeds the reviewed cap of {tier_cap}",
+        )
     _check_window(ticket["owner_review_window"])
     if not isinstance(ticket["lane_class"], str) or ticket["lane_class"] not in LANE_CLASSES:
         _fail("INVALID_FIELD", "lane_class is not recognized")
@@ -568,12 +579,20 @@ def _normalize_lane_observations(value, observed_minute):
 def _idle_lane_status(tickets, observation, observed_minute):
     lane = observation["owner_lane"]
     idle_since = observation["idle_since_minute"]
+    by_key = {ticket["key"]: ticket for ticket in tickets}
     queued = [ticket for ticket in tickets if ticket["owner_lane"] == lane and not ticket["in_lane"]]
     ready = []
     reasons = set()
     for ticket in queued:
-        ticket_reasons = set(ticket["blockers"])
-        if ticket["dependencies"] or ticket["serial_predecessor"] is not None:
+        ticket_reasons = set(ticket["blockers"]) - {"PREDECESSOR_UNMERGED"}
+        predecessors = set(ticket["dependencies"])
+        if ticket["serial_predecessor"] is not None:
+            predecessors.add(ticket["serial_predecessor"])
+        if any(
+            predecessor not in by_key
+            or by_key[predecessor]["status"].casefold() != "merged"
+            for predecessor in predecessors
+        ):
             ticket_reasons.add("PREDECESSOR_UNMERGED")
         if ticket_reasons:
             reasons.update(ticket_reasons)

@@ -112,7 +112,8 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "pattern": "^(?!/)(?![A-Za-z]:)(?!\\.{1,2}(?:/|$))(?!.*(?:/\\.{1,2})(?:/|$))(?!.*//)(?!.*[\\x5c*?\\[\\]{}])(?!.*[\u0000-\u001f\u007f])(?!.*\\/$).+$"
             },
             "minItems": 1,
             "uniqueItems": true
@@ -308,6 +309,42 @@
             "if": {
               "properties": {
                 "risk_tier": {
+                  "const": 1
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "round_cap": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "risk_tier": {
+                  "const": 2
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "round_cap": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "risk_tier": {
                   "const": 3
                 }
               }
@@ -395,7 +432,8 @@
             "type": "array",
             "items": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "pattern": "^(?!/)(?![A-Za-z]:)(?!\\.{1,2}(?:/|$))(?!.*(?:/\\.{1,2})(?:/|$))(?!.*//)(?!.*[\\x5c*?\\[\\]{}])(?!.*[\u0000-\u001f\u007f])(?!.*\\/$).+$"
             },
             "minItems": 0,
             "uniqueItems": true

@@ -152,6 +152,13 @@ def catalog(*, include_ticket_plan=True):
     """
     schemas = {}
     ticket_key = text(pattern="^[A-Z][A-Z0-9_]*-[1-9][0-9]*$")
+    control_character_range = f"{chr(0)}-{chr(31)}{chr(127)}"
+    exact_repo_path = text(pattern=(
+        r"^(?!/)(?![A-Za-z]:)(?!\.{1,2}(?:/|$))"
+        r"(?!.*(?:/\.{1,2})(?:/|$))(?!.*//)(?!.*[\x5c*?\[\]{}])"
+        f"(?!.*[{control_character_range}])"
+        r"(?!.*\/$).+$"
+    ))
     idle_lane_reason = nullable(enum(
         "NO_READY_TICKET", "PREDECESSOR_UNMERGED", "FILE_CLASH",
         "OWNERSHIP_CONFLICT", "GENERATOR_ORDER_BUSY", "START_GAP_PENDING",
@@ -171,7 +178,7 @@ def catalog(*, include_ticket_plan=True):
     ticket_plan_item = obj({
         "key": ticket_key,
         "dependencies": arr(ticket_key, uniqueItems=True),
-        "write_paths": arr(text(), 1, uniqueItems=True),
+        "write_paths": arr(exact_repo_path, 1, uniqueItems=True),
         "duration_minutes": integer(1),
         "risk_tier": integer(1, maximum=3),
         "round_cap": integer(1),
@@ -196,6 +203,14 @@ def catalog(*, include_ticket_plan=True):
             "if": {"properties": {"critical_path": const(True)}},
             "then": {"properties": {"critical_path_position": integer(1)}},
             "else": {"properties": {"critical_path_position": {"type": "null"}}},
+        },
+        {
+            "if": {"properties": {"risk_tier": const(1)}},
+            "then": {"properties": {"round_cap": integer(1, maximum=1)}},
+        },
+        {
+            "if": {"properties": {"risk_tier": const(2)}},
+            "then": {"properties": {"round_cap": integer(1, maximum=2)}},
         },
         {
             "if": {"properties": {"risk_tier": const(3)}},
@@ -230,7 +245,7 @@ def catalog(*, include_ticket_plan=True):
                 "from": ticket_key,
                 "to": ticket_key,
                 "kind": enum("dependency", "file_overlap", "generator_order"),
-                "paths": arr(text(), uniqueItems=True),
+                "paths": arr(exact_repo_path, uniqueItems=True),
             })),
             "observed_minute": integer(),
             "lane_status": arr(obj({
