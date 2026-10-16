@@ -854,6 +854,8 @@ def catalog():
         "UNOBSERVED", "SANDBOX_BLOCKED", "PROCESS_START_FAILED", "COMMAND_NONZERO",
         "MAPPING_MISSING", "PATH_NOT_FOUND", "ACCESS_DENIED", "INVALID_OUTPUT",
         "READ_VERIFIED", "STALE", "MAPPING_CHANGED")
+    receipt_state = copy.deepcopy(resource_state)
+    receipt_state["enum"].insert(3, "TIMEOUT")
     schemas["external-resource-claim"] = obj({
         "format": const("awf-external-resource-claim-1"),
         "status": enum("CLAIM_ACCEPTED", "CLAIM_REJECTED"),
@@ -897,13 +899,13 @@ def catalog():
             "expires_at": nullable({"type": "string", "format": "date-time"}),
             "source": enum("existing_grant", "narrow_approval"),
         }),
-        "state": resource_state,
+        "state": receipt_state,
         "error_layer": text(),
         "command_sha256": resource_digest,
         "attempts": arr(obj({
             "attempted_at": {"type": "string", "format": "date-time"},
             "command_sha256": resource_digest,
-            "state": resource_state,
+            "state": receipt_state,
             "error_layer": text(),
             "exit_code": nullable({"type": "integer"}),
         }), 1, maxItems=2),
