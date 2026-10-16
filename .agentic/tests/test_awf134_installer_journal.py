@@ -157,6 +157,21 @@ class CompactInstallerJournalTests(unittest.TestCase):
 
         self.assertEqual(len(small_raw), len(large_raw))
 
+    def test_awf150_compact_journal_refuses_to_consume_reserved_headroom(self):
+        journal, raw, _objects = self.capture_journal(
+            unchanged_files=0, changed_files=1)
+        writes = []
+
+        class RecordingTree:
+            def write(self, relative, data):
+                writes.append((relative, data))
+
+        with patch.object(installer, "INSTALL_JOURNAL_MAX_BYTES", len(raw) - 1), \
+                self.assertRaisesRegex(ValidationError, "headroom"):
+            installer._publish_initial_intent(RecordingTree(), journal)
+
+        self.assertEqual([], writes)
+
     def test_awf134_recover_round_trip_restores_prior_bytes_from_side_store(self):
         destination, _path, before, _journal = self.interrupt_after_journal_publish()
 
