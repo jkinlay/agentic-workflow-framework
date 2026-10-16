@@ -17,8 +17,8 @@ class TicketPlanGenerationTests(unittest.TestCase):
         catalog = generate_contracts.render_catalog()
         self.assertEqual("ticket-plan", next(iter(catalog)))
 
-    def test_ticket_plan_has_no_generic_unfilled_template(self):
-        self.assertNotIn("ticket-plan", generate_contracts.catalog())
+    def test_ticket_plan_is_registered_in_generic_schema_catalog(self):
+        self.assertIn("ticket-plan", generate_contracts.catalog())
 
     def test_checked_in_schema_is_generator_output(self):
         expected = generate_contracts.render_catalog()["ticket-plan"]
