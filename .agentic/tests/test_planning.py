@@ -14,6 +14,7 @@ from agentic.operating import operating_ceiling, stream_labels, validate_operati
 from agentic import planning
 
 NOW = "2026-10-12T12:00:00Z"
+HOST_EVIDENCE = {}
 
 
 def config(max_lanes=12):
@@ -58,6 +59,17 @@ def operating_snapshot(cfg, count=None):
     return validate_operating(value, cfg)
 
 
+def verify_host_observation(authentication, request):
+    evidence = HOST_EVIDENCE.get(authentication.get("evidence_id"))
+    if evidence is None:
+        return {
+            "status": "UNVERIFIED", **deepcopy(authentication),
+            "observed_at": request["observed_at"], "host_capacity": 0,
+            "resources": [{"name": "cpu", "capacity": 0}],
+        }
+    return {"status": "VERIFIED", **deepcopy(authentication), **deepcopy(evidence)}
+
+
 def resource_observation(cfg, snapshot, host_capacity=12, resources=None):
     binding = {
         "project_id": cfg["project"]["id"],
@@ -68,11 +80,29 @@ def resource_observation(cfg, snapshot, host_capacity=12, resources=None):
         "project_config_sha256": fingerprint("accepted-project-config", cfg),
         "operating_config_sha256": snapshot.operating_hash,
     }
+    capacities = (resources if resources is not None
+                  else [{"name": "cpu", "capacity": 12}])
+
+    def observe_host_resources(request):
+        claims = {
+            "observed_at": NOW, "host_capacity": host_capacity,
+            "resources": deepcopy(capacities),
+        }
+        evidence_sha256 = fingerprint("test_host_capacity_evidence", claims)
+        evidence_id = "test-host-evidence-" + evidence_sha256[:16]
+        HOST_EVIDENCE[evidence_id] = deepcopy(claims)
+        return {
+            "status": "OBSERVED", "producer_id": "test-host-adapter",
+            "evidence_id": evidence_id, "evidence_sha256": evidence_sha256,
+            "request_sha256": fingerprint("planning_resource_request", request),
+            **claims,
+        }
+
     return planning.produce_planning_resource_observation(
-        binding=binding, observed_at=NOW, host_capacity=host_capacity,
-        resources=(resources if resources is not None
-                   else [{"name": "cpu", "capacity": 12}]),
-        producer_implementation_sha256="a" * 64)
+        binding=binding, observed_at=NOW,
+        producer_implementation_sha256="a" * 64,
+        observe_host_resources=observe_host_resources,
+        verify_host_observation=verify_host_observation)
 
 
 def capacity_kwargs(cfg, host_capacity=12, resources=None, stream_capacity=None):
@@ -84,6 +114,7 @@ def capacity_kwargs(cfg, host_capacity=12, resources=None, stream_capacity=None)
         "expected_resource_producer_sha256": "a" * 64,
         "operating_snapshot": snapshot,
         "observed_at": NOW,
+        "verify_host_observation": verify_host_observation,
     }
 
 
@@ -235,6 +266,8 @@ class LaneTests(unittest.TestCase):
         self.assertEqual(planning.PLANNING_RESOURCE_KEYS, set(observation))
         self.assertEqual(planning.PLANNING_PRODUCER_KEYS, set(observation["producer"]))
         self.assertEqual(planning.PLANNING_BINDING_KEYS, set(observation["binding"]))
+        self.assertEqual(planning.PLANNING_AUTHENTICATION_KEYS,
+                         set(observation["authentication"]))
         self.assertEqual(planning.PLANNING_RESOURCE_ITEM_KEYS,
                          set(observation["resources"][0]))
 
@@ -244,6 +277,53 @@ class LaneTests(unittest.TestCase):
             planning.plan_lanes(
                 graph, config(), resources={"limits": {"cpu": 2}, "headroom": {}})
 
+    def test_operator_selected_capacities_cannot_pass_through_producer_into_plan_lanes(self):
+        cfg = config()
+        snapshot = operating_snapshot(cfg)
+        authenticated = resource_observation(
+            cfg, snapshot, host_capacity=4,
+            resources=[{"name": "cpu", "capacity": 4}])
+        operator_selected = deepcopy(authenticated)
+        operator_selected["host_capacity"] = 0
+        operator_selected["resources"] = [{"name": "cpu", "capacity": 0}]
+        operator_selected["observation_sha256"] = fingerprint(
+            "planning_resource_observation",
+            {key: value for key, value in operator_selected.items()
+             if key != "observation_sha256"})
+
+        def verify_host_observation(authentication, request):
+            return {
+                "status": "VERIFIED",
+                **deepcopy(authentication),
+                "observed_at": NOW,
+                "host_capacity": 4,
+                "resources": [{"name": "cpu", "capacity": 4}],
+            }
+
+        def operator_observer(request):
+            return {
+                "status": "OBSERVED", **deepcopy(authenticated["authentication"]),
+                "request_sha256": fingerprint("planning_resource_request", request),
+                "observed_at": NOW, "host_capacity": 0,
+                "resources": [{"name": "cpu", "capacity": 0}],
+            }
+
+        with self.assertRaisesRegex(ValidationError, "authenticated host evidence"):
+            planning.produce_planning_resource_observation(
+                binding=authenticated["binding"], observed_at=NOW,
+                producer_implementation_sha256="a" * 64,
+                observe_host_resources=operator_observer,
+                verify_host_observation=verify_host_observation)
+
+        with self.assertRaisesRegex(ValidationError, "authenticated host evidence"):
+            planning.plan_lanes(
+                planning.build_backlog_graph([ticket("AWF-1", "one.py")], cfg), cfg,
+                resource_observation=operator_selected,
+                expected_resource_binding=authenticated["binding"],
+                expected_resource_producer_sha256="a" * 64,
+                operating_snapshot=snapshot, observed_at=NOW,
+                verify_host_observation=verify_host_observation)
+
     def test_closed_authenticated_planning_resource_observation_is_required(self):
         cfg = config()
         snapshot = operating_snapshot(cfg)
@@ -251,7 +331,8 @@ class LaneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "closed"):
             planning.validate_planning_resource_observation(
                 {**observation, "extra": True}, expected_binding=observation["binding"],
-                expected_producer_sha256="a" * 64, now=NOW)
+                expected_producer_sha256="a" * 64, now=NOW,
+                verify_host_observation=verify_host_observation)
 
     def test_unknown_observation_key_is_refused(self):
         cfg = config()
@@ -261,7 +342,8 @@ class LaneTests(unittest.TestCase):
             planning.validate_planning_resource_observation(
                 {**observation, "operator_note": "two lanes"},
                 expected_binding=observation["binding"],
-                expected_producer_sha256="a" * 64, now=NOW)
+                expected_producer_sha256="a" * 64, now=NOW,
+                verify_host_observation=verify_host_observation)
 
     def test_missing_producer_field_is_refused(self):
         cfg = config()
@@ -271,7 +353,8 @@ class LaneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "closed"):
             planning.validate_planning_resource_observation(
                 observation, expected_binding=observation["binding"],
-                expected_producer_sha256="a" * 64, now=NOW)
+                expected_producer_sha256="a" * 64, now=NOW,
+                verify_host_observation=verify_host_observation)
 
     def test_unauthenticated_or_unsigned_observation_is_refused(self):
         cfg = config()
@@ -279,6 +362,16 @@ class LaneTests(unittest.TestCase):
         observation = resource_observation(cfg, snapshot)
         observation["observation_sha256"] = None
         with self.assertRaisesRegex(ValidationError, "digest"):
+            planning.validate_planning_resource_observation(
+                observation, expected_binding=observation["binding"],
+                expected_producer_sha256="a" * 64, now=NOW,
+                verify_host_observation=verify_host_observation)
+
+    def test_missing_host_evidence_authenticator_is_refused(self):
+        cfg = config()
+        snapshot = operating_snapshot(cfg)
+        observation = resource_observation(cfg, snapshot)
+        with self.assertRaisesRegex(ValidationError, "authenticated host evidence"):
             planning.validate_planning_resource_observation(
                 observation, expected_binding=observation["binding"],
                 expected_producer_sha256="a" * 64, now=NOW)
@@ -291,7 +384,8 @@ class LaneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "integer"):
             planning.validate_planning_resource_observation(
                 observation, expected_binding=observation["binding"],
-                expected_producer_sha256="a" * 64, now=NOW)
+                expected_producer_sha256="a" * 64, now=NOW,
+                verify_host_observation=verify_host_observation)
 
     def test_negative_capacity_is_refused(self):
         cfg = config()
@@ -301,7 +395,8 @@ class LaneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "zero through 1000"):
             planning.validate_planning_resource_observation(
                 observation, expected_binding=observation["binding"],
-                expected_producer_sha256="a" * 64, now=NOW)
+                expected_producer_sha256="a" * 64, now=NOW,
+                verify_host_observation=verify_host_observation)
 
     def test_out_of_bound_capacity_is_refused(self):
         cfg = config()
@@ -311,7 +406,8 @@ class LaneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "zero through 1000"):
             planning.validate_planning_resource_observation(
                 observation, expected_binding=observation["binding"],
-                expected_producer_sha256="a" * 64, now=NOW)
+                expected_producer_sha256="a" * 64, now=NOW,
+                verify_host_observation=verify_host_observation)
 
     def test_authenticated_observation_refuses_stale_digest_binding_and_producer(self):
         cfg = config()
@@ -319,7 +415,8 @@ class LaneTests(unittest.TestCase):
         observation = resource_observation(cfg, snapshot)
         accepted = planning.validate_planning_resource_observation(
             observation, expected_binding=observation["binding"],
-            expected_producer_sha256="a" * 64, now=NOW)
+            expected_producer_sha256="a" * 64, now=NOW,
+            verify_host_observation=verify_host_observation)
         self.assertEqual(observation, accepted)
 
         for name, changed, match in (
@@ -333,7 +430,7 @@ class LaneTests(unittest.TestCase):
                     expected_binding=({**observation["binding"], "scope_sha256": "9" * 64}
                                       if name == "binding" else observation["binding"]),
                     expected_producer_sha256=("9" * 64 if name == "producer" else "a" * 64),
-                    now=NOW)
+                    now=NOW, verify_host_observation=verify_host_observation)
 
     def test_observation_resource_inventory_is_closed_unique_and_bounded(self):
         cfg = config()
@@ -350,7 +447,8 @@ class LaneTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValidationError):
                 planning.validate_planning_resource_observation(
                     observation, expected_binding=observation["binding"],
-                    expected_producer_sha256="a" * 64, now=NOW)
+                    expected_producer_sha256="a" * 64, now=NOW,
+                    verify_host_observation=verify_host_observation)
 
 
 class OwnerOverrideTests(unittest.TestCase):
