@@ -20,6 +20,10 @@ class TicketPlanGenerationTests(unittest.TestCase):
     def test_ticket_plan_is_registered_in_generic_schema_catalog(self):
         self.assertIn("ticket-plan", generate_contracts.catalog())
 
+    def test_ticket_plan_uses_the_release_schema_revision(self):
+        schema = generate_contracts.catalog()["ticket-plan"]
+        self.assertEqual(3, schema["properties"]["schema_version"]["const"])
+
     def test_checked_in_schema_is_generator_output(self):
         expected = generate_contracts.render_catalog()["ticket-plan"]
         self.assertEqual(

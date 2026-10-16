@@ -176,6 +176,53 @@ class PlanningGraphValidationTests(unittest.TestCase):
             build(value)
         self.assertEqual("DANGLING_DEPENDENCY", caught.exception.reason)
 
+    def test_runtime_rejects_schema_unsafe_integer_inputs_and_derived_overflow(self):
+        module = implementation()
+        unsafe = 9007199254740992
+        cases = []
+
+        value = fixture()
+        value["tickets"][0]["duration_minutes"] = unsafe
+        cases.append((value, {}, "INVALID_FIELD"))
+
+        value = fixture()
+        value["tickets"][2]["risk_tier"] = 2
+        value["tickets"][2]["round_cap"] = unsafe
+        cases.append((value, {}, "TIER_ROUND_CAP_VIOLATION"))
+
+        value = fixture()
+        value["tickets"][3]["owner_review_window"] = {
+            "opens_at_minute": unsafe,
+            "closes_at_minute": unsafe,
+        }
+        cases.append((value, {}, "INVALID_FIELD"))
+
+        for value, overrides, reason in cases:
+            with self.subTest(reason=reason, ticket=value["tickets"][0]["key"]):
+                with self.assertRaises(module.PlanningGraphError) as caught:
+                    build(value, **overrides)
+                self.assertEqual(reason, caught.exception.reason)
+
+        for field, overrides in (
+            ("lane_cap", {"lane_cap": unsafe}),
+            ("start_gap_minutes", {"start_gap_minutes": unsafe}),
+            ("observed_minute", {"observed_minute": unsafe}),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaises(module.PlanningGraphError) as caught:
+                    build(**overrides)
+                self.assertEqual("INVALID_FIELD", caught.exception.reason)
+
+        value = fixture()
+        first = deepcopy(value["tickets"][2])
+        first.update(key="AWF-1", write_paths=["src/shared.py"], duration_minutes=unsafe - 1)
+        second = deepcopy(first)
+        second.update(key="AWF-2")
+        value.update(tickets=[first, second], lane_cap=1, start_gap_minutes=0)
+        with self.assertRaises(module.PlanningGraphError) as caught:
+            build(value)
+        self.assertEqual("INVALID_FIELD", caught.exception.reason)
+
     def test_unknown_input_and_idle_reason_fail_closed(self):
         module = implementation()
         value = fixture()
@@ -280,6 +327,35 @@ class PlanningGraphSchedulingTests(unittest.TestCase):
 
         self.assertEqual(
             {"AWF-1": 3, "AWF-2": 1},
+            {ticket["key"]: ticket["earliest_start_minute"] for ticket in plan["tickets"]},
+        )
+
+    def test_scheduler_reserves_aggregate_capacity_for_future_owner_windows(self):
+        value = fixture()
+        prototype = value["tickets"][2]
+        unrestricted = deepcopy(prototype)
+        unrestricted.update(
+            key="AWF-1", dependencies=[], write_paths=["src/unrestricted.py"],
+            duration_minutes=3, owner_review_window=None,
+        )
+        first_windowed = deepcopy(prototype)
+        first_windowed.update(
+            key="AWF-2", dependencies=[], write_paths=["src/first.py"],
+            duration_minutes=2,
+            owner_review_window={"opens_at_minute": 2, "closes_at_minute": 6},
+        )
+        second_windowed = deepcopy(first_windowed)
+        second_windowed.update(key="AWF-3", write_paths=["src/second.py"])
+        value.update(
+            tickets=[unrestricted, first_windowed, second_windowed],
+            lane_cap=1,
+            start_gap_minutes=0,
+        )
+
+        plan = build(value)
+
+        self.assertEqual(
+            {"AWF-1": 6, "AWF-2": 2, "AWF-3": 4},
             {ticket["key"]: ticket["earliest_start_minute"] for ticket in plan["tickets"]},
         )
 
@@ -411,6 +487,42 @@ class LaneFillAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual("AWF-36", successor["selected_ticket"])
 
+    def test_refill_waits_for_every_converging_file_overlap_predecessor(self):
+        module = implementation()
+        value = fixture()
+        prototype = value["tickets"][2]
+        first = deepcopy(prototype)
+        first.update(
+            key="AWF-1", dependencies=[], write_paths=["src/x.py"],
+            duration_minutes=1, in_lane=False,
+        )
+        second = deepcopy(prototype)
+        second.update(
+            key="AWF-2", dependencies=[], write_paths=["src/y.py"],
+            duration_minutes=2, in_lane=False,
+        )
+        converging = deepcopy(prototype)
+        converging.update(
+            key="AWF-3", dependencies=[], write_paths=["src/x.py", "src/y.py"],
+            duration_minutes=10, in_lane=False,
+        )
+        value.update(tickets=[first, second, converging], lane_cap=2, start_gap_minutes=0)
+        plan = build(value)
+        options = {
+            "owner_lanes": [first["owner_lane"]],
+            "merged_tickets": ["AWF-2"],
+            "live_write_paths": [],
+            "generator_busy": False,
+            "hold": False,
+            "start_lock_free": True,
+        }
+
+        ranked = module.refill_rank(plan, **options)
+
+        self.assertEqual("AWF-1", ranked["selected_ticket"])
+        blocked = {item["key"]: item["reasons"] for item in ranked["blocked_tickets"]}
+        self.assertIn("PREDECESSOR_UNMERGED", blocked["AWF-3"])
+
     def test_idle_lane_status_uses_injected_clock_and_lists_gates(self):
         value = fixture()
         for ticket in value["tickets"]:
@@ -462,6 +574,31 @@ class LaneFillAcceptanceTests(unittest.TestCase):
         with self.assertRaises(module.PlanningGraphError) as caught:
             module.validate_ticket_plan(missing)
         self.assertEqual("MISSING_REQUIRED_FIELD", caught.exception.reason)
+
+    def test_dependency_blocked_idle_lane_is_ok_and_names_predecessor_gate(self):
+        value = fixture()
+        predecessor = deepcopy(value["tickets"][2])
+        predecessor.update(
+            key="AWF-2", dependencies=[], write_paths=["src/predecessor.py"],
+            owner_lane="active-owner", in_lane=True,
+        )
+        waiting = deepcopy(value["tickets"][2])
+        waiting.update(
+            key="AWF-1", dependencies=["AWF-2"], write_paths=["src/waiting.py"],
+            owner_lane="idle-owner", blockers=[], idle_lane_reason=None, in_lane=False,
+        )
+        value.update(tickets=[predecessor, waiting], lane_cap=1, start_gap_minutes=0)
+
+        plan = build(
+            value,
+            observed_minute=11,
+            lane_observations=[{"owner_lane": "idle-owner", "idle_since_minute": 0}],
+        )
+
+        status = plan["lane_status"][0]
+        self.assertEqual("OK", status["status_verdict"])
+        self.assertEqual([], status["ready_tickets"])
+        self.assertEqual(["PREDECESSOR_UNMERGED"], status["idle_lane_reasons"])
 
     def test_output_is_byte_deterministic_and_mermaid_is_stable(self):
         module = implementation()
