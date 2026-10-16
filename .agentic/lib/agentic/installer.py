@@ -19,6 +19,7 @@ from .providers.github import load_observation_report, validate_codeowner
 MANIFEST = "MANIFEST.json"
 LOCK = ".agentic-install/lock"
 JOURNAL = ".agentic-install/journal.json"
+RECOVERY_OBJECTS = ".agentic-install/objects"
 MARKER = ".agentic/INSTALLING.json"
 INSTALLED = ".agentic/installed-manifest.json"
 CONFIG = ".agentic/PROJECT_CONFIG.yaml"
@@ -70,24 +71,57 @@ RELEASE_EXCLUDED_PATHS = frozenset({
 
 # safeio.Tree.write creates files with this mode before replacing the target.
 INSTALLER_WRITE_MODE = 0o600
+PENDING_UPDATE_KINDS = frozenset({
+    "activate",
+    "managed_after",
+    "runtime_stage",
+    "commit_cleanup",
+    "commit_cleanup_authenticated",
+    "rollback_cleanup",
+})
+_UNSPECIFIED_UPDATE_KIND = object()
 
 
 def json_bytes(value):
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
-def _journal_marker(transaction_id, journal_digest, pending_digest=None):
+def _journal_marker(transaction_id, journal_digest, pending_digest=None,
+                    pending_update_kind=_UNSPECIFIED_UPDATE_KIND):
     """Bind recovery authority to one exact journal, with one precommitted update."""
-    return {"format": "awf-install-marker-1", "transaction_id": transaction_id,
-            "journal_sha256": journal_digest, "pending_journal_sha256": pending_digest}
+    # Preserve legacy direct callers that construct a pending v1 marker. New
+    # production updates always pass an explicit kind and publish marker v2.
+    if pending_digest is not None and pending_update_kind is _UNSPECIFIED_UPDATE_KIND:
+        return {"format": "awf-install-marker-1", "transaction_id": transaction_id,
+                "journal_sha256": journal_digest,
+                "pending_journal_sha256": pending_digest}
+    if pending_update_kind is _UNSPECIFIED_UPDATE_KIND:
+        pending_update_kind = None
+    return {"format": "awf-install-marker-2", "transaction_id": transaction_id,
+            "journal_sha256": journal_digest,
+            "pending_journal_sha256": pending_digest,
+            "pending_update_kind": pending_update_kind}
 
 
 def _validate_journal_marker(marker, journal_raw):
-    if not isinstance(marker, dict) or set(marker) != {
-            "format", "transaction_id", "journal_sha256", "pending_journal_sha256"}:
+    if not isinstance(marker, dict):
         raise ValidationError("Invalid installation recovery marker")
-    if marker["format"] != "awf-install-marker-1":
+    if "format" not in marker or not isinstance(marker["format"], str):
+        raise ValidationError("Invalid installation recovery marker")
+    marker_format = marker["format"]
+    base_keys = {"format", "transaction_id", "journal_sha256",
+                 "pending_journal_sha256"}
+    marker_keys = set(marker)
+    if marker_keys not in (base_keys, base_keys | {"pending_update_kind"}):
+        raise ValidationError("Invalid installation recovery marker")
+    if marker_format == "awf-install-marker-1":
+        expected_keys = base_keys
+    elif marker_format == "awf-install-marker-2":
+        expected_keys = base_keys | {"pending_update_kind"}
+    else:
         raise ValidationError("Unsupported installation recovery marker")
+    if marker_keys != expected_keys:
+        raise ValidationError("Invalid installation recovery marker")
     try:
         transaction_id = str(uuid.UUID(marker["transaction_id"]))
     except (TypeError, ValueError, AttributeError) as exc:
@@ -100,6 +134,12 @@ def _validate_journal_marker(marker, journal_raw):
                 not isinstance(marker["pending_journal_sha256"], str) or
                 re.fullmatch(digest_pattern, marker["pending_journal_sha256"]) is None))):
         raise ValidationError("Invalid installation recovery marker digest")
+    if marker_format == "awf-install-marker-2":
+        update_kind = marker["pending_update_kind"]
+        if update_kind is not None and not isinstance(update_kind, str):
+            raise ValidationError("Invalid installation recovery marker update kind")
+        if marker["pending_journal_sha256"] is None and update_kind is not None:
+            raise ValidationError("Invalid installation recovery marker update kind")
     observed = sha256(journal_raw)
     if observed not in {marker["journal_sha256"], marker["pending_journal_sha256"]}:
         raise ValidationError("Installation recovery journal differs from its bound marker")
@@ -128,8 +168,10 @@ def _read_bound_journal(tree):
     return journal, journal_raw, marker
 
 
-def _write_bound_journal_update(tree, journal):
+def _write_bound_journal_update(tree, journal, update_kind=None):
     """Publish a journal update without an unauthenticated cross-file crash window."""
+    if update_kind is not None and update_kind not in PENDING_UPDATE_KINDS:
+        raise ValidationError("Invalid installation journal update kind")
     current, current_raw, _marker = _read_bound_journal(tree)
     if current["transaction_id"] != journal["transaction_id"]:
         raise ValidationError("Installation recovery journal identity changed during update")
@@ -142,18 +184,28 @@ def _write_bound_journal_update(tree, journal):
     # Precommit the exact next digest. A crash before the journal write leaves
     # the old digest valid; a crash after it leaves only the precommitted digest
     # valid. The final marker collapses the state back to one accepted digest.
-    tree.write(MARKER, json_bytes(_journal_marker(transaction_id, current_digest, updated_digest)))
+    tree.write(MARKER, json_bytes(_journal_marker(
+        transaction_id, current_digest, updated_digest, update_kind)))
     tree.write(JOURNAL, updated_raw)
     tree.write(MARKER, json_bytes(_journal_marker(transaction_id, updated_digest)))
 
 
-def _recover_pending_runtime_update(tree, journal, journal_raw, marker):
-    """Finish the one safe pending update whose bytes are proved by the stage."""
+def _recover_legacy_pending_update(tree, journal, journal_raw, marker):
+    """Retain recovery compatibility for pending markers emitted before marker v2."""
     if (marker["pending_journal_sha256"] is None or
             sha256(journal_raw) != marker["journal_sha256"]):
         return journal
+    if _compact_journal(journal) and journal["phase"] == "active":
+        # Rollback publishes its cleanup phase through the same bound-update
+        # protocol. If its journal replace was interrupted, keep the active
+        # journal and let idempotent rollback re-prove the restored endpoint.
+        rollback_candidate = loads(json_bytes(journal).decode("utf-8"))
+        rollback_candidate["phase"] = "rollback_cleanup"
+        if sha256(json_bytes(rollback_candidate)) == marker["pending_journal_sha256"]:
+            return journal
     runtime = _validated_runtime_journal(journal)
-    if (journal["format"] != "awf-install-journal-3" or journal["phase"] != "active" or
+    if (journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"} or
+            journal["phase"] != "active" or
             runtime is None or runtime["new_sha256"] is not None):
         return journal
     stage = tree.root / runtime["stage"]
@@ -168,6 +220,169 @@ def _recover_pending_runtime_update(tree, journal, journal_raw, marker):
     tree.write(MARKER, json_bytes(_journal_marker(
         candidate["transaction_id"], sha256(candidate_raw))))
     return candidate
+
+
+def _pending_transition_mismatch():
+    raise ValidationError(
+        "Pending journal update kind does not match the bound transition; journal retained")
+
+
+def _pending_digest_mismatch(update_kind):
+    display = update_kind.replace("_", "-")
+    raise ValidationError(
+        f"Pending {display} journal update digest mismatch; journal retained")
+
+
+def _copy_journal(journal):
+    return loads(json_bytes(journal).decode("utf-8"))
+
+
+def _validate_pending_new_journal(tree, journal, update_kind):
+    runtime = _validated_runtime_journal(journal)
+    if update_kind == "activate":
+        valid = (journal["format"] == "awf-install-journal-4" and
+                 journal["phase"] == "active" and
+                 journal["managed_after_sha256"] is None)
+    elif update_kind == "managed_after":
+        valid = (journal["format"] == "awf-install-journal-4" and
+                 journal["phase"] == "active" and
+                 journal["managed_after_sha256"] is not None)
+    elif update_kind == "runtime_stage":
+        managed_after = (journal.get("managed_after_sha256") if _compact_journal(journal)
+                         else journal.get("managed_after"))
+        valid = (journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"} and
+                 journal["phase"] == "active" and managed_after is not None and
+                 runtime is not None and runtime["new_sha256"] is not None)
+    elif update_kind == "commit_cleanup":
+        valid = journal["phase"] == "commit_cleanup"
+    elif update_kind == "commit_cleanup_authenticated":
+        valid = journal["phase"] == "commit_cleanup_authenticated"
+    else:
+        valid = journal["phase"] == "rollback_cleanup"
+    if not valid:
+        _pending_transition_mismatch()
+    if update_kind == "activate":
+        _load_recovery_objects(tree, journal)
+    elif update_kind == "managed_after":
+        candidate = _copy_journal(journal)
+        _capture_managed_after(tree, candidate)
+        if json_bytes(candidate) != json_bytes(journal):
+            _pending_digest_mismatch(update_kind)
+    elif update_kind == "runtime_stage":
+        stage = tree.root / runtime["stage"]
+        if not (stage.exists() or stage.is_symlink()):
+            raise ValidationError(
+                "Pending runtime-stage journal update has no staged runtime; journal retained")
+        if _runtime_tree_sha256(stage) != runtime["new_sha256"]:
+            raise ValidationError(
+                "Staged runtime does not prove the pending runtime-stage update; journal retained")
+    elif update_kind == "commit_cleanup_authenticated" and runtime is not None:
+        cleanup_path = _runtime_cleanup_path(tree.root, runtime)
+        if runtime["previous_sha256"] is None:
+            if cleanup_path.exists() or cleanup_path.is_symlink():
+                _pending_transition_mismatch()
+        elif ("cleanup_identity" not in runtime or runtime["cleanup_identity"] is None or
+              runtime["cleanup_members"] is None):
+            _pending_transition_mismatch()
+        else:
+            _verify_runtime_cleanup_proof(cleanup_path, {
+                "identity": runtime["cleanup_identity"],
+                "members": runtime["cleanup_members"],
+            })
+    if update_kind in {"managed_after", "runtime_stage"}:
+        _load_recovery_objects(tree, journal)
+
+
+def _reconstruct_pending_old_journal(tree, journal, update_kind):
+    """Authenticate the exact named transition without mutating project state."""
+    candidate = _copy_journal(journal)
+    runtime = _validated_runtime_journal(candidate)
+    if update_kind == "activate":
+        if not (_compact_journal(journal) and journal["phase"] == "object_prepare"):
+            _pending_transition_mismatch()
+        candidate["phase"] = "active"
+    elif update_kind == "managed_after":
+        if not (_compact_journal(journal) and journal["phase"] == "active" and
+                journal["managed_after_sha256"] is None):
+            _pending_transition_mismatch()
+        _capture_managed_after(tree, candidate)
+    elif update_kind == "runtime_stage":
+        managed_after = (journal.get("managed_after_sha256") if _compact_journal(journal)
+                         else journal.get("managed_after"))
+        if not (journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"} and
+                journal["phase"] == "active" and managed_after is not None and
+                runtime is not None and runtime["new_sha256"] is None):
+            _pending_transition_mismatch()
+        stage = tree.root / runtime["stage"]
+        if not (stage.exists() or stage.is_symlink()):
+            raise ValidationError(
+                "Pending runtime-stage journal update has no staged runtime; journal retained")
+        candidate["runtime"]["new_sha256"] = _runtime_tree_sha256(stage)
+    elif update_kind in {"commit_cleanup", "rollback_cleanup"}:
+        if journal["phase"] != "active":
+            _pending_transition_mismatch()
+        candidate["phase"] = update_kind
+    else:
+        if journal["phase"] != "commit_cleanup":
+            _pending_transition_mismatch()
+        candidate["phase"] = "commit_cleanup_authenticated"
+        if runtime is not None and runtime["previous_sha256"] is not None and \
+                "cleanup_identity" in runtime:
+            cleanup_path = _runtime_cleanup_path(tree.root, runtime)
+            if not (cleanup_path.exists() or cleanup_path.is_symlink()) or \
+                    _runtime_tree_sha256(cleanup_path) != runtime["previous_sha256"]:
+                raise ValidationError(
+                    "Pending runtime cleanup cannot be authenticated; journal retained")
+            proof = _runtime_cleanup_proof(cleanup_path)
+            candidate["runtime"]["cleanup_identity"] = proof["identity"]
+            candidate["runtime"]["cleanup_members"] = proof["members"]
+    return candidate
+
+
+def _recover_pending_journal_update(tree, journal, journal_raw, marker):
+    """Resolve one explicitly named, digest-bound journal replacement."""
+    pending_digest = marker["pending_journal_sha256"]
+    if pending_digest is None:
+        return journal
+    if marker["format"] == "awf-install-marker-1":
+        return _recover_legacy_pending_update(tree, journal, journal_raw, marker)
+    update_kind = marker.get("pending_update_kind")
+    if update_kind not in PENDING_UPDATE_KINDS:
+        raise ValidationError(
+            "Unknown or ambiguous pending journal update kind; journal retained")
+    observed_digest = sha256(journal_raw)
+    if observed_digest == pending_digest:
+        _validate_pending_new_journal(tree, journal, update_kind)
+        tree.write(MARKER, json_bytes(_journal_marker(
+            journal["transaction_id"], observed_digest)))
+        return journal
+    if observed_digest != marker["journal_sha256"]:
+        raise ValidationError(
+            "Installation recovery journal differs from its bound marker")
+
+    candidate = _reconstruct_pending_old_journal(tree, journal, update_kind)
+    candidate_raw = json_bytes(candidate)
+    if sha256(candidate_raw) != pending_digest:
+        if update_kind == "runtime_stage":
+            raise ValidationError(
+                "Staged runtime does not prove the pending runtime-stage update; journal retained")
+        _pending_digest_mismatch(update_kind)
+
+    if update_kind in {"managed_after", "runtime_stage", "commit_cleanup",
+                       "rollback_cleanup"}:
+        _load_recovery_objects(tree, journal)
+
+    if update_kind in {"runtime_stage", "commit_cleanup_authenticated"}:
+        tree.write(JOURNAL, candidate_raw)
+        tree.write(MARKER, json_bytes(_journal_marker(
+            candidate["transaction_id"], sha256(candidate_raw))))
+        return candidate
+
+    # Old-side activate/managed/commit/rollback transitions deliberately keep
+    # the old journal. Collapse the precommit and follow its recovery rule.
+    tree.write(MARKER, json_bytes(_journal_marker(
+        journal["transaction_id"], observed_digest)))
+    return journal
 
 
 def managed(path):
@@ -276,8 +491,169 @@ def _verify_managed_inventory(tree, expected, context):
         raise ValidationError(f"Managed-file inventory changed {context}: {detail}")
 
 
+def _managed_inventory_sha256(inventory):
+    """Bind one complete inventory without retaining every entry in the journal."""
+    _validate_inventory(inventory)
+    return sha256(json_bytes(inventory))
+
+
+def _compact_journal(journal):
+    return journal["format"] == "awf-install-journal-4"
+
+
+def _recovery_object_path(digest):
+    return f"{RECOVERY_OBJECTS}/{digest}"
+
+
+def _read_recovery_object(tree, digest, size):
+    path = _recovery_object_path(digest)
+    try:
+        info = tree.inspect(path)
+    except OSError as exc:
+        raise ValidationError(
+            f"Recovery object is missing; journal retained: {digest} (recovery object)") from exc
+    if info is None:
+        raise ValidationError(
+            f"Recovery object is missing; journal retained: {digest} (recovery object)")
+    if info.st_size != size:
+        raise ValidationError(
+            f"Recovery object size mismatch; journal retained: {digest} (recovery object)")
+    try:
+        data = tree.read(path, maximum=size)
+    except (OSError, ValidationError) as exc:
+        raise ValidationError(
+            f"Recovery object size mismatch; journal retained: {digest} (recovery object)") from exc
+    if len(data) != size:
+        raise ValidationError(
+            f"Recovery object size mismatch; journal retained: {digest} (recovery object)")
+    if sha256(data) != digest:
+        raise ValidationError(
+            f"Recovery object hash mismatch; journal retained: {digest} (recovery object)")
+    return data
+
+
+def _write_recovery_objects(tree, objects):
+    for digest, data in sorted(objects.items()):
+        if sha256(data) != digest:
+            raise ValidationError("Recovery object digest differs from its bytes")
+        tree.write(_recovery_object_path(digest), data)
+        _read_recovery_object(tree, digest, len(data))
+
+
+def _load_recovery_objects(tree, journal):
+    if not _compact_journal(journal):
+        return {}
+    sizes = {}
+    for item in journal["files"]:
+        digest = item["old_sha256"]
+        if digest is None:
+            continue
+        if digest in sizes and sizes[digest] != item["old_size"]:
+            raise ValidationError(
+                f"Recovery object size references disagree; journal retained: {digest}")
+        sizes[digest] = item["old_size"]
+    objects = {}
+    for digest, size in sizes.items():
+        objects[digest] = _read_recovery_object(tree, digest, size)
+    return objects
+
+
+def _cleanup_recovery_objects(tree, journal):
+    if not _compact_journal(journal):
+        return
+    for digest in sorted({item["old_sha256"] for item in journal["files"]
+                          if item["old_sha256"] is not None}):
+        tree.unlink(_recovery_object_path(digest))
+
+
+def _verify_compact_old_endpoint(tree, journal, context):
+    """Prove the old state from journal digests without requiring object bytes."""
+    if not _compact_journal(journal):
+        raise ValidationError("Compact recovery endpoint requires a compact journal")
+    _verify_journal_managed_state(tree, journal, "before", context)
+    for item in journal["files"]:
+        current = _exists_read(tree, item["path"])
+        expected_digest = item["old_sha256"]
+        matches = (current is None if expected_digest is None else
+                   current is not None and len(current) == item["old_size"] and
+                   sha256(current) == expected_digest)
+        if not matches:
+            raise ValidationError(f"Transaction old file state differs at {item['path']}")
+        if current is not None:
+            mode = stat.S_IMODE(tree.inspect(item["path"]).st_mode)
+            if mode != item["old_mode"]:
+                raise ValidationError(f"Transaction old file mode differs at {item['path']}")
+    _verify_runtime_state(tree, _validated_runtime_journal(journal), "old", require_cleanup=True)
+
+
+def _finalize_compact_rollback(tree, journal, *, marker_present):
+    """Retire recovery objects before the artifacts that track their ownership."""
+    _verify_compact_old_endpoint(tree, journal, "at compact rollback endpoint")
+    _cleanup_recovery_objects(tree, journal)
+    if marker_present:
+        tree.unlink(MARKER)
+    tree.unlink(JOURNAL)
+
+
+def _old_file_bytes(journal, item, objects):
+    if _compact_journal(journal):
+        digest = item["old_sha256"]
+        return None if digest is None else objects[digest]
+    return base64.b64decode(item["old"], validate=True) if item["old"] is not None else None
+
+
+def _managed_inventory_at_old_state(journal, observed):
+    """Normalize journalled paths to old state, leaving all other entries exact."""
+    normalized = {item["path"]: item for item in observed}
+    for item in journal["files"]:
+        path = item["path"]
+        if not _inventory_managed(path):
+            continue
+        old_digest = item["old_sha256"] if _compact_journal(journal) else (
+            sha256(base64.b64decode(item["old"], validate=True))
+            if item["old"] is not None else None)
+        if old_digest is None:
+            normalized.pop(path, None)
+        else:
+            normalized[path] = {"path": path, "mode": item["old_mode"],
+                                "sha256": old_digest}
+    return sorted(normalized.values(), key=lambda item: item["path"].casefold())
+
+
+def _verify_compact_unchanged_inventory(journal, observed, context):
+    normalized = _managed_inventory_at_old_state(journal, observed)
+    if _managed_inventory_sha256(normalized) != journal["managed_before_sha256"]:
+        raise ValidationError(f"Managed-file inventory changed {context}")
+
+
+def _verify_journal_managed_state(tree, journal, which, context):
+    if not _compact_journal(journal):
+        _verify_managed_inventory(tree, journal[f"managed_{which}"], context)
+        return
+    expected = journal[f"managed_{which}_sha256"]
+    if expected is None or _managed_inventory_sha256(_managed_file_inventory(tree)) != expected:
+        raise ValidationError(f"Managed-file inventory changed {context}")
+
+
 def _capture_managed_after(tree, journal):
     """Validate planned membership/bytes and bind the resulting file modes."""
+    if _compact_journal(journal):
+        observed = _managed_file_inventory(tree)
+        observed_map = {item["path"]: item for item in observed}
+        for item in journal["files"]:
+            if item["new_sha256"] is None:
+                if item["path"] in observed_map:
+                    raise ValidationError("Managed-file membership differs from the authenticated transaction plan")
+                continue
+            info = tree.inspect(item["path"])
+            if info is None or not stat.S_ISREG(info.st_mode):
+                raise ValidationError("Transaction output is not a regular file: " + item["path"])
+            if sha256(tree.read(item["path"])) != item["new_sha256"]:
+                raise ValidationError("Managed-file bytes differ from the authenticated transaction plan: " + item["path"])
+            item["new_mode"] = stat.S_IMODE(info.st_mode)
+        _verify_compact_unchanged_inventory(journal, observed, "while capturing the installed state")
+        journal["managed_after_sha256"] = _managed_inventory_sha256(observed)
+        return
     before = {item["path"]: item for item in journal["managed_before"]}
     expected = dict(before)
     changed = {}
@@ -667,11 +1043,15 @@ def _validated_runtime_journal(journal):
         if set(journal) != {"format", "transaction_id", "phase", "files", "runtime",
                             "managed_before", "managed_after"}:
             raise ValidationError("Invalid recovery journal")
+    elif journal["format"] == "awf-install-journal-4":
+        if set(journal) != {"format", "transaction_id", "phase", "files", "runtime",
+                            "managed_before_sha256", "managed_after_sha256"}:
+            raise ValidationError("Invalid recovery journal")
     else:
         raise ValidationError("Invalid recovery journal")
     transaction_id = str(uuid.UUID(journal["transaction_id"]))
     runtime = journal["runtime"]
-    if journal["format"] == "awf-install-journal-3" and runtime is None:
+    if journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"} and runtime is None:
         return None
     base_runtime_keys = {"path", "previous_sha256", "new_sha256", "stage", "backup"}
     proof_keys = {"cleanup_identity", "cleanup_members"}
@@ -725,19 +1105,36 @@ def _validate_transaction_journal(journal):
     if transaction_id != journal["transaction_id"]:
         raise ValidationError("Non-canonical recovery transaction identity")
     _validated_runtime_journal(journal)
-    if journal["format"] == "awf-install-journal-3":
-        if journal["phase"] not in {"active", "commit_cleanup", "commit_cleanup_authenticated"}:
+    if journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}:
+        if journal["phase"] not in {"object_prepare", "active", "rollback_cleanup",
+                                    "commit_cleanup", "commit_cleanup_authenticated"}:
             raise ValidationError("Invalid recovery journal phase")
-        _validate_inventory(journal["managed_before"])
-        _validate_inventory(journal["managed_after"], optional=True)
+        if journal["phase"] in {"object_prepare", "rollback_cleanup"} and not _compact_journal(journal):
+            raise ValidationError("Compact recovery phase requires a compact journal")
+        if _compact_journal(journal):
+            digest_pattern = r"[0-9a-f]{64}"
+            if (not isinstance(journal["managed_before_sha256"], str) or
+                    re.fullmatch(digest_pattern, journal["managed_before_sha256"]) is None or
+                    (journal["managed_after_sha256"] is not None and (
+                        not isinstance(journal["managed_after_sha256"], str) or
+                        re.fullmatch(digest_pattern, journal["managed_after_sha256"]) is None))):
+                raise ValidationError("Invalid managed recovery inventory digest")
+        else:
+            _validate_inventory(journal["managed_before"])
+            _validate_inventory(journal["managed_after"], optional=True)
     if not isinstance(journal["files"], list) or len(journal["files"]) > 10000:
         raise ValidationError("Invalid recovery file inventory")
     seen = set()
     backup_prefix = f".agentic-backup/{transaction_id}/"
-    version3 = journal["format"] == "awf-install-journal-3"
+    mode_aware = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
     for item in journal["files"]:
-        expected_keys = {"path", "old", "new_sha256", "old_mode", "new_mode"} if version3 else {
-            "path", "old", "new_sha256"}
+        if _compact_journal(journal):
+            expected_keys = {"path", "old_sha256", "old_size", "new_sha256",
+                             "old_mode", "new_mode"}
+        elif mode_aware:
+            expected_keys = {"path", "old", "new_sha256", "old_mode", "new_mode"}
+        else:
+            expected_keys = {"path", "old", "new_sha256"}
         if not isinstance(item, dict) or set(item) != expected_keys:
             raise ValidationError("Invalid recovery file entry")
         relative_parts(item["path"])
@@ -747,20 +1144,31 @@ def _validate_transaction_journal(journal):
         transaction_backup = item["path"].startswith(backup_prefix)
         safe_path = (managed(item["path"]) or item["path"] in OPERATOR_CONFIG_PATHS | {GITIGNORE}
                      or state_path or transaction_backup)
+        has_old = (item["old_sha256"] is not None if _compact_journal(journal)
+                   else item["old"] is not None)
         if (not safe_path or item["path"] == MARKER or item["path"].casefold() in seen or not valid_new or
-                (transaction_backup and (item["old"] is not None or item["new_sha256"] is None))):
+                (transaction_backup and (has_old or item["new_sha256"] is None))):
             raise ValidationError("Unsafe or duplicate recovery path/digest")
         seen.add(item["path"].casefold())
-        if item["old"] is not None:
+        if _compact_journal(journal):
+            valid_old_digest = item["old_sha256"] is None or (
+                isinstance(item["old_sha256"], str) and
+                re.fullmatch(r"[0-9a-f]{64}", item["old_sha256"]) is not None)
+            valid_old_size = item["old_size"] is None or (
+                type(item["old_size"]) is int and item["old_size"] >= 0)
+            if (not valid_old_digest or not valid_old_size or
+                    (item["old_sha256"] is None) != (item["old_size"] is None)):
+                raise ValidationError("Invalid recovery object reference")
+        elif item["old"] is not None:
             try:
                 base64.b64decode(item["old"], validate=True)
             except (ValueError, TypeError) as exc:
                 raise ValidationError("Invalid recovery file bytes") from exc
-        if version3:
+        if mode_aware:
             valid_mode = lambda value: value is None or (
                 isinstance(value, int) and 0 <= value <= 0o7777)
             if (not valid_mode(item["old_mode"]) or not valid_mode(item["new_mode"]) or
-                    (item["old"] is None) != (item["old_mode"] is None) or
+                    (not has_old) != (item["old_mode"] is None) or
                     (item["new_sha256"] is None and item["new_mode"] is not None)):
                 raise ValidationError("Invalid recovery file mode")
     return journal
@@ -811,20 +1219,26 @@ def _rollback_runtime(tree, runtime):
 
 def rollback(tree, journal):
     _validate_transaction_journal(journal)
+    if _compact_journal(journal) and journal["phase"] in {"object_prepare", "rollback_cleanup"}:
+        _finalize_compact_rollback(tree, journal, marker_present=True)
+        return
+    # Resolve and authenticate every recovery object before any project or
+    # runtime mutation, so one missing/tampered object fails the whole rollback.
+    recovery_objects = _load_recovery_objects(tree, journal)
     runtime = _validated_runtime_journal(journal)
     backup_prefix = f".agentic-backup/{journal['transaction_id']}/"
-    version3 = journal["format"] == "awf-install-journal-3"
+    mode_aware = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
     # Do not clobber edits that were neither the old nor proposed installer bytes.
     for item in journal["files"]:
         current = _exists_read(tree, item["path"])
-        old = base64.b64decode(item["old"], validate=True) if item["old"] is not None else None
+        old = _old_file_bytes(journal, item, recovery_objects)
         if current != old:
             if item["new_sha256"] is None:
                 if current is not None:
                     raise ValidationError(f"Recovery found an external edit at {item['path']}; marker retained")
             elif current is None or sha256(current) != item["new_sha256"]:
                 raise ValidationError(f"Recovery found an external edit at {item['path']}; marker retained")
-        if version3 and current is not None:
+        if mode_aware and current is not None:
             mode = stat.S_IMODE(tree.inspect(item["path"]).st_mode)
             expected_mode = item["old_mode"] if current == old else item["new_mode"]
             # An identical-byte rewrite interrupted before new_mode was recorded
@@ -833,7 +1247,7 @@ def rollback(tree, journal):
                          item["new_sha256"] == sha256(current) and mode == INSTALLER_WRITE_MODE)
             if expected_mode is not None and mode != expected_mode and not own_write:
                 raise ValidationError(f"Recovery found an external mode edit at {item['path']}; marker retained")
-    if version3:
+    if journal["format"] == "awf-install-journal-3":
         before = {item["path"]: item for item in journal["managed_before"]}
         after = ({item["path"]: item for item in journal["managed_after"]}
                  if journal["managed_after"] is not None else {})
@@ -849,6 +1263,10 @@ def rollback(tree, journal):
         for path, expected in before.items():
             if path not in changed and observed.get(path) != expected:
                 raise ValidationError("Recovery found external drift in an unchanged managed file; marker retained: " + path)
+    elif _compact_journal(journal):
+        observed = _managed_file_inventory(tree)
+        _verify_compact_unchanged_inventory(journal, observed,
+                                            "during rollback; marker retained")
     expected_backups = {item["path"] for item in journal["files"]
                         if item["path"].startswith(backup_prefix)}
     backup_root = tree.root / backup_prefix.rstrip("/")
@@ -872,18 +1290,26 @@ def rollback(tree, journal):
     # that it executes. A runtime proof failure retains the whole transaction.
     _rollback_runtime(tree, runtime)
     for item in reversed(journal["files"]):
-        if item["old"] is None:
+        old = _old_file_bytes(journal, item, recovery_objects)
+        if old is None:
             tree.unlink(item["path"])
         else:
-            tree.write(item["path"], base64.b64decode(item["old"], validate=True))
-            if version3:
+            tree.write(item["path"], old)
+            if mode_aware:
                 os.chmod(tree.root / item["path"], item["old_mode"])
     if backup_root.exists():
         shutil.rmtree(backup_root)
-    if version3:
-        _verify_managed_inventory(tree, journal["managed_before"], "after rollback")
-    tree.unlink(MARKER)
-    tree.unlink(JOURNAL)
+    if mode_aware:
+        _verify_journal_managed_state(tree, journal, "before", "after rollback")
+    if _compact_journal(journal):
+        # Publish the restored endpoint before deleting any object. Recovery can
+        # then prove the old state from hashes even after partial object cleanup.
+        journal["phase"] = "rollback_cleanup"
+        _write_bound_journal_update(tree, journal, "rollback_cleanup")
+        _finalize_compact_rollback(tree, journal, marker_present=True)
+    else:
+        tree.unlink(MARKER)
+        tree.unlink(JOURNAL)
 
 
 class _RuntimeInstallTransaction:
@@ -918,7 +1344,7 @@ class _RuntimeInstallTransaction:
         if self.runtime["new_sha256"] not in {None, proposed}:
             raise ValidationError("Staged canonical runtime identity changed")
         self.runtime["new_sha256"] = proposed
-        _write_bound_journal_update(self.tree, self.journal)
+        _write_bound_journal_update(self.tree, self.journal, "runtime_stage")
         return proposed
 
     def verify_committed(self):
@@ -937,10 +1363,11 @@ class _RuntimeInstallTransaction:
 
 
 def _verify_file_state(tree, journal, which):
-    version3 = journal["format"] == "awf-install-journal-3"
+    mode_aware = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
+    recovery_objects = _load_recovery_objects(tree, journal) if which == "old" else {}
     for item in journal["files"]:
         if which == "old":
-            expected = base64.b64decode(item["old"], validate=True) if item["old"] is not None else None
+            expected = _old_file_bytes(journal, item, recovery_objects)
             expected_mode = item.get("old_mode")
         else:
             expected = None if item["new_sha256"] is None else item["new_sha256"]
@@ -950,7 +1377,7 @@ def _verify_file_state(tree, journal, which):
             current is None if expected is None else current is not None and sha256(current) == expected)
         if not matches:
             raise ValidationError(f"Transaction {which} file state differs at {item['path']}")
-        if version3 and current is not None:
+        if mode_aware and current is not None:
             if expected_mode is None or stat.S_IMODE(tree.inspect(item["path"]).st_mode) != expected_mode:
                 raise ValidationError(f"Transaction {which} file mode differs at {item['path']}")
 
@@ -984,7 +1411,8 @@ def _cleanup_committed_runtime(tree, journal):
     if runtime is None:
         if journal["phase"] == "commit_cleanup":
             journal["phase"] = "commit_cleanup_authenticated"
-            _write_bound_journal_update(tree, journal)
+            _write_bound_journal_update(
+                tree, journal, "commit_cleanup_authenticated")
         return []
     cleanup = []
     backup = tree.root / runtime["backup"]
@@ -1015,7 +1443,8 @@ def _cleanup_committed_runtime(tree, journal):
             runtime["cleanup_identity"] = proof["identity"]
             runtime["cleanup_members"] = proof["members"]
         journal["phase"] = "commit_cleanup_authenticated"
-        _write_bound_journal_update(tree, journal)
+        _write_bound_journal_update(
+            tree, journal, "commit_cleanup_authenticated")
     if backup.exists() or backup.is_symlink():
         raise ValidationError("Prior runtime backup remains after authenticated cleanup transition")
     if runtime["previous_sha256"] is None:
@@ -1034,14 +1463,14 @@ def _cleanup_committed_runtime(tree, journal):
 
 
 def _verify_committed_payload(tree, journal, context):
-    _verify_managed_inventory(tree, journal["managed_after"], context)
+    _verify_journal_managed_state(tree, journal, "after", context)
     _verify_file_state(tree, journal, "new")
     _verify_runtime_state(tree, _validated_runtime_journal(journal), "new")
 
 
 def _verify_outer_commit_state(tree, journal, transaction):
     """Jointly re-prove every governed surface before durable commit intent."""
-    _verify_managed_inventory(tree, journal["managed_after"], "immediately before outer commit")
+    _verify_journal_managed_state(tree, journal, "after", "immediately before outer commit")
     _verify_file_state(tree, journal, "new")
     transaction.verify_committed()
 
@@ -1049,6 +1478,9 @@ def _verify_outer_commit_state(tree, journal, transaction):
 def _finalize_committed(tree, journal):
     _verify_committed_payload(tree, journal, "during authenticated commit cleanup")
     _verify_runtime_state(tree, _validated_runtime_journal(journal), "new", require_cleanup=True)
+    # A durable commit can no longer roll back, so its recovery objects may be
+    # removed before retiring the bound journal and marker.
+    _cleanup_recovery_objects(tree, journal)
     tree.unlink(MARKER)
     tree.unlink(JOURNAL)
 
@@ -1056,18 +1488,22 @@ def _finalize_committed(tree, journal):
 def _finalize_journal_only(tree, journal):
     """Resolve a one-artifact endpoint without trusting it to rewrite state."""
     _validate_transaction_journal(journal)
-    if journal["format"] != "awf-install-journal-3":
+    if journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"}:
         raise ValidationError("Legacy journal-only recovery failed closed")
+    if journal["phase"] in {"object_prepare", "rollback_cleanup"}:
+        _finalize_compact_rollback(tree, journal, marker_present=False)
+        return "ROLLED_BACK"
     if journal["phase"] == "active":
-        _verify_managed_inventory(tree, journal["managed_before"], "at journal-only rollback endpoint")
+        _verify_journal_managed_state(tree, journal, "before", "at journal-only rollback endpoint")
         _verify_file_state(tree, journal, "old")
         _verify_runtime_state(tree, _validated_runtime_journal(journal), "old", require_cleanup=True)
         status = "ROLLED_BACK"
     else:
-        _verify_managed_inventory(tree, journal["managed_after"], "at journal-only commit endpoint")
+        _verify_journal_managed_state(tree, journal, "after", "at journal-only commit endpoint")
         _verify_file_state(tree, journal, "new")
         _verify_runtime_state(tree, _validated_runtime_journal(journal), "new", require_cleanup=True)
         status = "COMMITTED"
+    _cleanup_recovery_objects(tree, journal)
     tree.unlink(JOURNAL)
     return status
 
@@ -1079,13 +1515,15 @@ def complete_runtime_transaction(destination, transaction_id, builder):
     with Tree(destination) as tree, install_lock(tree):
         journal, _raw, _marker = _read_bound_journal(tree)
         runtime = _validated_runtime_journal(journal)
-        if (journal["format"] != "awf-install-journal-3" or runtime is None or
+        if (journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"} or
+                runtime is None or
                 journal["transaction_id"] != str(transaction_id) or journal["phase"] != "active" or
-                journal["managed_after"] is None):
+                (journal["managed_after_sha256"] if _compact_journal(journal)
+                 else journal["managed_after"]) is None):
             raise ValidationError("Bootstrap runtime transaction identity or state changed")
         transaction = _RuntimeInstallTransaction(tree, journal)
         try:
-            _verify_managed_inventory(tree, journal["managed_after"], "before canonical runtime creation")
+            _verify_journal_managed_state(tree, journal, "after", "before canonical runtime creation")
             transaction.verify_initial()
             result = builder(transaction)
             transaction.verify_committed()
@@ -1102,7 +1540,7 @@ def complete_runtime_transaction(destination, transaction_id, builder):
 
         journal["phase"] = "commit_cleanup"
         try:
-            _write_bound_journal_update(tree, journal)
+            _write_bound_journal_update(tree, journal, "commit_cleanup")
             committed, _raw, _marker = _read_bound_journal(tree)
             if committed["phase"] != "commit_cleanup":
                 raise ValidationError("Authenticated runtime commit phase was not published")
@@ -1142,8 +1580,9 @@ def recover(destination):
                 raise ValidationError("Unauthenticated journal-only recovery failed closed") from exc
             return {"status": _finalize_journal_only(tree, journal)}
         journal, bound_raw, bound_marker = _read_bound_journal(tree)
-        journal = _recover_pending_runtime_update(tree, journal, bound_raw, bound_marker)
-        if journal["format"] == "awf-install-journal-3" and journal["phase"] in {
+        journal = _recover_pending_journal_update(
+            tree, journal, bound_raw, bound_marker)
+        if journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"} and journal["phase"] in {
                 "commit_cleanup", "commit_cleanup_authenticated"}:
             _verify_committed_payload(tree, journal, "before resumed runtime backup cleanup")
             cleanup = _cleanup_committed_runtime(tree, journal)
@@ -1443,34 +1882,41 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                         if dst.inspect(backup_path) is not None:
                             raise ValidationError("Transaction backup path appeared after preflight")
                         backup_plan[backup_path] = old
+            recovery_objects = {}
+
             def recovery_entry(path, old, new_digest):
                 info = dst.inspect(path)
+                old_digest = sha256(old) if old is not None else None
+                if old is not None:
+                    recovery_objects[old_digest] = old
                 return {"path": path,
-                        "old": base64.b64encode(old).decode() if old is not None else None,
+                        "old_sha256": old_digest,
+                        "old_size": len(old) if old is not None else None,
                         "old_mode": stat.S_IMODE(info.st_mode) if info is not None else None,
                         "new_sha256": new_digest, "new_mode": None}
 
-            journal = {"format": "awf-install-journal-3",
+            changed_planned = [(path, data) for path, data in sorted(planned.items())
+                               if originals[path] != data]
+            journal = {"format": "awf-install-journal-4",
                 "transaction_id": transaction_id,
-                "phase": "active",
+                "phase": "object_prepare",
                 "files": [recovery_entry(path, originals[path], sha256(data))
-                          for path, data in sorted(planned.items())]
+                          for path, data in changed_planned]
                           + [recovery_entry(path, originals[path], None) for path in deletions]
                           + [recovery_entry(path, None, sha256(data))
                              for path, data in sorted(backup_plan.items())],
-                "managed_before": managed_before,
-                "managed_after": None,
+                "managed_before_sha256": _managed_inventory_sha256(managed_before),
+                "managed_after_sha256": None,
                 "runtime": None}
             if defer_runtime:
                 journal["runtime"] = _runtime_journal(destination, transaction_id)
-            try:
-                _publish_initial_intent(dst, journal)
-            except BaseException:
-                # No destination payload has changed yet. Remove any partially
-                # published intent rather than leaving unauthenticated fresh state.
-                dst.unlink(MARKER)
-                dst.unlink(JOURNAL)
-                raise
+            # Bind the complete object inventory before creating it. An abrupt
+            # stop during side-store creation therefore leaves recoverable intent,
+            # while no destination payload changes before every object validates.
+            _publish_initial_intent(dst, journal)
+            _write_recovery_objects(dst, recovery_objects)
+            journal["phase"] = "active"
+            _write_bound_journal_update(dst, journal, "activate")
             try:
                 for path, data in sorted(backup_plan.items()):
                     dst.write(path, data)
@@ -1498,13 +1944,13 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                     if originals[path] is None:
                         (destination / Path(path)).chmod(stat.S_IREAD)
                 _capture_managed_after(dst, journal)
-                _write_bound_journal_update(dst, journal)
-                _verify_managed_inventory(dst, journal["managed_after"], "after managed writes")
+                _write_bound_journal_update(dst, journal, "managed_after")
+                _verify_journal_managed_state(dst, journal, "after", "after managed writes")
                 # Bootstrap keeps the same journal/marker until the canonical
                 # runtime has been staged, swapped and validated.
                 if not defer_runtime:
                     journal["phase"] = "commit_cleanup"
-                    _write_bound_journal_update(dst, journal)
+                    _write_bound_journal_update(dst, journal, "commit_cleanup")
                     _finalize_committed(dst, journal)
             except Exception:
                 rollback(dst, journal)
