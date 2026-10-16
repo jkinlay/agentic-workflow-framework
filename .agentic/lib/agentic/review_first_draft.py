@@ -10,12 +10,13 @@ from __future__ import annotations
 from pathlib import Path
 from hashlib import sha256
 import re
+import unicodedata
 
 from . import ValidationError
 from .gittree import candidate_tree, verify_publisher_tree
 from .interaction import writer_commit_message
 from .publication import scan_repository
-from .provenance import (decode_git_paths, parse_writer_trailer,
+from .provenance import (_validate_object_path, decode_git_paths, parse_writer_trailer,
                          validate_commit_message, validate_ref_locator,
                          read_commit_message_bytes, create_canonical_commit,
                          _FORMAT_CONTROLS)
@@ -24,7 +25,9 @@ from .review_loop import (complete_first_draft, confirm_first_draft_publication,
                           record_first_draft_publication, require,
                           record_first_draft_worker_receipt,
                           reserve_first_draft)
-from .safeio import relative_parts
+
+
+_PATH_INVENTORY_LIMIT = 100000
 
 
 def _bounded_text(value, label, maximum):
@@ -134,24 +137,36 @@ def validate_worker_receipt(receipt, *, allowed_paths):
     changes = receipt["changes"]
     require(isinstance(changes, list) and changes, "First-draft receipt has no declared changes")
     paths = []
-    require(len(changes) <= 100000, "First-draft receipt has too many changes")
     for change in changes:
         require(isinstance(change, dict) and set(change) == {"path", "action"},
                 "First-draft changes must contain path and action")
-        require(isinstance(change["path"], str) and change["path"] in allowed_paths,
-                "First-draft worker changed a path outside its exact scope")
-        relative_parts(change["path"])
         require(change["action"] in {"added", "modified", "deleted"},
                 "First-draft change has an unsupported action")
         paths.append(change["path"])
-    require(len(paths) == len(set(paths)), "First-draft changes contain duplicate paths")
     ignored = receipt["ignored_untracked"]
-    require(isinstance(ignored, list) and len(ignored) == len(set(ignored)),
+    require(isinstance(ignored, list),
             "First-draft receipt must retain the excluded ignored_untracked inventory")
-    require(len(ignored) <= 100000 and all(isinstance(path, str) and path
-            and not relative_parts(path) is None and path not in paths for path in ignored),
-            "ignored_untracked must contain distinct paths excluded from the published tree")
+    _validate_receipt_path_inventories(paths, ignored)
+    require(all(path in allowed_paths for path in paths),
+            "First-draft worker changed a path outside its exact scope")
     return receipt
+
+
+def _validate_receipt_path_inventories(*inventories):
+    """Apply one canonical validator and aggregate cap to receipt paths."""
+    try:
+        require(sum(len(inventory) for inventory in inventories) <= _PATH_INVENTORY_LIMIT,
+                "receipt path inventories exceed 100000 records")
+        normalized = set()
+        for inventory in inventories:
+            for path in inventory:
+                _validate_object_path(path)
+                canonical = unicodedata.normalize('NFC', path)
+                require(canonical not in normalized,
+                        "receipt path inventories contain an NFC alias")
+                normalized.add(canonical)
+    except (UnicodeError, ValidationError) as exc:
+        raise ValidationError(f"WORKER_RECEIPT_INVALID: {exc}") from exc
 
 
 def publication_scan(root, base, head, body, *, mapping_path=None):
@@ -161,18 +176,30 @@ def publication_scan(root, base, head, body, *, mapping_path=None):
     return result
 
 
-def _split_git_paths(value):
-    raw = value.encode('utf-8', 'strict') if isinstance(value, str) else value
-    return set(decode_git_paths(raw, require_terminal_nul=bool(raw)))
+def _decode_git_path_inventories(*values):
+    """Decode all Git inventories through one aggregate-bounded validator."""
+    try:
+        raw_values = []
+        for value in values:
+            require(isinstance(value, (bytes, str)),
+                    "Git path inventory must be bytes or text")
+            raw = value.encode('utf-8', 'strict') if isinstance(value, str) else value
+            require(not raw or raw.endswith(b'\0'),
+                    "Git path inventory lacks terminal NUL")
+            raw_values.append(raw)
+        combined = b''.join(raw_values)
+        return set(decode_git_paths(combined, require_terminal_nul=bool(combined)))
+    except (UnicodeError, ValidationError) as exc:
+        raise ValidationError(f"PUBLISHER_PATH_INVALID: {exc}") from exc
 
 
 def excluded_worktree_inventory(git, changes):
     """Return every untracked or Git-ignored path excluded from the tested tree."""
-    ordinary = _split_git_paths(git.run("ls-files", "--others", "--exclude-standard", "-z"))
-    ignored = _split_git_paths(git.run("ls-files", "--others", "--ignored",
-                                       "--exclude-standard", "-z"))
+    paths = _decode_git_path_inventories(
+        git.run("ls-files", "--others", "--exclude-standard", "-z"),
+        git.run("ls-files", "--others", "--ignored", "--exclude-standard", "-z"))
     declared_additions = {change["path"] for change in changes if change["action"] == "added"}
-    return sorted((ordinary | ignored) - declared_additions)
+    return sorted(paths - declared_additions)
 
 
 def publish_codex_tested_tree(root, base, branch, receipt, *, body,
