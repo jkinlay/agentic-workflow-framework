@@ -174,7 +174,7 @@ def _base_config(root):
 		auth.chmod(384)
 	return {'codex': {'executable': {'path': str(codex), 'sha256': sha256(codex.read_bytes())}, 'roles': {'writer': {'model': 'writer-model', 'reasoning_effort': 'high', 'sandbox': 'workspace-write'}, 'critic': {'model': 'critic-model', 'reasoning_effort': 'medium', 'sandbox': 'read-only'}}, 'isolated_home': str(isolated_home), 'windows_sandbox': 'elevated', 'worktree_root': str(worktree), 'run_record_directory': str(root / 'runs'), 'timeout_seconds': 20}, 'github': {'host': 'https://github.com', 'repository': 'example/project', 'repository_id': 101, 'project_id': 'project-1', 'scope_sha256': 'a' * 64, 'base_branch': 'main', 'branch_pattern': 'codex/{ticket}-{slug}', 'expected_actor_id': 1001, 'auth_profile': 'smoke', 'executable': {'path': str(gh), 'sha256': sha256(gh.read_bytes())}, 'page_size': 100}, 'jira': {'enabled': True, 'cloud_id': 'cloud-1', 'site': 'https://jira.example.invalid', 'provider_project_id': 'project-1', 'project_key': 'EX', 'controller_actor_id': 'controller', 'token_env': 'AWF_JIRA_TOKEN', 'merged_status_id': 'Done', 'merged_transition_id': 'done-transition', 'page_size': 1}, 'outbox': {'directory': str(root / 'outbox')}}
 
-def _overlap_run(case, ns, heads, base_sha, contents, *, merged=None, real=False):
+def _overlap_run(case, ns, heads, base_sha, contents, *, merged=None, real=False, binary=False):
 	original = list(heads)
 	seen = {}
 	tree_refs = {}
@@ -224,7 +224,7 @@ def _overlap_run(case, ns, heads, base_sha, contents, *, merged=None, real=False
 			case.assertEqual(('example/project', 'codex/AWF-33-awf-33', original[1]), (fields['repository'], fields['branch'], fields['head']))
 			if 'contents' in fields:
 				resolved = base64.b64decode(fields['contents'], validate=True)
-				if all((ref in contents for ref in (base_sha, *original))):
+				if all((ref in contents for ref in (base_sha, *original))) and not binary:
 					case.assertIn(b'value = 1', resolved); case.assertIn(b'value = 2', resolved)
 				seen.update(action='addition', resolved=resolved)
 			else:
@@ -244,6 +244,8 @@ def _overlap_run(case, ns, heads, base_sha, contents, *, merged=None, real=False
 			heads[1] = merged
 			return result
 		if merged and path == 'repos/example/project/compare/' + original[1] + '...' + merged:
+			if binary:
+				return {'files': [{'filename': 'src/shared.py', 'status': 'modified', 'sha': '9' * 40}]}
 			patch_text = '@@ -1 +0,0 @@\n-old' if seen.get('action') == 'deletion' else '@@ -1 +1 @@\n-old\n+resolved'
 			return {'files': [{'filename': 'src/shared.py', 'patch': patch_text}]}
 		raise AssertionError('unexpected default-runner path: ' + path)
@@ -420,6 +422,31 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 
 	def test_default_runner_resolves_true_conflict_and_replays_critic_diff(self):
 		self._exercise_true_conflict(near_limit=False)
+
+	def test_default_runner_resolves_binary_true_conflict_with_head_bound_receipt(self):
+		namespace = __import__('runpy').run_path(str(self.adapter))
+		heads = ['1' * 40, '2' * 40]
+		base_sha = '0' * 40
+		merge_sha = '3' * 40
+		contents = {
+			base_sha: b'\x00base-version',
+			heads[0]: b'\x00left-version',
+			heads[1]: b'\x00right-version',
+		}
+		run, mutation = _overlap_run(
+			self, namespace, heads, base_sha, contents, merged=merge_sha, binary=True)
+		gate = _overlap_gate(heads)
+		with patch.object(namespace['_SubprocessRunner'], 'run', run):
+			adapters = namespace['build_adapters']({**self.config, '_clock': FakeClock()})
+			self.assertEqual('CONFIRMED_CONFLICT', adapters['observe_overlap_conflict'](gate)['status'])
+			receipt = adapters['sync_writer'](_overlap_payload(gate))
+		self.assertEqual(b'\x00left-version', mutation['resolved'])
+		self.assertEqual(['1' * 40, merge_sha], receipt['post_sync_heads'])
+		self.assertIn('Binary overlap resolution evidence', receipt['diff'])
+		self.assertIn('left-head=' + '1' * 40, receipt['diff'])
+		self.assertIn('right-head=' + '2' * 40, receipt['diff'])
+		self.assertIn(hashlib.sha256(b'\x00left-version').hexdigest(), receipt['diff'])
+		self.assertIn(hashlib.sha256(b'\x00right-version').hexdigest(), receipt['diff'])
 
 	def test_true_conflict_near_limit_uses_stdin_not_process_argv(self):
 		self._exercise_true_conflict(near_limit=True)
