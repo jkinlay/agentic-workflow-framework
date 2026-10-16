@@ -526,7 +526,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_adoptable_source.py` | `4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745` |
 | `scripts/tests/test_autocrlf_scope.py` | `d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `378f4e8844ef552be777e92503be4c20ed44678747353798636c643bf4f1b9be` |
-| `scripts/tests/test_ci_suite_coverage.py` | `fad8b9c6a6396631b23899795de1e0e65eb527410c494cef33787b9baa5dfa26` |
+| `scripts/tests/test_ci_suite_coverage.py` | `46d04a5bced736858e27ece727fe9a8b339b826f6ba322237ccfc44ba2e7fba2` |
 | `scripts/tests/test_ci_windows_final_candidate.py` | `b24641b80b683d0f7909ba93c26c0e49128f6e3aceaa56c04c71eef6b2895c91` |
 | `scripts/tests/test_cli_failure_paths.py` | `0a0cef4139b488d1f8a048401ff6e7ef1582171a245c6d320113acf0e4c30dd1` |
 | `scripts/tests/test_fresh_bootstrap.py` | `ccc1c4fa1b125a93309f25af4d1abbbaaf4a930e80ea23197ec0794fca32ce6a` |

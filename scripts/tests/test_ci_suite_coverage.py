@@ -96,10 +96,9 @@ class CiSuiteCoverageTests(unittest.TestCase):
         self.assertEqual(
             "always() && (github.event_name == 'push' || "
             "(github.event_name == 'pull_request' && "
-            "(needs.windows_runtime_paths.result != 'success' || "
-            "needs.windows_runtime_paths.outputs.runtime_changed != 'false' || "
-            "(github.base_ref == 'main' && "
-            "startsWith(github.head_ref, 'release/')))))",
+            "((github.base_ref == 'main' && "
+            "startsWith(github.head_ref, 'release/')) || "
+            "github.event.pull_request.draft == false)))",
             job["if"],
         )
         job_environment = "\n".join(str(value) for value in job.get("env", {}).values())
@@ -212,11 +211,8 @@ class CiSuiteCoverageTests(unittest.TestCase):
             "github.event_name == 'pull_request' && github.base_ref == 'main'",
             condition,
         )
-        self.assertIn("needs.windows_runtime_paths.result != 'success'", condition)
-        self.assertIn(
-            "needs.windows_runtime_paths.outputs.runtime_changed != 'false'",
-            condition,
-        )
+        self.assertIn("github.event.pull_request.draft == false", condition)
+        self.assertNotIn("needs.windows_runtime_paths.", condition)
 
     def test_windows_installed_runtime_git_diff_statuses(self):
         def git(root, *arguments, check=True):
