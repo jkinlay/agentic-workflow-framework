@@ -143,20 +143,27 @@ GATE_NAMES = ["review_completion", "verdict_posting", "acceptance_criteria", "sc
               "publication_safety"]
 
 
-def catalog(*, include_ticket_plan=False):
-    """Return contracts used by generic draft-form generation.
+def catalog(*, include_ticket_plan=True):
+    """Return the complete generated contract catalog by default.
 
     Ticket plans are deterministic planner output, not operator-authored draft
-    forms.  ``render_catalog`` opts them into the generated schema catalog,
-    while the no-argument form remains suitable for ``generate_examples``.
+    forms.  Draft-form callers must explicitly pass
+    ``include_ticket_plan=False`` while parity checks use the complete catalog.
     """
     schemas = {}
     ticket_key = text(pattern="^[A-Z][A-Z0-9_]*-[1-9][0-9]*$")
     idle_lane_reason = nullable(enum(
         "NO_READY_TICKET", "PREDECESSOR_UNMERGED", "FILE_CLASH",
         "OWNERSHIP_CONFLICT", "GENERATOR_ORDER_BUSY", "START_GAP_PENDING",
-        "HOLD", "CAP_REACHED", "PLAN_UNREADABLE",
+        "HOLD", "CAP_REACHED", "PLAN_UNREADABLE", "MERGE_FREEZE",
+        "RESYNC_PENDING",
     ))
+    blocker = enum(
+        "NO_READY_TICKET", "PREDECESSOR_UNMERGED", "FILE_CLASH",
+        "OWNERSHIP_CONFLICT", "GENERATOR_ORDER_BUSY", "START_GAP_PENDING",
+        "HOLD", "CAP_REACHED", "PLAN_UNREADABLE", "MERGE_FREEZE",
+        "RESYNC_PENDING",
+    )
     owner_review_window = nullable(obj({
         "opens_at_minute": integer(),
         "closes_at_minute": integer(),
@@ -178,7 +185,9 @@ def catalog(*, include_ticket_plan=False):
         "independent": BOOL,
         "generator_order_slot": nullable(integer(1)),
         "owner_lane": text(),
+        "blockers": arr(blocker, uniqueItems=True),
         "idle_lane_reason": idle_lane_reason,
+        "prestage_allowed": BOOL,
         "phase": text(),
         "status": text(),
         "in_lane": BOOL,
@@ -188,6 +197,23 @@ def catalog(*, include_ticket_plan=False):
             "then": {"properties": {"critical_path_position": integer(1)}},
             "else": {"properties": {"critical_path_position": {"type": "null"}}},
         },
+        {
+            "if": {"properties": {"risk_tier": const(3)}},
+            "then": {"properties": {"round_cap": integer(1, maximum=3)}},
+        },
+        {
+            "if": {"properties": {"blockers": {
+                "type": "array",
+                "minItems": 1,
+                "items": enum("MERGE_FREEZE", "RESYNC_PENDING"),
+            }}},
+            "then": {"properties": {
+                "prestage_allowed": const(True),
+                "in_lane": const(True),
+                "status": const("prestaged-hold"),
+            }},
+            "else": {"properties": {"prestage_allowed": const(False)}},
+        },
     ])
     if include_ticket_plan:
         schemas["ticket-plan"] = obj({
@@ -195,7 +221,7 @@ def catalog(*, include_ticket_plan=False):
             "schema_version": const(1),
             "lane_cap": integer(1),
             "start_gap_minutes": integer(),
-            "tier3_round_cap": integer(1),
+            "tier3_round_cap": integer(1, maximum=3),
             "generator_order": arr(ticket_key, uniqueItems=True),
             "critical_path": arr(ticket_key, 1, uniqueItems=True),
             "duration_minutes": integer(1),
@@ -205,6 +231,15 @@ def catalog(*, include_ticket_plan=False):
                 "to": ticket_key,
                 "kind": enum("dependency", "file_overlap", "generator_order"),
                 "paths": arr(text(), uniqueItems=True),
+            })),
+            "observed_minute": integer(),
+            "lane_status": arr(obj({
+                "owner_lane": text(),
+                "idle_since_minute": integer(),
+                "idle_minutes": integer(),
+                "status_verdict": enum("OK", "FAIL"),
+                "ready_tickets": arr(ticket_key, uniqueItems=True),
+                "idle_lane_reasons": arr(blocker, uniqueItems=True),
             })),
             "mermaid": text(),
         })

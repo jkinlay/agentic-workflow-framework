@@ -16,26 +16,34 @@ TICKET_KEY = re.compile(r"^[A-Z][A-Z0-9_]*-[1-9][0-9]*$")
 IDLE_LANE_REASONS = {
     "NO_READY_TICKET", "PREDECESSOR_UNMERGED", "FILE_CLASH",
     "OWNERSHIP_CONFLICT", "GENERATOR_ORDER_BUSY", "START_GAP_PENDING",
-    "HOLD", "CAP_REACHED", "PLAN_UNREADABLE",
+    "HOLD", "CAP_REACHED", "PLAN_UNREADABLE", "MERGE_FREEZE",
+    "RESYNC_PENDING",
 }
+PRESTAGE_BLOCKERS = {"MERGE_FREEZE", "RESYNC_PENDING"}
 LANE_CLASSES = {"critical", "feeder", "controller"}
+STATUS_VERDICTS = {"OK", "FAIL"}
 INPUT_FIELDS = {
     "key", "dependencies", "write_paths", "duration_minutes", "risk_tier",
     "round_cap", "owner_review_window", "lane_class", "owner_lane",
-    "idle_lane_reason", "phase", "status", "in_lane",
+    "blockers", "idle_lane_reason", "phase", "status", "in_lane",
 }
 DERIVED_FIELDS = {
     "earliest_start_minute", "critical_path", "critical_path_position",
     "serial_path_id", "serial_predecessor", "independent",
-    "generator_order_slot",
+    "generator_order_slot", "prestage_allowed",
 }
 OUTPUT_TICKET_FIELDS = INPUT_FIELDS | DERIVED_FIELDS
 PLAN_FIELDS = {
     "format", "schema_version", "lane_cap", "start_gap_minutes",
     "tier3_round_cap", "generator_order", "critical_path",
-    "duration_minutes", "tickets", "edges", "mermaid",
+    "duration_minutes", "tickets", "edges", "observed_minute",
+    "lane_status", "mermaid",
 }
 EDGE_FIELDS = {"from", "to", "kind", "paths"}
+LANE_OBSERVATION_FIELDS = {"owner_lane", "idle_since_minute"}
+LANE_STATUS_FIELDS = LANE_OBSERVATION_FIELDS | {
+    "idle_minutes", "status_verdict", "ready_tickets", "idle_lane_reasons",
+}
 
 
 class PlanningGraphError(ValueError):
@@ -76,12 +84,28 @@ def _check_string(value, field):
 
 
 def _check_string_list(value, field, *, keys=False, nonempty=False):
-    if (not isinstance(value, list) or (nonempty and not value)
-            or len(value) != len(set(value))):
+    if not isinstance(value, list) or (nonempty and not value):
         _fail("INVALID_FIELD", f"{field} must be a unique list")
     for item in value:
         if (not _valid_key(item)) if keys else (not isinstance(item, str) or not item):
             _fail("INVALID_FIELD", f"{field} contains an invalid value")
+    if len(value) != len(set(value)):
+        _fail("INVALID_FIELD", f"{field} must be a unique list")
+
+
+def _check_reason(value, field="idle_lane_reason"):
+    if value is not None and (not isinstance(value, str) or value not in IDLE_LANE_REASONS):
+        _fail("UNKNOWN_IDLE_LANE_REASON", f"{field} {value!r} is not recognized")
+
+
+def _check_blockers(value):
+    if not isinstance(value, list):
+        _fail("INVALID_FIELD", "blockers must be a unique list")
+    for blocker in value:
+        if not isinstance(blocker, str) or blocker not in IDLE_LANE_REASONS:
+            _fail("UNKNOWN_IDLE_LANE_REASON", f"blocker {blocker!r} is not recognized")
+    if len(value) != len(set(value)):
+        _fail("INVALID_FIELD", "blockers must be a unique list")
 
 
 def _check_path(value):
@@ -89,6 +113,10 @@ def _check_path(value):
             or value.startswith("/") or re.match(r"^[A-Za-z]:", value)
             or any(part in {"", ".", ".."} for part in value.split("/"))):
         _fail("INVALID_FIELD", "write_paths must contain portable repository-relative paths")
+
+
+def _path_identity(value):
+    return value.casefold()
 
 
 def _check_window(value):
@@ -114,7 +142,7 @@ def _check_lane_fill(ticket):
     predecessor = ticket["serial_predecessor"]
     if predecessor is not None and not _valid_key(predecessor):
         _fail("INVALID_FIELD", "serial_predecessor must be a ticket key or null")
-    if ticket["lane_class"] not in LANE_CLASSES:
+    if not isinstance(ticket["lane_class"], str) or ticket["lane_class"] not in LANE_CLASSES:
         _fail("INVALID_FIELD", "lane_class is not recognized")
     if type(ticket["independent"]) is not bool:
         _fail("INVALID_FIELD", "independent must be boolean")
@@ -122,9 +150,10 @@ def _check_lane_fill(ticket):
     if slot is not None and not _is_int(slot, 1):
         _fail("INVALID_FIELD", "generator_order_slot must be 1-based or null")
     _check_string(ticket["owner_lane"], "owner_lane")
-    reason = ticket["idle_lane_reason"]
-    if reason is not None and reason not in IDLE_LANE_REASONS:
-        _fail("UNKNOWN_IDLE_LANE_REASON", f"idle lane reason {reason!r} is not recognized")
+    _check_blockers(ticket["blockers"])
+    _check_reason(ticket["idle_lane_reason"])
+    if type(ticket["prestage_allowed"]) is not bool:
+        _fail("INVALID_FIELD", "prestage_allowed must be boolean")
     _check_string(ticket["phase"], "phase")
     _check_string(ticket["status"], "status")
     if type(ticket["in_lane"]) is not bool:
@@ -140,8 +169,11 @@ def _normalize_ticket(raw, tier3_round_cap):
     _check_string_list(ticket["write_paths"], "write_paths", nonempty=True)
     for path in ticket["write_paths"]:
         _check_path(path)
+    identities = [_path_identity(path) for path in ticket["write_paths"]]
+    if len(identities) != len(set(identities)):
+        _fail("PATH_ALIAS_COLLISION", "write_paths contain portable case aliases")
     ticket["dependencies"] = sorted(ticket["dependencies"])
-    ticket["write_paths"] = sorted(ticket["write_paths"])
+    ticket["write_paths"] = sorted(ticket["write_paths"], key=lambda path: (_path_identity(path), path))
     if not _is_int(ticket["duration_minutes"], 1):
         _fail("INVALID_FIELD", "duration_minutes must be a positive integer")
     if type(ticket["risk_tier"]) is not int or ticket["risk_tier"] not in {1, 2, 3}:
@@ -151,23 +183,28 @@ def _normalize_ticket(raw, tier3_round_cap):
     if ticket["risk_tier"] == 3 and ticket["round_cap"] > tier3_round_cap:
         _fail("TIER_ROUND_CAP_VIOLATION", "Tier 3 round_cap exceeds the reviewed cap")
     _check_window(ticket["owner_review_window"])
-    if ticket["lane_class"] not in LANE_CLASSES:
+    if not isinstance(ticket["lane_class"], str) or ticket["lane_class"] not in LANE_CLASSES:
         _fail("INVALID_FIELD", "lane_class is not recognized")
     _check_string(ticket["owner_lane"], "owner_lane")
-    reason = ticket["idle_lane_reason"]
-    if reason is not None and reason not in IDLE_LANE_REASONS:
-        _fail("UNKNOWN_IDLE_LANE_REASON", f"idle lane reason {reason!r} is not recognized")
+    _check_blockers(ticket["blockers"])
+    ticket["blockers"] = sorted(ticket["blockers"])
+    _check_reason(ticket["idle_lane_reason"])
     _check_string(ticket["phase"], "phase")
     _check_string(ticket["status"], "status")
     if type(ticket["in_lane"]) is not bool:
         _fail("INVALID_FIELD", "in_lane must be boolean")
+    prestage_allowed = bool(ticket["blockers"]) and set(ticket["blockers"]) <= PRESTAGE_BLOCKERS
+    if prestage_allowed:
+        ticket["in_lane"] = True
+        ticket["status"] = "prestaged-hold"
     return ticket
 
 
 def _generator_ticket(ticket):
     return any(
-        path == "scripts/generate_contracts.py"
-        or (path.startswith(".agentic/schemas/") and path.endswith(".schema.json"))
+        _path_identity(path) == "scripts/generate_contracts.py"
+        or (_path_identity(path).startswith(".agentic/schemas/")
+            and _path_identity(path).endswith(".schema.json"))
         for path in ticket["write_paths"]
     )
 
@@ -226,7 +263,9 @@ def _graph(tickets, generator_order):
     ordered_keys = sorted(keys)
     for index, left in enumerate(ordered_keys):
         for right in ordered_keys[index + 1:]:
-            shared = sorted(set(by_key[left]["write_paths"]) & set(by_key[right]["write_paths"]))
+            left_paths = {_path_identity(path) for path in by_key[left]["write_paths"]}
+            right_paths = {_path_identity(path) for path in by_key[right]["write_paths"]}
+            shared = sorted(left_paths & right_paths)
             if not shared:
                 continue
             if _reachable(left, right, dependency_adjacency):
@@ -289,6 +328,7 @@ def _schedule(by_key, adjacency, lane_cap, start_gap_minutes, scores):
     finishes = {}
     running = {}
     minute = 0
+    last_start = None
     while unscheduled:
         running = {key: end for key, end in running.items() if end > minute}
         available = lane_cap - len(running)
@@ -308,8 +348,15 @@ def _schedule(by_key, adjacency, lane_cap, start_gap_minutes, scores):
                 ready.append(key)
             else:
                 future.append(release)
-        ready.sort(key=lambda key: (-scores[key], key))
-        for key in ready[:available]:
+        ready.sort(key=lambda key: (
+            by_key[key]["owner_review_window"]["closes_at_minute"]
+            if by_key[key]["owner_review_window"] is not None else float("inf"),
+            -scores[key],
+            key,
+        ))
+        launch_unlocked = last_start is None or minute >= last_start + start_gap_minutes
+        if available and ready and launch_unlocked:
+            key = ready[0]
             duration = by_key[key]["duration_minutes"]
             window = by_key[key]["owner_review_window"]
             if window is not None and minute + duration > window["closes_at_minute"]:
@@ -318,12 +365,17 @@ def _schedule(by_key, adjacency, lane_cap, start_gap_minutes, scores):
             finishes[key] = minute + duration
             running[key] = finishes[key]
             unscheduled.remove(key)
+            last_start = minute
+            if start_gap_minutes == 0:
+                continue
         if unscheduled:
             next_times = [end for end in running.values() if end > minute]
             next_times.extend(value for value in future if value > minute)
+            if available and ready and last_start is not None:
+                next_times.append(last_start + start_gap_minutes)
             if not next_times:
                 _fail("INVALID_PLAN", "scheduler made no progress")
-            minute = min(next_times)
+            minute = min(value for value in next_times if value > minute)
     return starts, finishes
 
 
@@ -355,13 +407,56 @@ def _serial_metadata(keys, adjacency, finishes):
 
 
 def _independence(key, by_key):
-    if by_key[key]["dependencies"]:
+    if by_key[key]["dependencies"] or by_key[key]["blockers"]:
         return False
-    paths = set(by_key[key]["write_paths"])
+    paths = {_path_identity(path) for path in by_key[key]["write_paths"]}
     return not any(
-        other != key and ticket["in_lane"] and paths.intersection(ticket["write_paths"])
+        other != key and ticket["in_lane"]
+        and paths.intersection(_path_identity(path) for path in ticket["write_paths"])
         for other, ticket in by_key.items()
     )
+
+
+def _normalize_lane_observations(value, observed_minute):
+    if not isinstance(value, list):
+        _fail("INVALID_FIELD", "lane_observations must be a list")
+    result = []
+    lanes = set()
+    for observation in value:
+        _check_fields(observation, LANE_OBSERVATION_FIELDS, "lane observation")
+        lane = observation["owner_lane"]
+        idle_since = observation["idle_since_minute"]
+        _check_string(lane, "owner_lane")
+        if not _is_int(idle_since) or idle_since > observed_minute:
+            _fail("INVALID_FIELD", "idle_since_minute must not exceed observed_minute")
+        if lane in lanes:
+            _fail("INVALID_FIELD", "lane observations must have unique owner_lane values")
+        lanes.add(lane)
+        result.append({"owner_lane": lane, "idle_since_minute": idle_since})
+    return sorted(result, key=lambda item: item["owner_lane"])
+
+
+def _idle_lane_status(tickets, observation, observed_minute):
+    lane = observation["owner_lane"]
+    idle_since = observation["idle_since_minute"]
+    queued = [ticket for ticket in tickets if ticket["owner_lane"] == lane and not ticket["in_lane"]]
+    ready = sorted(ticket["key"] for ticket in queued if not ticket["blockers"])
+    reasons = sorted({
+        reason
+        for ticket in queued
+        for reason in (ticket["blockers"] or ([ticket["idle_lane_reason"]] if ticket["idle_lane_reason"] else []))
+    })
+    if not ready and not reasons:
+        reasons = ["NO_READY_TICKET"]
+    idle_minutes = observed_minute - idle_since
+    return {
+        "owner_lane": lane,
+        "idle_since_minute": idle_since,
+        "idle_minutes": idle_minutes,
+        "status_verdict": "FAIL" if idle_minutes > 10 and ready else "OK",
+        "ready_tickets": ready,
+        "idle_lane_reasons": reasons,
+    }
 
 
 def _render_mermaid(plan):
@@ -376,7 +471,9 @@ def _render_mermaid(plan):
     return "\n".join(lines) + "\n"
 
 
-def build_ticket_plan(tickets, *, lane_cap, start_gap_minutes, tier3_round_cap, generator_order):
+def build_ticket_plan(
+        tickets, *, lane_cap, start_gap_minutes, tier3_round_cap, generator_order,
+        observed_minute=0, lane_observations=None):
     """Build a deterministic ticket-plan record from a reviewed snapshot."""
     if not isinstance(tickets, list) or not tickets:
         _fail("INVALID_FIELD", "tickets must be a non-empty list")
@@ -384,8 +481,14 @@ def build_ticket_plan(tickets, *, lane_cap, start_gap_minutes, tier3_round_cap, 
         _fail("INVALID_FIELD", "lane_cap must be a positive integer")
     if not _is_int(start_gap_minutes):
         _fail("INVALID_FIELD", "start_gap_minutes must be a non-negative integer")
-    if not _is_int(tier3_round_cap, 1):
-        _fail("TIER_ROUND_CAP_VIOLATION", "tier3_round_cap must be positive")
+    if not _is_int(tier3_round_cap, 1) or tier3_round_cap > 3:
+        _fail("TIER_ROUND_CAP_VIOLATION", "tier3_round_cap must be between 1 and the frozen maximum of 3")
+    if not _is_int(observed_minute):
+        _fail("INVALID_FIELD", "observed_minute must be a non-negative integer")
+    observations = _normalize_lane_observations(
+        [] if lane_observations is None else lane_observations,
+        observed_minute,
+    )
     _check_string_list(generator_order, "generator_order", keys=True)
     normalized = [_normalize_ticket(ticket, tier3_round_cap) for ticket in tickets]
     keys = [ticket["key"] for ticket in normalized]
@@ -407,6 +510,7 @@ def build_ticket_plan(tickets, *, lane_cap, start_gap_minutes, tier3_round_cap, 
             "serial_predecessor": serial[key][1],
             "independent": _independence(key, by_key),
             "generator_order_slot": order_slot.get(key) if _generator_ticket(item) else None,
+            "prestage_allowed": bool(item["blockers"]) and set(item["blockers"]) <= PRESTAGE_BLOCKERS,
         })
         output_tickets.append(item)
     plan = {
@@ -420,6 +524,11 @@ def build_ticket_plan(tickets, *, lane_cap, start_gap_minutes, tier3_round_cap, 
         "duration_minutes": max(finishes.values()),
         "tickets": output_tickets,
         "edges": edges,
+        "observed_minute": observed_minute,
+        "lane_status": [
+            _idle_lane_status(output_tickets, observation, observed_minute)
+            for observation in observations
+        ],
         "mermaid": "",
     }
     plan["mermaid"] = _render_mermaid(plan)
@@ -432,8 +541,8 @@ def _check_output_structure(plan):
         _fail("INVALID_FIELD", "ticket plan format or schema_version is invalid")
     if not _is_int(plan["lane_cap"], 1) or not _is_int(plan["start_gap_minutes"]):
         _fail("INVALID_FIELD", "ticket plan scheduling limits are invalid")
-    if not _is_int(plan["tier3_round_cap"], 1):
-        _fail("TIER_ROUND_CAP_VIOLATION", "tier3_round_cap must be positive")
+    if not _is_int(plan["tier3_round_cap"], 1) or plan["tier3_round_cap"] > 3:
+        _fail("TIER_ROUND_CAP_VIOLATION", "tier3_round_cap exceeds the frozen maximum of 3")
     _check_string_list(plan["generator_order"], "generator_order", keys=True)
     _check_string_list(plan["critical_path"], "critical_path", keys=True, nonempty=True)
     if not _is_int(plan["duration_minutes"], 1):
@@ -452,11 +561,31 @@ def _check_output_structure(plan):
         _check_fields(edge, EDGE_FIELDS, "edge")
         if not _valid_key(edge["from"]) or not _valid_key(edge["to"]):
             _fail("INVALID_FIELD", "edge endpoints must be ticket keys")
-        if edge["kind"] not in {"dependency", "file_overlap", "generator_order"}:
+        if not isinstance(edge["kind"], str) or edge["kind"] not in {"dependency", "file_overlap", "generator_order"}:
             _fail("INVALID_FIELD", "edge kind is invalid")
         _check_string_list(edge["paths"], "edge paths")
         for path in edge["paths"]:
             _check_path(path)
+    if not _is_int(plan["observed_minute"]):
+        _fail("INVALID_FIELD", "observed_minute must be a non-negative integer")
+    if not isinstance(plan["lane_status"], list):
+        _fail("INVALID_FIELD", "lane_status must be a list")
+    lanes = set()
+    for status in plan["lane_status"]:
+        _check_fields(status, LANE_STATUS_FIELDS, "lane status")
+        _check_string(status["owner_lane"], "owner_lane")
+        if status["owner_lane"] in lanes:
+            _fail("INVALID_FIELD", "lane_status must have unique owner_lane values")
+        lanes.add(status["owner_lane"])
+        if (not _is_int(status["idle_since_minute"])
+                or status["idle_since_minute"] > plan["observed_minute"]
+                or not _is_int(status["idle_minutes"])):
+            _fail("INVALID_FIELD", "lane status idle minutes are invalid")
+        if (not isinstance(status["status_verdict"], str)
+                or status["status_verdict"] not in STATUS_VERDICTS):
+            _fail("INVALID_FIELD", "status_verdict must be OK or FAIL")
+        _check_string_list(status["ready_tickets"], "ready_tickets", keys=True)
+        _check_blockers(status["idle_lane_reasons"])
     _check_string(plan["mermaid"], "mermaid")
 
 
@@ -469,10 +598,97 @@ def validate_ticket_plan(plan):
         start_gap_minutes=plan["start_gap_minutes"],
         tier3_round_cap=plan["tier3_round_cap"],
         generator_order=plan["generator_order"],
+        observed_minute=plan["observed_minute"],
+        lane_observations=[
+            {field: status[field] for field in LANE_OBSERVATION_FIELDS}
+            for status in plan["lane_status"]
+        ],
     )
     if rebuilt != plan:
         _fail("INVALID_PLAN", "derived ticket-plan fields do not match deterministic replay")
     return deepcopy(plan)
+
+
+def _runtime_string_set(value, field, *, keys=False):
+    _check_string_list(value, field, keys=keys)
+    return set(value)
+
+
+def refill_rank(
+        plan, *, owner_lanes, merged_tickets, live_write_paths,
+        generator_busy, hold, start_lock_free):
+    """Return a deterministic, side-effect-free lane refill decision.
+
+    The caller supplies observed gates; this function ranks only tickets that
+    are ready, independently writable, and not already occupying a lane.
+    """
+    checked = validate_ticket_plan(plan)
+    owners = _runtime_string_set(owner_lanes, "owner_lanes")
+    merged = _runtime_string_set(merged_tickets, "merged_tickets", keys=True)
+    _check_string_list(live_write_paths, "live_write_paths")
+    for path in live_write_paths:
+        _check_path(path)
+    live_paths = {_path_identity(path) for path in live_write_paths}
+    if type(generator_busy) is not bool or type(hold) is not bool or type(start_lock_free) is not bool:
+        _fail("INVALID_FIELD", "refill gates must be boolean")
+
+    incomplete_generator_slots = {
+        ticket["generator_order_slot"]
+        for ticket in checked["tickets"]
+        if ticket["generator_order_slot"] is not None and ticket["key"] not in merged
+    }
+    earliest_generator_slot = min(incomplete_generator_slots, default=None)
+    ready = []
+    blocked = []
+    for ticket in checked["tickets"]:
+        if ticket["in_lane"] or ticket["key"] in merged:
+            continue
+        reasons = set(ticket["blockers"])
+        if any(dependency not in merged for dependency in ticket["dependencies"]):
+            reasons.add("PREDECESSOR_UNMERGED")
+        predecessor = ticket["serial_predecessor"]
+        if predecessor is not None and predecessor not in merged:
+            reasons.add("PREDECESSOR_UNMERGED")
+        if ticket["owner_lane"] not in owners:
+            reasons.add("OWNERSHIP_CONFLICT")
+        paths = {_path_identity(path) for path in ticket["write_paths"]}
+        if paths & live_paths:
+            reasons.add("FILE_CLASH")
+        slot = ticket["generator_order_slot"]
+        if slot is not None and (generator_busy or slot != earliest_generator_slot):
+            reasons.add("GENERATOR_ORDER_BUSY")
+        if hold:
+            reasons.add("HOLD")
+        if not start_lock_free:
+            reasons.add("START_GAP_PENDING")
+        if reasons:
+            blocked.append({"key": ticket["key"], "reasons": sorted(reasons)})
+        else:
+            ready.append(ticket)
+
+    ready.sort(key=lambda ticket: (
+        0 if ticket["critical_path"] else 1,
+        ticket["critical_path_position"] or 9007199254740991,
+        ticket["generator_order_slot"] or 9007199254740991,
+        ticket["earliest_start_minute"],
+        ticket["key"],
+    ))
+    blocked.sort(key=lambda item: item["key"])
+    if ready:
+        reason = None
+    elif not start_lock_free:
+        reason = "START_GAP_PENDING"
+    elif hold:
+        reason = "HOLD"
+    else:
+        all_reasons = sorted({reason for item in blocked for reason in item["reasons"]})
+        reason = all_reasons[0] if all_reasons else "NO_READY_TICKET"
+    return {
+        "selected_ticket": ready[0]["key"] if ready else None,
+        "idle_lane_reason": reason,
+        "ranked_tickets": [ticket["key"] for ticket in ready],
+        "blocked_tickets": blocked,
+    }
 
 
 def serialize_ticket_plan(plan):

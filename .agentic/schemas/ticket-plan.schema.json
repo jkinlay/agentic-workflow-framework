@@ -12,6 +12,8 @@
     "duration_minutes",
     "tickets",
     "edges",
+    "observed_minute",
+    "lane_status",
     "mermaid"
   ],
   "properties": {
@@ -34,7 +36,7 @@
     "tier3_round_cap": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 9007199254740991
+      "maximum": 3
     },
     "generator_order": {
       "type": "array",
@@ -83,7 +85,9 @@
           "independent",
           "generator_order_slot",
           "owner_lane",
+          "blockers",
           "idle_lane_reason",
+          "prestage_allowed",
           "phase",
           "status",
           "in_lane"
@@ -217,6 +221,26 @@
             "type": "string",
             "minLength": 1
           },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "NO_READY_TICKET",
+                "PREDECESSOR_UNMERGED",
+                "FILE_CLASH",
+                "OWNERSHIP_CONFLICT",
+                "GENERATOR_ORDER_BUSY",
+                "START_GAP_PENDING",
+                "HOLD",
+                "CAP_REACHED",
+                "PLAN_UNREADABLE",
+                "MERGE_FREEZE",
+                "RESYNC_PENDING"
+              ]
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
           "idle_lane_reason": {
             "oneOf": [
               {
@@ -229,13 +253,18 @@
                   "START_GAP_PENDING",
                   "HOLD",
                   "CAP_REACHED",
-                  "PLAN_UNREADABLE"
+                  "PLAN_UNREADABLE",
+                  "MERGE_FREEZE",
+                  "RESYNC_PENDING"
                 ]
               },
               {
                 "type": "null"
               }
             ]
+          },
+          "prestage_allowed": {
+            "type": "boolean"
           },
           "phase": {
             "type": "string",
@@ -271,6 +300,60 @@
               "properties": {
                 "critical_path_position": {
                   "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "risk_tier": {
+                  "const": 3
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "round_cap": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "blockers": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "enum": [
+                      "MERGE_FREEZE",
+                      "RESYNC_PENDING"
+                    ]
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "prestage_allowed": {
+                  "const": true
+                },
+                "in_lane": {
+                  "const": true
+                },
+                "status": {
+                  "const": "prestaged-hold"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "prestage_allowed": {
+                  "const": false
                 }
               }
             }
@@ -313,6 +396,79 @@
             "items": {
               "type": "string",
               "minLength": 1
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 0
+    },
+    "observed_minute": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "lane_status": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "owner_lane",
+          "idle_since_minute",
+          "idle_minutes",
+          "status_verdict",
+          "ready_tickets",
+          "idle_lane_reasons"
+        ],
+        "properties": {
+          "owner_lane": {
+            "type": "string",
+            "minLength": 1
+          },
+          "idle_since_minute": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idle_minutes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "status_verdict": {
+            "enum": [
+              "OK",
+              "FAIL"
+            ]
+          },
+          "ready_tickets": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"
+            },
+            "minItems": 0,
+            "uniqueItems": true
+          },
+          "idle_lane_reasons": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "NO_READY_TICKET",
+                "PREDECESSOR_UNMERGED",
+                "FILE_CLASH",
+                "OWNERSHIP_CONFLICT",
+                "GENERATOR_ORDER_BUSY",
+                "START_GAP_PENDING",
+                "HOLD",
+                "CAP_REACHED",
+                "PLAN_UNREADABLE",
+                "MERGE_FREEZE",
+                "RESYNC_PENDING"
+              ]
             },
             "minItems": 0,
             "uniqueItems": true
