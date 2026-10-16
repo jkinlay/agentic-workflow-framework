@@ -575,6 +575,14 @@ def freeze_generation(batch_id, target_branch, target_sha, sources, generation,
         sources, observer_registry, now=now,
         trusted_owner_ids=trusted_owner_ids,
         max_age_seconds=max_age_seconds)
+    admission_targets = {
+        item["provider_admission"]["request"]["target_branch"]
+        for item in ordered
+    }
+    _require(len(admission_targets) == 1,
+             "merge-train sources have mixed admission target branches")
+    _require(admission_targets == {target_branch},
+             "source admission target branch differs from generation target branch")
     frozen_sources = [{
         "pr_number": item["pr_number"],
         "head_sha": item["head_sha"],
