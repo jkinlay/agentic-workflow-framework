@@ -8,12 +8,13 @@ stores the sealed records returned here.
 from __future__ import annotations
 
 import copy
+import re
 import uuid
 
 from . import ValidationError
 from .canonical import fingerprint, sha256, timestamp
 from .intake_assignment import classify_ticket, _canonical_repo_path
-from .operating import DEFAULT_MAX_LANES, operating_ceiling, stream_labels
+from .operating import DEFAULT_MAX_LANES, operating_ceiling, stream_labels, validate_snapshot
 
 
 MANIFEST_OUTPUTS = {"MANIFEST.json", "MANIFEST.md"}
@@ -269,23 +270,130 @@ def _lane_components(graph, ready):
     return result
 
 
-def _resource_constraints(resources):
-    if resources is None:
-        return {}, {}
-    if not isinstance(resources, dict):
-        raise ValidationError("Planning resources must be an object")
-    limits = resources.get("limits", {})
-    headroom = resources.get("headroom", {})
-    if not isinstance(limits, dict) or not isinstance(headroom, dict):
-        raise ValidationError("Planning resource limits and headroom must be objects")
-    checked = {}
-    for name, value in sorted(limits.items()):
-        if value is None:
-            continue
-        if type(value) is not int or value < 1:
-            raise ValidationError(f"Planning resource limit {name} must be a positive integer or null")
-        checked[name] = value
-    return checked, copy.deepcopy(headroom)
+PLANNING_RESOURCE_KEYS = {
+    "format", "complete", "producer", "observed_at", "binding",
+    "host_capacity", "resources", "observation_sha256",
+}
+PLANNING_PRODUCER_KEYS = {"kind", "operation", "implementation_sha256"}
+PLANNING_BINDING_KEYS = {
+    "project_id", "repository_id", "scope_sha256", "repository_head_sha",
+    "repository_tree_sha", "project_config_sha256", "operating_config_sha256",
+}
+PLANNING_RESOURCE_ITEM_KEYS = {"name", "capacity"}
+LOWER_SHA256 = re.compile(r"[0-9a-f]{64}")
+GIT_SHA = re.compile(r"[0-9a-f]{40}")
+RESOURCE_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+
+
+def _closed(value, keys, name):
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValidationError(f"Planning resource {name} must be a closed object")
+
+
+def validate_planning_resource_observation(
+        observation, *, expected_binding, expected_producer_sha256, now):
+    """Validate one exact-cycle observation from the pinned reviewed adapter.
+
+    The caller supplies controller-known bindings and the implementation digest
+    obtained from the already pinned adapter.  A self-hash alone never grants a
+    caller-authored capacity dictionary authority.
+    """
+    _closed(observation, PLANNING_RESOURCE_KEYS, "observation")
+    if observation["format"] != "awf-planning-resource-observation-1":
+        raise ValidationError("Planning resource observation format is unsupported")
+    if observation["complete"] is not True:
+        raise ValidationError("Planning resource observation must be complete")
+
+    producer = observation["producer"]
+    _closed(producer, PLANNING_PRODUCER_KEYS, "producer")
+    if (producer["kind"] != "reviewed_controller_adapter"
+            or producer["operation"] != "observe_planning_resources"
+            or not isinstance(expected_producer_sha256, str)
+            or not LOWER_SHA256.fullmatch(expected_producer_sha256)
+            or producer["implementation_sha256"] != expected_producer_sha256):
+        raise ValidationError("Planning resource observation producer is not the pinned reviewed adapter")
+
+    timestamp(observation["observed_at"])
+    timestamp(now)
+    if observation["observed_at"] != now:
+        raise ValidationError("Planning resource observation differs from this controller cycle")
+
+    binding = observation["binding"]
+    _closed(binding, PLANNING_BINDING_KEYS, "binding")
+    _closed(expected_binding, PLANNING_BINDING_KEYS, "expected binding")
+    if binding != expected_binding:
+        raise ValidationError("Planning resource observation binding differs from controller-known inputs")
+    if (not all(isinstance(binding[name], str) and binding[name]
+                for name in ("project_id", "repository_id"))
+            or not LOWER_SHA256.fullmatch(binding["scope_sha256"])
+            or not GIT_SHA.fullmatch(binding["repository_head_sha"])
+            or not GIT_SHA.fullmatch(binding["repository_tree_sha"])
+            or not LOWER_SHA256.fullmatch(binding["project_config_sha256"])
+            or not LOWER_SHA256.fullmatch(binding["operating_config_sha256"])):
+        raise ValidationError("Planning resource observation binding is malformed")
+
+    host_capacity = observation["host_capacity"]
+    if type(host_capacity) is not int or not 0 <= host_capacity <= 1000:
+        raise ValidationError("Planning observed host capacity must be an integer from zero through 1000")
+    resources = observation["resources"]
+    if not isinstance(resources, list) or not 1 <= len(resources) <= 32:
+        raise ValidationError("Planning resource observation needs 1 through 32 bounded resources")
+    names = set()
+    for item in resources:
+        _closed(item, PLANNING_RESOURCE_ITEM_KEYS, "inventory item")
+        name, capacity = item["name"], item["capacity"]
+        if not isinstance(name, str) or not RESOURCE_NAME.fullmatch(name):
+            raise ValidationError("Planning resource name must be a bounded lowercase identifier")
+        if name in names:
+            raise ValidationError("Planning resource observation contains a duplicate resource name")
+        if type(capacity) is not int or not 0 <= capacity <= 1000:
+            raise ValidationError("Planning resource capacity must be an integer from zero through 1000")
+        names.add(name)
+
+    digest = observation["observation_sha256"]
+    expected_digest = fingerprint(
+        "planning_resource_observation",
+        {key: value for key, value in observation.items() if key != "observation_sha256"})
+    if not isinstance(digest, str) or digest != expected_digest:
+        raise ValidationError("Planning resource observation digest is missing or stale")
+    return copy.deepcopy(observation)
+
+
+def _sealed_capacity_inputs(config, observation, expected_binding,
+                            expected_producer_sha256, operating_snapshot, now):
+    """Bind authenticated capacity inputs before lane selection or override."""
+    if observation is None:
+        raise ValidationError("Planning requires an authenticated resource observation")
+    validate_snapshot(operating_snapshot, config)
+    _closed(expected_binding, PLANNING_BINDING_KEYS, "expected binding")
+    accepted_config = fingerprint("accepted-project-config", config)
+    project_id = config.get("project", {}).get("id")
+    repository_id = config.get("github", {}).get("repository_id")
+    valid_repository_id = ((isinstance(repository_id, str) and bool(repository_id))
+                           or (type(repository_id) is int and repository_id > 0))
+    if (not isinstance(project_id, str) or not project_id or not valid_repository_id
+            or expected_binding["project_id"] != project_id
+            or expected_binding["repository_id"] != str(repository_id)
+            or expected_binding["project_config_sha256"] != accepted_config
+            or expected_binding["operating_config_sha256"] != operating_snapshot.operating_hash):
+        raise ValidationError("Planning capacity binding differs from accepted project or operating configuration")
+    checked = validate_planning_resource_observation(
+        observation, expected_binding=expected_binding,
+        expected_producer_sha256=expected_producer_sha256, now=now)
+    resources = sorted(checked["resources"], key=lambda item: item["name"])
+    ceiling = operating_ceiling(config)
+    return {
+        "observation_sha256": checked["observation_sha256"],
+        "producer_implementation_sha256": expected_producer_sha256,
+        "host_capacity": checked["host_capacity"],
+        "operating_hash": operating_snapshot.operating_hash,
+        "stream_capacity": operating_snapshot.count,
+        "resources": resources,
+        "resource_capacity": min(item["capacity"] for item in resources),
+        "project_config_sha256": accepted_config,
+        "governed_ceiling": ceiling["effective_ceiling"],
+        "governance_sources": copy.deepcopy(ceiling["effective_ceiling_sources"]),
+    }
 
 
 def _authenticated_override(record, config, previous, verify_owner_source):
@@ -410,9 +518,8 @@ def verify_override_state(config, state, verify_owner_source):
     return copy.deepcopy(current)
 
 
-def _estimate(graph, config, independent_count, resources):
+def _estimate(graph, config, independent_count, capacity_inputs):
     capacity = operating_ceiling(config)
-    limits, headroom = _resource_constraints(resources)
     execution = config["execution"]
     constraints = {
         "dependency_graph/file_overlap": independent_count,
@@ -422,33 +529,45 @@ def _estimate(graph, config, independent_count, resources):
     broker = execution.get("host_broker")
     if isinstance(broker, dict) and broker.get("enabled") is True:
         constraints["host_broker"] = broker["max_workers"]
-    collisions = sorted(set(constraints) & set(limits))
-    if collisions:
-        raise ValidationError(
-            "Planning resource limits duplicate governed constraint names: " + ", ".join(collisions))
-    constraints.update(limits)
+    constraints["reviewed_operating_streams"] = capacity_inputs["stream_capacity"]
+    constraints["observed_host_capacity"] = capacity_inputs["host_capacity"]
+    constraints.update({"resource:" + item["name"]: item["capacity"]
+                        for item in capacity_inputs["resources"]})
+    if any(type(value) is not int or value < 0 for value in constraints.values()):
+        raise ValidationError("Every planning capacity component must be a nonnegative integer")
     safe = min(constraints.values()) if constraints else 0
     binding = sorted(name for name, value in constraints.items() if value == safe)
+    sealed = copy.deepcopy(capacity_inputs)
+    sealed["safe_lane_count"] = safe
     return {
         "independent_lane_count": independent_count,
         "safe_lane_count": safe,
         "binding_constraints": binding,
         "constraints": constraints,
         "governance_sources": capacity["effective_ceiling_sources"],
-        "headroom": headroom,
+        "capacity": sealed,
         "reasoning": (
             f"{independent_count} independent lane(s); safe count {safe}; binding: "
             + (", ".join(binding) if binding else "none")
-            + "; resource and rate-limit headroom retained in this record"
+            + "; authenticated host, reviewed stream, and resource capacities are sealed"
         ),
     }
 
 
-def plan_lanes(graph, config, *, resources=None, controller_state=None,
-               verify_owner_source=None, override=None):
+def plan_lanes(graph, config, *, resource_observation=None,
+               expected_resource_binding=None,
+               expected_resource_producer_sha256=None,
+               operating_snapshot=None, observed_at=None, resources=None,
+               controller_state=None, verify_owner_source=None, override=None):
     """Return conflict-free ready lanes ranked by downstream critical path."""
     if not isinstance(graph, dict) or not isinstance(graph.get("tickets"), dict):
         raise ValidationError("Planning requires a backlog graph")
+    if resources is not None:
+        raise ValidationError(
+            "Planning refuses operator-authored capacity dictionaries; an authenticated resource observation is required")
+    capacity_inputs = _sealed_capacity_inputs(
+        config, resource_observation, expected_resource_binding,
+        expected_resource_producer_sha256, operating_snapshot, observed_at)
     blockers, dependents = _dependency_maps(graph)
     scores = _critical_scores(graph, dependents)
     ready, blocked = _ready_keys(graph, blockers)
@@ -466,7 +585,7 @@ def plan_lanes(graph, config, *, resources=None, controller_state=None,
     for label, lane in zip(stream_labels(len(lanes)), lanes):
         lane["label"] = label
 
-    estimate = _estimate(graph, config, len(lanes), resources)
+    estimate = _estimate(graph, config, len(lanes), capacity_inputs)
     lane_count = estimate["safe_lane_count"]
     decision = {"kind": "accepted_default", "value": lane_count}
     warnings = []
@@ -479,17 +598,17 @@ def plan_lanes(graph, config, *, resources=None, controller_state=None,
         if selected_override["value"] > ceiling:
             raise ValidationError(f"Planning override exceeds the governed lane ceiling of {ceiling}")
         if selected_override["mode"] == "fixed":
+            if selected_override["value"] > estimate["safe_lane_count"]:
+                raise ValidationError(
+                    "Planning fixed override exceeds the sealed safe capacity and cannot authorize a lane")
             lane_count = selected_override["value"]
         else:
             lane_count = min(lane_count, selected_override["value"])
         decision = {"kind": "owner_override", "mode": selected_override["mode"],
                     "value": selected_override["value"], "override_id": selected_override["override_id"]}
-        if selected_override["value"] > estimate["safe_lane_count"]:
-            warnings.append(
-                f"Owner {selected_override['mode']} override {selected_override['value']} is above the safe estimate "
-                f"{estimate['safe_lane_count']}; the value is retained and applies within the governed ceiling")
     return {"lanes": lanes, "blocked": blocked, "critical_path_minutes": scores,
             "estimate": estimate, "owner_decision": decision,
+            "capacity": copy.deepcopy(estimate["capacity"]),
             "lane_count": lane_count, "warnings": warnings}
 
 
@@ -593,7 +712,10 @@ def append_plan_record(state, record):
     return copy.deepcopy(record)
 
 
-def recompute_plan(tickets, config, state, *, now, trigger, resources=None,
+def recompute_plan(tickets, config, state, *, now, trigger,
+                   resource_observation=None, expected_resource_binding=None,
+                   expected_resource_producer_sha256=None,
+                   operating_snapshot=None, observed_at=None, resources=None,
                    round_active=False, verify_owner_source=None, override=None):
     """Re-plan at named boundaries, deferring any in-round reassignment."""
     if trigger not in RECOMPUTE_TRIGGERS:
@@ -609,15 +731,23 @@ def recompute_plan(tickets, config, state, *, now, trigger, resources=None,
             pending.append(trigger)
         return {"status": "DEFERRED_UNTIL_ROUND_END", "trigger": trigger,
                 "reason": "In-flight work is never reassigned mid-round"}
+    if observed_at != now:
+        raise ValidationError("Planning resource observation differs from the plan recompute cycle")
     graph = build_backlog_graph(tickets, config)
-    result = plan_lanes(graph, config, resources=resources, controller_state=state,
-                        verify_owner_source=verify_owner_source)
+    result = plan_lanes(
+        graph, config, resource_observation=resource_observation,
+        expected_resource_binding=expected_resource_binding,
+        expected_resource_producer_sha256=expected_resource_producer_sha256,
+        operating_snapshot=operating_snapshot, observed_at=observed_at,
+        resources=resources, controller_state=state,
+        verify_owner_source=verify_owner_source)
     body = {"schema_version": 1, "created_at": now, "trigger": trigger,
             "inputs": {"jira_snapshot_sha256": fingerprint("planning_ticket_snapshot", tickets),
                        "tickets": copy.deepcopy(graph["tickets"]),
                        "dependencies": copy.deepcopy(graph["dependencies"]),
                        "overlaps": copy.deepcopy(graph["overlaps"]),
-                       "generator_owners": copy.deepcopy(graph["generator_owners"])},
+                       "generator_owners": copy.deepcopy(graph["generator_owners"]),
+                       "capacity": copy.deepcopy(result["capacity"])},
             "lanes": copy.deepcopy(result["lanes"]), "blocked": copy.deepcopy(result["blocked"]),
             "ranking": copy.deepcopy(result["critical_path_minutes"]),
             "estimate": copy.deepcopy(result["estimate"]),
