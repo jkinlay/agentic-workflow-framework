@@ -27,6 +27,41 @@ COUNTS={'required':1,'completed':0,'acceptable':0,'failed':0,'stale':0,'outstand
 INVENTORY_BINDING={'project_id':'project-1','repository_id':'101','scope_sha256':'a'*64}
 SOURCE_GIT_TUPLE=committed_git_tuple(ROOT)
 REPOSITORY={'repository_root':ROOT,'repository_head_sha':SOURCE_GIT_TUPLE[0]if SOURCE_GIT_TUPLE else '0'*40,'repository_tree_sha':SOURCE_GIT_TUPLE[1]if SOURCE_GIT_TUPLE else '0'*40}
+LEGACY_194_DDL='''
+CREATE TABLE controller_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE stream_status(
+ stream_id TEXT PRIMARY KEY,state TEXT NOT NULL,ticket TEXT,actor TEXT NOT NULL,
+ reason TEXT NOT NULL,next_action TEXT NOT NULL,resume_trigger TEXT NOT NULL,
+ exact_tuple TEXT NOT NULL,activity TEXT NOT NULL,verification_gate TEXT NOT NULL,
+ reviewer_completion TEXT NOT NULL,open_findings INTEGER NOT NULL,
+ jira_status TEXT NOT NULL,paths TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE controller_outbox(
+ delivery_id TEXT PRIMARY KEY,kind TEXT NOT NULL,revision INTEGER NOT NULL,
+ observed_at TEXT NOT NULL,payload_json TEXT NOT NULL,acknowledged_at TEXT);
+CREATE TABLE controller_dispatch(
+ dispatch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,ticket TEXT NOT NULL,
+ exact_tuple TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,
+ receipt_json TEXT,updated_at TEXT NOT NULL);
+CREATE TABLE controller_ticket_authority(
+ ticket TEXT NOT NULL,exact_tuple TEXT NOT NULL,dispatch_role TEXT NOT NULL,
+ lifecycle_stage TEXT NOT NULL,observed_at TEXT NOT NULL,
+ PRIMARY KEY(ticket,exact_tuple));
+CREATE TABLE controller_overlap_allowance(
+ allowance_id TEXT PRIMARY KEY,source_id TEXT NOT NULL UNIQUE,repository_id TEXT NOT NULL,
+ cycle_id TEXT NOT NULL,path TEXT NOT NULL,tickets_json TEXT NOT NULL,
+ pull_requests_json TEXT NOT NULL,heads_json TEXT NOT NULL,expires_at TEXT NOT NULL,
+ status TEXT NOT NULL,record_json TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE controller_overlap_sync_gate(
+ gate_id TEXT PRIMARY KEY,allowance_id TEXT NOT NULL,status TEXT NOT NULL,
+ record_json TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE INDEX controller_overlap_gate_allowance
+ ON controller_overlap_sync_gate(allowance_id,status);
+CREATE TABLE controller_jira_operation(
+ operation_id TEXT PRIMARY KEY,issue_id TEXT NOT NULL,event TEXT NOT NULL,
+ intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,
+ operation_json TEXT,readback_json TEXT,updated_at TEXT NOT NULL);
+CREATE INDEX controller_jira_issue ON controller_jira_operation(issue_id,status);
+'''
 
 def setUpModule():
 	if SOURCE_GIT_TUPLE is None:
@@ -81,18 +116,41 @@ def ticket(name,priority,disposition='ELIGIBLE',paths=None,**overrides):
 def seal_replan(store, trigger_id, items, observed_at):
 	context = store.replan_context()
 	next_sha = fingerprint('controller-inventory', {'binding': INVENTORY_BINDING, 'tickets': items})
-	trigger = {'schema_version': 1, 'source': 'host_observation', 'trigger_id': trigger_id, 'repository_id': INVENTORY_BINDING['repository_id'], 'prior_inventory_sha256': context['prior_inventory_sha256'] or ('b' * 64), 'next_inventory_sha256': next_sha, 'round_id': 'round-' + trigger_id, 'observed_at': observed_at, 'nonterminal_dispatch_ids': [item['dispatch_id'] for item in context['nonterminal']], 'authenticated': True}
-	trigger['trigger_sha256'] = fingerprint('controller-replan-trigger', trigger)
+	trigger = replan_trigger(trigger_id, context['prior_inventory_sha256'] or ('b' * 64), next_sha, [item['dispatch_id'] for item in context['nonterminal']], observed_at)
 	store.seal_round_boundary_replan(trigger, observed_at)
 	return next_sha
 
+def replan_trigger(name,prior_sha,next_sha,dispatch_ids,observed_at):
+	comment_id=int(fingerprint('test-replan-comment',name)[:12],16)
+	artifact={'comment_id':comment_id,'node_id':'comment-node-'+name,'actor_id':7001,'actor_login':'owner','created_at':observed_at,'etag':'"'+name+'"','provider_observed_at':observed_at}
+	artifact['artifact_sha256']=fingerprint('controller-replan-provider-artifact',artifact)
+	trigger={'schema_version':2,'source':'github.com','trigger_id':fingerprint('controller-replan-trigger-id',{'repository_id':INVENTORY_BINDING['repository_id'],'comment_id':comment_id,'node_id':artifact['node_id']}),'repository_id':INVENTORY_BINDING['repository_id'],'prior_inventory_sha256':prior_sha,'next_inventory_sha256':next_sha,'round_id':'round-'+name,'observed_at':observed_at,'nonterminal_dispatch_ids':sorted(dispatch_ids),'provider_artifact':artifact,'owner_policy_sha256':fingerprint('controller-replan-owner-policy',{'trusted_owner_ids':[7001]})}
+	trigger['trigger_sha256']=fingerprint('controller-replan-trigger',trigger)
+	return trigger
+
 class ContinuousControllerTests(unittest.TestCase):
 	def _legacy_dispatch_store(self, path, rows):
-		store = ContinuousControllerStore(path, ['A', 'B', 'C'])
-		with store.transaction() as db:
+		db=sqlite3.connect(path)
+		try:
+			db.executescript(LEGACY_194_DDL)
+			db.execute('PRAGMA application_id=1096238641')
+			db.execute('PRAGMA user_version=1')
+			for key,value in (('streams',json.dumps(['A','B','C'],separators=(',',':'))),('cadence_seconds','600'),('revision','0'),('last_regular_digest',''),('last_digest_revision','-1')):
+				db.execute('INSERT INTO controller_meta VALUES(?,?)',(key,value))
+			for stream in ('A','B','C'):
+				db.execute('INSERT INTO stream_status VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(stream,'COMPLETE',None,'controller','No scoped work has been scheduled','Observe the scoped backlog','an eligible scoped ticket appears','UNOBSERVED','No active action','UNOBSERVED',json.dumps({'required':0,'completed':0,'acceptable':0,'failed':0,'stale':0,'outstanding':0},separators=(',',':')),0,'UNOBSERVED','[]',NOW))
 			for status, payload in rows:
 				db.execute('INSERT INTO controller_dispatch VALUES(?,?,?,?,?,?,NULL,?)', (payload['dispatch_id'], payload['stream'], payload['ticket'], payload['exact_tuple'], status, json.dumps(payload, sort_keys=True, separators=(',', ':')), NOW))
-		return store
+			db.commit()
+		finally:
+			db.close()
+
+	def _database_before_image(self,path):
+		db=sqlite3.connect(path)
+		try:
+			return {'application_id':db.execute('PRAGMA application_id').fetchone()[0],'user_version':db.execute('PRAGMA user_version').fetchone()[0],'dump':list(db.iterdump())}
+		finally:
+			db.close()
 
 	def _legacy_payload(self, name, status, stream='A'):
 		payload = {'dispatch_id': name, 'stream': stream, 'ticket': 'AWF-' + name, 'exact_tuple': 'tuple-' + name, 'paths': ['src/' + name + '.py'], 'actor': 'worker', 'next_action': 'continue', 'dispatch_nonce': name + '-nonce', 'prepared_at': NOW, 'role': 'writer', 'lifecycle_stage': 'implementation'}
@@ -116,14 +174,20 @@ class ContinuousControllerTests(unittest.TestCase):
 			path = Path(scratch) / 'controller.sqlite3'
 			rows = [('PENDING', self._legacy_payload('valid-a', 'PENDING', 'A')), ('IN_FLIGHT', self._legacy_payload('valid-b', 'IN_FLIGHT', 'B')), ('UNKNOWN', self._legacy_payload('ambiguous', 'UNKNOWN', 'C'))]
 			rows[-1][1]['unexpected_legacy_field'] = True
-			store = self._legacy_dispatch_store(path, rows)
-			with store.connection() as db:
-				before = db.execute('SELECT status,payload_json,receipt_json FROM controller_dispatch ORDER BY rowid').fetchall()
+			self._legacy_dispatch_store(path, rows)
+			before=self._database_before_image(path)
 			with self.assertRaisesRegex(ValidationError, '(?i)legacy.*UNKNOWN|UNKNOWN.*legacy'):
 				ContinuousControllerStore(path, ['A', 'B', 'C'])
-			with store.connection() as db:
-				after = db.execute('SELECT status,payload_json,receipt_json FROM controller_dispatch ORDER BY rowid').fetchall()
-			self.assertEqual([tuple(row) for row in after], [tuple(row) for row in before])
+			self.assertEqual(self._database_before_image(path),before)
+
+	def test_legacy_194_late_initialization_refusal_preserves_complete_before_image(self):
+		with tempfile.TemporaryDirectory(prefix='awf91-legacy-late-refusal-') as scratch:
+			path=Path(scratch)/'controller.sqlite3'
+			self._legacy_dispatch_store(path,[('PENDING',self._legacy_payload('valid','PENDING','A'))])
+			before=self._database_before_image(path)
+			with self.assertRaisesRegex(ValidationError,'Configured stream set changed'):
+				ContinuousControllerStore(path,['A','B'])
+			self.assertEqual(self._database_before_image(path),before)
 
 	def test_reservation_sources_are_authenticated_and_git_canonical(self):
 		with tempfile.TemporaryDirectory(prefix='awf91-reservations-') as scratch:
@@ -157,12 +221,26 @@ class ContinuousControllerTests(unittest.TestCase):
 			next_inventory = [ticket('AWF-NEXT', 1)]
 			next_sha = fingerprint('controller-inventory', {'binding': INVENTORY_BINDING, 'tickets': next_inventory})
 			self.assertFalse(store.schedule(next_inventory, NOW, 1, inventory_sha256=next_sha)[0]['ticket'] == 'AWF-NEXT')
-			trigger = {'schema_version': 1, 'source': 'host_observation', 'trigger_id': 'trigger-1', 'repository_id': '101', 'prior_inventory_sha256': 'b' * 64, 'next_inventory_sha256': next_sha, 'round_id': 'round-2', 'observed_at': NOW, 'nonterminal_dispatch_ids': [old['dispatch_id']], 'authenticated': True}
-			trigger['trigger_sha256'] = fingerprint('controller-replan-trigger', trigger)
+			trigger=replan_trigger('trigger-1','b'*64,next_sha,[old['dispatch_id']],NOW)
 			store.seal_round_boundary_replan(trigger, NOW)
 			reopened = ContinuousControllerStore(path, ['A'])
 			self.assertEqual(reopened.schedule(next_inventory, NOW, 1, inventory_sha256=next_sha)[0]['ticket'], 'AWF-NEXT')
 			self.assertTrue(any(item['payload']['ticket'] == 'AWF-NEXT' for item in reopened.prepare_dispatches(NOW)))
+
+	def test_consumed_replan_seal_persists_successor_intent_before_restart(self):
+		with tempfile.TemporaryDirectory(prefix='awf91-replan-crash-') as scratch:
+			path=Path(scratch)/'controller.sqlite3'
+			store=ContinuousControllerStore(path,['A'])
+			store.schedule([ticket('AWF-OLD',1)],NOW,1)
+			store.prepare_dispatches(NOW)
+			next_inventory=[ticket('AWF-NEXT',1)]
+			next_sha=seal_replan(store,'crash-after-schedule',next_inventory,'2026-10-02T10:00:01Z')
+			store.schedule(next_inventory,'2026-10-02T10:00:01Z',1,inventory_sha256=next_sha)
+			# Simulate process loss before production_controller_cycle reaches prepare_dispatches.
+			reopened=ContinuousControllerStore(path,['A'])
+			pending=reopened.pending_dispatches()
+			self.assertTrue(any(item['payload']['ticket']=='AWF-NEXT' for item in pending),pending)
+			self.assertTrue(reopened.round_boundary_ready(next_inventory,next_sha))
 
 	def test_all_nonterminal_states_block_refill_until_authenticated_replan(self):
 		for status in ('PENDING', 'IN_FLIGHT', 'UNKNOWN', 'LAUNCHED'):
@@ -173,14 +251,17 @@ class ContinuousControllerTests(unittest.TestCase):
 				with store.transaction() as db:
 					db.execute('UPDATE controller_dispatch SET status=? WHERE dispatch_id=?', (status, operation['dispatch_id']))
 				next_inventory = [ticket('AWF-NEXT', 1)]; next_sha = fingerprint('controller-inventory', {'binding': INVENTORY_BINDING, 'tickets': next_inventory})
-				for authenticated in (False, True):
-					trigger = {'schema_version': 1, 'source': 'host_observation', 'trigger_id': 'trigger-' + status + '-' + str(authenticated), 'repository_id': '101', 'prior_inventory_sha256': 'b' * 64, 'next_inventory_sha256': next_sha, 'round_id': 'round-2', 'observed_at': NOW, 'nonterminal_dispatch_ids': [operation['dispatch_id']], 'authenticated': authenticated}
-					trigger['trigger_sha256'] = fingerprint('controller-replan-trigger', trigger)
-					if not authenticated:
-						with self.assertRaises(ValidationError): store.seal_round_boundary_replan(trigger, NOW)
-					else:
-						store.seal_round_boundary_replan(trigger, NOW)
+				invalid=replan_trigger('trigger-'+status+'-invalid','b'*64,next_sha,[operation['dispatch_id']],NOW)
+				invalid['provider_artifact']['artifact_sha256']='0'*64
+				invalid['trigger_sha256']=fingerprint('controller-replan-trigger',{key:value for key,value in invalid.items() if key!='trigger_sha256'})
+				with self.assertRaises(ValidationError): store.seal_round_boundary_replan(invalid,NOW)
+				valid=replan_trigger('trigger-'+status,'b'*64,next_sha,[operation['dispatch_id']],NOW)
+				store.seal_round_boundary_replan(valid,NOW)
 				self.assertEqual(store.schedule(next_inventory, NOW, 1, inventory_sha256=next_sha)[0]['ticket'], 'AWF-NEXT')
+				with self.assertRaises(ValidationError):
+					store.seal_round_boundary_replan(valid,NOW)
+				with store.connection() as db:
+					self.assertEqual(db.execute("SELECT COUNT(*) FROM controller_replan_seal WHERE status='SEALED'").fetchone()[0],0)
 
 	def test_publication_failure_blocks_before_dispatch_while_other_streams_continue(self):
 		calls=[]

@@ -15,7 +15,7 @@ from agentic import ValidationError
 from source_only import skip_unless_source_repo
 from agentic.canonical import canonical, fingerprint, sha256
 from agentic.contracts import Contracts
-from agentic.continuous_controller import ContinuousControllerStore, overlap_allowance_command, production_controller_cycle, production_jira_lifecycle, production_merge_observed
+from agentic.continuous_controller import ContinuousControllerStore, overlap_allowance_command, production_controller_cycle, production_jira_lifecycle, production_merge_observed, validate_replan_trigger_observation
 from agentic.lifecycle import definition
 from agentic.policy import policy_hash
 NOW = '2026-10-09T08:00:00Z'
@@ -302,6 +302,41 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		restarted = __import__('runpy').run_path(str(self.adapter))['build_adapters']({**self.config, '_runner': RunningRunner(), '_clock': FakeClock()})
 		observed = restarted['observe_dispatch'](payload)
 		self.assertEqual((observed['dispatch_state'], observed['terminal']), ('LAUNCHED', False))
+
+	def test_replan_trigger_requires_trusted_immutable_provider_artifact(self):
+		prior='1'*64
+		nonterminal=['dispatch-1']
+
+		class TriggerRunner(FakeRunner):
+			def __init__(self,*,actor_id=7001,updated_at='2026-10-09T07:59:00Z',comment_body=''):
+				super().__init__()
+				self.actor_id=actor_id;self.updated_at=updated_at;self.comment_body=comment_body;self.comment_reads=0
+			def run(self,argv,*,cwd,env,timeout,max_bytes):
+				path=argv[-1]
+				if '/issues/comments/9002' in path:
+					self.comment_reads+=1
+					return {'headers':{'ETag':'"replan"','Date':'Fri, 09 Oct 2026 08:00:00 GMT'},'body':{'id':9002,'node_id':'comment-node-9002','user':{'id':self.actor_id,'login':'owner'},'author_association':'OWNER','created_at':'2026-10-09T07:59:00Z','updated_at':self.updated_at,'body':self.comment_body}}
+				return super().run(argv,cwd=cwd,env=env,timeout=timeout,max_bytes=max_bytes)
+
+		config={**self.config,'merge_gate':{'trusted_owner_ids':[7001]}}
+		runner=TriggerRunner()
+		adapters=__import__('runpy').run_path(str(self.adapter))['build_adapters']({**config,'_runner':runner,'_clock':FakeClock()})
+		next_inventory=adapters['observe_inventory']()['inventory_sha256']
+		event={'repository_id':'101','round_id':'round-2','prior_inventory_sha256':prior,'next_inventory_sha256':next_inventory,'nonterminal_dispatch_ids':nonterminal}
+		body='AWF-ROUND-REPLAN 1\n'+canonical(event).decode('utf-8')+'\n'
+		runner.comment_body=body
+		request={'comment_id':9002,'repository_id':'101','prior_inventory_sha256':prior,'next_inventory_sha256':next_inventory,'nonterminal_dispatch_ids':nonterminal}
+		raw=adapters['observe_replan_trigger'](request)
+		trigger=validate_replan_trigger_observation(config,request,raw,now=NOW)
+		self.assertEqual((trigger['source'],trigger['round_id'],trigger['provider_artifact']['comment_id']),('github.com','round-2',9002))
+		self.assertEqual(runner.comment_reads,1)
+		wrong_context='AWF-ROUND-REPLAN 1\n'+canonical({**event,'next_inventory_sha256':'3'*64}).decode('utf-8')+'\n'
+		for bad_runner in (TriggerRunner(actor_id=7999,comment_body=body),TriggerRunner(updated_at=NOW,comment_body=body),TriggerRunner(comment_body=wrong_context)):
+			with self.subTest(actor_id=bad_runner.actor_id,updated_at=bad_runner.updated_at,body=bad_runner.comment_body),self.assertRaises(ValidationError):
+				bad=__import__('runpy').run_path(str(self.adapter))['build_adapters']({**config,'_runner':bad_runner,'_clock':FakeClock()})
+				bad['observe_inventory']()
+				raw=bad['observe_replan_trigger'](request)
+				validate_replan_trigger_observation(config,request,raw,now=NOW)
 
 	def test_loader_executes_real_module_and_wrong_pin_refuses(self):
 		config_path = self.root / 'config.json'
