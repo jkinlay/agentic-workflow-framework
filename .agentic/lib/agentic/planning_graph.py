@@ -260,6 +260,10 @@ def _graph(tickets, generator_order):
         _fail("GENERATOR_ORDER_MISSING", f"generator order omits {', '.join(missing)}")
 
     precedence = {key: set(values) for key, values in dependency_adjacency.items()}
+    ordered_generators = sorted(generators, key=lambda key: (order_slot[key], key))
+    for before, after in zip(ordered_generators, ordered_generators[1:]):
+        precedence[before].add(after)
+        edges.append({"from": before, "to": after, "kind": "generator_order", "paths": []})
     ordered_keys = sorted(keys)
     for index, left in enumerate(ordered_keys):
         for right in ordered_keys[index + 1:]:
@@ -268,9 +272,9 @@ def _graph(tickets, generator_order):
             shared = sorted(left_paths & right_paths)
             if not shared:
                 continue
-            if _reachable(left, right, dependency_adjacency):
+            if _reachable(left, right, precedence):
                 before, after = left, right
-            elif _reachable(right, left, dependency_adjacency):
+            elif _reachable(right, left, precedence):
                 before, after = right, left
             elif left in order_slot and right in order_slot:
                 before, after = sorted((left, right), key=lambda key: (order_slot[key], key))
@@ -279,10 +283,6 @@ def _graph(tickets, generator_order):
             precedence[before].add(after)
             edges.append({"from": before, "to": after, "kind": "file_overlap", "paths": shared})
 
-    ordered_generators = sorted(generators, key=lambda key: (order_slot[key], key))
-    for before, after in zip(ordered_generators, ordered_generators[1:]):
-        precedence[before].add(after)
-        edges.append({"from": before, "to": after, "kind": "generator_order", "paths": []})
     _assert_acyclic(keys, precedence)
     edges.sort(key=lambda edge: (edge["from"], edge["to"], edge["kind"], edge["paths"]))
     return by_key, precedence, edges, order_slot
@@ -355,8 +355,33 @@ def _schedule(by_key, adjacency, lane_cap, start_gap_minutes, scores):
             key,
         ))
         launch_unlocked = last_start is None or minute >= last_start + start_gap_minutes
-        if available and ready and launch_unlocked:
-            key = ready[0]
+        def blocks_future_window(candidate):
+            candidate_finish = minute + by_key[candidate]["duration_minutes"]
+            for urgent in unscheduled - {candidate}:
+                window = by_key[urgent]["owner_review_window"]
+                if window is None or not predecessors[urgent] <= set(finishes):
+                    continue
+                release = max(
+                    (finishes[item] + start_gap_minutes for item in predecessors[urgent]),
+                    default=0,
+                )
+                release = max(release, window["opens_at_minute"])
+                latest_start = window["closes_at_minute"] - by_key[urgent]["duration_minutes"]
+                if release <= minute or release > latest_start:
+                    continue
+                occupied_at_deadline = sum(end > latest_start for end in running.values())
+                capacity_blocked = (
+                    candidate_finish > latest_start
+                    and occupied_at_deadline + 1 >= lane_cap
+                )
+                start_lock_blocked = minute + start_gap_minutes > latest_start
+                if capacity_blocked or start_lock_blocked:
+                    return True
+            return False
+
+        candidates = [key for key in ready if not blocks_future_window(key)]
+        if available and candidates and launch_unlocked:
+            key = candidates[0]
             duration = by_key[key]["duration_minutes"]
             window = by_key[key]["owner_review_window"]
             if window is not None and minute + duration > window["closes_at_minute"]:
@@ -446,14 +471,17 @@ def _idle_lane_status(tickets, observation, observed_minute):
         for ticket in queued
         for reason in (ticket["blockers"] or ([ticket["idle_lane_reason"]] if ticket["idle_lane_reason"] else []))
     })
-    if not ready and not reasons:
-        reasons = ["NO_READY_TICKET"]
     idle_minutes = observed_minute - idle_since
+    failed = idle_minutes > 10 and bool(ready)
+    if failed and not reasons:
+        reasons = ["PLAN_UNREADABLE"]
+    elif not ready and not reasons:
+        reasons = ["NO_READY_TICKET"]
     return {
         "owner_lane": lane,
         "idle_since_minute": idle_since,
         "idle_minutes": idle_minutes,
-        "status_verdict": "FAIL" if idle_minutes > 10 and ready else "OK",
+        "status_verdict": "FAIL" if failed else "OK",
         "ready_tickets": ready,
         "idle_lane_reasons": reasons,
     }
