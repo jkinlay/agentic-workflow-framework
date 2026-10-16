@@ -36,6 +36,8 @@ class MergeTrainTests(unittest.TestCase):
         self.head2 = self._commit("src/two.txt", "two\n", "two")
         self.tree1 = self._git("rev-parse", f"{self.head1}^{{tree}}")
         self.tree2 = self._git("rev-parse", f"{self.head2}^{{tree}}")
+        self.observer_registry = {}
+        self.observer_count = 0
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -125,7 +127,8 @@ class MergeTrainTests(unittest.TestCase):
             }
         return evidence
 
-    def _registration(self, source, evidence):
+    def _registration(self, source, evidence,
+                      observer_id="fixture-observer"):
         module = merge_train()
         request = module.source_admission_request(source, "main")
         receipts = {}
@@ -134,14 +137,14 @@ class MergeTrainTests(unittest.TestCase):
             result = copy.deepcopy(evidence)
             request_sha = fingerprint("merge_train_provider_request", value)
             material = {
-                "producer_id": "fixture-observer",
+                "producer_id": observer_id,
                 "observed_at": result["observed_at"],
                 "request_sha256": request_sha,
                 "result": result,
             }
             observation = {
                 "status": "OBSERVED",
-                "producer_id": "fixture-observer",
+                "producer_id": observer_id,
                 "observation_id": fingerprint(
                     "merge_train_provider_observation", material),
                 "observed_at": result["observed_at"],
@@ -173,10 +176,13 @@ class MergeTrainTests(unittest.TestCase):
         module = merge_train()
         source = source or self._source()
         evidence = evidence or self._evidence(source)
-        request, registration = self._registration(source, evidence)
+        self.observer_count += 1
+        observer_id = f"fixture-observer-{self.observer_count}"
+        request, registration = self._registration(
+            source, evidence, observer_id=observer_id)
+        self.observer_registry[observer_id] = registration
         return module.admit_source(
-            source, "main", "fixture-observer",
-            {"fixture-observer": registration}, now=NOW,
+            source, "main", observer_id, self.observer_registry, now=NOW,
             trusted_owner_ids=["owner-1"],
         )
 
@@ -265,69 +271,131 @@ class MergeTrainTests(unittest.TestCase):
                            observed_at="2026-10-16T17:50:00Z"),
         )
         ordered = module.order_sources(
-            [dependent, independent_late, independent_early])
+            [dependent, independent_late, independent_early],
+            self.observer_registry, now=NOW,
+            trusted_owner_ids=["owner-1"])
         self.assertEqual([11, 12, 13],
                          [item["pr_number"] for item in ordered])
 
     def test_duplicate_pr_head_and_shared_commit_range_are_refused(self):
         module = merge_train()
         first = self._admit()
-        duplicate_pr = copy.deepcopy(first)
-        duplicate_head = copy.deepcopy(first)
-        duplicate_head["pr_number"] = 12
-        duplicate_head["admission_id"] = fingerprint(
-            "merge_train_source_admission",
-            {key: value for key, value in duplicate_head.items()
-             if key != "admission_id"})
-        shared = copy.deepcopy(first)
-        shared["pr_number"] = 13
-        shared["head_sha"] = self.head2
-        shared["commit_range"] = [self.head1, self.head2]
-        shared["admission_id"] = fingerprint(
-            "merge_train_source_admission",
-            {key: value for key, value in shared.items()
-             if key != "admission_id"})
+        duplicate_head_source = self._source(
+            pr=12, commits=[self.head1])
+        duplicate_head = self._admit(
+            duplicate_head_source, self._evidence(duplicate_head_source))
+        shared_source = self._source(
+            pr=13, head=self.head2, tree=self.tree2,
+            commits=[self.head1, self.head2])
+        shared = self._admit(shared_source, self._evidence(shared_source))
         for sources, reason in [
-            ([first, duplicate_pr], "duplicate PR"),
+            ([first, first], "duplicate PR"),
             ([first, duplicate_head], "duplicate head"),
             ([first, shared], "shared commit"),
         ]:
             with self.subTest(reason=reason):
                 with self.assertRaisesRegex(ValidationError, reason):
-                    module.order_sources(sources)
+                    module.order_sources(
+                        sources, self.observer_registry, now=NOW,
+                        trusted_owner_ids=["owner-1"])
 
     def test_source_review_cannot_authorize_batch(self):
         module = merge_train()
         with self.assertRaisesRegex(ValidationError, "batch authorization"):
             module.require_batch_authorization(self._admit())
 
+    def test_forged_admission_with_recomputed_id_is_refused_at_freeze(self):
+        module = merge_train()
+        admitted = self._admit()
+        forged = copy.deepcopy(admitted)
+        forged_source = self._source(
+            head=self.head2, tree=self.tree2, commits=[self.head2])
+        forged.update(forged_source)
+        evidence = self._evidence(forged_source)
+        request = module.source_admission_request(forged_source, "main")
+        producer_id = admitted["provider_observation"]["producer_id"]
+        registration = self.observer_registry[producer_id]
+        request_sha = fingerprint("merge_train_provider_request", request)
+        observation_material = {
+            "producer_id": producer_id,
+            "observed_at": evidence["observed_at"],
+            "request_sha256": request_sha,
+            "result": evidence,
+        }
+        raw_observation = {
+            "status": "OBSERVED",
+            "producer_id": producer_id,
+            "observation_id": fingerprint(
+                "merge_train_provider_observation", observation_material),
+            "observed_at": evidence["observed_at"],
+            "request_sha256": request_sha,
+            "result": evidence,
+        }
+        forged_receipt = module.provider_receipt_sha256(
+            registration, request, raw_observation)
+        forged["provider_admission"]["request"] = request
+        forged["provider_admission"]["observation"] = raw_observation
+        forged["provider_observation"] = {
+            "producer_id": producer_id,
+            "observation_id": raw_observation["observation_id"],
+            "observed_at": raw_observation["observed_at"],
+            "request_sha256": request_sha,
+            "receipt_sha256": forged_receipt,
+            "implementation_sha256": registration["implementation_sha256"],
+            "release_sha256": registration["release_sha256"],
+        }
+        forged["evidence_digests"] = {
+            field: evidence[field]["evidence_sha256"]
+            for field in ("final_gate", "critic", "ci", "provenance")
+        }
+        forged["owner_review_evidence_sha256"] = evidence[
+            "owner_review"]["evidence_sha256"]
+        forged["approval_time"] = evidence["owner_review"]["submitted_at"]
+        forged["admission_evidence_sha256"] = fingerprint(
+            "merge_train_source_admission_evidence", {
+                "source": forged_source,
+                "provider_observation": forged["provider_observation"],
+                "evidence_digests": forged["evidence_digests"],
+                "owner_review_evidence_sha256": forged[
+                    "owner_review_evidence_sha256"],
+            })
+        forged["admission_id"] = fingerprint(
+            "merge_train_source_admission",
+            {key: value for key, value in forged.items()
+             if key != "admission_id"})
+
+        with self.assertRaisesRegex(ValidationError, "registered receipt"):
+            module.freeze_generation(
+                "AWF-54-batch", "main", self.target, [forged], 1,
+                self.observer_registry, now=NOW,
+                trusted_owner_ids=["owner-1"])
+
     def test_generation_invalidates_on_target_head_or_evidence_drift(self):
         module = merge_train()
         admitted = self._admit()
         generation = module.freeze_generation(
-            "AWF-54-batch", "main", self.target, [admitted], 1)
+            "AWF-54-batch", "main", self.target, [admitted], 1,
+            self.observer_registry, now=NOW,
+            trusted_owner_ids=["owner-1"])
         self.assertEqual("CURRENT", module.generation_status(
-            generation, self.target, [admitted])["status"])
-        changed_head = copy.deepcopy(admitted)
-        changed_head["head_sha"] = self.head2
-        changed_head["commit_range"] = [self.head2]
-        changed_head["admission_id"] = fingerprint(
-            "merge_train_source_admission",
-            {key: value for key, value in changed_head.items()
-             if key != "admission_id"})
-        changed_evidence = copy.deepcopy(admitted)
-        changed_evidence["admission_evidence_sha256"] = "f" * 64
-        changed_evidence["admission_id"] = fingerprint(
-            "merge_train_source_admission",
-            {key: value for key, value in changed_evidence.items()
-             if key != "admission_id"})
+            generation, self.target, [admitted], self.observer_registry,
+            now=NOW, trusted_owner_ids=["owner-1"])["status"])
+        changed_head_source = self._source(
+            head=self.head2, tree=self.tree2, commits=[self.head2])
+        changed_head = self._admit(
+            changed_head_source, self._evidence(changed_head_source))
+        changed_evidence = self._admit(
+            self._source(), self._evidence(
+                self._source(), observed_at="2026-10-16T17:59:00Z"))
         for target, sources, reason in [
             (self.head2, [admitted], "TARGET_DRIFT"),
             (self.target, [changed_head], "SOURCE_HEAD_DRIFT"),
             (self.target, [changed_evidence], "SOURCE_EVIDENCE_DRIFT"),
         ]:
             with self.subTest(reason=reason):
-                status = module.generation_status(generation, target, sources)
+                status = module.generation_status(
+                    generation, target, sources, self.observer_registry,
+                    now=NOW, trusted_owner_ids=["owner-1"])
                 self.assertEqual("ABANDONED", status["status"])
                 self.assertIn(reason, status["reasons"])
 
@@ -366,7 +434,9 @@ class MergeTrainTests(unittest.TestCase):
         module = merge_train()
         admitted = self._admit()
         generation = module.freeze_generation(
-            "AWF-54-batch", "main", self.target, [admitted], 1)
+            "AWF-54-batch", "main", self.target, [admitted], 1,
+            self.observer_registry, now=NOW,
+            trusted_owner_ids=["owner-1"])
         commit_sha = hashlib.sha1(b"batch-commit").hexdigest()
         result = {
             "generation_id": generation["generation_id"],
