@@ -44,6 +44,14 @@ _COMMIT_LIMIT = 10000
 _GENERATED_BLOB_LIMIT = 32 * 1024 * 1024
 _GENERATED_TOTAL_LIMIT = 512 * 1024 * 1024
 _REASON_LIMIT = 4096
+_REPOSITORY_FILE_LIMIT = 1024 * 1024
+_WINDOWS_RESERVED_STEMS = frozenset({
+    "con", "prn", "aux", "nul", "conin$", "conout$",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+    *(f"com{number}" for number in "¹²³"),
+    *(f"lpt{number}" for number in "¹²³"),
+})
 
 # Unicode confusables whose names and NFKC forms do not identify their visual
 # colon role.  NFKC and Unicode character names cover the general case below;
@@ -312,19 +320,31 @@ def validate_ref_locator(value, field="Git revision"):
     return value
 
 
+def _portable_path_key(value):
+    """Return the host-independent collision key for an accepted Git path."""
+    return unicodedata.normalize("NFC", value).casefold()
+
+
 def _validate_object_path(value):
     _require(isinstance(value, str) and value == unicodedata.normalize("NFC", value),
              "PATH_NFC: path must be NFC text")
     raw = value.encode("utf-8", "strict")
     _require(raw and len(raw) <= 4096, "PATH_SIZE: path is empty or too long")
-    _require("\\" not in value and not value.startswith("/") and ":" not in value,
+    _require("\\" not in value and not value.startswith("/") and ":" not in value
+             and not any(character in '<>"|?*' for character in value),
              "PATH_SYNTAX: path must be repository-relative POSIX text")
     parts = value.split("/")
     _require(all(part not in {"", ".", ".."} and len(part.encode("utf-8")) <= 255
                  for part in parts), "PATH_COMPONENT: unsafe path component")
     _require(not any(ord(char) < 32 or ord(char) == 127 for char in value),
              "PATH_CONTROL: path contains a control character")
-    _require(parts[0].casefold() != ".git", "PATH_DOT_GIT: .git aliases are forbidden")
+    _require(all(not part.endswith((".", " ")) for part in parts),
+             "PATH_TRAILING: path components may not end in dot or space")
+    _require(all(part.split(".", 1)[0].casefold() not in _WINDOWS_RESERVED_STEMS
+                 for part in parts),
+             "PATH_RESERVED: Windows device names are forbidden on every host")
+    _require(all(part.casefold() != ".git" for part in parts),
+             "PATH_DOT_GIT: .git aliases are forbidden")
     return value
 
 
@@ -342,6 +362,7 @@ def decode_git_paths(raw, *, failure="operation", require_terminal_nul=True):
     _require(len(records) <= _PATH_RECORD_LIMIT,
              "PATH_COUNT: Git path output exceeds 100000 records")
     result = []
+    seen = set()
     for ordinal, record in enumerate(records, 1):
         try:
             value = record.decode("utf-8", "strict")
@@ -353,8 +374,10 @@ def decode_git_paths(raw, *, failure="operation", require_terminal_nul=True):
         except ValidationError as exc:
             raise ValidationError(_safe_reason("PATH_INVALID", ordinal=ordinal,
                                                rejected=record)) from exc
-        _require(value not in result,
+        key = _portable_path_key(value)
+        _require(key not in seen,
                  _safe_reason("PATH_DUPLICATE", ordinal=ordinal, rejected=record))
+        seen.add(key)
         result.append(value)
     return result
 
@@ -733,20 +756,172 @@ def verify_provider_owner_override(record, observation, *, repository_id=None,
 class _Git:
     def __init__(self, root):
         path = Path(root).resolve()
-        _require(path.is_dir(), "Provenance repository root must be an existing directory")
+        _require(path.is_dir(),
+                 "REPOSITORY_INVALID: repository root must be an existing directory")
         self.root = path
+        self._identity_ready = False
+        top = Path(self.text("rev-parse", "--show-toplevel")).resolve()
+        _require(top == path,
+                 "REPOSITORY_ROOT: path must be the canonical Git worktree root")
+        self.git_dir = Path(self.text("rev-parse", "--absolute-git-dir")).resolve()
+        common = Path(self.text("rev-parse", "--git-common-dir"))
+        if not common.is_absolute():
+            common = self.root / common
+        self.common_dir = common.resolve()
+        objects = Path(self.text("rev-parse", "--git-path", "objects"))
+        if not objects.is_absolute():
+            objects = self.root / objects
+        self.objects_dir = objects.resolve()
+        _require(self.git_dir.is_dir() and self.common_dir.is_dir()
+                 and self.objects_dir.is_dir(),
+                 "REPOSITORY_IDENTITY_INVALID: Git directories are unavailable")
         self.object_format = self.text("rev-parse", "--show-object-format")
         _require(self.object_format in {"sha1", "sha256"},
                  "REPOSITORY_FORMAT: unsupported Git object format")
         self.oid_length = 40 if self.object_format == "sha1" else 64
 
+        identity_paths = {self.root, self.git_dir, self.common_dir, self.objects_dir}
+        marker = self.root / ".git"
+        if marker.exists():
+            identity_paths.add(marker)
+        self._identity = {
+            path: self._path_identity(path) for path in sorted(identity_paths, key=str)
+        }
+        watched = {
+            self.common_dir / "config",
+            self.git_dir / "config.worktree",
+            self.git_dir / "commondir",
+            self.common_dir / "shallow",
+            self.git_dir / "shallow",
+            self.objects_dir / "info" / "alternates",
+            self.common_dir / "info" / "grafts",
+            self.common_dir / "info" / "attributes",
+        }
+        if marker.is_file():
+            watched.add(marker)
+        self._repository_files = {
+            item: self._file_bytes(item) for item in sorted(watched, key=str)
+        }
+        alternates = self._repository_files[self.objects_dir / "info" / "alternates"]
+        grafts = self._repository_files[self.common_dir / "info" / "grafts"]
+        attributes = self._repository_files[self.common_dir / "info" / "attributes"]
+        _require(not alternates.strip(),
+                 "GIT_ALTERNATES_UNSAFE: repository object alternates are forbidden")
+        _require(not grafts.strip(),
+                 "GIT_GRAFTS_UNSAFE: repository grafts are forbidden")
+        _require(not attributes.strip(),
+                 "GIT_ATTRIBUTES_UNSAFE: repository-local attributes are forbidden")
+        self.shallow_boundaries = self._read_shallow_boundaries()
+        self._validate_local_config()
+        self._identity_ready = True
+
+    @staticmethod
+    def _path_identity(path):
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise ValidationError(
+                "REPOSITORY_IDENTITY_INVALID: repository path is unavailable"
+            ) from exc
+        return (str(path.resolve()), stat.st_dev, stat.st_ino,
+                stat.st_mode, path.is_dir(), path.is_file())
+
+    @staticmethod
+    def _file_bytes(path):
+        if not path.exists():
+            return b""
+        _require(path.is_file(),
+                 "REPOSITORY_IDENTITY_INVALID: repository metadata is not a file")
+        try:
+            before = path.stat()
+            _require(before.st_size <= _REPOSITORY_FILE_LIMIT,
+                     "REPOSITORY_METADATA_SIZE: repository metadata exceeds 1 MiB")
+            raw = path.read_bytes()
+            after = path.stat()
+        except OSError as exc:
+            raise ValidationError(
+                "REPOSITORY_IDENTITY_INVALID: repository metadata is unreadable"
+            ) from exc
+        _require(len(raw) == before.st_size
+                 and (before.st_dev, before.st_ino, before.st_size,
+                      before.st_mtime_ns)
+                 == (after.st_dev, after.st_ino, after.st_size,
+                     after.st_mtime_ns),
+                 "REPOSITORY_IDENTITY_CHANGED: repository metadata changed while read")
+        return raw
+
+    def _read_shallow_boundaries(self):
+        raw = self._repository_files.get(self.common_dir / "shallow", b"")
+        if self.git_dir != self.common_dir:
+            raw += self._repository_files.get(self.git_dir / "shallow", b"")
+        if not raw:
+            return frozenset()
+        try:
+            lines = raw.decode("ascii", "strict").splitlines()
+        except UnicodeDecodeError as exc:
+            raise ValidationError("SHALLOW_INVALID: shallow boundary is not ASCII") from exc
+        _require(all(len(value) == self.oid_length and _SHA.fullmatch(value)
+                     for value in lines),
+                 "SHALLOW_INVALID: shallow boundary has an invalid object id")
+        return frozenset(lines)
+
+    def missing_oid_is_shallow_parent(self, oid):
+        _require(len(oid) == self.oid_length and _SHA.fullmatch(oid),
+                 "REF_FORMAT: missing range endpoint has the wrong object format")
+        parent_header = b"parent " + oid.encode("ascii")
+        for boundary in sorted(self.shallow_boundaries):
+            raw = self.run("cat-file", "commit", boundary, binary=True).stdout
+            marker = raw.find(b"\n\n")
+            _require(marker > 0,
+                     "SHALLOW_INVALID: shallow boundary commit has no header separator")
+            if parent_header in raw[:marker].split(b"\n"):
+                return True
+        return False
+
+    def _validate_local_config(self):
+        configured = self.run(
+            "config", "--local", "--null", "--name-only", "--list",
+            binary=True,
+        ).stdout
+        try:
+            keys = [value.decode("ascii", "strict").casefold()
+                    for value in configured.split(b"\0") if value]
+        except UnicodeDecodeError as exc:
+            raise ValidationError("GIT_CONFIG_UNSAFE: local config key is not ASCII") from exc
+        unsafe_exact = {
+            "core.attributesfile", "core.alternaterefscommand",
+            "core.usereplacerefs", "diff.external", "diff.ignoresubmodules",
+            "diff.renamelimit", "diff.renames",
+        }
+        unsafe = [key for key in keys if (
+            key in unsafe_exact
+            or key.startswith(("include.", "includeif.", "merge."))
+            or re.fullmatch(r"diff\..+\.(?:command|textconv)", key)
+            or re.fullmatch(r"submodule\..+\.ignore", key)
+        )]
+        _require(not unsafe,
+                 "GIT_CONFIG_UNSAFE: repository-local Git behavior is not closed")
+
+    def _verify_repository_identity(self):
+        for path, expected in self._identity.items():
+            _require(self._path_identity(path) == expected,
+                     "REPOSITORY_IDENTITY_CHANGED: repository path identity changed")
+        for path, expected in self._repository_files.items():
+            _require(self._file_bytes(path) == expected,
+                     "REPOSITORY_IDENTITY_CHANGED: repository metadata changed")
+
     def run(self, *args, binary=False, allow_failure=False, environment=None,
             input_bytes=None):
+        if self._identity_ready:
+            self._verify_repository_identity()
         try:
             completed = run_bounded(
-                ["git", "--no-replace-objects", "-c", "core.useReplaceRefs=false",
+                ["git", "--no-replace-objects", "--literal-pathspecs",
+                 "-c", "core.useReplaceRefs=false",
                  "-c", "core.quotepath=false", "-c", "i18n.commitEncoding=UTF-8",
                  "-c", "i18n.logOutputEncoding=UTF-8",
+                  "-c", "core.ignoreCase=false", "-c", "core.precomposeUnicode=false",
+                  "-c", "diff.renames=false",
                  "-c", "safe.directory=" + str(self.root),
                  "-C", str(self.root), *args],
                 timeout=60, stdout_limit=_GIT_OUTPUT_LIMIT,
@@ -774,10 +949,45 @@ class _Git:
     def text(self, *args):
         return self.run(*args).stdout.strip()
 
-    def resolve(self, value, field):
+    def resolve(self, value, field, *, allow_missing=False):
         validate_ref_locator(value, field)
-        resolved = self.text("rev-parse", "--verify", "--end-of-options",
-                             f"{value}^{{commit}}")
+        candidate = value
+        if value.startswith("refs/"):
+            located = self.run(
+                "rev-parse", "--verify", "--quiet", "--end-of-options", value,
+                allow_failure=True, binary=True,
+            )
+            if located.returncode == 1 and not located.stdout:
+                if allow_missing:
+                    return None
+                raise ValidationError(f"REF_MISSING: {field} does not exist")
+            _require(located.returncode == 0,
+                     f"REF_RESOLUTION: {field} could not be resolved exactly")
+            try:
+                candidate = located.stdout.decode("ascii", "strict").strip()
+            except UnicodeDecodeError as exc:
+                raise ValidationError(
+                    f"REF_FORMAT: {field} resolved to non-ASCII output"
+                ) from exc
+        else:
+            _require(len(value) == self.oid_length,
+                     f"REF_FORMAT: {field} OID has the wrong object format")
+        dereferenced = self.run(
+            "rev-parse", "--verify", "--end-of-options",
+            f"{candidate}^{{commit}}", allow_failure=True, binary=True,
+        )
+        if dereferenced.returncode:
+            if allow_missing and not dereferenced.stdout:
+                return None
+            raise ValidationError(
+                f"REF_RESOLUTION: {field} could not be resolved exactly"
+            )
+        try:
+            resolved = dereferenced.stdout.decode("ascii", "strict").strip()
+        except UnicodeDecodeError as exc:
+            raise ValidationError(
+                f"REF_FORMAT: {field} resolved to non-ASCII output"
+            ) from exc
         _require(len(resolved) == self.oid_length and _SHA.fullmatch(resolved),
                  f"REF_FORMAT: {field} resolved to the wrong object format")
         return resolved
@@ -791,25 +1001,40 @@ class _Git:
             "ls-tree", "-z", treeish, "--", path,
             binary=True, allow_failure=True, environment=environment,
         )
-        if result.returncode or not result.stdout:
+        if result.returncode:
+            raise ValidationError("TREE_ENTRY_COMMAND: ls-tree failed")
+        if not result.stdout:
             return None
         rows = [row for row in result.stdout.split(b"\0") if row]
-        if len(rows) != 1 or b"\t" not in rows[0]:
-            return None
+        _require(result.stdout.endswith(b"\0") and len(rows) == 1
+                 and b"\t" in rows[0],
+                 "TREE_ENTRY_FRAMING: ls-tree returned an invalid record")
         metadata, raw_path = rows[0].split(b"\t", 1)
         try:
-            mode, object_type, object_id = metadata.decode("ascii").split()
-            decoded_path = raw_path.decode("utf-8")
-        except (UnicodeDecodeError, ValueError):
-            return None
-        if decoded_path != path:
-            return None
+            tokens = metadata.decode("ascii", "strict").split()
+        except UnicodeDecodeError as exc:
+            raise ValidationError("TREE_ENTRY_META: ls-tree metadata is not ASCII") from exc
+        _require(len(tokens) == 3, "TREE_ENTRY_META: ls-tree metadata is invalid")
+        mode, object_type, object_id = tokens
+        try:
+            decoded_path = raw_path.decode("utf-8", "strict")
+        except UnicodeDecodeError as exc:
+            raise ValidationError(_safe_reason(
+                "TREE_ENTRY_PATH_UTF8", ordinal=1, rejected=raw_path,
+            )) from exc
+        _require(decoded_path == path,
+                 "TREE_ENTRY_PATH_MISMATCH: ls-tree returned a different path")
+        _require(mode in {"100644", "100755", "120000", "160000"}
+                 and object_type in {"blob", "commit"}
+                 and len(object_id) == self.oid_length
+                 and _SHA.fullmatch(object_id),
+                 "TREE_ENTRY_META: ls-tree returned invalid mode/type/OID")
         content = self.run(
             "cat-file", object_type, object_id,
             binary=True, allow_failure=True, environment=environment,
         )
-        if content.returncode:
-            return None
+        _require(content.returncode == 0,
+                 "TREE_ENTRY_CONTENT: committed object is unavailable")
         return {
             "mode": mode,
             "type": object_type,
@@ -818,13 +1043,8 @@ class _Git:
         }
 
     def object_directory(self):
-        value = self.text("rev-parse", "--git-path", "objects")
-        path = Path(value)
-        if not path.is_absolute():
-            path = self.root / path
-        path = path.resolve()
-        _require(path.is_dir(), "Git provenance object database is unavailable")
-        return path
+        self._verify_repository_identity()
+        return self.objects_dir
 
 
 def _commit_details(git, commit):
@@ -888,11 +1108,12 @@ def _commit_details(git, commit):
     parents = [value.decode("ascii") for value in values(b"parent")]
     if parents:
         changed = git.run("diff", "--raw", "-r", "-z", "--no-renames",
-                          "--no-abbrev", parents[0], commit, binary=True).stdout
+                          "--ignore-submodules=none", "--no-abbrev",
+                          parents[0], commit, binary=True).stdout
     else:
         changed = git.run("diff-tree", "--root", "--no-commit-id", "--raw",
-                          "-r", "-z", "--no-renames", "--no-abbrev", commit,
-                          binary=True).stdout
+                          "-r", "-z", "--no-renames", "--ignore-submodules=none",
+                          "--no-abbrev", commit, binary=True).stdout
     entries = _parse_raw_diff(changed, git.oid_length)
     return {"sha": commit, "tree": values(b"tree")[0].decode("ascii"),
             "parents": parents, "message": message,
@@ -957,14 +1178,13 @@ def _parse_raw_diff(raw, oid_length):
         return []
     _require(raw.endswith(b"\0"), "RAW_DIFF_FRAMING: raw diff lacks terminal NUL")
     fields = raw.split(b"\0")[:-1]
-    _require(len(fields) % 2 == 0, "RAW_DIFF_FRAMING: raw diff has a truncated record")
-    _require(len(fields) // 2 <= _PATH_RECORD_LIMIT,
-             "RAW_DIFF_COUNT: raw diff exceeds 100000 records")
     entries = []
     seen = set()
-    for index in range(0, len(fields), 2):
-        ordinal = index // 2 + 1
-        meta, path_raw = fields[index], fields[index + 1]
+    index = 0
+    while index < len(fields):
+        ordinal = len(entries) + 1
+        meta = fields[index]
+        index += 1
         try:
             tokens = meta.decode("ascii", "strict").split()
         except UnicodeDecodeError as exc:
@@ -973,8 +1193,16 @@ def _parse_raw_diff(raw, oid_length):
         _require(len(tokens) == 5 and tokens[0].startswith(":"),
                  _safe_reason("RAW_DIFF_META", ordinal=ordinal, rejected=meta))
         old_mode, new_mode, old_oid, new_oid, status = tokens[0][1:], *tokens[1:]
+        _require(not status.startswith(("R", "C")),
+                 _safe_reason("RENAME_COLLAPSED", ordinal=ordinal, rejected=meta))
         _require(status in {"A", "D", "M", "T"},
                  _safe_reason("RAW_DIFF_STATUS", ordinal=ordinal, rejected=meta))
+        _require(index < len(fields),
+                 _safe_reason("RAW_DIFF_FRAMING", ordinal=ordinal, rejected=meta))
+        path_raw = fields[index]
+        index += 1
+        _require(len(entries) < _PATH_RECORD_LIMIT,
+                 "RAW_DIFF_COUNT: raw diff exceeds 100000 records")
         _require(_mode_type(old_mode) is not None or old_mode == "000000",
                  _safe_reason("RAW_DIFF_MODE", ordinal=ordinal, rejected=meta))
         _require(_mode_type(new_mode) is not None or new_mode == "000000",
@@ -982,15 +1210,34 @@ def _parse_raw_diff(raw, oid_length):
         _require(all(len(oid) == oid_length and re.fullmatch(r"[0-9a-f]+", oid)
                      for oid in (old_oid, new_oid)),
                  _safe_reason("RAW_DIFF_OID", ordinal=ordinal, rejected=meta))
+        zero = "0" * oid_length
+        valid_shape = {
+            "A": old_mode == "000000" and old_oid == zero
+                 and new_mode != "000000" and new_oid != zero,
+            "D": new_mode == "000000" and new_oid == zero
+                 and old_mode != "000000" and old_oid != zero,
+            "M": old_mode != "000000" and new_mode != "000000"
+                 and old_oid != zero and new_oid != zero,
+            "T": old_mode != "000000" and new_mode != "000000"
+                 and old_oid != zero and new_oid != zero
+                 and _mode_type(old_mode) != _mode_type(new_mode),
+        }[status]
+        _require(valid_shape,
+                 _safe_reason("ENTRY_INVALID", ordinal=ordinal, rejected=meta))
         try:
             path = path_raw.decode("utf-8", "strict")
-            _validate_object_path(path)
-        except (UnicodeDecodeError, ValidationError) as exc:
+        except UnicodeDecodeError as exc:
             raise ValidationError(_safe_reason("PATH_UTF8", ordinal=ordinal,
                                                rejected=path_raw)) from exc
-        _require(path not in seen,
+        try:
+            _validate_object_path(path)
+        except ValidationError as exc:
+            raise ValidationError(_safe_reason("PATH_INVALID", ordinal=ordinal,
+                                               rejected=path_raw)) from exc
+        key = _portable_path_key(path)
+        _require(key not in seen,
                  _safe_reason("PATH_DUPLICATE", ordinal=ordinal, rejected=path_raw))
-        seen.add(path)
+        seen.add(key)
         entries.append({"path": path, "action": status,
                         "old_mode": old_mode, "new_mode": new_mode,
                         "old_type": _mode_type(old_mode), "new_type": _mode_type(new_mode),
@@ -998,15 +1245,27 @@ def _parse_raw_diff(raw, oid_length):
     return entries
 
 
-def _decode_merge_tree_output(output):
-    fields = output.split(b"\0")
+def _decode_merge_tree_output(output, oid_length):
+    _require(isinstance(output, bytes) and len(output) <= _GIT_OUTPUT_LIMIT,
+             "MERGE_TREE_SIZE: merge-tree output exceeds 32 MiB")
+    _require(output.endswith(b"\0"),
+             "MERGE_TREE_FRAMING: merge-tree output lacks terminal NUL")
+    fields = output.split(b"\0")[:-1]
+    _require(bool(fields) and bool(fields[0]),
+             "MERGE_TREE_FRAMING: merge-tree output has no tree object id")
     try:
-        tree = fields[0].decode("ascii")
-        paths = [field.decode("utf-8") for field in fields[1:] if field]
-    except UnicodeDecodeError:
-        return None, None
-    if _SHA.fullmatch(tree) is None:
-        return None, None
+        tree = fields[0].decode("ascii", "strict")
+    except UnicodeDecodeError as exc:
+        raise ValidationError("MERGE_TREE_OID: merge-tree OID is not ASCII") from exc
+    _require(len(tree) == oid_length and _SHA.fullmatch(tree) is not None,
+             "MERGE_TREE_OID: merge-tree OID has the wrong object format")
+    try:
+        paths = decode_git_paths(
+            b"\0".join(fields[1:]) + (b"\0" if len(fields) > 1 else b""),
+            failure="commit",
+        )
+    except ValidationError as exc:
+        raise ValidationError("MERGE_TREE_PATH: " + str(exc)) from exc
     return tree, paths
 
 
@@ -1023,21 +1282,18 @@ def _expected_generated_entry(value):
 
 def _verify_generated_entries(git, details, paths, reproduce_generated):
     if not callable(reproduce_generated):
-        return False, "generated outputs were not reproduced byte-for-byte with mode/type"
+        return False, "GENERATOR_UNREGISTERED: generated outputs lack a reproducer"
     try:
         reproduced = reproduce_generated(details["sha"], list(paths))
     except Exception as exc:
-        return False, f"generator reproduction failed: {type(exc).__name__}: {exc}"
+        return False, f"GENERATOR_ERROR: reproducer raised {type(exc).__name__}"
     if not isinstance(reproduced, dict) or set(reproduced) != set(paths):
-        return False, "generator reproduction did not return every changed path exactly once"
+        return False, "GENERATOR_OUTPUT_INVALID: reproducer keys do not match changed paths"
     total = 0
     for path in paths:
         expected = _expected_generated_entry(reproduced[path])
         if expected is None:
-            return False, (
-                f"generated output {path} reproduction needs bytes or an exact "
-                "mode/type/content entry"
-            )
+            return False, "GENERATOR_OUTPUT_INVALID: mode/type/content entry is invalid"
         if len(expected["content"]) > _GENERATED_BLOB_LIMIT:
             return False, "GENERATOR_BLOB_SIZE: reproduced output exceeds 32 MiB"
         total += len(expected["content"])
@@ -1045,14 +1301,11 @@ def _verify_generated_entries(git, details, paths, reproduce_generated):
             return False, "GENERATOR_TOTAL_SIZE: reproduced output exceeds 512 MiB"
         actual = git.entry(details["sha"], path)
         if actual is None:
-            return False, f"generated output {path} is not a committed tree entry"
+            return False, "GENERATED_ENTRY_MISSING: committed tree entry is absent"
         if (expected["mode"], expected["type"]) != (actual["mode"], actual["type"]):
-            return False, (
-                f"generated output {path} mode/type did not reproduce "
-                f"({actual['mode']} {actual['type']} committed)"
-            )
+            return False, "GENERATED_ENTRY_INVALID: mode/type did not reproduce"
         if expected["content"] != actual["content"]:
-            return False, f"generated output {path} did not reproduce byte-for-byte"
+            return False, "GENERATOR_BYTES_MISMATCH: output did not reproduce byte-for-byte"
     return True, "byte-for-byte generated outputs with matching mode/type"
 
 
@@ -1065,6 +1318,8 @@ def _origin_main_merge(git, details, origin_main_oid, generated_paths,
         return False, "second parent is not the frozen observed default-branch OID"
     source_objects = git.object_directory()
     actual = git.text("rev-parse", f"{details['sha']}^{{tree}}")
+    _require(len(actual) == git.oid_length and _SHA.fullmatch(actual),
+             "MERGE_TREE_OID: committed tree has the wrong object format")
     with tempfile.TemporaryDirectory(prefix="awf-provenance-objects-") as directory:
         object_directory = Path(directory).resolve() / "objects"
         object_directory.mkdir()
@@ -1077,9 +1332,11 @@ def _origin_main_merge(git, details, origin_main_oid, generated_paths,
             parents[0], parents[1], binary=True, allow_failure=True,
             environment=environment,
         )
-        tree, conflict_paths = _decode_merge_tree_output(reproduced.stdout)
-        if tree is None:
-            return False, "origin/main merge reproduction failed in a disposable object database"
+        if reproduced.returncode not in {0, 1}:
+            return False, "MERGE_TREE_COMMAND: merge reproduction returned an invalid status"
+        tree, conflict_paths = _decode_merge_tree_output(
+            reproduced.stdout, git.oid_length,
+        )
         if reproduced.returncode == 0:
             if conflict_paths:
                 return False, "origin/main merge reproduction returned unexpected conflict paths"
@@ -1089,20 +1346,15 @@ def _origin_main_merge(git, details, origin_main_oid, generated_paths,
         if reproduced.returncode != 1 or not conflict_paths:
             return False, "origin/main merge reproduction failed in a disposable object database"
         if not set(conflict_paths).issubset(generated_paths):
-            return False, (
-                "origin/main merge has non-generated conflicts: "
-                + ", ".join(conflict_paths)
-            )
+            return False, "MERGE_TREE_CONFLICT_SCOPE: merge has non-generated conflicts"
         differences = git.run(
             "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", tree, actual,
-            environment=environment,
+            binary=True, environment=environment,
         ).stdout
-        changed_from_automatic = {path for path in differences.split("\0") if path}
+        changed_from_automatic = set(decode_git_paths(differences, failure="commit"))
         if not changed_from_automatic.issubset(set(conflict_paths)):
-            return False, (
-                "origin/main merge conflict resolution changed non-conflicted paths: "
-                + ", ".join(sorted(changed_from_automatic - set(conflict_paths)))
-            )
+            return False, ("MERGE_TREE_RESOLUTION_SCOPE: conflict resolution changed "
+                           "non-conflicted paths")
         matched, reason = _verify_generated_entries(
             git, details, sorted(set(conflict_paths)), reproduce_generated
         )
@@ -1114,12 +1366,16 @@ def _origin_main_merge(git, details, origin_main_oid, generated_paths,
 def _generated_commit(git, details, generated_paths, reproduce_generated):
     paths = details["changed_files"]
     if not paths or not set(paths).issubset(generated_paths):
-        return False, ("changed paths are not limited to declared generated outputs: "
-                       + (", ".join(paths) if paths else "<none>"))
+        listed = ", ".join(paths) if paths else "<none>"
+        return False, ("GENERATED_PATH_SCOPE: changed paths are not limited to "
+                       "declared generated outputs: " + listed)[:_REASON_LIMIT]
     entries = details.get("changed_entries", [])
-    if any(entry["new_mode"] not in {"100644", "100755"}
+    if any(entry["action"] not in {"A", "M"}
+           or entry["old_type"] not in {None, "blob"}
+           or entry["new_mode"] not in {"100644", "100755"}
            or entry["new_type"] != "blob" for entry in entries):
-        return False, "generated output includes deletion, symlink, gitlink, or unsupported mode"
+        return False, ("GENERATED_ENTRY_INVALID: deletion, type change, symlink, "
+                       "gitlink, or unsupported mode")
     return _verify_generated_entries(git, details, paths, reproduce_generated)
 
 
@@ -1192,6 +1448,61 @@ def _run_log_status(verifier, run_id, sha, inventory, required, *, strict=False)
     return False, "run-log verifier returned an unsupported result"
 
 
+def _validated_generated_paths(value):
+    _require(isinstance(value, (list, tuple, set, frozenset)),
+             "GENERATED_PATH_INVALID: generated_paths must be a collection")
+    _require(len(value) <= _PATH_RECORD_LIMIT,
+             "GENERATED_PATH_COUNT: generated_paths exceeds 100000 paths")
+    result = []
+    seen = set()
+    for ordinal, path in enumerate(value, 1):
+        try:
+            _validate_object_path(path)
+        except (ValidationError, UnicodeError, AttributeError, TypeError) as exc:
+            rejected = (path.encode("utf-8", "surrogatepass")
+                        if isinstance(path, str)
+                        else str(type(path)).encode("utf-8", "backslashreplace"))
+            raise ValidationError(_safe_reason(
+                "GENERATED_PATH_INVALID", ordinal=ordinal, rejected=rejected,
+            )) from exc
+        key = _portable_path_key(path)
+        _require(key not in seen, _safe_reason(
+            "GENERATED_PATH_DUPLICATE", ordinal=ordinal,
+            rejected=path.encode("utf-8"),
+        ))
+        seen.add(key)
+        result.append(path)
+    return tuple(result)
+
+
+def _validate_reviewed_provenance_policy(policy):
+    _require(isinstance(policy, dict)
+             and set(policy) == {"require_run_logs", "default_ref",
+                                 "generated_paths", "generators"}
+             and type(policy["require_run_logs"]) is bool,
+             "RUN_LOG_POLICY_UNBOUND: reviewed provenance policy is invalid")
+    default_ref = validate_ref_locator(policy["default_ref"], "Reviewed default ref")
+    _require(default_ref.startswith("refs/heads/"),
+             "DEFAULT_REF_UNBOUND: reviewed default must be a heads ref")
+    generated = _validated_generated_paths(policy["generated_paths"])
+    _require(isinstance(policy["generators"], dict),
+             "GENERATOR_REGISTRY_INVALID: reviewed generators must be an object")
+    generated_keys = {_portable_path_key(path) for path in generated}
+    for script_id, entry in policy["generators"].items():
+        _require(isinstance(script_id, str) and len(script_id) <= 64
+                 and _SCRIPT.fullmatch(script_id),
+                 "GENERATOR_REGISTRY_INVALID: generator script id is invalid")
+        _require(isinstance(entry, dict)
+                 and set(entry) == {"paths", "reproducer_sha256"}
+                 and isinstance(entry["reproducer_sha256"], str)
+                 and _DIGEST.fullmatch(entry["reproducer_sha256"]),
+                 "GENERATOR_REGISTRY_INVALID: generator registration is invalid")
+        paths = _validated_generated_paths(entry["paths"])
+        _require({_portable_path_key(path) for path in paths} <= generated_keys,
+                 "GENERATOR_REGISTRY_INVALID: generator paths are undeclared")
+    return generated
+
+
 def check_commit_range(root, base, head, *, origin_main="origin/main",
                        generated_paths=(), reproduce_generated=None,
                        run_log_verifier=None, require_run_logs=False,
@@ -1208,11 +1519,7 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
     link cannot be accepted in isolation.
     """
     if reviewed_policy is not None:
-        _require(isinstance(reviewed_policy, dict)
-                 and set(reviewed_policy) == {'require_run_logs', 'default_ref',
-                                              'generated_paths', 'generators'}
-                 and type(reviewed_policy['require_run_logs']) is bool,
-                 "RUN_LOG_POLICY_UNBOUND: reviewed provenance policy is invalid")
+        generated_paths = _validate_reviewed_provenance_policy(reviewed_policy)
         _require(isinstance(provider_observation, dict)
                  and provider_observation.get('version') == 1,
                  "PROVIDER_IDENTITY_INVALID: fresh provider observation is required")
@@ -1220,7 +1527,6 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
         _require(provider_observation.get('base_ref') == expected_default,
                  "DEFAULT_REF_UNBOUND: provider default ref differs from reviewed policy")
         require_run_logs = reviewed_policy['require_run_logs']
-        generated_paths = reviewed_policy['generated_paths']
         origin_main = provider_observation.get('base')
         pr_number = provider_observation.get('pr')
         pr_labels = provider_observation.get('labels', [])
@@ -1231,8 +1537,18 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
     else:
         registry = {}
     _require(type(require_run_logs) is bool, "require_run_logs must be Boolean")
+    base = validate_ref_locator(base, "Range base")
     git = _Git(root)
-    base_sha = git.resolve(base, "Range base")
+    raw_base_may_be_shallow = bool(git.shallow_boundaries) and not base.startswith("refs/")
+    base_sha = git.resolve(
+        base, "Range base", allow_missing=raw_base_may_be_shallow,
+    )
+    if base_sha is None:
+        _require(git.missing_oid_is_shallow_parent(base),
+                 "REF_MISSING: Range base does not exist")
+        raise ValidationError(
+            "SHALLOW_RANGE_BOUNDARY: range base is unavailable beyond a shallow boundary"
+        )
     head_sha = git.resolve(head, "Range head")
     # The 1.9.4 public default is retained as a locator adapter only.  The live
     # host passes its reviewed fully-qualified default ref and observed OID.
@@ -1240,15 +1556,20 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
     origin_locators = (["refs/remotes/origin/main", "refs/heads/origin/main"]
                        if origin_main == "origin/main" else [origin_main])
     for origin_locator in origin_locators:
-        try:
-            origin_main_sha = git.resolve(origin_locator, "origin/main ref")
+        origin_main_sha = git.resolve(
+            origin_locator, "origin/main ref",
+            allow_missing=origin_main == "origin/main",
+        )
+        if origin_main_sha is not None:
             break
-        except ValidationError:
-            if origin_main != "origin/main":
-                raise
     ancestry = git.run("merge-base", "--is-ancestor", base_sha, head_sha,
                        allow_failure=True)
-    _require(ancestry.returncode == 0, "Range base is not an ancestor of range head")
+    if ancestry.returncode:
+        _require(ancestry.returncode == 1,
+                 "RANGE_ANCESTRY_COMMAND: Git could not inspect range ancestry")
+        _require(not git.shallow_boundaries,
+                 "SHALLOW_RANGE_BOUNDARY: range crosses or is obscured by a shallow boundary")
+        raise ValidationError("RANGE_ANCESTRY: range base is not an ancestor of range head")
     commits_text = git.text("rev-list", "--reverse", "--topo-order",
                             "--max-count=" + str(_COMMIT_LIMIT + 1),
                             f"{base_sha}..{head_sha}")
@@ -1280,17 +1601,13 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
         _require(not override_predecessors,
                  "Provenance override predecessors require an override record")
 
+    generated_paths = _validated_generated_paths(generated_paths)
     allowed_generated = set(DEFAULT_GENERATED_PATHS)
-    _require(isinstance(generated_paths, (list, tuple, set, frozenset))
-             and all(isinstance(path, str) and path and "\\" not in path
-                     and not path.startswith(("/", "./")) and ":" not in path
-                     and all(part not in {"", ".", ".."} for part in path.split("/"))
-                     for path in generated_paths),
-             "generated_paths must contain portable repository paths")
-    for path in generated_paths:
-        _validate_object_path(path)
-    _require(len(generated_paths) <= _PATH_RECORD_LIMIT,
-             "generated_paths exceeds 100000 paths")
+    default_keys = {_portable_path_key(path) for path in DEFAULT_GENERATED_PATHS}
+    for ordinal, path in enumerate(generated_paths, 1):
+        _require(_portable_path_key(path) not in default_keys or path in allowed_generated,
+                 _safe_reason("GENERATED_PATH_DUPLICATE", ordinal=ordinal,
+                              rejected=path.encode("utf-8")))
     allowed_generated.update(generated_paths)
     results = []
     refusals = []
@@ -1334,7 +1651,10 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
                     reproducer = reproduce_generated
                     if reviewed_policy is not None:
                         declared = reviewed_policy['generators'].get(trailer['identity'])
-                        registered = (registry.get('generators') or {}).get(trailer['identity'])
+                        registered_generators = registry.get('generators')
+                        _require(isinstance(registered_generators, dict),
+                                 "GENERATOR_UNREGISTERED: runtime generator registry is missing")
+                        registered = registered_generators.get(trailer['identity'])
                         _require(isinstance(declared, dict)
                                  and isinstance(registered, dict)
                                  and set(registered) == {'reproducer_sha256', 'callable'}
@@ -1351,11 +1671,13 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
                     )
                 except (ValidationError, OSError, subprocess.SubprocessError) as exc:
                     mechanical, reason = False, str(exc)
+                reason = str(reason)[:_REASON_LIMIT]
                 item["mechanical"] = mechanical
                 item["mechanical_reason"] = reason
                 if not mechanical:
                     item["reasons"].append(
-                        "script-tagged commit is not reproducibly mechanical: " + reason
+                        ("script-tagged commit is not reproducibly mechanical: "
+                         + reason)[:_REASON_LIMIT]
                     )
             else:
                 matched, reason = _run_log_status(
