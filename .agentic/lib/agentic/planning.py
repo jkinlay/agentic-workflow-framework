@@ -272,9 +272,16 @@ def _lane_components(graph, ready):
 
 PLANNING_RESOURCE_KEYS = {
     "format", "complete", "producer", "observed_at", "binding",
-    "host_capacity", "resources", "observation_sha256",
+    "host_capacity", "resources", "authentication", "observation_sha256",
 }
 PLANNING_PRODUCER_KEYS = {"kind", "operation", "implementation_sha256"}
+PLANNING_AUTHENTICATION_KEYS = {
+    "producer_id", "evidence_id", "evidence_sha256", "request_sha256",
+}
+PLANNING_HOST_OBSERVATION_KEYS = {
+    "status", *PLANNING_AUTHENTICATION_KEYS,
+    "observed_at", "host_capacity", "resources",
+}
 PLANNING_BINDING_KEYS = {
     "project_id", "repository_id", "scope_sha256", "repository_head_sha",
     "repository_tree_sha", "project_config_sha256", "operating_config_sha256",
@@ -290,8 +297,36 @@ def _closed(value, keys, name):
         raise ValidationError(f"Planning resource {name} must be a closed object")
 
 
+def _planning_resource_request(binding, observed_at, producer_implementation_sha256):
+    return {
+        "operation": "observe_planning_resources",
+        "binding": copy.deepcopy(binding),
+        "observed_at": observed_at,
+        "producer_implementation_sha256": producer_implementation_sha256,
+    }
+
+
+def _validate_planning_capacities(host_capacity, resources):
+    if type(host_capacity) is not int or not 0 <= host_capacity <= 1000:
+        raise ValidationError("Planning observed host capacity must be an integer from zero through 1000")
+    if not isinstance(resources, list) or not 1 <= len(resources) <= 32:
+        raise ValidationError("Planning resource observation needs 1 through 32 bounded resources")
+    names = set()
+    for item in resources:
+        _closed(item, PLANNING_RESOURCE_ITEM_KEYS, "inventory item")
+        name, capacity = item["name"], item["capacity"]
+        if not isinstance(name, str) or not RESOURCE_NAME.fullmatch(name):
+            raise ValidationError("Planning resource name must be a bounded lowercase identifier")
+        if name in names:
+            raise ValidationError("Planning resource observation contains a duplicate resource name")
+        if type(capacity) is not int or not 0 <= capacity <= 1000:
+            raise ValidationError("Planning resource capacity must be an integer from zero through 1000")
+        names.add(name)
+
+
 def validate_planning_resource_observation(
-        observation, *, expected_binding, expected_producer_sha256, now):
+        observation, *, expected_binding, expected_producer_sha256, now,
+        verify_host_observation=None):
     """Validate one exact-cycle observation from the pinned reviewed adapter.
 
     The caller supplies controller-known bindings and the implementation digest
@@ -333,22 +368,22 @@ def validate_planning_resource_observation(
         raise ValidationError("Planning resource observation binding is malformed")
 
     host_capacity = observation["host_capacity"]
-    if type(host_capacity) is not int or not 0 <= host_capacity <= 1000:
-        raise ValidationError("Planning observed host capacity must be an integer from zero through 1000")
     resources = observation["resources"]
-    if not isinstance(resources, list) or not 1 <= len(resources) <= 32:
-        raise ValidationError("Planning resource observation needs 1 through 32 bounded resources")
-    names = set()
-    for item in resources:
-        _closed(item, PLANNING_RESOURCE_ITEM_KEYS, "inventory item")
-        name, capacity = item["name"], item["capacity"]
-        if not isinstance(name, str) or not RESOURCE_NAME.fullmatch(name):
-            raise ValidationError("Planning resource name must be a bounded lowercase identifier")
-        if name in names:
-            raise ValidationError("Planning resource observation contains a duplicate resource name")
-        if type(capacity) is not int or not 0 <= capacity <= 1000:
-            raise ValidationError("Planning resource capacity must be an integer from zero through 1000")
-        names.add(name)
+    _validate_planning_capacities(host_capacity, resources)
+
+    authentication = observation["authentication"]
+    _closed(authentication, PLANNING_AUTHENTICATION_KEYS, "authentication")
+    if (not isinstance(authentication["producer_id"], str)
+            or not RESOURCE_NAME.fullmatch(authentication["producer_id"])
+            or not isinstance(authentication["evidence_id"], str)
+            or not 1 <= len(authentication["evidence_id"]) <= 128
+            or not LOWER_SHA256.fullmatch(authentication["evidence_sha256"])):
+        raise ValidationError("Planning resource authentication identity is malformed")
+    request = _planning_resource_request(binding, observation["observed_at"],
+                                         producer["implementation_sha256"])
+    request_sha256 = fingerprint("planning_resource_request", request)
+    if authentication["request_sha256"] != request_sha256:
+        raise ValidationError("Planning resource authentication differs from the exact observation request")
 
     digest = observation["observation_sha256"]
     expected_digest = fingerprint(
@@ -356,19 +391,51 @@ def validate_planning_resource_observation(
         {key: value for key, value in observation.items() if key != "observation_sha256"})
     if not isinstance(digest, str) or digest != expected_digest:
         raise ValidationError("Planning resource observation digest is missing or stale")
+    if not callable(verify_host_observation):
+        raise ValidationError("Planning resource observation requires authenticated host evidence")
+    try:
+        verified = verify_host_observation(copy.deepcopy(authentication), copy.deepcopy(request))
+    except Exception as exc:
+        raise ValidationError("Planning resource authenticated host evidence lookup failed") from exc
+    _closed(verified, PLANNING_HOST_OBSERVATION_KEYS, "authenticated host evidence")
+    expected_verified = {
+        "status": "VERIFIED", **copy.deepcopy(authentication),
+        "observed_at": observation["observed_at"],
+        "host_capacity": host_capacity, "resources": copy.deepcopy(resources),
+    }
+    if verified != expected_verified:
+        raise ValidationError(
+            "Planning resource capacities differ from authenticated host evidence")
     return copy.deepcopy(observation)
 
 
 def produce_planning_resource_observation(
-        *, binding, observed_at, host_capacity, resources,
-        producer_implementation_sha256):
+        *, binding, observed_at, producer_implementation_sha256,
+        observe_host_resources, verify_host_observation):
     """Produce the one closed planning-resource observation shape.
 
-    This is the sole in-code constructor for the reviewed controller adapter.
-    Consumers still supply the independently pinned implementation digest,
-    controller-known binding, and cycle time to validation; the record's
-    self-hash does not authenticate caller-authored values.
+    The caller supplies no capacity values.  A trusted host observer collects
+    them for the exact request and an independent authenticator re-verifies its
+    retained evidence before the values can reach planning.
     """
+    if not callable(observe_host_resources):
+        raise ValidationError("Planning resource production requires a trusted host observer")
+    request = _planning_resource_request(
+        binding, observed_at, producer_implementation_sha256)
+    observer_request = copy.deepcopy(request)
+    request_before = copy.deepcopy(observer_request)
+    try:
+        observed = observe_host_resources(observer_request)
+    except Exception as exc:
+        raise ValidationError("Planning resource host observation failed") from exc
+    if observer_request != request_before:
+        raise ValidationError("Planning resource host observer mutated its request")
+    _closed(observed, PLANNING_HOST_OBSERVATION_KEYS, "host observation")
+    if (observed["status"] != "OBSERVED"
+            or observed["observed_at"] != observed_at
+            or observed["request_sha256"]
+            != fingerprint("planning_resource_request", request)):
+        raise ValidationError("Planning resource host observation is not bound to the exact request")
     body = {
         "format": "awf-planning-resource-observation-1",
         "complete": True,
@@ -379,18 +446,22 @@ def produce_planning_resource_observation(
         },
         "observed_at": observed_at,
         "binding": copy.deepcopy(binding),
-        "host_capacity": host_capacity,
-        "resources": copy.deepcopy(resources),
+        "host_capacity": observed["host_capacity"],
+        "resources": copy.deepcopy(observed["resources"]),
+        "authentication": {
+            key: observed[key] for key in PLANNING_AUTHENTICATION_KEYS
+        },
     }
     body["observation_sha256"] = fingerprint("planning_resource_observation", body)
     return validate_planning_resource_observation(
         body, expected_binding=binding,
         expected_producer_sha256=producer_implementation_sha256,
-        now=observed_at)
+        now=observed_at, verify_host_observation=verify_host_observation)
 
 
 def _sealed_capacity_inputs(config, observation, expected_binding,
-                            expected_producer_sha256, operating_snapshot, now):
+                            expected_producer_sha256, operating_snapshot, now,
+                            verify_host_observation):
     """Bind authenticated capacity inputs before lane selection or override."""
     if observation is None:
         raise ValidationError("Planning requires an authenticated resource observation")
@@ -409,7 +480,8 @@ def _sealed_capacity_inputs(config, observation, expected_binding,
         raise ValidationError("Planning capacity binding differs from accepted project or operating configuration")
     checked = validate_planning_resource_observation(
         observation, expected_binding=expected_binding,
-        expected_producer_sha256=expected_producer_sha256, now=now)
+        expected_producer_sha256=expected_producer_sha256, now=now,
+        verify_host_observation=verify_host_observation)
     resources = sorted(checked["resources"], key=lambda item: item["name"])
     ceiling = operating_ceiling(config)
     return {
@@ -588,7 +660,8 @@ def plan_lanes(graph, config, *, resource_observation=None,
                expected_resource_binding=None,
                expected_resource_producer_sha256=None,
                operating_snapshot=None, observed_at=None, resources=None,
-               controller_state=None, verify_owner_source=None, override=None):
+               verify_host_observation=None, controller_state=None,
+               verify_owner_source=None, override=None):
     """Return conflict-free ready lanes ranked by downstream critical path."""
     if not isinstance(graph, dict) or not isinstance(graph.get("tickets"), dict):
         raise ValidationError("Planning requires a backlog graph")
@@ -597,7 +670,8 @@ def plan_lanes(graph, config, *, resource_observation=None,
             "Planning refuses operator-authored capacity dictionaries; an authenticated resource observation is required")
     capacity_inputs = _sealed_capacity_inputs(
         config, resource_observation, expected_resource_binding,
-        expected_resource_producer_sha256, operating_snapshot, observed_at)
+        expected_resource_producer_sha256, operating_snapshot, observed_at,
+        verify_host_observation)
     blockers, dependents = _dependency_maps(graph)
     scores = _critical_scores(graph, dependents)
     ready, blocked = _ready_keys(graph, blockers)
@@ -746,7 +820,8 @@ def recompute_plan(tickets, config, state, *, now, trigger,
                    resource_observation=None, expected_resource_binding=None,
                    expected_resource_producer_sha256=None,
                    operating_snapshot=None, observed_at=None, resources=None,
-                   round_active=False, verify_owner_source=None, override=None):
+                   verify_host_observation=None, round_active=False,
+                   verify_owner_source=None, override=None):
     """Re-plan at named boundaries, deferring any in-round reassignment."""
     if trigger not in RECOMPUTE_TRIGGERS:
         raise ValidationError("Unknown planning recompute trigger")
@@ -769,7 +844,8 @@ def recompute_plan(tickets, config, state, *, now, trigger,
         expected_resource_binding=expected_resource_binding,
         expected_resource_producer_sha256=expected_resource_producer_sha256,
         operating_snapshot=operating_snapshot, observed_at=observed_at,
-        resources=resources, controller_state=state,
+        resources=resources, verify_host_observation=verify_host_observation,
+        controller_state=state,
         verify_owner_source=verify_owner_source)
     body = {"schema_version": 1, "created_at": now, "trigger": trigger,
             "inputs": {"jira_snapshot_sha256": fingerprint("planning_ticket_snapshot", tickets),

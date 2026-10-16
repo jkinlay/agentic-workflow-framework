@@ -11,10 +11,11 @@ Show JSON/text, status and newly prepared `operating.state` share `effective_cei
 `effective_ceiling_governance_path` names the binding project/broker path, preferring project on ties. `effective_ceiling_sources` lists every tied path, including the schema's six-stream maximum. When only that structural limit binds, the governance path is null. Native planning separately considers observed host slots, ownership and spawn depth. Malformed inputs are refused.
 
 Planning-resource observations have one in-code producer:
-`produce_planning_resource_observation`. The closed shape refuses unknown or
-missing fields, invalid types, negatives, values above 1000 and stale digests.
-Consumers provide independently pinned implementation digest, binding and
-cycle time; self-digests and operator dictionaries do not authenticate.
+`produce_planning_resource_observation`. It accepts no capacities; a trusted
+host callback supplies them for a bound cycle. Closed shapes reject
+malformation. Planning independently reauthenticates evidence and requires
+matching capacities; missing authentication, self-digests and
+operator values fail closed.
 Capacity is bounded 0–1000; zero yields `safe_lane_count == 0`
 and selects no lane.
 
