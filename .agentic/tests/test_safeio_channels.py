@@ -173,6 +173,25 @@ class SafeWriteAndDiagnosticTests(unittest.TestCase):
         self.assertGreaterEqual(rendered.count("<redacted-credential>"), 3)
         self.assertIn("<redacted-path>", rendered)
 
+    def test_diagnostic_redacts_quoted_multiword_credentials_and_spaced_paths(self):
+        slash = chr(47)
+        credential_name = "pass" + "word"
+        credential_value = "alpha" + " beta"
+        local_path = slash.join(("", "srv", "Alice Smith", "private.txt"))
+        payload = (
+            credential_name + "=\"" + credential_value + "\"\n"
+            + "failed at " + local_path
+        )
+
+        rendered = child_process.render_diagnostic(payload)
+
+        self.assertNotIn(credential_value, rendered)
+        self.assertNotIn(" beta", rendered)
+        self.assertNotIn(local_path, rendered)
+        self.assertNotIn(" Smith", rendered)
+        self.assertEqual(rendered.count("<redacted-credential>"), 1)
+        self.assertEqual(rendered.count("<redacted-path>"), 1)
+
     def test_diagnostic_digest_binds_raw_bytes_not_redacted_text(self):
         slash = chr(47)
         left = "token=first " + slash.join(("", "home", "alice", "file"))
