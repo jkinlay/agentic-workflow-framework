@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import re
 import uuid
+from urllib.parse import quote
 
 from . import ValidationError
 from .canonical import (fingerprint, fresh, loads, reject_git_sha_candidate_ids,
@@ -145,16 +146,17 @@ def trusted_owner_ids(config):
 
 
 def cap_disposition_record_id(record):
-    """Bind a cap disposition identity to its exact critic artifact and verdict."""
+    """Bind a cap disposition identity to its artifact, verdict, and successor."""
     try:
         fields = {
             "critic_artifact_binding": record["critic_artifact_binding"],
             "review_verdict_record_id": record["review_verdict_record_id"],
             "review_verdict_sha256": record["review_verdict_sha256"],
+            "successor_ticket": record["successor_ticket"],
         }
     except (KeyError, TypeError) as exc:
         raise ValidationError(
-            "Review cap disposition is missing its critic artifact or verdict binding"
+            "Review cap disposition is missing its artifact, verdict, or successor binding"
         ) from exc
     return fingerprint("review-cap-artifact-binding", fields)
 
@@ -414,9 +416,12 @@ def owner_fields(record, kind, head_sha):
         ids = sorted(record["open_finding_ids"])
         if any("+" in item or "/" in item or ":" in item for item in ids):
             raise ValidationError("Finding IDs in a cap disposition cannot contain '+', '/' or ':'")
-        # cycles/extensions are part of the signed text so a cap decision binds the cap it answers.
+        # Bind the cap answered and any RESCOPE successor into the signed text.
         decision = record["decision"]
-        subject = f"{record['cycles']}/{record['cap_extensions']}:" + ("+".join(ids) if ids else "none")
+        successor = (quote(record["successor_ticket"], safe="")
+                     if record["successor_ticket"] is not None else "-")
+        subject = (f"{record['cycles']}/{record['cap_extensions']}:"
+                   + ("+".join(ids) if ids else "none") + f"/{successor}")
         head = head_sha
     elif kind == "tier":
         decision, subject, head = f"{record['from_tier']}-to-{record['to_tier']}", record["contract_id"], head_sha
