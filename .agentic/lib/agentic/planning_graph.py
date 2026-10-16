@@ -350,7 +350,7 @@ def _critical_path(by_key, adjacency):
 
 def _owner_windows_feasible(
         by_key, predecessors, unscheduled, finishes, running, minute,
-        last_start, lane_cap, start_gap_minutes, candidate):
+        last_start, lane_cap, start_gap_minutes, candidate, feasibility_cache):
     """Return whether launching candidate preserves every owner-window deadline.
 
     The feasibility search includes all future windowed tickets and their
@@ -381,11 +381,22 @@ def _owner_windows_feasible(
     if not required:
         return True
 
-    failed_states = set()
+    feasible_states, failed_states = feasibility_cache
+    pending_states = [(
+        frozenset(required), trial_finishes, trial_running, minute, minute, None,
+    )]
+    visited = set()
+    parents = {}
 
-    def search(remaining, known_finishes, active, at_minute, prior_start):
-        if not remaining:
-            return True
+    def mark_feasible(state):
+        while state is not None and state not in feasible_states:
+            feasible_states.add(state)
+            state = parents.get(state)
+
+    while pending_states:
+        remaining, known_finishes, active, at_minute, prior_start, parent = (
+            pending_states.pop()
+        )
         active = {key: end for key, end in active.items() if end > at_minute}
         state = (
             tuple(sorted(remaining)),
@@ -394,13 +405,23 @@ def _owner_windows_feasible(
             at_minute,
             prior_start,
         )
-        if state in failed_states:
-            return False
+        parents.setdefault(state, parent)
+        if state in feasible_states:
+            mark_feasible(parent)
+            return True
+        if state in failed_states or state in visited:
+            continue
+        visited.add(state)
+        if not remaining:
+            mark_feasible(state)
+            return True
 
         ready = []
         future = []
+        known_keys = set(known_finishes)
+        deadline_missed = False
         for key in remaining:
-            if not predecessors[key] <= set(known_finishes):
+            if not predecessors[key] <= known_keys:
                 continue
             release = max(
                 (known_finishes[item] + start_gap_minutes for item in predecessors[key]),
@@ -411,18 +432,21 @@ def _owner_windows_feasible(
                 release = max(release, window["opens_at_minute"])
                 latest_start = window["closes_at_minute"] - by_key[key]["duration_minutes"]
                 if release > latest_start or at_minute > latest_start:
-                    failed_states.add(state)
-                    return False
+                    deadline_missed = True
+                    break
             if release <= at_minute:
                 ready.append(key)
             else:
                 future.append(release)
+        if deadline_missed:
+            continue
 
         ready.sort(key=lambda key: (
             by_key[key]["owner_review_window"]["closes_at_minute"]
             if by_key[key]["owner_review_window"] is not None else float("inf"),
             key,
         ))
+        next_states = []
         launch_unlocked = prior_start is None or at_minute >= prior_start + start_gap_minutes
         if len(active) < lane_cap and launch_unlocked:
             for key in ready:
@@ -435,10 +459,10 @@ def _owner_windows_feasible(
                 next_finishes[key] = finish
                 next_active = dict(active)
                 next_active[key] = finish
-                if search(
-                        remaining - {key}, next_finishes, next_active,
-                        at_minute, at_minute):
-                    return True
+                next_states.append((
+                    remaining - {key}, next_finishes, next_active,
+                    at_minute, at_minute, state,
+                ))
 
         next_times = [end for end in active.values() if end > at_minute]
         next_times.extend(release for release in future if release > at_minute)
@@ -447,20 +471,17 @@ def _owner_windows_feasible(
             if unlock > at_minute:
                 next_times.append(unlock)
         if next_times:
-            next_minute = min(next_times)
-            if search(remaining, known_finishes, active, next_minute, prior_start):
-                return True
+            next_states.append((
+                remaining, known_finishes, active,
+                min(next_times), prior_start, state,
+            ))
 
-        failed_states.add(state)
-        return False
+        # LIFO order matches the former depth-first search: launch candidates
+        # in deadline/key order, then advance time after all launch branches.
+        pending_states.extend(reversed(next_states))
 
-    return search(
-        required,
-        trial_finishes,
-        trial_running,
-        minute,
-        minute,
-    )
+    failed_states.update(visited)
+    return False
 
 
 def _schedule(by_key, adjacency, lane_cap, start_gap_minutes, scores):
@@ -471,6 +492,7 @@ def _schedule(by_key, adjacency, lane_cap, start_gap_minutes, scores):
     running = {}
     minute = 0
     last_start = None
+    feasibility_cache = (set(), set())
     while unscheduled:
         running = {key: end for key, end in running.items() if end > minute}
         available = lane_cap - len(running)
@@ -507,7 +529,7 @@ def _schedule(by_key, adjacency, lane_cap, start_gap_minutes, scores):
             key for key in ready
             if _owner_windows_feasible(
                 by_key, predecessors, unscheduled, finishes, running, minute,
-                last_start, lane_cap, start_gap_minutes, key,
+                last_start, lane_cap, start_gap_minutes, key, feasibility_cache,
             )
         ]
         if available and candidates and launch_unlocked:
