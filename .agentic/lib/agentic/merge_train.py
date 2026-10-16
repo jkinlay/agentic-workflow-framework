@@ -72,6 +72,23 @@ def default_enabled(*, is_awf_repository):
     return not is_awf_repository
 
 
+def _provider_identity(value, field="provider identity"):
+    _require(isinstance(value, dict)
+             and set(value) == {"host", "repository", "repository_id"},
+             f"{field} is invalid")
+    _identifier(value["host"], f"{field} host")
+    _identifier(value["repository"], f"{field} repository")
+    _positive(value["repository_id"], f"{field} repository_id")
+    return deepcopy(value)
+
+
+def _owner_review_required(risk_tier):
+    """Derive the normal final-gate owner-review policy from the source tier."""
+    _require(type(risk_tier) is int and risk_tier in {1, 2, 3},
+             "source risk_tier must be 1, 2, or 3")
+    return risk_tier == 3
+
+
 def _validate_source(source):
     fields = {"pr_number", "ticket", "head_sha", "tree_sha", "base_branch",
               "base_sha", "depends_on", "commit_range", "risk_tier",
@@ -99,22 +116,31 @@ def _validate_source(source):
         _sha(commit, "source commit_range SHA")
     _require(commits[-1] == normalized["head_sha"],
              "source head_sha must end its commit_range")
-    _require(normalized["risk_tier"] in {1, 2, 3},
-             "source risk_tier must be 1, 2, or 3")
+    owner_review_required = _owner_review_required(normalized["risk_tier"])
     _require(type(normalized["normal_final_gate_requires_owner_review"]) is bool,
              "source owner-review gate flag must be Boolean")
+    _require(normalized["normal_final_gate_requires_owner_review"]
+             is owner_review_required,
+             (f"Tier {normalized['risk_tier']} normal final gate "
+              + ("requires" if owner_review_required else "does not require")
+              + " owner review"))
+    normalized["normal_final_gate_requires_owner_review"] = (
+        owner_review_required)
     return normalized
 
 
-def source_admission_request(source, target_branch):
+def source_admission_request(source, target_branch, expected_provider_identity):
     """Create the exact immutable selector used for admission observation."""
     source = _validate_source(source)
     _identifier(target_branch, "target_branch")
+    expected_provider_identity = _provider_identity(
+        expected_provider_identity, "expected provider identity")
     if not source["depends_on"]:
         _require(source["base_branch"] == target_branch,
                  "independent source base must match the train target branch")
     request = {
         "operation": "SOURCE_ADMISSION",
+        "provider_identity": expected_provider_identity,
         "target_branch": target_branch,
         "source": source,
     }
@@ -140,14 +166,8 @@ def _validate_registration(registration, capability):
              "merge-train observer capabilities are invalid")
     _require(capability in capabilities,
              f"merge-train observer lacks {capability} capability")
-    provider = registration["provider_identity"]
-    _require(isinstance(provider, dict)
-             and set(provider) == {"host", "repository", "repository_id"}
-             and isinstance(provider["host"], str) and provider["host"]
-             and isinstance(provider["repository"], str) and provider["repository"]
-             and type(provider["repository_id"]) is int
-             and provider["repository_id"] > 0,
-             "merge-train observer provider identity is invalid")
+    _provider_identity(registration["provider_identity"],
+                       "merge-train observer provider identity")
     _require(registration["receipt_namespace"] == OBSERVER_NAMESPACE,
              "merge-train observer receipt namespace is invalid")
     _require(callable(registration["observer"])
@@ -186,10 +206,20 @@ def _registration_trust(registration, capability):
     }
 
 
+def _require_registration_identity(registration, request):
+    expected = _provider_identity(
+        request.get("provider_identity"), "request provider identity")
+    _require(registration["provider_identity"] == expected,
+             "registered observer provider identity differs from the "
+             "expected provider identity")
+    return expected
+
+
 def _validate_registered_observation(registration, producer_id, request,
                                      observation, *, now, max_age_seconds):
     _identifier(producer_id, "producer_id")
     _validate_registration(registration, request["operation"])
+    _require_registration_identity(registration, request)
     fields = {"status", "producer_id", "observation_id", "observed_at",
               "request_sha256", "result"}
     _require(isinstance(observation, dict) and set(observation) == fields,
@@ -234,6 +264,7 @@ def _registered_observation(registry, producer_id, request, *, now,
     _require(isinstance(registration, dict),
              "merge-train evidence requires a registered provider observer")
     _validate_registration(registration, request["operation"])
+    _require_registration_identity(registration, request)
     argument = deepcopy(request)
     frozen = canonical(argument)
     observation = registration["observer"](argument)
@@ -292,8 +323,9 @@ def _validate_admission_evidence(source, evidence, trusted_owner_ids,
              "source final gate is not bound to the exact PR/base/head/tree")
     _require(gate["risk_tier"] == source["risk_tier"],
              "source final gate risk tier drifted")
-    _require(gate["owner_review_required"]
-             == source["normal_final_gate_requires_owner_review"],
+    owner_review_required = _owner_review_required(source["risk_tier"])
+    _require(type(gate["owner_review_required"]) is bool
+             and gate["owner_review_required"] is owner_review_required,
              "source final gate owner-review policy drifted")
     timestamp(gate["completed_at"])
     gate_digest = _evidence_digest(gate, "final gate")
@@ -325,7 +357,7 @@ def _validate_admission_evidence(source, evidence, trusted_owner_ids,
     owner_review = evidence["owner_review"]
     owner_digest = None
     approval_time = gate["completed_at"]
-    if source["normal_final_gate_requires_owner_review"]:
+    if owner_review_required:
         owner_fields = {"status", "pr_number", "head_sha", "reviewer_id",
                         "submitted_at", "observed_at", "provider_artifact_id",
                         "evidence_sha256"}
@@ -358,8 +390,9 @@ def _validate_admission_evidence(source, evidence, trusted_owner_ids,
     return evidence_digests, owner_digest, approval_time
 
 
-def admit_source(source, target_branch, observer_id, observer_registry, *, now,
-                 trusted_owner_ids, max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
+def admit_source(source, target_branch, expected_provider_identity, observer_id,
+                 observer_registry, *, now, trusted_owner_ids,
+                 max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
     """Admit one exact source; its evidence never authorizes the batch."""
     source = _validate_source(source)
     _require(isinstance(trusted_owner_ids, (list, tuple, set, frozenset))
@@ -367,7 +400,8 @@ def admit_source(source, target_branch, observer_id, observer_registry, *, now,
              "trusted_owner_ids must be an identity collection")
     _require(type(max_age_seconds) is int and max_age_seconds >= 0,
              "max_age_seconds must be a nonnegative integer")
-    request = source_admission_request(source, target_branch)
+    request = source_admission_request(
+        source, target_branch, expected_provider_identity)
     evidence, observation, raw_observation = _registered_observation(
         observer_registry, observer_id, request, now=now,
         max_age_seconds=max_age_seconds)
@@ -404,8 +438,9 @@ def admit_source(source, target_branch, observer_id, observer_registry, *, now,
     return record
 
 
-def _validate_admitted_source(source, observer_registry, *, now,
-                              trusted_owner_ids, max_age_seconds):
+def _validate_admitted_source(source, expected_provider_identity,
+                              observer_registry, *, now, trusted_owner_ids,
+                              max_age_seconds):
     fields = {"format", "status", "pr_number", "ticket", "head_sha",
               "tree_sha", "base_branch", "base_sha", "depends_on",
               "commit_range", "risk_tier",
@@ -442,7 +477,7 @@ def _validate_admitted_source(source, observer_registry, *, now,
     for field, value in digests.items():
         _digest(value, f"admitted {field} digest")
     owner_digest = source["owner_review_evidence_sha256"]
-    if source["normal_final_gate_requires_owner_review"]:
+    if _owner_review_required(source["risk_tier"]):
         _digest(owner_digest, "admitted owner review digest")
     else:
         _require(owner_digest is None,
@@ -471,8 +506,17 @@ def _validate_admitted_source(source, observer_registry, *, now,
              and request.get("operation") == "SOURCE_ADMISSION"
              and isinstance(request.get("target_branch"), str),
              "provider admission request is invalid")
+    admitted_provider_identity = _provider_identity(
+        request.get("provider_identity"),
+        "provider admission provider identity")
+    expected_provider_identity = _provider_identity(
+        expected_provider_identity, "expected provider identity")
+    _require(admitted_provider_identity == expected_provider_identity,
+             "provider admission provider identity differs from the "
+             "expected provider identity")
     expected_request = source_admission_request(
-        normalized_source, request["target_branch"])
+        normalized_source, request["target_branch"],
+        expected_provider_identity)
     _require(request == expected_request,
              "provider admission request is not bound to the persisted source")
     raw_observation = provider_admission["observation"]
@@ -516,14 +560,15 @@ def _validate_admitted_source(source, observer_registry, *, now,
     return source
 
 
-def order_sources(sources, observer_registry, *, now, trusted_owner_ids,
+def order_sources(sources, expected_provider_identity, observer_registry, *,
+                  now, trusted_owner_ids,
                   max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
     """Topologically order by dependencies, then approval time and PR number."""
     _require(isinstance(sources, list) and sources,
              "merge train requires at least one admitted source")
     for source in sources:
         _validate_admitted_source(
-            source, observer_registry, now=now,
+            source, expected_provider_identity, observer_registry, now=now,
             trusted_owner_ids=trusted_owner_ids,
             max_age_seconds=max_age_seconds)
     prs = [source["pr_number"] for source in sources]
@@ -564,15 +609,18 @@ def require_batch_authorization(record):
 
 
 def freeze_generation(batch_id, target_branch, target_sha, sources, generation,
-                      observer_registry, *, now, trusted_owner_ids,
+                      expected_provider_identity, observer_registry, *, now,
+                      trusted_owner_ids,
                       max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
     """Freeze target and ordered admitted source/evidence identities."""
     _identifier(batch_id, "batch_id")
     _identifier(target_branch, "target_branch")
     _sha(target_sha, "target_sha")
     _positive(generation, "generation")
+    expected_provider_identity = _provider_identity(
+        expected_provider_identity, "expected provider identity")
     ordered = order_sources(
-        sources, observer_registry, now=now,
+        sources, expected_provider_identity, observer_registry, now=now,
         trusted_owner_ids=trusted_owner_ids,
         max_age_seconds=max_age_seconds)
     admission_targets = {
@@ -595,6 +643,7 @@ def freeze_generation(batch_id, target_branch, target_sha, sources, generation,
         "target_branch": target_branch,
         "target_sha": target_sha,
         "generation": generation,
+        "provider_identity": expected_provider_identity,
         "sources": frozen_sources,
         "authorization_scope": "CONSTRUCTION_ONLY",
         "may_publish": False,
@@ -606,8 +655,8 @@ def freeze_generation(batch_id, target_branch, target_sha, sources, generation,
 
 def _validate_generation(generation):
     fields = {"format", "batch_id", "target_branch", "target_sha", "generation",
-              "sources", "authorization_scope", "may_publish", "may_merge",
-              "generation_id"}
+              "provider_identity", "sources", "authorization_scope",
+              "may_publish", "may_merge", "generation_id"}
     _require(isinstance(generation, dict) and set(generation) == fields
              and generation.get("format") == "awf-merge-train-generation-1",
              "generation contract is invalid")
@@ -615,6 +664,8 @@ def _validate_generation(generation):
     _identifier(generation["target_branch"], "generation target_branch")
     _sha(generation["target_sha"], "generation target_sha")
     _positive(generation["generation"], "generation number")
+    _provider_identity(generation["provider_identity"],
+                       "generation provider identity")
     _require(generation["authorization_scope"] == "CONSTRUCTION_ONLY"
              and generation["may_publish"] is False
              and generation["may_merge"] is False,
@@ -645,13 +696,19 @@ def _validate_generation(generation):
 
 
 def generation_status(generation, current_target_sha, current_sources,
-                      observer_registry, *, now, trusted_owner_ids,
+                      expected_provider_identity, observer_registry, *, now,
+                      trusted_owner_ids,
                       max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
     """Abandon a generation for target, source, or evidence drift."""
     _validate_generation(generation)
+    expected_provider_identity = _provider_identity(
+        expected_provider_identity, "expected provider identity")
+    _require(generation["provider_identity"] == expected_provider_identity,
+             "generation provider identity differs from the expected "
+             "provider identity")
     _sha(current_target_sha, "current_target_sha")
     ordered = order_sources(
-        current_sources, observer_registry, now=now,
+        current_sources, expected_provider_identity, observer_registry, now=now,
         trusted_owner_ids=trusted_owner_ids,
         max_age_seconds=max_age_seconds)
     current = {item["pr_number"]: item for item in ordered}
@@ -703,10 +760,16 @@ def conflict_action(*, conflict_paths, generated_paths, reproduced,
 
 
 def verify_batch_parent_provenance(generation, commit_shas, observer_id,
+                                   expected_provider_identity,
                                    observer_registry, *, now,
                                    max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
     """Require registered exact base/source parents for every batch prefix."""
     _validate_generation(generation)
+    expected_provider_identity = _provider_identity(
+        expected_provider_identity, "expected provider identity")
+    _require(generation["provider_identity"] == expected_provider_identity,
+             "generation provider identity differs from the expected "
+             "provider identity")
     _require(isinstance(commit_shas, list)
              and len(commit_shas) == len(generation["sources"]),
              "batch-parent provenance needs one commit per source")
@@ -716,6 +779,7 @@ def verify_batch_parent_provenance(generation, commit_shas, observer_id,
              "batch-parent provenance contains duplicate commits")
     request = {
         "operation": "BATCH_PARENT_PROVENANCE",
+        "provider_identity": expected_provider_identity,
         "generation_id": generation["generation_id"],
         "target_branch": generation["target_branch"],
         "target_sha": generation["target_sha"],
