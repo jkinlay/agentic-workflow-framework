@@ -189,9 +189,11 @@ class ContinuousControllerTests(unittest.TestCase):
 			rows[-1][1]['unexpected_legacy_field'] = True
 			self._legacy_dispatch_store(path, rows)
 			before=self._database_before_image(path)
+			before_bytes=path.read_bytes()
 			with self.assertRaisesRegex(ValidationError, '(?i)legacy.*UNKNOWN|UNKNOWN.*legacy'):
 				ContinuousControllerStore(path, ['A', 'B', 'C'])
 			self.assertEqual(self._database_before_image(path),before)
+			self.assertEqual(path.read_bytes(),before_bytes)
 
 	def test_legacy_194_late_initialization_refusal_preserves_complete_before_image(self):
 		with tempfile.TemporaryDirectory(prefix='awf91-legacy-late-refusal-') as scratch:
