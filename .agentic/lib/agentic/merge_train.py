@@ -168,24 +168,28 @@ def provider_receipt_sha256(registration, request, observation):
         "result_sha256": fingerprint(
             "merge_train_provider_result", observation["result"]),
         "operation": capability,
-        "implementation_sha256": registration["implementation_sha256"],
-        "release_sha256": registration["release_sha256"],
-        "receipt_namespace": registration["receipt_namespace"],
+        "registration_trust": _registration_trust(
+            registration, capability),
     })
 
 
-def _registered_observation(registry, producer_id, request, *, now,
-                            max_age_seconds):
+def _registration_trust(registration, capability):
+    _validate_registration(registration, capability)
+    return {
+        "producer_kind": registration["producer_kind"],
+        "implementation_sha256": registration["implementation_sha256"],
+        "release_sha256": registration["release_sha256"],
+        "capability": capability,
+        "capabilities": deepcopy(registration["capabilities"]),
+        "provider_identity": deepcopy(registration["provider_identity"]),
+        "receipt_namespace": registration["receipt_namespace"],
+    }
+
+
+def _validate_registered_observation(registration, producer_id, request,
+                                     observation, *, now, max_age_seconds):
     _identifier(producer_id, "producer_id")
-    registration = registry.get(producer_id) if isinstance(registry, dict) else None
-    _require(isinstance(registration, dict),
-             "merge-train evidence requires a registered provider observer")
     _validate_registration(registration, request["operation"])
-    argument = deepcopy(request)
-    frozen = canonical(argument)
-    observation = registration["observer"](argument)
-    _require(canonical(argument) == frozen,
-             "merge-train observer mutated its frozen request")
     fields = {"status", "producer_id", "observation_id", "observed_at",
               "request_sha256", "result"}
     _require(isinstance(observation, dict) and set(observation) == fields,
@@ -221,6 +225,24 @@ def _registered_observation(registry, producer_id, request, *, now,
         "release_sha256": registration["release_sha256"],
     }
     return deepcopy(observation["result"]), attestation
+
+
+def _registered_observation(registry, producer_id, request, *, now,
+                            max_age_seconds):
+    _identifier(producer_id, "producer_id")
+    registration = registry.get(producer_id) if isinstance(registry, dict) else None
+    _require(isinstance(registration, dict),
+             "merge-train evidence requires a registered provider observer")
+    _validate_registration(registration, request["operation"])
+    argument = deepcopy(request)
+    frozen = canonical(argument)
+    observation = registration["observer"](argument)
+    _require(canonical(argument) == frozen,
+             "merge-train observer mutated its frozen request")
+    result, attestation = _validate_registered_observation(
+        registration, producer_id, request, observation, now=now,
+        max_age_seconds=max_age_seconds)
+    return result, attestation, deepcopy(observation)
 
 
 def _evidence_digest(value, field):
@@ -346,7 +368,7 @@ def admit_source(source, target_branch, observer_id, observer_registry, *, now,
     _require(type(max_age_seconds) is int and max_age_seconds >= 0,
              "max_age_seconds must be a nonnegative integer")
     request = source_admission_request(source, target_branch)
-    evidence, observation = _registered_observation(
+    evidence, observation, raw_observation = _registered_observation(
         observer_registry, observer_id, request, now=now,
         max_age_seconds=max_age_seconds)
     digests, owner_digest, approval_time = _validate_admission_evidence(
@@ -358,6 +380,7 @@ def admit_source(source, target_branch, observer_id, observer_registry, *, now,
         "evidence_digests": digests,
         "owner_review_evidence_sha256": owner_digest,
     }
+    registration = observer_registry[observer_id]
     record = {
         "format": "awf-merge-train-source-admission-1",
         "status": "ADMITTED",
@@ -366,6 +389,12 @@ def admit_source(source, target_branch, observer_id, observer_registry, *, now,
         "evidence_digests": digests,
         "owner_review_evidence_sha256": owner_digest,
         "provider_observation": observation,
+        "provider_admission": {
+            "request": deepcopy(request),
+            "observation": raw_observation,
+            "registration_trust": _registration_trust(
+                registration, "SOURCE_ADMISSION"),
+        },
         "authorization_scope": "SOURCE_ADMISSION_ONLY",
         "batch_merge_authorized": False,
         "admission_evidence_sha256": fingerprint(
@@ -375,13 +404,15 @@ def admit_source(source, target_branch, observer_id, observer_registry, *, now,
     return record
 
 
-def _validate_admitted_source(source):
+def _validate_admitted_source(source, observer_registry, *, now,
+                              trusted_owner_ids, max_age_seconds):
     fields = {"format", "status", "pr_number", "ticket", "head_sha",
               "tree_sha", "base_branch", "base_sha", "depends_on",
               "commit_range", "risk_tier",
               "normal_final_gate_requires_owner_review", "approval_time",
               "evidence_digests", "owner_review_evidence_sha256",
-              "provider_observation", "authorization_scope",
+              "provider_observation", "provider_admission",
+              "authorization_scope",
               "batch_merge_authorized", "admission_evidence_sha256",
               "admission_id"}
     _require(isinstance(source, dict) and set(source) == fields
@@ -390,7 +421,14 @@ def _validate_admitted_source(source):
              and source.get("authorization_scope") == "SOURCE_ADMISSION_ONLY"
              and source.get("batch_merge_authorized") is False,
              "ordered source is not a source-only admission contract")
-    _validate_source({key: deepcopy(source[key]) for key in (
+    _require(isinstance(trusted_owner_ids, (list, tuple, set, frozenset))
+             and all(isinstance(value, str) and value
+                     for value in trusted_owner_ids),
+             "trusted_owner_ids must be an identity collection")
+    _require(type(max_age_seconds) is int and max_age_seconds >= 0,
+             "max_age_seconds must be a nonnegative integer")
+    normalized_source = _validate_source({
+        key: deepcopy(source[key]) for key in (
         "pr_number", "ticket", "head_sha", "tree_sha", "base_branch",
         "base_sha", "depends_on", "commit_range", "risk_tier",
         "normal_final_gate_requires_owner_review")})
@@ -422,6 +460,54 @@ def _validate_admitted_source(source):
     for field in ("request_sha256", "receipt_sha256", "implementation_sha256",
                   "release_sha256"):
         _digest(observation[field], f"admitted {field}")
+
+    provider_admission = source["provider_admission"]
+    _require(isinstance(provider_admission, dict)
+             and set(provider_admission) == {
+                 "request", "observation", "registration_trust"},
+             "provider admission has a non-closed shape")
+    request = provider_admission["request"]
+    _require(isinstance(request, dict)
+             and request.get("operation") == "SOURCE_ADMISSION"
+             and isinstance(request.get("target_branch"), str),
+             "provider admission request is invalid")
+    expected_request = source_admission_request(
+        normalized_source, request["target_branch"])
+    _require(request == expected_request,
+             "provider admission request is not bound to the persisted source")
+    raw_observation = provider_admission["observation"]
+    producer_id = (raw_observation.get("producer_id")
+                   if isinstance(raw_observation, dict) else None)
+    _identifier(producer_id, "provider admission producer_id")
+    registration = (observer_registry.get(producer_id)
+                    if isinstance(observer_registry, dict) else None)
+    _require(isinstance(registration, dict),
+             "provider admission requires its protected observer registration")
+    expected_trust = _registration_trust(registration, "SOURCE_ADMISSION")
+    _require(provider_admission["registration_trust"] == expected_trust,
+             "provider admission registration trust root changed")
+    evidence, verified_observation = _validate_registered_observation(
+        registration, producer_id, request, raw_observation, now=now,
+        max_age_seconds=max_age_seconds)
+    _require(observation == verified_observation,
+             "provider admission attestation differs from its protected receipt")
+    verified_digests, verified_owner_digest, verified_approval_time = (
+        _validate_admission_evidence(
+            normalized_source, evidence, trusted_owner_ids, now=now,
+            max_age_seconds=max_age_seconds))
+    _require(digests == verified_digests
+             and owner_digest == verified_owner_digest
+             and source["approval_time"] == verified_approval_time,
+             "provider admission result differs from the persisted evidence")
+    evidence_material = {
+        "source": normalized_source,
+        "provider_observation": verified_observation,
+        "evidence_digests": verified_digests,
+        "owner_review_evidence_sha256": verified_owner_digest,
+    }
+    _require(source["admission_evidence_sha256"] == fingerprint(
+        "merge_train_source_admission_evidence", evidence_material),
+        "provider admission evidence digest does not match its protected receipt")
     expected_id = fingerprint("merge_train_source_admission", {
         key: value for key, value in source.items() if key != "admission_id"
     })
@@ -430,12 +516,16 @@ def _validate_admitted_source(source):
     return source
 
 
-def order_sources(sources):
+def order_sources(sources, observer_registry, *, now, trusted_owner_ids,
+                  max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
     """Topologically order by dependencies, then approval time and PR number."""
     _require(isinstance(sources, list) and sources,
              "merge train requires at least one admitted source")
     for source in sources:
-        _validate_admitted_source(source)
+        _validate_admitted_source(
+            source, observer_registry, now=now,
+            trusted_owner_ids=trusted_owner_ids,
+            max_age_seconds=max_age_seconds)
     prs = [source["pr_number"] for source in sources]
     _require(len(prs) == len(set(prs)), "duplicate PR in merge train")
     heads = [source["head_sha"] for source in sources]
@@ -473,13 +563,18 @@ def require_batch_authorization(record):
     raise ValidationError("54A defines no batch authorization or live publication path")
 
 
-def freeze_generation(batch_id, target_branch, target_sha, sources, generation):
+def freeze_generation(batch_id, target_branch, target_sha, sources, generation,
+                      observer_registry, *, now, trusted_owner_ids,
+                      max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
     """Freeze target and ordered admitted source/evidence identities."""
     _identifier(batch_id, "batch_id")
     _identifier(target_branch, "target_branch")
     _sha(target_sha, "target_sha")
     _positive(generation, "generation")
-    ordered = order_sources(sources)
+    ordered = order_sources(
+        sources, observer_registry, now=now,
+        trusted_owner_ids=trusted_owner_ids,
+        max_age_seconds=max_age_seconds)
     frozen_sources = [{
         "pr_number": item["pr_number"],
         "head_sha": item["head_sha"],
@@ -541,11 +636,16 @@ def _validate_generation(generation):
     return generation
 
 
-def generation_status(generation, current_target_sha, current_sources):
+def generation_status(generation, current_target_sha, current_sources,
+                      observer_registry, *, now, trusted_owner_ids,
+                      max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
     """Abandon a generation for target, source, or evidence drift."""
     _validate_generation(generation)
     _sha(current_target_sha, "current_target_sha")
-    ordered = order_sources(current_sources)
+    ordered = order_sources(
+        current_sources, observer_registry, now=now,
+        trusted_owner_ids=trusted_owner_ids,
+        max_age_seconds=max_age_seconds)
     current = {item["pr_number"]: item for item in ordered}
     frozen = {item["pr_number"]: item for item in generation["sources"]}
     reasons = []
@@ -614,7 +714,7 @@ def verify_batch_parent_provenance(generation, commit_shas, observer_id,
         "sources": deepcopy(generation["sources"]),
         "commit_shas": list(commit_shas),
     }
-    result, observation = _registered_observation(
+    result, observation, _ = _registered_observation(
         observer_registry, observer_id, request, now=now,
         max_age_seconds=max_age_seconds)
     _require(isinstance(result, dict)
