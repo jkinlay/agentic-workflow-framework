@@ -19,6 +19,7 @@ from .providers.github import load_observation_report, validate_codeowner
 MANIFEST = "MANIFEST.json"
 LOCK = ".agentic-install/lock"
 JOURNAL = ".agentic-install/journal.json"
+RECOVERY_OBJECTS = ".agentic-install/objects"
 MARKER = ".agentic/INSTALLING.json"
 INSTALLED = ".agentic/installed-manifest.json"
 CONFIG = ".agentic/PROJECT_CONFIG.yaml"
@@ -283,6 +284,62 @@ def _compact_journal(journal):
     return journal["format"] == "awf-install-journal-4"
 
 
+def _recovery_object_path(digest):
+    return f"{RECOVERY_OBJECTS}/{digest}"
+
+
+def _read_recovery_object(tree, digest, size):
+    path = _recovery_object_path(digest)
+    try:
+        info = tree.inspect(path)
+        if info is None or info.st_size != size:
+            raise ValidationError("Recovery object is missing or has the wrong size")
+        data = tree.read(path, maximum=size)
+    except (OSError, ValidationError) as exc:
+        raise ValidationError(f"Invalid or missing recovery object: {digest}") from exc
+    if len(data) != size or sha256(data) != digest:
+        raise ValidationError(f"Invalid recovery object hash or size: {digest}")
+    return data
+
+
+def _write_recovery_objects(tree, objects):
+    for digest, data in sorted(objects.items()):
+        if sha256(data) != digest:
+            raise ValidationError("Recovery object digest differs from its bytes")
+        tree.write(_recovery_object_path(digest), data)
+        _read_recovery_object(tree, digest, len(data))
+
+
+def _load_recovery_objects(tree, journal):
+    if not _compact_journal(journal):
+        return {}
+    objects = {}
+    for item in journal["files"]:
+        digest = item["old_sha256"]
+        if digest is None:
+            continue
+        if digest not in objects:
+            objects[digest] = _read_recovery_object(tree, digest, item["old_size"])
+        elif len(objects[digest]) != item["old_size"]:
+            raise ValidationError(f"Invalid recovery object size reference: {digest}")
+    return objects
+
+
+def _cleanup_recovery_objects(tree, journal):
+    if not _compact_journal(journal):
+        return
+    for digest in sorted({item["old_sha256"] for item in journal["files"]
+                          if item["old_sha256"] is not None}):
+        tree.unlink(_recovery_object_path(digest))
+
+
+def _old_file_bytes(journal, item, objects):
+    if _compact_journal(journal):
+        digest = item["old_sha256"]
+        return None if digest is None else objects[digest]
+    return base64.b64decode(item["old"], validate=True) if item["old"] is not None else None
+
+
 def _managed_inventory_at_old_state(journal, observed):
     """Normalize journalled paths to old state, leaving all other entries exact."""
     normalized = {item["path"]: item for item in observed}
@@ -290,11 +347,14 @@ def _managed_inventory_at_old_state(journal, observed):
         path = item["path"]
         if not _inventory_managed(path):
             continue
-        if item["old"] is None:
+        old_digest = item["old_sha256"] if _compact_journal(journal) else (
+            sha256(base64.b64decode(item["old"], validate=True))
+            if item["old"] is not None else None)
+        if old_digest is None:
             normalized.pop(path, None)
         else:
-            old = base64.b64decode(item["old"], validate=True)
-            normalized[path] = {"path": path, "mode": item["old_mode"], "sha256": sha256(old)}
+            normalized[path] = {"path": path, "mode": item["old_mode"],
+                                "sha256": old_digest}
     return sorted(normalized.values(), key=lambda item: item["path"].casefold())
 
 
@@ -798,10 +858,15 @@ def _validate_transaction_journal(journal):
         raise ValidationError("Invalid recovery file inventory")
     seen = set()
     backup_prefix = f".agentic-backup/{transaction_id}/"
-    version3 = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
+    mode_aware = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
     for item in journal["files"]:
-        expected_keys = {"path", "old", "new_sha256", "old_mode", "new_mode"} if version3 else {
-            "path", "old", "new_sha256"}
+        if _compact_journal(journal):
+            expected_keys = {"path", "old_sha256", "old_size", "new_sha256",
+                             "old_mode", "new_mode"}
+        elif mode_aware:
+            expected_keys = {"path", "old", "new_sha256", "old_mode", "new_mode"}
+        else:
+            expected_keys = {"path", "old", "new_sha256"}
         if not isinstance(item, dict) or set(item) != expected_keys:
             raise ValidationError("Invalid recovery file entry")
         relative_parts(item["path"])
@@ -811,20 +876,31 @@ def _validate_transaction_journal(journal):
         transaction_backup = item["path"].startswith(backup_prefix)
         safe_path = (managed(item["path"]) or item["path"] in {GITIGNORE, "OPERATING_CONFIG.yaml"}
                      or state_path or transaction_backup)
+        has_old = (item["old_sha256"] is not None if _compact_journal(journal)
+                   else item["old"] is not None)
         if (not safe_path or item["path"] == MARKER or item["path"].casefold() in seen or not valid_new or
-                (transaction_backup and (item["old"] is not None or item["new_sha256"] is None))):
+                (transaction_backup and (has_old or item["new_sha256"] is None))):
             raise ValidationError("Unsafe or duplicate recovery path/digest")
         seen.add(item["path"].casefold())
-        if item["old"] is not None:
+        if _compact_journal(journal):
+            valid_old_digest = item["old_sha256"] is None or (
+                isinstance(item["old_sha256"], str) and
+                re.fullmatch(r"[0-9a-f]{64}", item["old_sha256"]) is not None)
+            valid_old_size = item["old_size"] is None or (
+                type(item["old_size"]) is int and item["old_size"] >= 0)
+            if (not valid_old_digest or not valid_old_size or
+                    (item["old_sha256"] is None) != (item["old_size"] is None)):
+                raise ValidationError("Invalid recovery object reference")
+        elif item["old"] is not None:
             try:
                 base64.b64decode(item["old"], validate=True)
             except (ValueError, TypeError) as exc:
                 raise ValidationError("Invalid recovery file bytes") from exc
-        if version3:
+        if mode_aware:
             valid_mode = lambda value: value is None or (
                 isinstance(value, int) and 0 <= value <= 0o7777)
             if (not valid_mode(item["old_mode"]) or not valid_mode(item["new_mode"]) or
-                    (item["old"] is None) != (item["old_mode"] is None) or
+                    (not has_old) != (item["old_mode"] is None) or
                     (item["new_sha256"] is None and item["new_mode"] is not None)):
                 raise ValidationError("Invalid recovery file mode")
     return journal
@@ -875,20 +951,23 @@ def _rollback_runtime(tree, runtime):
 
 def rollback(tree, journal):
     _validate_transaction_journal(journal)
+    # Resolve and authenticate every recovery object before any project or
+    # runtime mutation, so one missing/tampered object fails the whole rollback.
+    recovery_objects = _load_recovery_objects(tree, journal)
     runtime = _validated_runtime_journal(journal)
     backup_prefix = f".agentic-backup/{journal['transaction_id']}/"
-    version3 = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
+    mode_aware = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
     # Do not clobber edits that were neither the old nor proposed installer bytes.
     for item in journal["files"]:
         current = _exists_read(tree, item["path"])
-        old = base64.b64decode(item["old"], validate=True) if item["old"] is not None else None
+        old = _old_file_bytes(journal, item, recovery_objects)
         if current != old:
             if item["new_sha256"] is None:
                 if current is not None:
                     raise ValidationError(f"Recovery found an external edit at {item['path']}; marker retained")
             elif current is None or sha256(current) != item["new_sha256"]:
                 raise ValidationError(f"Recovery found an external edit at {item['path']}; marker retained")
-        if version3 and current is not None:
+        if mode_aware and current is not None:
             mode = stat.S_IMODE(tree.inspect(item["path"]).st_mode)
             expected_mode = item["old_mode"] if current == old else item["new_mode"]
             # An identical-byte rewrite interrupted before new_mode was recorded
@@ -940,18 +1019,20 @@ def rollback(tree, journal):
     # that it executes. A runtime proof failure retains the whole transaction.
     _rollback_runtime(tree, runtime)
     for item in reversed(journal["files"]):
-        if item["old"] is None:
+        old = _old_file_bytes(journal, item, recovery_objects)
+        if old is None:
             tree.unlink(item["path"])
         else:
-            tree.write(item["path"], base64.b64decode(item["old"], validate=True))
-            if version3:
+            tree.write(item["path"], old)
+            if mode_aware:
                 os.chmod(tree.root / item["path"], item["old_mode"])
     if backup_root.exists():
         shutil.rmtree(backup_root)
-    if version3:
+    if mode_aware:
         _verify_journal_managed_state(tree, journal, "before", "after rollback")
     tree.unlink(MARKER)
     tree.unlink(JOURNAL)
+    _cleanup_recovery_objects(tree, journal)
 
 
 class _RuntimeInstallTransaction:
@@ -1005,10 +1086,11 @@ class _RuntimeInstallTransaction:
 
 
 def _verify_file_state(tree, journal, which):
-    version3 = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
+    mode_aware = journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}
+    recovery_objects = _load_recovery_objects(tree, journal) if which == "old" else {}
     for item in journal["files"]:
         if which == "old":
-            expected = base64.b64decode(item["old"], validate=True) if item["old"] is not None else None
+            expected = _old_file_bytes(journal, item, recovery_objects)
             expected_mode = item.get("old_mode")
         else:
             expected = None if item["new_sha256"] is None else item["new_sha256"]
@@ -1018,7 +1100,7 @@ def _verify_file_state(tree, journal, which):
             current is None if expected is None else current is not None and sha256(current) == expected)
         if not matches:
             raise ValidationError(f"Transaction {which} file state differs at {item['path']}")
-        if version3 and current is not None:
+        if mode_aware and current is not None:
             if expected_mode is None or stat.S_IMODE(tree.inspect(item["path"]).st_mode) != expected_mode:
                 raise ValidationError(f"Transaction {which} file mode differs at {item['path']}")
 
@@ -1117,6 +1199,9 @@ def _verify_outer_commit_state(tree, journal, transaction):
 def _finalize_committed(tree, journal):
     _verify_committed_payload(tree, journal, "during authenticated commit cleanup")
     _verify_runtime_state(tree, _validated_runtime_journal(journal), "new", require_cleanup=True)
+    # A durable commit can no longer roll back, so its recovery objects may be
+    # removed before retiring the bound journal and marker.
+    _cleanup_recovery_objects(tree, journal)
     tree.unlink(MARKER)
     tree.unlink(JOURNAL)
 
@@ -1137,6 +1222,7 @@ def _finalize_journal_only(tree, journal):
         _verify_runtime_state(tree, _validated_runtime_journal(journal), "new", require_cleanup=True)
         status = "COMMITTED"
     tree.unlink(JOURNAL)
+    _cleanup_recovery_objects(tree, journal)
     return status
 
 
@@ -1508,10 +1594,16 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                         if dst.inspect(backup_path) is not None:
                             raise ValidationError("Transaction backup path appeared after preflight")
                         backup_plan[backup_path] = old
+            recovery_objects = {}
+
             def recovery_entry(path, old, new_digest):
                 info = dst.inspect(path)
+                old_digest = sha256(old) if old is not None else None
+                if old is not None:
+                    recovery_objects[old_digest] = old
                 return {"path": path,
-                        "old": base64.b64encode(old).decode() if old is not None else None,
+                        "old_sha256": old_digest,
+                        "old_size": len(old) if old is not None else None,
                         "old_mode": stat.S_IMODE(info.st_mode) if info is not None else None,
                         "new_sha256": new_digest, "new_mode": None}
 
@@ -1531,12 +1623,14 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
             if defer_runtime:
                 journal["runtime"] = _runtime_journal(destination, transaction_id)
             try:
+                _write_recovery_objects(dst, recovery_objects)
                 _publish_initial_intent(dst, journal)
             except BaseException:
                 # No destination payload has changed yet. Remove any partially
                 # published intent rather than leaving unauthenticated fresh state.
                 dst.unlink(MARKER)
                 dst.unlink(JOURNAL)
+                _cleanup_recovery_objects(dst, journal)
                 raise
             try:
                 for path, data in sorted(backup_plan.items()):

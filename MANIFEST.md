@@ -97,7 +97,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/heavy_validation_child.py` | `1098a432539cd38f290f4491f3bd5b9196ee4c54d1be0871bd0550d4477a3d69` |
 | `.agentic/lib/agentic/heavy_validation_controller.py` | `e89fa18a530a879f1047cfe360c2f4ec32b23970528b14f0e5a2e209b325e2de` |
 | `.agentic/lib/agentic/host_preflight.py` | `1c9e0c5da08947aba2f2bc98b8be1fa0459be5a278c932e01aa19648d3282384` |
-| `.agentic/lib/agentic/installer.py` | `c08a55295106caa45212cc34915c926609ada5ae8230d43e85bff82cb78d646a` |
+| `.agentic/lib/agentic/installer.py` | `480e7b6e64f0a09720c4767314ae25fd47fdd601d5f204d949370d867866b892` |
 | `.agentic/lib/agentic/intake_assignment.py` | `f099d5839df09582960bd411730f48dc5b115da2d133d1ff7e49d23673e7fe09` |
 | `.agentic/lib/agentic/integration_queue.py` | `178eeadecd8b87305734da126eaa558f39c6fab2ddc00a854641df4137bd8d23` |
 | `.agentic/lib/agentic/interaction.py` | `caf34359bc2053d9fe5f3a19ec57202af719cd0ba9866c8d4b3916ccbf26d3e5` |
@@ -305,7 +305,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_approved_models_awf82.py` | `1ab7396504177491840a17b2f507b7165f26d2711be77c2c0e6530ed702b1872` |
 | `.agentic/tests/test_authorization_awf73.py` | `a40a73c244805c86bdf5d9a8e3e7a4fcff21cd0f65b2074ba4f761a94c037375` |
 | `.agentic/tests/test_awf110_collector_overcap.py` | `2b71626e00c6ddadb15b8bd437b6b992fb7567d10bf601008cb060c55e8acbfd` |
-| `.agentic/tests/test_awf134_installer_journal.py` | `bbc9af8a98543e8bd75ff80d8dd701dc7c0e98059df6b37f07ddfb8a15505831` |
+| `.agentic/tests/test_awf134_installer_journal.py` | `cac7d23d2f664d5b247c52770f806389d3e6465735b7c78df17c44a2b6e67d20` |
 | `.agentic/tests/test_awf59_review_tier_yaml.py` | `dce123fbd47c3ebc7c744c83fdbe7cfa4a2488c8b2c0dd294b948ba417e5f666` |
 | `.agentic/tests/test_bootstrap_configuration.py` | `2a96e3b578b044417ff20deb164db75203ca9e7ccd54721974ac89ab1fcdebe2` |
 | `.agentic/tests/test_candidate_id.py` | `5c70856fe665ec4b2bcbba4c267db24dd7c99d3b9eb27a18ae0e76ed2f8de884` |
