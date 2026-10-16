@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from source_only import COMMITTED_GIT_REASON,committed_git_tuple
-from agentic.continuous_controller import ContinuousControllerStore,canonical_repository_paths,production_controller_cycle as real_production_controller_cycle,production_jira_lifecycle,production_merge_observed,post_merge_jira_progress
+from agentic.continuous_controller import ContinuousControllerStore,canonical_repository_paths,canonical_reservation_sources,production_controller_cycle as real_production_controller_cycle,production_jira_lifecycle,production_merge_observed,post_merge_jira_progress
 from agentic import continuous_controller
 from agentic.contracts import Contracts,schema_inventory
 from agentic import ValidationError
@@ -36,16 +36,30 @@ def production_controller_cycle(*args,**kwargs):
 	"""Existing controller cases use explicit synthetic passing publication facts."""
 	kwargs.setdefault('publication_config',publication_config())
 	kwargs.setdefault('observe_publication',lambda item:publication_observation(item['ticket'],kwargs['now']))
+	kwargs.setdefault('observe_reservations',reservation_observation)
 	return real_production_controller_cycle(*args,**kwargs)
 
 def inventory_observation(now,tickets):
 	return{'source':'host_observation','observed_at':now,'binding':dict(INVENTORY_BINDING),'complete':True,'inventory_sha256':fingerprint('controller-inventory',{'binding':INVENTORY_BINDING,'tickets':tickets}),'tickets':tickets}
 
+def reservation_observation(request):
+	changed=subprocess.check_output(['git','-C',str(ROOT),'diff','--name-only','-z','HEAD','--']).decode('utf-8').split('\x00')
+	untracked=subprocess.check_output(['git','-C',str(ROOT),'ls-files','--others','--exclude-standard','-z']).decode('utf-8').split('\x00')
+	paths=sorted(set(path for path in [*changed,*untracked]if path))
+	sources=[]
+	if paths:
+		diff={'schema_version':1,'kind':'worktree_diff','source':'git','repository_id':request['repository_id'],'head_sha':request['head_sha'],'tree_sha':request['tree_sha'],'artifact_id':fingerprint('controller-worktree-diff',{'head_sha':request['head_sha'],'tree_sha':request['tree_sha'],'paths':paths}),'observed_at':request['observed_at'],'authenticated':True,'complete':True,'paths':paths}
+		diff['evidence_sha256']=fingerprint('controller-reservation-source',diff)
+		sources.append(diff)
+	envelope={'schema_version':1,'source':'host_observation','repository_id':request['repository_id'],'head_sha':request['head_sha'],'tree_sha':request['tree_sha'],'observed_at':request['observed_at'],'authenticated':True,'complete':True,'sources':sources}
+	envelope['observation_sha256']=fingerprint('controller-reservation-observation',envelope)
+	return envelope
+
 def dispatch_receipt(payload,observed_at):
-	keys=['dispatch_id','stream','ticket','exact_tuple','dispatch_nonce','prepared_at','begun_at','role','lifecycle_stage']
+	keys=['dispatch_schema_version','dispatch_id','stream','ticket','exact_tuple','dispatch_nonce','prepared_at','begun_at','role','lifecycle_stage','lane_start_waivers']
 	if 'reconcile_nonce' in payload:
 		keys+=['reconcile_nonce','reconcile_at']
-	return{key:payload[key]for key in keys}|{'status':'ACCEPTED','observed_at':observed_at,'session_id':'session-'+payload['dispatch_id']}
+	return{key:payload[key]for key in keys}|{'status':'ACCEPTED','dispatch_state':'TERMINAL','terminal':True,'observed_at':observed_at,'session_id':'session-'+payload['dispatch_id']}
 
 def jira_current(binding,status,observed_at):
 	return{'issue_id':binding['issue_id'],'status_id':status,'observed_at':observed_at,'jira_provider':binding['jira_provider']}
@@ -64,7 +78,109 @@ def ticket(name,priority,disposition='ELIGIBLE',paths=None,**overrides):
 	value.update(overrides)
 	return value
 
+def seal_replan(store, trigger_id, items, observed_at):
+	context = store.replan_context()
+	next_sha = fingerprint('controller-inventory', {'binding': INVENTORY_BINDING, 'tickets': items})
+	trigger = {'schema_version': 1, 'source': 'host_observation', 'trigger_id': trigger_id, 'repository_id': INVENTORY_BINDING['repository_id'], 'prior_inventory_sha256': context['prior_inventory_sha256'] or ('b' * 64), 'next_inventory_sha256': next_sha, 'round_id': 'round-' + trigger_id, 'observed_at': observed_at, 'nonterminal_dispatch_ids': [item['dispatch_id'] for item in context['nonterminal']], 'authenticated': True}
+	trigger['trigger_sha256'] = fingerprint('controller-replan-trigger', trigger)
+	store.seal_round_boundary_replan(trigger, observed_at)
+	return next_sha
+
 class ContinuousControllerTests(unittest.TestCase):
+	def _legacy_dispatch_store(self, path, rows):
+		store = ContinuousControllerStore(path, ['A', 'B', 'C'])
+		with store.transaction() as db:
+			for status, payload in rows:
+				db.execute('INSERT INTO controller_dispatch VALUES(?,?,?,?,?,?,NULL,?)', (payload['dispatch_id'], payload['stream'], payload['ticket'], payload['exact_tuple'], status, json.dumps(payload, sort_keys=True, separators=(',', ':')), NOW))
+		return store
+
+	def _legacy_payload(self, name, status, stream='A'):
+		payload = {'dispatch_id': name, 'stream': stream, 'ticket': 'AWF-' + name, 'exact_tuple': 'tuple-' + name, 'paths': ['src/' + name + '.py'], 'actor': 'worker', 'next_action': 'continue', 'dispatch_nonce': name + '-nonce', 'prepared_at': NOW, 'role': 'writer', 'lifecycle_stage': 'implementation'}
+		if status in {'IN_FLIGHT', 'UNKNOWN'}:
+			payload['begun_at'] = NOW
+		return payload
+
+	def test_legacy_194_dispatch_rows_are_migrated_or_explicitly_refused(self):
+		with tempfile.TemporaryDirectory(prefix='awf91-legacy-') as scratch:
+			path = Path(scratch) / 'controller.sqlite3'
+			rows = [(state, self._legacy_payload(state.lower(), state, chr(65 + index))) for index, state in enumerate(('PENDING', 'IN_FLIGHT', 'UNKNOWN'))]
+			self._legacy_dispatch_store(path, rows)
+			reopened = ContinuousControllerStore(path, ['A', 'B', 'C'])
+			with reopened.connection() as db:
+				migrated = [(row['status'], json.loads(row['payload_json'])) for row in db.execute('SELECT status,payload_json FROM controller_dispatch ORDER BY rowid')]
+			self.assertEqual([state for state, _ in migrated], ['PENDING', 'IN_FLIGHT', 'UNKNOWN'])
+			self.assertTrue(all(payload['dispatch_schema_version'] == 2 for _, payload in migrated))
+
+	def test_legacy_194_mixed_migration_is_atomic(self):
+		with tempfile.TemporaryDirectory(prefix='awf91-legacy-atomic-') as scratch:
+			path = Path(scratch) / 'controller.sqlite3'
+			rows = [('PENDING', self._legacy_payload('valid-a', 'PENDING', 'A')), ('IN_FLIGHT', self._legacy_payload('valid-b', 'IN_FLIGHT', 'B')), ('UNKNOWN', self._legacy_payload('ambiguous', 'UNKNOWN', 'C'))]
+			rows[-1][1]['unexpected_legacy_field'] = True
+			store = self._legacy_dispatch_store(path, rows)
+			with store.connection() as db:
+				before = db.execute('SELECT status,payload_json,receipt_json FROM controller_dispatch ORDER BY rowid').fetchall()
+			with self.assertRaisesRegex(ValidationError, '(?i)legacy.*UNKNOWN|UNKNOWN.*legacy'):
+				ContinuousControllerStore(path, ['A', 'B', 'C'])
+			with store.connection() as db:
+				after = db.execute('SELECT status,payload_json,receipt_json FROM controller_dispatch ORDER BY rowid').fetchall()
+			self.assertEqual([tuple(row) for row in after], [tuple(row) for row in before])
+
+	def test_reservation_sources_are_authenticated_and_git_canonical(self):
+		with tempfile.TemporaryDirectory(prefix='awf91-reservations-') as scratch:
+			repository = Path(scratch) / 'repo'; repository.mkdir()
+			subprocess.run(['git', 'init', '-q', str(repository)], check=True)
+			subprocess.run(['git', '-C', str(repository), 'config', 'user.email', 'fixture@example.invalid'], check=True)
+			subprocess.run(['git', '-C', str(repository), 'config', 'user.name', 'Fixture'], check=True)
+			(repository / 'shared.py').write_text('base\n', encoding='utf-8')
+			subprocess.run(['git', '-C', str(repository), 'add', 'shared.py'], check=True)
+			subprocess.run(['git', '-C', str(repository), 'commit', '-qm', 'fixture'], check=True)
+			head = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD'], text=True).strip()
+			tree = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+			(repository / 'shared.py').write_text('dirty\n', encoding='utf-8')
+			parked = {'schema_version': 1, 'kind': 'parked', 'source': 'github.com', 'repository_id': '101', 'head_sha': head, 'tree_sha': tree, 'artifact_id': 'parked-1', 'observed_at': NOW, 'authenticated': True, 'complete': True, 'paths': ['shared.py']}
+			parked['evidence_sha256'] = fingerprint('controller-reservation-source', parked)
+			diff = {'schema_version': 1, 'kind': 'worktree_diff', 'source': 'git', 'repository_id': '101', 'head_sha': head, 'tree_sha': tree, 'artifact_id': 'diff-1', 'observed_at': NOW, 'authenticated': True, 'complete': True, 'paths': ['shared.py']}
+			diff['evidence_sha256'] = fingerprint('controller-reservation-source', diff)
+			accepted = canonical_reservation_sources([parked, diff], repository, head, tree, '101', NOW)
+			self.assertEqual([item['kind'] for item in accepted], ['parked', 'worktree_diff'])
+			for mutation in ({'authenticated': False}, {'repository_id': '999'}, {'head_sha': '0' * 40}, {'paths': ['../shared.py']}, {'paths': ['SHARED.py']}):
+				bad = dict(parked); bad.update(mutation); bad['evidence_sha256'] = fingerprint('controller-reservation-source', {key: value for key, value in bad.items() if key != 'evidence_sha256'})
+				with self.assertRaises(ValidationError):
+					canonical_reservation_sources([bad], repository, head, tree, '101', NOW)
+
+	def test_pending_replan_is_sealed_before_round_boundary_refill(self):
+		with tempfile.TemporaryDirectory(prefix='awf91-replan-') as scratch:
+			path = Path(scratch) / 'controller.sqlite3'
+			store = ContinuousControllerStore(path, ['A'])
+			store.schedule([ticket('AWF-OLD', 1)], NOW, 1)
+			old = store.prepare_dispatches(NOW)[0]
+			next_inventory = [ticket('AWF-NEXT', 1)]
+			next_sha = fingerprint('controller-inventory', {'binding': INVENTORY_BINDING, 'tickets': next_inventory})
+			self.assertFalse(store.schedule(next_inventory, NOW, 1, inventory_sha256=next_sha)[0]['ticket'] == 'AWF-NEXT')
+			trigger = {'schema_version': 1, 'source': 'host_observation', 'trigger_id': 'trigger-1', 'repository_id': '101', 'prior_inventory_sha256': 'b' * 64, 'next_inventory_sha256': next_sha, 'round_id': 'round-2', 'observed_at': NOW, 'nonterminal_dispatch_ids': [old['dispatch_id']], 'authenticated': True}
+			trigger['trigger_sha256'] = fingerprint('controller-replan-trigger', trigger)
+			store.seal_round_boundary_replan(trigger, NOW)
+			reopened = ContinuousControllerStore(path, ['A'])
+			self.assertEqual(reopened.schedule(next_inventory, NOW, 1, inventory_sha256=next_sha)[0]['ticket'], 'AWF-NEXT')
+			self.assertTrue(any(item['payload']['ticket'] == 'AWF-NEXT' for item in reopened.prepare_dispatches(NOW)))
+
+	def test_all_nonterminal_states_block_refill_until_authenticated_replan(self):
+		for status in ('PENDING', 'IN_FLIGHT', 'UNKNOWN', 'LAUNCHED'):
+			with self.subTest(status=status), tempfile.TemporaryDirectory(prefix='awf91-replan-state-') as scratch:
+				path = Path(scratch) / 'controller.sqlite3'
+				store = ContinuousControllerStore(path, ['A'])
+				store.schedule([ticket('AWF-OLD', 1)], NOW, 1); operation = store.prepare_dispatches(NOW)[0]
+				with store.transaction() as db:
+					db.execute('UPDATE controller_dispatch SET status=? WHERE dispatch_id=?', (status, operation['dispatch_id']))
+				next_inventory = [ticket('AWF-NEXT', 1)]; next_sha = fingerprint('controller-inventory', {'binding': INVENTORY_BINDING, 'tickets': next_inventory})
+				for authenticated in (False, True):
+					trigger = {'schema_version': 1, 'source': 'host_observation', 'trigger_id': 'trigger-' + status + '-' + str(authenticated), 'repository_id': '101', 'prior_inventory_sha256': 'b' * 64, 'next_inventory_sha256': next_sha, 'round_id': 'round-2', 'observed_at': NOW, 'nonterminal_dispatch_ids': [operation['dispatch_id']], 'authenticated': authenticated}
+					trigger['trigger_sha256'] = fingerprint('controller-replan-trigger', trigger)
+					if not authenticated:
+						with self.assertRaises(ValidationError): store.seal_round_boundary_replan(trigger, NOW)
+					else:
+						store.seal_round_boundary_replan(trigger, NOW)
+				self.assertEqual(store.schedule(next_inventory, NOW, 1, inventory_sha256=next_sha)[0]['ticket'], 'AWF-NEXT')
 
 	def test_publication_failure_blocks_before_dispatch_while_other_streams_continue(self):
 		calls=[]
@@ -139,7 +255,9 @@ class ContinuousControllerTests(unittest.TestCase):
 		store.mark_dispatch_unknown(old_intent['dispatch_id'],'2026-10-02T10:00:01Z')
 		later='2026-10-02T10:00:02Z'
 		replacement=ticket('EX-REPLACEMENT',2)
-		store.schedule([ticket('EX-RESERVED',1,'COMPLETE'),replacement],later,host_capacity=2)
+		replanned=[ticket('EX-RESERVED',1,'COMPLETE'),replacement]
+		next_sha=seal_replan(store,'reservation-priority',replanned,later)
+		store.schedule(replanned,later,host_capacity=2,inventory_sha256=next_sha)
 		replacement_intent=next((item for item in store.prepare_dispatches(later)if item['ticket']=='EX-REPLACEMENT'))
 		begun=store.begin_dispatch(replacement_intent['dispatch_id'],'2026-10-02T10:00:03Z')
 		store.finish_dispatch(replacement_intent['dispatch_id'],dispatch_receipt(begun,'2026-10-02T10:00:04Z'),'2026-10-02T10:00:04Z')
@@ -193,7 +311,9 @@ class ContinuousControllerTests(unittest.TestCase):
 				if status=='IN_FLIGHT':
 					store.begin_dispatch(intent['dispatch_id'],NOW)
 				later='2026-10-02T10:00:01Z'
-				store.schedule([ticket('EX-HELD',1,'COMPLETE'),replacement],later,host_capacity=2 if status=='IN_FLIGHT' else 1)
+				replanned=[ticket('EX-HELD',1,'COMPLETE'),replacement]
+				next_sha=seal_replan(store,'held-'+status.lower(),replanned,later)
+				store.schedule(replanned,later,host_capacity=2 if status=='IN_FLIGHT' else 1,inventory_sha256=next_sha)
 				snapshot=store.schedule([ticket('EX-HELD',0),replacement],'2026-10-02T10:00:02Z',host_capacity=2)
 				self.assertEqual(next((row for row in snapshot if row['stream']=='A'))['ticket'],'EX-NEXT')
 				self.assertNotEqual(next((row for row in snapshot if row['stream']=='B'))['ticket'],'EX-HELD')
@@ -214,12 +334,14 @@ class ContinuousControllerTests(unittest.TestCase):
 					if intent_state=='UNKNOWN':
 						store.mark_dispatch_unknown(intent['dispatch_id'],'2026-10-02T10:00:01Z')
 					later='2026-10-02T10:00:02Z'
-					snapshot=store.schedule([ticket('EX-IN-FLIGHT',1,'COMPLETE'),ticket('EX-AVAILABLE-1',2),ticket('EX-AVAILABLE-2',3)],later,host_capacity=capacity)
+					replanned=[ticket('EX-IN-FLIGHT',1,'COMPLETE'),ticket('EX-AVAILABLE-1',2),ticket('EX-AVAILABLE-2',3)]
+					next_sha=seal_replan(store,'capacity-'+intent_state.lower()+'-'+str(capacity),replanned,later)
+					snapshot=store.schedule(replanned,later,host_capacity=capacity,inventory_sha256=next_sha)
 					reserved=0 if intent_state=='PENDING' else 1
 					self.assertEqual(sum((row['state']=='WORKING' for row in snapshot)),max(0,capacity-reserved))
 					self.assertNotIn('EX-IN-FLIGHT',[row['ticket']for row in snapshot])
 
-	def test_orphan_pending_dispatch_is_cancelled_and_recreated_after_fresh_preflight(self):
+	def test_orphan_pending_dispatch_blocks_successor_until_replan(self):
 		store=ContinuousControllerStore(Path(self.temporary.name)/'orphan-pending.sqlite3',['A','B'])
 		store.schedule([ticket('EX-8',1)],NOW,host_capacity=1)
 		original=store.prepare_dispatches(NOW)[0]
@@ -229,12 +351,9 @@ class ContinuousControllerTests(unittest.TestCase):
 		self.assertNotIn('EX-8',calls,repr(blocked_cycle))
 		with store.connection()as db:
 			cancelled=db.execute('SELECT status,payload_json FROM controller_dispatch WHERE dispatch_id=?',(original['dispatch_id'],)).fetchone()
-		self.assertEqual(cancelled['status'],'CANCELLED')
-		self.assertIn('fresh preflight',json.loads(cancelled['payload_json'])['cancellation_reason'])
-		resumed_at='2026-10-02T10:00:02Z'
-		resumed=production_controller_cycle(store,now=resumed_at,host_capacity=1,inventory_binding=INVENTORY_BINDING,**REPOSITORY,observe_inventory=lambda:inventory_observation(resumed_at,[ticket('EX-8',1),ticket('EX-9',2,'COMPLETE')]),dispatch_ticket=lambda payload:calls.append(payload['ticket'])or dispatch_receipt(payload,resumed_at),observe_dispatch=lambda payload:self.fail('cancelled PENDING intent cannot reconcile'),deliver_status=lambda digest:{'delivery_id':digest['delivery_id'],'status':'DELIVERED','observed_at':resumed_at})
-		self.assertEqual(calls,['EX-9','EX-8'],repr((blocked_cycle,resumed)))
-		self.assertIn('EX-8',[receipt['ticket']for receipt in resumed['dispatch_receipts']])
+		self.assertEqual(cancelled['status'],'PENDING')
+		self.assertNotIn('cancellation_reason',json.loads(cancelled['payload_json']))
+		self.assertNotIn('EX-9',[row['ticket']for row in blocked_cycle['streams']if row['state']=='WORKING'])
 
 	def test_pending_dispatch_cancellation_refuses_any_intent_that_reached_begin(self):
 		store=ContinuousControllerStore(Path(self.temporary.name)/'cancel-inflight.sqlite3',['A'])
@@ -244,7 +363,7 @@ class ContinuousControllerTests(unittest.TestCase):
 		with self.assertRaisesRegex(ValidationError,'never-begun pending'):
 			store.cancel_pending_dispatch(intent['dispatch_id'],'2026-10-02T10:00:01Z','preflight changed')
 
-	def test_pending_dispatch_cancels_when_preflight_pauses_or_completes_ticket(self):
+	def test_pending_dispatch_preflight_change_waits_for_replan(self):
 		for disposition in('PAUSED_INPUT','COMPLETE'):
 			with self.subTest(disposition=disposition):
 				path=Path(self.temporary.name)/f'cancel-{disposition.lower()}.sqlite3'
@@ -254,10 +373,10 @@ class ContinuousControllerTests(unittest.TestCase):
 				intent=store.prepare_dispatches(NOW)[0]
 				observed_at='2026-10-02T10:00:01Z'
 				result=production_controller_cycle(store,now=observed_at,host_capacity=1,inventory_binding=INVENTORY_BINDING,**REPOSITORY,observe_inventory=lambda:inventory_observation(observed_at,[ticket(ticket_id,1,disposition)]),dispatch_ticket=lambda payload:self.fail('non-eligible PENDING intent reached host'),observe_dispatch=lambda payload:self.fail('never-begun intent cannot reconcile'),deliver_status=lambda digest:{'delivery_id':digest['delivery_id'],'status':'DELIVERED','observed_at':observed_at})
-				self.assertEqual(next((row for row in result['streams']if row['stream']=='A'))['state'],disposition)
+				self.assertEqual(next((row for row in result['streams']if row['stream']=='A'))['state'],'WORKING')
 				with store.connection()as db:
 					status=db.execute('SELECT status FROM controller_dispatch WHERE dispatch_id=?',(intent['dispatch_id'],)).fetchone()[0]
-				self.assertEqual(status,'CANCELLED')
+				self.assertEqual(status,'PENDING')
 
 	def test_contradictory_reviewer_counts_fail_before_dispatch_or_delivery(self):
 		malformed=ticket('QA-BAD',1,reviewer_completion={'required':2,'completed':1,'acceptable':1,'failed':0,'stale':0,'outstanding':0})
@@ -546,7 +665,9 @@ class ContinuousControllerTests(unittest.TestCase):
 		store.mark_dispatch_unknown(old_intent['dispatch_id'],'2026-10-02T10:00:01Z')
 		replacement=ticket('EX-20',2)
 		allocated_at='2026-10-02T10:00:02Z'
-		store.schedule([ticket('EX-19',1,'COMPLETE'),replacement],allocated_at,host_capacity=2)
+		replanned=[ticket('EX-19',1,'COMPLETE'),replacement]
+		next_sha=seal_replan(store,'reassigned-unknown',replanned,allocated_at)
+		store.schedule(replanned,allocated_at,host_capacity=2,inventory_sha256=next_sha)
 		replacement_intent=next((item for item in store.prepare_dispatches(allocated_at)if item['ticket']=='EX-20'))
 		begun=store.begin_dispatch(replacement_intent['dispatch_id'],'2026-10-02T10:00:03Z')
 		store.finish_dispatch(replacement_intent['dispatch_id'],dispatch_receipt(begun,'2026-10-02T10:00:04Z'),'2026-10-02T10:00:04Z')
@@ -563,7 +684,7 @@ class ContinuousControllerTests(unittest.TestCase):
 		self.assertEqual((detached['ticket'],detached['status'],detached['detached']),('EX-19','UNKNOWN',True))
 		delivered_owner=next((row for row in delivered[0]['streams']if row['stream']=='A'))
 		self.assertEqual((delivered_owner['state'],delivered_owner['ticket'],delivered_owner['exact_tuple']),('WORKING','EX-20',replacement['exact_tuple']))
-		self.assertEqual([item['state']for item in result['errors']if item['operation']=='dispatch'],['UNKNOWN'])
+		self.assertEqual([item['state']for item in result['errors']if item['operation']=='dispatch'],[])
 		with store.connection()as db:
 			self.assertEqual(db.execute("SELECT COUNT(*) FROM controller_dispatch WHERE ticket='EX-20'").fetchone()[0],1)
 
@@ -575,7 +696,9 @@ class ContinuousControllerTests(unittest.TestCase):
 		store.begin_dispatch(old_intent['dispatch_id'],NOW)
 		store.mark_dispatch_unknown(old_intent['dispatch_id'],'2026-10-02T10:00:01Z')
 		replacement=ticket('EX-NEW',2)
-		store.schedule([ticket('EX-OLD',1,'COMPLETE'),replacement],'2026-10-02T10:00:02Z',host_capacity=2)
+		replanned=[ticket('EX-OLD',1,'COMPLETE'),replacement]
+		next_sha=seal_replan(store,'detached-unknown',replanned,'2026-10-02T10:00:02Z')
+		store.schedule(replanned,'2026-10-02T10:00:02Z',host_capacity=2,inventory_sha256=next_sha)
 		unresolved=store.digest('2026-10-02T10:00:03Z')
 		self.assertEqual(unresolved['kind'],'CHANGE')
 		self.assertEqual([(row['ticket'],row['detached'])for row in unresolved['unresolved_dispatches']],[('EX-OLD',True)])
@@ -878,7 +1001,7 @@ class JiraProgressTests(unittest.TestCase):
 		subprocess.run(['git','-C',str(worktree),'config','user.name','fixture'],check=True)
 		fixture_path=worktree/'.agentic/tests/fixtures/ex-42.txt'
 		fixture_path.parent.mkdir(parents=True)
-		fixture_path.write_text('controller fixture\n',encoding='utf-8')
+		fixture_path.write_bytes(b'controller fixture\n')
 		subprocess.run(['git','-C',str(worktree),'add',fixture_path.relative_to(worktree)],check=True)
 		subprocess.run(['git','-C',str(worktree),'commit','-q','-m','fixture'],check=True)
 		inventory=[ticket('EX-42',1)]
@@ -902,8 +1025,10 @@ class JiraProgressTests(unittest.TestCase):
 		transition_id=str(uuid.UUID(int=25))
 		closeout={'schema_version':3,'record_id':str(uuid.UUID(int=20)),'created_at':NOW,'producer_id':'fixture-controller','run_id':str(uuid.UUID(int=21)),'binding':{'project_id':project_config['project']['id'],'repository_id':project_config['github']['repository_id'],'issue_id':'QA-CLI','requirements_hash':'a'*64,'contract_hash':'b'*64,'policy_hash':policy_hash(project_config,definition()),'candidate_id':'c'*64},'pr_number':42,'reviewed_head_sha':merged_head,'base_sha':merged_head,'merge_commit_sha':merged_head,'merge_tree_sha':merged_tree,'bound_files':[{'path':bound_path,'blob_sha':bound_blob,'sha256':sha256(bound_bytes)}],'gate_record_id':str(uuid.UUID(int=22)),'review_record_ids':[str(uuid.UUID(int=23))],'jira_transition_record_id':transition_id,'evidence':['urn:awf:fixture:cli-closeout']}
 		transition={'schema_version':3,'record_id':transition_id,'created_at':NOW,'producer_id':'fixture-controller','run_id':str(uuid.UUID(int=26)),'binding':closeout['binding'],'operation_id':str(uuid.UUID(int=27)),'merge_result_id':merge_result_id,'jira_provider':{'cloud_id':'fixture-cloud','site':'https://jira.example.invalid','project_id':'fixture-project','project_key':'EX','controller_actor_id':'fixture-controller'},'lifecycle_event':'JIRA_RECONCILED','from_status_id':'In Review','to_status_id':'Done','transition_id':'31','status':'SUCCEEDED','evidence':['urn:awf:fixture:cli-jira-transition'],'read_back':{'observed_status':'Done','observed_actor':'fixture-controller','observed_at':NOW}}
-		adapter_config={'inventory':inventory_observation(NOW,inventory),'publication':publication_observation('EX-42',NOW),'jira_now':NOW,'jira_before':'Ready','jira_after':'In Progress','reconcile_receipt':{'ticket':'QA-CLI','issue_id':'10001',**jira_binding,'status':'RECONCILED','operation_id':str(uuid.UUID(int=9)),'before_status_id':'3','after_status_id':'10002','observed_at':NOW},'jira_page':{'items':[{'id':'10001','issue_type':'TASK','status_category':'TERMINAL'}],'next_cursor':None,'complete':True,'snapshot_id':'snapshot-cli','scope_sha256':scope_sha256,'observed_at':NOW},'project_config_observation':{'raw_bytes_base64':base64.b64encode(project_config_bytes).decode('ascii'),'config_sha256':sha256(project_config_bytes),'policy_sha256':policy_hash(project_config,definition()),'path':'.agentic/PROJECT_CONFIG.yaml','repository':project_config['github']['repository'],'repository_id':project_config['github']['repository_id'],'ref':'refs/heads/'+project_config['github']['base_branch'],'blob_sha':'e'*40,'acceptance':{'status':'ACCEPTED','receipt_id':'cli-acceptance','workflow_version':project_config['template']['expected_workflow_version']}},'closeout_observation':{'record':closeout,'merge_result_id':merge_result_id,'merge_observed_at':NOW},'jira_reconciliation_observation':{'record':transition}}
-		adapter_source='def build_adapters(config):\n    now = config["jira_now"]\n    def observe_inventory():\n        return config["inventory"]\n    def observe_publication(item):\n        return config["publication"]\n    def dispatch_ticket(payload):\n        keys = ["dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce", "prepared_at", "begun_at", "role", "lifecycle_stage"]\n        if "reconcile_nonce" in payload:\n            keys += ["reconcile_nonce", "reconcile_at"]\n        return {key: payload[key] for key in keys} | {"status": "ACCEPTED", "observed_at": now, "session_id": "session-" + payload["dispatch_id"]}\n    def observe_dispatch(payload):\n        return dispatch_ticket(payload)\n    def deliver_status(digest):\n        return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": now}\n    def observe_provider_identity():\n        return {"cloud_id": "fixture-cloud", "site": "https://jira.example.invalid",\n                "project_id": "fixture-project", "project_key": "EX",\n                "controller_actor_id": "fixture-controller"}\n    def read_current_status(binding):\n        return {"issue_id": binding["issue_id"], "status_id": config["jira_before"], "observed_at": now, "jira_provider": binding["jira_provider"]}\n    def write_transition(record):\n        return {"operation_id": record["operation_id"], "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED", "observed_at": now, "jira_provider": record["jira_provider"]}\n    def read_transition(record, operation):\n        return {"issue_id": record["binding"]["issue_id"], "status": config["jira_after"], "actor": record["producer_id"], "observed_at": now, "jira_provider": record["jira_provider"]}\n    def reconcile_merged_ticket(ticket):\n        value = dict(config["reconcile_receipt"])\n        value["ticket"] = ticket\n        return value\n    def fetch_scope_page(scope, cursor):\n        return config["jira_page"]\n    def observe_accepted_project_config(request):\n        return {"observed_at": now, "result": config["project_config_observation"]}\n    def observe_closeout_record(request):\n        return {"observed_at": now, "result": config["closeout_observation"]}\n    def observe_jira_reconciliation(request):\n        return {"observed_at": now, "result": config["jira_reconciliation_observation"]}\n    return {name: value for name, value in locals().items() if callable(value) and name != "build_adapters"}\n'
+		reservation_envelope={'schema_version':1,'source':'host_observation','repository_id':INVENTORY_BINDING['repository_id'],'head_sha':merged_head,'tree_sha':merged_tree,'observed_at':NOW,'authenticated':True,'complete':True,'sources':[]}
+		reservation_envelope['observation_sha256']=fingerprint('controller-reservation-observation',reservation_envelope)
+		adapter_config={'reservations':reservation_envelope,'inventory':inventory_observation(NOW,inventory),'publication':publication_observation('EX-42',NOW),'jira_now':NOW,'jira_before':'Ready','jira_after':'In Progress','reconcile_receipt':{'ticket':'QA-CLI','issue_id':'10001',**jira_binding,'status':'RECONCILED','operation_id':str(uuid.UUID(int=9)),'before_status_id':'3','after_status_id':'10002','observed_at':NOW},'jira_page':{'items':[{'id':'10001','issue_type':'TASK','status_category':'TERMINAL'}],'next_cursor':None,'complete':True,'snapshot_id':'snapshot-cli','scope_sha256':scope_sha256,'observed_at':NOW},'project_config_observation':{'raw_bytes_base64':base64.b64encode(project_config_bytes).decode('ascii'),'config_sha256':sha256(project_config_bytes),'policy_sha256':policy_hash(project_config,definition()),'path':'.agentic/PROJECT_CONFIG.yaml','repository':project_config['github']['repository'],'repository_id':project_config['github']['repository_id'],'ref':'refs/heads/'+project_config['github']['base_branch'],'blob_sha':'e'*40,'acceptance':{'status':'ACCEPTED','receipt_id':'cli-acceptance','workflow_version':project_config['template']['expected_workflow_version']}},'closeout_observation':{'record':closeout,'merge_result_id':merge_result_id,'merge_observed_at':NOW},'jira_reconciliation_observation':{'record':transition}}
+		adapter_source='def build_adapters(config):\n    now = config["jira_now"]\n    def observe_inventory():\n        return config["inventory"]\n    def observe_reservations(request):\n        return config["reservations"]\n    def observe_publication(item):\n        return config["publication"]\n    def dispatch_ticket(payload):\n        keys = ["dispatch_schema_version", "dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce", "prepared_at", "begun_at", "role", "lifecycle_stage", "lane_start_waivers"]\n        if "reconcile_nonce" in payload:\n            keys += ["reconcile_nonce", "reconcile_at"]\n        return {key: payload[key] for key in keys} | {"status": "ACCEPTED", "dispatch_state": "TERMINAL", "terminal": True, "observed_at": now, "session_id": "session-" + payload["dispatch_id"]}\n    def observe_dispatch(payload):\n        return dispatch_ticket(payload)\n    def deliver_status(digest):\n        return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": now}\n    def observe_provider_identity():\n        return {"cloud_id": "fixture-cloud", "site": "https://jira.example.invalid",\n                "project_id": "fixture-project", "project_key": "EX",\n                "controller_actor_id": "fixture-controller"}\n    def read_current_status(binding):\n        return {"issue_id": binding["issue_id"], "status_id": config["jira_before"], "observed_at": now, "jira_provider": binding["jira_provider"]}\n    def write_transition(record):\n        return {"operation_id": record["operation_id"], "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED", "observed_at": now, "jira_provider": record["jira_provider"]}\n    def read_transition(record, operation):\n        return {"issue_id": record["binding"]["issue_id"], "status": config["jira_after"], "actor": record["producer_id"], "observed_at": now, "jira_provider": record["jira_provider"]}\n    def reconcile_merged_ticket(ticket):\n        value = dict(config["reconcile_receipt"])\n        value["ticket"] = ticket\n        return value\n    def fetch_scope_page(scope, cursor):\n        return config["jira_page"]\n    def observe_accepted_project_config(request):\n        return {"observed_at": now, "result": config["project_config_observation"]}\n    def observe_closeout_record(request):\n        return {"observed_at": now, "result": config["closeout_observation"]}\n    def observe_jira_reconciliation(request):\n        return {"observed_at": now, "result": config["jira_reconciliation_observation"]}\n    return {name: value for name, value in locals().items() if callable(value) and name != "build_adapters"}\n'
 		adapter_path=root/'reviewed_adapter.py'
 		adapter_path.write_text(adapter_source,encoding='utf-8',newline='\n')
 		adapter_config_path=root/'adapter.json'
