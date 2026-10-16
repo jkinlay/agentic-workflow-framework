@@ -69,7 +69,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/examples/routing-request.json` | `961cd9c8a0850d69bd75e38343d3962f511b6f135f35e83aa0e3d44dd6323a0e` |
 | `.agentic/examples/stream-input.json` | `37097f3c73d5de9941dbd049fa29c7e9f659b7fb02b882b2978916f7d3c9cc33` |
 | `.agentic/examples/unconfigured-project.yaml` | `60a4ff371642dbe19eec6210c7b468c4d4fafe8c3d64cdf76795fdab60fad081` |
-| `.agentic/examples/workflow-content-binding-project.yaml` | `ce7525c6f74e7490f7a9d0461ed21635043c0b1b785be2a9926e8cd39f9fc849` |
+| `.agentic/examples/workflow-content-binding-project.yaml` | `419ede86035e8dab7a61f689557b93cf0c4ac27f20e499fafe599fa18e42cf0e` |
 | `.agentic/launch-surfaces.json` | `10a85af93c9b5e224b30e37232cc6e30e265e10e54dd46f74db739293ce86e8b` |
 | `.agentic/lib/agentic/__init__.py` | `90d15a9106615d2ffcfca40655ebbe3e3dfe3d3f357652a5c20c935d51f8d7e8` |
 | `.agentic/lib/agentic/activation.py` | `ebb73dee3a03be049b46cb11787c77ace16965e938bb2fc371e07851ad00deb7` |
@@ -416,7 +416,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.gitattributes` | `8d550a32a0754956bef789a454ce284e9ad34e0e7a77fdbf6e90c3350e702f31` |
 | `.github/CODEOWNERS` | `84e1f8ae33c4914a7171818c8e4c76aa8fb89a669bb36c1c2c8449f24d05610a` |
 | `.github/PULL_REQUEST_TEMPLATE.md` | `412d8a2f6759770df76f215782d9fae9be06805ae046041f8447e0f32fc06d72` |
-| `.github/workflows/ci.yml` | `152895b64476156cb96cb1725be65d24283704250d16a6255f3ea790ff3b1ec8` |
+| `.github/workflows/ci.yml` | `90a25b4748318c9d178c089b74f5b2b8b8567d571a5e51e6d3c6e76cc88c66d1` |
 | `.github/workflows/manifest-check.yml` | `c966a63516568158fd078ac22d4d10e46ef77de795c081d9b7bf322c4a1cc6b4` |
 | `ADR-DESIGN-FIRST-TRIAL.md` | `6702007630ee25d4e8cc64b9913ee0b86e7eaf03ecf8dba0632e124bbe179e16` |
 | `ADR-LANE-MODEL-ROUTING.md` | `c713ee7cb72d5d504674bdd5cfaf7437a9cbb122f738ab49dbac3e70f79bff52` |
@@ -526,7 +526,8 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_adoptable_source.py` | `4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745` |
 | `scripts/tests/test_autocrlf_scope.py` | `d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `378f4e8844ef552be777e92503be4c20ed44678747353798636c643bf4f1b9be` |
-| `scripts/tests/test_ci_suite_coverage.py` | `fad8b9c6a6396631b23899795de1e0e65eb527410c494cef33787b9baa5dfa26` |
+| `scripts/tests/test_ci_suite_coverage.py` | `46d04a5bced736858e27ece727fe9a8b339b826f6ba322237ccfc44ba2e7fba2` |
+| `scripts/tests/test_ci_windows_final_candidate.py` | `b24641b80b683d0f7909ba93c26c0e49128f6e3aceaa56c04c71eef6b2895c91` |
 | `scripts/tests/test_cli_failure_paths.py` | `0a0cef4139b488d1f8a048401ff6e7ef1582171a245c6d320113acf0e4c30dd1` |
 | `scripts/tests/test_fresh_bootstrap.py` | `ccc1c4fa1b125a93309f25af4d1abbbaaf4a930e80ea23197ec0794fca32ce6a` |
 | `scripts/tests/test_generate_examples_schema_refs.py` | `acd329623a932ba4b7485fe1b544dc6729631ad5a5a20f73901e093571f84b17` |
