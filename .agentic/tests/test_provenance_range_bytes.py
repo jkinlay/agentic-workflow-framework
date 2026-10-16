@@ -510,6 +510,19 @@ class IN44RepositoryConfigTests(_RepositoryCase):
                     provenance.check_commit_range(shallow_root, base, head)
                 self.assertEqual(str(full.exception), str(shallow.exception))
 
+    def test_in_44_malformed_base_refuses_before_repository_inspection(self):
+        missing_root = self.scratch / "not-a-repository"
+        malformed = (None, 7, "", "main", "refs/tags/v1", "refs/heads/a..b")
+        for base in malformed:
+            with self.subTest(base=base):
+                with patch.object(
+                    provenance, "_Git",
+                    side_effect=AssertionError("repository inspected"),
+                ) as git:
+                    with self.assertRaisesRegex(ValidationError, "^REF_INVALID"):
+                        provenance.check_commit_range(missing_root, base, self.base)
+                    git.assert_not_called()
+
     def test_in_44_unsafe_local_config_refuses_and_shallow_boundary_is_named(self):
         self.git("config", "merge.fixture.driver", "false")
         with self.assertRaisesRegex(ValidationError, "GIT_CONFIG_UNSAFE"):
