@@ -104,7 +104,9 @@ def _journal_marker(transaction_id, journal_digest, pending_digest=None,
 def _validate_journal_marker(marker, journal_raw):
     if not isinstance(marker, dict):
         raise ValidationError("Invalid installation recovery marker")
-    marker_format = marker.get("format")
+    if "format" not in marker or not isinstance(marker["format"], str):
+        raise ValidationError("Invalid installation recovery marker")
+    marker_format = marker["format"]
     base_keys = {"format", "transaction_id", "journal_sha256",
                  "pending_journal_sha256"}
     if marker_format == "awf-install-marker-1":
