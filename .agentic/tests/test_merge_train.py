@@ -38,6 +38,11 @@ class MergeTrainTests(unittest.TestCase):
         self.tree2 = self._git("rev-parse", f"{self.head2}^{{tree}}")
         self.observer_registry = {}
         self.observer_count = 0
+        self.provider_identity = {
+            "host": "https://example.invalid",
+            "repository": "owner/repository",
+            "repository_id": 42,
+        }
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -128,9 +133,16 @@ class MergeTrainTests(unittest.TestCase):
         return evidence
 
     def _registration(self, source, evidence,
-                      observer_id="fixture-observer", target_branch="main"):
+                      observer_id="fixture-observer", target_branch="main",
+                      provider_identity=None,
+                      expected_provider_identity=None):
         module = merge_train()
-        request = module.source_admission_request(source, target_branch)
+        provider_identity = copy.deepcopy(
+            provider_identity or self.provider_identity)
+        expected_provider_identity = copy.deepcopy(
+            expected_provider_identity or provider_identity)
+        request = module.source_admission_request(
+            source, target_branch, expected_provider_identity)
         receipts = {}
 
         def observer(value):
@@ -161,30 +173,32 @@ class MergeTrainTests(unittest.TestCase):
             "implementation_sha256": "a" * 64,
             "release_sha256": "b" * 64,
             "capabilities": ["SOURCE_ADMISSION", "BATCH_PARENT_PROVENANCE"],
-            "provider_identity": {
-                "host": "https://example.invalid",
-                "repository": "owner/repository",
-                "repository_id": 42,
-            },
+            "provider_identity": provider_identity,
             "receipt_namespace": "awf-merge-train-observer-v1",
             "observer": observer,
             "receipts": receipts,
         }
         return request, registration
 
-    def _admit(self, source=None, evidence=None, *, target_branch="main"):
+    def _admit(self, source=None, evidence=None, *, target_branch="main",
+               provider_identity=None, expected_provider_identity=None):
         module = merge_train()
         source = source or self._source()
         evidence = evidence or self._evidence(source)
+        expected_provider_identity = copy.deepcopy(
+            expected_provider_identity or provider_identity
+            or self.provider_identity)
         self.observer_count += 1
         observer_id = f"fixture-observer-{self.observer_count}"
         request, registration = self._registration(
             source, evidence, observer_id=observer_id,
-            target_branch=target_branch)
+            target_branch=target_branch,
+            provider_identity=provider_identity,
+            expected_provider_identity=expected_provider_identity)
         self.observer_registry[observer_id] = registration
         return module.admit_source(
-            source, target_branch, observer_id, self.observer_registry, now=NOW,
-            trusted_owner_ids=["owner-1"],
+            source, target_branch, expected_provider_identity, observer_id,
+            self.observer_registry, now=NOW, trusted_owner_ids=["owner-1"],
         )
 
     def test_default_is_on_for_adopters_and_off_for_awf_repository(self):
@@ -197,10 +211,37 @@ class MergeTrainTests(unittest.TestCase):
         self.assertEqual("ADMITTED", admitted["status"])
         self.assertEqual("SOURCE_ADMISSION_ONLY", admitted["authorization_scope"])
         self.assertFalse(admitted["batch_merge_authorized"])
+        self.assertEqual(
+            self.provider_identity,
+            admitted["provider_admission"]["request"]["provider_identity"])
+
+    def test_admission_rejects_observer_from_different_repository(self):
+        module = merge_train()
+        source = self._source()
+        observer_id = "wrong-repository-observer"
+        _, registration = self._registration(
+            source, self._evidence(source), observer_id=observer_id,
+            provider_identity={
+                "host": "https://example.invalid",
+                "repository": "owner/other-repository",
+                "repository_id": 84,
+            },
+            expected_provider_identity=self.provider_identity)
+        registry = {observer_id: registration}
+        with self.assertRaisesRegex(ValidationError, "provider identity"):
+            module.admit_source(
+                source, "main", self.provider_identity, observer_id, registry,
+                now=NOW, trusted_owner_ids=["owner-1"])
 
     def test_missing_required_owner_review_is_refused(self):
         source = self._source()
         with self.assertRaisesRegex(ValidationError, "owner review"):
+            self._admit(source, self._evidence(source, owner=False))
+
+    def test_tier_three_cannot_disable_owner_review_requirement(self):
+        source = self._source(owner_required=False)
+        source["risk_tier"] = 3
+        with self.assertRaisesRegex(ValidationError, "Tier 3.*owner review"):
             self._admit(source, self._evidence(source, owner=False))
 
     def test_stale_owner_review_is_refused(self):
@@ -273,6 +314,7 @@ class MergeTrainTests(unittest.TestCase):
         )
         ordered = module.order_sources(
             [dependent, independent_late, independent_early],
+            self.provider_identity,
             self.observer_registry, now=NOW,
             trusted_owner_ids=["owner-1"])
         self.assertEqual([11, 12, 13],
@@ -297,7 +339,8 @@ class MergeTrainTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 with self.assertRaisesRegex(ValidationError, reason):
                     module.order_sources(
-                        sources, self.observer_registry, now=NOW,
+                        sources, self.provider_identity,
+                        self.observer_registry, now=NOW,
                         trusted_owner_ids=["owner-1"])
 
     def test_source_review_cannot_authorize_batch(self):
@@ -313,7 +356,8 @@ class MergeTrainTests(unittest.TestCase):
             head=self.head2, tree=self.tree2, commits=[self.head2])
         forged.update(forged_source)
         evidence = self._evidence(forged_source)
-        request = module.source_admission_request(forged_source, "main")
+        request = module.source_admission_request(
+            forged_source, "main", self.provider_identity)
         producer_id = admitted["provider_observation"]["producer_id"]
         registration = self.observer_registry[producer_id]
         request_sha = fingerprint("merge_train_provider_request", request)
@@ -368,7 +412,7 @@ class MergeTrainTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "registered receipt"):
             module.freeze_generation(
                 "AWF-54-batch", "main", self.target, [forged], 1,
-                self.observer_registry, now=NOW,
+                self.provider_identity, self.observer_registry, now=NOW,
                 trusted_owner_ids=["owner-1"])
 
     def test_generation_rejects_wrong_or_mixed_admission_targets(self):
@@ -392,18 +436,48 @@ class MergeTrainTests(unittest.TestCase):
                         ValidationError, "admission target branch"):
                     module.freeze_generation(
                         "AWF-54-batch", target_branch, self.target, sources, 1,
-                        self.observer_registry, now=NOW,
+                        self.provider_identity, self.observer_registry, now=NOW,
                         trusted_owner_ids=["owner-1"])
+
+    def test_generation_rejects_admissions_from_different_repositories(self):
+        module = merge_train()
+        first = self._admit()
+        second_source = self._source(
+            pr=12, head=self.head2, tree=self.tree2, commits=[self.head2])
+        second_evidence = self._evidence(second_source)
+        observer_id = "other-repository-observer"
+        other_provider_identity = {
+            "host": "https://example.invalid",
+            "repository": "owner/other-repository",
+            "repository_id": 84,
+        }
+        _, registration = self._registration(
+            second_source, second_evidence, observer_id=observer_id,
+            provider_identity=other_provider_identity)
+        self.observer_registry[observer_id] = registration
+        second = module.admit_source(
+            second_source, "main", other_provider_identity, observer_id,
+            self.observer_registry, now=NOW,
+            trusted_owner_ids=["owner-1"])
+
+        with self.assertRaisesRegex(ValidationError, "provider identity"):
+            module.freeze_generation(
+                "AWF-54-batch", "main", self.target, [first, second], 1,
+                self.provider_identity, self.observer_registry, now=NOW,
+                trusted_owner_ids=["owner-1"])
 
     def test_generation_invalidates_on_target_head_or_evidence_drift(self):
         module = merge_train()
         admitted = self._admit()
         generation = module.freeze_generation(
             "AWF-54-batch", "main", self.target, [admitted], 1,
-            self.observer_registry, now=NOW,
+            self.provider_identity, self.observer_registry, now=NOW,
             trusted_owner_ids=["owner-1"])
+        self.assertEqual(self.provider_identity,
+                         generation["provider_identity"])
         self.assertEqual("CURRENT", module.generation_status(
-            generation, self.target, [admitted], self.observer_registry,
+            generation, self.target, [admitted], self.provider_identity,
+            self.observer_registry,
             now=NOW, trusted_owner_ids=["owner-1"])["status"])
         changed_head_source = self._source(
             head=self.head2, tree=self.tree2, commits=[self.head2])
@@ -419,7 +493,8 @@ class MergeTrainTests(unittest.TestCase):
         ]:
             with self.subTest(reason=reason):
                 status = module.generation_status(
-                    generation, target, sources, self.observer_registry,
+                    generation, target, sources, self.provider_identity,
+                    self.observer_registry,
                     now=NOW, trusted_owner_ids=["owner-1"])
                 self.assertEqual("ABANDONED", status["status"])
                 self.assertIn(reason, status["reasons"])
@@ -460,7 +535,7 @@ class MergeTrainTests(unittest.TestCase):
         admitted = self._admit()
         generation = module.freeze_generation(
             "AWF-54-batch", "main", self.target, [admitted], 1,
-            self.observer_registry, now=NOW,
+            self.provider_identity, self.observer_registry, now=NOW,
             trusted_owner_ids=["owner-1"])
         commit_sha = hashlib.sha1(b"batch-commit").hexdigest()
         result = {
@@ -495,16 +570,31 @@ class MergeTrainTests(unittest.TestCase):
         registration["observer"] = parent_observer
         provenance = module.verify_batch_parent_provenance(
             generation, [commit_sha], "fixture-observer",
-            {"fixture-observer": registration}, now=NOW)
+            self.provider_identity, {"fixture-observer": registration},
+            now=NOW)
         self.assertEqual("PASS", provenance["status"])
         self.assertEqual([self.target, admitted["head_sha"]],
                          provenance["commits"][0]["parents"])
+
+        registration["provider_identity"] = {
+            "host": "https://example.invalid",
+            "repository": "owner/other-repository",
+            "repository_id": 84,
+        }
+        with self.assertRaisesRegex(ValidationError, "provider identity"):
+            module.verify_batch_parent_provenance(
+                generation, [commit_sha], "fixture-observer",
+                self.provider_identity, {"fixture-observer": registration},
+                now=NOW)
+        registration["provider_identity"] = copy.deepcopy(
+            self.provider_identity)
 
         result["commits"][0]["parents"].reverse()
         with self.assertRaisesRegex(ValidationError, "batch parents"):
             module.verify_batch_parent_provenance(
                 generation, [commit_sha], "fixture-observer",
-                {"fixture-observer": registration}, now=NOW)
+                self.provider_identity, {"fixture-observer": registration},
+                now=NOW)
 
 
 if __name__ == "__main__":
