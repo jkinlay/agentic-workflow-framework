@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,9 +18,62 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import generate_contracts  # noqa: E402
 import generate_examples  # noqa: E402
 from agentic.contracts import Contracts  # noqa: E402
+from agentic.model_routing import default_policy  # noqa: E402
+from agentic.operating import default_operating  # noqa: E402
 
 
 class WorkflowBlobGenerationTests(unittest.TestCase):
+    def test_routing_only_switch_does_not_change_generated_artifacts(self):
+        fixture = ROOT / ".agentic/tests/fixtures/routing/valid.yaml"
+        original = fixture.read_text(encoding="utf-8")
+        switched = original.replace(
+            '"worker": {"model": "gpt-5.6-luna", "effort": "medium"}',
+            '"worker": {"model": "gpt-5.6-sol", "effort": "medium"}',
+            1,
+        )
+        with tempfile.TemporaryDirectory(prefix="awf-routing-generation-") as raw:
+            root = Path(raw)
+            routing = root / "routing.yaml"
+            before = root / "before"
+            after = root / "after"
+            routing.write_text(original, encoding="utf-8")
+            with patch("agentic.model_routing._default_routing_path", return_value=routing):
+                generate_examples.generate(before, ROOT)
+            routing.write_text(switched, encoding="utf-8")
+            switched_model = default_policy(routing)["role_defaults"]["worker"]["model"]
+            with patch("agentic.model_routing._default_routing_path", return_value=routing):
+                generate_examples.generate(after, ROOT)
+            before_files = {
+                path.relative_to(before).as_posix(): path.read_bytes()
+                for path in before.rglob("*") if path.is_file()
+            }
+            after_files = {
+                path.relative_to(after).as_posix(): path.read_bytes()
+                for path in after.rglob("*") if path.is_file()
+            }
+        self.assertEqual("gpt-5.6-sol", switched_model)
+        self.assertEqual(before_files, after_files)
+
+    def test_generated_config_and_operating_defaults_follow_routing_file(self):
+        policy = default_policy()
+        generated = generate_examples.config(False)
+        configured = generated["execution"]["model_routing"]
+        self.assertEqual(".agentic/routing.yaml", configured["routing"])
+        for key in ("high_risk_flags", "agent_overrides", "ticket_overrides",
+                    "escalation", "budgets", "adaptive", "reconciliation"):
+            self.assertEqual(policy[key], configured[key])
+        operating = default_operating()
+        for role in ("controller", "critic", "specialist"):
+            self.assertEqual(policy["role_defaults"][role], operating[role])
+        self.assertEqual(
+            policy["role_defaults"]["worker"],
+            operating["streams"]["A"]["worker"],
+        )
+        self.assertEqual(
+            {"enabled": True, **policy["simple_worker"]},
+            operating["simple_worker"],
+        )
+
     def test_project_schema_accepts_optional_workflow_blob_sha(self):
         check = generate_contracts.catalog()["project-config"]["properties"][
             "validation"
@@ -98,12 +152,16 @@ class WorkflowBlobGenerationTests(unittest.TestCase):
         for relative in (
             ".agentic/PROJECT_CONFIG.yaml",
             ".agentic/templates/source-config/PROJECT_CONFIG.yaml",
-            ".agentic/examples/unconfigured-project.yaml",
         ):
             with self.subTest(relative=relative):
                 actual = json.loads((ROOT / relative).read_text(encoding="utf-8"))
                 self.assertEqual(expected, actual)
                 self.assertEqual([], actual["validation"]["required_ci_checks"])
+        unconfigured = json.loads(
+            (ROOT / ".agentic/examples/unconfigured-project.yaml").read_text(
+                encoding="utf-8"))
+        self.assertEqual(default_policy(), unconfigured["execution"]["model_routing"])
+        self.assertEqual([], unconfigured["validation"]["required_ci_checks"])
 
     def test_generated_content_example_matches_and_check_mode_is_clean(self):
         expected = generate_examples.content_binding_config(ROOT)
