@@ -255,7 +255,8 @@ class ExternalResourceCliTests(unittest.TestCase):
                 now="2026-10-09T12:00:00Z")
 
         self.assertEqual(timeouts, [5])
-        self.assertEqual(receipt["state"], "COMMAND_NONZERO")
+        self.assertEqual(receipt["state"], "TIMEOUT")
+        self.assertEqual(receipt["attempts"][0]["state"], "TIMEOUT")
         self.assertEqual(receipt["error_layer"], "COMMAND_TIMEOUT")
         self.assertEqual(json.loads(stderr.getvalue().split("=", 1)[1])
                          ["diagnostic_category"], "TIMEOUT")
