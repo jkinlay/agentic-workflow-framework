@@ -43,6 +43,30 @@ def build(value=None, **overrides):
     )
 
 
+def deep_dependency_chain(count=1101):
+    value = fixture()
+    prototype = value["tickets"][2]
+    tickets = []
+    for number in range(1, count + 1):
+        ticket = deepcopy(prototype)
+        ticket.update(
+            key=f"AWF-{number}",
+            dependencies=[] if number == 1 else [f"AWF-{number - 1}"],
+            write_paths=[f"src/deep-chain-{number}.py"],
+            duration_minutes=1,
+            owner_lane="deep-chain",
+            in_lane=False,
+        )
+        tickets.append(ticket)
+    value.update(
+        tickets=tickets,
+        lane_cap=1,
+        start_gap_minutes=0,
+        generator_order=[],
+    )
+    return value
+
+
 class TicketPlanSchemaTests(unittest.TestCase):
     def setUp(self):
         self.schema = json.loads(
@@ -117,6 +141,26 @@ class TicketPlanSchemaTests(unittest.TestCase):
 
 
 class PlanningGraphValidationTests(unittest.TestCase):
+    def test_deep_acyclic_dependency_chain_is_planned_without_recursion_error(self):
+        value = deep_dependency_chain()
+
+        plan = build(value)
+
+        self.assertEqual(1101, plan["duration_minutes"])
+        self.assertEqual(1101, len(plan["critical_path"]))
+        self.assertEqual("AWF-1", plan["critical_path"][0])
+        self.assertEqual("AWF-1101", plan["critical_path"][-1])
+
+    def test_deep_dependency_cycle_has_named_fail_closed_reason(self):
+        module = implementation()
+        value = deep_dependency_chain()
+        value["tickets"][0]["dependencies"] = ["AWF-1101"]
+
+        with self.assertRaises(module.PlanningGraphError) as caught:
+            build(value)
+
+        self.assertEqual("DEPENDENCY_CYCLE", caught.exception.reason)
+
     def test_nested_objects_and_arrays_fail_with_named_reasons(self):
         module = implementation()
         for field, malformed, expected in (
