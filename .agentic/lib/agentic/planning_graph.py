@@ -22,6 +22,7 @@ IDLE_LANE_REASONS = {
 PRESTAGE_BLOCKERS = {"MERGE_FREEZE", "RESYNC_PENDING"}
 LANE_CLASSES = {"critical", "feeder", "controller"}
 STATUS_VERDICTS = {"OK", "FAIL"}
+MAX_SAFE_INTEGER = 9007199254740991
 INPUT_FIELDS = {
     "key", "dependencies", "write_paths", "duration_minutes", "risk_tier",
     "round_cap", "owner_review_window", "lane_class", "owner_lane",
@@ -59,8 +60,8 @@ def _fail(reason, detail):
     raise PlanningGraphError(reason, detail)
 
 
-def _is_int(value, minimum=0):
-    return type(value) is int and value >= minimum
+def _is_int(value, minimum=0, maximum=MAX_SAFE_INTEGER):
+    return type(value) is int and minimum <= value <= maximum
 
 
 def _check_fields(value, expected, context):
@@ -321,6 +322,121 @@ def _critical_path(by_key, adjacency):
     return path, scores
 
 
+def _owner_windows_feasible(
+        by_key, predecessors, unscheduled, finishes, running, minute,
+        last_start, lane_cap, start_gap_minutes, candidate):
+    """Return whether launching candidate preserves every owner-window deadline.
+
+    The feasibility search includes all future windowed tickets and their
+    unscheduled predecessors.  This reserves aggregate capacity rather than
+    considering each future ticket independently.
+    """
+    trial_unscheduled = set(unscheduled)
+    trial_unscheduled.remove(candidate)
+    trial_finishes = dict(finishes)
+    candidate_finish = minute + by_key[candidate]["duration_minutes"]
+    if candidate_finish > MAX_SAFE_INTEGER:
+        return False
+    trial_finishes[candidate] = candidate_finish
+    trial_running = dict(running)
+    trial_running[candidate] = candidate_finish
+
+    required = {
+        key for key in trial_unscheduled
+        if by_key[key]["owner_review_window"] is not None
+    }
+    pending = list(required)
+    while pending:
+        key = pending.pop()
+        for predecessor in predecessors[key]:
+            if predecessor in trial_unscheduled and predecessor not in required:
+                required.add(predecessor)
+                pending.append(predecessor)
+    if not required:
+        return True
+
+    failed_states = set()
+
+    def search(remaining, known_finishes, active, at_minute, prior_start):
+        if not remaining:
+            return True
+        active = {key: end for key, end in active.items() if end > at_minute}
+        state = (
+            tuple(sorted(remaining)),
+            tuple(sorted(known_finishes.items())),
+            tuple(sorted(active.items())),
+            at_minute,
+            prior_start,
+        )
+        if state in failed_states:
+            return False
+
+        ready = []
+        future = []
+        for key in remaining:
+            if not predecessors[key] <= set(known_finishes):
+                continue
+            release = max(
+                (known_finishes[item] + start_gap_minutes for item in predecessors[key]),
+                default=0,
+            )
+            window = by_key[key]["owner_review_window"]
+            if window is not None:
+                release = max(release, window["opens_at_minute"])
+                latest_start = window["closes_at_minute"] - by_key[key]["duration_minutes"]
+                if release > latest_start or at_minute > latest_start:
+                    failed_states.add(state)
+                    return False
+            if release <= at_minute:
+                ready.append(key)
+            else:
+                future.append(release)
+
+        ready.sort(key=lambda key: (
+            by_key[key]["owner_review_window"]["closes_at_minute"]
+            if by_key[key]["owner_review_window"] is not None else float("inf"),
+            key,
+        ))
+        launch_unlocked = prior_start is None or at_minute >= prior_start + start_gap_minutes
+        if len(active) < lane_cap and launch_unlocked:
+            for key in ready:
+                finish = at_minute + by_key[key]["duration_minutes"]
+                window = by_key[key]["owner_review_window"]
+                if finish > MAX_SAFE_INTEGER or (
+                        window is not None and finish > window["closes_at_minute"]):
+                    continue
+                next_finishes = dict(known_finishes)
+                next_finishes[key] = finish
+                next_active = dict(active)
+                next_active[key] = finish
+                if search(
+                        remaining - {key}, next_finishes, next_active,
+                        at_minute, at_minute):
+                    return True
+
+        next_times = [end for end in active.values() if end > at_minute]
+        next_times.extend(release for release in future if release > at_minute)
+        if ready and prior_start is not None:
+            unlock = prior_start + start_gap_minutes
+            if unlock > at_minute:
+                next_times.append(unlock)
+        if next_times:
+            next_minute = min(next_times)
+            if search(remaining, known_finishes, active, next_minute, prior_start):
+                return True
+
+        failed_states.add(state)
+        return False
+
+    return search(
+        required,
+        trial_finishes,
+        trial_running,
+        minute,
+        minute,
+    )
+
+
 def _schedule(by_key, adjacency, lane_cap, start_gap_minutes, scores):
     predecessors = _predecessors(by_key, adjacency)
     unscheduled = set(by_key)
@@ -355,31 +471,19 @@ def _schedule(by_key, adjacency, lane_cap, start_gap_minutes, scores):
             key,
         ))
         launch_unlocked = last_start is None or minute >= last_start + start_gap_minutes
-        def blocks_future_window(candidate):
-            candidate_finish = minute + by_key[candidate]["duration_minutes"]
-            for urgent in unscheduled - {candidate}:
-                window = by_key[urgent]["owner_review_window"]
-                if window is None or not predecessors[urgent] <= set(finishes):
-                    continue
-                release = max(
-                    (finishes[item] + start_gap_minutes for item in predecessors[urgent]),
-                    default=0,
-                )
-                release = max(release, window["opens_at_minute"])
-                latest_start = window["closes_at_minute"] - by_key[urgent]["duration_minutes"]
-                if release <= minute or release > latest_start:
-                    continue
-                occupied_at_deadline = sum(end > latest_start for end in running.values())
-                capacity_blocked = (
-                    candidate_finish > latest_start
-                    and occupied_at_deadline + 1 >= lane_cap
-                )
-                start_lock_blocked = minute + start_gap_minutes > latest_start
-                if capacity_blocked or start_lock_blocked:
-                    return True
-            return False
-
-        candidates = [key for key in ready if not blocks_future_window(key)]
+        for key in ready:
+            if minute + by_key[key]["duration_minutes"] > MAX_SAFE_INTEGER:
+                _fail("INVALID_FIELD", f"{key} scheduling exceeds the maximum safe integer")
+            window = by_key[key]["owner_review_window"]
+            if window is not None and minute + by_key[key]["duration_minutes"] > window["closes_at_minute"]:
+                _fail("OWNER_REVIEW_WINDOW_MISSED", f"{key} cannot finish in its owner review window")
+        candidates = [
+            key for key in ready
+            if _owner_windows_feasible(
+                by_key, predecessors, unscheduled, finishes, running, minute,
+                last_start, lane_cap, start_gap_minutes, key,
+            )
+        ]
         if available and candidates and launch_unlocked:
             key = candidates[0]
             duration = by_key[key]["duration_minutes"]
@@ -465,12 +569,20 @@ def _idle_lane_status(tickets, observation, observed_minute):
     lane = observation["owner_lane"]
     idle_since = observation["idle_since_minute"]
     queued = [ticket for ticket in tickets if ticket["owner_lane"] == lane and not ticket["in_lane"]]
-    ready = sorted(ticket["key"] for ticket in queued if not ticket["blockers"])
-    reasons = sorted({
-        reason
-        for ticket in queued
-        for reason in (ticket["blockers"] or ([ticket["idle_lane_reason"]] if ticket["idle_lane_reason"] else []))
-    })
+    ready = []
+    reasons = set()
+    for ticket in queued:
+        ticket_reasons = set(ticket["blockers"])
+        if ticket["dependencies"] or ticket["serial_predecessor"] is not None:
+            ticket_reasons.add("PREDECESSOR_UNMERGED")
+        if ticket_reasons:
+            reasons.update(ticket_reasons)
+            if ticket["idle_lane_reason"] is not None:
+                reasons.add(ticket["idle_lane_reason"])
+        else:
+            ready.append(ticket["key"])
+    ready.sort()
+    reasons = sorted(reasons)
     idle_minutes = observed_minute - idle_since
     failed = idle_minutes > 10 and bool(ready)
     if failed and not reasons:
@@ -543,7 +655,7 @@ def build_ticket_plan(
         output_tickets.append(item)
     plan = {
         "format": "awf-ticket-plan-1",
-        "schema_version": 1,
+        "schema_version": 3,
         "lane_cap": lane_cap,
         "start_gap_minutes": start_gap_minutes,
         "tier3_round_cap": tier3_round_cap,
@@ -560,12 +672,13 @@ def build_ticket_plan(
         "mermaid": "",
     }
     plan["mermaid"] = _render_mermaid(plan)
+    _check_output_structure(plan)
     return plan
 
 
 def _check_output_structure(plan):
     _check_fields(plan, PLAN_FIELDS, "ticket plan")
-    if plan["format"] != "awf-ticket-plan-1" or plan["schema_version"] != 1:
+    if plan["format"] != "awf-ticket-plan-1" or plan["schema_version"] != 3:
         _fail("INVALID_FIELD", "ticket plan format or schema_version is invalid")
     if not _is_int(plan["lane_cap"], 1) or not _is_int(plan["start_gap_minutes"]):
         _fail("INVALID_FIELD", "ticket plan scheduling limits are invalid")
@@ -666,16 +779,16 @@ def refill_rank(
         if ticket["generator_order_slot"] is not None and ticket["key"] not in merged
     }
     earliest_generator_slot = min(incomplete_generator_slots, default=None)
+    ordering_predecessors = {ticket["key"]: set() for ticket in checked["tickets"]}
+    for edge in checked["edges"]:
+        ordering_predecessors[edge["to"]].add(edge["from"])
     ready = []
     blocked = []
     for ticket in checked["tickets"]:
         if ticket["in_lane"] or ticket["key"] in merged:
             continue
         reasons = set(ticket["blockers"])
-        if any(dependency not in merged for dependency in ticket["dependencies"]):
-            reasons.add("PREDECESSOR_UNMERGED")
-        predecessor = ticket["serial_predecessor"]
-        if predecessor is not None and predecessor not in merged:
+        if any(predecessor not in merged for predecessor in ordering_predecessors[ticket["key"]]):
             reasons.add("PREDECESSOR_UNMERGED")
         if ticket["owner_lane"] not in owners:
             reasons.add("OWNERSHIP_CONFLICT")

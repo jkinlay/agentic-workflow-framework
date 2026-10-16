@@ -218,7 +218,7 @@ def catalog(*, include_ticket_plan=True):
     if include_ticket_plan:
         schemas["ticket-plan"] = obj({
             "format": const("awf-ticket-plan-1"),
-            "schema_version": const(1),
+            "schema_version": const(3),
             "lane_cap": integer(1),
             "start_gap_minutes": integer(),
             "tier3_round_cap": integer(1, maximum=3),
