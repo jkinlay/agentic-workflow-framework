@@ -58,7 +58,7 @@ def operating_snapshot(cfg, count=None):
     return validate_operating(value, cfg)
 
 
-def resource_observation(cfg, snapshot, host_capacity=12, resources=None, **changes):
+def resource_observation(cfg, snapshot, host_capacity=12, resources=None):
     binding = {
         "project_id": cfg["project"]["id"],
         "repository_id": str(cfg["github"]["repository_id"]),
@@ -68,22 +68,11 @@ def resource_observation(cfg, snapshot, host_capacity=12, resources=None, **chan
         "project_config_sha256": fingerprint("accepted-project-config", cfg),
         "operating_config_sha256": snapshot.operating_hash,
     }
-    body = {
-        "format": "awf-planning-resource-observation-1",
-        "complete": True,
-        "producer": {
-            "kind": "reviewed_controller_adapter",
-            "operation": "observe_planning_resources",
-            "implementation_sha256": "a" * 64,
-        },
-        "observed_at": NOW,
-        "binding": binding,
-        "host_capacity": host_capacity,
-        "resources": resources if resources is not None else [{"name": "cpu", "capacity": 12}],
-    }
-    body.update(changes)
-    body["observation_sha256"] = fingerprint("planning_resource_observation", body)
-    return body
+    return planning.produce_planning_resource_observation(
+        binding=binding, observed_at=NOW, host_capacity=host_capacity,
+        resources=(resources if resources is not None
+                   else [{"name": "cpu", "capacity": 12}]),
+        producer_implementation_sha256="a" * 64)
 
 
 def capacity_kwargs(cfg, host_capacity=12, resources=None, stream_capacity=None):
@@ -222,6 +211,33 @@ class LaneTests(unittest.TestCase):
             [ticket("AWF-1", "one.py")], config(), resources=[{"name": "cpu", "capacity": 0}])
         self.assertEqual(0, resource_zero["estimate"]["safe_lane_count"])
 
+    def test_zero_host_capacity_is_a_zero_safe_estimate(self):
+        result = plan([ticket("AWF-1", "one.py")], config(), host_capacity=0)
+        self.assertEqual(0, result["estimate"]["safe_lane_count"])
+        self.assertEqual(0, result["lane_count"])
+        self.assertEqual(0, result["estimate"]["constraints"]["observed_host_capacity"])
+        self.assertIn("observed_host_capacity", result["estimate"]["binding_constraints"])
+        self.assertIn("safe count 0", result["estimate"]["reasoning"])
+
+    def test_zero_resource_capacity_is_a_zero_safe_estimate(self):
+        result = plan(
+            [ticket("AWF-1", "one.py")], config(),
+            resources=[{"name": "cpu", "capacity": 0}])
+        self.assertEqual(0, result["estimate"]["safe_lane_count"])
+        self.assertEqual(0, result["lane_count"])
+        self.assertEqual(0, result["estimate"]["capacity"]["resource_capacity"])
+        self.assertIn("resource:cpu", result["estimate"]["binding_constraints"])
+
+    def test_defined_producer_emits_the_only_closed_observation_shape(self):
+        cfg = config()
+        snapshot = operating_snapshot(cfg)
+        observation = resource_observation(cfg, snapshot)
+        self.assertEqual(planning.PLANNING_RESOURCE_KEYS, set(observation))
+        self.assertEqual(planning.PLANNING_PRODUCER_KEYS, set(observation["producer"]))
+        self.assertEqual(planning.PLANNING_BINDING_KEYS, set(observation["binding"]))
+        self.assertEqual(planning.PLANNING_RESOURCE_ITEM_KEYS,
+                         set(observation["resources"][0]))
+
     def test_operator_authored_capacity_dictionary_is_refused(self):
         graph = planning.build_backlog_graph([ticket("AWF-1", "one.py")], config())
         with self.assertRaisesRegex(ValidationError, "authenticated.*observation"):
@@ -235,6 +251,66 @@ class LaneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "closed"):
             planning.validate_planning_resource_observation(
                 {**observation, "extra": True}, expected_binding=observation["binding"],
+                expected_producer_sha256="a" * 64, now=NOW)
+
+    def test_unknown_observation_key_is_refused(self):
+        cfg = config()
+        snapshot = operating_snapshot(cfg)
+        observation = resource_observation(cfg, snapshot)
+        with self.assertRaisesRegex(ValidationError, "closed"):
+            planning.validate_planning_resource_observation(
+                {**observation, "operator_note": "two lanes"},
+                expected_binding=observation["binding"],
+                expected_producer_sha256="a" * 64, now=NOW)
+
+    def test_missing_producer_field_is_refused(self):
+        cfg = config()
+        snapshot = operating_snapshot(cfg)
+        observation = resource_observation(cfg, snapshot)
+        del observation["producer"]
+        with self.assertRaisesRegex(ValidationError, "closed"):
+            planning.validate_planning_resource_observation(
+                observation, expected_binding=observation["binding"],
+                expected_producer_sha256="a" * 64, now=NOW)
+
+    def test_unauthenticated_or_unsigned_observation_is_refused(self):
+        cfg = config()
+        snapshot = operating_snapshot(cfg)
+        observation = resource_observation(cfg, snapshot)
+        observation["observation_sha256"] = None
+        with self.assertRaisesRegex(ValidationError, "digest"):
+            planning.validate_planning_resource_observation(
+                observation, expected_binding=observation["binding"],
+                expected_producer_sha256="a" * 64, now=NOW)
+
+    def test_wrong_capacity_type_is_refused(self):
+        cfg = config()
+        snapshot = operating_snapshot(cfg)
+        observation = resource_observation(cfg, snapshot)
+        observation["host_capacity"] = True
+        with self.assertRaisesRegex(ValidationError, "integer"):
+            planning.validate_planning_resource_observation(
+                observation, expected_binding=observation["binding"],
+                expected_producer_sha256="a" * 64, now=NOW)
+
+    def test_negative_capacity_is_refused(self):
+        cfg = config()
+        snapshot = operating_snapshot(cfg)
+        observation = resource_observation(cfg, snapshot)
+        observation["host_capacity"] = -1
+        with self.assertRaisesRegex(ValidationError, "zero through 1000"):
+            planning.validate_planning_resource_observation(
+                observation, expected_binding=observation["binding"],
+                expected_producer_sha256="a" * 64, now=NOW)
+
+    def test_out_of_bound_capacity_is_refused(self):
+        cfg = config()
+        snapshot = operating_snapshot(cfg)
+        observation = resource_observation(cfg, snapshot)
+        observation["host_capacity"] = 1001
+        with self.assertRaisesRegex(ValidationError, "zero through 1000"):
+            planning.validate_planning_resource_observation(
+                observation, expected_binding=observation["binding"],
                 expected_producer_sha256="a" * 64, now=NOW)
 
     def test_authenticated_observation_refuses_stale_digest_binding_and_producer(self):
@@ -269,7 +345,8 @@ class LaneTests(unittest.TestCase):
                 ("boolean", [{"name": "cpu", "capacity": True}]),
                 ("over-cap", [{"name": "cpu", "capacity": 1001}]),
                 ("extra", [{"name": "cpu", "capacity": 1, "extra": True}])):
-            observation = resource_observation(cfg, snapshot, resources=resources)
+            observation = resource_observation(cfg, snapshot)
+            observation["resources"] = resources
             with self.subTest(name=name), self.assertRaises(ValidationError):
                 planning.validate_planning_resource_observation(
                     observation, expected_binding=observation["binding"],
