@@ -177,6 +177,8 @@ def _base_config(root):
 def _overlap_run(case, ns, heads, base_sha, contents, *, merged=None, real=False):
 	original = list(heads)
 	seen = {}
+	tree_refs = {}
+	blob_contents = {}
 	original_run = ns['_SubprocessRunner'].run
 
 	def response(body, etag):
@@ -190,24 +192,60 @@ def _overlap_run(case, ns, heads, base_sha, contents, *, merged=None, real=False
 			return response({'number': number, 'state': 'open', 'merged': False, 'head': {'sha': heads[index], 'ref': 'codex/' + ticket + '-' + ticket.lower(), 'repo': {'id': 101}}, 'base': {'repo': {'id': 101}}}, '"pr-%s-%s"' % (number, heads[index]))
 		if path == 'repos/example/project/compare/' + original[1] + '...' + original[0]:
 			return response({'merge_base_commit': {'sha': base_sha}}, '"merge-base"')
+		if '/git/commits/' in path:
+			ref = path.rsplit('/', 1)[1]
+			tree_sha = format((int(ref[0], 16) + 4) % 16, 'x') * 40
+			tree_refs[tree_sha] = (ref, 'root')
+			return response({'sha': ref, 'tree': {'sha': tree_sha}}, '"commit-' + ref[0] + '"')
+		if '/git/trees/' in path:
+			tree_sha = path.rsplit('/', 1)[1]
+			ref, level = tree_refs[tree_sha]
+			entries = []
+			if level == 'root':
+				subtree_sha = format((int(ref[0], 16) + 12) % 16, 'x') * 40
+				tree_refs[subtree_sha] = (ref, 'src')
+				entries.append({'path': 'src', 'mode': '040000', 'type': 'tree', 'sha': subtree_sha})
+			elif ref in contents:
+				blob_sha = format((int(ref[0], 16) + 8) % 16, 'x') * 40
+				blob_contents[blob_sha] = contents[ref]
+				entries.append({'path': 'shared.py', 'mode': '100644', 'type': 'blob', 'sha': blob_sha})
+			return response({'sha': tree_sha, 'truncated': False, 'tree': entries}, '"tree-' + ref[0] + '-' + level + '"')
+		if '/git/blobs/' in path:
+			blob_sha = path.rsplit('/', 1)[1]
+			return response({'sha': blob_sha, 'encoding': 'base64', 'content': base64.b64encode(blob_contents[blob_sha]).decode('ascii')}, '"blob-' + blob_sha[0] + '"')
 		if '/contents/src/shared.py?ref=' in path:
 			ref = path.rsplit('=', 1)[1]
+			if ref not in contents:
+				return response({'message': 'Not Found'}, '"missing-' + ref[0] + '"')
 			return response({'type': 'file', 'sha': {'0': 'a', '1': 'b', '2': 'c'}[ref[0]] * 40, 'encoding': 'base64', 'content': base64.b64encode(contents[ref]).decode('ascii')}, '"blob-' + ref[0] + '"')
 		if 'graphql' in argv:
 			case.assertEqual(['--input', '-'], argv[-2:]); case.assertIsNotNone(stdin)
-			fields = json.loads(stdin)['variables']; resolved = base64.b64decode(fields['contents'], validate=True)
+			request = json.loads(stdin); fields = request['variables']
 			case.assertEqual(('example/project', 'codex/AWF-33-awf-33', original[1]), (fields['repository'], fields['branch'], fields['head']))
-			case.assertIn(b'value = 1', resolved); case.assertIn(b'value = 2', resolved)
-			seen.update(argv=list(argv), stdin=stdin, resolved=resolved)
+			if 'contents' in fields:
+				resolved = base64.b64decode(fields['contents'], validate=True)
+				if all((ref in contents for ref in (base_sha, *original))):
+					case.assertIn(b'value = 1', resolved); case.assertIn(b'value = 2', resolved)
+				seen.update(action='addition', resolved=resolved)
+			else:
+				case.assertIn('deletions:', request['query'])
+				resolved = None
+				seen.update(action='deletion', resolved=None)
+			seen.update(argv=list(argv), stdin=stdin)
 			if real:
 				helper = 'import json,sys; body=json.load(sys.stdin); assert len(body["variables"]["contents"])>1000000; json.dump({"data":{"createCommitOnBranch":{"commit":{"oid":"' + merged + '"}}}},sys.stdout)'
 				result = original_run(runner, [sys.executable, '-B', '-c', helper, *argv[1:]], cwd=cwd, env=env, timeout=timeout, max_bytes=max_bytes, stdin=stdin)
 			else:
 				result = {'data': {'createCommitOnBranch': {'commit': {'oid': merged}}}}
-			contents[merged] = resolved; heads[1] = merged
+			if resolved is None:
+				contents.pop(merged, None)
+			else:
+				contents[merged] = resolved
+			heads[1] = merged
 			return result
 		if merged and path == 'repos/example/project/compare/' + original[1] + '...' + merged:
-			return {'files': [{'filename': 'src/shared.py', 'patch': '@@ -1 +1 @@\n-old\n+resolved'}]}
+			patch_text = '@@ -1 +0,0 @@\n-old' if seen.get('action') == 'deletion' else '@@ -1 +1 @@\n-old\n+resolved'
+			return {'files': [{'filename': 'src/shared.py', 'patch': patch_text}]}
 		raise AssertionError('unexpected default-runner path: ' + path)
 	return run, seen
 
@@ -300,6 +338,54 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 			adapters = namespace['build_adapters']({**self.config, '_clock': FakeClock()})
 			decision = adapters['observe_overlap_conflict'](gate)
 		self.assertEqual('NO_CONFLICT', decision['status'])
+
+	def test_default_runner_resolves_add_add_conflict_to_left_addition(self):
+		namespace = __import__('runpy').run_path(str(self.adapter))
+		heads = ['1' * 40, '2' * 40]
+		base_sha = '0' * 40
+		merge_sha = '3' * 40
+		contents = {heads[0]: b'left addition\n', heads[1]: b'right addition\n'}
+		run, mutation = _overlap_run(self, namespace, heads, base_sha, contents, merged=merge_sha)
+		gate = _overlap_gate(heads)
+		with patch.object(namespace['_SubprocessRunner'], 'run', run):
+			adapters = namespace['build_adapters']({**self.config, '_clock': FakeClock()})
+			self.assertEqual('CONFIRMED_CONFLICT', adapters['observe_overlap_conflict'](gate)['status'])
+			receipt = adapters['sync_writer'](_overlap_payload(gate))
+		self.assertEqual('addition', mutation['action'])
+		self.assertEqual(b'left addition\n', mutation['resolved'])
+		self.assertEqual(['1' * 40, merge_sha], receipt['post_sync_heads'])
+
+	def test_default_runner_resolves_modify_delete_conflict_with_deletion(self):
+		namespace = __import__('runpy').run_path(str(self.adapter))
+		heads = ['1' * 40, '2' * 40]
+		base_sha = '0' * 40
+		merge_sha = '3' * 40
+		contents = {base_sha: b'value = 0\n', heads[1]: b'value = 2\n'}
+		run, mutation = _overlap_run(self, namespace, heads, base_sha, contents, merged=merge_sha)
+		gate = _overlap_gate(heads)
+		with patch.object(namespace['_SubprocessRunner'], 'run', run):
+			adapters = namespace['build_adapters']({**self.config, '_clock': FakeClock()})
+			self.assertEqual('CONFIRMED_CONFLICT', adapters['observe_overlap_conflict'](gate)['status'])
+			receipt = adapters['sync_writer'](_overlap_payload(gate))
+		self.assertEqual('deletion', mutation['action'])
+		self.assertIsNone(mutation['resolved'])
+		self.assertIn('-old', receipt['diff'])
+
+	def test_default_runner_resolves_delete_modify_conflict_with_addition(self):
+		namespace = __import__('runpy').run_path(str(self.adapter))
+		heads = ['1' * 40, '2' * 40]
+		base_sha = '0' * 40
+		merge_sha = '3' * 40
+		contents = {base_sha: b'value = 0\n', heads[0]: b'value = 1\n'}
+		run, mutation = _overlap_run(self, namespace, heads, base_sha, contents, merged=merge_sha)
+		gate = _overlap_gate(heads)
+		with patch.object(namespace['_SubprocessRunner'], 'run', run):
+			adapters = namespace['build_adapters']({**self.config, '_clock': FakeClock()})
+			self.assertEqual('CONFIRMED_CONFLICT', adapters['observe_overlap_conflict'](gate)['status'])
+			receipt = adapters['sync_writer'](_overlap_payload(gate))
+		self.assertEqual('addition', mutation['action'])
+		self.assertEqual(b'value = 1\n', mutation['resolved'])
+		self.assertEqual(['1' * 40, merge_sha], receipt['post_sync_heads'])
 
 	def _exercise_true_conflict(self, *, near_limit):
 		namespace = __import__('runpy').run_path(str(self.adapter))
@@ -687,6 +773,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		handoff = self.root / 'runner.handoff.json'
 		proof = self.root / 'runner.terminal.json'
 		observed = []
+		watcher_argv = []
 
 		class StdinProbe:
 
@@ -705,15 +792,16 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 
 		def fake_popen(argv, **kwargs):
 			observed.append(handoff.exists())
-			launch_spec = json.loads(handoff.with_suffix('.launch.json').read_text(encoding='utf-8'))
-			handoff.write_text(json.dumps({'pid': 9876, 'launch_nonce': launch_spec['launch_nonce'], 'status': 'LAUNCHED'}), encoding='utf-8')
+			watcher_argv.append(list(argv))
 			return Process()
 		with patch.dict(os.environ, {'ATLASSIAN_API_TOKEN': 'secret-atlassian', 'JIRA_API_KEY': 'secret-jira-key', 'EXAMPLE_CLIENT_SECRET': 'secret-generic'}, clear=False):
 			child_env = namespace['_safe_env']('AWF_JIRA_TOKEN')
 		with patch('subprocess.Popen', side_effect=fake_popen):
 			result = runner_class().launch(['fake-bin/codex', 'exec'], cwd=self.root, env=child_env, timeout=5, stdin='task', handoff_path=str(handoff), terminal_proof_path=str(proof), launch_nonce='nonce')
 		self.assertEqual(observed, [True])
-		self.assertEqual(result['pid'], 9876)
+		self.assertEqual(result['pid'], 4321)
+		self.assertEqual(json.loads(handoff.read_text(encoding='utf-8')), {'launch_nonce': 'nonce', 'pid': 4321, 'status': 'LAUNCHED'})
+		self.assertEqual(watcher_argv[0][0], getattr(sys, '_base_executable', sys.executable) if os.name == 'nt' else sys.executable)
 		launch_spec = json.loads(handoff.with_suffix('.launch.json').read_text(encoding='utf-8'))
 		for name in ('ATLASSIAN_API_TOKEN', 'JIRA_API_KEY', 'EXAMPLE_CLIENT_SECRET'):
 			self.assertNotIn(name, launch_spec['env'].keys())
