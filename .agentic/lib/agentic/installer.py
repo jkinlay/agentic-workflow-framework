@@ -151,6 +151,14 @@ def _recover_pending_runtime_update(tree, journal, journal_raw, marker):
     if (marker["pending_journal_sha256"] is None or
             sha256(journal_raw) != marker["journal_sha256"]):
         return journal
+    if _compact_journal(journal) and journal["phase"] == "active":
+        # Rollback publishes its cleanup phase through the same bound-update
+        # protocol. If its journal replace was interrupted, keep the active
+        # journal and let idempotent rollback re-prove the restored endpoint.
+        rollback_candidate = loads(json_bytes(journal).decode("utf-8"))
+        rollback_candidate["phase"] = "rollback_cleanup"
+        if sha256(json_bytes(rollback_candidate)) == marker["pending_journal_sha256"]:
+            return journal
     runtime = _validated_runtime_journal(journal)
     if (journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"} or
             journal["phase"] != "active" or
@@ -331,6 +339,35 @@ def _cleanup_recovery_objects(tree, journal):
     for digest in sorted({item["old_sha256"] for item in journal["files"]
                           if item["old_sha256"] is not None}):
         tree.unlink(_recovery_object_path(digest))
+
+
+def _verify_compact_old_endpoint(tree, journal, context):
+    """Prove the old state from journal digests without requiring object bytes."""
+    if not _compact_journal(journal):
+        raise ValidationError("Compact recovery endpoint requires a compact journal")
+    _verify_journal_managed_state(tree, journal, "before", context)
+    for item in journal["files"]:
+        current = _exists_read(tree, item["path"])
+        expected_digest = item["old_sha256"]
+        matches = (current is None if expected_digest is None else
+                   current is not None and len(current) == item["old_size"] and
+                   sha256(current) == expected_digest)
+        if not matches:
+            raise ValidationError(f"Transaction old file state differs at {item['path']}")
+        if current is not None:
+            mode = stat.S_IMODE(tree.inspect(item["path"]).st_mode)
+            if mode != item["old_mode"]:
+                raise ValidationError(f"Transaction old file mode differs at {item['path']}")
+    _verify_runtime_state(tree, _validated_runtime_journal(journal), "old", require_cleanup=True)
+
+
+def _finalize_compact_rollback(tree, journal, *, marker_present):
+    """Retire recovery objects before the artifacts that track their ownership."""
+    _verify_compact_old_endpoint(tree, journal, "at compact rollback endpoint")
+    _cleanup_recovery_objects(tree, journal)
+    if marker_present:
+        tree.unlink(MARKER)
+    tree.unlink(JOURNAL)
 
 
 def _old_file_bytes(journal, item, objects):
@@ -841,8 +878,11 @@ def _validate_transaction_journal(journal):
         raise ValidationError("Non-canonical recovery transaction identity")
     _validated_runtime_journal(journal)
     if journal["format"] in {"awf-install-journal-3", "awf-install-journal-4"}:
-        if journal["phase"] not in {"active", "commit_cleanup", "commit_cleanup_authenticated"}:
+        if journal["phase"] not in {"object_prepare", "active", "rollback_cleanup",
+                                    "commit_cleanup", "commit_cleanup_authenticated"}:
             raise ValidationError("Invalid recovery journal phase")
+        if journal["phase"] in {"object_prepare", "rollback_cleanup"} and not _compact_journal(journal):
+            raise ValidationError("Compact recovery phase requires a compact journal")
         if _compact_journal(journal):
             digest_pattern = r"[0-9a-f]{64}"
             if (not isinstance(journal["managed_before_sha256"], str) or
@@ -951,6 +991,9 @@ def _rollback_runtime(tree, runtime):
 
 def rollback(tree, journal):
     _validate_transaction_journal(journal)
+    if _compact_journal(journal) and journal["phase"] in {"object_prepare", "rollback_cleanup"}:
+        _finalize_compact_rollback(tree, journal, marker_present=True)
+        return
     # Resolve and authenticate every recovery object before any project or
     # runtime mutation, so one missing/tampered object fails the whole rollback.
     recovery_objects = _load_recovery_objects(tree, journal)
@@ -1030,9 +1073,15 @@ def rollback(tree, journal):
         shutil.rmtree(backup_root)
     if mode_aware:
         _verify_journal_managed_state(tree, journal, "before", "after rollback")
-    tree.unlink(MARKER)
-    tree.unlink(JOURNAL)
-    _cleanup_recovery_objects(tree, journal)
+    if _compact_journal(journal):
+        # Publish the restored endpoint before deleting any object. Recovery can
+        # then prove the old state from hashes even after partial object cleanup.
+        journal["phase"] = "rollback_cleanup"
+        _write_bound_journal_update(tree, journal)
+        _finalize_compact_rollback(tree, journal, marker_present=True)
+    else:
+        tree.unlink(MARKER)
+        tree.unlink(JOURNAL)
 
 
 class _RuntimeInstallTransaction:
@@ -1211,6 +1260,9 @@ def _finalize_journal_only(tree, journal):
     _validate_transaction_journal(journal)
     if journal["format"] not in {"awf-install-journal-3", "awf-install-journal-4"}:
         raise ValidationError("Legacy journal-only recovery failed closed")
+    if journal["phase"] in {"object_prepare", "rollback_cleanup"}:
+        _finalize_compact_rollback(tree, journal, marker_present=False)
+        return "ROLLED_BACK"
     if journal["phase"] == "active":
         _verify_journal_managed_state(tree, journal, "before", "at journal-only rollback endpoint")
         _verify_file_state(tree, journal, "old")
@@ -1221,8 +1273,8 @@ def _finalize_journal_only(tree, journal):
         _verify_file_state(tree, journal, "new")
         _verify_runtime_state(tree, _validated_runtime_journal(journal), "new", require_cleanup=True)
         status = "COMMITTED"
-    tree.unlink(JOURNAL)
     _cleanup_recovery_objects(tree, journal)
+    tree.unlink(JOURNAL)
     return status
 
 
@@ -1611,7 +1663,7 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                                if originals[path] != data]
             journal = {"format": "awf-install-journal-4",
                 "transaction_id": transaction_id,
-                "phase": "active",
+                "phase": "object_prepare",
                 "files": [recovery_entry(path, originals[path], sha256(data))
                           for path, data in changed_planned]
                           + [recovery_entry(path, originals[path], None) for path in deletions]
@@ -1622,16 +1674,13 @@ def install(source, destination, expected_digest, mode="install", conflict="erro
                 "runtime": None}
             if defer_runtime:
                 journal["runtime"] = _runtime_journal(destination, transaction_id)
-            try:
-                _write_recovery_objects(dst, recovery_objects)
-                _publish_initial_intent(dst, journal)
-            except BaseException:
-                # No destination payload has changed yet. Remove any partially
-                # published intent rather than leaving unauthenticated fresh state.
-                dst.unlink(MARKER)
-                dst.unlink(JOURNAL)
-                _cleanup_recovery_objects(dst, journal)
-                raise
+            # Bind the complete object inventory before creating it. An abrupt
+            # stop during side-store creation therefore leaves recoverable intent,
+            # while no destination payload changes before every object validates.
+            _publish_initial_intent(dst, journal)
+            _write_recovery_objects(dst, recovery_objects)
+            journal["phase"] = "active"
+            _write_bound_journal_update(dst, journal)
             try:
                 for path, data in sorted(backup_plan.items()):
                     dst.write(path, data)
