@@ -11,6 +11,39 @@ python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --s
 State stays outside worktrees; pin intent and never reissue unresolved
 mutations.
 
+## Dispatch state and round boundaries
+
+Dispatch payloads and receipts use closed schema version 2. Opening protected
+state atomically migrates unambiguous 1.9.4 `PENDING`, `IN_FLIGHT`, and
+`UNKNOWN` rows without changing their identities or states; an unsupported
+state, receipt, field, or mixed ambiguous payload refuses the entire migration
+and preserves the before-image. The reference adapter refuses legacy calls and
+records before preparing or launching a runner.
+
+`PENDING`, `IN_FLIGHT`, `UNKNOWN`, and adapter `LAUNCHED` are non-terminal.
+A successor inventory cannot refill a round while any of those operations
+crosses the boundary. Refill requires one fresh authenticated host trigger
+bound to the prior and next inventory digests and the complete durable
+dispatch/stream/ticket/tuple/state set. The controller persists that seal before
+refill, consumes it once, and does not recreate it from replay. Use
+`--replan-request REQUEST.json` to have the reviewed adapter observe and seal
+this trigger; caller-authored trigger records are not accepted.
+
+Provider reads never occur inside a controller write transaction. For an
+overlap allowance, the `LANE_START` provider observation is validated first;
+then a dispatch-bound waiver record is persisted before `begun_at` and before
+the adapter call. Its digest binds the dispatch, ticket, stream, exact tuple,
+allowance, shared path, observation, and persistence time. Restart observation
+must carry the same digest and never relaunch the session.
+
+Authenticated parked and worktree-diff sources are independent reservations,
+not overlap allowances. Every production cycle asks the reviewed adapter for
+the complete provider-bound paused inventory and the complete Git diff at the
+pinned repository head/tree. The controller rejects foreign, stale, partial,
+non-NFC, case/separator/traversal, symlink, and non-canonical Git paths. A valid
+reservation blocks every overlapping start even when an exact owner allowance
+exists; unrelated paths continue when capacity permits.
+
 ## Exact overlap allowances
 
 Only a trusted owner's canonical `AWF-OVERLAP-ALLOWANCE 1` permits an exact

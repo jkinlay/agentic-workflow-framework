@@ -411,12 +411,26 @@ def _write_record(path, value):
 	except OSError as exc:
 		raise ValidationError('Detached run record could not be made durable') from exc
 
-def _record_receipt(payload, observed_at, session_id, *, reconcile=False):
-	fields = ['dispatch_id', 'stream', 'ticket', 'exact_tuple', 'dispatch_nonce', 'prepared_at', 'begun_at', 'role', 'lifecycle_stage']
+def _validated_dispatch_payload(payload, *, observation=False):
+	_require(isinstance(payload, dict), 'Dispatch payload is missing')
+	_require(payload.get('dispatch_schema_version') == 2, 'Legacy or unsupported dispatch payload version is refused')
+	required = {'dispatch_schema_version', 'dispatch_id', 'stream', 'ticket', 'exact_tuple', 'dispatch_nonce', 'prepared_at', 'begun_at', 'paths', 'actor', 'next_action', 'role', 'lifecycle_stage', 'lane_start_waivers'}
+	_require(required <= set(payload), 'Dispatch payload is incomplete')
+	allowed = required | {'worktree', 'overlap_sync_evidence', 'codex_skill_selection'}
+	if observation:
+		allowed |= {'reconcile_nonce', 'reconcile_at', 'terminal_observation'}
+	_require(set(payload) <= allowed, 'Dispatch payload has unknown or legacy fields')
+	_require(isinstance(payload['lane_start_waivers'], list) and payload['lane_start_waivers'] == sorted(payload['lane_start_waivers']) and len(payload['lane_start_waivers']) == len(set(payload['lane_start_waivers'])) and all((isinstance(item, str) and re.fullmatch('[0-9a-f]{64}', item) for item in payload['lane_start_waivers'])), 'Dispatch lane-start waiver binding is malformed')
+	if observation:
+		_require(('reconcile_nonce' in payload) == ('reconcile_at' in payload), 'Dispatch reconciliation identity is partial')
+	return payload
+
+def _record_receipt(payload, observed_at, session_id, dispatch_state, *, reconcile=False):
+	fields = ['dispatch_schema_version', 'dispatch_id', 'stream', 'ticket', 'exact_tuple', 'dispatch_nonce', 'prepared_at', 'begun_at', 'role', 'lifecycle_stage', 'lane_start_waivers']
 	if reconcile:
 		fields += ['reconcile_nonce', 'reconcile_at']
 	result = {key: payload[key] for key in fields}
-	result.update(status='ACCEPTED', observed_at=observed_at, session_id=session_id)
+	result.update(status='ACCEPTED', dispatch_state=dispatch_state, terminal=dispatch_state == 'TERMINAL', observed_at=observed_at, session_id=session_id)
 	return result
 
 def _worktree(root, candidate):
@@ -756,7 +770,48 @@ def _build(config):
 		tickets = _validate_ticket_records(records)
 		binding = {'project_id': github['project_id'], 'repository_id': str(github['repository_id']), 'scope_sha256': github['scope_sha256']}
 		observed_at = _clock_text(clock, controller_now)
-		return {'source': 'host_observation', 'observed_at': observed_at, 'binding': binding, 'complete': True, 'inventory_sha256': fingerprint('controller-inventory', {'binding': binding, 'tickets': tickets}), 'tickets': tickets}
+		result = {'source': 'host_observation', 'observed_at': observed_at, 'binding': binding, 'complete': True, 'inventory_sha256': fingerprint('controller-inventory', {'binding': binding, 'tickets': tickets}), 'tickets': tickets}
+		inventory_cache.clear()
+		inventory_cache.update(deepcopy(result))
+		return result
+
+	inventory_cache = {}
+
+	def observe_replan_trigger(request):
+		required = {'trigger_id', 'round_id', 'repository_id', 'prior_inventory_sha256', 'next_inventory_sha256', 'nonterminal_dispatch_ids'}
+		_require(isinstance(request, dict) and set(request) == required, 'Replan trigger observation request is malformed')
+		_require(str(request['repository_id']) == str(github['repository_id']) and request['next_inventory_sha256'] == inventory_cache.get('inventory_sha256'), 'Replan trigger observation is not bound to the authenticated current inventory')
+		_require(isinstance(request['nonterminal_dispatch_ids'], list) and request['nonterminal_dispatch_ids'] == sorted(request['nonterminal_dispatch_ids']), 'Replan trigger dispatch identities are not canonical')
+		trigger = {'schema_version': 1, 'source': 'host_observation', **deepcopy(request), 'observed_at': inventory_cache['observed_at'], 'authenticated': True}
+		trigger['trigger_sha256'] = fingerprint('controller-replan-trigger', trigger)
+		return trigger
+
+	def observe_reservations(request):
+		_require(isinstance(request, dict) and set(request) == {'repository_id', 'repository_root', 'head_sha', 'tree_sha', 'observed_at'}, 'Reservation observation request is malformed')
+		_require(str(request['repository_id']) == str(github['repository_id']) and re.fullmatch('[0-9a-f]{40}', request['head_sha']) and re.fullmatch('[0-9a-f]{40}', request['tree_sha']), 'Reservation observation request names a foreign or malformed repository tuple')
+		_require(inventory_cache.get('binding', {}).get('repository_id') == str(request['repository_id']), 'Parked reservations require the current authenticated inventory')
+		reservation_root = _absolute(request['repository_root'], 'reservation repository root').resolve(strict=True)
+		observed_at = _clock_text(clock)
+		result = []
+		parked_paths = sorted({path for item in inventory_cache['tickets'] if item.get('disposition') == 'PAUSED_INPUT' for path in item.get('paths', [])})
+		if parked_paths:
+			parked = {'schema_version': 1, 'kind': 'parked', 'source': 'github.com', 'repository_id': str(request['repository_id']), 'head_sha': request['head_sha'], 'tree_sha': request['tree_sha'], 'artifact_id': fingerprint('controller-parked-inventory', {'inventory_sha256': inventory_cache['inventory_sha256'], 'paths': parked_paths}), 'observed_at': observed_at, 'authenticated': True, 'complete': True, 'paths': parked_paths}
+			parked['evidence_sha256'] = fingerprint('controller-reservation-source', parked)
+			result.append(parked)
+		git_prefix = ['git', '--no-replace-objects', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=' + os.devnull, '-c', 'core.quotePath=false', '-C', str(reservation_root)]
+		git_env = _safe_env(token_env)
+		git_env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_NO_REPLACE_OBJECTS='1', GIT_NO_LAZY_FETCH='1', GIT_OPTIONAL_LOCKS='0', GIT_TERMINAL_PROMPT='0')
+		changed = _invoke(runner, 'run', [*git_prefix, 'diff', '--name-only', '-z', 'HEAD', '--'], cwd=reservation_root, env=git_env, timeout=30, max_bytes=MAX_OUTPUT)
+		untracked = _invoke(runner, 'run', [*git_prefix, 'ls-files', '--others', '--exclude-standard', '-z'], cwd=reservation_root, env=git_env, timeout=30, max_bytes=MAX_OUTPUT)
+		_require(isinstance(changed, str) and isinstance(untracked, str), 'Git reservation observation is not UTF-8 text')
+		dirty = sorted(set(name for name in (changed + untracked).split('\x00') if name))
+		if dirty:
+			diff = {'schema_version': 1, 'kind': 'worktree_diff', 'source': 'git', 'repository_id': str(request['repository_id']), 'head_sha': request['head_sha'], 'tree_sha': request['tree_sha'], 'artifact_id': fingerprint('controller-worktree-diff', {'head_sha': request['head_sha'], 'tree_sha': request['tree_sha'], 'paths': dirty}), 'observed_at': observed_at, 'authenticated': True, 'complete': True, 'paths': dirty}
+			diff['evidence_sha256'] = fingerprint('controller-reservation-source', diff)
+			result.append(diff)
+		envelope = {'schema_version': 1, 'source': 'host_observation', 'repository_id': str(request['repository_id']), 'head_sha': request['head_sha'], 'tree_sha': request['tree_sha'], 'observed_at': observed_at, 'authenticated': True, 'complete': True, 'sources': result}
+		envelope['observation_sha256'] = fingerprint('controller-reservation-observation', envelope)
+		return envelope
 
 	def observe_publication(item):
 		_require(isinstance(item, dict) and isinstance(item.get('ticket'), str), 'Publication observation needs a ticket')
@@ -1080,9 +1135,7 @@ def _build(config):
 		return production_overlap_sync_inventory(deepcopy(gate))
 
 	def dispatch_ticket(payload):
-		_require(isinstance(payload, dict), 'Dispatch payload is missing')
-		required = {'dispatch_id', 'stream', 'ticket', 'exact_tuple', 'dispatch_nonce', 'prepared_at', 'begun_at', 'paths', 'actor', 'next_action', 'role', 'lifecycle_stage'}
-		_require(required <= set(payload), 'Dispatch payload is incomplete')
+		_validated_dispatch_payload(payload)
 		role = payload['role']
 		_require(role in role_config or role == 'probe', 'Dispatch role is not configured')
 		expected_stage = 'implementation' if role == 'writer' else 'independent_review'
@@ -1112,7 +1165,7 @@ def _build(config):
 		handoff_path = record_path.with_suffix('.handoff.json')
 		startup_proof_path = record_path.with_suffix('.startup.json')
 		terminal_proof_path = record_path.with_suffix('.terminal.json')
-		record = {'format': 'awf-reference-dispatch-1', 'dispatch_id': payload['dispatch_id'], 'dispatch_nonce': payload['dispatch_nonce'], 'stream': payload['stream'], 'ticket': payload['ticket'], 'prepared_at': payload['prepared_at'], 'begun_at': payload['begun_at'], 'role': role, 'lifecycle_stage': payload['lifecycle_stage'], 'argv': argv, 'worktree': str(worktree), 'prompt_sha256': hashlib.sha256(prompt.encode('utf-8')).hexdigest(), 'argv_sha256': hashlib.sha256(canonical(argv)).hexdigest(), 'launch_nonce': launch_nonce, 'handoff_path': str(handoff_path), 'startup_proof_path': str(startup_proof_path), 'terminal_proof_path': str(terminal_proof_path), 'status': 'PREPARED', 'created_at': _clock_text(clock)}
+		record = {'format': 'awf-reference-dispatch-2', 'dispatch_schema_version': 2, 'dispatch_id': payload['dispatch_id'], 'dispatch_nonce': payload['dispatch_nonce'], 'stream': payload['stream'], 'ticket': payload['ticket'], 'exact_tuple': payload['exact_tuple'], 'prepared_at': payload['prepared_at'], 'begun_at': payload['begun_at'], 'role': role, 'lifecycle_stage': payload['lifecycle_stage'], 'lane_start_waivers': list(payload['lane_start_waivers']), 'argv': argv, 'worktree': str(worktree), 'prompt_sha256': hashlib.sha256(prompt.encode('utf-8')).hexdigest(), 'argv_sha256': hashlib.sha256(canonical(argv)).hexdigest(), 'launch_nonce': launch_nonce, 'handoff_path': str(handoff_path), 'startup_proof_path': str(startup_proof_path), 'terminal_proof_path': str(terminal_proof_path), 'status': 'PREPARED', 'created_at': _clock_text(clock)}
 		_write_record(record_path, record)
 		_verify_executable(codex_executable)
 		launch_env = _safe_env(token_env)
@@ -1156,7 +1209,7 @@ def _build(config):
 				previous = _read_record(candidate)
 			except ValidationError:
 				continue
-			if previous.get('format') == 'awf-reference-dispatch-1':
+			if previous.get('format') == 'awf-reference-dispatch-2':
 				previous_session = previous.get('session_id')
 				if previous.get('ticket') == payload['ticket'] and previous.get('role') != role:
 					_require(isinstance(previous_session, str) and previous_session.strip(), 'Writer/critic independence lacks prior observed session evidence')
@@ -1167,15 +1220,17 @@ def _build(config):
 		if terminal:
 			record['observed_at'] = record['startup_observed_at']
 		_write_record(record_path, record)
-		return _record_receipt(payload, record['startup_observed_at'], session_id)
+		return _record_receipt(payload, record['startup_observed_at'], session_id, 'TERMINAL' if terminal else 'LAUNCHED')
 
 	def observe_dispatch(payload):
-		_require(isinstance(payload, dict) and isinstance(payload.get('dispatch_id'), str), 'Dispatch observation payload is missing')
+		_validated_dispatch_payload(payload, observation=True)
 		path = record_dir / (payload['dispatch_id'] + '.json')
 		record = _read_record(path)
+		_require(record.get('format') == 'awf-reference-dispatch-2' and record.get('dispatch_schema_version') == 2, 'Legacy or unsupported durable dispatch record is refused')
 		_require(record.get('dispatch_id') == payload['dispatch_id'] and record.get('dispatch_nonce') == payload.get('dispatch_nonce'), 'Dispatch observation is bound to a different nonce')
 		_require(record.get('ticket') == payload.get('ticket') and record.get('stream') == payload.get('stream'), 'Dispatch observation identity differs from durable record')
 		_require(record.get('role') == payload.get('role') and record.get('lifecycle_stage') == payload.get('lifecycle_stage'), 'Dispatch observation role or lifecycle stage differs from durable record')
+		_require(record.get('exact_tuple') == payload.get('exact_tuple') and record.get('lane_start_waivers') == payload.get('lane_start_waivers'), 'Dispatch observation tuple or waiver evidence differs from durable record')
 		reconcile = 'reconcile_nonce' in payload
 		if reconcile:
 			_require(record.get('status') in {'PREPARED', 'LAUNCHED', 'COMPLETED'}, 'Interrupted dispatch has no observable durable launch intent')
@@ -1202,12 +1257,13 @@ def _build(config):
 		else:
 			_require(record.get('status') in {'LAUNCHED', 'COMPLETED'}, 'Dispatch has no accepted durable launch')
 		_require(isinstance(record.get('session_id'), str) and record['session_id'].strip(), 'Dispatch durable record has no observed session identity')
-		return _record_receipt(payload, _clock_text(clock), record['session_id'], reconcile=reconcile)
+		return _record_receipt(payload, _clock_text(clock), record['session_id'], 'TERMINAL' if record['status'] == 'COMPLETED' else 'LAUNCHED', reconcile=reconcile)
 
 	def observe_dispatch_quiescence(payload):
-		_require(isinstance(payload, dict) and isinstance(payload.get('dispatch_id'), str), 'Dispatch quiescence payload is missing')
+		_validated_dispatch_payload(payload, observation=True)
 		path = record_dir / (payload['dispatch_id'] + '.json')
 		record = _read_record(path)
+		_require(record.get('format') == 'awf-reference-dispatch-2', 'Legacy or unsupported durable dispatch record is refused')
 		_require(record.get('dispatch_id') == payload['dispatch_id'] and record.get('dispatch_nonce') == payload.get('dispatch_nonce') and (record.get('ticket') == payload.get('ticket')) and (record.get('session_id') is not None), 'Dispatch quiescence observation differs from the accepted run')
 		observer = 'observe_quiescence' if callable(getattr(runner, 'observe_quiescence', None)) else 'observe'
 		kwargs = {} if observer == 'observe_quiescence' else {'timeout': 0}
@@ -1382,7 +1438,7 @@ def _build(config):
 		complete = next_cursor is None
 		observed_at = snapshot['observed_at']
 		return {'items': items, 'next_cursor': next_cursor, 'complete': complete, 'snapshot_id': snapshot_id, 'scope_sha256': scope_sha, 'observed_at': observed_at}
-	return {'observe_inventory': observe_inventory, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation}
+	return {'observe_inventory': observe_inventory, 'observe_reservations': observe_reservations, 'observe_replan_trigger': observe_replan_trigger, 'dispatch_ticket': dispatch_ticket, 'observe_dispatch': observe_dispatch, 'observe_dispatch_quiescence': observe_dispatch_quiescence, 'deliver_status': deliver_status, 'observe_publication': observe_publication, 'observe_overlap_allowance': observe_overlap_allowance, 'observe_overlap_conflict': observe_overlap_conflict, 'observe_overlap_sync_inventory': observe_overlap_sync_inventory, 'sync_writer': sync_writer, 'reconcile_overlap_sync': reconcile_overlap_sync, 'observe_provider_identity': provider_identity, 'read_current_status': read_current_status, 'write_transition': write_transition, 'read_transition': read_transition, 'reconcile_merged_ticket': reconcile_merged_ticket, 'fetch_scope_page': fetch_scope_page, 'observe_accepted_project_config': observe_accepted_project_config, 'observe_closeout_record': observe_closeout_record, 'observe_jira_reconciliation': observe_jira_reconciliation}
 
 def build_adapters(config):
 	return _build(config)
