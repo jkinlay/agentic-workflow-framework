@@ -1,7 +1,9 @@
 """Shared adoption validation diagnostics; acceptance does not enable automation."""
 from __future__ import annotations
 
+import copy
 import json
+import re
 import stat
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -9,7 +11,26 @@ from urllib.parse import urlsplit
 from jsonschema import Draft202012Validator
 
 from . import ValidationError, VERSION
-from .canonical import validate_value
+from .canonical import fingerprint, validate_value
+
+
+MAX_LARGE_FILE_ALLOWANCES = 256
+_ALLOWANCE_FIELDS = {"path", "sha256", "reason", "approver"}
+_LARGE_FILE_ALLOWANCES_SCHEMA = {
+    "type": "array",
+    "maxItems": MAX_LARGE_FILE_ALLOWANCES,
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": sorted(_ALLOWANCE_FIELDS),
+        "properties": {
+            "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+            "approver": {"type": "string", "minLength": 1, "maxLength": 255},
+        },
+    },
+}
 
 FLAGS = {
     '$.project.id': 'bootstrap generates a stable UUID4; preserve the installation receipt',
@@ -68,6 +89,115 @@ def valid_workflow_blob_sha(value):
     return (isinstance(value, str) and len(value) == 40
             and value != "0" * 40
             and all(character in "0123456789abcdef" for character in value))
+
+
+def _printable_scalar_text(value, limit):
+    if not isinstance(value, str) or not value or value.strip() != value or len(value) > limit:
+        return False
+    try:
+        value.encode("utf-8", "strict")
+    except UnicodeError:
+        return False
+    return not any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def validate_large_file_allowances(value):
+    """Return an ordered defensive snapshot of governed large-file entries."""
+    from .safeio import relative_parts
+
+    if not isinstance(value, (list, tuple)) or len(value) > MAX_LARGE_FILE_ALLOWANCES:
+        raise ValidationError("Publication large-file allowances must be a bounded list")
+    snapshot = []
+    paths = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != _ALLOWANCE_FIELDS:
+            raise ValidationError(
+                "Publication large-file allowances require only path, sha256, reason, and approver"
+            )
+        path = item["path"]
+        if not _printable_scalar_text(path, 4096):
+            raise ValidationError(
+                "Publication large-file allowance paths must be bounded Unicode scalar text"
+            )
+        try:
+            relative_parts(path)
+        except ValidationError as exc:
+            raise ValidationError(
+                "Publication large-file allowance paths must be canonical repository-relative POSIX paths"
+            ) from exc
+        if path in paths:
+            raise ValidationError("Publication large-file allowance paths must be unique")
+        digest = item["sha256"]
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValidationError(
+                "Publication large-file allowance sha256 must be a lower-case SHA-256 digest"
+            )
+        for field, limit in (("reason", 1024), ("approver", 255)):
+            if not _printable_scalar_text(item[field], limit):
+                raise ValidationError(
+                    f"Publication large-file allowance {field} must be bounded printable Unicode scalar text"
+                )
+        paths.add(path)
+        snapshot.append({field: item[field] for field in ("path", "sha256", "reason", "approver")})
+    return tuple(snapshot)
+
+
+def extract_large_file_allowances(config):
+    """Extract allowances without retaining mutable caller-owned containers."""
+    if not isinstance(config, dict):
+        raise ValidationError("Project configuration must be an object")
+    publication = config.get("publication", {})
+    if not isinstance(publication, dict):
+        raise ValidationError("Project publication configuration must be an object")
+    return validate_large_file_allowances(publication.get("large_file_allowances", []))
+
+
+def publication_project_config_binding(config):
+    """Bind the complete parsed candidate-head project configuration."""
+    return fingerprint("publication-project-config", config)
+
+
+def _project_config_schema_with_allowances(contracts):
+    """Supply the staged core contract until the generated schema phase lands."""
+    schema = copy.deepcopy(contracts.schemas["project-config"])
+    publication = schema.get("properties", {}).get("publication")
+    if not isinstance(publication, dict) or not isinstance(publication.get("properties"), dict):
+        raise ValidationError("Trusted project-config schema lacks the publication contract")
+    existing = publication["properties"].get("large_file_allowances")
+    if existing is None:
+        publication["properties"]["large_file_allowances"] = copy.deepcopy(
+            _LARGE_FILE_ALLOWANCES_SCHEMA)
+    return schema
+
+
+def _project_config_errors(config, contracts):
+    validator = Draft202012Validator(
+        _project_config_schema_with_allowances(contracts),
+        registry=contracts.registry,
+        format_checker=contracts.formats,
+    )
+    return sorted(validator.iter_errors(config), key=lambda error: str(list(error.absolute_path)))
+
+
+def _schema_error_reason(error):
+    path = tuple(error.absolute_path)
+    if len(path) >= 2 and path[:2] == ("publication", "large_file_allowances"):
+        return "large-file allowance violates the closed contract"
+    return error.message
+
+
+def validate_publication_project_config(config, contracts):
+    """Validate a parsed config against trusted schema plus allowance semantics."""
+    validate_value(config)
+    errors = _project_config_errors(config, contracts)
+    if errors:
+        error = errors[0]
+        raise ValidationError(
+            f"Project configuration is invalid at {json_path(error.absolute_path)}: "
+            f"{_schema_error_reason(error)}"
+        )
+    extract_large_file_allowances(config)
+    return config
 
 
 def json_path(parts):
@@ -155,16 +285,14 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
         validate_value(config)
     except ValidationError as exc:
         problems.append(issue('$', str(exc)))
-    validator = Draft202012Validator(contracts.schemas['project-config'], registry=contracts.registry,
-                                     format_checker=contracts.formats)
-    schema_errors = sorted(validator.iter_errors(config), key=lambda error: str(list(error.absolute_path)))
+    schema_errors = _project_config_errors(config, contracts)
     for error in schema_errors:
         if error.validator == 'required' and isinstance(error.instance, dict):
             for key in error.validator_value:
                 if key not in error.instance:
                     problems.append(issue(json_path((*error.absolute_path, key)), 'required value is missing'))
         else:
-            problems.append(issue(json_path(error.absolute_path), error.message))
+            problems.append(issue(json_path(error.absolute_path), _schema_error_reason(error)))
     problems.extend(placeholder_issues(config))
     # Null is allowed in inert release forms, but adoption always needs the real
     # repository identity. Report it even when another field has a schema error.
@@ -182,6 +310,12 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
         def require(condition, path, reason):
             if not condition:
                 problems.append(issue(path, reason))
+        try:
+            extract_large_file_allowances(config)
+        except ValidationError:
+            problems.append(issue(
+                '$.publication.large_file_allowances',
+                'large-file allowance violates the closed runtime contract'))
         require(type(config['github']['repository_id']) is int and config['github']['repository_id'] > 0,
                 '$.github.repository_id', 'numeric repository identity is unresolved')
         if not isinstance(workflow, dict):

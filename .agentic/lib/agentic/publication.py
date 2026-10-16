@@ -8,17 +8,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import difflib
+from functools import lru_cache
 import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import shutil
 import stat
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 import zlib
 
@@ -33,7 +35,13 @@ except ImportError:  # pragma: no cover - exercised on older Python runtimes
     _re_parser = None
 
 from . import ValidationError
+from .canonical import MAX_DOCUMENT_BYTES, canonical, load_yaml
 from .child_process import child_env
+from .configuration import (extract_large_file_allowances,
+                            publication_project_config_binding,
+                            validate_large_file_allowances,
+                            validate_publication_project_config)
+from .contracts import Contracts
 from .gittree import verify_publisher_tree
 from .interaction import writer_commit_message
 from .provenance import (parse_writer_trailer, validate_commit_message,
@@ -53,6 +61,10 @@ MAX_REGEX_REPEAT = 64
 MAX_LINEAR_REGEX_BRANCHES = 16
 MAX_LINEAR_REGEX_REPEAT_BRANCHES = 4
 MAX_LARGE_FILE_ALLOWANCES = 256
+MAX_LARGE_FILE_ALLOWANCE_BYTES = 512 * 1024 * 1024
+MAX_LARGE_FILE_ALLOWANCE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+MAX_LARGE_FILE_ALLOWANCE_SECONDS = 60
+PROJECT_CONFIG_PATH = ".agentic/PROJECT_CONFIG.yaml"
 ALIAS = re.compile(r"^[a-z][a-z0-9_]*$")
 UNC = re.compile(r"(?<![\\])\\\\[A-Za-z0-9][A-Za-z0-9._-]*[\\/][^\s<>:\"|?*]+(?:[\\/][^\s<>:\"|?*]+)*")
 WINDOWS_ABSOLUTE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/](?:[^\s<>:\"|?*]+[\\/]?)+")
@@ -295,21 +307,6 @@ def _json_file(path, label):
     return value
 
 
-def _config_file(path):
-    """PROJECT_CONFIG.yaml is JSON-shaped YAML; owner comments survive upgrades."""
-    try:
-        return _json_file(path, "project configuration")
-    except ValidationError:
-        from .canonical import load_yaml
-        try:
-            value = load_yaml(Path(path).read_bytes())
-        except (OSError, ValidationError) as exc:
-            raise ValidationError(f"Invalid project configuration: {type(exc).__name__}") from exc
-        if not isinstance(value, dict):
-            raise ValidationError("project configuration must be a JSON object")
-        return value
-
-
 def _linear_terminal_repeat_regex(pattern):
     """Recognize a small alternation subset with a linear matching bound.
 
@@ -528,15 +525,36 @@ def render_aliases(text, mapping):
     return text
 
 
-def _project_declarations(root, config_path=None):
-    path = Path(config_path) if config_path else Path(root) / ".agentic/PROJECT_CONFIG.yaml"
-    if not path.is_absolute():
-        path = Path(root) / path
-    if not path.is_file():
-        return {}, None
-    config = _config_file(path)
+@lru_cache(maxsize=1)
+def _trusted_project_contracts():
+    return Contracts(Path(__file__).resolve().parents[2] / "schemas")
+
+
+def _parse_config_document(raw, label):
+    try:
+        config = load_yaml(raw)
+    except (UnicodeError, ValidationError) as exc:
+        raise ValidationError(f"{label} is malformed") from exc
+    if not isinstance(config, dict):
+        raise ValidationError(f"{label} must be an object")
+    return config
+
+
+def _parse_project_config(raw, label):
+    config = _parse_config_document(raw, label)
+    try:
+        validate_publication_project_config(config, _trusted_project_contracts())
+    except ValidationError as exc:
+        raise ValidationError(f"{label} does not satisfy the trusted project-config contract: {exc}") from exc
+    return config
+
+
+def _publication_declarations(config):
     publication = config.get("publication", {})
-    if not isinstance(publication, dict) or set(publication) - {"deny_literals", "deny_regexes", "internal_hostnames"}:
+    if not isinstance(publication, dict):
+        raise ValidationError("Project publication declarations must be an object")
+    if set(publication) - {
+            "deny_literals", "deny_regexes", "internal_hostnames", "large_file_allowances"}:
         raise ValidationError("Project publication declarations have unsupported fields")
     for key in ("deny_literals", "internal_hostnames"):
         if not isinstance(publication.get(key, []), list) or not all(isinstance(x, str) and x for x in publication.get(key, [])):
@@ -552,7 +570,48 @@ def _project_declarations(root, config_path=None):
             raise ValidationError("Project publication regex entries need unique ids")
         identifiers.add(item["id"])
         _validate_safe_regex(item["pattern"], "Project publication declarations")
-    return publication, hashlib.sha256(path.read_bytes()).hexdigest()
+    return {key: list(publication.get(key, []))
+            for key in ("deny_literals", "deny_regexes", "internal_hostnames")}
+
+
+def _head_project_config(root, head_sha, head_tree, extra_env=None):
+    entry = head_tree.get(PROJECT_CONFIG_PATH)
+    if entry is None:
+        return {}, None, None, ()
+    mode, kind, oid = entry
+    if kind != "blob" or not mode.startswith("100"):
+        raise ValidationError("Candidate-head project configuration must be a regular Git blob")
+    kind_result = _git(root, "cat-file", "-t", oid, extra_env=extra_env, check=False)
+    if kind_result.returncode or kind_result.stdout.strip() != b"blob":
+        raise ValidationError("Candidate-head project configuration object kind could not be verified")
+    size = _blob_size(root, oid, extra_env)
+    if size > MAX_DOCUMENT_BYTES:
+        raise ValidationError("Candidate-head project configuration exceeds 8 MiB")
+    raw = _git_bounded_stdout(
+        root, "cat-file", "blob", oid, extra_env=extra_env, limit=MAX_DOCUMENT_BYTES)
+    if len(raw) != size:
+        raise ValidationError("Candidate-head project configuration size changed during bounded read")
+    config = _parse_project_config(raw, "Candidate-head project configuration")
+    return (config, hashlib.sha256(raw).hexdigest(),
+            publication_project_config_binding(config), extract_large_file_allowances(config))
+
+
+def _supplemental_project_config(root, config_path):
+    if config_path is None:
+        return {}, None
+    path = Path(config_path)
+    if not path.is_absolute():
+        path = Path(root) / path
+    if not path.is_file():
+        return {}, None
+    raw = _bounded_regular_file(path, MAX_DOCUMENT_BYTES, "Supplemental project configuration")
+    config = _parse_config_document(raw, "Supplemental project configuration")
+    return _publication_declarations(config), hashlib.sha256(raw).hexdigest()
+
+
+def _merge_declarations(primary, supplemental):
+    return {key: list(primary.get(key, [])) + list(supplemental.get(key, []))
+            for key in ("deny_literals", "deny_regexes", "internal_hostnames")}
 
 
 def _detectors(mapping, declarations):
@@ -653,7 +712,7 @@ def _tree(root, commit, extra_env=None):
     return result
 
 
-def _blob(root, oid, extra_env=None, *, classification=False):
+def _blob_size(root, oid, extra_env=None):
     size_result = _git(root, "cat-file", "-s", oid, extra_env=extra_env, check=False)
     if size_result.returncode:
         raise ValidationError("Git blob size could not be verified before reading")
@@ -661,6 +720,13 @@ def _blob(root, oid, extra_env=None, *, classification=False):
         size = int(size_result.stdout.strip())
     except (TypeError, ValueError) as exc:
         raise ValidationError("Git blob size is invalid") from exc
+    if size < 0:
+        raise ValidationError("Git blob size is invalid")
+    return size
+
+
+def _blob(root, oid, extra_env=None, *, classification=False):
+    size = _blob_size(root, oid, extra_env)
     if size > MAX_TEXT_BYTES:
         return None, "oversize"
     value = _git(root, "cat-file", "blob", oid, extra_env=extra_env).stdout
@@ -679,43 +745,21 @@ def _blob(root, oid, extra_env=None, *, classification=False):
 
 
 def _validate_large_file_allowances(value):
-    """Validate explicit, reviewed baseline entries before inspecting content."""
-    if not isinstance(value, (list, tuple)) or len(value) > MAX_LARGE_FILE_ALLOWANCES:
-        raise ValidationError("Publication large-file allowances must be a bounded list")
+    """Return the historical path lookup while retaining shared validation."""
     result = {}
-    for item in value:
-        if not isinstance(item, dict) or set(item) != {"path", "sha256", "reason", "approver"}:
-            raise ValidationError("Publication large-file allowances require path, sha256, reason, and approver")
+    for item in validate_large_file_allowances(value):
         path = item["path"]
-        if (not isinstance(path, str) or not path or len(path) > 4096 or "\\" in path
-                or path.startswith("/") or PurePosixPath(path).as_posix() != path
-                or any(part in {"", ".", ".."} for part in path.split("/"))
-                or any(ord(character) < 32 or ord(character) == 127 for character in path)):
-            raise ValidationError("Publication large-file allowance paths must be canonical repository-relative POSIX paths")
-        digest = item["sha256"]
-        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-            raise ValidationError("Publication large-file allowance sha256 must be a lower-case SHA-256 digest")
-        for field, limit in (("reason", 1024), ("approver", 255)):
-            text = item[field]
-            if (not isinstance(text, str) or not text or text.strip() != text or len(text) > limit
-                    or any(ord(character) < 32 or ord(character) == 127 for character in text)):
-                raise ValidationError(f"Publication large-file allowance {field} must be bounded printable text")
-        if path in result:
-            raise ValidationError("Publication large-file allowance paths must be unique")
-        canonical = json.dumps(item, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        result[path] = {**item, "allowance_sha256": hashlib.sha256(canonical).hexdigest()}
+        result[path] = {**item, "allowance_sha256": hashlib.sha256(canonical(item)).hexdigest()}
     return result
 
 
-def _blob_sha256(root, oid, extra_env=None):
+def _blob_sha256(root, oid, extra_env=None, *, expected_size=None, timeout=120):
     """Hash a Git blob incrementally without retaining its potentially large bytes."""
-    size_result = _git(root, "cat-file", "-s", oid, extra_env=extra_env, check=False)
-    if size_result.returncode:
-        raise ValidationError("Git blob size could not be verified before hashing")
-    try:
-        expected_size = int(size_result.stdout.strip())
-    except (TypeError, ValueError) as exc:
-        raise ValidationError("Git blob size is invalid") from exc
+    observed_size = _blob_size(root, oid, extra_env)
+    if expected_size is None:
+        expected_size = observed_size
+    elif observed_size != expected_size:
+        raise ValidationError("Git blob size changed before hashing")
     executable = shutil.which("git")
     if not executable:
         raise ValidationError("Git is required for publication safety")
@@ -765,26 +809,80 @@ def _blob_sha256(root, oid, extra_env=None):
     error_thread = threading.Thread(target=drain_error, daemon=True)
     output_thread.start()
     error_thread.start()
+    wait_failure = None
     try:
-        process.wait(timeout=120)
+        process.wait(timeout=timeout)
     except subprocess.SubprocessError as exc:
         process.kill()
         process.wait()
-        raise ValidationError("git cat-file did not complete while hashing a large blob") from exc
+        wait_failure = exc
     finally:
         output_thread.join(timeout=5)
         error_thread.join(timeout=5)
     if output_thread.is_alive() or error_thread.is_alive():
         process.kill()
+        process.wait()
+        process.stdout.close()
+        process.stderr.close()
         raise ValidationError("git cat-file output could not be consumed while hashing a large blob")
     process.stdout.close()
     process.stderr.close()
+    if wait_failure is not None:
+        raise ValidationError(
+            "git cat-file did not complete while hashing a large blob") from wait_failure
     if process.returncode:
         detail = re.sub(r"[^\x20-\x7e]", "?", bytes(stderr).decode("utf-8", "replace"))[:300]
         raise ValidationError(f"git cat-file failed with exit {process.returncode}: {detail}")
     if state["error"] or state["total"] != expected_size:
         raise ValidationError(state["error"] or "Git blob content differed from its verified size")
     return digest.hexdigest()
+
+
+class _AllowanceHashBudget:
+    """One scan's fail-closed, unique-OID allowance hashing budget."""
+
+    def __init__(self, *, per_file_limit=MAX_LARGE_FILE_ALLOWANCE_BYTES,
+                 total_limit=MAX_LARGE_FILE_ALLOWANCE_TOTAL_BYTES,
+                 deadline_seconds=MAX_LARGE_FILE_ALLOWANCE_SECONDS, clock=None):
+        self.per_file_limit = per_file_limit
+        self.total_limit = total_limit
+        self.clock = clock or time.monotonic
+        self.deadline = self.clock() + deadline_seconds
+        self.total = 0
+        self.cache = {}
+
+    def hash_blob(self, root, oid, extra_env=None):
+        try:
+            size = _blob_size(root, oid, extra_env)
+        except ValidationError:
+            return None, "HASH_FAILED"
+        cached = self.cache.get(oid)
+        if cached is not None:
+            cached_size, digest, disposition = cached
+            if cached_size != size:
+                return None, "OID_SIZE_MISMATCH"
+            return digest, disposition
+        if size > self.per_file_limit:
+            self.cache[oid] = (size, None, "PER_FILE_LIMIT")
+            return None, "PER_FILE_LIMIT"
+        if self.total + size > self.total_limit:
+            self.cache[oid] = (size, None, "TOTAL_LIMIT")
+            return None, "TOTAL_LIMIT"
+        now = self.clock()
+        if now >= self.deadline:
+            self.cache[oid] = (size, None, "DEADLINE")
+            return None, "DEADLINE"
+        self.total += size
+        try:
+            digest = _blob_sha256(
+                root, oid, extra_env, expected_size=size,
+                timeout=max(self.deadline - now, 0.001))
+        except ValidationError:
+            disposition = "DEADLINE" if self.clock() >= self.deadline else "HASH_FAILED"
+            self.cache[oid] = (size, None, disposition)
+            return None, disposition
+        self.cache[oid] = (size, digest, "MATCHED")
+        return digest, "MATCHED"
 
 
 def _provider_file(path):
@@ -869,62 +967,121 @@ def _path_for_output(path, detectors, allows):
 
 
 def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_body_texts=(), comment_texts=(),
-                    mapping_path=None, config_path=None, large_file_allowances=(), extra_env=None):
+                    mapping_path=None, config_path=None, large_file_allowances=None, extra_env=None,
+                    _allowance_budget=None):
     """Scan branch history, final changed files, and prospective provider text."""
     root = Path(root).resolve()
-    large_allowances = _validate_large_file_allowances(large_file_allowances)
     base_sha = _git(root, "rev-parse", "--verify", base + "^{commit}", extra_env=extra_env).stdout.decode("ascii").strip()
     head_sha = _git(root, "rev-parse", "--verify", head + "^{commit}", extra_env=extra_env).stdout.decode("ascii").strip()
     ancestor = _git(root, "merge-base", "--is-ancestor", base_sha, head_sha, extra_env=extra_env, check=False)
     if ancestor.returncode != 0:
         raise ValidationError("Publication base must be an ancestor of head")
+    tree_cache = {}
+    head_tree = tree_cache.setdefault(head_sha, _tree(root, head_sha, extra_env))
+    head_config, config_sha, config_binding_sha, head_allowances = _head_project_config(
+        root, head_sha, head_tree, extra_env)
+    if large_file_allowances is None:
+        allowance_snapshot = head_allowances
+    else:
+        allowance_snapshot = validate_large_file_allowances(large_file_allowances)
+        if allowance_snapshot != head_allowances:
+            raise ValidationError(
+                "Explicit publication large-file allowances must exactly equal candidate-head configuration"
+            )
+        if validate_large_file_allowances(large_file_allowances) != allowance_snapshot:
+            raise ValidationError("Publication large-file allowances changed during validation")
+    large_allowances = _validate_large_file_allowances(allowance_snapshot)
     mapping, mapping_sha, mapping_file = load_mapping(root, mapping_path)
-    declarations, config_sha = _project_declarations(root, config_path)
+    supplemental, supplemental_config_sha = _supplemental_project_config(root, config_path)
+    declarations = _merge_declarations(_publication_declarations(head_config), supplemental)
     detectors, allows = _detectors(mapping, declarations)
     commits = [item.decode("ascii") for item in _git(root, "rev-list", "--reverse", "--topo-order", base_sha + ".." + head_sha,
                                                        extra_env=extra_env).stdout.splitlines()]
     findings, unscanned = [], []
-    tree_cache = {}
     base_tree = tree_cache.setdefault(base_sha, _tree(root, base_sha, extra_env))
     # Classification is exact and case-sensitive.  Known positives survive an
     # incomplete base scan, while every unknown remains blocking and the
     # unscanned base entry independently prevents PASS.
     base_membership = set()
     allowed_large_oids = {}
-    observed_allowance_paths = set()
+    allowance_budget = _allowance_budget or _AllowanceHashBudget()
+    allowance_accounting = []
+    accounting_by_path = {}
+    for item in allowance_snapshot:
+        path = item["path"]
+        entry = base_tree.get(path)
+        record = {
+            "path": _path_for_output(path, detectors, allows),
+            "path_sha256": hashlib.sha256(path.encode("utf-8")).hexdigest(),
+            "allowance_sha256": large_allowances[path]["allowance_sha256"],
+            "configured_sha256": item["sha256"],
+            "base_blob_oid": None,
+            "observed_sha256": None,
+            "base_disposition": "PATH_MISSING",
+            "candidate_events": [],
+        }
+        if entry is not None:
+            mode, kind, oid = entry
+            if kind != "blob" or not mode.startswith("100"):
+                record["base_disposition"] = "NOT_BLOB"
+            else:
+                record["base_blob_oid"] = oid
+                try:
+                    size = _blob_size(root, oid, extra_env)
+                except ValidationError:
+                    record["base_disposition"] = "HASH_FAILED"
+                else:
+                    if size <= MAX_TEXT_BYTES:
+                        record["base_disposition"] = "NOT_OVERSIZE"
+                    else:
+                        digest, disposition = allowance_budget.hash_blob(root, oid, extra_env)
+                        record["observed_sha256"] = digest
+                        record["base_disposition"] = disposition
+                        if disposition == "MATCHED" and digest != item["sha256"]:
+                            record["base_disposition"] = "HASH_MISMATCH"
+                        elif disposition == "MATCHED":
+                            allowed_large_oids[path] = oid
+        allowance_accounting.append(record)
+        accounting_by_path[path] = record
     for base_path, (_mode, kind, oid) in sorted(base_tree.items()):
         if kind != "blob":
             continue
         output_path = _path_for_output(base_path, detectors, allows)
+        allowance_record = accounting_by_path.get(base_path)
+        if (allowance_record is not None and allowance_record["base_disposition"] in {
+                "PER_FILE_LIMIT", "TOTAL_LIMIT", "DEADLINE", "OID_SIZE_MISMATCH", "HASH_FAILED"}):
+            unscanned.append({
+                "commit": base_sha, "path": output_path, "source": "base-classification",
+                "reason": "large-file-allowance-" +
+                          allowance_record["base_disposition"].lower().replace("_", "-"),
+                "parent": None,
+            })
+            continue
         base_text, base_reason = _blob(root, oid, extra_env, classification=True)
         if base_reason:
             if base_reason == "oversize" and base_path in large_allowances:
-                observed_allowance_paths.add(base_path)
                 allowance = large_allowances[base_path]
-                actual_sha256 = _blob_sha256(root, oid, extra_env)
-                if actual_sha256 == allowance["sha256"]:
-                    allowed_large_oids[base_path] = oid
+                record = accounting_by_path[base_path]
+                actual_sha256 = record["observed_sha256"]
+                if record["base_disposition"] == "MATCHED":
                     findings.append({"commit": base_sha, "path": output_path, "line": None,
                                      "source": "large-file-allowance", "change": None,
                                      "detector_id": "allowance.large_file.sha256." + actual_sha256,
                                      "classification": "PRE_EXISTING",
                                      "redacted_excerpt": "sha256:" + allowance["allowance_sha256"]})
                     continue
-                findings.append({"commit": base_sha, "path": output_path, "line": None,
-                                 "source": "large-file-allowance", "change": None,
-                                 "detector_id": "allowance.large_file.sha256." + allowance["sha256"],
-                                 "classification": "BLOCKING",
-                                 "redacted_excerpt": "sha256:" + actual_sha256})
+                if actual_sha256 is not None:
+                    findings.append({"commit": base_sha, "path": output_path, "line": None,
+                                     "source": "large-file-allowance", "change": None,
+                                     "detector_id": "allowance.large_file.sha256." + allowance["sha256"],
+                                     "classification": "BLOCKING",
+                                     "redacted_excerpt": "sha256:" + actual_sha256})
             unscanned.append({"commit": base_sha, "path": output_path, "source": "base-classification",
                               "reason": base_reason, "parent": None})
             continue
         for _line, detector_id, value in _matching_values(
                 base_text, path=base_path, detectors=detectors, allows=allows):
             base_membership.add((detector_id, value))
-    unused_allowances = sorted(set(large_allowances) - observed_allowance_paths)
-    if unused_allowances:
-        raise ValidationError("Publication large-file allowance does not identify an oversized base blob: "
-                              + unused_allowances[0])
     # Keep provenance per commit.  A traversal-global pathname map makes merge
     # results depend on parent order when disconnected roots reuse a path.
     # Each parent transition is derived independently and merge results retain
@@ -935,6 +1092,27 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     sync_parent_reachability_cache = {}
     historical_lines_cache = {}
     allowance_mismatches = set()
+    allowance_changed = set()
+
+    def add_allowance_event(path, event, commit, source_path, destination_path, entry=None):
+        record = accounting_by_path[path]
+        observed_oid = None
+        observed_digest = None
+        if entry is not None and entry[1] == "blob" and entry[0].startswith("100"):
+            observed_oid = entry[2]
+            observed_digest, _disposition = allowance_budget.hash_blob(root, observed_oid, extra_env)
+        value = {
+            "commit": commit,
+            "source_path_sha256": (None if source_path is None else
+                                     hashlib.sha256(source_path.encode("utf-8", "surrogatepass")).hexdigest()),
+            "destination_path_sha256": (None if destination_path is None else
+                                          hashlib.sha256(destination_path.encode("utf-8", "surrogatepass")).hexdigest()),
+            "observed_blob_oid": observed_oid,
+            "observed_sha256": observed_digest,
+            "event": event,
+        }
+        if value not in record["candidate_events"]:
+            record["candidate_events"].append(value)
 
     def historical_lines(commit, path):
         key = (commit, path)
@@ -1026,6 +1204,38 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                     transitioned.pop(before_path, None)
                 elif status.startswith("D"):
                     transitioned.pop(before_path, None)
+                for allowance_path, record in accounting_by_path.items():
+                    base_oid = record["base_blob_oid"]
+                    if status.startswith("R") and before_path == allowance_path and after_path != allowance_path:
+                        add_allowance_event(
+                            allowance_path, "MOVED", commit, before_path, after_path,
+                            commit_tree.get(after_path))
+                        allowance_changed.add(allowance_path)
+                        continue
+                    if status.startswith("D") and before_path == allowance_path:
+                        add_allowance_event(allowance_path, "DELETED", commit, before_path, None)
+                        allowance_changed.add(allowance_path)
+                        continue
+                    if after_path != allowance_path:
+                        continue
+                    new_entry = commit_tree.get(after_path)
+                    if status.startswith("A") and base_oid is None:
+                        add_allowance_event(
+                            allowance_path, "CANDIDATE_ONLY", commit, None, after_path, new_entry)
+                        allowance_changed.add(allowance_path)
+                    elif (new_entry is None or new_entry[1] != "blob"
+                          or not new_entry[0].startswith("100")):
+                        add_allowance_event(
+                            allowance_path, "TYPE_CHANGED", commit, before_path, after_path, new_entry)
+                        allowance_changed.add(allowance_path)
+                    elif new_entry[2] != base_oid:
+                        add_allowance_event(
+                            allowance_path, "CHANGED", commit, before_path, after_path, new_entry)
+                        allowance_changed.add(allowance_path)
+                    elif allowance_path in allowance_changed:
+                        add_allowance_event(
+                            allowance_path, "REVERTED_AFTER_CHANGE", commit,
+                            before_path, after_path, new_entry)
                 output_path = _path_for_output(after_path or before_path, detectors, allows)
                 path_text = (before_path or "") + "\n" + (after_path or "")
                 findings += _scan_text(path_text, commit=commit, path=output_path, source="patch-path",
@@ -1040,13 +1250,15 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
                         mismatch_key = (commit, after_path, commit_tree[after_path][2])
                         if mismatch_key not in allowance_mismatches:
                             allowance_mismatches.add(mismatch_key)
-                            actual_sha256 = _blob_sha256(root, commit_tree[after_path][2], extra_env)
+                            actual_sha256, _hash_disposition = allowance_budget.hash_blob(
+                                root, commit_tree[after_path][2], extra_env)
                             allowance = large_allowances[after_path]
-                            findings.append({"commit": commit, "path": output_path, "line": None,
-                                             "source": "large-file-allowance", "change": None,
-                                             "detector_id": "allowance.large_file.sha256." + allowance["sha256"],
-                                             "classification": "BLOCKING",
-                                             "redacted_excerpt": "sha256:" + actual_sha256})
+                            if actual_sha256 is not None:
+                                findings.append({"commit": commit, "path": output_path, "line": None,
+                                                 "source": "large-file-allowance", "change": None,
+                                                 "detector_id": "allowance.large_file.sha256." + allowance["sha256"],
+                                                 "classification": "BLOCKING",
+                                                 "redacted_excerpt": "sha256:" + actual_sha256})
                 if (old_reason == "oversize" and before_path in allowed_large_oids
                         and before_path in old_tree and old_tree[before_path][2] == allowed_large_oids[before_path]):
                     old_text, old_reason = "", None
@@ -1134,11 +1346,17 @@ def scan_repository(root, base, head, *, pr_body_paths=(), comment_paths=(), pr_
     findings.sort(key=lambda item: (item["commit"] or "", item["path"] or "", item["line"] or 0, item["detector_id"]))
     blocking_count = sum(item["classification"] == "BLOCKING" for item in findings)
     pre_existing_count = sum(item["classification"] == "PRE_EXISTING" for item in findings)
-    status = "BLOCKED" if blocking_count or unscanned else "PASS"
+    allowance_blocked = any(
+        item["base_disposition"] != "MATCHED" or item["candidate_events"]
+        for item in allowance_accounting)
+    status = "BLOCKED" if blocking_count or unscanned or allowance_blocked else "PASS"
     return {"schema_version": 3, "status": status, "base_sha": base_sha, "head_sha": head_sha,
             "pr_body_sha256": body_hashes[0] if len(body_hashes) == 1 else None,
             "additional_pr_body_sha256": body_hashes[1:], "comment_sha256": comment_hashes,
             "mapping_sha256": mapping_sha, "project_config_sha256": config_sha,
+            "project_config_binding_sha256": config_binding_sha,
+            "supplemental_project_config_sha256": supplemental_config_sha,
+            "large_file_allowance_accounting": allowance_accounting,
             "mapping_loaded": mapping_sha is not None, "mapping_location": DEFAULT_MAPPING.as_posix(),
             "commits_scanned": commits, "findings": findings,
             "total_findings": len(findings), "blocking_findings": blocking_count,

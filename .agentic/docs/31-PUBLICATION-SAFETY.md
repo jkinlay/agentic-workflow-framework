@@ -4,34 +4,41 @@ Version 1.9.4. Publication is blocked unless the exact candidate history and
 provider text pass a history-aware scan. `git diff --check` checks whitespace
 only and is never publication-safety evidence.
 
-## Operator-local deny mapping
+## Deny configuration
 
-The default mapping is `.agentic-state/publication-deny.json`; the installed
-`.gitignore` keeps it untracked. External review hosts use the same filename in
-their state directory. Version 1 supports:
+The operator-local mapping is `.agentic-state/publication-deny.json`, kept
+ignored and untracked. Version 1 supports aliases, deny literals, named deny
+regexes, internal hostnames, and narrow `builtin_allow` entries. Aliases such as
+`{raw_estate}` are safe tracked forms; `publication-render --input REPORT`
+substitutes them. Identity checks reject tracked aliases, links, junctions, and
+reparse points. Regexes use a bounded linear grammar; lookaround,
+backreferences, empty matches, nested repeats, and unsafe forms are refused.
 
-```json
-{
-  "version": 1,
-  "aliases": {"raw_estate": ["<operator-private-value>"]},
-  "deny_literals": ["<operator-private-literal>"],
-  "deny_regexes": [{"id": "private_locator", "pattern": "<operator-private-regex>"}],
-  "internal_hostnames": ["<operator-private-hostname>"],
-  "builtin_allow": [{"id": "unc_path", "pattern": "<explicit-local-exception>"}]
-}
+The reviewed `.agentic/PROJECT_CONFIG.yaml` may contain:
+
+```yaml
+publication:
+  deny_literals: []
+  deny_regexes: []
+  internal_hostnames: []
+  large_file_allowances:
+    - path: artifacts/existing.dat
+      sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      reason: Reviewed historical artifact
+      approver: owner-identity
 ```
 
-Aliases `{raw_estate}` and `{output_root}` are safe tracked forms;
-`publication-render --input REPORT` substitutes them. Mappings must remain
-Git-proven ignored and untracked. Identity checks reject index/`HEAD` aliases,
-links, junctions and reparse points. Operator-local `builtin_allow` tunes
-built-in false positives; tracked config cannot. Regexes are limited to 256
-characters and a bounded linear grammar; lookaround, backreferences, empty
-matches, nested repeats and other unsafe forms are refused.
+An allowance names one canonical repository-relative POSIX path, its exact
+lower-case SHA-256 content digest, a trimmed review reason, and a trimmed
+approver identity. The list is ordered, closed, and path-unique. Unknown or
+malformed entries fail configuration loading without echoing their metadata.
+Absent and empty lists grant no authority.
 
-Projects may add a tracked `publication` object containing `deny_literals`,
-named `deny_regexes`, and `internal_hostnames`. These only add detectors. Keep
-machine paths and network mappings operator-local.
+Only the exact project-config blob at the resolved candidate head grants an
+allowance. A caller-supplied list is an equality assertion, including explicit
+`[]`; it cannot add or reorder entries. An explicit filesystem config remains
+an additive detector source only. Its allowances are ignored, and its raw
+digest is recorded as `supplemental_project_config_sha256`.
 
 ## Scan and receipt
 
@@ -39,81 +46,56 @@ machine paths and network mappings operator-local.
 python -B .agentic/scripts/workflow.py publication-scan --base BASE --head HEAD --pr-body PR_BODY --json
 ```
 
-The scan covers strict-UTF-8 commit messages, each parent's added and deleted
+The scan covers strict-UTF-8 commit messages, every parent's added and deleted
 lines (including roots and merges), complete head content for touched paths,
-and supplied provider text. Committed or supplied generated output is covered.
-Detector/value pairs proven in the base are `PRE_EXISTING`; candidate additions
-are `BLOCKING`. Unknown base coverage, binary, invalid-UTF-8 or oversize content
-blocks a pass. Renames cover both paths; reads and hashes are bounded.
+and supplied provider text. Detector/value pairs proven in the base are
+`PRE_EXISTING`; candidate additions are `BLOCKING`. Unknown coverage, binary,
+invalid-UTF-8, or ordinary content over 32 MiB blocks a pass. Renames cover
+both paths.
 
-Built-ins detect network shares, absolute drive/home paths, private IPv4 and
-unique-local IPv6. Local and project declarations add detectors. Findings name
-the commit, path/channel, line when available, detector ID, and only a full
-SHA-256 match digest. Published-history exceptions are exact code-owned line
-hashes scoped to path and detector; mappings cannot broaden them or apply them
-to provider text.
+A large-file allowance applies only when its path is an oversized regular blob
+already present in the selected base and its bytes still match the configured
+digest. New, moved, deleted, type-changed, small, changed, or
+changed-then-reverted files block. Hashing re-checks Git object size and content
+with replacement objects disabled. One scan permits at most 512 MiB per file,
+2 GiB across unique blob OIDs, and 60 seconds for the shared hashing phase.
+Digests and sizes are cached by OID. Size disagreement, overflow, timeout,
+stream failure, or child failure blocks; it never passes on partial evidence.
 
-Preserve the JSON receipt. Its base, head and `pr_body_sha256` must match the
-pushed candidate and exact body. Counts bind their arrays. `PASS` permits only
-`PRE_EXISTING` findings; blocking/unscanned content, inconsistency, or tuple/body
-change invalidates it. Scan prospective comments with `--comment FILE`.
+The receipt binds the raw candidate config with `project_config_sha256` and its
+parsed value with `project_config_binding_sha256`. Ordered
+`large_file_allowance_accounting` records every declaration, base disposition,
+and candidate event. Paths have full digests and safe display forms; reason and
+approver text never appear in receipts or rendered output.
+
+Preserve the JSON receipt. Base, head, body digest, arrays, and counts must
+match the pushed candidate. `PASS` permits only `PRE_EXISTING` findings, full
+base allowance matches, no allowance events, and no unscanned content. Scan
+prospective comments with `--comment FILE`.
 
 ## Draft-to-ready authorization
 
-A publication-scan PASS, current validation or green CI never authorizes a
-draft-state change. Mark-ready requires an explicit owner/manager authorization
-record bound to the exact PR and head. Render a pre-issued request identifier,
-issue time and expiry before creating the owner comment; provider-assigned comment
-time is observation, not signed input. Require an authenticated immutable provider observation
-through the trusted host, binding accepted configuration and trusted current time. Persist
-the lifecycle's authorized transition record before mutation and observe
-`draft_cleared` afterward. If authorization is absent, invalid, mismatched or only
-offline-consistent, persist the refusal record, leave the PR draft and do not
-dispatch review.
+A scan PASS, current validation, or green CI never authorizes a draft-state
+change. Mark-ready requires an explicit owner/manager authorization bound to
+the exact PR and head, a pre-issued request and expiry, and an authenticated
+immutable provider observation binding accepted configuration and trusted
+time. Persist the authorized lifecycle transition before mutation and observe
+`draft_cleared` afterward. Otherwise persist refusal, retain draft state, and
+do not dispatch review.
 
 `PRE_EXISTING` applies only here. Private deny baseline acceptance is the
-separate [`37-PRIVATE-DENY-SCAN.md`](37-PRIVATE-DENY-SCAN.md) gate; neither
-receipt waives the other.
+separate [`37-PRIVATE-DENY-SCAN.md`](37-PRIVATE-DENY-SCAN.md) gate.
 
 ## Unpublished rewrite
 
 `publication-rewrite --base BASE --branch BRANCH --commits 1 --message-file FILE`
 scans a quarantined one-commit replacement and proves tree equality. Under the
-repository-wide AWF rewrite lock it snapshots all refs, pseudorefs, worktree
-HEADs/state, reflogs, indexes, object storage and objects; installs the recorded
-objects; performs exact CAS; and proves the final census. Every AWF writer must
-honor the lock. Upstreams, remote branches, dirty state, unsupported counts or
-other claimants of old commits are refused. Published-history rewrites require
-an owner decision.
+repository-wide lock it snapshots refs, worktree state, reflogs, indexes, and
+object storage; performs exact compare-and-swap; then proves the final census.
+Upstreams, remote branches, dirty state, unsupported counts, or other old-tip
+claimants are refused. Published-history rewriting remains an owner decision.
 
-The replacement uses repository-local `user.name` and `user.email`, validated
-by Git and passed explicitly to `commit-tree`; global config remains isolated.
-Missing or invalid values return `IDENTITY_REQUIRED` before snapshot/creation.
-
-### Rewrite refusal and recovery
-
-Pre/post-CAS checks share one tip set: every ref namespace, every non-target
-worktree HEAD and every supported worktree pseudoref. `PRE_CAS_STALE_TIP` names
-the claimant (for example `ORIG_HEAD` or `FETCH_HEAD`) and leaves the branch
-unchanged. Inspect it, clear it only if disposable, and rerun. No tip is
-implicitly acknowledged or deleted.
-
-For a race-window claimant, `POST_CAS_STALE_TIP_RECOVERY_REQUIRED` distinguishes
-old-commit reachability from other proof failures. Verify the target equals
-`old_head`; inspect and, if disposable, clear the named tip; run the reported
-non-destructive object check; then rerun. Never manually delete retained
-objects/fanouts: they are recovery evidence.
-
-The locked snapshot controls object/fanout provenance. New loose objects use
-atomic create-if-absent hard links. Before CAS, AWF records bounded type,
-content and recomputed-OID evidence for the complete replacement closure;
-primary loose members also bind no-follow storage identity. Shallow boundaries
-and legacy grafts are refused. Post-CAS closure and evidence must match exactly.
-Failures retain objects/fanouts and report `*_RECOVERY_REQUIRED`; existing,
-alternate, linked or ambiguous objects are never removed.
-
-Publication identity/byte reads use fresh Git children. Inherited `GIT_*` names
-are removed case-insensitively before fixed isolation and replacement/lazy-fetch
-defences are added. Thus repository, worktree, object/config redirection and
-local replacement refs cannot substitute publisher, history or pinned workflow
-bytes. The review host hashes the binary workflow blob; LF and CRLF differ.
+The replacement uses validated repository-local author identity. Stale-tip and
+post-CAS failures retain recovery evidence and name the claimant; never delete
+retained objects manually. Git children strip inherited `GIT_*` values and add
+fixed config, hook, replacement-object, protocol, and lazy-fetch defences.
