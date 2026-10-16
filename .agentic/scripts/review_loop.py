@@ -17,11 +17,11 @@ from agentic.review_loop import (LoopStore, complete_first_draft,
     resume, resume_first_draft, tick, require)
 from agentic.review_first_draft import (publish_codex_tested_tree,
     publish_tested_tree, render_first_draft_body, republish_prepared_tree,
-    run_first_draft)
+    run_first_draft, canonical_first_draft_title,
+    validate_first_draft_body_inputs)
 from agentic.review_qualification import collect_qualification
 from agentic.providers.github_review_host import HostDriver, load_config
 from agentic.interaction import loop_next_step, next_step, render_markdown, rejected_next_step
-from agentic.provenance import validate_commit_message
 
 
 def main(argv=None):
@@ -48,11 +48,7 @@ def main(argv=None):
         config = load_config(args.config, ROOT,
                              require_qualification=args.command != 'qualify')
         if args.command == 'first-draft':
-            canonical_title = validate_commit_message(args.title)
-            require('\n' not in canonical_title
-                    and len(canonical_title.encode('utf-8')) <= 4096,
-                    'first-draft title must be one canonical line within 4 KiB')
-            args.title = canonical_title
+            args.title = canonical_first_draft_title(args.title)
         require(config['runtime_manifest_sha256'] == digest, 'Runtime is not the enrolled approved release')
         driver = HostDriver(config,ROOT)
         if args.command != 'qualify':
@@ -86,6 +82,12 @@ def main(argv=None):
             tier = config.get('risk_tier')
             require(tier in {1, 2, 3, 'Tier 1', 'Tier 2', 'Tier 3'}, 'A reviewed first-draft risk tier is required')
             contract = driver.verified_contract_text()
+            validate_first_draft_body_inputs(
+                contract, risk_tier=tier,
+                worker_model=config['models']['worker'],
+                reasoning_effort=(config.get('reasoning_effort') or {}).get(
+                    'worker', 'default'),
+                branch=config['head_branch'])
             reserved = store.db.execute('SELECT 1 FROM prs WHERE key=?',
                                         (f"{config['repository_id']}:0",)).fetchone()
             prior = None

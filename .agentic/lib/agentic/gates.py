@@ -71,6 +71,21 @@ def owner_approval_evidence_matches(owner, terminal_verdict, candidate):
             and owner.get("pr_comment_url") == expected_url)
 
 
+def owner_review_registry_uri(owner):
+    """Return the stable registry identity for one exact owner-review record."""
+    record_id = owner.get("record_id") if isinstance(owner, dict) else None
+    if not isinstance(record_id, str) or not record_id:
+        raise ValidationError("Owner review needs a record_id before registration")
+    return f"urn:awf:owner-review:{record_id}"
+
+
+def owner_review_record_sha256(owner):
+    """Content address the complete canonical owner-review record."""
+    if not isinstance(owner, dict):
+        raise ValidationError("Owner review must be an object")
+    return sha256(canonical(owner))
+
+
 def resource_overlaps(runs, limits):
     """Concurrent COMPLETE runs from different contexts exceeding a named resource's slots.
 
@@ -339,10 +354,12 @@ def verified_overcap_approvals(config, approvals, candidate, runs,
             "created_at": approval.get("created_at"),
             "updated_at": approval.get("updated_at"),
             "body": approval.get("raw_body"),
+            "head_sha": candidate["head_sha"],
         }
         if (approval.get("source") != "host_observation"
                 or run is None or run.get("role") != "collector"
                 or run.get("producer_id") != approval.get("producer_id")
+                or run.get("created_at") != approval.get("observed_at")
                 or not registration_shape_ok
                 or (configured_collectors
                     and approval.get("producer_id") not in configured_collectors)
@@ -572,9 +589,9 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
             round_kwargs = ({"assignment_record": assignment_record}
                             if assignment_record is not None else {"config": config})
         round_started_at = None
+        matching_approvals = []
         if verdict["tier"] == 3:
             from .policy import parse_overcap_approval
-            matching_approvals = []
             for approval in overcap_approvals:
                 try:
                     parsed_approval = parse_overcap_approval(approval["raw_body"])
@@ -685,7 +702,11 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
             and isinstance(critic_receipt, dict)
             and run is not None
             and run_binding_matches
-            and run.get("created_at") == verdict["created_at"]
+            and (run.get("created_at") == verdict["created_at"]
+                 or (len(matching_approvals) == 1
+                     and run.get("created_at") == round_started_at
+                     and timestamp(run.get("created_at"))
+                         < timestamp(verdict["created_at"])))
             and critic_receipt.get("run_id") == verdict["run_id"]
             and critic_receipt.get("round") == verdict["round"]
             and critic_receipt.get("head_sha") == verdict["head_sha"]
@@ -894,24 +915,54 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     terminal_verdict = next(v for v in verdicts if v["round"] == terminal_round)
     owner = bundle.get("owner_review")
     owner_run = runs.get(owner.get("run_id")) if owner is not None else None
-    owner_review_ok = tier != 3 or (owner is not None
-                                    and owner.get("owner_review") is True
-                                    and owner.get("verdict") == "PASS"
-                                    and owner.get("head_sha") == candidate["head_sha"]
-                                     and owner_run is not None
-                                     and owner_run["role"] == "verifier"
-                                     and owner_run["producer_id"] == owner.get("producer_id")
-                                     and owner.get("owner_id") in config["merge_gate"]["trusted_owner_ids"]
-                                     and owner.get("binding") == binding
-                                     and owner.get("candidate_binding") == {
-                                        "repository_id": candidate["repository_id"],
-                                        "pr_number": candidate["pr_number"],
-                                        "base_sha": candidate["target_base_sha"],
-                                         "head_sha": candidate["head_sha"]}
-                                     and owner.get("record_id") in {v.get("record_id") for v in records}
-                                     and posting_evidence_ok
-                                     and owner_approval_evidence_matches(
-                                         owner, terminal_verdict, candidate))
+    owner_provider_receipt_uri = f"urn:awf:review-round-receipt:{terminal_round}"
+    owner_provider_receipt_entry = next(
+        (entry for entry in bundle["evidence_registry"]
+         if entry["uri"] == owner_provider_receipt_uri),
+        None,
+    )
+    owner_registry_uri = (owner_review_registry_uri(owner)
+                          if isinstance(owner, dict) else None)
+    owner_registry_entry = next(
+        (entry for entry in bundle["evidence_registry"]
+         if entry["uri"] == owner_registry_uri),
+        None,
+    )
+    expected_owner_binding = {
+        "repository_id": candidate["repository_id"],
+        "pr_number": candidate["pr_number"],
+        "base_sha": candidate["target_base_sha"],
+        "head_sha": candidate["head_sha"],
+    }
+    owner_provider_verified = (owner is not None
+            and owner.get("owner_review") is True
+            and owner.get("verdict") == "PASS"
+            and owner.get("head_sha") == candidate["head_sha"]
+            and owner_run is not None
+            and owner_run["role"] == "verifier"
+            and owner_run["producer_id"] == owner.get("producer_id")
+            and owner.get("owner_id") in config["merge_gate"]["trusted_owner_ids"]
+            and owner.get("binding") == binding
+            and owner.get("candidate_binding") == expected_owner_binding
+            and owner.get("record_id") in {v.get("record_id") for v in records}
+            and owner_provider_receipt_uri in evidence_ids
+            and posting_evidence_ok
+            and owner_approval_evidence_matches(owner, terminal_verdict, candidate))
+    if owner_provider_verified and owner_registry_entry is None:
+        owner_registry_entry = {
+            "uri": owner_registry_uri,
+            "sha256": owner_review_record_sha256(owner),
+            "producer_id": owner["producer_id"],
+            "retained_until": owner_provider_receipt_entry["retained_until"],
+        }
+        bundle["evidence_registry"].append(owner_registry_entry)
+        evidence_ids.add(owner_registry_uri)
+    owner_review_ok = tier != 3 or (
+        owner_provider_verified
+        and owner_registry_entry is not None
+        and owner_registry_entry["sha256"] == owner_review_record_sha256(owner)
+        and owner_registry_entry["producer_id"] == owner.get("producer_id")
+    )
     terminal_verdict_ok = (terminal_verdict["verdict"] in {"PASS", "REQUEST_CHANGES"}
                            if lenient else terminal_verdict["verdict"] == "PASS")
     critic_ok = (no_blockers and p2_ticketing_ok and critic_artifacts_ok
@@ -1000,12 +1051,23 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         "local_ci_parity": ["worker", "ci", "contract"],
         "publication_safety": ["publication_scan", "candidate", "pr"],
     }
+    if owner is not None:
+        # Preserve the exact verified owner record as a content-addressed final
+        # gate input.  Its provider observation remains separately retained in
+        # the terminal round receipt from the evidence registry.
+        inputs["critic_current_tuple"].append("owner_review")
+        inputs["verdict_posting"].append("owner_review")
     refs = {name: ["urn:awf:input:" + key + ":" + fingerprint("gate-input", bundle[key]) for key in keys]
             for name, keys in inputs.items()}
     refs["critic_current_tuple"].append(
         "urn:awf:input:overcap_approvals:"
         + fingerprint("gate-input", overcap_approvals)
     )
+    if tier == 3 and owner_review_ok:
+        refs["critic_current_tuple"].append(owner_provider_receipt_uri)
+        refs["verdict_posting"].append(owner_provider_receipt_uri)
+        refs["critic_current_tuple"].append(owner_registry_uri)
+        refs["verdict_posting"].append(owner_registry_uri)
     expires = timestamp(now) + timedelta(seconds=config["merge_gate"]["authorization_ttl_seconds"])
     gate = {"schema_version": 3, "record_id": str(uuid.uuid4()), "created_at": now,
         "producer_id": "offline-reference-evaluator", "run_id": str(uuid.uuid4()), "binding": binding,
