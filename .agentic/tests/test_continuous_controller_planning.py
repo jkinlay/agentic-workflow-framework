@@ -71,9 +71,6 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 
 	def test_managed_source_payload_preserves_install_journal_headroom(self):
 		root = Path(__file__).resolve().parents[2]
-		manifest_raw = (root / installer.MANIFEST).read_bytes()
-		manifest = json.loads(manifest_raw)
-		content = {path: (root / path).read_bytes() for path in manifest['files']}
 		captured = {}
 
 		class JournalCaptured(BaseException):
@@ -85,13 +82,39 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 				raise JournalCaptured
 			raise AssertionError('unexpected journal phase before active intent')
 
-		with tempfile.TemporaryDirectory(prefix='awf150-journal-') as destination, \
-				patch.object(installer, 'verify_release',
-							 return_value=(sha256(manifest_raw), content)), \
-				patch.object(installer, '_write_bound_journal_update',
+		with tempfile.TemporaryDirectory(prefix='awf150-journal-') as scratch:
+			scratch = Path(scratch)
+			source = root
+			manifest_path = root / installer.MANIFEST
+			manifest = (json.loads(manifest_path.read_bytes())
+						if manifest_path.is_file() else None)
+			if not isinstance(manifest, dict) or manifest.get('format') != 'awf-manifest-1':
+				receipt = json.loads((root / installer.INSTALLED).read_bytes())
+				manifest_raw = receipt['source_manifest_json'].encode('utf-8')
+				self.assertEqual(receipt['source_manifest_sha256'], sha256(manifest_raw))
+				manifest = json.loads(manifest_raw)
+				source = scratch / 'source'
+				(source / installer.MANIFEST).parent.mkdir(parents=True, exist_ok=True)
+				(source / installer.MANIFEST).write_bytes(manifest_raw)
+				for path in manifest['files']:
+					installed_path = root / path
+					if installed_path.is_file():
+						target = source / path
+						target.parent.mkdir(parents=True, exist_ok=True)
+						target.write_bytes(installed_path.read_bytes())
+			else:
+				manifest_raw = manifest_path.read_bytes()
+			content = {path: (source / path).read_bytes() for path in manifest['files']
+					   if (source / path).is_file()}
+			self.assertIn('.agentic/lib/agentic/installer.py', content)
+
+			with patch.object(installer, 'verify_release',
+							  return_value=(sha256(manifest_raw), content)), \
+					patch.object(installer, '_write_bound_journal_update',
 							 side_effect=capture_journal), \
-				self.assertRaises(JournalCaptured):
-			installer.install(root, destination, sha256(manifest_raw), conflict='backup')
+					self.assertRaises(JournalCaptured):
+				installer.install(source, scratch / 'destination', sha256(manifest_raw),
+							  conflict='backup')
 
 		self.assertLessEqual(len(captured['raw']), installer.INSTALL_JOURNAL_MAX_BYTES)
 		self.assertLessEqual(len(captured['raw']) + installer.INSTALL_JOURNAL_HEADROOM_BYTES,
