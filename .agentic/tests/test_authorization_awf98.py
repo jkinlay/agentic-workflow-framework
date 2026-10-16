@@ -38,7 +38,9 @@ CONTRACTS = NoopContracts()
 
 class OwnerDispositionTests(unittest.TestCase):
     def setUp(self):
-        self.config = {"merge_gate": {"trusted_owner_ids": [1001]},
+        self.config = {"project": {"id": "00000000-0000-0000-0000-000000000001"},
+                       "github": {"repository_id": 123},
+                       "merge_gate": {"trusted_owner_ids": [1001]},
                        "validation": {"max_evidence_age_seconds": 1800}}
         self.binding = {
             "project_id": "00000000-0000-0000-0000-000000000001",
@@ -78,12 +80,27 @@ class OwnerDispositionTests(unittest.TestCase):
         return record
 
     def _review_verdict(self):
+        critic_record_id = str(uuid.uuid4())
         verdict = {
             "record_id": str(uuid.uuid4()),
             "run_id": self.record["critic_artifact_binding"]["critic_run_id"],
             "binding": copy.deepcopy(self.binding), "head_sha": HEAD,
-            "round": 3, "owner_review": False,
+            "round": 3, "owner_review": False, "verdict": "REQUEST_CHANGES",
             "critic_artifact_binding": copy.deepcopy(self.record["critic_artifact_binding"]),
+            "candidate_binding": {
+                "repository_id": self.binding["repository_id"],
+                "pr_number": 157,
+                "base_sha": "a" * 40,
+                "head_sha": HEAD,
+            },
+            "critic_review": {
+                "record_id": critic_record_id,
+                "run_id": self.record["critic_artifact_binding"]["critic_run_id"],
+                "round": 3,
+                "head_sha": HEAD,
+                "verdict": "REQUEST_CHANGES",
+                "findings_sha256": "9" * 64,
+            },
         }
         self.record["review_verdict_record_id"] = verdict["record_id"]
         self.record["review_verdict_sha256"] = sha256(
@@ -98,7 +115,13 @@ class OwnerDispositionTests(unittest.TestCase):
 
     def _verify_verdict(self, verdict):
         return verify_disposition_review_binding(
-            self.record, SCHEMA, verdict, CONTRACTS, HEAD)
+            self.record, SCHEMA, verdict, CONTRACTS, HEAD,
+            expected_binding=self.binding,
+            config=self.config,
+            assignment_record={"ticket_key": "AWF-98"},
+            expected_policy_hash=self.binding["policy_hash"],
+            expected_ticket_key="AWF-98",
+        )
 
     def _assert_verify_rejected(self, record, pattern):
         with self.assertRaisesRegex(ValidationError, pattern):
@@ -118,6 +141,7 @@ class OwnerDispositionTests(unittest.TestCase):
             "head_sha": HEAD,
             "binding": self.binding,
             "review_verdict": verdict,
+            "assignment_record": {"ticket_key": "AWF-98"},
         }
 
     def test_request_assigns_id_and_renders_exact_dispose_line(self):
@@ -235,6 +259,28 @@ class OwnerDispositionTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValidationError, "candidate context"):
                     self._verify_verdict(verdict)
+
+    def test_cap_disposition_rejects_cross_ticket_verdict_and_record(self):
+        verdict = self._review_verdict()
+        verdict["binding"]["issue_id"] = "AWF-99"
+        self.record["binding"]["issue_id"] = "AWF-99"
+
+        with self.assertRaisesRegex(ValidationError, "ticket|candidate context"):
+            self._verify_verdict(verdict)
+
+    def test_cap_disposition_rejects_tampered_candidate_binding_head(self):
+        verdict = self._review_verdict()
+        verdict["candidate_binding"]["head_sha"] = "c" * 40
+
+        with self.assertRaisesRegex(ValidationError, "candidate_binding|candidate head"):
+            self._verify_verdict(verdict)
+
+    def test_cap_disposition_rejects_tampered_critic_review_head(self):
+        verdict = self._review_verdict()
+        verdict["critic_review"]["head_sha"] = "c" * 40
+
+        with self.assertRaisesRegex(ValidationError, "critic_review|critic review"):
+            self._verify_verdict(verdict)
 
     def test_lifecycle_extension_rejects_different_verdict_artifact(self):
         self.record["cap_extensions"] = 1

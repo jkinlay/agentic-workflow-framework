@@ -71,7 +71,10 @@ class CliIntakeAssignmentTests(unittest.TestCase):
             ])
         return code, json.loads(stdout.getvalue()), selected
 
-    def _cap_plan(self, runtime, config_path, state_path, cycles):
+    def _cap_plan(self, runtime, config_path, state_path, cycles, *, extensions=0,
+                  signed_cycles=None, signed_extensions=None):
+        signed_cycles = cycles if signed_cycles is None else signed_cycles
+        signed_extensions = extensions if signed_extensions is None else signed_extensions
         base = state_path.parent
         disposition_path = base / f"disposition-{cycles}.json"
         verdict_path = base / f"review-verdict-{cycles}.json"
@@ -79,6 +82,7 @@ class CliIntakeAssignmentTests(unittest.TestCase):
         disposition_path.write_text(json.dumps({
             "binding": {}, "decision": "PARK", "open_finding_ids": [],
             "successor_ticket": None,
+            "cycles": signed_cycles, "cap_extensions": signed_extensions,
         }), encoding="utf-8")
         verdict_path.write_text(json.dumps({"binding": {}}), encoding="utf-8")
         findings_path.write_text("[]\n", encoding="utf-8")
@@ -91,6 +95,7 @@ class CliIntakeAssignmentTests(unittest.TestCase):
                 "--disposition", str(disposition_path),
                 "--findings", str(findings_path),
                 "--cycles", str(cycles),
+                "--extensions", str(extensions),
                 "--head", "a" * 40,
                 "--review-verdict", str(verdict_path),
                 "--config", str(config_path),
@@ -189,6 +194,16 @@ class CliIntakeAssignmentTests(unittest.TestCase):
             code, output = self._cap_plan(runtime, config_path, state_path, cycles=1)
         self.assertEqual(0, code)
         self.assertEqual("CAP_PARK", output["event"])
+
+    def test_cap_plan_rejects_runtime_counters_different_from_signed_disposition(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime, config_path, _, state_path, _, _, _ = self._fixture(folder)
+            code, output = self._cap_plan(
+                runtime, config_path, state_path, cycles=4, extensions=1,
+                signed_cycles=3, signed_extensions=0,
+            )
+        self.assertEqual(2, code)
+        self.assertIn("signed disposition counters", output["reason"])
 
     def test_owner_change_is_selected_on_next_cli_invocation(self):
         with tempfile.TemporaryDirectory() as folder:

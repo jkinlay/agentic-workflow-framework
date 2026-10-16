@@ -26,19 +26,27 @@ class DispositionRequestCliTests(unittest.TestCase):
             config_path = base / "config.json"
             disposition_path = base / "disposition.json"
             verdict_path = base / "verdict.json"
+            assignment_path = base / "assignments.json"
             for path, value in (
                     (config_path, config),
                     (disposition_path, disposition), (verdict_path, verdict)):
                 path.write_text(json.dumps(value), encoding="utf-8")
+            assignment_path.write_text("{}\n", encoding="utf-8")
             stdout = io.StringIO()
             with mock.patch("agentic.cli.verify_installed", return_value="0" * 64), \
                     mock.patch("agentic.cli.Contracts.validate"), \
+                    mock.patch("agentic.cli._load_cli_intake_assignment",
+                               return_value=(config, {"ticket_key": "AWF-98"})), \
+                    mock.patch("agentic.policy.policy_hash",
+                               return_value=disposition["binding"]["policy_hash"]), \
                     contextlib.redirect_stdout(stdout):
                 code = workflow_main([
                     "--root", str(ROOT), "disposition-request",
                     "review-cap-disposition", str(disposition_path),
                     "--head", head, "--config", str(config_path),
                     "--review-verdict", str(verdict_path),
+                     "--assignment-state", str(assignment_path),
+                     "--ticket", "AWF-98",
                     "--request-id", request_id])
 
         output = json.loads(stdout.getvalue())

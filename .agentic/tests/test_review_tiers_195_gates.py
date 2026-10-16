@@ -299,10 +299,14 @@ class ReviewTiers195GateTests(Fixture):
         }
         cap["record_id"] = cap_disposition_record_id(cap)
         bundle = {"candidate": {"head_sha": "b" * 40},
+                  "contract": {"ticket": "EX-1"},
+                  "review_verdicts": [{"record_id": cap["review_verdict_record_id"]}],
                   "finding_dispositions": [], "cap_disposition": cap}
-        with mock.patch("agentic.authorization.verify_owner_record"):
+        with mock.patch("agentic.authorization.verify_owner_record"), \
+                mock.patch("agentic.gates.verify_disposition_review_binding"):
             _, verified = verified_owner_records(
-                self.config, self.contracts, bundle, {}, {}, set(), set(), NOW,
+                self.config, self.contracts, bundle, {"policy_hash": "d" * 64},
+                {}, set(), set(), NOW,
                 assignment_record=assignment)
         self.assertIs(cap, verified)
 
