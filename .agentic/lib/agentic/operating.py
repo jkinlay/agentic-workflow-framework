@@ -116,15 +116,33 @@ def _pair(model, effort):
     return {"model": model, "reasoning_effort": effort}
 
 
-def _stream():
-    return {"worker": _pair("gpt-5.6-luna", "medium")}
+def _routing_policy(governance):
+    from .model_routing import policy_from_config
+
+    return policy_from_config(governance)
 
 
-def default_operating():
-    return {"version": 1, "source": "default", "streams": {"count": 3, **{s: _stream() for s in stream_labels(3)}},
-            "critic": _pair("gpt-5.6-sol", "high"),
-            "controller": _pair("gpt-5.6-sol", "high"), "specialist": _pair("gpt-5.6-sol", "high"),
-            "simple_worker": {"enabled": True, **_pair("gpt-5.6-luna", "low")}}
+def _stream(policy=None):
+    if policy is None:
+        from .model_routing import default_policy
+
+        policy = default_policy()
+    return {"worker": deepcopy(policy["role_defaults"]["worker"])}
+
+
+def default_operating(policy=None):
+    from .model_routing import default_policy, validate_policy
+
+    policy = default_policy() if policy is None else validate_policy(deepcopy(policy))
+    defaults = policy["role_defaults"]
+    stream = _stream(policy)
+    return {"version": 1, "source": "default",
+            "streams": {"count": 3,
+                        **{label: deepcopy(stream) for label in stream_labels(3)}},
+            "critic": deepcopy(defaults["critic"]),
+            "controller": deepcopy(defaults["controller"]),
+            "specialist": deepcopy(defaults["specialist"]),
+            "simple_worker": {"enabled": True, **deepcopy(policy["simple_worker"])}}
 
 
 def operating_applicability(governance):
@@ -248,12 +266,12 @@ def validate_operating(value, governance):
     ceiling = capacity["effective_ceiling"]
     structural_ceiling = execution.get("max_lanes", DEFAULT_MAX_LANES)
     errors = _schema("operating-config", value, stream_ceiling=structural_ceiling)
-    policy = execution["model_routing"]
-    from .model_routing import EFFORTS, validate_policy
+    configured_policy = execution["model_routing"]
+    from .model_routing import EFFORTS
     try:
-        validate_policy(policy)
+        policy = _routing_policy(governance)
     except ValidationError as exc:
-        fail("$", str(exc), "$.execution.model_routing", policy)
+        fail("$", str(exc), "$.execution.model_routing", configured_policy)
     streams = value.get("streams", {}) if isinstance(value, dict) else {}
     if not isinstance(streams, dict):
         raise OperatingError(errors or [refusal("$.streams", "Streams must be an object")])
@@ -835,7 +853,7 @@ def set_operating(project_root, governance, instruction, assignments=(), *, reco
         ceiling = operating_ceiling(governance)["effective_ceiling"]
         if type(count) is int and 1 <= count <= ceiling:
             for label in stream_labels(count):
-                value["streams"].setdefault(label, _stream())
+                value["streams"].setdefault(label, _stream(_routing_policy(governance)))
         structural_ceiling = governance["execution"].get("max_lanes", DEFAULT_MAX_LANES)
         migration_paths = _prune_unrepresentable_routes(value, structural_ceiling)
         for path, choice in selected.items():
@@ -898,7 +916,7 @@ def _epic_groups(epics, ceiling, scopes):
 
 
 def _risk(epics, paths, governance):
-    policy = governance["execution"]["model_routing"]
+    policy = _routing_policy(governance)
     flags = {flag for epic in epics for flag in epic.get("risk_flags", [])}
     high = sorted(flags.intersection(policy["high_risk_flags"]))
     text = " ".join(text for epic in epics for text in (epic["title"], epic.get("scope"), epic.get("_inventory_scope"))
@@ -960,7 +978,7 @@ def recommend_operating(epics_raw, snapshot, governance, *, inventory_raw=None, 
               "input_files": input_files or {"epics": None, "inventory": None},
               "input_content": {"epics": epics_raw.decode("utf-8"), "inventory": inventory_raw.decode("utf-8") if inventory_raw is not None else None},
               "rows": [], "epic_count": len(epics), "ticket_count": 0, "execution_authority": False, "applied": False}
-    current, policy = snapshot.config, governance["execution"]["model_routing"]
+    current, policy = snapshot.config, _routing_policy(governance)
     if epics:
         ceiling = operating_ceiling(governance)["effective_ceiling"]
         ticket_metadata = {}
@@ -995,7 +1013,7 @@ def recommend_operating(epics_raw, snapshot, governance, *, inventory_raw=None, 
             choices = [("streams.count", count, reason)]
             for group in groups[:count]:
                 label = group["label"]
-                proposed["streams"].setdefault(label, _stream())
+                proposed["streams"].setdefault(label, _stream(policy))
                 relevant = []
                 for item in epics:
                     if item["id"] not in group["epic_ids"]:
@@ -1015,7 +1033,7 @@ def recommend_operating(epics_raw, snapshot, governance, *, inventory_raw=None, 
                 if high:
                     from .model_routing import EFFORTS
                     reviewer["model"] = max((reviewer["model"], policy["risk_route"]["model"]), key=policy["model_order"].index)
-                    reviewer["reasoning_effort"] = max((reviewer["reasoning_effort"], "high"), key=EFFORTS.index)
+                    reviewer["reasoning_effort"] = max((reviewer["reasoning_effort"], policy["risk_route"]["reasoning_effort"]), key=EFFORTS.index)
                 why = ("High-risk flags " + ", ".join(high) if high else "Specialist triggers " + ", ".join(specialists)
                        if specialists else "Entire scope is simple with strong verification; retain the default worker ceiling"
                        if simple else "Default route for the declared bounded scope")
@@ -1116,7 +1134,7 @@ def _display(value):
 
 def render_operating(snapshot, governance, *, state, version=VERSION):
     validate_snapshot(snapshot, governance)
-    value, policy = snapshot.config, governance["execution"]["model_routing"]
+    value, policy = snapshot.config, _routing_policy(governance)
     capacity = operating_ceiling(governance)
     lines = [f"AWF {version}: {state} — operating configuration (source: {snapshot.source})",
              f"Streams: {snapshot.count} of ceiling {capacity['effective_ceiling']}; one shared independent critic/adversarial handler by default; binding limits: "

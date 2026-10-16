@@ -18,7 +18,7 @@ from ..canonical import candidate_id, loads, sha256
 from ..child_process import child_env, isolated_git_env
 from ..codex_skill import enforce_pinned_awf_skill
 from ..installer import (CONFIG, PROVENANCE, RELEASE_EXCLUDED_PREFIXES,
-                         SOURCE_CONFIG_PATHS, SOURCE_CONFIG_PREFIX,
+                         ROUTING, SOURCE_CONFIG_PATHS, SOURCE_CONFIG_PREFIX,
                          install_owned_path, release_member)
 from ..interaction import writer_commit_message
 from ..operating import is_awf_source_repository as has_awf_source_identity
@@ -37,12 +37,23 @@ OVERRIDE_KEYS = {'windows.sandbox'}
 CODEX_LOG_LIMIT = 64 * 1024 * 1024
 CODEX_RESULT_LIMIT = 1024 * 1024
 MANIFEST_PATHS = ('MANIFEST.json', 'MANIFEST.md')
+ROUTING_SOURCE = '.agentic/tests/fixtures/routing/valid.yaml'
 _SUBPROCESS_RUN = subprocess.run
-SOURCE_CONFIGS = {
+
+
+class _ReleaseSourceConfigs(dict):
+    """Keep install-owned membership closed while projecting operator routing."""
+    def get(self, key, default=None):
+        if key == ROUTING:
+            return ROUTING_SOURCE
+        return super().get(key, default)
+
+
+SOURCE_CONFIGS = _ReleaseSourceConfigs({
     CONFIG: SOURCE_CONFIG_PREFIX + 'PROJECT_CONFIG.yaml',
     PROVENANCE: SOURCE_CONFIG_PREFIX + 'workflow-version.yaml',
     'OPERATING_CONFIG.yaml': SOURCE_CONFIG_PREFIX + 'OPERATING_CONFIG.yaml',
-}
+})
 
 
 def _redacted_stderr_tail(stderr, environment, limit=4096):
@@ -116,10 +127,28 @@ def reviewed_model_effort_pairs(root, revision, git_runner=None):
                 return {}
             raise
         value = loads(policy)
-        models = value['execution']['model_routing']['models']
+        configured = value['execution']['model_routing']
+        if not isinstance(configured, dict):
+            return {}
+        if 'routing' in configured:
+            if configured['routing'] != '.agentic/routing.yaml':
+                return {}
+            try:
+                raw_routing = git_runner(
+                    Path(root), 'show', f'{revision}:.agentic/routing.yaml')
+            except ValidationError as error:
+                if str(error).startswith('git failed with exit '):
+                    return {}
+                raise
+            from ..model_routing import load_routing_content
+            routing = load_routing_content(
+                raw_routing, f'{revision}:.agentic/routing.yaml')
+            return {model: details['efforts']
+                    for model, details in routing['catalog'].items()}
+        models = configured['models']
         return {model: details['reasoning_efforts'] for model, details in models.items()
                 if isinstance(details, dict) and isinstance(details.get('reasoning_efforts'), list)}
-    except (OSError, UnicodeError, KeyError, TypeError, ValueError):
+    except (OSError, UnicodeError, KeyError, TypeError, ValueError, ValidationError):
         return {}
 
 

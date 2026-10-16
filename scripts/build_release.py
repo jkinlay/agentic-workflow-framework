@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / '.agentic/lib'))
 from agentic import ValidationError, VERSION
 from agentic.canonical import sha256
 from agentic.installer import (CONFIG, PROVENANCE, RELEASE_EXCLUDED_PREFIXES,
-                               SOURCE_CONFIG_PATHS, SOURCE_CONFIG_PREFIX,
+                               ROUTING, SOURCE_CONFIG_PATHS, SOURCE_CONFIG_PREFIX,
                                install_owned_path, release_member)
 from agentic.safeio import Tree
 from release_hygiene import check_release
@@ -27,6 +27,7 @@ SOURCE_CONFIGS = {
     PROVENANCE: SOURCE_CONFIG_PREFIX + "workflow-version.yaml",
     "OPERATING_CONFIG.yaml": SOURCE_CONFIG_PREFIX + "OPERATING_CONFIG.yaml",
 }
+ROUTING_SOURCE = ".agentic/tests/fixtures/routing/valid.yaml"
 
 ADVISORY_ROW = re.compile(r'^\| `(?P<path>.+)` \| `(?P<digest>[0-9a-f]{64})` \|$')
 
@@ -54,6 +55,8 @@ def release_paths(tree):
 
 def release_bytes(tree, path):
     """Read one logical member, substituting the immutable source template."""
+    if path == ROUTING:
+        return tree.read(ROUTING_SOURCE)
     return tree.read(SOURCE_CONFIGS.get(path, path))
 
 

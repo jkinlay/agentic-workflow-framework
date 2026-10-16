@@ -13,13 +13,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
-from agentic.model_routing import MODELS, default_policy
+from agentic.model_routing import default_policy, load_routing
 from agentic.canonical import canonical
 from agentic.operating import set_operating
 from test_operating_integration import configuration, governance, outcome
 
 
 ROOT = Path(__file__).resolve().parents[2]
+MODELS = tuple(load_routing(ROOT / ".agentic/tests/fixtures/routing/valid.yaml")["catalog"])
 CLI = ROOT / ".agentic/scripts/route_model.py"
 
 
@@ -140,9 +141,13 @@ class RoutingCLITests(unittest.TestCase):
 
     def prepare_operating_project(self):
         governing = governance()
+        operating = configuration()
+        policy = governing["execution"]["model_routing"]
+        for role in ("controller", "critic", "specialist"):
+            operating[role] = dict(policy["role_defaults"][role])
         (self.project / ".agentic").mkdir()
         (self.project / ".agentic/PROJECT_CONFIG.yaml").write_bytes(canonical(governing))
-        (self.project / "OPERATING_CONFIG.yaml").write_bytes(canonical(configuration()))
+        (self.project / "OPERATING_CONFIG.yaml").write_bytes(canonical(operating))
         self.request["stream"] = "A"
         self.document("request.json", self.request)
         return governing
@@ -213,7 +218,7 @@ class RoutingCLITests(unittest.TestCase):
         self.assertEqual(self.route(expected=2)["error_type"], "ValidationError")
 
     def test_escalation_ceiling_is_respected_in_real_cli(self):
-        self.request.update(previous_route={"model": MODELS[1], "reasoning_effort": "xhigh"}, last_failure_kind="reasoning", risk="high")
+        self.request.update(previous_route={"model": MODELS[0], "reasoning_effort": "xhigh"}, last_failure_kind="reasoning", risk="high")
         self.document("request.json", self.request)
         self.assertIn("ceiling", self.route(expected=2)["reason"])
         self.policy["escalation"]["effort_ceiling"] = "xhigh"
@@ -224,10 +229,12 @@ class RoutingCLITests(unittest.TestCase):
             self.policy["role_allowed_models"][role] = [
                 model for model in allowed if model != "gpt-6.1-sol"
             ]
+        self.policy["review_floor"] = {"model": MODELS[1], "reasoning_effort": "high"}
+        self.policy["risk_route"] = {"model": MODELS[1], "reasoning_effort": "high"}
         self.policy["escalation"]["effort_ceiling"] = "xhigh"
         self.document("config.json", self.config)
         result = self.route()
-        self.assertEqual((result["model"], result["reasoning_effort"]), (MODELS[2], "xhigh"))
+        self.assertEqual((result["model"], result["reasoning_effort"]), (MODELS[1], "xhigh"))
 
     def test_real_cli_reserve_reconcile_history_and_idempotence(self):
         self.policy["reconciliation"] = {"enabled": True, "authorized_operator_ids": ["test-operator"]}
@@ -286,6 +293,7 @@ class RoutingCLITests(unittest.TestCase):
     def test_routing_cli_runs_from_installed_directory_layout(self):
         installed = self.root / "installed"
         shutil.copytree(ROOT / ".agentic/lib", installed / ".agentic/lib")
+        shutil.copy2(ROOT / ".agentic/routing.yaml", installed / ".agentic/routing.yaml")
         installed_script = installed / ".agentic/scripts/route_model.py"
         installed_script.parent.mkdir()
         shutil.copy2(CLI, installed_script)
