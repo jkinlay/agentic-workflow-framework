@@ -371,7 +371,12 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
             ) from exc
         verify_disposition_review_binding(
             owner_cap_disposition, "review-cap-disposition", review_verdict,
-            owner_cap_context["contracts"], owner_cap_context["head_sha"])
+            owner_cap_context["contracts"], owner_cap_context["head_sha"],
+            expected_binding=owner_cap_context["binding"],
+            config=owner_cap_context["config"],
+            assignment_record=owner_cap_context["assignment_record"],
+            expected_policy_hash=owner_cap_context["binding"]["policy_hash"],
+            expected_ticket_key=owner_cap_context["assignment_record"]["ticket_key"])
     if overcap_approvals or trusted_owner_ids or round_started_at is not None:
         raise ValidationError(
             "Lifecycle does not trust caller-supplied over-cap approval fields; "

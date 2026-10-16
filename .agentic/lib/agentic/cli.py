@@ -131,6 +131,13 @@ def main(argv=None, default_root=None):
         "--review-verdict", type=Path,
         help="Required AWF review-verdict for finding/cap disposition requests",
     )
+    disposition_parser.add_argument(
+        "--assignment-state", type=Path,
+        help="Controller-owned persisted intake-assignment state for critic-driven requests",
+    )
+    disposition_parser.add_argument(
+        "--ticket", help="Ticket key selecting the persisted assignment",
+    )
     gate_parser = sub.add_parser("evaluate")
     gate_parser.add_argument("bundle", type=Path)
     gate_parser.add_argument("--config", type=Path)
@@ -393,14 +400,24 @@ def main(argv=None, default_root=None):
                     config = load(args.config or root / ".agentic/PROJECT_CONFIG.yaml")
                     disposition = load(args.file)
                     if args.type in {"finding-disposition", "review-cap-disposition"}:
-                        if args.review_verdict is None:
+                        if (args.review_verdict is None or args.assignment_state is None
+                                or args.ticket is None):
                             raise ValidationError(
-                                "Critic-driven disposition requests require --review-verdict"
+                                "Critic-driven disposition requests require --review-verdict, "
+                                "--assignment-state, and --ticket"
                             )
+                        config, assignment = _load_cli_intake_assignment(
+                            config, args.assignment_state, args.ticket
+                        )
                         from .gates import verify_disposition_review_binding
+                        from .policy import policy_hash
                         verify_disposition_review_binding(
                             disposition, args.type, load(args.review_verdict),
                             contracts, args.head,
+                            expected_binding=disposition.get("binding"), config=config,
+                            assignment_record=assignment,
+                            expected_policy_hash=policy_hash(config, workflow),
+                            expected_ticket_key=args.ticket,
                         )
                     elif args.review_verdict is not None:
                         raise ValidationError(
@@ -452,10 +469,20 @@ def main(argv=None, default_root=None):
                     verify_owner_record(disposition, "review-cap-disposition", config, contracts, now_text(), head_sha=args.head,
                                         binding=review_verdict["binding"])
                     from .gates import verify_disposition_review_binding
+                    from .policy import policy_hash
                     output_binding = verify_disposition_review_binding(
                         disposition, "review-cap-disposition",
                         review_verdict, contracts, args.head,
+                        expected_binding=review_verdict.get("binding"), config=config,
+                        assignment_record=assignment,
+                        expected_policy_hash=policy_hash(config, workflow),
+                        expected_ticket_key=args.ticket,
                     )
+                    if (disposition.get("cycles") != args.cycles
+                            or disposition.get("cap_extensions") != args.extensions):
+                        raise ValidationError(
+                            "Runtime cycles/extensions do not match the signed disposition counters"
+                        )
                     findings = [f for f in load(args.findings) if f["status"] != "RESOLVED" and f["severity"] in set(config["critic"]["blocking_severities"])]
                     output = cap_disposition_plan(
                         config, disposition, args.cycles, args.extensions, findings,

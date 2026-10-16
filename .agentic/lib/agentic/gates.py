@@ -190,7 +190,7 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
     """Validate owner dispositions before any of them can change a gate."""
     from .authorization import verify_owner_record
     head = bundle["candidate"]["head_sha"]
-    dispositions, comments, request_ids = [], set(), set()
+    dispositions, comments, request_ids, review_records = [], set(), set(), []
     records = [("finding-disposition", r) for r in bundle.get("finding_dispositions", [])]
     cap = bundle.get("cap_disposition")
     if cap is not None:
@@ -213,6 +213,7 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
                 f"{schema}: authorization request {request_id} already signs another record"
             )
         request_ids.add(request_id)
+        review_records.append((schema, record))
         if schema == "finding-disposition":
             dispositions.append(record)
     if cap is not None:
@@ -226,6 +227,48 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
             raise ValidationError(f"Cap disposition at cycles {cap['cycles']} precedes the cap ({limit}); present REVIEW_CAP_REACHED first")
         if cap["cap_extensions"] > config["execution"].get("max_cap_extensions", 2):
             raise ValidationError("Cap disposition records more extensions than $.execution.max_cap_extensions allows")
+    verdicts = bundle.get("review_verdicts", [])
+    for schema, record in review_records:
+        if schema == "finding-disposition" and record.get("decision") in {
+                "ACCEPT_RISK", "NOT_A_DEFECT"}:
+            finding = next((item for item in bundle["critic"]["findings"]
+                            if item["id"] == record.get("finding_id")), None)
+            if finding is not None and is_boundary(finding):
+                raise ValidationError(
+                    f"Finding {finding['id']} is a mandatory boundary and cannot be dispositioned"
+                )
+        if schema == "finding-disposition" and record.get("head_sha") != head:
+            # Historical finding dispositions are verified above, then voided by
+            # HEAD_CHANGED semantics; they are not consumed for this candidate.
+            continue
+        if schema == "review-cap-disposition":
+            matching_verdicts = [
+                verdict for verdict in verdicts
+                if verdict.get("record_id") == record.get("review_verdict_record_id")
+            ]
+        else:
+            matching_verdicts = [
+                verdict for verdict in verdicts
+                if verdict.get("binding") == record.get("binding")
+                and verdict.get("head_sha") == record.get("head_sha")
+            ]
+            if matching_verdicts:
+                terminal_round = max(verdict.get("round", 0) for verdict in matching_verdicts)
+                matching_verdicts = [
+                    verdict for verdict in matching_verdicts
+                    if verdict.get("round") == terminal_round
+                ]
+        if len(matching_verdicts) != 1:
+            raise ValidationError(
+                f"{schema}: disposition must select exactly one retained AWF review-verdict"
+            )
+        verify_disposition_review_binding(
+            record, schema, matching_verdicts[0], contracts, record.get("head_sha", head),
+            expected_binding=record.get("binding"), config=config,
+            assignment_record=assignment_record,
+            expected_policy_hash=binding["policy_hash"],
+            expected_ticket_key=bundle["contract"]["ticket"],
+        )
     return dispositions, cap
 
 
@@ -269,23 +312,83 @@ def review_verdict_json(verdict):
                       if key != "posting_observation"}).decode("utf-8")
 
 
-def verify_disposition_review_binding(record, schema, verdict, contracts, head_sha):
+def verify_disposition_review_binding(
+        record, schema, verdict, contracts, head_sha, *, expected_binding=None,
+        config=None, assignment_record=None, expected_policy_hash=None,
+        expected_ticket_key=None):
     """Bind a critic-driven owner disposition to one native review verdict."""
     if schema not in {"finding-disposition", "review-cap-disposition"}:
         raise ValidationError("This owner disposition type is not driven by a critic verdict")
     contracts.validate("review-verdict", verdict)
-    if record.get("binding") != verdict.get("binding"):
+    if (not isinstance(expected_binding, dict)
+            or not isinstance(config, dict)
+            or not isinstance(assignment_record, dict)
+            or not isinstance(expected_policy_hash, str)
+            or not isinstance(expected_ticket_key, str)):
+        raise ValidationError(
+            "Disposition review verification requires trusted candidate context, "
+            "configuration, assignment, and policy"
+        )
+    binding = verdict.get("binding")
+    if record.get("binding") != binding or binding != expected_binding:
         raise ValidationError(
             "Disposition and review verdict must bind the same candidate context"
         )
-    artifact = verdict["critic_artifact_binding"]
+    try:
+        trusted_identity = {
+            "project_id": config["project"]["id"],
+            "repository_id": config["github"]["repository_id"],
+            "issue_id": expected_binding["issue_id"],
+            "policy_hash": expected_policy_hash,
+            "candidate_id": expected_binding["candidate_id"],
+        }
+    except (KeyError, TypeError) as exc:
+        raise ValidationError(
+            "Disposition trusted configuration or assignment identity is incomplete"
+        ) from exc
+    if (assignment_record.get("ticket_key") != expected_ticket_key
+            or any(binding.get(field) != value
+                   for field, value in trusted_identity.items())):
+        raise ValidationError(
+            "Disposition review verdict project, ticket, repository, policy, or "
+            "candidate identity differs from the trusted selected context"
+        )
+    artifact = verdict.get("critic_artifact_binding")
+    candidate_binding = verdict.get("candidate_binding")
+    critic_review = verdict.get("critic_review")
+    if (any(field not in verdict
+            for field in ("owner_review", "head_sha", "run_id", "round", "verdict"))
+            or not isinstance(artifact, dict)
+            or not isinstance(candidate_binding, dict)
+            or not isinstance(critic_review, dict)
+            or any(field not in artifact
+                   for field in ("critic_run_id", "result_sha256", "head_sha", "round"))
+            or any(field not in candidate_binding
+                   for field in ("repository_id", "pr_number", "base_sha", "head_sha"))
+            or any(field not in critic_review
+                   for field in ("record_id", "run_id", "round", "head_sha",
+                                 "verdict", "findings_sha256"))):
+        raise ValidationError(
+            "Disposition review-verdict is missing candidate_binding or critic_review fields"
+        )
+    expected_critic_verdict = (
+        "APPROVE" if verdict.get("verdict") == "PASS" else "REQUEST_CHANGES"
+    )
     if (verdict["owner_review"] is not False
             or verdict["head_sha"] != head_sha
             or artifact["critic_run_id"] != verdict["run_id"]
             or artifact["head_sha"] != verdict["head_sha"]
-            or artifact["round"] != verdict["round"]):
+            or artifact["round"] != verdict["round"]
+            or candidate_binding["repository_id"] != binding["repository_id"]
+            or candidate_binding["head_sha"] != verdict["head_sha"]
+            or critic_review["run_id"] != verdict["run_id"]
+            or critic_review["head_sha"] != verdict["head_sha"]
+            or critic_review["round"] != verdict["round"]
+            or critic_review["verdict"] != expected_critic_verdict):
         raise ValidationError(
-            "Disposition requires an AWF-native critic review-verdict for the exact candidate head"
+            "Disposition requires the exact AWF review-verdict for the exact candidate "
+            "head; candidate_binding and critic_review must match the top-level "
+            "verdict/artifact head, run, and round"
         )
     if schema == "review-cap-disposition":
         from .authorization import cap_disposition_record_id
