@@ -219,6 +219,27 @@ class PlanningGraphSchedulingTests(unittest.TestCase):
         generator_plan = build(generator_value)
         self.assertEqual(1, generator_plan["tickets"][0]["generator_order_slot"])
 
+    def test_overlap_orientation_uses_evolving_precedence_without_creating_a_cycle(self):
+        value = fixture()
+        prototype = value["tickets"][2]
+        first = deepcopy(prototype)
+        first.update(key="AWF-1", dependencies=["AWF-3"], write_paths=["src/x.py"])
+        middle = deepcopy(prototype)
+        middle.update(key="AWF-2", dependencies=[], write_paths=["src/x.py", "src/y.py"])
+        last = deepcopy(prototype)
+        last.update(key="AWF-3", dependencies=[], write_paths=["src/y.py"])
+        value.update(tickets=[first, middle, last], lane_cap=1, start_gap_minutes=0)
+
+        plan = build(value)
+
+        edges = {
+            (edge["from"], edge["to"], edge["kind"])
+            for edge in plan["edges"]
+        }
+        self.assertIn(("AWF-3", "AWF-1", "dependency"), edges)
+        self.assertIn(("AWF-1", "AWF-2", "file_overlap"), edges)
+        self.assertIn(("AWF-3", "AWF-2", "file_overlap"), edges)
+
     def test_owner_window_deadline_takes_priority_when_schedule_is_feasible(self):
         value = fixture()
         long_ticket = value["tickets"][2]
@@ -232,6 +253,35 @@ class PlanningGraphSchedulingTests(unittest.TestCase):
         plan = build(value)
         starts = {ticket["key"]: ticket["earliest_start_minute"] for ticket in plan["tickets"]}
         self.assertEqual({"AWF-200": 2, "AWF-210": 0}, starts)
+
+    def test_scheduler_idles_for_a_feasible_future_opening_owner_window(self):
+        value = fixture()
+        unrestricted = deepcopy(value["tickets"][2])
+        unrestricted.update(
+            key="AWF-1",
+            dependencies=[],
+            write_paths=["src/unrestricted.py"],
+            duration_minutes=10,
+            owner_review_window=None,
+        )
+        urgent = deepcopy(value["tickets"][3])
+        urgent.update(
+            key="AWF-2",
+            dependencies=[],
+            write_paths=["src/urgent.py"],
+            duration_minutes=2,
+            owner_review_window={"opens_at_minute": 1, "closes_at_minute": 3},
+            blockers=[],
+            idle_lane_reason=None,
+        )
+        value.update(tickets=[unrestricted, urgent], lane_cap=1, start_gap_minutes=0)
+
+        plan = build(value)
+
+        self.assertEqual(
+            {"AWF-1": 3, "AWF-2": 1},
+            {ticket["key"]: ticket["earliest_start_minute"] for ticket in plan["tickets"]},
+        )
 
     def test_hand_computed_critical_path_cap_gap_and_owner_windows(self):
         value = fixture()
@@ -388,6 +438,7 @@ class LaneFillAcceptanceTests(unittest.TestCase):
         ))
         self.assertEqual("FAIL", statuses["docs"]["status_verdict"])
         self.assertEqual(["AWF-200"], statuses["docs"]["ready_tickets"])
+        self.assertEqual(["PLAN_UNREADABLE"], statuses["docs"]["idle_lane_reasons"])
         self.assertEqual("OK", statuses["framework-contracts"]["status_verdict"])
         self.assertEqual(
             ["CAP_REACHED", "HOLD", "PREDECESSOR_UNMERGED"],
