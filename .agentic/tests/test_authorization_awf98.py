@@ -14,13 +14,14 @@ from agentic.authorization import (  # noqa: E402
     render_owner_record,
     verify_owner_record,
 )
-from agentic.canonical import sha256  # noqa: E402
+from agentic.canonical import candidate_id, sha256  # noqa: E402
 from agentic.gates import (  # noqa: E402
     cap_disposition_record_id,
     review_verdict_json,
     verify_disposition_review_binding,
 )
-from agentic.lifecycle import review_round_transition  # noqa: E402
+from agentic.lifecycle import definition, review_round_transition  # noqa: E402
+from agentic.policy import policy_hash  # noqa: E402
 
 
 NOW = "2026-10-15T18:50:00Z"
@@ -39,14 +40,19 @@ CONTRACTS = NoopContracts()
 class OwnerDispositionTests(unittest.TestCase):
     def setUp(self):
         self.config = {"project": {"id": "00000000-0000-0000-0000-000000000001"},
-                       "github": {"repository_id": 123},
+                       "github": {"repository_id": 123, "expected_actor_id": 2002},
                        "merge_gate": {"trusted_owner_ids": [1001]},
                        "validation": {"max_evidence_age_seconds": 1800}}
+        self.candidate = {
+            "repository_id": 123, "pr_number": 157,
+            "target_base_sha": "a" * 40, "head_sha": HEAD,
+        }
         self.binding = {
             "project_id": "00000000-0000-0000-0000-000000000001",
             "repository_id": 123, "issue_id": "AWF-98",
             "requirements_hash": "1" * 64, "contract_hash": "2" * 64,
-            "policy_hash": "3" * 64, "candidate_id": "4" * 64,
+            "policy_hash": policy_hash(self.config, definition()),
+            "candidate_id": candidate_id(self.candidate),
         }
         self.record = {
             "schema_version": 3, "record_id": "", "created_at": NOW,
@@ -140,6 +146,7 @@ class OwnerDispositionTests(unittest.TestCase):
             "now": NOW,
             "head_sha": HEAD,
             "binding": self.binding,
+            "candidate": self.candidate,
             "review_verdict": verdict,
             "assignment_record": {"ticket_key": "AWF-98"},
         }
@@ -166,6 +173,18 @@ class OwnerDispositionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "trusted_owner_ids"):
             make_owner_disposition_request(
                 self.record, SCHEMA, self.config, head_sha=HEAD)
+
+    def test_disposition_rejects_automation_actor_as_trusted_owner(self):
+        self.config["github"]["expected_actor_id"] = 1001
+
+        with self.subTest(operation="request"), \
+                self.assertRaisesRegex(ValidationError, "automation actor|owner"):
+            make_owner_disposition_request(
+                self.record, SCHEMA, self.config, head_sha=HEAD)
+
+        with self.subTest(operation="verify"), \
+                self.assertRaisesRegex(ValidationError, "automation actor|owner"):
+            self._verify(self._signed_record())
 
     def test_verification_rejects_cap_artifact_for_another_head(self):
         record = self._signed_record()
@@ -319,6 +338,30 @@ class OwnerDispositionTests(unittest.TestCase):
         verdict["extra_retained_field"] = "tampered"
 
         with self.assertRaisesRegex(ValidationError, "exact AWF review-verdict"):
+            review_round_transition(
+                2, 4, owner_cap_disposition=record,
+                owner_cap_context=self._owner_cap_context(verdict))
+
+    def test_lifecycle_extension_rejects_disposition_signed_under_stale_policy(self):
+        self.record["cap_extensions"] = 1
+        stale_policy_hash = "3" * 64
+        self.binding["policy_hash"] = stale_policy_hash
+        self.record["binding"]["policy_hash"] = stale_policy_hash
+        verdict = self._review_verdict()
+        record = self._signed_record()
+
+        with self.assertRaisesRegex(ValidationError, "policy"):
+            review_round_transition(
+                2, 4, owner_cap_disposition=record,
+                owner_cap_context=self._owner_cap_context(verdict))
+
+    def test_lifecycle_extension_rejects_stale_candidate_identity(self):
+        self.record["cap_extensions"] = 1
+        verdict = self._review_verdict()
+        record = self._signed_record()
+        self.candidate["diff_sha256"] = "7" * 64
+
+        with self.assertRaisesRegex(ValidationError, "candidate binding"):
             review_round_transition(
                 2, 4, owner_cap_disposition=record,
                 owner_cap_context=self._owner_cap_context(verdict))
