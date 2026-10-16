@@ -396,7 +396,7 @@
         "workflow_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "min_tests_executed": 1,
         "verifies_history": false,
-        "workflow_blob_sha": "03eb6e251e61ca841cae942d6b150a87c56ea14a"
+        "workflow_blob_sha": "fee3620cf51ca56c0f793db6f4eb546307d1c249"
       }
     ],
     "max_evidence_age_seconds": 1800,
