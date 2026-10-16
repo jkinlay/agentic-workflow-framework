@@ -109,13 +109,16 @@ def _validate_journal_marker(marker, journal_raw):
     marker_format = marker["format"]
     base_keys = {"format", "transaction_id", "journal_sha256",
                  "pending_journal_sha256"}
+    marker_keys = set(marker)
+    if marker_keys not in (base_keys, base_keys | {"pending_update_kind"}):
+        raise ValidationError("Invalid installation recovery marker")
     if marker_format == "awf-install-marker-1":
         expected_keys = base_keys
     elif marker_format == "awf-install-marker-2":
         expected_keys = base_keys | {"pending_update_kind"}
     else:
         raise ValidationError("Unsupported installation recovery marker")
-    if set(marker) != expected_keys:
+    if marker_keys != expected_keys:
         raise ValidationError("Invalid installation recovery marker")
     try:
         transaction_id = str(uuid.UUID(marker["transaction_id"]))
