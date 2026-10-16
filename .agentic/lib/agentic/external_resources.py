@@ -508,11 +508,16 @@ def admit_resource(registry, mappings, resource_alias, *, task_id, principal, se
 def public_evidence(receipt):
     """Return the deliberately small tracked view of a private receipt."""
     _validate_receipt_shape(receipt)
+    # TIMEOUT is a private diagnostic refinement.  The tracked contract keeps
+    # the established public state vocabulary and reports it as an
+    # unsuccessful command rather than falsely classifying it as a start
+    # failure.
+    result = "COMMAND_NONZERO" if receipt["state"] == "TIMEOUT" else receipt["state"]
     return {
         "format": PUBLIC_EVIDENCE_FORMAT,
         "resource_alias": receipt["resource_alias"],
         "observed_at": receipt["observed_at"],
-        "result": receipt["state"],
+        "result": result,
         "execution_authority": False,
     }
 
