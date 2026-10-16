@@ -138,11 +138,14 @@ class BoundedProcessTests(unittest.TestCase):
             ("import sys; sys.stderr.buffer.write(b'x' * 5)", "SUBPROCESS_STDERR_LIMIT"),
         )
         for source, reason in cases:
+            received = []
             with self.subTest(reason=reason), self.assertRaisesRegex(ValidationError, reason):
                 safeio.run_bounded(
                     _python(source), stdout_limit=4, stderr_limit=4,
                     aggregate_output_limit=8,
+                    stream_sink=lambda channel, chunk: received.append((channel, chunk)),
                 )
+            self.assertEqual(received, [])
 
     def test_cancellation_terminates_an_owned_child(self):
         cancelled = threading.Event()
@@ -264,6 +267,13 @@ class BoundedProcessTests(unittest.TestCase):
             self.assertEqual(len(result.watched_outputs[0].sha256), 64)
 
     def test_child_does_not_inherit_an_unlisted_handle(self):
+        real_popen = subprocess.Popen
+        observed = {}
+
+        def recording_popen(*args, **kwargs):
+            observed.update(kwargs)
+            return real_popen(*args, **kwargs)
+
         read_fd, write_fd = os.pipe()
         try:
             os.set_inheritable(write_fd, True)
@@ -271,8 +281,10 @@ class BoundedProcessTests(unittest.TestCase):
                 "import os,sys; fd=int(sys.argv[1]); "
                 "\ntry: os.fstat(fd)\nexcept OSError: sys.exit(0)\nsys.exit(9)"
             )
-            result = safeio.run_bounded(_python(source, write_fd))
+            with mock.patch.object(safeio.subprocess, "Popen", side_effect=recording_popen):
+                result = safeio.run_bounded(_python(source, write_fd))
             self.assertEqual(result.returncode, 0)
+            self.assertIs(observed.get("close_fds"), True)
         finally:
             os.close(read_fd)
             os.close(write_fd)

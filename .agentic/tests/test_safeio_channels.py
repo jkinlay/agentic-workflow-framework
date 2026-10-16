@@ -192,6 +192,32 @@ class SafeWriteAndDiagnosticTests(unittest.TestCase):
         self.assertEqual(rendered.count("<redacted-credential>"), 1)
         self.assertEqual(rendered.count("<redacted-path>"), 1)
 
+    def test_log_redacts_prefixed_secret_names_and_complete_spaced_network_path(self):
+        backslash = chr(92)
+        assignments = (
+            ("AWS" + "_SECRET_ACCESS_KEY", "aws" + "-secret-value"),
+            ("AZURE" + "_CLIENT_SECRET", "azure" + "-secret-value"),
+        )
+        network_path = (backslash * 2) + backslash.join(
+            ("server", "Shared Folder", "secret.txt")
+        )
+        payload = "\n".join(
+            [name + "=" + value for name, value in assignments]
+            + ["failed at " + network_path]
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            with safeio.Tree(directory) as tree:
+                safeio.write_log(tree, "result.log", payload, maximum=1024)
+                rendered = tree.read("result.log").decode("utf-8")
+
+        for _name, value in assignments:
+            self.assertNotIn(value, rendered)
+        self.assertNotIn(network_path, rendered)
+        self.assertNotIn(" Folder" + backslash + "secret.txt", rendered)
+        self.assertEqual(rendered.count("<redacted-credential>"), 2)
+        self.assertEqual(rendered.count("<redacted-path>"), 1)
+
     def test_diagnostic_digest_binds_raw_bytes_not_redacted_text(self):
         slash = chr(47)
         left = "token=first " + slash.join(("", "home", "alice", "file"))
