@@ -151,6 +151,19 @@ class PlanningGraphValidationTests(unittest.TestCase):
         self.assertEqual("AWF-1", plan["critical_path"][0])
         self.assertEqual("AWF-1101", plan["critical_path"][-1])
 
+    def test_deep_acyclic_chain_with_owner_window_is_planned_without_recursion_error(self):
+        value = deep_dependency_chain()
+        value["tickets"][-1]["owner_review_window"] = {
+            "opens_at_minute": 0,
+            "closes_at_minute": 2000,
+        }
+
+        plan = build(value)
+
+        self.assertEqual(1101, plan["duration_minutes"])
+        tickets = {ticket["key"]: ticket for ticket in plan["tickets"]}
+        self.assertEqual(1100, tickets["AWF-1101"]["earliest_start_minute"])
+
     def test_deep_dependency_cycle_has_named_fail_closed_reason(self):
         module = implementation()
         value = deep_dependency_chain()
