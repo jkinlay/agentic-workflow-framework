@@ -20,6 +20,7 @@ from agentic.gates import (  # noqa: E402
     review_verdict_json,
     verify_disposition_review_binding,
 )
+from agentic.lifecycle import review_round_transition  # noqa: E402
 
 
 NOW = "2026-10-15T18:50:00Z"
@@ -103,6 +104,22 @@ class OwnerDispositionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, pattern):
             self._verify(record)
 
+    def _signed_rescope(self, successor_ticket="AWF-200"):
+        self.record["decision"] = "RESCOPE"
+        self.record["successor_ticket"] = successor_ticket
+        self.record["record_id"] = cap_disposition_record_id(self.record)
+        return self._signed_record()
+
+    def _owner_cap_context(self, verdict):
+        return {
+            "config": self.config,
+            "contracts": CONTRACTS,
+            "now": NOW,
+            "head_sha": HEAD,
+            "binding": self.binding,
+            "review_verdict": verdict,
+        }
+
     def test_request_assigns_id_and_renders_exact_dispose_line(self):
         request_id = str(uuid.uuid4())
 
@@ -169,6 +186,19 @@ class OwnerDispositionTests(unittest.TestCase):
 
         self._assert_verify_rejected(record, "recorded fields disagree")
 
+    def test_rescope_rejects_forged_successor_ticket(self):
+        record = self._signed_rescope()
+        record["successor_ticket"] = "AWF-999"
+
+        self._assert_verify_rejected(record, "record ID|recorded fields")
+
+    def test_rescope_rejects_replayed_disposition_with_different_successor(self):
+        record = self._signed_rescope()
+        record["successor_ticket"] = "AWF-999"
+        record["record_id"] = cap_disposition_record_id(record)
+
+        self._assert_verify_rejected(record, "recorded fields")
+
     def test_verification_returns_exact_owner_line(self):
         record = self._signed_record()
 
@@ -205,6 +235,47 @@ class OwnerDispositionTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValidationError, "candidate context"):
                     self._verify_verdict(verdict)
+
+    def test_lifecycle_extension_rejects_different_verdict_artifact(self):
+        self.record["cap_extensions"] = 1
+        verdict = self._review_verdict()
+        record = self._signed_record()
+        different = copy.deepcopy(verdict)
+        different["record_id"] = str(uuid.uuid4())
+        different["run_id"] = str(uuid.uuid4())
+        different["critic_artifact_binding"] = {
+            **different["critic_artifact_binding"],
+            "critic_run_id": different["run_id"],
+            "result_sha256": "7" * 64,
+        }
+
+        with self.assertRaisesRegex(ValidationError, "exact AWF review-verdict"):
+            review_round_transition(
+                2, 4, owner_cap_disposition=record,
+                owner_cap_context=self._owner_cap_context(different))
+
+    def test_lifecycle_extension_rejects_wrong_verdict_head(self):
+        self.record["cap_extensions"] = 1
+        verdict = self._review_verdict()
+        record = self._signed_record()
+        verdict["head_sha"] = "c" * 40
+        verdict["critic_artifact_binding"]["head_sha"] = verdict["head_sha"]
+
+        with self.assertRaisesRegex(ValidationError, "exact candidate head"):
+            review_round_transition(
+                2, 4, owner_cap_disposition=record,
+                owner_cap_context=self._owner_cap_context(verdict))
+
+    def test_lifecycle_extension_rejects_tampered_verdict(self):
+        self.record["cap_extensions"] = 1
+        verdict = self._review_verdict()
+        record = self._signed_record()
+        verdict["extra_retained_field"] = "tampered"
+
+        with self.assertRaisesRegex(ValidationError, "exact AWF review-verdict"):
+            review_round_transition(
+                2, 4, owner_cap_disposition=record,
+                owner_cap_context=self._owner_cap_context(verdict))
 
 
 def cap_request_fixture():

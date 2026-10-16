@@ -294,6 +294,7 @@ class ReviewTiers195GateTests(Fixture):
             "authorization_request_id": str(uuid.uuid4()),
             "cycles": 2,
             "cap_extensions": 0,
+            "successor_ticket": None,
             "owner_source": {"comment_id": 99},
         }
         cap["record_id"] = cap_disposition_record_id(cap)
@@ -315,6 +316,7 @@ class ReviewTiers195GateTests(Fixture):
             "authorization_request_id": str(uuid.uuid4()),
             "cycles": 2,
             "cap_extensions": 0,
+            "successor_ticket": None,
             "owner_source": {"comment_id": 99},
         }
         cap["record_id"] = cap_disposition_record_id(cap)
