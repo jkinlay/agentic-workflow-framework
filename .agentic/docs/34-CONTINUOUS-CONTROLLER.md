@@ -14,20 +14,29 @@ mutations.
 ## Dispatch state and round boundaries
 
 Dispatch payloads and receipts use closed schema version 2. Opening protected
-state atomically migrates unambiguous 1.9.4 `PENDING`, `IN_FLIGHT`, and
-`UNKNOWN` rows without changing their identities or states; an unsupported
-state, receipt, field, or mixed ambiguous payload refuses the entire migration
-and preserves the before-image. The reference adapter refuses legacy calls and
-records before preparing or launching a runner.
+state atomically creates any new schema, migrates unambiguous 1.9.4 `PENDING`,
+`IN_FLIGHT`, and `UNKNOWN` rows, and completes every initialization validation
+without changing their identities or states. An unsupported state, receipt,
+field, mixed ambiguous payload, or later initialization refusal rolls back the
+schema and data transaction and preserves the complete 1.9.4 before-image. The
+reference adapter refuses legacy calls and records before preparing or
+launching a runner.
 
 `PENDING`, `IN_FLIGHT`, `UNKNOWN`, and adapter `LAUNCHED` are non-terminal.
 A successor inventory cannot refill a round while any of those operations
 crosses the boundary. Refill requires one fresh authenticated host trigger
 bound to the prior and next inventory digests and the complete durable
 dispatch/stream/ticket/tuple/state set. The controller persists that seal before
-refill, consumes it once, and does not recreate it from replay. Use
-`--replan-request REQUEST.json` to have the reviewed adapter observe and seal
-this trigger; caller-authored trigger records are not accepted.
+refill and atomically consumes it with creation of the successor dispatch
+intent. A restart at that boundary resumes only those persisted successor
+intents; it neither loses the refill nor recreates a seal from replay. Use
+`--replan-request REQUEST.json` containing only a positive GitHub `comment_id`.
+The reviewed adapter fetches the immutable comment with provider Date/ETag;
+the controller requires a fresh, unedited comment by a configured trusted owner
+whose body is exactly `AWF-ROUND-REPLAN 1`, a newline, and canonical JSON
+binding repository, round, prior/next inventory digests, and the complete
+non-terminal dispatch set. Caller-authored trigger or round identities are not
+accepted.
 
 Provider reads never occur inside a controller write transaction. For an
 overlap allowance, the `LANE_START` provider observation is validated first;

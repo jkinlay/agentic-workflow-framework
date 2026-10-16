@@ -778,13 +778,13 @@ def _build(config):
 	inventory_cache = {}
 
 	def observe_replan_trigger(request):
-		required = {'trigger_id', 'round_id', 'repository_id', 'prior_inventory_sha256', 'next_inventory_sha256', 'nonterminal_dispatch_ids'}
+		required = {'comment_id', 'repository_id', 'prior_inventory_sha256', 'next_inventory_sha256', 'nonterminal_dispatch_ids'}
 		_require(isinstance(request, dict) and set(request) == required, 'Replan trigger observation request is malformed')
 		_require(str(request['repository_id']) == str(github['repository_id']) and request['next_inventory_sha256'] == inventory_cache.get('inventory_sha256'), 'Replan trigger observation is not bound to the authenticated current inventory')
-		_require(isinstance(request['nonterminal_dispatch_ids'], list) and request['nonterminal_dispatch_ids'] == sorted(request['nonterminal_dispatch_ids']), 'Replan trigger dispatch identities are not canonical')
-		trigger = {'schema_version': 1, 'source': 'host_observation', **deepcopy(request), 'observed_at': inventory_cache['observed_at'], 'authenticated': True}
-		trigger['trigger_sha256'] = fingerprint('controller-replan-trigger', trigger)
-		return trigger
+		_require(type(request['comment_id']) is int and request['comment_id'] > 0 and isinstance(request['nonterminal_dispatch_ids'], list) and request['nonterminal_dispatch_ids'] == sorted(request['nonterminal_dispatch_ids']), 'Replan trigger locator or dispatch identities are not canonical')
+		comment, comment_etag, provider_time = gh_json_etag('repos/' + github['repository'] + '/issues/comments/' + str(request['comment_id']))
+		_require(isinstance(comment, dict), 'GitHub replan trigger comment is malformed')
+		return {'source': 'github.com', 'repository_id': github['repository_id'], 'provider_observed_at': provider_time, 'observation_etag': comment_etag, 'comment': {'id': comment.get('id'), 'node_id': comment.get('node_id'), 'actor_id': comment.get('user', {}).get('id'), 'actor_login': comment.get('user', {}).get('login'), 'author_association': comment.get('author_association'), 'created_at': comment.get('created_at'), 'updated_at': comment.get('updated_at'), 'body': comment.get('body'), 'etag': comment_etag, 'provider_observed_at': provider_time}}
 
 	def observe_reservations(request):
 		_require(isinstance(request, dict) and set(request) == {'repository_id', 'repository_root', 'head_sha', 'tree_sha', 'observed_at'}, 'Reservation observation request is malformed')

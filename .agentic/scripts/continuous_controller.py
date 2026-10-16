@@ -131,7 +131,7 @@ def main(argv=None, default_root=ROOT):
 	cycle.add_argument('--host-capacity', type=int, required=True)
 	cycle.add_argument('--cycle-id', help='immutable controller cycle bound by overlap approvals')
 	cycle.add_argument('--overlap-allowances', type=Path, help='JSON list of exact provider-comment allowance requests')
-	cycle.add_argument('--replan-request', type=Path, help='round identity request whose trigger is observed by the reviewed adapter')
+	cycle.add_argument('--replan-request', type=Path, help='JSON object containing the GitHub comment_id locator for an immutable trusted-owner AWF-ROUND-REPLAN event')
 	jira = sub.add_parser('jira-lifecycle', help='Read, optionally write once, and read back Jira lifecycle state')
 	jira.add_argument('--contract', type=Path, required=True)
 	jira.add_argument('--event', required=True)
