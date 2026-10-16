@@ -865,6 +865,19 @@ class _Git:
                  "SHALLOW_INVALID: shallow boundary has an invalid object id")
         return frozenset(lines)
 
+    def missing_oid_is_shallow_parent(self, oid):
+        _require(len(oid) == self.oid_length and _SHA.fullmatch(oid),
+                 "REF_FORMAT: missing range endpoint has the wrong object format")
+        parent_header = b"parent " + oid.encode("ascii")
+        for boundary in sorted(self.shallow_boundaries):
+            raw = self.run("cat-file", "commit", boundary, binary=True).stdout
+            marker = raw.find(b"\n\n")
+            _require(marker > 0,
+                     "SHALLOW_INVALID: shallow boundary commit has no header separator")
+            if parent_header in raw[:marker].split(b"\n"):
+                return True
+        return False
+
     def _validate_local_config(self):
         configured = self.run(
             "config", "--local", "--null", "--name-only", "--list",
@@ -959,8 +972,22 @@ class _Git:
         else:
             _require(len(value) == self.oid_length,
                      f"REF_FORMAT: {field} OID has the wrong object format")
-        resolved = self.text("rev-parse", "--verify", "--end-of-options",
-                             f"{candidate}^{{commit}}")
+        dereferenced = self.run(
+            "rev-parse", "--verify", "--end-of-options",
+            f"{candidate}^{{commit}}", allow_failure=True, binary=True,
+        )
+        if dereferenced.returncode:
+            if allow_missing and not dereferenced.stdout:
+                return None
+            raise ValidationError(
+                f"REF_RESOLUTION: {field} could not be resolved exactly"
+            )
+        try:
+            resolved = dereferenced.stdout.decode("ascii", "strict").strip()
+        except UnicodeDecodeError as exc:
+            raise ValidationError(
+                f"REF_FORMAT: {field} resolved to non-ASCII output"
+            ) from exc
         _require(len(resolved) == self.oid_length and _SHA.fullmatch(resolved),
                  f"REF_FORMAT: {field} resolved to the wrong object format")
         return resolved
@@ -1511,7 +1538,16 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
         registry = {}
     _require(type(require_run_logs) is bool, "require_run_logs must be Boolean")
     git = _Git(root)
-    base_sha = git.resolve(base, "Range base")
+    raw_base_may_be_shallow = bool(git.shallow_boundaries) and not base.startswith("refs/")
+    base_sha = git.resolve(
+        base, "Range base", allow_missing=raw_base_may_be_shallow,
+    )
+    if base_sha is None:
+        _require(git.missing_oid_is_shallow_parent(base),
+                 "REF_MISSING: Range base does not exist")
+        raise ValidationError(
+            "SHALLOW_RANGE_BOUNDARY: range base is unavailable beyond a shallow boundary"
+        )
     head_sha = git.resolve(head, "Range head")
     # The 1.9.4 public default is retained as a locator adapter only.  The live
     # host passes its reviewed fully-qualified default ref and observed OID.
