@@ -302,7 +302,7 @@
     ".agentic/tests/test_awf134_installer_journal.py": "b0e0fc15b89465f863674d10a78615c2d77fed81433988683dac3060b468d037",
     ".agentic/tests/test_awf134_pending_updates.py": "b511ea8aaa14320efb5e68040f719e9c40af1747df8f66981331a76900cc5a6d",
     ".agentic/tests/test_awf134_recovery_lifecycle.py": "5b340f47e0cbab82abe7ec505c9ecc0287d65d2eb204ae09417f3c0cb2b0338a",
-    ".agentic/tests/test_awf140_marker_validation.py": "0106055742b7408ada2be205703a7f912e02bed302de7c472a05ea429d0d29f9",
+    ".agentic/tests/test_awf140_marker_validation.py": "cdf0ff27bbe21b5b39fe2fde0f992afec0cebae1a0f825bf1c4c8ef54541aa1d",
     ".agentic/tests/test_awf59_review_tier_yaml.py": "dce123fbd47c3ebc7c744c83fdbe7cfa4a2488c8b2c0dd294b948ba417e5f666",
     ".agentic/tests/test_bootstrap_configuration.py": "2a96e3b578b044417ff20deb164db75203ca9e7ccd54721974ac89ab1fcdebe2",
     ".agentic/tests/test_candidate_id.py": "5c70856fe665ec4b2bcbba4c267db24dd7c99d3b9eb27a18ae0e76ed2f8de884",

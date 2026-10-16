@@ -1,8 +1,14 @@
 import re
+from pathlib import Path
+import sys
 import unittest
 
-from agentic import ValidationError
-from agentic.installer import _validate_journal_marker, sha256
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / ".agentic/lib"))
+
+from agentic import ValidationError  # noqa: E402
+from agentic.installer import _validate_journal_marker, sha256  # noqa: E402
 
 
 class JournalMarkerValidationOrderTests(unittest.TestCase):
