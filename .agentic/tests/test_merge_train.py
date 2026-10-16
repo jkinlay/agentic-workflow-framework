@@ -128,9 +128,9 @@ class MergeTrainTests(unittest.TestCase):
         return evidence
 
     def _registration(self, source, evidence,
-                      observer_id="fixture-observer"):
+                      observer_id="fixture-observer", target_branch="main"):
         module = merge_train()
-        request = module.source_admission_request(source, "main")
+        request = module.source_admission_request(source, target_branch)
         receipts = {}
 
         def observer(value):
@@ -172,17 +172,18 @@ class MergeTrainTests(unittest.TestCase):
         }
         return request, registration
 
-    def _admit(self, source=None, evidence=None):
+    def _admit(self, source=None, evidence=None, *, target_branch="main"):
         module = merge_train()
         source = source or self._source()
         evidence = evidence or self._evidence(source)
         self.observer_count += 1
         observer_id = f"fixture-observer-{self.observer_count}"
         request, registration = self._registration(
-            source, evidence, observer_id=observer_id)
+            source, evidence, observer_id=observer_id,
+            target_branch=target_branch)
         self.observer_registry[observer_id] = registration
         return module.admit_source(
-            source, "main", observer_id, self.observer_registry, now=NOW,
+            source, target_branch, observer_id, self.observer_registry, now=NOW,
             trusted_owner_ids=["owner-1"],
         )
 
@@ -369,6 +370,30 @@ class MergeTrainTests(unittest.TestCase):
                 "AWF-54-batch", "main", self.target, [forged], 1,
                 self.observer_registry, now=NOW,
                 trusted_owner_ids=["owner-1"])
+
+    def test_generation_rejects_wrong_or_mixed_admission_targets(self):
+        module = merge_train()
+        admitted_main = self._admit()
+        release_source = self._source(
+            pr=12, head=self.head2, tree=self.tree2, commits=[self.head2])
+        release_source["base_branch"] = "release"
+        admitted_release = self._admit(
+            release_source, self._evidence(release_source),
+            target_branch="release")
+
+        cases = [
+            ("release", [admitted_main]),
+            ("main", [admitted_main, admitted_release]),
+        ]
+        for target_branch, sources in cases:
+            with self.subTest(target_branch=target_branch,
+                              source_count=len(sources)):
+                with self.assertRaisesRegex(
+                        ValidationError, "admission target branch"):
+                    module.freeze_generation(
+                        "AWF-54-batch", target_branch, self.target, sources, 1,
+                        self.observer_registry, now=NOW,
+                        trusted_owner_ids=["owner-1"])
 
     def test_generation_invalidates_on_target_head_or_evidence_drift(self):
         module = merge_train()
