@@ -30,7 +30,7 @@ CLAIM_FORMAT = "awf-external-resource-claim-1"
 
 RESOURCE_STATES = {
     "UNOBSERVED", "SANDBOX_BLOCKED", "PROCESS_START_FAILED",
-    "COMMAND_NONZERO", "MAPPING_MISSING", "PATH_NOT_FOUND",
+    "TIMEOUT", "COMMAND_NONZERO", "MAPPING_MISSING", "PATH_NOT_FOUND",
     "ACCESS_DENIED", "INVALID_OUTPUT", "READ_VERIFIED", "STALE",
     "MAPPING_CHANGED",
 }
@@ -340,7 +340,7 @@ def classify_probe_result(result):
     if diagnostic == "SANDBOX_BLOCKED":
         return "SANDBOX_BLOCKED", "SANDBOX", None
     if diagnostic == "TIMEOUT":
-        return "COMMAND_NONZERO", "COMMAND_TIMEOUT", None
+        return "TIMEOUT", "COMMAND_TIMEOUT", None
     if exit_code is None:
         return "PROCESS_START_FAILED", "PROCESS_START", None
     observation = result.get("probe")
