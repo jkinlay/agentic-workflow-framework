@@ -98,6 +98,12 @@ class _SubprocessRunner:
 		"""Run Git's bounded three-way file merge without touching a repository."""
 		_require(all((isinstance(value, bytes) and len(value) <= MAX_OUTPUT
 					  for value in (current, base, other))), 'Overlap merge inputs exceed their byte bound')
+		# Git rejects binary inputs with exit 255 instead of reporting a
+		# conflict. Preserve that genuine conflict for the sync writer; when
+		# resolving, its one-path commit deterministically copies the left
+		# head (``other``) onto the target/right head.
+		if any((b'\0' in value for value in (current, base, other))):
+			return {'status': 'CONFLICT', 'content': other if union else b''}
 		with tempfile.TemporaryDirectory(prefix='awf-overlap-merge-') as directory:
 			paths = [Path(directory) / name for name in ('current', 'base', 'other')]
 			for path, value in zip(paths, (current, base, other)):
@@ -1010,10 +1016,34 @@ def _build(config):
 		compare = _json_output(command(gh_executable, ['api', '--hostname', 'github.com', '--method', 'GET', compare_path]))
 		files = compare.get('files') if isinstance(compare, dict) else None
 		_require(isinstance(files, list) and 0 < len(files) < 300, 'Overlap sync comparison does not prove a complete bounded diff')
+		base_ref = inputs['merge_base']
+		left_ref, right_ref = before['heads']
+		binary_resolution = all((inputs['versions'][ref] is not None for ref in (base_ref, left_ref, right_ref))) and any(
+			b'\0' in inputs['versions'][ref] for ref in (base_ref, left_ref, right_ref))
+		binary_evidence = None
+		if binary_resolution:
+			def bound_binary_version(label, ref):
+				value = inputs['versions'][ref]
+				return (label + '=' + ref + ' blob=' + inputs['blobs'][ref] + ' sha256=' +
+						hashlib.sha256(value).hexdigest() + ' bytes=' + str(len(value)))
+			binary_evidence = '\n'.join((
+				'Binary overlap resolution evidence',
+				bound_binary_version('merge-base', base_ref),
+				bound_binary_version('left-head', left_ref),
+				bound_binary_version('right-head', right_ref),
+				'resolution=copy-left-blob-to-right-head',
+				'post-sync-right-head=' + after['heads'][1] + ' result-blob=' + inputs['blobs'][left_ref] +
+					' result-sha256=' + hashlib.sha256(resolved['content']).hexdigest() +
+					' bytes=' + str(len(resolved['content'])),
+			))
 		normalized = []
 		for item in files:
 			name = item.get('filename') if isinstance(item, dict) else None
 			patch_text = item.get('patch') if isinstance(item, dict) else None
+			if name == payload['path'] and binary_evidence is not None:
+				_require(item.get('status') == 'modified' and item.get('sha') == inputs['blobs'][left_ref],
+						 'Overlap sync comparison does not bind the binary result blob')
+				patch_text = binary_evidence
 			_require(isinstance(name, str) and isinstance(patch_text, str) and patch_text.strip(), 'Overlap sync comparison contains an unreviewable file')
 			normalized.append((name, patch_text))
 		normalized.sort(key=lambda item: item[0])
