@@ -74,6 +74,13 @@ def validate_config(config, workflow, contracts):
     if report['status'] != 'ACCEPTED':
         raise ValidationError('Unresolved configuration values: ' + '; '.join(
             item['path'] + ': ' + item['reason'] for item in report['unresolved']))
+    # Unbound owner/actor configuration remains an adoption warning, but once
+    # both identities are configured they must satisfy the authorization
+    # module's single bot/owner-separation rule before a policy is accepted.
+    if (config["merge_gate"]["trusted_owner_ids"]
+            and config["github"].get("expected_actor_id") is not None):
+        from .authorization import trusted_owner_ids
+        trusted_owner_ids(config)
     return report['policy_sha256']
 
 
