@@ -17,6 +17,7 @@ from source_only import skip_unless_source_repo  # noqa: E402
 from agentic import ValidationError
 from agentic.canonical import now_text, sha256
 from agentic.review_first_draft import (enroll_created_pr, publication_scan,
+                                         excluded_worktree_inventory,
                                          publish_tested_tree,
                                          render_first_draft_body,
                                          run_first_draft,
@@ -123,6 +124,34 @@ class FirstDraftTests(unittest.TestCase):
                                         for index in range(100000)]
         with self.assertRaisesRegex(ValidationError, 'WORKER_RECEIPT_INVALID'):
             validate_worker_receipt(receipt, allowed_paths={'caf\u00e9.txt'})
+
+    def test_in35_validated_receipt_is_a_frozen_snapshot(self):
+        receipt = {'outcome': 'CHANGED',
+                   'changes': [{'path': 'a.txt', 'action': 'modified'}],
+                   'tested_tree': 'a' * 40, 'ignored_untracked': [],
+                   'summary': 'changed'}
+        validated = validate_worker_receipt(receipt, allowed_paths={'a.txt'})
+        receipt['changes'][0]['path'] = 'outside.txt'
+        receipt['ignored_untracked'].append('later.txt')
+        self.assertEqual('a.txt', validated['changes'][0]['path'])
+        self.assertEqual([], validated['ignored_untracked'])
+
+    def test_in36_git_exclusion_inventory_freezes_declared_additions_before_reads(self):
+        changes = [{'path': 'added.txt', 'action': 'added'}]
+
+        class MutatingGit:
+            calls = 0
+
+            def run(self, *args):
+                self.calls += 1
+                if self.calls == 1:
+                    changes[0]['path'] = 'ignored.txt'
+                    return b'ignored.txt\0'
+                return b''
+
+        self.assertEqual(
+            ['ignored.txt'], excluded_worktree_inventory(MutatingGit(), changes),
+        )
 
     def test_first_draft_body_fields_are_bounded_escaped_and_digest_stable(self):
         body = render_first_draft_body(
