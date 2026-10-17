@@ -86,10 +86,22 @@ class ProviderIdentityTests(unittest.TestCase):
         self.assertIsNone(value["github"]["expected_actor_id"])
 
     def test_github_identity_refuses_unreadable_or_invalid_trusted_owners(self):
-        invalid_gates = [None, [], {}] + [
+        absent = object()
+        compatible_gates = [absent, None, [], {}, {"trusted_owner_ids": []}]
+        invalid_gates = [
             {"trusted_owner_ids": owners} for owners in
-            (None, [], "1001", [True], [0], ["1001"], [1001, 1001], [[1001]])]
+            (None, "1001", [True], [0], ["1001"], [1001, 1001], [[1001]])]
         for expected_actor in (None, 1002):
+            for gate in compatible_gates:
+                with self.subTest(expected_actor=expected_actor, merge_gate=gate):
+                    value = config()
+                    value["github"]["expected_actor_id"] = expected_actor
+                    if gate is absent:
+                        del value["merge_gate"]
+                    else:
+                        value["merge_gate"] = gate
+                    self.assertEqual(
+                        github_identity_preflight(value, github_observation())["status"], "PASS")
             for gate in invalid_gates:
                 with self.subTest(expected_actor=expected_actor, merge_gate=gate):
                     value = config()
