@@ -594,6 +594,81 @@ class RecomputeAndAuditTests(unittest.TestCase):
         self.assertEqual(
             result["record"]["estimate"]["safe_lane_count"], capacity["safe_lane_count"])
 
+    def test_sealed_plan_binds_host_capacity_input(self):
+        first = planning.recompute_plan(
+            self.tickets, self.cfg, {}, now=NOW, trigger="project_start",
+            **capacity_kwargs(self.cfg, host_capacity=5))
+        second = planning.recompute_plan(
+            self.tickets, self.cfg, {}, now=NOW, trigger="project_start",
+            **capacity_kwargs(self.cfg, host_capacity=4))
+        first_capacity = first["record"]["inputs"]["capacity"]
+        second_capacity = second["record"]["inputs"]["capacity"]
+        self.assertEqual(5, first_capacity["host_capacity"])
+        self.assertEqual(4, second_capacity["host_capacity"])
+        self.assertNotEqual(first_capacity["capacity_binding_sha256"],
+                            second_capacity["capacity_binding_sha256"])
+
+    def test_sealed_plan_binds_stream_capacity_input(self):
+        first = planning.recompute_plan(
+            self.tickets, self.cfg, {}, now=NOW, trigger="project_start",
+            **capacity_kwargs(self.cfg, stream_capacity=5))
+        second = planning.recompute_plan(
+            self.tickets, self.cfg, {}, now=NOW, trigger="project_start",
+            **capacity_kwargs(self.cfg, stream_capacity=4))
+        first_capacity = first["record"]["inputs"]["capacity"]
+        second_capacity = second["record"]["inputs"]["capacity"]
+        self.assertEqual(5, first_capacity["stream_capacity"])
+        self.assertEqual(4, second_capacity["stream_capacity"])
+        self.assertNotEqual(first_capacity["capacity_binding_sha256"],
+                            second_capacity["capacity_binding_sha256"])
+
+    def test_sealed_plan_binds_resource_capacity_input(self):
+        first = planning.recompute_plan(
+            self.tickets, self.cfg, {}, now=NOW, trigger="project_start",
+            **capacity_kwargs(self.cfg, resources=[{"name": "cpu", "capacity": 5}]))
+        second = planning.recompute_plan(
+            self.tickets, self.cfg, {}, now=NOW, trigger="project_start",
+            **capacity_kwargs(self.cfg, resources=[{"name": "cpu", "capacity": 4}]))
+        first_capacity = first["record"]["inputs"]["capacity"]
+        second_capacity = second["record"]["inputs"]["capacity"]
+        self.assertEqual(5, first_capacity["resource_capacity"])
+        self.assertEqual(4, second_capacity["resource_capacity"])
+        self.assertNotEqual(first_capacity["capacity_binding_sha256"],
+                            second_capacity["capacity_binding_sha256"])
+
+    def test_owner_override_is_applied_after_capacity_binding(self):
+        tickets = [ticket(f"AWF-{index}", f"src/{index}.py") for index in range(1, 5)]
+        planning.change_owner_override(
+            self.cfg, self.state, mode="fixed", value=2, reason="owner choice", now=NOW,
+            owner_source=owner_source(None, "fixed", 2, "owner choice"),
+            verify_owner_source=verify_owner)
+        result = planning.recompute_plan(
+            tickets, self.cfg, self.state, now=NOW, trigger="override_changed",
+            verify_owner_source=verify_owner,
+            **capacity_kwargs(self.cfg, resources=[{"name": "cpu", "capacity": 2}]))
+        record = result["record"]
+        self.assertEqual(
+            record["inputs"]["capacity"]["capacity_binding_sha256"],
+            record["owner_decision"]["capacity_binding_sha256"])
+        self.assertTrue(record["owner_decision"]["applied_after_capacity_binding"])
+        self.assertLessEqual(record["lane_count"],
+                             record["inputs"]["capacity"]["safe_lane_count"])
+
+    def test_stream_slots_come_from_reviewed_operating_configuration(self):
+        kwargs = capacity_kwargs(self.cfg, stream_capacity=3)
+        result = planning.recompute_plan(
+            self.tickets, self.cfg, self.state, now=NOW, trigger="project_start", **kwargs)
+        capacity = result["record"]["inputs"]["capacity"]
+        snapshot = kwargs["operating_snapshot"]
+        self.assertEqual(snapshot.count, capacity["stream_capacity"])
+        self.assertEqual({
+            "kind": "validated_operating_snapshot",
+            "operating_hash": snapshot.operating_hash,
+            "governance_hash": snapshot.governance_hash,
+            "source": snapshot.source,
+            "last_change_id": snapshot.last_change_id,
+        }, capacity["stream_capacity_source"])
+
 
 if __name__ == "__main__":
     unittest.main()
