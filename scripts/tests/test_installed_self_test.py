@@ -5,6 +5,7 @@ when scripts/, tools/, root documents and historical fixtures are absent.
 """
 from __future__ import annotations
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -24,6 +25,14 @@ from agentic.runtime_commands import installed_paths  # noqa: E402
 
 
 MIN_INSTALL_TIMEOUT_SECONDS = 180
+
+
+def load_self_test_module():
+    path = ROOT / ".agentic/scripts/self_test.py"
+    spec = importlib.util.spec_from_file_location("awf_installed_self_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def install_timeout_seconds(observed_seconds):
@@ -47,6 +56,17 @@ def run_with_timeout(command, *, timeout, **kwargs):
 
 
 class InstallSubprocessTimeoutTests(unittest.TestCase):
+    def test_ticket_plan_is_classified_as_a_non_form_schema(self):
+        module = load_self_test_module()
+        schemas = {
+            "candidate", "project-config", "evidence-bundle", "operating-config",
+            "ticket-plan", "worker-result",
+        }
+        self.assertEqual(
+            {"worker-result"},
+            module.unfilled_form_schema_names(schemas, {"operating-config"}),
+        )
+
     def test_timeout_limit_has_documented_margin_over_observed_controller_load(self):
         self.assertEqual(180, install_timeout_seconds(96.3))
         self.assertEqual(300, install_timeout_seconds(200.0))

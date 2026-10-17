@@ -20,7 +20,7 @@ class GenerateExamplesTicketPlanTests(unittest.TestCase):
 
         def future_catalog(*, include_ticket_plan):
             calls.append(include_ticket_plan)
-            return legacy_catalog()
+            return legacy_catalog(include_ticket_plan=False)
 
         with tempfile.TemporaryDirectory(prefix="awf-generate-examples-") as raw:
             with patch.object(generate_examples, "catalog", future_catalog):
