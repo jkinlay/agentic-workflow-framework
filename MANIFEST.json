@@ -385,6 +385,7 @@
     ".agentic/tests/test_provider_identity.py": "92b46c77a9a7bfd04cb774e216f63966b25f9986ce0a314bb3a285e086cd8bf2",
     ".agentic/tests/test_publication.py": "add2fb41f68d682cd8fa52ebb726bd8497524d9b73e090f47ca1b48dc1758275",
     ".agentic/tests/test_publication_readiness.py": "4c2e48395f0a3a26c86625cf49e62b2b71353ff9bb33cb9c2bedcb7c40431354",
+    ".agentic/tests/test_publication_records.py": "4c5c30abc535d0bc01caad2afdded80b7132a66a77164fd846648e52f86ef14c",
     ".agentic/tests/test_publication_sync_merge.py": "b522354cc6b31b50da5f6cf916d5204d14d4a52bbe9b872b0ba77160baed48af",
     ".agentic/tests/test_publication_sync_merge_history.py": "ea3a103d200bd5c8f10a87e725e5ccb3b3a1485ca2f12f08c39574c8e7385d7e",
     ".agentic/tests/test_ready_authorization.py": "fa9d1fe9c4e1cc3f286f16d0da0bb18e4af62e212c597363d1463f589f5f551d",
