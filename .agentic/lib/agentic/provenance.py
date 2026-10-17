@@ -588,10 +588,18 @@ def _verify_override_shape(record):
     return record
 
 
-def verify_owner_override(record, *, reviewed_owner_config, pr=None,
-                          supersedes=None):
+def verify_owner_override(record, *, reviewed_owner_config=None,
+                          trusted_owner_ids=None, pr=None, supersedes=None):
     """Validate a sealed override against reviewed owner IDs and optional PR."""
     _verify_override_shape(record)
+    # ``trusted_owner_ids`` is retained only so 1.9.4 callers receive a stable,
+    # versioned refusal instead of Python argument dispatch.  A caller-owned
+    # list never establishes authority.
+    del trusted_owner_ids
+    _require(reviewed_owner_config is not None,
+             "OVERRIDE_VERSION_AUTHORITY_UNBOUND: provenance override schema "
+             f"version {record['schema_version']} requires digest-bound reviewed "
+             "owner configuration")
     owners = _reviewed_owner_ids(reviewed_owner_config)
     _require(type(record["who"]) is int and record["who"] > 0,
              "OVERRIDE_VERSION_AUTHORITY_INCOMPATIBLE: provenance override "
@@ -618,9 +626,13 @@ def verify_owner_override(record, *, reviewed_owner_config, pr=None,
 
 
 def record_owner_override(state, *, who, when, why, pr, covered_shas,
-                          reviewed_owner_config):
+                          reviewed_owner_config=None, trusted_owner_ids=None):
     """Seal and durably add one owner-approved fallback record to AWF state."""
     _require(isinstance(state, dict), "AWF state must be an object")
+    # The 1.9.4 keyword remains accepted as a non-authoritative compatibility
+    # input.  Provider verification below binds legacy records to the reviewed
+    # host observation; new callers pass reviewed_owner_config directly.
+    del trusted_owner_ids
     draft = {
         "schema_version": 1,
         "override_sha256": "",
@@ -635,8 +647,14 @@ def record_owner_override(state, *, who, when, why, pr, covered_shas,
     }
     # Validate all authority and shape before mutating caller-owned state.
     draft["override_sha256"] = fingerprint("provenance_override", _override_payload(draft))
-    verify_owner_override(draft, reviewed_owner_config=reviewed_owner_config,
-                          pr=pr)
+    if reviewed_owner_config is None:
+        _verify_override_shape(draft)
+        _require(type(draft["who"]) is int and draft["who"] > 0,
+                 "OVERRIDE_VERSION_AUTHORITY_INCOMPATIBLE: provenance override "
+                 "schema version 1 has a non-numeric owner id")
+    else:
+        verify_owner_override(draft, reviewed_owner_config=reviewed_owner_config,
+                              pr=pr)
     existing = state.get("provenance_overrides", {})
     _require(isinstance(existing, dict), "AWF provenance override state is malformed")
     key = str(pr)
@@ -648,7 +666,8 @@ def record_owner_override(state, *, who, when, why, pr, covered_shas,
 
 
 def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
-                             supersedes, reviewed_owner_config):
+                             supersedes, reviewed_owner_config=None,
+                             trusted_owner_ids=None):
     """Append a sealed replacement while preserving the original record.
 
     The original v1 record remains at ``provenance_overrides[pr]``.  Later
@@ -656,6 +675,10 @@ def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
     ``provenance_override_supersessions`` map.  The full existing chain and
     the proposed replacement are validated before caller-owned state changes.
     """
+    del trusted_owner_ids
+    _require(reviewed_owner_config is not None,
+             "OVERRIDE_VERSION_AUTHORITY_UNBOUND: superseding provenance "
+             "override requires digest-bound reviewed owner configuration")
     _require(isinstance(state, dict), "AWF state must be an object")
     originals = state.get("provenance_overrides", {})
     _require(isinstance(originals, dict), "AWF provenance override state is malformed")
@@ -777,8 +800,9 @@ def _verify_override_chain(record, predecessors, *, reviewed_owner_config, pr):
     return result
 
 
-def verify_provider_owner_override(record, observation, *, reviewed_owner_config,
-                                   repository_id=None):
+def verify_provider_owner_override(record, observation, *,
+                                   reviewed_owner_config=None,
+                                   repository_id=None, config_sha256=None):
     """Bind an override to reviewed numeric owners and one fresh comment."""
     _require(isinstance(observation, dict) and observation.get("version") == 1,
              "Provider provenance observation is missing")
@@ -787,12 +811,29 @@ def verify_provider_owner_override(record, observation, *, reviewed_owner_config
              and (repository_id is None
                   or observation['repository_id'] == repository_id),
              "Provider override repository identity mismatch")
-    _require(isinstance(observation.get('config_sha256'), str)
-             and _DIGEST.fullmatch(observation['config_sha256']),
+    observed_config_sha256 = observation.get('config_sha256')
+    _require(isinstance(observed_config_sha256, str)
+             and _DIGEST.fullmatch(observed_config_sha256),
              "Provider override reviewed configuration mismatch")
+    if config_sha256 is not None:
+        _require(config_sha256 == observed_config_sha256,
+                 "Provider override reviewed configuration mismatch")
+    if reviewed_owner_config is None:
+        # The 1.9.4 host observation copied the already-reviewed numeric IDs and
+        # its configuration digest into one provider snapshot.  Close and bind
+        # that legacy representation before it reaches the authority verifier.
+        payload = {
+            "config_sha256": observed_config_sha256,
+            "trusted_owner_ids": copy.deepcopy(
+                observation.get("trusted_owner_ids")),
+        }
+        reviewed_owner_config = {
+            **payload,
+            "binding_sha256": fingerprint("provenance_owner_config", payload),
+        }
     _reviewed_owner_ids(
         reviewed_owner_config,
-        expected_config_sha256=observation['config_sha256'],
+        expected_config_sha256=observed_config_sha256,
     )
     _require(type(record.get("who")) is int,
              "Provider overrides require a numeric GitHub actor id")

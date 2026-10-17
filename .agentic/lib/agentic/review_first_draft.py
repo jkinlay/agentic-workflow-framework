@@ -385,10 +385,12 @@ def run_first_draft(store, config, *, worker, publisher, observe_pr, republisher
             receipt = reservation.get('first_draft_worker_receipt')
             if receipt is None:
                 receipt = worker(reservation['inflight']['id'])
-                validate_worker_receipt(receipt, allowed_paths=set(config['allowed_paths']))
+                receipt = validate_worker_receipt(
+                    receipt, allowed_paths=set(config['allowed_paths']))
                 record_first_draft_worker_receipt(store, config, receipt)
             else:
-                validate_worker_receipt(receipt, allowed_paths=set(config['allowed_paths']))
+                receipt = validate_worker_receipt(
+                    receipt, allowed_paths=set(config['allowed_paths']))
             publication = publisher(receipt)
             require(isinstance(publication, dict) and publication.get('head'),
                     'First-draft publisher returned no observed head')
