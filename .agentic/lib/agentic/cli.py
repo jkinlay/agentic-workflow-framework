@@ -87,6 +87,43 @@ def _load_cli_intake_assignment(config, state_path, ticket_key):
     return runtime_config, runtime_assignment(runtime_config, ticket_key=ticket_key)
 
 
+def _load_cli_disposition_context(config, workflow, contracts, bundle_path,
+                                  ticket_key, head_sha):
+    """Derive disposition trust roots from the controller-selected candidate."""
+    if bundle_path is None:
+        raise ValidationError(
+            "Critic-driven dispositions require --bundle for the trusted current "
+            "ticket, contract, and candidate"
+        )
+    bundle = load(bundle_path)
+    contracts.validate("evidence-bundle", bundle)
+    from .gates import expected_binding
+    from .policy import policy_hash
+
+    try:
+        contract = bundle["contract"]
+        candidate = bundle["candidate"]
+        trusted_binding = expected_binding(config, workflow, bundle)
+        current_policy_hash = policy_hash(config, workflow)
+        context_matches = (
+            contract["ticket"] == ticket_key
+            and contract["policy_hash"] == current_policy_hash
+            and candidate["repository_id"] == config["github"]["repository_id"]
+            and candidate["head_sha"] == head_sha
+        )
+    except (KeyError, TypeError) as exc:
+        raise ValidationError(
+            "Trusted disposition bundle is missing ticket, contract, policy, "
+            "repository, or candidate identity"
+        ) from exc
+    if not context_matches:
+        raise ValidationError(
+            "Disposition bundle differs from the trusted selected ticket, "
+            "contract, repository, policy, or candidate context"
+        )
+    return bundle, trusted_binding
+
+
 def main(argv=None, default_root=None):
     configure_streams()
     parser = argparse.ArgumentParser(description=f"Agentic Workflow {VERSION} offline evidence tools; native streams use the host's delegation tools and PR automation uses review_loop.py")
@@ -132,6 +169,10 @@ def main(argv=None, default_root=None):
         help="Required AWF review-verdict for finding/cap disposition requests",
     )
     disposition_parser.add_argument(
+        "--bundle", type=Path,
+        help="Controller-selected current evidence bundle for critic-driven requests",
+    )
+    disposition_parser.add_argument(
         "--assignment-state", type=Path,
         help="Controller-owned persisted intake-assignment state for critic-driven requests",
     )
@@ -173,6 +214,8 @@ def main(argv=None, default_root=None):
     cap_parser.add_argument("--head", required=True, help="Candidate head SHA the owner signed against")
     cap_parser.add_argument("--review-verdict", type=Path, required=True,
                             help="Exact AWF review-verdict bound by this disposition")
+    cap_parser.add_argument("--bundle", type=Path, required=True,
+                            help="Controller-selected current evidence bundle")
     cap_parser.add_argument("--config", type=Path)
     cap_parser.add_argument(
         "--assignment-state", type=Path, required=True,
@@ -409,15 +452,20 @@ def main(argv=None, default_root=None):
                         config, assignment = _load_cli_intake_assignment(
                             config, args.assignment_state, args.ticket
                         )
+                        bundle, trusted_binding = _load_cli_disposition_context(
+                            config, workflow, contracts, args.bundle,
+                            args.ticket, args.head,
+                        )
                         from .gates import verify_disposition_review_binding
                         from .policy import policy_hash
                         verify_disposition_review_binding(
                             disposition, args.type, load(args.review_verdict),
                             contracts, args.head,
-                            expected_binding=disposition.get("binding"), config=config,
+                            expected_binding=trusted_binding, config=config,
                             assignment_record=assignment,
                             expected_policy_hash=policy_hash(config, workflow),
                             expected_ticket_key=args.ticket,
+                            candidate=bundle["candidate"],
                         )
                     elif args.review_verdict is not None:
                         raise ValidationError(
@@ -465,18 +513,23 @@ def main(argv=None, default_root=None):
                     )
                     disposition = load(args.disposition)
                     review_verdict = load(args.review_verdict)
+                    bundle, trusted_binding = _load_cli_disposition_context(
+                        config, workflow, contracts, args.bundle,
+                        args.ticket, args.head,
+                    )
                     from .authorization import verify_owner_record
                     verify_owner_record(disposition, "review-cap-disposition", config, contracts, now_text(), head_sha=args.head,
-                                        binding=review_verdict["binding"])
+                                        binding=trusted_binding)
                     from .gates import verify_disposition_review_binding
                     from .policy import policy_hash
                     output_binding = verify_disposition_review_binding(
                         disposition, "review-cap-disposition",
                         review_verdict, contracts, args.head,
-                        expected_binding=review_verdict.get("binding"), config=config,
+                        expected_binding=trusted_binding, config=config,
                         assignment_record=assignment,
                         expected_policy_hash=policy_hash(config, workflow),
                         expected_ticket_key=args.ticket,
+                        candidate=bundle["candidate"],
                     )
                     if (disposition.get("cycles") != args.cycles
                             or disposition.get("cap_extensions") != args.extensions):

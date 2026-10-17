@@ -264,11 +264,11 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
             )
         verify_disposition_review_binding(
             record, schema, matching_verdicts[0], contracts, record.get("head_sha", head),
-            expected_binding=record.get("binding"), config=config,
+            expected_binding=binding, config=config,
             assignment_record=assignment_record,
             expected_policy_hash=binding["policy_hash"],
             expected_ticket_key=bundle["contract"]["ticket"],
-            require_review_tuple=False,
+            candidate=bundle["candidate"],
         )
     return dispositions, cap
 
@@ -316,7 +316,7 @@ def review_verdict_json(verdict):
 def verify_disposition_review_binding(
         record, schema, verdict, contracts, head_sha, *, expected_binding=None,
         config=None, assignment_record=None, expected_policy_hash=None,
-        expected_ticket_key=None, require_review_tuple=True):
+        expected_ticket_key=None, candidate=None):
     """Bind a critic-driven owner disposition to one native review verdict."""
     if schema not in {"finding-disposition", "review-cap-disposition"}:
         raise ValidationError("This owner disposition type is not driven by a critic verdict")
@@ -325,7 +325,8 @@ def verify_disposition_review_binding(
             or not isinstance(config, dict)
             or not isinstance(assignment_record, dict)
             or not isinstance(expected_policy_hash, str)
-            or not isinstance(expected_ticket_key, str)):
+            or not isinstance(expected_ticket_key, str)
+            or not isinstance(candidate, dict)):
         raise ValidationError(
             "Disposition review verification requires trusted candidate context, "
             "configuration, assignment, and policy"
@@ -336,18 +337,27 @@ def verify_disposition_review_binding(
             "Disposition and review verdict must bind the same candidate context"
         )
     try:
+        from .canonical import candidate_id
         trusted_identity = {
             "project_id": config["project"]["id"],
             "repository_id": config["github"]["repository_id"],
             "issue_id": expected_binding["issue_id"],
             "policy_hash": expected_policy_hash,
-            "candidate_id": expected_binding["candidate_id"],
+            "candidate_id": candidate_id(candidate),
+        }
+        trusted_candidate_binding = {
+            "repository_id": config["github"]["repository_id"],
+            "pr_number": candidate["pr_number"],
+            "base_sha": candidate["target_base_sha"],
+            "head_sha": candidate["head_sha"],
         }
     except (KeyError, TypeError) as exc:
         raise ValidationError(
             "Disposition trusted configuration or assignment identity is incomplete"
         ) from exc
     if (assignment_record.get("ticket_key") != expected_ticket_key
+            or expected_binding.get("candidate_id") != trusted_identity["candidate_id"]
+            or candidate.get("repository_id") != trusted_identity["repository_id"]
             or any(binding.get(field) != value
                    for field, value in trusted_identity.items())):
         raise ValidationError(
@@ -372,22 +382,18 @@ def verify_disposition_review_binding(
         raise ValidationError(
             "Disposition review-verdict is missing candidate_binding or critic_review fields"
         )
-    expected_critic_verdict = (
-        "APPROVE" if verdict.get("verdict") == "PASS" else "REQUEST_CHANGES"
-    )
     review_tuple_consistent = not (
             verdict["owner_review"] is not False
             or verdict["head_sha"] != head_sha
             or artifact["critic_run_id"] != verdict["run_id"]
             or artifact["head_sha"] != verdict["head_sha"]
             or artifact["round"] != verdict["round"]
-            or candidate_binding["repository_id"] != binding["repository_id"]
-            or candidate_binding["head_sha"] != verdict["head_sha"]
+            or candidate_binding != trusted_candidate_binding
+            or verdict["head_sha"] != trusted_candidate_binding["head_sha"]
             or critic_review["run_id"] != verdict["run_id"]
             or critic_review["head_sha"] != verdict["head_sha"]
-            or critic_review["round"] != verdict["round"]
-            or critic_review["verdict"] != expected_critic_verdict)
-    if require_review_tuple and not review_tuple_consistent:
+            or critic_review["round"] != verdict["round"])
+    if not review_tuple_consistent:
         raise ValidationError(
             "Disposition requires the exact AWF review-verdict for the exact candidate "
             "head; candidate_binding and critic_review must match the top-level "
