@@ -289,6 +289,59 @@ class SafeWriteAndDiagnosticTests(unittest.TestCase):
         self.assertEqual(rendered.count("<redacted-credential>"), len(assignments))
         self.assertEqual(rendered.count("<redacted-path>"), len(network_paths))
 
+    def test_diagnostic_redacts_complete_unc_paths_with_valid_punctuation(self):
+        backslash = chr(92)
+        network_paths = (
+            (backslash * 2) + backslash.join(
+                ("server", "Shared Folder", "secret [1].txt")
+            ),
+            (backslash * 2) + backslash.join(
+                ("server", "Project {Phoenix}", "secret.txt")
+            ),
+            (backslash * 2) + backslash.join(
+                ("server", "Shared Folder", "secret,backup.txt")
+            ),
+            (backslash * 2) + backslash.join(
+                ("server", "Project Phoenix", "secret!#$%&'()+,-.;=@[]^_`{}~.txt")
+            ),
+        )
+        payload = "\n".join("failed at " + path for path in network_paths)
+
+        rendered = child_process.render_diagnostic(payload)
+
+        self.assertEqual(
+            rendered,
+            "\\x0a".join(["failed at <redacted-path>"] * len(network_paths)),
+        )
+
+    def test_log_redacts_complete_unc_paths_with_valid_punctuation(self):
+        backslash = chr(92)
+        network_paths = (
+            (backslash * 2) + backslash.join(
+                ("server", "Shared Folder", "secret [1].txt")
+            ),
+            (backslash * 2) + backslash.join(
+                ("server", "Project {Phoenix}", "secret.txt")
+            ),
+            (backslash * 2) + backslash.join(
+                ("server", "Shared Folder", "secret,backup.txt")
+            ),
+            (backslash * 2) + backslash.join(
+                ("server", "Project Phoenix", "secret!#$%&'()+,-.;=@[]^_`{}~.txt")
+            ),
+        )
+        payload = "\n".join("failed at " + path for path in network_paths)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with safeio.Tree(directory) as tree:
+                safeio.write_log(tree, "result.log", payload, maximum=2048)
+                rendered = tree.read("result.log").decode("utf-8")
+
+        self.assertEqual(
+            rendered,
+            "\\x0a".join(["failed at <redacted-path>"] * len(network_paths)) + "\n",
+        )
+
     def test_diagnostic_digest_binds_raw_bytes_not_redacted_text(self):
         slash = chr(47)
         left = "token=first " + slash.join(("", "home", "alice", "file"))
