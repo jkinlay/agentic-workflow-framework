@@ -82,12 +82,13 @@ def github_identity_preflight(config, observation):
     if type(actor_id) is not int or actor_id < 1 or type(repository_id) is not int or repository_id < 1:
         raise ProviderIdentityError("INVALID_OBSERVATION", "GitHub immutable IDs must be positive integers",
                                     expected=expected, observed=observation)
-    # Owner separation applies when an owner allowlist is supplied. Absent
-    # policy and the valid empty adoption allowlist add no identity requirement.
+    # Only absent/null policy, empty lists/mappings and a valid empty adoption
+    # allowlist add no identity requirement. Validate every other policy shape.
     gate = config.get("merge_gate")
     owners = ()
-    if (isinstance(gate, dict) and "trusted_owner_ids" in gate
-            and gate["trusted_owner_ids"] != []):
+    absent_policy = gate is None or gate == [] or gate == {}
+    empty_allowlist = isinstance(gate, dict) and gate.get("trusted_owner_ids") == []
+    if not (absent_policy or empty_allowlist):
         from .authorization import trusted_owner_ids
         # Bind profile-only admission to the validated observation without
         # changing reviewed configuration or the reported expected identity.
