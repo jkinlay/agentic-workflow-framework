@@ -5,6 +5,10 @@ import json
 import os
 from pathlib import Path
 import re
+from dataclasses import dataclass
+import hashlib
+import threading
+from types import MappingProxyType
 
 
 PROVIDER_API_KEY_ENV_VARS = frozenset({
@@ -20,6 +24,225 @@ HOST_AUTH_ENV_VARS = frozenset({"GH_TOKEN", "GITHUB_TOKEN"})
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_CONFIG_BYTES = 1024 * 1024
 _DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "PROJECT_CONFIG.yaml"
+
+_MIB = 1024 * 1024
+
+
+class ChildProcessPolicyError(ValueError):
+    """A closed runner policy or its shared budget was violated."""
+
+
+@dataclass(frozen=True)
+class RunnerPolicy:
+    """Immutable resource policy for one class of owned child operation."""
+
+    name: str
+    stdin_limit: int
+    stdout_limit: int
+    stderr_limit: int
+    aggregate_output_limit: int
+    watched_file_limit: int
+    timeout: float
+    operation_budget: int
+
+    def __post_init__(self):
+        if not isinstance(self.name, str) or not self.name:
+            raise ChildProcessPolicyError("RUNNER_POLICY: name must be non-empty text")
+        integer_values = (
+            self.stdin_limit,
+            self.stdout_limit,
+            self.stderr_limit,
+            self.aggregate_output_limit,
+            self.watched_file_limit,
+            self.operation_budget,
+        )
+        if any(type(value) is not int or value < 0 for value in integer_values):
+            raise ChildProcessPolicyError("RUNNER_POLICY: caps must be non-negative integers")
+        if (not isinstance(self.timeout, (int, float)) or isinstance(self.timeout, bool)
+                or self.timeout <= 0):
+            raise ChildProcessPolicyError("RUNNER_POLICY: timeout must be positive")
+        if self.aggregate_output_limit > self.stdout_limit + self.stderr_limit:
+            raise ChildProcessPolicyError(
+                "RUNNER_POLICY: aggregate cap cannot exceed the channel caps")
+        if self.operation_budget < self.aggregate_output_limit:
+            raise ChildProcessPolicyError(
+                "RUNNER_POLICY: operation budget cannot be smaller than one operation")
+
+    @property
+    def operation_budget_limit(self):
+        return self.operation_budget
+
+    def make_budget(self, name=None, *, operation_limit=None):
+        """Create mutable accounting without making the policy itself mutable."""
+        return OperationBudget(
+            name or self.name,
+            byte_limit=self.operation_budget,
+            operation_limit=operation_limit,
+        )
+
+
+GIT_RUNNER_POLICY = RunnerPolicy(
+    "git", _MIB, 32 * _MIB, 32 * _MIB, 32 * _MIB, 32 * _MIB, 300, 64 * _MIB)
+HOST_PROVIDER_RUNNER_POLICY = RunnerPolicy(
+    "host-provider", _MIB, 8 * _MIB, _MIB, 8 * _MIB, 8 * _MIB, 120, 8 * _MIB)
+CODEX_LOG_RUNNER_POLICY = RunnerPolicy(
+    "codex-log", _MIB, 32 * _MIB, 8 * _MIB, 32 * _MIB, 32 * _MIB, 3600, 64 * _MIB)
+STREAMING_RUNNER_POLICY = RunnerPolicy(
+    "streaming", _MIB, 8 * _MIB, 8 * _MIB, 8 * _MIB, 8 * _MIB, 300, 64 * _MIB)
+
+# Aliases keep policy selection readable without making the mapping mutable.
+GIT_POLICY = GIT_RUNNER_POLICY
+HOST_PROVIDER_POLICY = HOST_PROVIDER_RUNNER_POLICY
+CODEX_LOG_POLICY = CODEX_LOG_RUNNER_POLICY
+STREAMING_POLICY = STREAMING_RUNNER_POLICY
+RUNNER_POLICIES = MappingProxyType({
+    policy.name: policy for policy in (
+        GIT_RUNNER_POLICY,
+        HOST_PROVIDER_RUNNER_POLICY,
+        CODEX_LOG_RUNNER_POLICY,
+        STREAMING_RUNNER_POLICY,
+    )
+})
+
+
+class OperationBudget:
+    """Thread-safe, non-resettable accounting shared by related operations."""
+
+    def __init__(self, name, *, byte_limit, operation_limit=None):
+        if not isinstance(name, str) or not name:
+            raise ChildProcessPolicyError("OPERATION_BUDGET: name must be non-empty text")
+        if type(byte_limit) is not int or byte_limit < 0:
+            raise ChildProcessPolicyError("OPERATION_BUDGET: byte limit is invalid")
+        if (operation_limit is not None
+                and (type(operation_limit) is not int or operation_limit < 1)):
+            raise ChildProcessPolicyError("OPERATION_BUDGET: operation limit is invalid")
+        self._name = name
+        self._byte_limit = byte_limit
+        self._operation_limit = operation_limit
+        self._consumed_bytes = 0
+        self._operations = 0
+        self._lock = threading.Lock()
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def byte_limit(self):
+        return self._byte_limit
+
+    @property
+    def consumed_bytes(self):
+        with self._lock:
+            return self._consumed_bytes
+
+    @property
+    def remaining_bytes(self):
+        with self._lock:
+            return self._byte_limit - self._consumed_bytes
+
+    @property
+    def operations(self):
+        with self._lock:
+            return self._operations
+
+    def start_operation(self):
+        with self._lock:
+            if (self._operation_limit is not None
+                    and self._operations >= self._operation_limit):
+                raise ChildProcessPolicyError(
+                    f"OPERATION_BUDGET: {self._name} operation limit exceeded")
+            self._operations += 1
+
+    def consume(self, amount):
+        if type(amount) is not int or amount < 0:
+            raise ChildProcessPolicyError("OPERATION_BUDGET: debit is invalid")
+        with self._lock:
+            if amount > self._byte_limit - self._consumed_bytes:
+                raise ChildProcessPolicyError(
+                    f"OPERATION_BUDGET: {self._name} byte limit exceeded")
+            self._consumed_bytes += amount
+
+
+_SENSITIVE_NAME = (
+    r"(?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|access[_-]?token|"
+    r"refresh[_-]?token|private[_-]?token|client[_-]?secret|password|passwd|"
+    r"secret|token)(?:[_-][a-z0-9]+)*"
+)
+_QUOTED_CREDENTIAL_VALUE = (
+    r'"(?:\\[^\r\n]|[^"\\\r\n])*"'
+    r"|'(?:\\[^\r\n]|[^'\\\r\n])*'"
+)
+_CREDENTIAL_PATTERNS = (
+    re.compile(
+        r'''(?i)(\bauthorization\s*:\s*(?:bearer|token|basic)\s+)'''
+        r'''(?:''' + _QUOTED_CREDENTIAL_VALUE + r'''|[^\s,;]+)'''),
+    re.compile(
+        r"(?i)((?<![a-z0-9_])[\"']?" + _SENSITIVE_NAME +
+        r'''["']?\s*[=:]\s*)(?:''' + _QUOTED_CREDENTIAL_VALUE +
+        r'''|[^\s,;&"']+)'''),
+    re.compile(
+        r"(?i)((?<![a-z0-9_])--" + _SENSITIVE_NAME + r'''(?:=|\s+))'''
+        r'''(?:''' + _QUOTED_CREDENTIAL_VALUE + r'''|[^\s,;&"']+)'''),
+    re.compile(r"(?i)(https?://)[^/@\s]+@"),
+    re.compile(r"(?i)\b(?:github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]+"),
+)
+_LOCAL_PATH_PATTERNS = (
+    re.compile(
+        r'''(?i)(?:"(?:\\\\|[A-Z]:[\\/]|/(?!/))[^"\r\n]*"'''
+        r'''|'(?:\\\\|[A-Z]:[\\/]|/(?!/))[^'\r\n]*')'''),
+    re.compile(
+        r'''\\\\[^\\\s]+\\[^\x00-\x1f<>:"/\\|?*]+'''
+        r'''(?:\\[^\x00-\x1f<>:"/\\|?*]*)*'''),
+    re.compile(r'''(?i)\b[A-Z]:[\\/][^\r\n:;,"'\[\]{}()]*'''),
+    re.compile(r'''(?<![:/\w])/(?!/)[^\r\n:;,"'\[\]{}()]*'''),
+)
+
+
+def _diagnostic_text(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if not isinstance(value, str):
+        return str(value)
+    return value
+
+
+def render_diagnostic(value, *, credentials=(), paths=()):
+    """Render untrusted diagnostics without credentials, local paths, or controls."""
+    text = _diagnostic_text(value)
+    for credential in credentials:
+        if isinstance(credential, bytes):
+            credential = credential.decode("utf-8", errors="replace")
+        if isinstance(credential, str) and credential:
+            text = text.replace(credential, "<redacted-credential>")
+    for pattern in _CREDENTIAL_PATTERNS:
+        if pattern.groups:
+            text = pattern.sub(lambda match: match.group(1) + "<redacted-credential>", text)
+        else:
+            text = pattern.sub("<redacted-credential>", text)
+    for path in paths:
+        rendered_path = os.fspath(path)
+        if isinstance(rendered_path, bytes):
+            rendered_path = rendered_path.decode("utf-8", errors="replace")
+        if rendered_path:
+            text = text.replace(rendered_path, "<redacted-path>")
+    for pattern in _LOCAL_PATH_PATTERNS:
+        text = pattern.sub("<redacted-path>", text)
+    rendered = []
+    for character in text:
+        codepoint = ord(character)
+        if codepoint < 0x20 or 0x7F <= codepoint <= 0x9F:
+            rendered.append(f"\\x{codepoint:02x}")
+        else:
+            rendered.append(character)
+    return "".join(rendered)
+
+
+def diagnostic_digest(value):
+    """Return a digest of raw diagnostic bytes without retaining those bytes."""
+    raw = (value if isinstance(value, bytes)
+           else _diagnostic_text(value).encode("utf-8", errors="replace"))
+    return hashlib.sha256(raw).hexdigest()
 
 ISOLATED_GIT_ENV = {
     "GIT_ATTR_NOSYSTEM": "1",

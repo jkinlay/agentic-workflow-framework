@@ -1,8 +1,8 @@
 # Merge train ADR and tests-first plan
 
-**Status:** proposed, design only. AWF-54 is Tier 3 with `FULL` closure. No
-implementation starts until the four owner questions below are decided. This
-ADR grants no provider, merge, Jira, or target-push authority.
+**Status:** owner decisions recorded; sequential 54A implementation in progress.
+AWF-54 is Tier 3 with `FULL` closure. This ADR and 54A grant no provider
+publication, merge, Jira, or target-push authority.
 
 ## Context and recommended design
 
@@ -14,11 +14,16 @@ It must not turn the serial queue into batch mode or add a weaker approval
 store.
 
 Admission should reconstruct each source PR's current final gate and bind its
-exact head, tree, base, critic completion, required CI, provenance outcome, and
-provider-observed owner review. Source evidence authorizes admission only; it
-cannot authorize the batch. The batch needs its own authenticated mark-ready
-operation, frozen independent reviews, final gate, owner authorization, and
-human merge.
+exact head, tree, base, critic completion, required CI, and provenance outcome.
+Where that source tier's normal final gate requires owner review, admission also
+requires a fresh provider-observed exact-head owner review. Source evidence
+authorizes admission only; it cannot authorize the batch. The batch needs its
+own authenticated mark-ready operation, frozen independent reviews, final gate,
+owner authorization, and human merge.
+
+The library default retains the prior adopter-on/AWF-repository-off policy.
+Configuration projections remain unchanged in 54A; 54B applies the accepted
+default where its configuration work is in scope.
 
 One generation freezes the target and admitted source heads. It orders sources
 dependency-first, then by approval time and PR number, and builds a two-parent
@@ -53,12 +58,13 @@ admission, ordering, generation invalidation, and narrowly registered batch
 provenance. **54B**, based on accepted 54A, adds authenticated publication,
 freeze-race handling, batch lifecycle/final-gate plumbing, constituent
 closeout, and controller-only reconciliation. Both are Tier 3 and receive
-independent current-head review; 54A grants no live publication path.
+independent current-head review. Delivery is sequential, 54A then 54B; 54A
+grants no live publication path.
 
 ## Tests-first plan
 
 Each implementation assertion is added before its code, demonstrated failing
-on `2f5aabf`, then passing on its implementation head. Tests use temporary
+on `3a8add0`, then passing on its implementation tree. Tests use temporary
 repositories, portable POSIX-style fixture paths, and no network.
 
 54A first tests the admission matrix (stale/missing/wrong-head approval, critic,
@@ -82,17 +88,13 @@ gates/contracts; AWF-117 must first bind commit-range provenance into the
 existing gate. AWF-145's final draft/full-CI behavior and a live AWF-142 freeze
 observation are runtime prerequisites, never inferred from unmerged source.
 
-## Open owner questions
+## Owner decisions
 
-1. What does **owner-approved** mean? **Option A (recommended):** a fresh
-   provider-observed exact-head owner review qualifies a source for admission
-   only. **Option B:** treat source merge authorization as replayable for the
-   batch.
-2. What is the default? **Option A (recommended):**
-   `merge_train.enabled: false` in every projection until explicit opt-in.
-   **Option B:** retain the old adopter-on/AWF-repository-off ruling.
-3. What is the delivery shape? **Option A (recommended):** sequential 54A and
-   54B PRs. **Option B:** retain the old one-PR ruling.
-4. Must lower-tier sources have owner approval before admission? **Option A
-   (recommended):** require the same exact-head owner review for every source.
-   **Option B:** require it only where the source tier's normal final gate does.
+Jonathan via DevHead decided:
+
+1. "Q1=A: a fresh provider-observed exact-head owner review admits a source
+   only."
+2. "Q2=B: keep the old ruling, adopter on, AWF repo off."
+3. "Q3=A: sequential 54A then 54B PRs."
+4. "Q4=B: owner review only where the source tier's normal final gate requires
+   it."
