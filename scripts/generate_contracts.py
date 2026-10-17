@@ -908,7 +908,7 @@ def catalog(*, include_ticket_plan=True):
           "authorization_ttl_seconds": integer(1, maximum=86400), "trusted_owner_ids": arr(integer(1), 0, uniqueItems=True),
           "production_posting_collector_ids": arr(text(), 0, uniqueItems=True),
           "high_risk_owner_quorum": integer(1)}),
-        "controller": obj({**{k: FALSE for k in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments"]},
+        "controller": obj({**{k: BOOL for k in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments"]},
                            "auto_transition_jira": BOOL, "status_cadence_seconds": integer(1)}),
         "audit": obj({"store_must_be_outside_worktrees": TRUE, "retention_days": integer(1), "redact_secrets": TRUE}),
         "portfolio": obj({"read_only": TRUE, "cross_project_dispatch": FALSE})})

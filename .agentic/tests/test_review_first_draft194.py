@@ -17,6 +17,7 @@ from source_only import skip_unless_source_repo  # noqa: E402
 from agentic import ValidationError
 from agentic.canonical import now_text, sha256
 from agentic.review_first_draft import (enroll_created_pr, publication_scan,
+                                         excluded_worktree_inventory,
                                          publish_tested_tree,
                                          render_first_draft_body,
                                          run_first_draft,
@@ -123,6 +124,34 @@ class FirstDraftTests(unittest.TestCase):
                                         for index in range(100000)]
         with self.assertRaisesRegex(ValidationError, 'WORKER_RECEIPT_INVALID'):
             validate_worker_receipt(receipt, allowed_paths={'caf\u00e9.txt'})
+
+    def test_in35_validated_receipt_is_a_frozen_snapshot(self):
+        receipt = {'outcome': 'CHANGED',
+                   'changes': [{'path': 'a.txt', 'action': 'modified'}],
+                   'tested_tree': 'a' * 40, 'ignored_untracked': [],
+                   'summary': 'changed'}
+        validated = validate_worker_receipt(receipt, allowed_paths={'a.txt'})
+        receipt['changes'][0]['path'] = 'outside.txt'
+        receipt['ignored_untracked'].append('later.txt')
+        self.assertEqual('a.txt', validated['changes'][0]['path'])
+        self.assertEqual([], validated['ignored_untracked'])
+
+    def test_in36_git_exclusion_inventory_freezes_declared_additions_before_reads(self):
+        changes = [{'path': 'added.txt', 'action': 'added'}]
+
+        class MutatingGit:
+            calls = 0
+
+            def run(self, *args):
+                self.calls += 1
+                if self.calls == 1:
+                    changes[0]['path'] = 'ignored.txt'
+                    return b'ignored.txt\0'
+                return b''
+
+        self.assertEqual(
+            ['ignored.txt'], excluded_worktree_inventory(MutatingGit(), changes),
+        )
 
     def test_first_draft_body_fields_are_bounded_escaped_and_digest_stable(self):
         body = render_first_draft_body(
@@ -523,6 +552,54 @@ class FirstDraftTests(unittest.TestCase):
             self.assertEqual(calls, ['publish', 'observe'])
             self.assertEqual(state['agent_runs'], 1)
             store.close()
+
+    def test_in35_first_draft_forwards_frozen_receipt_on_fresh_and_retry_paths(self):
+        receipt = {'outcome': 'CHANGED',
+                   'changes': [{'path': 'src/a.py', 'action': 'added'}],
+                   'tested_tree': 'a' * 40, 'ignored_untracked': [],
+                   'summary': 'worker-owned'}
+        config = {'key': '12:0', 'repository_id': 12, 'pr': 0,
+                  'repository': 'fixture/project', 'config_hash': 'x',
+                  'initial_findings': [], 'max_agent_runs': 10,
+                  'allowed_paths': ['src/a.py']}
+
+        with tempfile.TemporaryDirectory() as name:
+            store = LoopStore(Path(name))
+            try:
+                with patch('agentic.review_first_draft.validate_worker_receipt',
+                           side_effect=lambda value, **_:
+                           {**deepcopy(value), 'summary': 'frozen-fresh'}):
+                    with self.assertRaisesRegex(RuntimeError, 'pause after receipt'):
+                        run_first_draft(
+                            store, config, worker=lambda _run_id: receipt,
+                            publisher=lambda value:
+                            (_ for _ in ()).throw(RuntimeError(
+                                'pause after receipt'
+                                if value['summary'] == 'frozen-fresh'
+                                else 'unfrozen fresh receipt')),
+                            observe_pr=lambda _publication: None,
+                        )
+
+                paused = store.get('12:0')
+                self.assertEqual('frozen-fresh',
+                                 paused['first_draft_worker_receipt']['summary'])
+                resume_first_draft(store, config, paused['inflight']['id'])
+                seen = []
+                with patch('agentic.review_first_draft.validate_worker_receipt',
+                           side_effect=lambda value, **_:
+                           {**deepcopy(value), 'summary': 'frozen-retry'}):
+                    with self.assertRaisesRegex(RuntimeError, 'pause after retry'):
+                        run_first_draft(
+                            store, config,
+                            worker=lambda _run_id: (_ for _ in ()).throw(
+                                AssertionError('worker replayed')),
+                            publisher=lambda value: seen.append(value['summary']) or
+                            (_ for _ in ()).throw(RuntimeError('pause after retry')),
+                            observe_pr=lambda _publication: None,
+                        )
+                self.assertEqual(['frozen-retry'], seen)
+            finally:
+                store.close()
 
     def test_failed_first_draft_is_paused_with_reserved_run(self):
         with tempfile.TemporaryDirectory() as name:
