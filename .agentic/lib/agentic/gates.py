@@ -2,6 +2,7 @@
 from __future__ import annotations
 import base64
 import binascii
+from copy import deepcopy
 from datetime import timedelta
 import fnmatch
 from pathlib import Path
@@ -18,6 +19,124 @@ from .policy import (CAPABILITIES, dependencies_satisfied, inside_scope, safe_pa
 from .review_policy import (blocking_findings, check_tier_declaration, closure_met, is_boundary,
                             tier1_specialist_domains, validate_findings)
 from .review_tiers import classify
+
+
+def validate_batch_candidate(generation, candidate, config):
+    """Bind a batch to the reviewed provider and frozen construction target.
+
+    The generation is construction evidence, never publication or merge authority.
+    Runtime observers, rather than candidate records, supply live truth.
+    """
+    from .merge_train import _validate_generation, _require, _sha, _positive
+    _validate_generation(generation)
+    _require(isinstance(candidate, dict), "Batch candidate must be an object")
+    identity = generation["provider_identity"]
+    for key in ("host", "repository", "repository_id"):
+        _require(candidate.get(key) == identity[key] == config["github"].get(key),
+                 f"Batch candidate {key} differs from reviewed provider identity")
+    _positive(candidate.get("pr_number"), "batch PR number")
+    _require(candidate["pr_number"] not in {s["pr_number"] for s in generation["sources"]},
+             "Batch PR cannot be a constituent source PR")
+    for key in ("head_sha", "head_tree_sha", "target_base_sha"):
+        _sha(candidate.get(key), f"batch {key}")
+    _require(candidate.get("target_base_branch") == generation["target_branch"]
+             == config["github"].get("base_branch")
+             and candidate["target_base_sha"] == generation["target_sha"],
+             "Batch candidate differs from the frozen target")
+
+
+def evaluate_batch_final_gate(config, workflow, bundle, contracts, now, *,
+                              generation, observer_id, observer_registry,
+                              posting_collector_registry=None, repository=None):
+    """Layer full-batch CI observation over the unchanged normal final gate.
+
+    This library-only record introduces no schema, provider mutation or permit.
+    The host supplies the registered observer and the protected frozen review
+    submission. Normal findings, provenance and review barriers remain mandatory.
+    """
+    from .merge_train import _registered_observation, _require
+    validate_batch_candidate(generation, bundle["candidate"], config)
+    final_gate = evaluate(config, workflow, bundle, contracts, now,
+                          posting_collector_registry=posting_collector_registry,
+                          repository=repository)
+    _require(final_gate["conclusion"] == "READY_FOR_OWNER_AUTHORIZATION",
+             "Batch requires a passing normal final gate")
+    _require(all(check.get("tested_commit_sha") == bundle["candidate"]["head_sha"]
+                 for check in bundle["ci"]["checks"]),
+             "Every batch CI check must test the exact batch head")
+    request = {
+        "operation": "BATCH_FINAL_GATE",
+        "provider_identity": deepcopy(generation["provider_identity"]),
+        "generation_id": generation["generation_id"],
+        "candidate": deepcopy(bundle["candidate"]),
+        "configuration_sha256": fingerprint("batch_configuration", config),
+        "gate_sha256": fingerprint("gate", final_gate),
+        "review_submission_sha256": fingerprint("batch_reviews", final_gate["review_submission"]),
+        "ci_sha256": fingerprint("batch_ci", bundle["ci"]),
+    }
+    result, _, observation = _registered_observation(
+        observer_registry, observer_id, request, now=now,
+        max_age_seconds=config["validation"]["max_evidence_age_seconds"])
+    expected = {key: deepcopy(request[key]) for key in (
+        "candidate", "generation_id", "gate_sha256", "review_submission_sha256", "ci_sha256")}
+    expected["ci_scope"] = "FULL"
+    _require(result == expected, "Batch gate requires full exact-head CI and frozen reviews")
+    record = {
+        "format": "awf-batch-final-gate-1", "generation_id": generation["generation_id"],
+        "final_gate": final_gate, "request": request, "observation": observation,
+        "observer_id": observer_id, "conclusion": "READY_FOR_OWNER_AUTHORIZATION",
+        "execution_authority": False,
+    }
+    record["batch_gate_id"] = fingerprint("batch_final_gate", record)
+    return record
+
+
+def validate_batch_final_gate(record, generation, candidate, config, contracts,
+                              observer_registry, *, now):
+    """Recheck retained normal-gate bytes and registered full-batch observation."""
+    from .merge_train import _require, _validate_registered_observation
+    from .review_completion import validate_ready_gate_completion
+    validate_batch_candidate(generation, candidate, config)
+    fields = {"format", "generation_id", "final_gate", "request", "observation",
+              "observer_id", "conclusion", "execution_authority", "batch_gate_id"}
+    _require(isinstance(record, dict) and set(record) == fields,
+             "Batch final gate has an invalid shape")
+    _require(record["format"] == "awf-batch-final-gate-1"
+             and record["generation_id"] == generation["generation_id"]
+             and record["execution_authority"] is False
+             and record["conclusion"] == "READY_FOR_OWNER_AUTHORIZATION"
+             and record["batch_gate_id"] == fingerprint("batch_final_gate", {
+                 k: v for k, v in record.items() if k != "batch_gate_id"}),
+             "Batch gate identity or authority differs")
+    gate = record["final_gate"]
+    contracts.validate("final-gate", gate)
+    validate_ready_gate_completion(gate)
+    _require(gate["candidate"] == candidate
+             and all(g["result"] in {"PASS", "N_A"} for g in gate["gates"].values()),
+             "Batch final gate is failed or belongs to a different candidate")
+    _require(timestamp(gate["created_at"]) <= timestamp(now) < timestamp(gate["expires_at"]),
+             "Batch final gate is expired or from the future")
+    request = record["request"]
+    expected = {
+        "operation": "BATCH_FINAL_GATE", "provider_identity": generation["provider_identity"],
+        "generation_id": generation["generation_id"], "candidate": candidate,
+        "configuration_sha256": fingerprint("batch_configuration", config),
+        "gate_sha256": fingerprint("gate", gate),
+        "review_submission_sha256": fingerprint("batch_reviews", gate["review_submission"]),
+        "ci_sha256": request.get("ci_sha256"),
+    }
+    _require(request == expected and isinstance(request["ci_sha256"], str)
+             and re.fullmatch(r"[0-9a-f]{64}", request["ci_sha256"]),
+             "Batch final gate request binding differs")
+    registration = observer_registry.get(record["observer_id"], {})
+    result, _ = _validate_registered_observation(
+        registration, record["observer_id"], request, record["observation"], now=now,
+        max_age_seconds=config["validation"]["max_evidence_age_seconds"])
+    expected_result = {k: request[k] for k in (
+        "candidate", "generation_id", "gate_sha256", "review_submission_sha256", "ci_sha256")}
+    _require(result == dict(expected_result, ci_scope="FULL"),
+             "Batch gate observation is not full exact-batch evidence")
+    return record["batch_gate_id"]
 
 
 def decode_base64_bytes(value, field):
