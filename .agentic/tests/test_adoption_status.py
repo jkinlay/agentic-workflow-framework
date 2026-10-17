@@ -1172,3 +1172,73 @@ class AdoptionStatusTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ActivationStatusReportTests(unittest.TestCase):
+    """Doc 46 T14, appended without modifying existing tests or fixtures."""
+
+    def test_activation_require_active_exit_codes_and_output_unchanged_apart_from_report(self):
+        from contextlib import redirect_stderr
+        import importlib
+        from agentic.cli import main
+
+        # CLI spelling/alias remains open question 1. A proposed in-process
+        # seam supplies the implementation's report arguments instead of
+        # freezing a flag here. Fix legacy bytes/exits and additive behavior.
+        cases = (
+            ('ACTIVE', False, 0), ('ACTIVE', True, 0),
+            ('CONFIGURED', False, 0), ('CONFIGURED', True, 4),
+            (None, False, 2), (None, True, 4),
+        )
+        with tempfile.TemporaryDirectory(prefix='awf-report-cli-') as temporary:
+            root = Path(temporary)
+            baselines = []
+            for state, require_active, expected_exit in cases:
+                for json_mode in (False, True):
+                    observed = {
+                        'line': 'AWF ' + VERSION + ': ' + (state or 'UNKNOWN'),
+                        'project_state': state, 'next_action': None,
+                    }
+                    arguments = ['--root', str(root), 'status']
+                    if require_active:
+                        arguments.append('--require-active')
+                    if json_mode:
+                        arguments.append('--json')
+                    out, err = io.StringIO(), io.StringIO()
+                    with patch.object(status, 'project_status', return_value=observed), \
+                            redirect_stdout(out), redirect_stderr(err):
+                        code = main(arguments)
+                    expected = ((json.dumps(observed, indent=2, ensure_ascii=True) + '\n')
+                                if json_mode else observed['line'] + '\n')
+                    self.assertEqual(code, expected_exit, (state, require_active, json_mode))
+                    self.assertEqual(out.getvalue().encode('utf-8'), expected.encode('utf-8'))
+                    self.assertEqual(err.getvalue(), '')
+                    baselines.append((arguments, observed, expected_exit, out.getvalue()))
+
+            module = importlib.import_module('agentic.status_report')
+            report_arguments = module.status_report_arguments()
+            self.assertIsInstance(report_arguments, (list, tuple))
+            self.assertTrue(report_arguments, 'Missing status report option')
+            self.assertTrue(all(isinstance(arg, str) for arg in report_arguments))
+            # A deterministic hook result isolates CLI compatibility from source
+            # collection. Real report content/format is covered by T11 and T12.
+            report = {'trigger': 'activation', 'inputs_sha256': 'a' * 64}
+            for arguments, observed, expected_exit, baseline in baselines:
+                with self.subTest(state=observed['project_state'], arguments=arguments):
+                    out, err = io.StringIO(), io.StringIO()
+                    with patch.object(status, 'project_status', return_value=observed), \
+                            patch.object(module, 'activation_report', return_value=report) as hook, \
+                            patch.object(module, 'render_text', return_value='fixture report'), \
+                            redirect_stdout(out), redirect_stderr(err):
+                        try:
+                            code = main(arguments + list(report_arguments))
+                        except SystemExit as exc:
+                            self.fail('Status report option rejected: ' + str(exc.code))
+                    self.assertEqual(code, expected_exit)
+                    self.assertEqual(err.getvalue(), '')
+                    hook.assert_called_once()
+                    if '--json' in arguments:
+                        self.assertEqual(json.loads(out.getvalue()), {**observed, 'report': report})
+                    else:
+                        self.assertEqual(out.getvalue().encode('utf-8'),
+                                         (baseline + 'fixture report\n').encode('utf-8'))
