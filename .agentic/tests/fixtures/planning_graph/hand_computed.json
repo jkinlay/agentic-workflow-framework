@@ -1,0 +1,136 @@
+{
+  "lane_cap": 2,
+  "start_gap_minutes": 2,
+  "tier3_round_cap": 3,
+  "generator_order": [
+    "AWF-115",
+    "AWF-36",
+    "AWF-88",
+    "AWF-117",
+    "AWF-54",
+    "AWF-34"
+  ],
+  "tickets": [
+    {
+      "key": "AWF-115",
+      "dependencies": [],
+      "write_paths": [
+        "scripts/generate_contracts.py"
+      ],
+      "duration_minutes": 10,
+      "risk_tier": 3,
+      "round_cap": 3,
+      "owner_review_window": {
+        "opens_at_minute": 0,
+        "closes_at_minute": 20
+      },
+      "lane_class": "critical",
+      "owner_lane": "framework-planning",
+      "blockers": [],
+      "idle_lane_reason": null,
+      "phase": "writer",
+      "status": "ready",
+      "in_lane": true
+    },
+    {
+      "key": "AWF-36",
+      "dependencies": [
+        "AWF-115"
+      ],
+      "write_paths": [
+        "scripts/generate_contracts.py"
+      ],
+      "duration_minutes": 5,
+      "risk_tier": 3,
+      "round_cap": 3,
+      "owner_review_window": null,
+      "lane_class": "feeder",
+      "owner_lane": "framework-contracts",
+      "blockers": [
+        "PREDECESSOR_UNMERGED"
+      ],
+      "idle_lane_reason": "PREDECESSOR_UNMERGED",
+      "phase": "planning",
+      "status": "waiting",
+      "in_lane": false
+    },
+    {
+      "key": "AWF-200",
+      "dependencies": [],
+      "write_paths": [
+        "docs/independent.md"
+      ],
+      "duration_minutes": 8,
+      "risk_tier": 1,
+      "round_cap": 1,
+      "owner_review_window": null,
+      "lane_class": "feeder",
+      "owner_lane": "docs",
+      "blockers": [],
+      "idle_lane_reason": null,
+      "phase": "writer",
+      "status": "ready",
+      "in_lane": true
+    },
+    {
+      "key": "AWF-210",
+      "dependencies": [],
+      "write_paths": [
+        "docs/second-independent.md"
+      ],
+      "duration_minutes": 6,
+      "risk_tier": 1,
+      "round_cap": 1,
+      "owner_review_window": null,
+      "lane_class": "feeder",
+      "owner_lane": "docs-two",
+      "blockers": [
+        "CAP_REACHED"
+      ],
+      "idle_lane_reason": "CAP_REACHED",
+      "phase": "planning",
+      "status": "ready",
+      "in_lane": false
+    },
+    {
+      "key": "AWF-300",
+      "dependencies": [
+        "AWF-36"
+      ],
+      "write_paths": [
+        "src/final.py"
+      ],
+      "duration_minutes": 4,
+      "risk_tier": 2,
+      "round_cap": 2,
+      "owner_review_window": {
+        "opens_at_minute": 30,
+        "closes_at_minute": 45
+      },
+      "lane_class": "controller",
+      "owner_lane": "controller",
+      "blockers": [
+        "PREDECESSOR_UNMERGED"
+      ],
+      "idle_lane_reason": "PREDECESSOR_UNMERGED",
+      "phase": "planning",
+      "status": "waiting",
+      "in_lane": false
+    }
+  ],
+  "expected": {
+    "critical_path": [
+      "AWF-115",
+      "AWF-36",
+      "AWF-300"
+    ],
+    "earliest_starts": {
+      "AWF-115": 0,
+      "AWF-36": 12,
+      "AWF-200": 2,
+      "AWF-210": 10,
+      "AWF-300": 30
+    },
+    "duration_minutes": 34
+  }
+}
