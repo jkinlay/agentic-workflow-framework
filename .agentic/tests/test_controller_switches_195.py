@@ -7,6 +7,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
+import test_awf36_automation_fixtures  # noqa: E402,F401 - install shared current-policy fixtures
 
 from agentic import ValidationError
 from agentic.contracts import Contracts

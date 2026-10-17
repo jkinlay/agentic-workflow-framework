@@ -63,10 +63,6 @@ def controller_config(**overrides):
 
 
 def ticket(name, *, role="writer", stage="implementation"):
-    # Current publication policy requires a concrete KEY-number ticket.
-    names = ("MASTER", "IMPLEMENTATION", "REVIEW", "AMENDMENT", "PENDING", "UNKNOWN")
-    if name.startswith("AWF-36-"):
-        name = "AWF-" + str(360 + names.index(name.removeprefix("AWF-36-")))
     return {
         "ticket": name,
         "priority": 1,
@@ -116,13 +112,8 @@ def dispatch_receipt(payload, observed_at):
         "role",
         "lifecycle_stage",
     )
-    keys += ("dispatch_schema_version", "lane_start_waivers")
-    if "reconcile_nonce" in payload:
-        keys += ("reconcile_nonce", "reconcile_at")
     return {key: payload[key] for key in keys} | {
         "status": "ACCEPTED",
-        "dispatch_state": "TERMINAL",
-        "terminal": True,
         "observed_at": observed_at,
         "session_id": "session-" + payload["ticket"],
     }
@@ -146,12 +137,6 @@ class ControllerAutomationTests(unittest.TestCase):
                 },
             ),
         )
-        reservation_patch = patch(
-            "agentic.continuous_controller.canonical_reservation_sources",
-            return_value=[],
-        )
-        reservation_patch.start()
-        self.addCleanup(reservation_patch.stop)
         repository_patch.start()
         self.addCleanup(repository_patch.stop)
         skill_patch = patch(
@@ -212,7 +197,6 @@ class ControllerAutomationTests(unittest.TestCase):
             "inventory_binding": BINDING,
             **REPOSITORY,
             "observe_inventory": lambda: inventory_observation(observed_at, [item]),
-            "observe_reservations": lambda request: {},
             "dispatch_ticket": dispatch_ticket,
             "observe_dispatch": observe_dispatch,
             "deliver_status": lambda digest: {
