@@ -5,6 +5,9 @@ pull requests, authorize a batch merge, merge a target, or write Jira.
 """
 
 from copy import deepcopy
+import json
+import os
+from pathlib import Path
 import re
 
 from . import ValidationError
@@ -15,6 +18,9 @@ SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 MAX_EVIDENCE_AGE_SECONDS = 1800
 OBSERVER_NAMESPACE = "awf-merge-train-observer-v1"
+PUBLISHER_NAMESPACE = "awf-merge-train-publisher-v1"
+PUBLISHER_CAPABILITIES = (
+    "PUSH_BATCH_REF", "CREATE_DRAFT_PR", "MARK_DRAFT_PR_READY")
 
 
 def _require(condition, message):
@@ -766,6 +772,445 @@ def conflict_action(*, conflict_paths, generated_paths, reproduced,
             and not unexpected_generated_bytes and repair_attempts == 0):
         return "REGENERATE_ONCE_FROM_COMBINED_TREE"
     return "EJECT_SOURCE_REBUILD_FROM_TARGET"
+
+
+def rebuild_after_failed_source(*, frozen_target_sha, ordered_sources,
+                                failed_pr_number, build_prefix):
+    """Eject a failed source and its dependents, then rebuild from the target.
+
+    ``build_prefix`` is a local construction callback.  Every call receives the
+    same frozen target and a complete retained prefix; this function exposes no
+    provider mutation or publication authority.
+    """
+    _sha(frozen_target_sha, "frozen_target_sha")
+    _positive(failed_pr_number, "failed_pr_number")
+    _require(isinstance(ordered_sources, list) and ordered_sources,
+             "ordered_sources must be a nonempty list")
+    _require(callable(build_prefix), "build_prefix must be callable")
+    normalized = []
+    seen = set()
+    for source in ordered_sources:
+        _require(isinstance(source, dict)
+                 and {"pr_number", "head_sha", "depends_on"}.issubset(source),
+                 "rebuild source lacks its required frozen fields")
+        number = _positive(source["pr_number"], "rebuild source pr_number")
+        _require(number not in seen, "rebuild sources contain a duplicate PR")
+        seen.add(number)
+        _sha(source["head_sha"], "rebuild source head_sha")
+        dependencies = source["depends_on"]
+        _require(isinstance(dependencies, list)
+                 and all(type(item) is int and item > 0 for item in dependencies)
+                 and len(dependencies) == len(set(dependencies)),
+                 "rebuild source dependencies are invalid")
+        normalized.append(deepcopy(source))
+    _require(failed_pr_number in seen,
+             "failed source is absent from the frozen source order")
+    ejected = {failed_pr_number}
+    changed = True
+    while changed:
+        changed = False
+        for source in normalized:
+            if (source["pr_number"] not in ejected
+                    and ejected.intersection(source["depends_on"])):
+                ejected.add(source["pr_number"])
+                changed = True
+    retained = [source for source in normalized
+                if source["pr_number"] not in ejected]
+    prefixes = []
+    for length in range(1, len(retained) + 1):
+        included = deepcopy(retained[:length])
+        commit_sha = build_prefix(frozen_target_sha, included)
+        _sha(commit_sha, "rebuilt prefix commit_sha")
+        prefixes.append({
+            "length": length,
+            "started_from_sha": frozen_target_sha,
+            "source_pr_numbers": [item["pr_number"] for item in included],
+            "commit_sha": commit_sha,
+        })
+    return {
+        "status": "REBUILT_FROM_FROZEN_TARGET",
+        "frozen_target_sha": frozen_target_sha,
+        "failed_pr_number": failed_pr_number,
+        "ejected_pr_numbers": [source["pr_number"] for source in normalized
+                                if source["pr_number"] in ejected],
+        "retained_pr_numbers": [source["pr_number"] for source in retained],
+        "rebuilt_prefixes": prefixes,
+        "may_publish": False,
+        "may_merge": False,
+    }
+
+
+def _batch_names(release, scheduled_at, pr_numbers):
+    _require(isinstance(release, str)
+             and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", release),
+             "release must be a portable branch component")
+    moment = timestamp(scheduled_at)
+    _require(scheduled_at.endswith("Z") and moment.second == 0
+             and moment.microsecond == 0 and (moment.hour, moment.minute)
+             in {(10, 0), (15, 0)},
+             "scheduled_at must be a fixed batch slot (10:00 or 15:00 UTC)")
+    batch_id = f"{release}-{moment.strftime('%Y%m%d-%H%M')}"
+    title = f"{batch_id} (PRs " + ", ".join(
+        f"#{number}" for number in pr_numbers) + ")"
+    return batch_id, "batch/" + batch_id, title
+
+
+def _publication_request(generation, branch, head, tree, title):
+    return {
+        "operation": "BATCH_PUBLICATION_CANDIDATE",
+        "provider_identity": deepcopy(generation["provider_identity"]),
+        "expected_candidate": {
+            "generation_id": generation["generation_id"],
+            "batch_branch": branch,
+            "batch_head_sha": head,
+            "batch_tree_sha": tree,
+            "base_branch": generation["target_branch"],
+            "base_sha": generation["target_sha"],
+            "constituent_pr_numbers": [item["pr_number"]
+                                       for item in generation["sources"]],
+            "draft_pr_title": title,
+        },
+    }
+
+
+def freeze_publication_candidate(generation, batch_head_sha, batch_tree_sha, *,
+                                 release, scheduled_at, max_batch_size,
+                                 observer_id, observer_registry, now,
+                                 max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
+    """Authenticate and freeze the exact batch publication candidate."""
+    _validate_generation(generation)
+    _require(generation["target_branch"] == "main",
+             "batch publication target branch must be main")
+    _sha(batch_head_sha, "batch_head_sha")
+    _sha(batch_tree_sha, "batch_tree_sha")
+    _positive(max_batch_size, "max_batch_size")
+    _require(len(generation["sources"]) <= max_batch_size,
+             "generation exceeds the configured maximum batch size")
+    pr_numbers = [item["pr_number"] for item in generation["sources"]]
+    batch_id, branch, title = _batch_names(
+        release, scheduled_at, pr_numbers)
+    _require(generation["batch_id"] == batch_id,
+             "generation batch_id differs from the named publication slot")
+    request = _publication_request(
+        generation, branch, batch_head_sha, batch_tree_sha, title)
+    expected = request["expected_candidate"]
+    result, attestation, raw_observation = _registered_observation(
+        observer_registry, observer_id, request, now=now,
+        max_age_seconds=max_age_seconds)
+    _require(result == expected,
+             "provider did not observe the exact batch publication candidate")
+    candidate = {
+        "format": "awf-merge-train-publication-candidate-1",
+        "generation": deepcopy(generation),
+        "batch_id": batch_id,
+        "batch_branch": branch,
+        "batch_head_sha": batch_head_sha,
+        "batch_tree_sha": batch_tree_sha,
+        "base_branch": generation["target_branch"],
+        "base_sha": generation["target_sha"],
+        "scheduled_at": scheduled_at,
+        "max_batch_size": max_batch_size,
+        "constituent_pr_numbers": pr_numbers,
+        "draft_pr_title": title,
+        "provider_candidate": {
+            "request": request,
+            "observation": raw_observation,
+            "attestation": attestation,
+        },
+        "may_merge": False,
+    }
+    candidate["publication_candidate_id"] = fingerprint(
+        "merge_train_publication_candidate", candidate)
+    return candidate
+
+
+def _validate_publication_candidate(candidate, observer_registry, *, now,
+                                    max_age_seconds):
+    fields = {
+        "format", "generation", "batch_id", "batch_branch",
+        "batch_head_sha", "batch_tree_sha", "base_branch", "base_sha",
+        "scheduled_at", "max_batch_size", "constituent_pr_numbers",
+        "draft_pr_title", "provider_candidate", "may_merge",
+        "publication_candidate_id",
+    }
+    _require(isinstance(candidate, dict) and set(candidate) == fields
+             and candidate.get("format") ==
+             "awf-merge-train-publication-candidate-1",
+             "publication candidate has a non-closed shape")
+    generation = _validate_generation(candidate["generation"])
+    _sha(candidate["batch_head_sha"], "candidate batch_head_sha")
+    _sha(candidate["batch_tree_sha"], "candidate batch_tree_sha")
+    _positive(candidate["max_batch_size"], "candidate max_batch_size")
+    _require(len(generation["sources"]) <= candidate["max_batch_size"],
+             "publication candidate exceeds its maximum batch size")
+    expected_prs = [item["pr_number"] for item in generation["sources"]]
+    release = candidate["batch_id"].rsplit("-", 2)[0]
+    batch_id, branch, title = _batch_names(
+        release, candidate["scheduled_at"], expected_prs)
+    _require(candidate["batch_id"] == batch_id
+             and generation["batch_id"] == batch_id
+             and generation["target_branch"] == "main"
+             and candidate["batch_branch"] == branch
+             and candidate["draft_pr_title"] == title
+             and candidate["base_branch"] == generation["target_branch"]
+             and candidate["base_sha"] == generation["target_sha"]
+             and candidate["constituent_pr_numbers"] == expected_prs
+             and candidate["may_merge"] is False,
+             "publication candidate differs from its frozen generation")
+    expected_id = fingerprint("merge_train_publication_candidate", {
+        key: value for key, value in candidate.items()
+        if key != "publication_candidate_id"
+    })
+    _require(candidate["publication_candidate_id"] == expected_id,
+             "publication candidate differs from its identity")
+    provider = candidate["provider_candidate"]
+    _require(isinstance(provider, dict)
+             and set(provider) == {"request", "observation", "attestation"},
+             "publication candidate provider evidence is invalid")
+    request = _publication_request(
+        generation, branch, candidate["batch_head_sha"],
+        candidate["batch_tree_sha"], title)
+    _require(provider["request"] == request,
+             "publication candidate request does not bind authenticated exact bytes")
+    producer_id = provider["attestation"].get("producer_id")
+    registration = (observer_registry.get(producer_id)
+                    if isinstance(observer_registry, dict) else None)
+    _require(isinstance(registration, dict),
+             "publication candidate requires its registered provider observer")
+    result, attestation = _validate_registered_observation(
+        registration, producer_id, request,
+        provider["observation"], now=now, max_age_seconds=max_age_seconds)
+    _require(attestation == provider["attestation"]
+             and result == request["expected_candidate"],
+             "publication candidate is not bound to authenticated exact bytes")
+    return candidate
+
+
+def _validate_publisher(registration, expected_provider_identity):
+    fields = {
+        "producer_kind", "adapter_kind", "implementation_sha256",
+        "release_sha256", "capabilities", "provider_identity",
+        "receipt_namespace", "push_batch_ref", "create_draft_pr",
+        "mark_draft_pr_ready", "observe_batch_ref", "observe_pull_request",
+    }
+    _require(isinstance(registration, dict) and set(registration) == fields,
+             "merge-train publisher registration has a non-closed shape")
+    _require(registration["producer_kind"] == "merge_train_publisher"
+             and registration["adapter_kind"] == "gh",
+             "merge-train publisher must be registered as gh-backed")
+    _digest(registration["implementation_sha256"],
+            "publisher implementation_sha256")
+    _digest(registration["release_sha256"], "publisher release_sha256")
+    _require(registration["capabilities"] == list(PUBLISHER_CAPABILITIES),
+             "publisher capabilities must be limited to batch publication")
+    _require(registration["provider_identity"] == expected_provider_identity,
+             "publisher provider identity differs from the candidate")
+    _require(registration["receipt_namespace"] == PUBLISHER_NAMESPACE,
+             "publisher receipt namespace is invalid")
+    for name in ("push_batch_ref", "create_draft_pr",
+                 "mark_draft_pr_ready", "observe_batch_ref",
+                 "observe_pull_request"):
+        _require(callable(registration[name]),
+                 f"publisher {name} adapter is not callable")
+    return registration
+
+
+def _save_publication_journal(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def _load_publication_journal(path, candidate):
+    path = Path(path)
+    if not path.exists():
+        value = {
+            "format": "awf-merge-train-publication-journal-1",
+            "publication_candidate_id": candidate["publication_candidate_id"],
+            "batch_id": candidate["batch_id"],
+            "generation": candidate["generation"]["generation"],
+            "expected_head": candidate["batch_head_sha"],
+            "operations": [],
+        }
+        _save_publication_journal(path, value)
+        return value
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValidationError("publication intent journal is unreadable") from exc
+    _require(isinstance(value, dict)
+             and value.get("format") == "awf-merge-train-publication-journal-1"
+             and value.get("publication_candidate_id") ==
+             candidate["publication_candidate_id"]
+             and value.get("batch_id") == candidate["batch_id"]
+             and value.get("generation") == candidate["generation"]["generation"]
+             and value.get("expected_head") == candidate["batch_head_sha"]
+             and isinstance(value.get("operations"), list),
+             "publication intent journal belongs to another candidate")
+    return value
+
+
+def _require_current_publication(candidate, observer_id, observer_registry, *,
+                                 now, max_age_seconds):
+    generation = candidate["generation"]
+    expected = {
+        "generation_id": generation["generation_id"],
+        "target_branch": generation["target_branch"],
+        "target_sha": generation["target_sha"],
+        "sources": deepcopy(generation["sources"]),
+    }
+    request = {
+        "operation": "BATCH_PUBLICATION_STATE",
+        "provider_identity": deepcopy(generation["provider_identity"]),
+        "generation_id": generation["generation_id"],
+        "batch_branch": candidate["batch_branch"],
+        "expected_head": candidate["batch_head_sha"],
+    }
+    result, _, _ = _registered_observation(
+        observer_registry, observer_id, request, now=now,
+        max_age_seconds=max_age_seconds)
+    _require(result == expected,
+             "publication generation is abandoned because its freeze drifted")
+
+
+def _publication_pr_matches(value, candidate, *, draft, number=None):
+    return (isinstance(value, dict)
+            and type(value.get("number")) is int and value["number"] > 0
+            and (number is None or value["number"] == number)
+            and value.get("branch") == candidate["batch_branch"]
+            and value.get("base_branch") == candidate["base_branch"]
+            and value.get("head_sha") == candidate["batch_head_sha"]
+            and value.get("title") == candidate["draft_pr_title"]
+            and value.get("draft") is draft)
+
+
+def publish_batch(candidate, *, observer_id, observer_registry, publisher_id,
+                  publisher_registry, intent_path, now, mark_ready=False,
+                  max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
+    """Push only the batch ref and create/optionally ready its draft PR.
+
+    A durable intent is written before each mutation.  Unknown operations are
+    only reconciled by branch/head observation and are never replayed.
+    """
+    _validate_publication_candidate(
+        candidate, observer_registry, now=now,
+        max_age_seconds=max_age_seconds)
+    _require(type(mark_ready) is bool, "mark_ready must be Boolean")
+    _identifier(publisher_id, "publisher_id")
+    registration = (publisher_registry.get(publisher_id)
+                    if isinstance(publisher_registry, dict) else None)
+    _require(isinstance(registration, dict),
+             "publication requires a registered publisher")
+    _validate_publisher(registration,
+                        candidate["generation"]["provider_identity"])
+    journal = _load_publication_journal(intent_path, candidate)
+
+    operations = ["PUSH_BATCH_REF", "CREATE_DRAFT_PR"]
+    if mark_ready:
+        operations.append("MARK_DRAFT_PR_READY")
+    for operation in operations:
+        created_pr = next((item.get("provider_result")
+                           for item in journal["operations"]
+                           if item.get("operation") == "CREATE_DRAFT_PR"
+                           and item.get("status") in {"DONE", "RECONCILED"}), None)
+        if operation == "MARK_DRAFT_PR_READY":
+            _require(_publication_pr_matches(created_pr, candidate, draft=True),
+                     "created PR does not match the publication candidate")
+        existing = next((item for item in journal["operations"]
+                         if item.get("operation") == operation), None)
+        if existing is not None and existing.get("status") in {
+                "DONE", "RECONCILED"}:
+            continue
+        if existing is not None:
+            _require(existing.get("status") in {"INTENT", "UNKNOWN"},
+                     "publication journal has an invalid operation state")
+            if operation == "PUSH_BATCH_REF":
+                observed = registration["observe_batch_ref"](
+                    candidate["batch_branch"])
+                matched = observed == {
+                    "branch": candidate["batch_branch"],
+                    "head_sha": candidate["batch_head_sha"],
+                }
+            else:
+                observed = registration["observe_pull_request"](
+                    candidate["batch_branch"])
+                matched = _publication_pr_matches(
+                    observed, candidate,
+                    draft=operation != "MARK_DRAFT_PR_READY",
+                    number=(created_pr["number"]
+                            if operation == "MARK_DRAFT_PR_READY" else None))
+            _require(matched,
+                     "publication outcome is unknown; inspect provider state without replay")
+            existing["status"] = "RECONCILED"
+            existing["provider_result"] = deepcopy(observed)
+            _save_publication_journal(intent_path, journal)
+            continue
+
+        _require_current_publication(
+            candidate, observer_id, observer_registry, now=now,
+            max_age_seconds=max_age_seconds)
+        intent = {
+            "operation": operation,
+            "status": "INTENT",
+            "batch_id": candidate["batch_id"],
+            "generation": candidate["generation"]["generation"],
+            "expected_head": candidate["batch_head_sha"],
+        }
+        journal["operations"].append(intent)
+        _save_publication_journal(intent_path, journal)
+        try:
+            if operation == "PUSH_BATCH_REF":
+                result = registration["push_batch_ref"](
+                    candidate["batch_branch"], candidate["batch_head_sha"])
+                valid = result == {"branch": candidate["batch_branch"],
+                                   "head_sha": candidate["batch_head_sha"]}
+            elif operation == "CREATE_DRAFT_PR":
+                result = registration["create_draft_pr"](
+                    candidate["batch_branch"], candidate["base_branch"],
+                    candidate["draft_pr_title"])
+                valid = _publication_pr_matches(result, candidate, draft=True)
+            else:
+                pull_request = registration["observe_pull_request"](
+                    candidate["batch_branch"])
+                _require(_publication_pr_matches(
+                    pull_request, candidate, draft=True, number=created_pr["number"]),
+                    "observed PR differs from the publication candidate")
+                result = registration["mark_draft_pr_ready"](
+                    pull_request["number"])
+                valid = _publication_pr_matches(
+                    result, candidate, draft=False, number=created_pr["number"])
+        except (TimeoutError, ConnectionError, OSError) as exc:
+            intent["status"] = "UNKNOWN"
+            _save_publication_journal(intent_path, journal)
+            raise ValidationError(
+                "publication outcome is unknown; restart to observe without replay") from exc
+        _require(valid, "publisher returned a result for a different batch candidate")
+        intent["status"] = "DONE"
+        intent["provider_result"] = deepcopy(result)
+        _save_publication_journal(intent_path, journal)
+    pull_request = registration["observe_pull_request"](
+        candidate["batch_branch"])
+    created_pr = next(item["provider_result"] for item in journal["operations"]
+                      if item["operation"] == "CREATE_DRAFT_PR")
+    _require(_publication_pr_matches(
+        pull_request, candidate, draft=not mark_ready, number=created_pr["number"]),
+        "observed PR differs from the publication candidate")
+    return {
+        "status": ("PUBLISHED_READY" if mark_ready else "PUBLISHED_DRAFT"),
+        "batch_id": candidate["batch_id"],
+        "generation": candidate["generation"]["generation"],
+        "batch_branch": candidate["batch_branch"],
+        "batch_head_sha": candidate["batch_head_sha"],
+        "pull_request": pull_request,
+        "journal": deepcopy(journal),
+        "may_merge": False,
+    }
 
 
 def verify_batch_parent_provenance(generation, commit_shas, observer_id,
