@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import copy
+from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
@@ -226,6 +227,37 @@ class R13MessageAndPathAcceptanceTests(unittest.TestCase):
                       f" Critic run: {RUN_A}"):
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 provenance.parse_critic_run_carrier(value)
+
+    def test_awf132_writer_emitter_rejects_dash_and_minus_separators(self):
+        separators = ("\u2212", "\u2043", "\u02d7", "\u2053", "\u2796")
+        for separator in separators:
+            for line in (
+                    f"prefix{separator}Writer: codex/{RUN_A}",
+                    f"Writer{separator}: codex/{RUN_A}"):
+                with self.subTest(separator=ascii(separator), line=line), \
+                        self.assertRaisesRegex(
+                            ValidationError, r"^EMITTER_WRITER_AMBIGUOUS:"):
+                    writer_commit_message(
+                        f"subject\n\n{line}", codex_run_id=RUN_A)
+
+    def test_awf132_critic_parser_rejects_dash_and_minus_separators(self):
+        separators = ("\u2212", "\u2043", "\u02d7", "\u2053", "\u2796")
+        for separator in separators:
+            line = f"Critic{separator}run: {RUN_A}"
+            with self.subTest(separator=ascii(separator)), self.assertRaisesRegex(
+                    ValidationError, r"^CRITIC_LINE_INVALID:"):
+                provenance.parse_critic_run_carrier(
+                    f"{line}\nCritic run: {RUN_A}")
+
+    def test_awf132_trailer_cap_counts_colon_lookalikes(self):
+        for colon in ("\ua789", "\u2236", "\ufe13", "\ufe55"):
+            with self.subTest(colon=ascii(colon)), self.assertRaisesRegex(
+                    ValidationError, r"^WRITER_TRAILER_LIMIT:"):
+                parse_writer_trailer(
+                    "subject\n\n" + "\n".join(
+                        f"Key{index}{colon} value" for index in range(257)
+                    )
+                )
 
     def test_awf49a_r12_056_002_undecodable_path_is_sanitized(self):
         with self.assertRaisesRegex(ValidationError, r"PATH_UTF8.*ordinal=2.*sha256=") as caught:
@@ -638,6 +670,38 @@ class RepositoryRangeTests(unittest.TestCase):
         )
         return original, latest
 
+    def make_provider_override(self, covered_shas):
+        record = record_owner_override(
+            {}, who=101, when=NOW, why="Reviewed fallback", pr=49,
+            covered_shas=covered_shas, trusted_owner_ids=[101],
+        )
+        rendered = render_owner_override(record)
+        observation = {
+            "version": 1,
+            "repository_id": 12,
+            "config_sha256": "f" * 64,
+            "base": self.base,
+            "base_ref": "main",
+            "pr": 49,
+            "labels": [],
+            "trusted_owner_ids": [101],
+            "comments": [{
+                "kind": "issue",
+                "id": 91,
+                "actor_id": 101,
+                "url": "https://example.invalid/pull/49#issuecomment-91",
+                "body": rendered,
+                "body_sha256": sha256(rendered.encode()).hexdigest(),
+            }],
+        }
+        policy = {
+            "require_run_logs": False,
+            "default_ref": "refs/heads/main",
+            "generated_paths": [],
+            "generators": {},
+        }
+        return record, observation, policy
+
     def test_tagged_commit_passes_and_untagged_commit_has_per_commit_reason(self):
         self.write("src/feature.py", "value = 1\n")
         tagged = self.commit("feature", f"Writer: codex/{RUN_B}")
@@ -917,14 +981,51 @@ class RepositoryRangeTests(unittest.TestCase):
         )
         self.assertEqual("PASS", result["status"])
         self.assertEqual("OVERRIDDEN", result["commits"][0]["status"])
-        with self.assertRaisesRegex(ValidationError, "fallback"):
-            check_commit_range(
-                self.root, self.base, head,
-                override=override,
-                trusted_owner_ids=["owner-1"],
-                pr_number=49,
-                pr_labels=[],
-            )
+
+    def test_label_free_provider_override_is_bound_to_exact_owner_comment(self):
+        self.write("legacy-provider.txt", "legacy provider\n")
+        head = self.commit("legacy provider commit")
+        override, observation, policy = self.make_provider_override([head])
+
+        result = check_commit_range(
+            self.root, self.base, head, override=override,
+            reviewed_policy=policy, provider_observation=observation,
+        )
+
+        self.assertEqual("PASS", result["status"], result["refusals"])
+        self.assertEqual("OVERRIDDEN", result["commits"][0]["status"])
+        self.assertEqual(
+            91, result["provider_override_evidence"]["provider_comment_id"])
+
+    def test_label_free_provider_override_refuses_invalid_inner_authority(self):
+        self.write("legacy-provider.txt", "legacy provider\n")
+        head = self.commit("legacy provider commit")
+        override, observation, policy = self.make_provider_override([head])
+
+        tampered = copy.deepcopy(override)
+        tampered["why"] = "Tampered reason"
+        wrong_pr = copy.deepcopy(observation)
+        wrong_pr["pr"] = 50
+        untrusted = copy.deepcopy(observation)
+        untrusted["trusted_owner_ids"] = [202]
+        wrong_comment = copy.deepcopy(observation)
+        wrong_comment["comments"][0]["body_sha256"] = "0" * 64
+        outside, outside_observation, _ = self.make_provider_override(["a" * 40])
+        cases = (
+            (tampered, observation, r"digest"),
+            (override, wrong_pr, r"different PR"),
+            (override, untrusted, r"trusted owner"),
+            (override, wrong_comment,
+             r"exactly one freshly observed trusted owner comment"),
+            (outside, outside_observation, r"outside the checked PR range"),
+        )
+        for candidate, provider, reason in cases:
+            with self.subTest(reason=reason), self.assertRaisesRegex(
+                    ValidationError, reason):
+                check_commit_range(
+                    self.root, self.base, head, override=candidate,
+                    reviewed_policy=policy, provider_observation=provider,
+                )
 
     def test_override_cannot_claim_a_commit_that_did_not_need_it(self):
         self.write("tagged.txt", "tagged\n")
