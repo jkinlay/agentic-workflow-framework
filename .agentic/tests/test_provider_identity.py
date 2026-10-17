@@ -64,6 +64,15 @@ class ProviderIdentityTests(unittest.TestCase):
         self.assertFalse(result["changes_attempted"])
         self.assertFalse(result["tokens_reported"])
 
+    def test_github_identity_refuses_automation_actor_trusted_as_owner(self):
+        """AWF148-R3-049-001: provider admission must enforce bot/owner separation."""
+        value = config()
+        value["github"]["expected_actor_id"] = 1001
+        with self.assertRaisesRegex(
+                ProviderIdentityError, "automation actor must not be a trusted owner") as raised:
+            github_identity_preflight(value, github_observation(actor_id=1001))
+        self.assertEqual(raised.exception.code, "IDENTITY_UNBOUND")
+
     def test_wrong_github_actor_or_repository_fails_by_immutable_id(self):
         for changes, field in (({"actor_id": 2002}, "actor_id"),
                                ({"repository_id": 202}, "repository_id"),

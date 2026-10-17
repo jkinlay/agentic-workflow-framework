@@ -333,6 +333,15 @@ class Fixture(unittest.TestCase):
                 with self.subTest(collection=collection, index=index):
                     self.assertEqual(expected, record["binding"]["policy_hash"])
 
+    def test_validate_config_rejects_automation_actor_trusted_as_owner(self):
+        """AWF148-R3-049-001: policy admission must enforce bot/owner separation."""
+        from agentic.policy import validate_config
+
+        self.config["github"]["expected_actor_id"] = 1001
+        with self.assertRaisesRegex(
+                ValidationError, "automation actor must not be a trusted owner"):
+            validate_config(self.config, definition(), self.contracts)
+
     def gate(self):
         bind_review_admission(self.bundle)
         registry = bind_production_posting_fixture(self.config, self.bundle)
