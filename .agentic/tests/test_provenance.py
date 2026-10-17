@@ -508,6 +508,50 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, verified["version"])
         self.assertEqual(91, verified["provider_comment_id"])
 
+    def test_deprecated_owner_alias_refuses_dual_authority_arguments(self):
+        authority = reviewed_owner_config(101)
+        original_state = {}
+        original = record_owner_override(
+            original_state, who=101, when=NOW, why="Reviewed authority", pr=49,
+            covered_shas=["a" * 40], reviewed_owner_config=authority,
+        )
+        conflict = (
+            r"^OWNER_AUTHORITY_ARGUMENT_CONFLICT:.*reviewed_owner_config.*"
+            r"trusted_owner_ids"
+        )
+
+        for legacy_ids in ([101], [202]):
+            with self.subTest(operation="record", legacy_ids=legacy_ids):
+                state = {}
+                with self.assertRaisesRegex(ValidationError, conflict):
+                    record_owner_override(
+                        state, who=101, when=NOW, why="Ambiguous authority",
+                        pr=49, covered_shas=["a" * 40],
+                        reviewed_owner_config=authority,
+                        trusted_owner_ids=legacy_ids,
+                    )
+                self.assertEqual({}, state)
+
+            with self.subTest(operation="verify", legacy_ids=legacy_ids):
+                with self.assertRaisesRegex(ValidationError, conflict):
+                    verify_owner_override(
+                        original, reviewed_owner_config=authority,
+                        trusted_owner_ids=legacy_ids, pr=49,
+                    )
+
+            with self.subTest(operation="supersede", legacy_ids=legacy_ids):
+                state = copy.deepcopy(original_state)
+                with self.assertRaisesRegex(ValidationError, conflict):
+                    supersede_owner_override(
+                        state, who=101, when="2026-10-13T12:00:00Z",
+                        why="Ambiguous replacement authority", pr=49,
+                        covered_shas=["a" * 40, "b" * 40],
+                        supersedes=original["override_sha256"],
+                        reviewed_owner_config=authority,
+                        trusted_owner_ids=legacy_ids,
+                    )
+                self.assertEqual(original_state, state)
+
 
 class OwnerOverrideTests(unittest.TestCase):
     def test_override_is_recorded_sealed_and_renderable_for_the_pr(self):
