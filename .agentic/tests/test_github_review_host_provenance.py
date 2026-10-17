@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import subprocess
@@ -377,12 +378,20 @@ class ProviderProvenanceTests(unittest.TestCase):
             started = time.monotonic()
 
             with patch.object(github_review_host, 'enforce_pinned_awf_skill'), \
+                    patch.object(github_review_host, 'run_bounded',
+                                 wraps=github_review_host.run_bounded) as runner, \
                     self.assertRaisesRegex(ValidationError,
                                             'RESULT_FILE_LIMIT'):
                 driver.run('codex', ['-c', program,
                                      '--output-last-message', str(result)])
 
             self.assertLess(time.monotonic() - started, 2)
+            # Result-file monitoring must retain the closed Codex channel,
+            # aggregate-output and stdin policy, rather than ad-hoc caps.
+            self.assertEqual(
+                replace(child_process.CODEX_LOG_RUNNER_POLICY,
+                        watched_file_limit=github_review_host.CODEX_RESULT_LIMIT),
+                runner.call_args.kwargs.get('policy'))
 
 
 class CodexIdentityTests(unittest.TestCase):
