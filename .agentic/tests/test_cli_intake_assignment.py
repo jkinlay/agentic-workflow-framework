@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from agentic.cli import main as workflow_main
 from agentic.intake_assignment import assign_intake, change_assignment
+from agentic.lifecycle import definition
+from agentic.policy import policy_hash
 from agentic.review_tiers import runtime_assignment
 from source_only import skip_unless_source_repo
 from test_intake_assignment import NOW, owner_source, verify_owner_source
@@ -37,6 +39,7 @@ class CliIntakeAssignmentTests(unittest.TestCase):
         config_path = base / "project-config.json"
         config_path.write_text(json.dumps(config), encoding="utf-8")
         bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text(encoding="utf-8"))
+        bundle["contract"]["policy_hash"] = policy_hash(config, definition())
         bundle_path = base / "bundle.json"
         bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
         state = {}
@@ -86,6 +89,9 @@ class CliIntakeAssignmentTests(unittest.TestCase):
         }), encoding="utf-8")
         verdict_path.write_text(json.dumps({"binding": {}}), encoding="utf-8")
         findings_path.write_text("[]\n", encoding="utf-8")
+        bundle_path = base / "bundle.json"
+        candidate_head = json.loads(
+            bundle_path.read_text(encoding="utf-8"))["candidate"]["head_sha"]
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch("agentic.authorization.verify_owner_record", return_value={"status": "VERIFIED"}), \
                 mock.patch("agentic.gates.verify_disposition_review_binding", return_value={"status": "VERIFIED"}), \
@@ -96,8 +102,9 @@ class CliIntakeAssignmentTests(unittest.TestCase):
                 "--findings", str(findings_path),
                 "--cycles", str(cycles),
                 "--extensions", str(extensions),
-                "--head", "a" * 40,
+                "--head", candidate_head,
                 "--review-verdict", str(verdict_path),
+                "--bundle", str(bundle_path),
                 "--config", str(config_path),
                 "--assignment-state", str(state_path),
                 "--ticket", "EX-1",
