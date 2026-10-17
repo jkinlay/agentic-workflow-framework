@@ -69,6 +69,7 @@ def setUpModule():
 
 def production_controller_cycle(*args,**kwargs):
 	"""Existing controller cases use explicit synthetic passing publication facts."""
+	kwargs.setdefault('controller_config', {'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True})
 	kwargs.setdefault('publication_config',publication_config())
 	kwargs.setdefault('observe_publication',lambda item:publication_observation(item['ticket'],kwargs['now']))
 	kwargs.setdefault('observe_reservations',reservation_observation)
@@ -1160,6 +1161,9 @@ class JiraProgressTests(unittest.TestCase):
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
 		project_config_path=ROOT/'.agentic/examples/PROJECT_CONFIG.yaml'
 		project_config=json.loads(project_config_path.read_text())
+		project_config['controller'].update(dispatch_enabled=True,auto_dispatch=True,auto_request_critic=True,auto_resume_amendments=True)
+		project_config_path=root/'project-config.json'
+		project_config_path.write_text(json.dumps(project_config),encoding='utf-8')
 		project_config_bytes=project_config_path.read_bytes()
 		publication=publication_observation('EX-42',NOW)
 		publication['identity']['actor_id']=project_config['github']['expected_actor_id']
@@ -1187,7 +1191,7 @@ class JiraProgressTests(unittest.TestCase):
 		binding_path=root/'inventory-binding.json'
 		binding_path.write_text(json.dumps(INVENTORY_BINDING),encoding='utf-8')
 		pin=sha256(adapter_path.read_bytes())
-		common=[sys.executable,'-B',str(ROOT/'.agentic/scripts/workflow.py'),'--root',str(ROOT),'controller','--state',str(state_path),'--stream','A','--stream','B','--stream','C','--worktree-root',str(worktree),'--project-config',str(ROOT/'.agentic/examples/PROJECT_CONFIG.yaml'),'--adapter-module',str(adapter_path),'--adapter-sha256',pin,'--adapter-config',str(adapter_config_path)]
+		common=[sys.executable,'-B',str(ROOT/'.agentic/scripts/workflow.py'),'--root',str(ROOT),'controller','--state',str(state_path),'--stream','A','--stream','B','--stream','C','--worktree-root',str(worktree),'--project-config',str(project_config_path),'--adapter-module',str(adapter_path),'--adapter-sha256',pin,'--adapter-config',str(adapter_config_path)]
 		cycle=subprocess.run([*common,'cycle','--inventory-binding',str(binding_path),'--repository-root',str(worktree),'--repository-head-sha',merged_head,'--repository-tree-sha',merged_tree,'--now',NOW,'--host-capacity','1'],cwd=ROOT,text=True,capture_output=True,timeout=30)
 		self.assertEqual(cycle.returncode,0,cycle.stderr)
 		cycle_output=json.loads(cycle.stdout)

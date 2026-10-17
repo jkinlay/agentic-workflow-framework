@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
-import subprocess
+import sys
 import tempfile
 import threading
 import uuid
@@ -33,11 +33,13 @@ except ImportError:  # pragma: no cover - exercised on older Python runtimes
     _re_parser = None
 
 from . import ValidationError
-from .child_process import child_env
+from .child_process import (GIT_RUNNER_POLICY, child_env,
+                            render_diagnostic)
 from .gittree import verify_publisher_tree
 from .interaction import writer_commit_message
 from .provenance import (parse_writer_trailer, validate_commit_message,
                          validate_ref_locator)
+from .safeio import run_bounded
 
 
 DEFAULT_MAPPING = Path(".agentic-state/publication-deny.json")
@@ -153,6 +155,122 @@ _CLOSED_HISTORICAL_SELF_REFERENCES = frozenset({
 })
 
 
+_BLOB_HASH_HELPER = r"""
+import hashlib
+import subprocess
+import sys
+
+git, root, oid, expected_raw = sys.argv[1:]
+expected = int(expected_raw)
+command = [
+    git, "--no-replace-objects", "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=" + __import__("os").devnull,
+    "-c", "core.quotePath=false", "-c", "protocol.file.allow=never",
+    "-C", root, "cat-file", "blob", oid,
+]
+try:
+    process = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        shell=False, close_fds=True,
+    )
+except OSError:
+    sys.stderr.write("GIT_BLOB_HASH_START_FAILED\n")
+    raise SystemExit(120)
+
+digest = hashlib.sha256()
+total = 0
+overflow = False
+try:
+    while True:
+        chunk = process.stdout.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > expected:
+            overflow = True
+            process.kill()
+            break
+        digest.update(chunk)
+finally:
+    process.stdout.close()
+returncode = process.wait()
+if overflow:
+    sys.stderr.write("GIT_BLOB_HASH_SIZE_OVERFLOW\n")
+    raise SystemExit(121)
+if returncode:
+    raise SystemExit(returncode if 0 < returncode < 256 else 122)
+if total != expected:
+    sys.stderr.write("GIT_BLOB_HASH_SIZE_MISMATCH\n")
+    raise SystemExit(123)
+sys.stdout.buffer.write(digest.hexdigest().encode("ascii") + b"\n")
+"""
+
+
+_OBJECT_EVIDENCE_HELPER = r"""
+import hashlib
+import json
+import subprocess
+import sys
+
+git, root, oid, kind, expected_raw, object_format = sys.argv[1:]
+expected = int(expected_raw)
+if kind not in {"blob", "tree", "commit"} or object_format not in {"sha1", "sha256"}:
+    raise SystemExit(119)
+command = [
+    git, "--no-replace-objects", "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=" + __import__("os").devnull,
+    "-c", "core.quotePath=false", "-c", "protocol.file.allow=never",
+    "-C", root, "cat-file", kind, oid,
+]
+try:
+    process = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, shell=False, close_fds=True,
+    )
+except OSError:
+    sys.stderr.write("GIT_OBJECT_EVIDENCE_START_FAILED\n")
+    raise SystemExit(120)
+
+content_digest = hashlib.sha256()
+object_digest = hashlib.new(object_format)
+object_digest.update((kind + " " + str(expected)).encode("ascii") + b"\0")
+total = 0
+overflow = False
+try:
+    while True:
+        chunk = process.stdout.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > expected:
+            overflow = True
+            process.kill()
+            break
+        content_digest.update(chunk)
+        object_digest.update(chunk)
+finally:
+    process.stdout.close()
+returncode = process.wait()
+if overflow:
+    sys.stderr.write("GIT_OBJECT_EVIDENCE_SIZE_OVERFLOW\n")
+    raise SystemExit(121)
+if returncode:
+    raise SystemExit(returncode if 0 < returncode < 256 else 122)
+if total != expected:
+    sys.stderr.write("GIT_OBJECT_EVIDENCE_SIZE_MISMATCH\n")
+    raise SystemExit(123)
+if object_digest.hexdigest() != oid:
+    sys.stderr.write("GIT_OBJECT_EVIDENCE_OID_MISMATCH\n")
+    raise SystemExit(124)
+sys.stdout.buffer.write((json.dumps({
+    "content_sha256": content_digest.hexdigest(),
+    "kind": kind,
+    "oid": oid,
+    "size": total,
+}, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii"))
+"""
+
+
 @dataclass(frozen=True)
 class Detector:
     detector_id: str
@@ -173,83 +291,60 @@ def _safe_env(extra=None):
 def _git(root, *args, input_bytes=None, extra_env=None, check=True, timeout=120):
     executable = shutil.which("git")
     if not executable:
-        raise ValidationError("Git is required for publication safety")
+        raise ValidationError("GIT_UNAVAILABLE: Git is required for publication safety")
     command = [executable, "--no-replace-objects", "-c", "core.fsmonitor=false",
                "-c", "core.hooksPath=" + os.devnull, "-c", "core.quotePath=false",
                "-c", "protocol.file.allow=never", "-C", str(Path(root).resolve()), *args]
+    if (not isinstance(timeout, (int, float)) or isinstance(timeout, bool)
+            or timeout <= 0 or timeout > GIT_RUNNER_POLICY.timeout):
+        raise ValidationError(
+            "GIT_TIMEOUT_POLICY: publication Git timeout exceeds the closed policy"
+        )
+    cancel_event = None
+    timer = None
+    if timeout < GIT_RUNNER_POLICY.timeout:
+        cancel_event = threading.Event()
+        timer = threading.Timer(timeout, cancel_event.set)
+        timer.daemon = True
+        timer.start()
     try:
-        result = subprocess.run(command, input=input_bytes, capture_output=True, timeout=timeout,
-                                env=child_env(_safe_env(extra_env)), check=False)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise ValidationError(f"git {args[0]} did not complete: {type(exc).__name__}") from exc
+        try:
+            result = run_bounded(
+                command, stdin=input_bytes,
+                env=child_env(_safe_env(extra_env)),
+                policy=GIT_RUNNER_POLICY, cancel_event=cancel_event,
+            )
+        finally:
+            if timer is not None:
+                timer.cancel()
+    except OSError as exc:
+        raise ValidationError(
+            f"GIT_START_FAILED: git {args[0]} did not start: {type(exc).__name__}"
+        ) from exc
     if check and result.returncode:
-        detail = re.sub(r"[^\x20-\x7e]", "?", result.stderr.decode("utf-8", "replace"))[:300]
-        raise ValidationError(f"git {args[0]} failed with exit {result.returncode}: {detail}")
+        detail = render_diagnostic(
+            result.stderr, paths=(Path(root).resolve(),)
+        )[:300]
+        raise ValidationError(
+            f"GIT_COMMAND_FAILED: git {args[0]} failed with exit "
+            f"{result.returncode}: {detail}"
+        )
     return result
 
 
 def _git_bounded_stdout(root, *args, input_bytes=None, extra_env=None,
                         limit=MAX_REWRITE_PROOF_OBJECT_BYTES + 1024, timeout=120):
     """Run trusted Git plumbing while retaining at most ``limit`` output bytes."""
-    executable = shutil.which("git")
-    if not executable:
-        raise ValidationError("Git is required for publication safety")
-    command = [executable, "--no-replace-objects", "-c", "core.fsmonitor=false",
-               "-c", "core.hooksPath=" + os.devnull, "-c", "core.quotePath=false",
-               "-c", "protocol.file.allow=never", "-C", str(Path(root).resolve()), *args]
-    try:
-        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE,
-                                   env=child_env(_safe_env(extra_env)))
-    except OSError as exc:
-        raise ValidationError(f"git {args[0]} did not start: {type(exc).__name__}") from exc
-    stdout = bytearray()
-    stderr = bytearray()
-    overflow = threading.Event()
-
-    def drain(stream, destination, bound):
-        try:
-            while True:
-                chunk = stream.read(64 * 1024)
-                if not chunk:
-                    break
-                room = bound + 1 - len(destination)
-                if room > 0:
-                    destination.extend(chunk[:room])
-                if len(destination) > bound:
-                    overflow.set()
-                    process.kill()
-        except OSError:
-            overflow.set()
-            process.kill()
-        finally:
-            stream.close()
-
-    out_thread = threading.Thread(target=drain, args=(process.stdout, stdout, limit), daemon=True)
-    err_thread = threading.Thread(target=drain, args=(process.stderr, stderr, 300), daemon=True)
-    out_thread.start()
-    err_thread.start()
-    try:
-        if input_bytes:
-            process.stdin.write(input_bytes)
-        process.stdin.close()
-        process.wait(timeout=timeout)
-    except (OSError, subprocess.SubprocessError) as exc:
-        process.kill()
-        process.wait()
-        raise ValidationError(f"git {args[0]} did not complete: {type(exc).__name__}") from exc
-    finally:
-        out_thread.join(timeout=5)
-        err_thread.join(timeout=5)
-    if out_thread.is_alive() or err_thread.is_alive():
-        process.kill()
-        raise ValidationError(f"git {args[0]} output could not be bounded")
-    if overflow.is_set() or len(stdout) > limit:
-        raise ValidationError(f"git {args[0]} output exceeded the publication proof bound")
-    if process.returncode:
-        detail = re.sub(r"[^\x20-\x7e]", "?", bytes(stderr).decode("utf-8", "replace"))[:300]
-        raise ValidationError(f"git {args[0]} failed with exit {process.returncode}: {detail}")
-    return bytes(stdout)
+    result = _git(
+        root, *args, input_bytes=input_bytes, extra_env=extra_env,
+        timeout=timeout,
+    )
+    if len(result.stdout) > limit:
+        raise ValidationError(
+            f"GIT_PROOF_STDOUT_LIMIT: git {args[0]} output exceeded "
+            "the publication proof bound"
+        )
+    return result.stdout
 
 
 def _bounded_regular_file(path, limit, label):
@@ -718,73 +813,40 @@ def _blob_sha256(root, oid, extra_env=None):
         raise ValidationError("Git blob size is invalid") from exc
     executable = shutil.which("git")
     if not executable:
-        raise ValidationError("Git is required for publication safety")
-    command = [executable, "--no-replace-objects", "-c", "core.fsmonitor=false",
-               "-c", "core.hooksPath=" + os.devnull, "-c", "core.quotePath=false",
-               "-c", "protocol.file.allow=never", "-C", str(Path(root).resolve()),
-               "cat-file", "blob", oid]
+        raise ValidationError("GIT_UNAVAILABLE: Git is required for publication safety")
+    command = [
+        str(Path(sys.executable).resolve(strict=True)), "-I", "-B", "-c",
+        _BLOB_HASH_HELPER, executable, str(Path(root).resolve()), oid,
+        str(expected_size),
+    ]
     try:
-        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, env=child_env(_safe_env(extra_env)))
+        result = run_bounded(
+            command, env=child_env(_safe_env(extra_env)),
+            policy=GIT_RUNNER_POLICY,
+        )
     except OSError as exc:
-        raise ValidationError("git cat-file did not start while hashing a large blob") from exc
-    digest = hashlib.sha256()
-    state = {"total": 0, "error": None}
-    stderr = bytearray()
-
-    def hash_output():
-        try:
-            while True:
-                chunk = process.stdout.read(1024 * 1024)
-                if not chunk:
-                    break
-                state["total"] += len(chunk)
-                if state["total"] > expected_size:
-                    state["error"] = "Git blob content exceeded its verified size"
-                    process.kill()
-                    break
-                digest.update(chunk)
-        except OSError:
-            state["error"] = "Git blob content could not be hashed"
-            process.kill()
-
-    def drain_error():
-        try:
-            while True:
-                chunk = process.stderr.read(4096)
-                if not chunk:
-                    break
-                room = 301 - len(stderr)
-                if room > 0:
-                    stderr.extend(chunk[:room])
-        except OSError:
-            state["error"] = "Git blob hashing diagnostics could not be read"
-            process.kill()
-
-    output_thread = threading.Thread(target=hash_output, daemon=True)
-    error_thread = threading.Thread(target=drain_error, daemon=True)
-    output_thread.start()
-    error_thread.start()
+        raise ValidationError(
+            "GIT_BLOB_HASH_START_FAILED: owned blob hasher did not start"
+        ) from exc
+    if result.returncode:
+        detail = render_diagnostic(
+            result.stderr, paths=(Path(root).resolve(),)
+        )[:300]
+        raise ValidationError(
+            "GIT_BLOB_HASH_FAILED: git cat-file failed with exit "
+            f"{result.returncode}: {detail}"
+        )
     try:
-        process.wait(timeout=120)
-    except subprocess.SubprocessError as exc:
-        process.kill()
-        process.wait()
-        raise ValidationError("git cat-file did not complete while hashing a large blob") from exc
-    finally:
-        output_thread.join(timeout=5)
-        error_thread.join(timeout=5)
-    if output_thread.is_alive() or error_thread.is_alive():
-        process.kill()
-        raise ValidationError("git cat-file output could not be consumed while hashing a large blob")
-    process.stdout.close()
-    process.stderr.close()
-    if process.returncode:
-        detail = re.sub(r"[^\x20-\x7e]", "?", bytes(stderr).decode("utf-8", "replace"))[:300]
-        raise ValidationError(f"git cat-file failed with exit {process.returncode}: {detail}")
-    if state["error"] or state["total"] != expected_size:
-        raise ValidationError(state["error"] or "Git blob content differed from its verified size")
-    return digest.hexdigest()
+        rendered = result.stdout.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(
+            "GIT_BLOB_HASH_INVALID: blob digest output is not ASCII"
+        ) from exc
+    if re.fullmatch(r"[0-9a-f]{64}\n", rendered) is None:
+        raise ValidationError(
+            "GIT_BLOB_HASH_INVALID: blob digest output is not canonical"
+        )
+    return rendered.rstrip("\n")
 
 
 def _provider_file(path):
@@ -1690,27 +1752,68 @@ def _loose_object_evidence(path, oid, object_format, expected_identity=None):
 
 def _git_object_evidence(root, oid, object_format, extra_env=None):
     """Read one packed/alternate object through bounded, replacement-disabled plumbing."""
-    output = _git_bounded_stdout(
-        root, "cat-file", "--batch", input_bytes=(oid + "\n").encode("ascii"),
-        extra_env=extra_env, limit=MAX_REWRITE_PROOF_OBJECT_BYTES + 1024)
-    header, separator, content = output.partition(b"\n")
-    if not separator or not content.endswith(b"\n"):
-        raise ValidationError("Snapshot-present object batch evidence is incomplete")
+    kind_result = _git(root, "cat-file", "-t", oid, extra_env=extra_env,
+                       check=False)
+    size_result = _git(root, "cat-file", "-s", oid, extra_env=extra_env,
+                       check=False)
+    if kind_result.returncode or size_result.returncode:
+        raise ValidationError("Snapshot-present object metadata could not be verified")
     try:
-        actual_bytes, kind_bytes, size_bytes = header.split(b" ", 2)
-        actual = actual_bytes.decode("ascii")
-        kind = kind_bytes.decode("ascii")
-        size = int(size_bytes.decode("ascii"))
+        kind_text = kind_result.stdout.decode("ascii")
+        size_text = size_result.stdout.decode("ascii")
+        if (re.fullmatch(r"(?:blob|tree|commit)\n", kind_text) is None
+                or re.fullmatch(r"[0-9]+\n", size_text) is None):
+            raise ValueError
+        kind = kind_text[:-1]
+        size = int(size_text)
     except (ValueError, UnicodeError) as exc:
-        raise ValidationError("Snapshot-present object batch header is invalid") from exc
-    raw = content[:-1]
-    if (actual != oid or kind not in {"blob", "tree", "commit"} or
-            size != len(raw) or size > MAX_REWRITE_PROOF_OBJECT_BYTES or
-            _object_digest(kind, raw, object_format) != oid):
-        raise ValidationError("Snapshot-present object content or OID is invalid")
-    return {"oid": oid, "kind": kind, "size": size,
-            "content_sha256": hashlib.sha256(raw).hexdigest(),
-            "loose_identity": None}
+        raise ValidationError("Snapshot-present object metadata is invalid") from exc
+    if size > MAX_REWRITE_PROOF_OBJECT_BYTES:
+        raise ValidationError("Snapshot-present object exceeds the publication proof bound")
+    executable = shutil.which("git")
+    if not executable:
+        raise ValidationError("GIT_UNAVAILABLE: Git is required for publication safety")
+    command = [
+        str(Path(sys.executable).resolve(strict=True)), "-I", "-B", "-c",
+        _OBJECT_EVIDENCE_HELPER, executable, str(Path(root).resolve()), oid,
+        kind, str(size), object_format,
+    ]
+    try:
+        result = run_bounded(
+            command, env=child_env(_safe_env(extra_env)),
+            policy=GIT_RUNNER_POLICY,
+        )
+    except OSError as exc:
+        raise ValidationError(
+            "GIT_OBJECT_EVIDENCE_START_FAILED: owned object reader did not start"
+        ) from exc
+    if result.returncode:
+        detail = render_diagnostic(
+            result.stderr, paths=(Path(root).resolve(),)
+        )[:300]
+        raise ValidationError(
+            "GIT_OBJECT_EVIDENCE_FAILED: git cat-file failed with exit "
+            f"{result.returncode}: {detail}"
+        )
+    try:
+        evidence = json.loads(result.stdout.decode("ascii"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValidationError(
+            "GIT_OBJECT_EVIDENCE_INVALID: object proof is not canonical JSON"
+        ) from exc
+    canonical = (json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+                 + "\n").encode("ascii") if isinstance(evidence, dict) else b""
+    expected = {"oid": oid, "kind": kind, "size": size}
+    if (not isinstance(evidence, dict)
+            or result.stdout != canonical
+            or set(evidence) != {"oid", "kind", "size", "content_sha256"}
+            or any(evidence.get(key) != value for key, value in expected.items())
+            or not isinstance(evidence.get("content_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", evidence["content_sha256"]) is None):
+        raise ValidationError(
+            "GIT_OBJECT_EVIDENCE_INVALID: object proof fields are invalid"
+        )
+    return {**evidence, "loose_identity": None}
 
 
 def _snapshot_object_evidence(root, snapshot, oid, extra_env=None, expected=None):
