@@ -164,19 +164,20 @@ class OperationBudget:
             self._consumed_bytes += amount
 
 
+_SENSITIVE_NAME = (
+    r"(?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|access[_-]?token|"
+    r"refresh[_-]?token|private[_-]?token|client[_-]?secret|password|passwd|"
+    r"secret|token)(?:[_-][a-z0-9]+)*"
+)
 _CREDENTIAL_PATTERNS = (
     re.compile(
         r'''(?i)(\bauthorization\s*:\s*(?:bearer|token|basic)\s+)'''
         r'''(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)'''),
     re.compile(
-        r"(?i)((?<![a-z0-9_])[\"']?(?:(?:[a-z0-9]+[_-])*(?:api[_-]?key|"
-        r"access[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?token|"
-        r"client[_-]?secret|password|passwd|secret|token))"
+        r"(?i)((?<![a-z0-9_])[\"']?" + _SENSITIVE_NAME +
         r'''["']?\s*[=:]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&"']+)'''),
     re.compile(
-        r"(?i)((?<![a-z0-9_])--(?:(?:[a-z0-9]+[_-])*(?:api[_-]?key|"
-        r"access[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?token|"
-        r'''client[_-]?secret|password|passwd|secret|token))(?:=|\s+))'''
+        r"(?i)((?<![a-z0-9_])--" + _SENSITIVE_NAME + r'''(?:=|\s+))'''
         r'''(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&"']+)'''),
     re.compile(r"(?i)(https?://)[^/@\s]+@"),
     re.compile(r"(?i)\b(?:github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]+"),
@@ -186,8 +187,8 @@ _LOCAL_PATH_PATTERNS = (
         r'''(?i)(?:"(?:\\\\|[A-Z]:[\\/]|/(?!/))[^"\r\n]*"'''
         r'''|'(?:\\\\|[A-Z]:[\\/]|/(?!/))[^'\r\n]*')'''),
     re.compile(
-        r'''\\\\[^\\\s]+\\[^\\\r\n:;,"'\[\]{}()]+'''
-        r'''(?:\\[^\\\r\n:;,"'\[\]{}()]*)*'''),
+        r'''\\\\[^\\\s]+\\[^\\\r\n:;,"'\[\]{}]+'''
+        r'''(?:\\[^\\\r\n:;,"'\[\]{}]*)*'''),
     re.compile(r'''(?i)\b[A-Z]:[\\/][^\r\n:;,"'\[\]{}()]*'''),
     re.compile(r'''(?<![:/\w])/(?!/)[^\r\n:;,"'\[\]{}()]*'''),
 )

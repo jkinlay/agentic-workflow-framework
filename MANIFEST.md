@@ -79,7 +79,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/adoption_status.py` | `31c682fc4062a57e5d9392ba11a2dcf5431ea8a90b1195efe1be3f4b02ae4118` |
 | `.agentic/lib/agentic/authorization.py` | `eca93950d8ff3e1a27e7a7c0b2d50df2093eaf6a422be2ad275a4f3ba7695564` |
 | `.agentic/lib/agentic/canonical.py` | `9126c06fc38813318238c85b88877ad857cb097a84f914e2da46c8b10eeefcea` |
-| `.agentic/lib/agentic/child_process.py` | `1fbf540f5fe694570f9959858303e9aebe6c5e948d96efd07d6a1219f3d4978e` |
+| `.agentic/lib/agentic/child_process.py` | `af43e21a376e9c73a938c1da9075df5102eb6278c4ab1e5a240d43ee1145a291` |
 | `.agentic/lib/agentic/cli.py` | `86888887993eb0eb8e6ae9aeb72cae510c4f14249a5e690ba1f734b40f73062d` |
 | `.agentic/lib/agentic/closeout.py` | `9fde2899c4b1f364fe573a97e3df08c6bc3402ea9ea99a69d478b1dec818af24` |
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
@@ -403,7 +403,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_routing_cli.py` | `596ed8423e7b32d98e12df6e137b66907f8ce1e8c6d75b8226be6481c6190e4c` |
 | `.agentic/tests/test_routing_integration.py` | `b56f30216318e0c925eb660f1bbc7839bc9d0b317389804e4cecf047d59c844e` |
 | `.agentic/tests/test_rules_activation.py` | `a80728328f2f8ec76369c1431e31270ecaf7c82055288496d65d8da0e03aeb85` |
-| `.agentic/tests/test_safeio_channels.py` | `c6fa7120b2e8ffcfe6759e711a4976622c3db584d422e9a7f96e03c83f7421da` |
+| `.agentic/tests/test_safeio_channels.py` | `6fef7d8710466af5cac06a4ebd0b1ac172b10b01371637aa891c500a9c96161c` |
 | `.agentic/tests/test_safeio_process.py` | `7c6e9e0cce111aa6e1d8a774ed5100a771cbd43d76697c4c09287bc1aa15585f` |
 | `.agentic/tests/test_safeio_unlink.py` | `86d91b38a4e930fc1af316caf359b04cf8748dc53958465a141aeab200c1457f` |
 | `.agentic/tests/test_source_only.py` | `ff834d09650472ae5522aeaf6cad4dad7caf205e80ee73e03e7bcb3ac17208e3` |
