@@ -56,6 +56,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/docs/44-AWF91-DISPATCH-STATE-TEST-PLAN.md` | `9aa3f29e2472ccac2b6cb63441f9a5a37b064ed9680a67b2fb4cfa6eeadb5cc5` |
 | `.agentic/docs/45-AWF117-PROVENANCE-GATE-TEST-PLAN.md` | `418677c77be2703e5dd6a8b133bfc80cbcc2f376708512972dd18c07938e3ba6` |
 | `.agentic/docs/46-AWF55-STATUS-REPORT-TEST-PLAN.md` | `19d5e76d44cb7dceb4cd5168c7cbc9490414e18e200cd5c8feda5ba740b732a2` |
+| `.agentic/docs/47-AWF54B-TEST-PLAN.md` | `fe6059f9a8b49e1b67ff873a9ad88ca3ef84a4110666a73de8bd9e4561079d2b` |
 | `.agentic/docs/48-AWF50-DESIGN-PLAN.md` | `49c23fa721a1bc41708f583b9bca9613c79f39963a670726e6a8b140a45ec84c` |
 | `.agentic/docs/TICKET-LIFECYCLE.md` | `765124f19ce8a4b2be22ad7e2ba5e71b0624f48369b9af88fdffac1e21747806` |
 | `.agentic/docs/evidence/awf28-u1-investigation.md` | `4521c3b869e7c68940d789ded091be90e358bd5c2353a123ece9694a7574bdc9` |
