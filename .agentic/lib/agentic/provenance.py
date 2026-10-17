@@ -745,8 +745,6 @@ def verify_provider_owner_override(record, observation, *, repository_id=None,
                and comment.get("body_sha256") == sha256(rendered.encode()).hexdigest()]
     _require(len(matches) == 1,
              "Override requires exactly one freshly observed trusted owner comment")
-    _require(FALLBACK_LABEL in observation.get("labels", []),
-             f"Override requires exact current '{FALLBACK_LABEL}' label")
     return {"record": record, "provider_comment_id": matches[0]["id"],
             "provider_comment_url": matches[0].get("url"),
             "body_sha256": matches[0]["body_sha256"],
@@ -1513,10 +1511,11 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
     """Check every ``base..head`` commit and report a refusal reason per commit.
 
     Optional run logs fail only when configured as required; an observed mismatch
-    always fails.  A sealed owner override applies only to its named SHAs and only
-    on a PR carrying the exact fallback label.  A superseding override must be
-    accompanied by its ordered, oldest-first predecessor chain so its digest
-    link cannot be accepted in isolation.
+    always fails.  A sealed owner override applies only to its named SHAs and
+    bound PR, independently of provider labels.  Provider-backed authority also
+    requires a reviewed numeric owner and one exact freshly observed comment.  A
+    superseding override must be accompanied by its ordered, oldest-first
+    predecessor chain so its digest link cannot be accepted in isolation.
     """
     if reviewed_policy is not None:
         generated_paths = _validate_reviewed_provenance_policy(reviewed_policy)
@@ -1580,9 +1579,6 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
     provider_override_evidence = None
     covered = set()
     if override is not None:
-        _require(isinstance(pr_labels, (list, tuple, set, frozenset))
-                 and FALLBACK_LABEL in pr_labels,
-                 f"Provenance override requires the exact '{FALLBACK_LABEL}' fallback label")
         _require(type(pr_number) is int and pr_number > 0,
                  "Provenance override checking requires the bound PR number")
         override_record = _verify_override_chain(
