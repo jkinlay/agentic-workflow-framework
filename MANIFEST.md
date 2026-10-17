@@ -369,6 +369,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_launch_surfaces.py` | `2666ff8d2b5ec264f3a5e00ada7d83fb9ef4761f6f544b58fb44660778ec2725` |
 | `.agentic/tests/test_lifecycle_190.py` | `fe656d84e0880848dc27f628ff7c55e9404a08341ae2c21053e07cf6def1ba26` |
 | `.agentic/tests/test_merge_train.py` | `8e653113fa3e3e993221438c8825b862e87f56bad00b397bc47e7df9510bd75d` |
+| `.agentic/tests/test_merge_train_controller.py` | `0d7286ee2b0e96c9195e3dbcc24f88b4bfb97ecdcd4aa7b22dfa9b1a2343e81a` |
 | `.agentic/tests/test_model_routing.py` | `b6a65f8d07525444d66af2c9490df5420779aa27ffd044ad82ba1a66f659d4e9` |
 | `.agentic/tests/test_model_routing_provenance.py` | `a1367235951a54574aff79d4817350f42f55c387b63f75f602604ab5e0d7538b` |
 | `.agentic/tests/test_module_import_isolation.py` | `75fa93ebd60268e51812989bd900201190589a0c4e895bb44e26d57924f1366d` |
