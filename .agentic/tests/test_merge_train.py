@@ -576,6 +576,50 @@ class MergeTrainTests(unittest.TestCase):
                 unexpected_generated_bytes=False, repair_attempts=0,
                 failure_kind="REMOTE_ONLY_CI_FAILURE"))
 
+    def test_failed_source_is_ejected_and_generation_rebuilt_from_frozen_target(self):
+        module = merge_train()
+        second_head = hashlib.sha1(b"second-source").hexdigest()
+        third_head = hashlib.sha1(b"third-source").hexdigest()
+        sources = [
+            {"pr_number": 11, "head_sha": self.head1, "depends_on": [],
+             "admission_evidence_sha256": "a" * 64},
+            {"pr_number": 12, "head_sha": second_head, "depends_on": []},
+            {"pr_number": 13, "head_sha": third_head, "depends_on": [12]},
+        ]
+        built = []
+
+        def build_prefix(target_sha, included):
+            built.append((target_sha, [item["pr_number"] for item in included]))
+            return hashlib.sha1(
+                (target_sha + ":" + ",".join(str(item["pr_number"])
+                                               for item in included)).encode("ascii")
+            ).hexdigest()
+
+        result = module.rebuild_after_failed_source(
+            frozen_target_sha=self.target, ordered_sources=sources,
+            failed_pr_number=12, build_prefix=build_prefix)
+        self.assertEqual([12, 13], result["ejected_pr_numbers"])
+        self.assertEqual([11], result["retained_pr_numbers"])
+        self.assertEqual([(self.target, [11])], built)
+        self.assertTrue(all(item["started_from_sha"] == self.target
+                            for item in result["rebuilt_prefixes"]))
+
+    def test_merge_train_fixtures_are_portable_on_windows_and_linux(self):
+        module = merge_train()
+        self.assertEqual(("src/app.py", "tests/test_app.py"),
+                         module._portable_paths(
+                             ["tests/test_app.py", "src/app.py"], "fixture"))
+        separator = chr(92)
+        drive_path = "C" + ":" + separator + separator.join(
+            ("fixture", "member.py"))
+        unc_path = separator * 2 + separator.join(
+            ("server", "share", "member.py"))
+        for path in (drive_path, unc_path,
+                     "/absolute/member.py"):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(ValidationError, "non-portable"):
+                    module._portable_paths([path], "fixture")
+
     def test_strict_registered_batch_parent_provenance(self):
         module = merge_train()
         admitted = self._admit()
