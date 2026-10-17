@@ -540,6 +540,7 @@
     "scripts/tests/test_ac42_e2e.py": "ea8b2909cf3c928e8c21f49afcb85000bb7d9f78269069f877926965784e4548",
     "scripts/tests/test_adoptable_source.py": "4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745",
     "scripts/tests/test_autocrlf_scope.py": "d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3",
+    "scripts/tests/test_awf117_ac1_red_suite.py": "335d5208efb7f20a32cd5c7fabb5f90426c63af7b43da4559013ce8e18fa8e51",
     "scripts/tests/test_build_release_adoptable_source.py": "378f4e8844ef552be777e92503be4c20ed44678747353798636c643bf4f1b9be",
     "scripts/tests/test_ci_suite_coverage.py": "46d04a5bced736858e27ece727fe9a8b339b826f6ba322237ccfc44ba2e7fba2",
     "scripts/tests/test_ci_windows_final_candidate.py": "b24641b80b683d0f7909ba93c26c0e49128f6e3aceaa56c04c71eef6b2895c91",
