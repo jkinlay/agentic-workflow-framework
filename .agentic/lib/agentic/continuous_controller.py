@@ -1663,6 +1663,13 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity,
 			allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'SYNC_DECISION', 'status': gate['status'], 'gate_id': gate['gate_id'], 'reason': reason})
 			errors.append({'operation': 'overlap_sync', 'state': 'BLOCKED', 'reason': reason})
 			continue
+		disabled = next((key for key in ('dispatch_enabled', 'auto_dispatch') if controller_config[key] is not True), None)
+		if disabled is not None:
+			allowance_blocked_tickets.update(gate['tickets'])
+			reason = 'CONTROLLER_AUTOMATION_DISABLED: controller.' + disabled + ' is false'
+			allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'SYNC_DECISION', 'status': 'REFUSED', 'gate_id': gate['gate_id'], 'reason': reason})
+			errors.append({'operation': 'overlap_sync', 'state': 'REFUSED', 'switch': 'controller.' + disabled, 'reason': reason})
+			continue
 		try:
 			quiescence = store.overlap_sync_quiescence(gate['gate_id'])
 			for pending in quiescence['observations']:
@@ -1728,6 +1735,8 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity,
 				allowance_blocked_tickets.update(planned['binding']['tickets'])
 			reason = str(exc) if isinstance(exc, ValidationError) else type(exc).__name__
 			errors.append({'operation': 'overlap_allowance_inventory', 'state': 'BLOCKED', 'reason': reason})
+	# Preserve the boundary presented by the fresh inventory before policy refusals.
+	cancellation_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
 	for index, item in enumerate(tickets):
 		if item['disposition'] != 'ELIGIBLE':
 			continue
@@ -1767,15 +1776,17 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity,
 		for index, item in enumerate(tickets):
 			if item['ticket'] in allowance_blocked_tickets:
 				tickets[index] = {**item, 'disposition': 'BLOCKED', 'reason': 'Overlap allowance or post-expiry synchronization gate is not current', 'next_action': 'Restore exact provider-bound allowance or complete its durable sync gate', 'resume_trigger': 'a fresh plan and lane-start recheck pass'}
-	# Policy revocation may cancel a never-begun intent without authorizing a refill.
-	for operation in store.pending_dispatches():
-		current = next((item for item in tickets if item['ticket'] == operation['ticket']), None)
-		if current is not None and current['reason'].startswith('CONTROLLER_AUTOMATION_DISABLED:'):
-			store.cancel_pending_dispatch(operation['dispatch_id'], now, current['reason'])
 	_require(isinstance(reservations, list), 'Authenticated reservations were not refreshed for the inventory being scheduled')
 	ticket_by_id = {item['ticket']: item for item in tickets}
 	round_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
 	streams = store.schedule(tickets, now, host_capacity, active_allowances, reservations=reservations, inventory_sha256=observation['inventory_sha256'])
+	# Evaluate and consume any authenticated boundary seal before cancellation.
+	# A closed boundary retains pending intents across restarts.
+	if cancellation_boundary_ready:
+		for operation in store.pending_dispatches():
+			current = next((item for item in tickets if item['ticket'] == operation['ticket']), None)
+			if current is not None and current['reason'].startswith('CONTROLLER_AUTOMATION_DISABLED:'):
+				store.cancel_pending_dispatch(operation['dispatch_id'], now, current['reason'])
 	dispatches = []
 	operations = []
 	if round_boundary_ready:
