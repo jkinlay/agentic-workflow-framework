@@ -411,7 +411,8 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
             config=cap_config,
             assignment_record=assignment_record,
             expected_policy_hash=trusted_binding["policy_hash"],
-            expected_ticket_key=assignment_record["ticket_key"])
+            expected_ticket_key=assignment_record["ticket_key"],
+            candidate=cap_candidate)
     if overcap_approvals or trusted_owner_ids or round_started_at is not None:
         raise ValidationError(
             "Lifecycle does not trust caller-supplied over-cap approval fields; "

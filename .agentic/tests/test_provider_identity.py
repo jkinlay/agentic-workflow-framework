@@ -36,7 +36,7 @@ def config():
 
 
 def github_observation(**overrides):
-    value = {"actor_id": 1001, "actor_login": "fixture-owner", "auth_profile": "fixture",
+    value = {"actor_id": 1002, "actor_login": "fixture-owner", "auth_profile": "fixture",
              "repository_id": 101, "repository": "fixture/example", "readable": True,
              "protocol": "ssh", "observed_at": NOW}
     value.update(overrides)
@@ -60,7 +60,7 @@ class ProviderIdentityTests(unittest.TestCase):
     def test_expected_github_actor_repository_and_protocol_are_reported_without_tokens(self):
         result = github_identity_preflight(config(), github_observation())
         self.assertEqual((result["status"], result["observed"]["actor_id"],
-                          result["observed"]["protocol"]), ("PASS", 1001, "ssh"))
+                          result["observed"]["protocol"]), ("PASS", 1002, "ssh"))
         self.assertFalse(result["changes_attempted"])
         self.assertFalse(result["tokens_reported"])
 
@@ -88,7 +88,7 @@ class ProviderIdentityTests(unittest.TestCase):
     def test_github_adapter_reads_configured_numeric_repository_without_switching(self):
         calls = []
         result = observe_github_identity(config(),
-            read_actor=lambda: {"id": 1001, "login": "fixture-owner",
+            read_actor=lambda: {"id": 1002, "login": "fixture-owner",
                 "auth_profile": "fixture", "observed_at": NOW},
             read_repository=lambda repository_id: calls.append(repository_id) or {
                 "id": 101, "name_with_owner": "fixture/example", "readable": True},
@@ -120,7 +120,7 @@ class ProviderIdentityTests(unittest.TestCase):
                            github_observation=github_observation(), jira_connections=connections())
         rows = {item["check"]: item for item in report["rows"]}
         self.assertEqual(rows["github_identity"]["status"], "PASS")
-        self.assertIn("actor_id=1001", rows["github_identity"]["detail"])
+        self.assertIn("actor_id=1002", rows["github_identity"]["detail"])
         self.assertEqual(rows["jira_identity"]["status"], "PASS")
         self.assertIn("cloud_id=fixture-cloud", rows["jira_identity"]["detail"])
 
