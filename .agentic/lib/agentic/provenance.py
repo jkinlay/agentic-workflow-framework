@@ -588,14 +588,29 @@ def _verify_override_shape(record):
     return record
 
 
+_OWNER_AUTHORITY_UNSET = object()
+
+
+def _reject_dual_owner_authority(reviewed_owner_config, trusted_owner_ids):
+    _require(reviewed_owner_config is None
+             or trusted_owner_ids is _OWNER_AUTHORITY_UNSET,
+             "OWNER_AUTHORITY_ARGUMENT_CONFLICT: reviewed_owner_config and "
+             "deprecated trusted_owner_ids cannot both be supplied")
+
+
 def verify_owner_override(record, *, reviewed_owner_config=None,
-                          trusted_owner_ids=None, pr=None, supersedes=None):
-    """Validate a sealed override against reviewed owner IDs and optional PR."""
+                          trusted_owner_ids=_OWNER_AUTHORITY_UNSET, pr=None,
+                          supersedes=None):
+    """Validate an override; ``trusted_owner_ids`` is a deprecated alias.
+
+    The alias remains accepted for 1.9.4 call compatibility but cannot establish
+    authority.  Supplying it with ``reviewed_owner_config`` is always refused.
+    """
+    _reject_dual_owner_authority(reviewed_owner_config, trusted_owner_ids)
     _verify_override_shape(record)
     # ``trusted_owner_ids`` is retained only so 1.9.4 callers receive a stable,
     # versioned refusal instead of Python argument dispatch.  A caller-owned
     # list never establishes authority.
-    del trusted_owner_ids
     _require(reviewed_owner_config is not None,
              "OVERRIDE_VERSION_AUTHORITY_UNBOUND: provenance override schema "
              f"version {record['schema_version']} requires digest-bound reviewed "
@@ -626,13 +641,18 @@ def verify_owner_override(record, *, reviewed_owner_config=None,
 
 
 def record_owner_override(state, *, who, when, why, pr, covered_shas,
-                          reviewed_owner_config=None, trusted_owner_ids=None):
-    """Seal and durably add one owner-approved fallback record to AWF state."""
+                          reviewed_owner_config=None,
+                          trusted_owner_ids=_OWNER_AUTHORITY_UNSET):
+    """Seal an override; ``trusted_owner_ids`` is a deprecated alias.
+
+    Alias-only 1.9.4 calls may create the compatibility envelope for later
+    provider verification.  Supplying both authority arguments is refused.
+    """
+    _reject_dual_owner_authority(reviewed_owner_config, trusted_owner_ids)
     _require(isinstance(state, dict), "AWF state must be an object")
     # The 1.9.4 keyword remains accepted as a non-authoritative compatibility
     # input.  Provider verification below binds legacy records to the reviewed
     # host observation; new callers pass reviewed_owner_config directly.
-    del trusted_owner_ids
     draft = {
         "schema_version": 1,
         "override_sha256": "",
@@ -667,15 +687,18 @@ def record_owner_override(state, *, who, when, why, pr, covered_shas,
 
 def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
                              supersedes, reviewed_owner_config=None,
-                             trusted_owner_ids=None):
+                             trusted_owner_ids=_OWNER_AUTHORITY_UNSET):
     """Append a sealed replacement while preserving the original record.
+
+    ``trusted_owner_ids`` is a deprecated 1.9.4 alias which cannot establish
+    authority or be combined with ``reviewed_owner_config``.
 
     The original v1 record remains at ``provenance_overrides[pr]``.  Later
     records form a digest-linked append-only list in the separate
     ``provenance_override_supersessions`` map.  The full existing chain and
     the proposed replacement are validated before caller-owned state changes.
     """
-    del trusted_owner_ids
+    _reject_dual_owner_authority(reviewed_owner_config, trusted_owner_ids)
     _require(reviewed_owner_config is not None,
              "OVERRIDE_VERSION_AUTHORITY_UNBOUND: superseding provenance "
              "override requires digest-bound reviewed owner configuration")
