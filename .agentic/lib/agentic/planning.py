@@ -490,6 +490,13 @@ def _sealed_capacity_inputs(config, observation, expected_binding,
         "host_capacity": checked["host_capacity"],
         "operating_hash": operating_snapshot.operating_hash,
         "stream_capacity": operating_snapshot.count,
+        "stream_capacity_source": {
+            "kind": "validated_operating_snapshot",
+            "operating_hash": operating_snapshot.operating_hash,
+            "governance_hash": operating_snapshot.governance_hash,
+            "source": operating_snapshot.source,
+            "last_change_id": operating_snapshot.last_change_id,
+        },
         "resources": resources,
         "resource_capacity": min(item["capacity"] for item in resources),
         "project_config_sha256": accepted_config,
@@ -641,6 +648,7 @@ def _estimate(graph, config, independent_count, capacity_inputs):
     binding = sorted(name for name, value in constraints.items() if value == safe)
     sealed = copy.deepcopy(capacity_inputs)
     sealed["safe_lane_count"] = safe
+    sealed["capacity_binding_sha256"] = fingerprint("planning_capacity_binding", sealed)
     return {
         "independent_lane_count": independent_count,
         "safe_lane_count": safe,
@@ -709,7 +717,9 @@ def plan_lanes(graph, config, *, resource_observation=None,
         else:
             lane_count = min(lane_count, selected_override["value"])
         decision = {"kind": "owner_override", "mode": selected_override["mode"],
-                    "value": selected_override["value"], "override_id": selected_override["override_id"]}
+                    "value": selected_override["value"], "override_id": selected_override["override_id"],
+                    "capacity_binding_sha256": estimate["capacity"]["capacity_binding_sha256"],
+                    "applied_after_capacity_binding": True}
     return {"lanes": lanes, "blocked": blocked, "critical_path_minutes": scores,
             "estimate": estimate, "owner_decision": decision,
             "capacity": copy.deepcopy(estimate["capacity"]),
@@ -799,6 +809,37 @@ def verify_plan_record(record):
     expected = fingerprint("planning_audit_record", {k: v for k, v in record.items() if k != "plan_sha256"})
     if not isinstance(digest, str) or digest != expected:
         raise ValidationError("Planning record digest is missing or stale")
+    inputs = record.get("inputs")
+    capacity = inputs.get("capacity") if isinstance(inputs, dict) else None
+    if not isinstance(capacity, dict):
+        raise ValidationError("Planning record lacks its sealed capacity binding")
+    schema_version = record.get("schema_version")
+    if schema_version == 1 and "capacity_binding_sha256" not in capacity:
+        timestamp(record.get("created_at"))
+        return True
+    if schema_version not in {1, 2}:
+        raise ValidationError("Planning record schema version is unsupported")
+    capacity_digest = capacity.get("capacity_binding_sha256")
+    expected_capacity_digest = fingerprint(
+        "planning_capacity_binding",
+        {key: value for key, value in capacity.items()
+         if key != "capacity_binding_sha256"})
+    if not isinstance(capacity_digest, str) or capacity_digest != expected_capacity_digest:
+        raise ValidationError("Planning record capacity binding digest is missing or stale")
+    estimate = record.get("estimate")
+    if (not isinstance(estimate, dict)
+            or estimate.get("capacity") != capacity
+            or estimate.get("safe_lane_count") != capacity.get("safe_lane_count")):
+        raise ValidationError("Planning record estimate differs from its sealed capacity binding")
+    decision = record.get("owner_decision")
+    if isinstance(decision, dict) and decision.get("kind") == "owner_override":
+        if (decision.get("capacity_binding_sha256") != capacity_digest
+                or decision.get("applied_after_capacity_binding") is not True):
+            raise ValidationError("Planning owner override is not bound after sealed capacity")
+    safe = capacity.get("safe_lane_count")
+    if (type(safe) is not int or safe < 0 or type(record.get("lane_count")) is not int
+            or not 0 <= record["lane_count"] <= safe):
+        raise ValidationError("Planning lane count exceeds its sealed safe capacity")
     timestamp(record.get("created_at"))
     return True
 
@@ -847,7 +888,7 @@ def recompute_plan(tickets, config, state, *, now, trigger,
         resources=resources, verify_host_observation=verify_host_observation,
         controller_state=state,
         verify_owner_source=verify_owner_source)
-    body = {"schema_version": 1, "created_at": now, "trigger": trigger,
+    body = {"schema_version": 2, "created_at": now, "trigger": trigger,
             "inputs": {"jira_snapshot_sha256": fingerprint("planning_ticket_snapshot", tickets),
                        "tickets": copy.deepcopy(graph["tickets"]),
                        "dependencies": copy.deepcopy(graph["dependencies"]),
