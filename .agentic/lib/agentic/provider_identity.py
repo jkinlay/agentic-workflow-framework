@@ -82,17 +82,23 @@ def github_identity_preflight(config, observation):
     if type(actor_id) is not int or actor_id < 1 or type(repository_id) is not int or repository_id < 1:
         raise ProviderIdentityError("INVALID_OBSERVATION", "GitHub immutable IDs must be positive integers",
                                     expected=expected, observed=observation)
-    from .authorization import trusted_owner_ids
-    # Profile-only admission binds the validated observation for this check;
-    # the reviewed configuration and reported expected identity stay unchanged.
-    owner_config = config
-    if expected["actor_id"] is None:
-        owner_config = config | {"github": config["github"] | {"expected_actor_id": actor_id}}
-    try:
-        owners = trusted_owner_ids(owner_config)
-    except ValidationError as exc:
-        raise ProviderIdentityError("IDENTITY_UNBOUND", str(exc),
-                                    expected=expected, observed=observation) from exc
+    # Owner separation applies when an owner allowlist is supplied. Absent
+    # policy and the valid empty adoption allowlist add no identity requirement.
+    gate = config.get("merge_gate")
+    owners = ()
+    if (isinstance(gate, dict) and "trusted_owner_ids" in gate
+            and gate["trusted_owner_ids"] != []):
+        from .authorization import trusted_owner_ids
+        # Bind profile-only admission to the validated observation without
+        # changing reviewed configuration or the reported expected identity.
+        owner_config = config
+        if expected["actor_id"] is None:
+            owner_config = config | {"github": config["github"] | {"expected_actor_id": actor_id}}
+        try:
+            owners = trusted_owner_ids(owner_config)
+        except ValidationError as exc:
+            raise ProviderIdentityError("IDENTITY_UNBOUND", str(exc),
+                                        expected=expected, observed=observation) from exc
     if actor_id in owners:
         raise ProviderIdentityError("IDENTITY_UNBOUND",
                                     "The observed automation actor must not be a trusted owner",
