@@ -27,8 +27,8 @@ def observation(items, observed_at=NOW):
 	return {'source': 'host_observation', 'observed_at': observed_at, 'binding': dict(BINDING), 'complete': True, 'inventory_sha256': fingerprint('controller-inventory', {'binding': BINDING, 'tickets': items}), 'tickets': items}
 
 def receipt(payload, observed_at=NOW):
-	keys = ['dispatch_id', 'stream', 'ticket', 'exact_tuple', 'dispatch_nonce', 'prepared_at', 'begun_at', 'role', 'lifecycle_stage']
-	return {key: payload[key] for key in keys} | {'status': 'ACCEPTED', 'observed_at': observed_at, 'session_id': 'session-' + payload['ticket']}
+	keys = ['dispatch_schema_version', 'dispatch_id', 'stream', 'ticket', 'exact_tuple', 'dispatch_nonce', 'prepared_at', 'begun_at', 'role', 'lifecycle_stage', 'lane_start_waivers']
+	return {key: payload[key] for key in keys} | {'status': 'ACCEPTED', 'dispatch_state': 'TERMINAL', 'terminal': True, 'observed_at': observed_at, 'session_id': 'session-' + payload['ticket']}
 
 def allowance_request(**overrides):
 	value = {'repository_id': '101', 'cycle_id': 'cycle-17', 'comment_id': 9001, 'path': 'src/shared.py', 'expires_at': '2026-10-15T08:30:00Z', 'pull_requests': [{'number': 11, 'ticket': 'AWF-101', 'head_sha': '1' * 40, 'changed_files': ['src/left.py', 'src/shared.py']}, {'number': 12, 'ticket': 'AWF-102', 'head_sha': '2' * 40, 'changed_files': ['src/right.py', 'src/shared.py']}]}
@@ -128,6 +128,9 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 		self.repository_patch = patch('agentic.continuous_controller.canonical_repository_paths', side_effect=lambda items, *_: (items, {'repository_root': '/fixture', 'head_sha': 'a' * 40, 'tree_sha': 'b' * 40, 'git_path_count': 0}))
 		self.repository_patch.start()
 		self.addCleanup(self.repository_patch.stop)
+		self.reservation_patch = patch('agentic.continuous_controller.canonical_reservation_sources', return_value=[])
+		self.reservation_patch.start()
+		self.addCleanup(self.reservation_patch.stop)
 		self.skill_patch = patch('agentic.codex_skill.observe_codex_awf_skills', return_value={'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.4', 'project_root': '/fixture', 'pinned_skill_path': '/fixture/skill', 'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []})
 		self.skill_patch.start()
 		self.addCleanup(self.skill_patch.stop)
@@ -135,7 +138,7 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 	def cycle(self, items, *, capacity=2, dispatch=None):
 		calls = []
 		dispatch = dispatch or (lambda payload: calls.append(dict(payload)) or receipt(payload))
-		result = production_controller_cycle(self.store, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **REPOSITORY, observe_inventory=lambda: observation(items), dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
+		result = production_controller_cycle(self.store, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **REPOSITORY, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
 		return (calls, result)
 
 	def test_production_cycle_dispatches_mixed_writer_and_critic_per_ticket(self):
@@ -153,6 +156,60 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 		self.assertEqual(len(result['dispatch_receipts']), 1)
 
 class OverlapAllowanceBoundaryTests(unittest.TestCase):
+	def test_lane_start_provider_observation_occurs_outside_write_transaction(self):
+		calls = []
+		def observer(request, phase):
+			if phase == 'LANE_START':
+				with self.store.connection() as second:
+					second.execute("INSERT OR REPLACE INTO controller_meta VALUES('observer-write','ok')")
+			calls.append(phase)
+			value = allowance_observation(request)
+			for item in value['pull_requests']:
+				item['head_ref'] = 'codex/' + item['ticket'] + '-' + item['ticket'].lower()
+			return value
+		self._cycle_with_allowance(observe_overlap_allowance=observer)
+		self.assertEqual(calls, ['PLAN', 'LANE_START'])
+
+	def test_lane_start_waiver_is_persisted_before_dispatch_begin(self):
+		seen = []
+		def dispatch(payload):
+			with self.store.connection() as db:
+				rows = db.execute('SELECT record_json FROM controller_dispatch_waiver WHERE dispatch_id=?', (payload['dispatch_id'],)).fetchall()
+			seen.append((payload, [json.loads(row[0]) for row in rows]))
+			return receipt(payload)
+		self._cycle_with_allowance(dispatch_ticket=dispatch)
+		self.assertEqual(len(seen), 2)
+		for payload, records in seen:
+			self.assertTrue(records and payload['lane_start_waivers'] == [records[0]['waiver_sha256']])
+			self.assertEqual(records[0]['binding']['dispatch_id'], payload['dispatch_id'])
+
+	def test_lane_start_waiver_survives_crash_before_receipt(self):
+		def crash(payload):
+			raise RuntimeError('crash after durable waiver assertion')
+		self._cycle_with_allowance(dispatch_ticket=crash)
+		reopened = ContinuousControllerStore(self.store.path, ['A', 'B'])
+		operations = reopened.prepare_dispatches(NOW)
+		self.assertTrue(operations and all(item['status'] == 'UNKNOWN' for item in operations))
+		for operation in operations:
+			payload = reopened.begin_dispatch_reconciliation(operation['dispatch_id'], NOW)
+			self.assertTrue(payload['lane_start_waivers'])
+			with reopened.connection() as db:
+				digests = [json.loads(row[0])['waiver_sha256'] for row in db.execute('SELECT record_json FROM controller_dispatch_waiver WHERE dispatch_id=?', (operation['dispatch_id'],))]
+			self.assertEqual(payload['lane_start_waivers'], digests)
+
+	def test_authenticated_parked_reservation_blocks_start_even_with_allowance(self):
+		items = allowance_inventory() + [ticket('AWF-103', 3) | {'paths': ['src/unrelated.py']}]
+		reservation = {'schema_version': 1, 'kind': 'parked', 'source': 'github.com', 'repository_id': '101', 'head_sha': 'a' * 40, 'tree_sha': 'b' * 40, 'artifact_id': 'parked-1', 'observed_at': NOW, 'authenticated': True, 'complete': True, 'paths': ['src/shared.py']}
+		reservation['evidence_sha256'] = fingerprint('controller-reservation-source', reservation)
+		streams = self.store.schedule(items, NOW, 3, [{'path': 'src/shared.py', 'tickets': ['AWF-101', 'AWF-102']}], reservations=[reservation])
+		self.assertEqual({item['ticket'] for item in streams if item['state'] == 'WORKING'}, {'AWF-103'})
+
+	def test_authenticated_worktree_diff_blocks_start_even_with_allowance(self):
+		items = allowance_inventory()
+		reservation = {'schema_version': 1, 'kind': 'worktree_diff', 'source': 'git', 'repository_id': '101', 'head_sha': 'a' * 40, 'tree_sha': 'b' * 40, 'artifact_id': 'diff-1', 'observed_at': NOW, 'authenticated': True, 'complete': True, 'paths': ['src/shared.py']}
+		reservation['evidence_sha256'] = fingerprint('controller-reservation-source', reservation)
+		streams = self.store.schedule(items, NOW, 2, [{'path': 'src/shared.py', 'tickets': ['AWF-101', 'AWF-102']}], reservations=[reservation])
+		self.assertFalse(any(item['state'] == 'WORKING' for item in streams))
 
 	def setUp(self):
 		temporary = tempfile.TemporaryDirectory(prefix='awf90-overlap-')
@@ -166,7 +223,8 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			('agentic.codex_skill.observe_codex_awf_skills',
 			 {'format': 'awf-codex-skill-selection-1', 'expected_version': '1.9.4',
 			  'project_root': '/fixture', 'pinned_skill_path': '/fixture/skill',
-			  'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []})):
+			  'launch_directory': '/fixture', 'visible_skills': ['awf'], 'status': 'PASS', 'problems': []}),
+			('agentic.continuous_controller.canonical_reservation_sources', lambda *_args, **_kwargs: [])):
 			mock = patch(target, side_effect=value) if callable(value) else patch(target, return_value=value)
 			mock.start()
 			self.addCleanup(mock.stop)
@@ -179,6 +237,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 		dispatch_ticket = dispatch_ticket or (lambda payload: self.fail('unexpected dispatch'))
 		arguments = {
 			'observe_inventory': observe_inventory,
+			'observe_reservations': lambda request: {},
 			'dispatch_ticket': dispatch_ticket,
 			'observe_dispatch': lambda payload: self.fail('unexpected dispatch reconciliation'),
 			'deliver_status': lambda digest: {'delivery_id': digest['delivery_id'],
@@ -197,6 +256,19 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 		expected_repository_id = kwargs.pop('expected_repository_id', '101')
 		expected_cycle_id = kwargs.pop('expected_cycle_id', 'cycle-17')
 		return validate_overlap_allowance_observation(OWNER_CONFIG, request, observation, allowance_inventory(), now=NOW, expected_repository_id=expected_repository_id, expected_cycle_id=expected_cycle_id, **kwargs)
+
+	def _cycle_with_allowance(self, **overrides):
+		cfg = publication_config()
+		cfg['github']['repository_id'] = 101
+		cfg.setdefault('merge_gate', {})['trusted_owner_ids'] = [7002]
+		def observe(request, phase):
+			value = allowance_observation(request)
+			for item in value['pull_requests']:
+				item['head_ref'] = 'codex/' + item['ticket'] + '-' + item['ticket'].lower()
+			return value
+		arguments = {'publication': cfg, 'cycle_id': 'cycle-17', 'overlap_allowance_requests': [allowance_request()], 'observe_overlap_allowance': observe, 'dispatch_ticket': lambda payload: receipt(payload)}
+		arguments.update(overrides)
+		return self.cycle(allowance_inventory(), **arguments)
 
 	def test_canonical_owner_comment_is_the_only_authority_and_replay_is_refused(self):
 		request = allowance_request()
@@ -413,7 +485,8 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 		self.store.schedule(active, NOW, 2, overlap_allowances=[{'path': 'src/shared.py', 'tickets': ['AWF-101', 'AWF-102']}])
 		for pending in self.store.prepare_dispatches(NOW):
 			payload = self.store.begin_dispatch(pending['dispatch_id'], NOW)
-			self.store.finish_dispatch(pending['dispatch_id'], receipt(payload), NOW)
+			launched = receipt(payload) | {'dispatch_state': 'LAUNCHED', 'terminal': False}
+			self.store.finish_dispatch(pending['dispatch_id'], launched, NOW)
 		expired_at = '2026-10-15T08:31:00Z'
 		sync_calls = []
 
@@ -549,6 +622,44 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 		self.assertEqual([], dispatched, result)
 		self.assertTrue(any(row['phase'] == 'LANE_START' and row['status'] == 'REFUSED'
 							for row in result['overlap_allowances']), result)
+
+	def test_inventory_refresh_reobserves_reservations_before_scheduling(self):
+		cfg = publication_config()
+		cfg['github']['repository_id'] = 101
+		cfg.setdefault('merge_gate', {})['trusted_owner_ids'] = [7002]
+		planned = allowance_inventory()
+		refreshed = deepcopy(planned) + [ticket('AWF-PARK', 3) | {'disposition': 'PAUSED_INPUT', 'reason': 'parked input', 'paths': ['src/shared.py']}]
+		inventory_calls, reservation_calls, dispatched = ([], [], [])
+
+		def observe_inventory(controller_now=None):
+			items = planned if not inventory_calls else refreshed
+			inventory_calls.append(deepcopy(items))
+			return observation(items, controller_now or NOW)
+
+		def observe_reservations(request):
+			reservation_calls.append(deepcopy(request))
+			sources = []
+			if len(reservation_calls) == 2:
+				parked = {'schema_version': 1, 'kind': 'parked', 'source': 'github.com', 'repository_id': '101', 'head_sha': 'a' * 40, 'tree_sha': 'b' * 40, 'artifact_id': 'parked-after-refresh', 'observed_at': request['observed_at'], 'authenticated': True, 'complete': True, 'paths': ['src/shared.py']}
+				parked['evidence_sha256'] = fingerprint('controller-reservation-source', parked)
+				sources.append(parked)
+			return {'inventory_sha256': request['inventory_sha256'], 'sources': sources}
+
+		def observe_allowance(request, _phase):
+			value = allowance_observation(request)
+			for item in value['pull_requests']:
+				item['head_ref'] = 'codex/' + item['ticket'] + '-' + item['ticket'].lower()
+			return value
+
+		with patch('agentic.continuous_controller.canonical_reservation_sources', side_effect=lambda raw, *_args, **_kwargs: raw['sources']):
+			result = self.cycle(planned, publication=cfg, observe_inventory=observe_inventory,
+				dispatch_ticket=lambda payload: dispatched.append(payload['ticket']) or receipt(payload),
+				observe_reservations=observe_reservations, cycle_id='cycle-17',
+				overlap_allowance_requests=[allowance_request()], observe_overlap_allowance=observe_allowance)
+		self.assertEqual(2, len(inventory_calls), result)
+		self.assertEqual(2, len(reservation_calls), result)
+		self.assertEqual(observation(refreshed)['inventory_sha256'], reservation_calls[1]['inventory_sha256'])
+		self.assertEqual([], dispatched, result)
 
 	def test_post_expiry_provider_reads_use_post_read_controller_times(self):
 		allowance = self.validate()
