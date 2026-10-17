@@ -4,6 +4,7 @@ All commands are argument arrays, with no shell expansion. No merge command,
 Jira write, API-key provisioning, approval bypass or automatic force-push exists.
 """
 from __future__ import annotations
+from dataclasses import replace
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -661,6 +662,7 @@ class HostDriver:
             require(output_index < len(args),
                     'Codex result path argument is missing')
             watched_results.append(args[output_index])
+            policy = replace(policy, watched_file_limit=CODEX_RESULT_LIMIT)
         if subprocess.run is _SUBPROCESS_RUN:
             require(native_executable(executable_path),
                     'Configured command is not a native executable')
@@ -672,12 +674,20 @@ class HostDriver:
                 timer.daemon = True
                 timer.start()
             try:
-                result = run_bounded(
-                    command, cwd=cwd, env=child_env(env), stdin=stdin,
-                    watched_files=watched_results, policy=policy,
-                    operation_budget=operation_budget,
-                    cancel_event=cancel_event,
-                )
+                try:
+                    result = run_bounded(
+                        command, cwd=cwd, env=child_env(env), stdin=stdin,
+                        watched_files=watched_results, policy=policy,
+                        operation_budget=operation_budget,
+                        cancel_event=cancel_event,
+                    )
+                except ValidationError as exc:
+                    if (name == 'gh'
+                            and str(exc).startswith('SUBPROCESS_STDOUT_LIMIT:')):
+                        raise ValidationError(
+                            'HOST_STDOUT_LIMIT: host provider output exceeded its cap'
+                        ) from exc
+                    raise
             finally:
                 if timer is not None:
                     timer.cancel()
@@ -881,9 +891,32 @@ class HostDriver:
         endpoint = f'repos/{self.c["repository"]}'
         if suffix:
             endpoint += '/' + suffix
-        return loads(self.run(
-            'gh', ['api','--hostname','github.com','--method','GET',endpoint],
-            operation_budget=operation_budget))
+        arguments = ['api','--hostname','github.com','--method','GET',endpoint]
+        parameters = inspect.signature(self.run).parameters.values()
+        accepts_budget = (any(item.name == 'operation_budget' for item in parameters)
+                          or any(item.kind is inspect.Parameter.VAR_KEYWORD
+                                 for item in parameters))
+        if accepts_budget:
+            raw = self.run('gh', arguments, operation_budget=operation_budget)
+        else:
+            # Retained controller fixtures and older recorded drivers predate
+            # the optional keyword. Keep their replay compatible while applying
+            # the same shared response accounting at this call boundary.
+            raw = self.run('gh', arguments)
+            require(isinstance(raw, str),
+                    'Recorded host provider response is not text')
+            encoded = raw.encode('utf-8')
+            require(len(encoded) <= HOST_PROVIDER_RUNNER_POLICY.stdout_limit,
+                    'HOST_STDOUT_LIMIT: host provider output exceeded its cap')
+            if operation_budget is not None:
+                try:
+                    operation_budget.start_operation()
+                    operation_budget.consume(len(encoded))
+                except ChildProcessPolicyError as exc:
+                    raise ValidationError(
+                        'SUBPROCESS_OPERATION_BUDGET: shared operation budget exceeded'
+                    ) from exc
+        return loads(raw)
 
     def api_post(self, suffix, payload):
         endpoint = f'repos/{self.c["repository"]}/{suffix}'

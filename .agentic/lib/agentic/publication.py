@@ -206,6 +206,71 @@ sys.stdout.buffer.write(digest.hexdigest().encode("ascii") + b"\n")
 """
 
 
+_OBJECT_EVIDENCE_HELPER = r"""
+import hashlib
+import json
+import subprocess
+import sys
+
+git, root, oid, kind, expected_raw, object_format = sys.argv[1:]
+expected = int(expected_raw)
+if kind not in {"blob", "tree", "commit"} or object_format not in {"sha1", "sha256"}:
+    raise SystemExit(119)
+command = [
+    git, "--no-replace-objects", "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=" + __import__("os").devnull,
+    "-c", "core.quotePath=false", "-c", "protocol.file.allow=never",
+    "-C", root, "cat-file", kind, oid,
+]
+try:
+    process = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, shell=False, close_fds=True,
+    )
+except OSError:
+    sys.stderr.write("GIT_OBJECT_EVIDENCE_START_FAILED\n")
+    raise SystemExit(120)
+
+content_digest = hashlib.sha256()
+object_digest = hashlib.new(object_format)
+object_digest.update((kind + " " + str(expected)).encode("ascii") + b"\0")
+total = 0
+overflow = False
+try:
+    while True:
+        chunk = process.stdout.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > expected:
+            overflow = True
+            process.kill()
+            break
+        content_digest.update(chunk)
+        object_digest.update(chunk)
+finally:
+    process.stdout.close()
+returncode = process.wait()
+if overflow:
+    sys.stderr.write("GIT_OBJECT_EVIDENCE_SIZE_OVERFLOW\n")
+    raise SystemExit(121)
+if returncode:
+    raise SystemExit(returncode if 0 < returncode < 256 else 122)
+if total != expected:
+    sys.stderr.write("GIT_OBJECT_EVIDENCE_SIZE_MISMATCH\n")
+    raise SystemExit(123)
+if object_digest.hexdigest() != oid:
+    sys.stderr.write("GIT_OBJECT_EVIDENCE_OID_MISMATCH\n")
+    raise SystemExit(124)
+sys.stdout.buffer.write((json.dumps({
+    "content_sha256": content_digest.hexdigest(),
+    "kind": kind,
+    "oid": oid,
+    "size": total,
+}, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii"))
+"""
+
+
 @dataclass(frozen=True)
 class Detector:
     detector_id: str
@@ -1687,27 +1752,68 @@ def _loose_object_evidence(path, oid, object_format, expected_identity=None):
 
 def _git_object_evidence(root, oid, object_format, extra_env=None):
     """Read one packed/alternate object through bounded, replacement-disabled plumbing."""
-    output = _git_bounded_stdout(
-        root, "cat-file", "--batch", input_bytes=(oid + "\n").encode("ascii"),
-        extra_env=extra_env, limit=MAX_REWRITE_PROOF_OBJECT_BYTES + 1024)
-    header, separator, content = output.partition(b"\n")
-    if not separator or not content.endswith(b"\n"):
-        raise ValidationError("Snapshot-present object batch evidence is incomplete")
+    kind_result = _git(root, "cat-file", "-t", oid, extra_env=extra_env,
+                       check=False)
+    size_result = _git(root, "cat-file", "-s", oid, extra_env=extra_env,
+                       check=False)
+    if kind_result.returncode or size_result.returncode:
+        raise ValidationError("Snapshot-present object metadata could not be verified")
     try:
-        actual_bytes, kind_bytes, size_bytes = header.split(b" ", 2)
-        actual = actual_bytes.decode("ascii")
-        kind = kind_bytes.decode("ascii")
-        size = int(size_bytes.decode("ascii"))
+        kind_text = kind_result.stdout.decode("ascii")
+        size_text = size_result.stdout.decode("ascii")
+        if (re.fullmatch(r"(?:blob|tree|commit)\n", kind_text) is None
+                or re.fullmatch(r"[0-9]+\n", size_text) is None):
+            raise ValueError
+        kind = kind_text[:-1]
+        size = int(size_text)
     except (ValueError, UnicodeError) as exc:
-        raise ValidationError("Snapshot-present object batch header is invalid") from exc
-    raw = content[:-1]
-    if (actual != oid or kind not in {"blob", "tree", "commit"} or
-            size != len(raw) or size > MAX_REWRITE_PROOF_OBJECT_BYTES or
-            _object_digest(kind, raw, object_format) != oid):
-        raise ValidationError("Snapshot-present object content or OID is invalid")
-    return {"oid": oid, "kind": kind, "size": size,
-            "content_sha256": hashlib.sha256(raw).hexdigest(),
-            "loose_identity": None}
+        raise ValidationError("Snapshot-present object metadata is invalid") from exc
+    if size > MAX_REWRITE_PROOF_OBJECT_BYTES:
+        raise ValidationError("Snapshot-present object exceeds the publication proof bound")
+    executable = shutil.which("git")
+    if not executable:
+        raise ValidationError("GIT_UNAVAILABLE: Git is required for publication safety")
+    command = [
+        str(Path(sys.executable).resolve(strict=True)), "-I", "-B", "-c",
+        _OBJECT_EVIDENCE_HELPER, executable, str(Path(root).resolve()), oid,
+        kind, str(size), object_format,
+    ]
+    try:
+        result = run_bounded(
+            command, env=child_env(_safe_env(extra_env)),
+            policy=GIT_RUNNER_POLICY,
+        )
+    except OSError as exc:
+        raise ValidationError(
+            "GIT_OBJECT_EVIDENCE_START_FAILED: owned object reader did not start"
+        ) from exc
+    if result.returncode:
+        detail = render_diagnostic(
+            result.stderr, paths=(Path(root).resolve(),)
+        )[:300]
+        raise ValidationError(
+            "GIT_OBJECT_EVIDENCE_FAILED: git cat-file failed with exit "
+            f"{result.returncode}: {detail}"
+        )
+    try:
+        evidence = json.loads(result.stdout.decode("ascii"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValidationError(
+            "GIT_OBJECT_EVIDENCE_INVALID: object proof is not canonical JSON"
+        ) from exc
+    canonical = (json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+                 + "\n").encode("ascii") if isinstance(evidence, dict) else b""
+    expected = {"oid": oid, "kind": kind, "size": size}
+    if (not isinstance(evidence, dict)
+            or result.stdout != canonical
+            or set(evidence) != {"oid", "kind", "size", "content_sha256"}
+            or any(evidence.get(key) != value for key, value in expected.items())
+            or not isinstance(evidence.get("content_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", evidence["content_sha256"]) is None):
+        raise ValidationError(
+            "GIT_OBJECT_EVIDENCE_INVALID: object proof fields are invalid"
+        )
+    return {**evidence, "loose_identity": None}
 
 
 def _snapshot_object_evidence(root, snapshot, oid, extra_env=None, expected=None):
