@@ -508,6 +508,78 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, verified["version"])
         self.assertEqual(91, verified["provider_comment_id"])
 
+    def legacy_v1_fixture(self):
+        # Fixed pre-change 1.9.4 bytes: no candidate renderer builds this body.
+        record = {
+            "schema_version": 1,
+            "override_sha256":
+                "d2cef1ee25bbc5301d97fb2c7ad9392bfa3e8d03ac7bb4081e83d143aa8a484c",
+            "who": 101,
+            "when": "2026-10-12T12:00:00Z",
+            "why": "1.9.4 keyword compatibility",
+            "pr": 49,
+            "covered_shas": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        }
+        body = (
+            "<!-- awf-provenance-override:start -->\n"
+            "## AWF provenance override\n\n"
+            "- PR: #49\n"
+            "- Who: 101\n"
+            "- When: 2026-10-12T12:00:00Z\n"
+            "- Why: 1.9.4 keyword compatibility\n"
+            "- Override SHA-256: "
+            "`d2cef1ee25bbc5301d97fb2c7ad9392bfa3e8d03ac7bb4081e83d143aa8a484c`\n"
+            "- Covered commits:\n"
+            "  - `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`\n"
+            "<!-- awf-provenance-override:end -->\n"
+        )
+        observation = {
+            "version": 1, "repository_id": 12, "pr": 49,
+            "trusted_owner_ids": [101], "config_sha256": "f" * 64,
+            "comments": [{
+                "kind": "issue", "id": 91, "actor_id": 101,
+                "url": "https://example.invalid/pull/49#issuecomment-91",
+                "body": body, "body_sha256": sha256(body.encode()).hexdigest(),
+            }],
+        }
+        return record, observation
+
+    def test_awf96a_r2_001_b22_fixed_194_comment_bytes_remain_accepted(self):
+        record, observation = self.legacy_v1_fixture()
+        for authority in (None, reviewed_owner_config(101)):
+            with self.subTest(explicit_authority=authority is not None):
+                verified = verify_provider_owner_override(
+                    record, observation, reviewed_owner_config=authority,
+                    repository_id=12, config_sha256="f" * 64,
+                )
+                self.assertEqual(91, verified["provider_comment_id"])
+                self.assertEqual(record, verified["record"])
+                self.assertEqual(observation["comments"][0]["body_sha256"],
+                                 verified["body_sha256"])
+
+    def test_awf96a_r2_001_legacy_comment_keeps_exact_identity_and_digest(self):
+        record, observation = self.legacy_v1_fixture()
+        for field, value in (("actor_id", 202), ("body_sha256", "0" * 64),
+                             ("body", observation["comments"][0]["body"] + " ")):
+            changed = copy.deepcopy(observation)
+            changed["comments"][0][field] = value
+            if field == "body":
+                changed["comments"][0]["body_sha256"] = sha256(value.encode()).hexdigest()
+            with self.subTest(field=field), self.assertRaisesRegex(
+                    ValidationError, "exactly one freshly observed trusted owner comment"):
+                verify_provider_owner_override(record, changed)
+
+    def test_awf96a_r2_001_legacy_and_versioned_comments_are_not_two_authorizations(self):
+        record, observation = self.legacy_v1_fixture()
+        modern = copy.deepcopy(observation["comments"][0])
+        modern["id"] = 92
+        modern["body"] = render_owner_override(record)
+        modern["body_sha256"] = sha256(modern["body"].encode()).hexdigest()
+        observation["comments"].append(modern)
+        with self.assertRaisesRegex(
+                ValidationError, "exactly one freshly observed trusted owner comment"):
+            verify_provider_owner_override(record, observation)
+
     def test_deprecated_owner_alias_refuses_dual_authority_arguments(self):
         authority = reviewed_owner_config(101)
         original_state = {}
@@ -843,7 +915,7 @@ class RepositoryRangeTests(unittest.TestCase):
         )
         return original, latest, authority
 
-    def make_provider_override(self, covered_shas):
+    def make_provider_override(self, covered_shas, *, include_authority=False):
         authority = reviewed_owner_config(101)
         record = record_owner_override(
             {}, who=101, when=NOW, why="Reviewed fallback", pr=49,
@@ -874,7 +946,9 @@ class RepositoryRangeTests(unittest.TestCase):
             "generated_paths": [],
             "generators": {},
         }
-        return record, observation, policy, authority
+        if include_authority:
+            return record, observation, policy, authority
+        return record, observation, policy
 
     def test_tagged_commit_passes_and_untagged_commit_has_per_commit_reason(self):
         self.write("src/feature.py", "value = 1\n")
@@ -1156,10 +1230,26 @@ class RepositoryRangeTests(unittest.TestCase):
         self.assertEqual("PASS", result["status"])
         self.assertEqual("OVERRIDDEN", result["commits"][0]["status"])
 
+    def test_label_free_provider_override_is_bound_to_exact_owner_comment(self):
+        self.write("legacy-provider.txt", "legacy provider\n")
+        head = self.commit("legacy provider commit")
+        override, observation, policy = self.make_provider_override([head])
+
+        result = check_commit_range(
+            self.root, self.base, head, override=override,
+            reviewed_policy=policy, provider_observation=observation,
+        )
+
+        self.assertEqual("PASS", result["status"], result["refusals"])
+        self.assertEqual("OVERRIDDEN", result["commits"][0]["status"])
+        self.assertEqual(
+            91, result["provider_override_evidence"]["provider_comment_id"])
+
     def test_in29_caller_and_observation_owner_lists_are_ignored_for_reviewed_config(self):
         self.write("legacy-provider.txt", "legacy provider\n")
         head = self.commit("legacy provider commit")
-        override, observation, policy, authority = self.make_provider_override([head])
+        override, observation, policy, authority = self.make_provider_override(
+            [head], include_authority=True)
         observation["trusted_owner_ids"] = [202]
 
         result = check_commit_range(
@@ -1176,7 +1266,8 @@ class RepositoryRangeTests(unittest.TestCase):
     def test_label_free_provider_override_refuses_invalid_inner_authority(self):
         self.write("legacy-provider.txt", "legacy provider\n")
         head = self.commit("legacy provider commit")
-        override, observation, policy, authority = self.make_provider_override([head])
+        override, observation, policy, authority = self.make_provider_override(
+            [head], include_authority=True)
 
         tampered = copy.deepcopy(override)
         tampered["why"] = "Tampered reason"
@@ -1192,7 +1283,7 @@ class RepositoryRangeTests(unittest.TestCase):
         wrong_comment = copy.deepcopy(observation)
         wrong_comment["comments"][0]["body_sha256"] = "0" * 64
         outside, outside_observation, _, outside_authority = self.make_provider_override(
-            ["a" * 40])
+            ["a" * 40], include_authority=True)
         cases = (
             (tampered, observation, authority, r"digest"),
             (override, wrong_pr, authority, r"different PR"),
