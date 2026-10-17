@@ -77,7 +77,8 @@ class MergeTrainTests(unittest.TestCase):
         }
 
     def _evidence(self, source, *, observed_at=NOW, draft=False,
-                  head=None, base_branch=None, owner=True):
+                  head=None, base_branch=None, owner=True,
+                  reviewer_id="owner-1"):
         head = head or source["head_sha"]
         base_branch = base_branch or source["base_branch"]
         digest = lambda name: hashlib.sha256(
@@ -124,7 +125,7 @@ class MergeTrainTests(unittest.TestCase):
                 "status": "APPROVED",
                 "pr_number": source["pr_number"],
                 "head_sha": head,
-                "reviewer_id": "owner-1",
+                "reviewer_id": reviewer_id,
                 "submitted_at": observed_at,
                 "observed_at": observed_at,
                 "provider_artifact_id": f"review-{source['pr_number']}",
@@ -181,7 +182,8 @@ class MergeTrainTests(unittest.TestCase):
         return request, registration
 
     def _admit(self, source=None, evidence=None, *, target_branch="main",
-               provider_identity=None, expected_provider_identity=None):
+               provider_identity=None, expected_provider_identity=None,
+               trusted_owner_ids=None):
         module = merge_train()
         source = source or self._source()
         evidence = evidence or self._evidence(source)
@@ -198,7 +200,10 @@ class MergeTrainTests(unittest.TestCase):
         self.observer_registry[observer_id] = registration
         return module.admit_source(
             source, target_branch, expected_provider_identity, observer_id,
-            self.observer_registry, now=NOW, trusted_owner_ids=["owner-1"],
+            self.observer_registry, now=NOW,
+            trusted_owner_ids=(trusted_owner_ids
+                               if trusted_owner_ids is not None
+                               else ["owner-1"]),
         )
 
     def test_default_is_on_for_adopters_and_off_for_awf_repository(self):
@@ -214,6 +219,47 @@ class MergeTrainTests(unittest.TestCase):
         self.assertEqual(
             self.provider_identity,
             admitted["provider_admission"]["request"]["provider_identity"])
+
+    def test_numeric_provider_owner_id_admits_required_source(self):
+        module = merge_train()
+        source = self._source()
+        admitted = self._admit(
+            source, self._evidence(source, reviewer_id=54314148),
+            trusted_owner_ids=[54314148])
+        self.assertEqual("ADMITTED", admitted["status"])
+        self.assertEqual("SOURCE_ADMISSION_ONLY",
+                         admitted["authorization_scope"])
+        self.assertEqual([admitted], module.order_sources(
+            [admitted], self.provider_identity, self.observer_registry,
+            now=NOW, trusted_owner_ids=[54314148]))
+
+    def test_numeric_provider_owner_identity_boundary(self):
+        source = self._source()
+        evidence = self._evidence(source, reviewer_id=54314148)
+        self.assertEqual("ADMITTED", self._admit(
+            source, evidence, trusted_owner_ids=[54314148])["status"])
+
+        for invalid_id in (0, -1, True):
+            with self.subTest(trusted_owner_id=invalid_id):
+                with self.assertRaisesRegex(
+                        ValidationError, "identity collection"):
+                    self._admit(
+                        source, evidence, trusted_owner_ids=[invalid_id])
+
+        for invalid_id in (0, -1, True):
+            with self.subTest(reviewer_id=invalid_id):
+                invalid_evidence = self._evidence(
+                    source, reviewer_id=invalid_id)
+                with self.assertRaisesRegex(
+                        ValidationError, "owner review actor"):
+                    self._admit(
+                        source, invalid_evidence,
+                        trusted_owner_ids=[54314148])
+
+        with self.assertRaisesRegex(ValidationError, "owner review actor"):
+            self._admit(
+                source, self._evidence(source, reviewer_id=54314149),
+                trusted_owner_ids=[54314148])
 
     def test_admission_rejects_observer_from_different_repository(self):
         module = merge_train()
