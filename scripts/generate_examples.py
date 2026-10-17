@@ -449,7 +449,7 @@ def generate(output_root, source_root=ROOT):
           reviewed_example_config)
     write(output_root / ".agentic/examples/workflow-content-binding-project.yaml",
           content_binding_config(source_root, generation_policy))
-    bundle = example_bundle(cfg, operating)
+    bundle = example_bundle(reviewed_example_config, operating)
     write(output_root / ".agentic/examples/evidence-bundle.json", bundle)
     write(output_root / ".agentic/examples/controller-status-digest.json", {
         "schema_version": 3, "observed_at": NOW, "kind": "REGULAR", "cadence_seconds": 600,
@@ -475,7 +475,8 @@ def generate(output_root, source_root=ROOT):
     from agentic.contracts import Contracts
     from agentic.digest import render
     from agentic.gates import evaluate
-    gate = evaluate(cfg, definition(), bundle, Contracts(source_root / ".agentic/schemas"), NOW)
+    gate = evaluate(reviewed_example_config, definition(), bundle,
+                    Contracts(source_root / ".agentic/schemas"), NOW)
     finding = {"id": "F1", "severity": "MAJOR", "summary": "Fixture finding F1", "evidence": ["urn:awf:fixture:example-evidence"], "status": "OPEN",
                "resolution_evidence": [], "basis": {"criterion_id": "AC1"}, "supersedes_finding_id": None, "path": "src/example.py"}
     state = {"ticket": "EX-1", "awf_state": "MERGED", "pr_number": 7, "head_sha": "b" * 40, "base_sha": "c" * 40, "tree_sha": "e" * 40, "risk_tier": 2}
