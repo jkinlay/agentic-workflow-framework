@@ -443,7 +443,10 @@ def generate(output_root, source_root=ROOT):
     write(output_root / ".agentic/workflow-version.yaml", {"template": {"name": "generic-agentic-development-workflow", "version": VERSION, "schema_revision": 3},
         "installation": {"install_id": None, "last_operation": None, "operation_at": None, "source_manifest_sha256": None, "profile": "manual_reference"}})
     cfg = config(True, generation_policy)
-    write(output_root / ".agentic/examples/PROJECT_CONFIG.yaml", cfg)
+    reviewed_example_config = copy.deepcopy(cfg)
+    reviewed_example_config["github"]["expected_actor_id"] = 1002
+    write(output_root / ".agentic/examples/PROJECT_CONFIG.yaml",
+          reviewed_example_config)
     write(output_root / ".agentic/examples/workflow-content-binding-project.yaml",
           content_binding_config(source_root, generation_policy))
     bundle = example_bundle(cfg, operating)

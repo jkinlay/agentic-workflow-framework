@@ -22,7 +22,7 @@ BLOCKER/MAJOR findings carry `{criterion_id}` or `{boundary_code}` from `PROTECT
 
 `finding-disposition` `ACCEPT_RISK` or `NOT_A_DEFECT` makes a non-boundary finding non-blocking for the exact `head_sha` and copies it into `residual_risks`; `REQUIRE_FIX` keeps it open; `HEAD_CHANGED` voids it.
 
-`authorization.verify_owner_record` requires exact `AWF1.2 DISPOSE`, a trusted actor, one unedited comment per record, and a verifier independent of worker/critic. Cap dispositions sign `cycles/extensions:ids`; tier/closure records sign `head=-`.
+`authorization.verify_owner_record` requires exact `AWF1.2 DISPOSE`, a trusted actor, one unedited comment per record, and a verifier independent of worker/critic. Cap dispositions sign `cycles/extensions:ids/successor` (`-` when absent; URL-encoded for `RESCOPE`); tier/closure records sign `head=-`.
 
 Every lane review critic run needs an AWF-native `review-verdict` and `critic_artifact_binding`; auxiliary critic analyses are not rounds. `disposition-request` verifies head/bytes, creates a unique `authorization_request_id` and renders exact `AWF1.2 DISPOSE`. Only the resulting unedited comment from `merge_gate.trusted_owner_ids` supports close/extend/merge. `cap-plan` requires that verdict and matching project, ticket, policy and candidate.
 
