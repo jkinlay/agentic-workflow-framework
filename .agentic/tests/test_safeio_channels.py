@@ -289,6 +289,47 @@ class SafeWriteAndDiagnosticTests(unittest.TestCase):
         self.assertEqual(rendered.count("<redacted-credential>"), len(assignments))
         self.assertEqual(rendered.count("<redacted-path>"), len(network_paths))
 
+    def test_diagnostic_redacts_complete_json_secret_with_escaped_quote(self):
+        secret_suffixes = ("omega", "sigma")
+        payload = "\n".join((
+            json.dumps({
+                "STRIPE" + "_SECRET_KEY": "alpha" + chr(34) + secret_suffixes[0],
+            }),
+            "DJANGO" + "_SECRET_KEY='delta\\'" + secret_suffixes[1] + "'",
+        ))
+
+        rendered = child_process.render_diagnostic(payload)
+
+        for secret_suffix in secret_suffixes:
+            self.assertNotIn(secret_suffix, rendered)
+        self.assertEqual(
+            rendered,
+            '{"STRIPE_SECRET_KEY": <redacted-credential>}'
+            "\\x0aDJANGO_SECRET_KEY=<redacted-credential>",
+        )
+
+    def test_log_redacts_complete_json_secret_with_escaped_quote(self):
+        secret_suffixes = ("omega", "sigma")
+        payload = "\n".join((
+            json.dumps({
+                "STRIPE" + "_SECRET_KEY": "alpha" + chr(34) + secret_suffixes[0],
+            }),
+            "DJANGO" + "_SECRET_KEY='delta\\'" + secret_suffixes[1] + "'",
+        ))
+
+        with tempfile.TemporaryDirectory() as directory:
+            with safeio.Tree(directory) as tree:
+                safeio.write_log(tree, "result.log", payload, maximum=1024)
+                rendered = tree.read("result.log").decode("utf-8")
+
+        for secret_suffix in secret_suffixes:
+            self.assertNotIn(secret_suffix, rendered)
+        self.assertEqual(
+            rendered,
+            '{"STRIPE_SECRET_KEY": <redacted-credential>}'
+            "\\x0aDJANGO_SECRET_KEY=<redacted-credential>\n",
+        )
+
     def test_diagnostic_redacts_complete_unc_paths_with_valid_punctuation(self):
         backslash = chr(92)
         network_paths = (
