@@ -74,14 +74,6 @@ def _github_expected(config):
 def github_identity_preflight(config, observation):
     """Require the intended actor/profile and numeric repository before change."""
     expected = _github_expected(config)
-    owners = config.get("merge_gate", {}).get("trusted_owner_ids", [])
-    if expected["actor_id"] is not None and owners:
-        from .authorization import trusted_owner_ids
-        try:
-            trusted_owner_ids(config)
-        except ValidationError as exc:
-            raise ProviderIdentityError("IDENTITY_UNBOUND", str(exc),
-                                        expected=expected, observed=None) from exc
     if not isinstance(observation, dict) or set(observation) != GITHUB_FIELDS:
         raise ProviderIdentityError("INVALID_OBSERVATION", "GitHub identity observation has an invalid shape",
                                     expected=expected, observed=None)
@@ -89,6 +81,21 @@ def github_identity_preflight(config, observation):
     repository_id = observation["repository_id"]
     if type(actor_id) is not int or actor_id < 1 or type(repository_id) is not int or repository_id < 1:
         raise ProviderIdentityError("INVALID_OBSERVATION", "GitHub immutable IDs must be positive integers",
+                                    expected=expected, observed=observation)
+    from .authorization import trusted_owner_ids
+    # Profile-only admission binds the validated observation for this check;
+    # the reviewed configuration and reported expected identity stay unchanged.
+    owner_config = config
+    if expected["actor_id"] is None:
+        owner_config = config | {"github": config["github"] | {"expected_actor_id": actor_id}}
+    try:
+        owners = trusted_owner_ids(owner_config)
+    except ValidationError as exc:
+        raise ProviderIdentityError("IDENTITY_UNBOUND", str(exc),
+                                    expected=expected, observed=observation) from exc
+    if actor_id in owners:
+        raise ProviderIdentityError("IDENTITY_UNBOUND",
+                                    "The observed automation actor must not be a trusted owner",
                                     expected=expected, observed=observation)
     for field in ("actor_login", "repository", "protocol", "observed_at"):
         _text(observation[field], "GitHub observation " + field)
