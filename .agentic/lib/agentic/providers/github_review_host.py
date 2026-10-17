@@ -69,8 +69,21 @@ def _redacted_stderr_tail(stderr, environment, limit=4096):
             and (review_qualification.is_host_auth_environment_name(key)
                  or review_qualification.CREDENTIAL_ENVIRONMENT_NAME.search(key)))
     }, key=len, reverse=True)
-    rendered = render_diagnostic(stderr, credentials=credential_values)
-    return rendered.encode('utf-8')[-limit:].decode('utf-8', errors='replace')
+    text = stderr.decode('utf-8', errors='replace')
+    # Retain the host's broader credential coverage alongside the shared
+    # renderer. Redact headers before rendering escapes their line breaks.
+    text = re.sub(r'(?i)\bAuthorization\s*:\s*[^\r\n]*',
+                  'Authorization: [REDACTED]', text)
+    text = re.sub(r'(?i)\b(?:Bearer|token)\s+[^\s,;]+',
+                  '[REDACTED]', text)
+    text = re.sub(r'(?i)\b(?:gh[opusr]|github_pat)_[A-Za-z0-9_]+',
+                  '[REDACTED]', text)
+    rendered = render_diagnostic(text, credentials=credential_values)
+    if limit <= 0:
+        return ''
+    # A partial leading UTF-8 codepoint is discarded rather than replaced:
+    # replacement characters can expand the encoded result past its budget.
+    return rendered.encode('utf-8')[-limit:].decode('utf-8', errors='ignore')
 
 
 def protected(path):
@@ -733,10 +746,14 @@ class HostDriver:
             return ''
         failure_message = (f'HOST_COMMAND_FAILED: {name} failed with exit '
                            f'{result.returncode}; reconcile before retry')
+        failure_message = failure_message.encode('utf-8')[:4096].decode('utf-8', errors='ignore')
         if result.returncode != 0 and result.stderr:
-            stderr_tail = _redacted_stderr_tail(result.stderr, child_env(env))
+            separator = ' | stderr tail: '
+            tail_budget = 4096 - len((failure_message + separator).encode('utf-8'))
+            stderr_tail = _redacted_stderr_tail(result.stderr, child_env(env),
+                                                limit=tail_budget)
             if stderr_tail:
-                failure_message += f' | stderr tail: {stderr_tail}'
+                failure_message += separator + stderr_tail
         require(result.returncode == 0, failure_message)
         if binary:
             return result.stdout
