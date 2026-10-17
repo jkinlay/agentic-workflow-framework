@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 
 from agentic import ValidationError
+from agentic import child_process
+from agentic.providers import github_review_host
 from agentic.providers.github_review_host import (HostDriver,
     manifest_reproducer_sha256)
 from agentic.provenance import (check_commit_range, record_owner_override,
@@ -36,13 +39,34 @@ class ProviderProvenanceTests(unittest.TestCase):
                         'generated_paths': [], 'generators': {}}}
         return driver
 
+    def configured_command_driver(self, directory, name):
+        driver = self.driver()
+        config = Path(directory) / 'host-config.json'
+        config.write_text('{}\n', encoding='utf-8')
+        executable = Path(sys.executable).resolve()
+        driver.root = ROOT
+        driver.state = Path(directory) / 'state'
+        driver.state.mkdir()
+        driver.c.update({
+            '_config_path': str(config),
+            'config_hash': __import__('hashlib').sha256(
+                config.read_bytes()).hexdigest(),
+            'executables': {name: {
+                'path': str(executable),
+                'sha256': __import__('hashlib').sha256(
+                    executable.read_bytes()).hexdigest(),
+            }},
+            'command_timeout_seconds': 10,
+        })
+        return driver
+
     def test_provenance_collector_binds_repository_pr_base_head_and_refs(self):
         driver = self.driver()
         pr = {'number': 7, 'updated_at': '2026-10-13T20:00:00Z', 'body': 'body',
               'labels': [{'name': 'fallback: bot-written'}],
               'head': {'sha': 'a' * 40, 'ref': 'codex/test', 'repo': {'id': 12}},
               'base': {'sha': 'b' * 40, 'ref': 'main', 'repo': {'id': 12}}}
-        def api(suffix):
+        def api(suffix, *, operation_budget=None):
             if suffix == '':
                 return {'id': 12}
             if suffix == 'pulls/7':
@@ -57,13 +81,115 @@ class ProviderProvenanceTests(unittest.TestCase):
                           observed['head_ref'], observed['base_ref']))
         self.assertEqual([101], observed['trusted_owner_ids'])
 
+    def test_provenance_collection_shares_one_provider_response_budget(self):
+        driver = self.driver()
+        budgets = []
+        pr = {'number': 7, 'updated_at': 'same', 'body': '', 'labels': [],
+              'head': {'sha': 'a' * 40, 'ref': 'codex/test', 'repo': {'id': 12}},
+              'base': {'sha': 'b' * 40, 'ref': 'main', 'repo': {'id': 12}}}
+
+        def api(suffix, operation_budget=None):
+            budgets.append(operation_budget)
+            if suffix == '':
+                return {'id': 12}
+            if suffix == 'pulls/7':
+                return dict(pr)
+            return []
+
+        driver.api = api
+        driver.collect_provenance_observation()
+
+        self.assertGreaterEqual(len(budgets), 6)
+        self.assertTrue(all(item is budgets[0] for item in budgets))
+        self.assertIsInstance(budgets[0], child_process.OperationBudget)
+        self.assertEqual(child_process.HOST_PROVIDER_RUNNER_POLICY.operation_budget,
+                         budgets[0].byte_limit)
+
+    def test_host_provider_command_selects_closed_channel_policy(self):
+        driver = self.driver()
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'host-config.json'
+            config.write_text('{}\n', encoding='utf-8')
+            executable = Path(sys.executable).resolve()
+            driver.c.update({
+                '_config_path': str(config),
+                'config_hash': __import__('hashlib').sha256(
+                    config.read_bytes()).hexdigest(),
+                'executables': {'gh': {
+                    'path': str(executable),
+                    'sha256': __import__('hashlib').sha256(
+                        executable.read_bytes()).hexdigest(),
+                }},
+                'command_timeout_seconds': 120,
+            })
+            completed = subprocess.CompletedProcess(
+                [str(executable)], 0, b'{}', b'')
+            with patch.object(github_review_host, 'run_bounded',
+                              return_value=completed) as runner:
+                self.assertEqual('{}', driver.run('gh', ['-c', 'pass']))
+
+        self.assertIs(runner.call_args.kwargs['policy'],
+                      child_process.HOST_PROVIDER_RUNNER_POLICY)
+        self.assertNotIn('stdout_limit', runner.call_args.kwargs)
+        self.assertNotIn('stderr_limit', runner.call_args.kwargs)
+
+    def test_host_provider_stdout_overflow_has_frozen_reason_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = self.configured_command_driver(directory, 'gh')
+            program = 'import sys; sys.stdout.buffer.write(b"x" * (9 * 1024 * 1024))'
+
+            with self.assertRaisesRegex(ValidationError,
+                                        r'^HOST_STDOUT_LIMIT:'):
+                driver.run('gh', ['-c', program])
+
+    def test_failed_host_command_redacts_standalone_and_arbitrary_auth(self):
+        for diagnostic in ('Bearer fixture-credential-value',
+                           'token fixture-credential-value',
+                           'Authorization: Negotiate fixture-credential-value',
+                           'aUtHoRiZaTiOn: Custom fixture-credential-value'):
+            with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
+                driver = self.configured_command_driver(directory, 'gh')
+                program = ('import sys; sys.stderr.write(' + repr(diagnostic)
+                           + '); sys.exit(1)')
+                with self.assertRaisesRegex(ValidationError, '^HOST_COMMAND_FAILED:') as caught:
+                    driver.run('gh', ['-c', program])
+                self.assertNotIn('fixture-credential-value', str(caught.exception))
+
+    def test_failed_host_command_reason_fits_4_kib_including_framing(self):
+        for character in ('x', '\u20ac', '\U0001f642'):
+            with self.subTest(character=character), tempfile.TemporaryDirectory() as directory:
+                driver = self.configured_command_driver(directory, 'gh')
+                program = ('import sys; sys.stderr.buffer.write(('
+                           + ascii(character) + ' * 5000).encode("utf-8")); sys.exit(1)')
+                with self.assertRaisesRegex(ValidationError, '^HOST_COMMAND_FAILED:') as caught:
+                    driver.run('gh', ['-c', program])
+                reason = str(caught.exception)
+                self.assertLessEqual(len(reason.encode('utf-8')), 4096)
+                self.assertNotIn('\ufffd', reason)
+                self.assertTrue(reason.endswith(character * 10))
+
+    def test_legacy_recorded_driver_accounts_shared_provider_budget(self):
+        class RecordedDriver(HostDriver):
+            def run(self, name, args, cwd=None, stdin=None, timeout=None,
+                    log=None, binary=False):
+                return '{}'
+
+        driver = RecordedDriver.__new__(RecordedDriver)
+        driver.c = {'repository': 'fixture/project'}
+        budget = child_process.HOST_PROVIDER_RUNNER_POLICY.make_budget(
+            'legacy-recorded-driver')
+
+        self.assertEqual({}, driver.api('', operation_budget=budget))
+        self.assertEqual(1, budget.operations)
+        self.assertEqual(2, budget.consumed_bytes)
+
     def test_provider_labels_comments_pagination_caps_and_ambiguity(self):
         driver = self.driver()
         rows = [{'id': index + 1, 'body': 'comment',
                  'user': {'id': 101},
                  'html_url': f'https://github.com/fixture/project/issues/7#{index + 1}'}
                 for index in range(100)]
-        def api(suffix):
+        def api(suffix, *, operation_budget=None):
             if suffix == '':
                 return {'id': 12}
             if suffix == 'pulls/7':
@@ -240,6 +366,32 @@ class ProviderProvenanceTests(unittest.TestCase):
             finally:
                 sentinel.terminate()
                 sentinel.wait(timeout=10)
+
+    def test_host_driver_stops_oversized_codex_result_during_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = self.configured_command_driver(directory, 'codex')
+            driver._qualification_probe = True
+            result = Path(directory) / 'result.json'
+            program = ('from pathlib import Path; import sys,time; '
+                       'Path(sys.argv[-1]).write_bytes(b"x" * (1024 * 1024 + 1)); '
+                       'time.sleep(3)')
+            started = time.monotonic()
+
+            with patch.object(github_review_host, 'enforce_pinned_awf_skill'), \
+                    patch.object(github_review_host, 'run_bounded',
+                                 wraps=github_review_host.run_bounded) as runner, \
+                    self.assertRaisesRegex(ValidationError,
+                                            'RESULT_FILE_LIMIT'):
+                driver.run('codex', ['-c', program,
+                                     '--output-last-message', str(result)])
+
+            self.assertLess(time.monotonic() - started, 2)
+            # Result-file monitoring must retain the closed Codex channel,
+            # aggregate-output and stdin policy, rather than ad-hoc caps.
+            self.assertEqual(
+                replace(child_process.CODEX_LOG_RUNNER_POLICY,
+                        watched_file_limit=github_review_host.CODEX_RESULT_LIMIT),
+                runner.call_args.kwargs.get('policy'))
 
 
 class CodexIdentityTests(unittest.TestCase):
