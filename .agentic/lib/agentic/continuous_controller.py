@@ -15,14 +15,15 @@ import uuid
 from . import ValidationError
 from .child_process import child_env
 from .canonical import canonical, loads, now_text, timestamp
-from .child_process import child_env
-from .controller_state import configure_database, protected_state_path, restrict_state_permissions
+from .controller_state import STATE_SCHEMA_VERSION, configure_database, protected_state_path, restrict_state_permissions
 STREAM_STATES = {'WORKING', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 TICKET_STATES = {'ELIGIBLE', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 LIFECYCLE_ROLES = {'implementation': 'writer', 'independent_review': 'critic'}
 DEFAULT_STATUS_CADENCE_SECONDS = 10 * 60
 STATE_APPLICATION_ID = 1096238641
-DDL = '\nCREATE TABLE IF NOT EXISTS controller_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS stream_status(\n stream_id TEXT PRIMARY KEY,state TEXT NOT NULL,ticket TEXT,actor TEXT NOT NULL,\n reason TEXT NOT NULL,next_action TEXT NOT NULL,resume_trigger TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,activity TEXT NOT NULL,verification_gate TEXT NOT NULL,\n reviewer_completion TEXT NOT NULL,open_findings INTEGER NOT NULL,\n jira_status TEXT NOT NULL,paths TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_outbox(\n delivery_id TEXT PRIMARY KEY,kind TEXT NOT NULL,revision INTEGER NOT NULL,\n observed_at TEXT NOT NULL,payload_json TEXT NOT NULL,acknowledged_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_dispatch(\n dispatch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,ticket TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,\n receipt_json TEXT,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_ticket_authority(\n ticket TEXT NOT NULL,exact_tuple TEXT NOT NULL,dispatch_role TEXT NOT NULL,\n lifecycle_stage TEXT NOT NULL,observed_at TEXT NOT NULL,\n PRIMARY KEY(ticket,exact_tuple));\nCREATE TABLE IF NOT EXISTS controller_overlap_allowance(\n allowance_id TEXT PRIMARY KEY,source_id TEXT NOT NULL UNIQUE,repository_id TEXT NOT NULL,\n cycle_id TEXT NOT NULL,path TEXT NOT NULL,tickets_json TEXT NOT NULL,\n pull_requests_json TEXT NOT NULL,heads_json TEXT NOT NULL,expires_at TEXT NOT NULL,\n status TEXT NOT NULL,record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_overlap_sync_gate(\n gate_id TEXT PRIMARY KEY,allowance_id TEXT NOT NULL,status TEXT NOT NULL,\n record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_overlap_gate_allowance\n ON controller_overlap_sync_gate(allowance_id,status);\nCREATE TABLE IF NOT EXISTS controller_jira_operation(\n operation_id TEXT PRIMARY KEY,issue_id TEXT NOT NULL,event TEXT NOT NULL,\n intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,\n operation_json TEXT,readback_json TEXT,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_jira_issue ON controller_jira_operation(issue_id,status);\n'
+DISPATCH_SCHEMA_VERSION = 2
+REPLAN_TRIGGER_SCHEMA_VERSION = 2
+DDL = '\nCREATE TABLE IF NOT EXISTS controller_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS stream_status(\n stream_id TEXT PRIMARY KEY,state TEXT NOT NULL,ticket TEXT,actor TEXT NOT NULL,\n reason TEXT NOT NULL,next_action TEXT NOT NULL,resume_trigger TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,activity TEXT NOT NULL,verification_gate TEXT NOT NULL,\n reviewer_completion TEXT NOT NULL,open_findings INTEGER NOT NULL,\n jira_status TEXT NOT NULL,paths TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_outbox(\n delivery_id TEXT PRIMARY KEY,kind TEXT NOT NULL,revision INTEGER NOT NULL,\n observed_at TEXT NOT NULL,payload_json TEXT NOT NULL,acknowledged_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_dispatch(\n dispatch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,ticket TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,\n receipt_json TEXT,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_dispatch_waiver(\n waiver_id TEXT PRIMARY KEY,dispatch_id TEXT NOT NULL,allowance_id TEXT NOT NULL,\n record_json TEXT NOT NULL,created_at TEXT NOT NULL,\n UNIQUE(dispatch_id,allowance_id));\nCREATE TABLE IF NOT EXISTS controller_replan_seal(\n seal_id TEXT PRIMARY KEY,trigger_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,\n record_json TEXT NOT NULL,created_at TEXT NOT NULL,consumed_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_ticket_authority(\n ticket TEXT NOT NULL,exact_tuple TEXT NOT NULL,dispatch_role TEXT NOT NULL,\n lifecycle_stage TEXT NOT NULL,observed_at TEXT NOT NULL,\n PRIMARY KEY(ticket,exact_tuple));\nCREATE TABLE IF NOT EXISTS controller_overlap_allowance(\n allowance_id TEXT PRIMARY KEY,source_id TEXT NOT NULL UNIQUE,repository_id TEXT NOT NULL,\n cycle_id TEXT NOT NULL,path TEXT NOT NULL,tickets_json TEXT NOT NULL,\n pull_requests_json TEXT NOT NULL,heads_json TEXT NOT NULL,expires_at TEXT NOT NULL,\n status TEXT NOT NULL,record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_overlap_sync_gate(\n gate_id TEXT PRIMARY KEY,allowance_id TEXT NOT NULL,status TEXT NOT NULL,\n record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_overlap_gate_allowance\n ON controller_overlap_sync_gate(allowance_id,status);\nCREATE TABLE IF NOT EXISTS controller_jira_operation(\n operation_id TEXT PRIMARY KEY,issue_id TEXT NOT NULL,event TEXT NOT NULL,\n intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,\n operation_json TEXT,readback_json TEXT,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_jira_issue ON controller_jira_operation(issue_id,status);\n'
 
 def _require(condition, message):
 	if not condition:
@@ -158,6 +159,49 @@ def overlap_allowance_command(request):
 	scope = {key: deepcopy(request[key]) for key in ('repository_id', 'cycle_id', 'path', 'expires_at', 'pull_requests')}
 	return 'AWF-OVERLAP-ALLOWANCE 1\n' + canonical(scope).decode('utf-8') + '\n'
 
+def replan_trigger_command(event):
+	required = {'repository_id', 'round_id', 'prior_inventory_sha256', 'next_inventory_sha256', 'nonterminal_dispatch_ids'}
+	_require(isinstance(event, dict) and set(event) == required, 'Round-boundary replan event is malformed')
+	_require(isinstance(event['repository_id'], str) and event['repository_id'].isdecimal(), 'Round-boundary replan repository identity is invalid')
+	_require(isinstance(event['round_id'], str) and event['round_id'].strip() == event['round_id'] and event['round_id'] and len(event['round_id']) <= 256 and not any(ord(char) < 32 for char in event['round_id']), 'Round-boundary replan identity is invalid')
+	_require(all(isinstance(event[key], str) and re.fullmatch('[0-9a-f]{64}', event[key]) is not None for key in ('prior_inventory_sha256', 'next_inventory_sha256')), 'Round-boundary replan inventory binding is invalid')
+	ids = event['nonterminal_dispatch_ids']
+	_require(isinstance(ids, list) and ids == sorted(ids) and len(ids) == len(set(ids)) and ids and all(isinstance(value, str) and value.strip() == value and value for value in ids), 'Round-boundary replan dispatch identities are not canonical')
+	return 'AWF-ROUND-REPLAN 1\n' + canonical(event).decode('utf-8') + '\n'
+
+def validate_replan_trigger_observation(config, request, observation, *, now):
+	from .canonical import fingerprint
+	timestamp(now)
+	required_request = {'comment_id', 'repository_id', 'prior_inventory_sha256', 'next_inventory_sha256', 'nonterminal_dispatch_ids'}
+	_require(isinstance(request, dict) and set(request) == required_request and type(request['comment_id']) is int and request['comment_id'] > 0, 'Replan trigger observation request is malformed')
+	event_context = {key: deepcopy(request[key]) for key in required_request if key != 'comment_id'}
+	_require(isinstance(config, dict) and isinstance(config.get('merge_gate'), dict), 'Replan trigger needs reviewed owner configuration')
+	trusted = config['merge_gate'].get('trusted_owner_ids')
+	_require(isinstance(trusted, list) and trusted and all(type(value) is int and value > 0 for value in trusted) and len(trusted) == len(set(trusted)), 'Replan trigger has no configured trusted owner identities')
+	required_observation = {'source', 'repository_id', 'provider_observed_at', 'observation_etag', 'comment'}
+	_require(isinstance(observation, dict) and set(observation) == required_observation and observation['source'] == 'github.com' and str(observation['repository_id']) == request['repository_id'], 'Replan trigger provider observation names a foreign repository')
+	_provider_fresh({'provider_observed_at': observation['provider_observed_at'], 'etag': observation['observation_etag']}, now, 'Replan trigger aggregate')
+	comment = observation['comment']
+	comment_fields = {'id', 'node_id', 'actor_id', 'actor_login', 'author_association', 'created_at', 'updated_at', 'body', 'etag', 'provider_observed_at'}
+	_require(isinstance(comment, dict) and set(comment) == comment_fields and comment['id'] == request['comment_id'] and isinstance(comment['node_id'], str) and comment['node_id'].strip() and type(comment['actor_id']) is int and comment['actor_id'] > 0 and isinstance(comment['actor_login'], str) and comment['actor_login'].strip() and comment['author_association'] in {'OWNER', 'MEMBER', 'COLLABORATOR'}, 'Replan trigger comment provider identity is malformed')
+	_provider_fresh(comment, now, 'Replan trigger comment')
+	_require(comment['actor_id'] in set(trusted), 'Replan trigger comment author is not a configured owner')
+	created, updated, current = timestamp(comment['created_at']), timestamp(comment['updated_at']), timestamp(now)
+	_require(created == updated, 'Replan trigger comment was edited or mutated')
+	_require(created <= current and (current - created).total_seconds() <= OVERLAP_OBSERVATION_MAX_AGE_SECONDS, 'Replan trigger comment is stale or future-dated')
+	prefix = 'AWF-ROUND-REPLAN 1\n'
+	body = comment['body']
+	_require(isinstance(body, str) and body.startswith(prefix) and body.endswith('\n'), 'Replan trigger comment is not the canonical round event')
+	event = loads(body[len(prefix):-1])
+	_require(replan_trigger_command(event) == body, 'Replan trigger comment bytes are not canonical')
+	_require(all(event[key] == event_context[key] for key in event_context), 'Replan trigger comment does not bind the current round boundary')
+	artifact = {'comment_id': comment['id'], 'node_id': comment['node_id'], 'actor_id': comment['actor_id'], 'actor_login': comment['actor_login'], 'created_at': comment['created_at'], 'etag': comment['etag'], 'provider_observed_at': comment['provider_observed_at']}
+	artifact['artifact_sha256'] = fingerprint('controller-replan-provider-artifact', artifact)
+	trigger_id = fingerprint('controller-replan-trigger-id', {'repository_id': request['repository_id'], 'comment_id': comment['id'], 'node_id': comment['node_id']})
+	trigger = {'schema_version': REPLAN_TRIGGER_SCHEMA_VERSION, 'source': 'github.com', 'trigger_id': trigger_id, **event, 'observed_at': now, 'provider_artifact': artifact, 'owner_policy_sha256': fingerprint('controller-replan-owner-policy', {'trusted_owner_ids': sorted(trusted)})}
+	trigger['trigger_sha256'] = fingerprint('controller-replan-trigger', trigger)
+	return trigger
+
 def _provider_fresh(value, now, label):
 	_require(isinstance(value, dict) and isinstance(value.get('provider_observed_at'), str) and isinstance(value.get('etag'), str) and value['etag'].strip() and (len(value['etag']) <= 512), label + ' needs a provider timestamp and ETag')
 	observed = timestamp(value['provider_observed_at'])
@@ -233,6 +277,100 @@ def _git(root, *args):
 		raise ValidationError(f'Git path inventory failed: {type(exc).__name__}') from exc
 	_require(result.returncode == 0, 'Git path inventory could not be observed')
 	return result.stdout
+
+def _reservation_record(value):
+	from .canonical import fingerprint
+	required = {'schema_version', 'kind', 'source', 'repository_id', 'head_sha', 'tree_sha', 'artifact_id', 'observed_at', 'authenticated', 'complete', 'paths', 'evidence_sha256'}
+	_require(isinstance(value, dict) and set(value) == required, 'Reservation source is partial or has unknown fields')
+	_require(value['schema_version'] == 1 and value['kind'] in {'parked', 'worktree_diff'}, 'Reservation source kind or version is unsupported')
+	_require(value['source'] == ('github.com' if value['kind'] == 'parked' else 'git'), 'Reservation source is not authoritative for its kind')
+	_require(value['authenticated'] is True and value['complete'] is True, 'Reservation source is not authenticated and complete')
+	_require(isinstance(value['artifact_id'], str) and value['artifact_id'].strip() == value['artifact_id'] and value['artifact_id'], 'Reservation artifact identity is invalid')
+	_require(isinstance(value['repository_id'], str) and value['repository_id'].isdecimal(), 'Reservation repository identity is invalid')
+	_require(re.fullmatch('[0-9a-f]{40}', value['head_sha']) is not None and re.fullmatch('[0-9a-f]{40}', value['tree_sha']) is not None, 'Reservation head/tree binding is invalid')
+	timestamp(value['observed_at'])
+	_require(isinstance(value['paths'], list) and value['paths'] and value['paths'] == sorted(value['paths']) and len(value['paths']) == len(set(value['paths'])), 'Reservation paths must be a sorted nonempty unique list')
+	paths = []
+	for path in value['paths']:
+		canonical_path = _exact_overlap_path(path)
+		_require(unicodedata.normalize('NFC', canonical_path) == canonical_path, 'Reservation path is not NFC canonical')
+		paths.append(canonical_path)
+	seed = {key: deepcopy(item) for key, item in value.items() if key != 'evidence_sha256'}
+	_require(value['evidence_sha256'] == fingerprint('controller-reservation-source', seed), 'Reservation source digest is missing or mismatched')
+	return {**deepcopy(value), 'paths': paths}
+
+def canonical_reservation_sources(sources, repository_root, head_sha, tree_sha, repository_id, now, *, inventory_sha256=None):
+	"""Authenticate and Git-canonicalize parked and dirty-worktree reservations."""
+	from .canonical import fingerprint
+	envelope = None
+	if isinstance(sources, dict):
+		required = {'schema_version', 'source', 'repository_id', 'head_sha', 'tree_sha', 'inventory_sha256', 'observed_at', 'authenticated', 'complete', 'sources', 'observation_sha256'}
+		_require(set(sources) == required and sources['schema_version'] == 1 and sources['source'] == 'host_observation' and sources['authenticated'] is True and sources['complete'] is True, 'Reservation observation envelope is not authenticated and complete')
+		_require(re.fullmatch('[0-9a-f]{64}', sources['inventory_sha256'] or '') is not None, 'Reservation observation inventory binding is malformed')
+		_require(inventory_sha256 is None or sources['inventory_sha256'] == inventory_sha256, 'Reservation observation is bound to a different inventory')
+		seed = {key: deepcopy(value) for key, value in sources.items() if key != 'observation_sha256'}
+		_require(sources['observation_sha256'] == fingerprint('controller-reservation-observation', seed), 'Reservation observation envelope digest is mismatched')
+		envelope = sources
+		sources = sources['sources']
+	_require(isinstance(sources, list), 'Reservation sources must be a list')
+	root = Path(repository_root).resolve(strict=True)
+	_require(str(repository_id).isdecimal(), 'Reservation repository identity is invalid')
+	_require(_git(root, 'rev-parse', 'HEAD').decode('ascii', 'strict').strip() == head_sha and _git(root, 'rev-parse', 'HEAD^{tree}').decode('ascii', 'strict').strip() == tree_sha, 'Reservation source repository tuple is stale')
+	tracked_records = _git(root, 'ls-files', '-s', '-z').decode('utf-8', 'strict').split('\x00')
+	modes = {}
+	for record in tracked_records:
+		if not record:
+			continue
+		metadata, name = record.split('\t', 1)
+		mode, _object_id, stage = metadata.split(' ')
+		_require(stage == '0', 'Reservation Git inventory contains an unmerged path')
+		modes[name] = mode
+	tracked = list(modes)
+	untracked = _git(root, 'ls-files', '--others', '--exclude-standard', '-z').decode('utf-8', 'strict').split('\x00')
+	known = {name.casefold(): name for name in [*tracked, *untracked] if name}
+	_require(len(known) == len([name for name in [*tracked, *untracked] if name]), 'Repository has case-folded path aliases')
+	dirty = set(_git(root, 'diff', '--name-only', '-z', 'HEAD', '--').decode('utf-8', 'strict').split('\x00'))
+	dirty.update(name for name in untracked if name)
+	dirty.discard('')
+	current = timestamp(now)
+	if envelope is not None:
+		_require(envelope['repository_id'] == str(repository_id) and envelope['head_sha'] == head_sha and envelope['tree_sha'] == tree_sha, 'Reservation observation envelope names a foreign or stale repository tuple')
+		age = (current - timestamp(envelope['observed_at'])).total_seconds()
+		_require(-OVERLAP_PROVIDER_CLOCK_SKEW_SECONDS <= age <= OVERLAP_OBSERVATION_MAX_AGE_SECONDS, 'Reservation observation envelope is stale')
+	result = []
+	for raw in sources:
+		value = _reservation_record(raw)
+		_require(value['repository_id'] == str(repository_id) and value['head_sha'] == head_sha and value['tree_sha'] == tree_sha, 'Reservation source names a foreign or stale repository tuple')
+		age = (current - timestamp(value['observed_at'])).total_seconds()
+		_require(-OVERLAP_PROVIDER_CLOCK_SKEW_SECONDS <= age <= OVERLAP_OBSERVATION_MAX_AGE_SECONDS, 'Reservation source observation is stale')
+		for path in value['paths']:
+			_require(known.get(path.casefold()) == path, 'Reservation path is not the exact Git-canonical path')
+			_require(modes.get(path) not in {'120000', '160000'}, 'Reservation path is a Git link or nested repository')
+			candidate = root / path
+			for component in (candidate, *candidate.parents):
+				if component == root.parent:
+					break
+				_require(not _reparse(component), 'Reservation path traverses a link, junction, or reparse point')
+			if candidate.exists():
+				metadata = candidate.stat()
+				identity = (getattr(metadata, 'st_dev', None), getattr(metadata, 'st_ino', None))
+				_require(all((type(item) is int for item in identity)) and identity[1] != 0, 'Reservation path has no reliable physical identity')
+				aliases = []
+				for other in known.values():
+					other_path = root / other
+					if other_path.exists() and not _reparse(other_path):
+						other_metadata = other_path.stat()
+						if (getattr(other_metadata, 'st_dev', None), getattr(other_metadata, 'st_ino', None)) == identity:
+							aliases.append(other)
+				_require(aliases == [path], 'Reservation path has a physical Git alias')
+		if value['kind'] == 'worktree_diff':
+			_require(set(value['paths']) == dirty, 'Worktree-diff reservation is partial or differs from the authenticated Git observation')
+		result.append(value)
+	_require(len({item['artifact_id'] for item in result}) == len(result), 'Reservation artifact identity is replayed')
+	if envelope is not None:
+		worktree_records = [item for item in result if item['kind'] == 'worktree_diff']
+		_require(len(worktree_records) == (1 if dirty else 0), 'Reservation observation omits or duplicates the complete worktree diff')
+	return result
 
 def canonical_repository_paths(tickets, repository_root, head_sha, tree_sha):
 	root_input = Path(repository_root)
@@ -370,10 +508,16 @@ class ContinuousControllerStore:
 		_require(type(migrate_cadence) is bool, 'Cadence migration choice must be boolean')
 		self.periodic_status_enabled = periodic_status_enabled
 		self.path.parent.mkdir(parents=True, exist_ok=True)
-		with self.connection() as db:
-			db.executescript(DDL)
+		with self._initialization_connection() as db:
+			self._validate_database_before_initialization(db)
 			db.execute('BEGIN IMMEDIATE')
 			try:
+				if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='controller_dispatch'").fetchone() is not None:
+					self._migrate_dispatch_rows(db, apply=False)
+				for statement in DDL.split(';'):
+					if statement.strip():
+						db.execute(statement)
+				self._migrate_dispatch_rows(db)
 				configured = canonical(sorted(stream_ids)).decode()
 				old = db.execute("SELECT value FROM controller_meta WHERE key='streams'").fetchone()
 				_require(old is None or old[0] == configured, 'Configured stream set changed; perform explicit controller migration')
@@ -394,17 +538,81 @@ class ContinuousControllerStore:
 			except BaseException:
 				db.execute('ROLLBACK')
 				raise
+			configure_database(db, self.path, STATE_APPLICATION_ID)
 		restrict_state_permissions(self.path)
 
+	@staticmethod
+	def _validate_database_before_initialization(db):
+		"""Validate existing state without changing its journal or identity bytes."""
+		try:
+			integrity = db.execute('PRAGMA quick_check').fetchone()
+			_require(integrity is not None and integrity[0] == 'ok', 'Controller state integrity check failed')
+			observed_app = db.execute('PRAGMA application_id').fetchone()[0]
+			observed_version = db.execute('PRAGMA user_version').fetchone()[0]
+			uninitialized = observed_app == 0 and observed_version == 0
+			_require(uninitialized or observed_app == STATE_APPLICATION_ID, 'Controller state application identity is wrong or tampered')
+			_require(uninitialized or observed_version == STATE_SCHEMA_VERSION, 'Controller state schema version is unsupported or tampered')
+		except sqlite3.DatabaseError as exc:
+			raise ValidationError('Controller state is unreadable or corrupt') from exc
+
+	@staticmethod
+	def _migrate_dispatch_rows(db, *, apply=True):
+		"""Atomically upgrade the closed 1.9.4 dispatch JSON shape to v2."""
+		rows = db.execute('SELECT dispatch_id,stream_id,ticket,exact_tuple,status,payload_json,receipt_json FROM controller_dispatch ORDER BY rowid').fetchall()
+		migrations = []
+		legacy_base = {'dispatch_id', 'stream', 'ticket', 'exact_tuple', 'paths', 'actor', 'next_action', 'dispatch_nonce', 'prepared_at', 'role', 'lifecycle_stage'}
+		for row in rows:
+			payload = loads(row['payload_json'])
+			if payload.get('dispatch_schema_version') == DISPATCH_SCHEMA_VERSION:
+				_require(isinstance(payload.get('lane_start_waivers'), list) and payload['lane_start_waivers'] == sorted(payload['lane_start_waivers']) and len(payload['lane_start_waivers']) == len(set(payload['lane_start_waivers'])), 'Versioned dispatch has no canonical lane-start waiver binding')
+				_require(all((payload.get(key) == row[column] for key, column in (('dispatch_id', 'dispatch_id'), ('stream', 'stream_id'), ('ticket', 'ticket'), ('exact_tuple', 'exact_tuple')))), 'Versioned dispatch identity differs from its row')
+				_require(row['status'] in {'PENDING', 'IN_FLIGHT', 'UNKNOWN', 'LAUNCHED', 'TERMINAL', 'CANCELLED'}, 'Versioned dispatch has an unsupported durable state')
+				if row['status'] in {'LAUNCHED', 'TERMINAL'}:
+					receipt = loads(row['receipt_json']) if row['receipt_json'] is not None else None
+					expected = row['status']
+					_require(isinstance(receipt, dict) and receipt.get('dispatch_schema_version') == DISPATCH_SCHEMA_VERSION and receipt.get('dispatch_state') == expected and receipt.get('terminal') is (expected == 'TERMINAL'), 'Versioned dispatch receipt differs from its durable state')
+				elif row['status'] in {'PENDING', 'IN_FLIGHT', 'UNKNOWN'}:
+					_require(row['receipt_json'] is None, 'Unaccepted versioned dispatch has an unexpected receipt')
+				continue
+			_require('dispatch_schema_version' not in payload, 'Dispatch row has an unsupported schema version')
+			status = row['status']
+			_require(status in {'PENDING', 'IN_FLIGHT', 'UNKNOWN'}, f'Legacy {status} dispatch requires an explicit operator migration')
+			allowed = set(legacy_base)
+			if status in {'IN_FLIGHT', 'UNKNOWN'}:
+				allowed.add('begun_at')
+			allowed.add('codex_skill_selection')
+			if status == 'UNKNOWN':
+				allowed.update({'_stream_before_unknown', 'reconcile_nonce', 'reconcile_at'})
+			_require(legacy_base <= set(payload) and set(payload) <= allowed, f'Legacy {status} dispatch payload is ambiguous and was not migrated')
+			_require(payload['dispatch_id'] == row['dispatch_id'] and payload['stream'] == row['stream_id'] and payload['ticket'] == row['ticket'] and payload['exact_tuple'] == row['exact_tuple'], f'Legacy {status} dispatch identity is mismatched')
+			_require((status == 'PENDING') == ('begun_at' not in payload), f'Legacy {status} dispatch begin state is ambiguous')
+			_require(row['receipt_json'] is None, f'Legacy {status} dispatch has an ambiguous receipt')
+			migrated = deepcopy(payload)
+			migrated['dispatch_schema_version'] = DISPATCH_SCHEMA_VERSION
+			migrated['lane_start_waivers'] = []
+			migrations.append((canonical(migrated).decode(), row['dispatch_id']))
+		if migrations:
+			prior_inventory = db.execute("SELECT value FROM controller_meta WHERE key='last_inventory_sha256'").fetchone()
+			_require(prior_inventory is not None and re.fullmatch('[0-9a-f]{64}', prior_inventory[0]) is not None, 'Legacy non-terminal dispatch has no durable prior inventory binding; explicit boundary recovery is required')
+		if apply:
+			for encoded, dispatch_id in migrations:
+				db.execute('UPDATE controller_dispatch SET payload_json=? WHERE dispatch_id=?', (encoded, dispatch_id))
+			db.execute("INSERT OR REPLACE INTO controller_meta VALUES('dispatch_schema_version',?)", (str(DISPATCH_SCHEMA_VERSION),))
+
 	@contextmanager
-	def connection(self):
+	def _initialization_connection(self):
 		db = sqlite3.connect(str(self.path), timeout=10, isolation_level=None)
 		try:
 			db.row_factory = sqlite3.Row
-			configure_database(db, self.path, STATE_APPLICATION_ID)
 			yield db
 		finally:
 			db.close()
+
+	@contextmanager
+	def connection(self):
+		with self._initialization_connection() as db:
+			configure_database(db, self.path, STATE_APPLICATION_ID)
+			yield db
 
 	@contextmanager
 	def transaction(self):
@@ -512,11 +720,11 @@ class ContinuousControllerStore:
 			_require(gate_row is not None, 'Unknown overlap synchronization gate')
 			gate = loads(gate_row['record_json'])
 			placeholders = ','.join(('?' for _ in gate['tickets']))
-			rows = db.execute('SELECT * FROM controller_dispatch WHERE ticket IN (' + placeholders + ") AND status IN ('PENDING','IN_FLIGHT','UNKNOWN','ACCEPTED') ORDER BY rowid", tuple(gate['tickets'])).fetchall()
+			rows = db.execute('SELECT * FROM controller_dispatch WHERE ticket IN (' + placeholders + ") AND status IN ('PENDING','IN_FLIGHT','UNKNOWN','LAUNCHED') ORDER BY rowid", tuple(gate['tickets'])).fetchall()
 			observations = []
 			blockers = []
 			for row in rows:
-				if row['status'] == 'ACCEPTED':
+				if row['status'] == 'LAUNCHED':
 					observations.append({'dispatch_id': row['dispatch_id'], 'payload': loads(row['payload_json']), 'receipt': loads(row['receipt_json'])})
 				else:
 					blockers.append({'dispatch_id': row['dispatch_id'], 'ticket': row['ticket'], 'status': row['status']})
@@ -533,7 +741,7 @@ class ContinuousControllerStore:
 		timestamp(observation['observed_at'])
 		with self.transaction() as db:
 			row = db.execute('SELECT * FROM controller_dispatch WHERE dispatch_id=?', (dispatch_id,)).fetchone()
-			_require(row is not None and row['status'] in {'ACCEPTED', 'TERMINAL'}, 'Only an accepted dispatch can become quiescent')
+			_require(row is not None and row['status'] in {'LAUNCHED', 'TERMINAL'}, 'Only a launched dispatch can become quiescent')
 			receipt = loads(row['receipt_json'])
 			_require(timestamp(observation['observed_at']) >= timestamp(now) and timestamp(observation['observed_at']) >= timestamp(receipt['observed_at']), 'Dispatch quiescence observation predates the cycle or accepted session')
 			_require(observation['dispatch_id'] == dispatch_id and observation['ticket'] == row['ticket'] and (observation['exact_tuple'] == row['exact_tuple']) and (observation['session_id'] == receipt['session_id']), 'Dispatch quiescence proof differs from the accepted session')
@@ -541,7 +749,9 @@ class ContinuousControllerStore:
 			prior = payload.get('terminal_observation')
 			_require(prior is None or prior == observation, 'Dispatch quiescence replay differs from retained proof')
 			payload['terminal_observation'] = deepcopy(observation)
-			db.execute("UPDATE controller_dispatch SET status='TERMINAL',payload_json=?,updated_at=? WHERE dispatch_id=?", (canonical(payload).decode(), observation['observed_at'], dispatch_id))
+			terminal_receipt = deepcopy(receipt)
+			terminal_receipt.update(dispatch_state='TERMINAL', terminal=True, observed_at=observation['observed_at'])
+			db.execute("UPDATE controller_dispatch SET status='TERMINAL',payload_json=?,receipt_json=?,updated_at=? WHERE dispatch_id=?", (canonical(payload).decode(), canonical(terminal_receipt).decode(), observation['observed_at'], dispatch_id))
 			return deepcopy(observation)
 
 	def overlap_sync_gate(self, gate_id):
@@ -716,26 +926,128 @@ class ContinuousControllerStore:
 		_require(restore['state'] in STREAM_STATES and restore['state'] != 'COMPLETE' and (restore['ticket'] == payload['ticket']) and (restore['exact_tuple'] == payload['exact_tuple']), 'UNKNOWN dispatch stream restoration state is mismatched')
 		db.execute('UPDATE stream_status SET state=?,ticket=?,actor=?,reason=?,next_action=?,resume_trigger=?,exact_tuple=?,activity=?,verification_gate=?,reviewer_completion=?,open_findings=?,jira_status=?,paths=?,updated_at=? WHERE stream_id=?', (restore['state'], restore['ticket'], restore['actor'], restore['reason'], restore['next_action'], restore['resume_trigger'], restore['exact_tuple'], restore['activity'], restore['verification_gate'], canonical(_reviewer_counts(restore['reviewer_completion'])).decode(), restore['open_findings'], restore['jira_status'], canonical(restore['paths']).decode(), now, payload['stream']))
 
-	def schedule(self, inventory, now, host_capacity, overlap_allowances=()):
+	def seal_round_boundary_replan(self, trigger, now):
+		from .canonical import fingerprint
+		timestamp(now)
+		required = {'schema_version', 'source', 'trigger_id', 'repository_id', 'prior_inventory_sha256', 'next_inventory_sha256', 'round_id', 'observed_at', 'nonterminal_dispatch_ids', 'provider_artifact', 'owner_policy_sha256', 'trigger_sha256'}
+		_require(isinstance(trigger, dict) and set(trigger) == required, 'Replan trigger is partial or malformed')
+		_require(trigger['schema_version'] == REPLAN_TRIGGER_SCHEMA_VERSION and trigger['source'] == 'github.com', 'Replan trigger is not an authenticated provider artifact')
+		for key in ('trigger_id', 'repository_id', 'round_id'):
+			_require(isinstance(trigger[key], str) and trigger[key].strip() == trigger[key] and trigger[key], 'Replan trigger identity is invalid')
+		_require(trigger['repository_id'].isdecimal(), 'Replan trigger repository identity is invalid')
+		_require(all((re.fullmatch('[0-9a-f]{64}', trigger[key]) is not None for key in ('prior_inventory_sha256', 'next_inventory_sha256'))), 'Replan trigger inventory binding is invalid')
+		_require(isinstance(trigger['nonterminal_dispatch_ids'], list) and trigger['nonterminal_dispatch_ids'] == sorted(trigger['nonterminal_dispatch_ids']) and len(trigger['nonterminal_dispatch_ids']) == len(set(trigger['nonterminal_dispatch_ids'])), 'Replan trigger dispatch set is not sorted and unique')
+		_require(timestamp(trigger['observed_at']) == timestamp(now), 'Replan trigger is not fresh for this round boundary')
+		artifact = trigger['provider_artifact']
+		artifact_fields = {'comment_id', 'node_id', 'actor_id', 'actor_login', 'created_at', 'etag', 'provider_observed_at', 'artifact_sha256'}
+		_require(isinstance(artifact, dict) and set(artifact) == artifact_fields and type(artifact['comment_id']) is int and artifact['comment_id'] > 0 and type(artifact['actor_id']) is int and artifact['actor_id'] > 0 and all(isinstance(artifact[key], str) and artifact[key].strip() for key in ('node_id', 'actor_login', 'created_at', 'etag', 'provider_observed_at')), 'Replan trigger provider artifact is malformed')
+		artifact_seed = {key: deepcopy(value) for key, value in artifact.items() if key != 'artifact_sha256'}
+		_require(artifact['artifact_sha256'] == fingerprint('controller-replan-provider-artifact', artifact_seed), 'Replan trigger provider artifact digest is mismatched')
+		timestamp(artifact['created_at'])
+		timestamp(artifact['provider_observed_at'])
+		_require(trigger['trigger_id'] == fingerprint('controller-replan-trigger-id', {'repository_id': trigger['repository_id'], 'comment_id': artifact['comment_id'], 'node_id': artifact['node_id']}), 'Replan trigger identity differs from its provider artifact')
+		_require(re.fullmatch('[0-9a-f]{64}', trigger['owner_policy_sha256'] or '') is not None, 'Replan trigger owner policy binding is malformed')
+		seed = {key: deepcopy(value) for key, value in trigger.items() if key != 'trigger_sha256'}
+		_require(trigger['trigger_sha256'] == fingerprint('controller-replan-trigger', seed), 'Replan trigger digest is mismatched')
+		with self.transaction() as db:
+			binding = db.execute("SELECT value FROM controller_meta WHERE key='repository_binding'").fetchone()
+			if binding is not None:
+				_require(str(loads(binding[0]).get('repository_id', trigger['repository_id'])) == trigger['repository_id'], 'Replan trigger names a foreign repository')
+			nonterminal = [dict(row) for row in db.execute("SELECT dispatch_id,ticket,stream_id AS stream,exact_tuple,status FROM controller_dispatch WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN','LAUNCHED') ORDER BY dispatch_id")]
+			observed = [row['dispatch_id'] for row in nonterminal]
+			_require(observed and observed == trigger['nonterminal_dispatch_ids'], 'Replan trigger does not bind every current non-terminal dispatch')
+			prior_inventory = db.execute("SELECT value FROM controller_meta WHERE key='last_inventory_sha256'").fetchone()
+			if prior_inventory is not None:
+				_require(prior_inventory[0] == trigger['prior_inventory_sha256'], 'Replan trigger prior inventory digest is stale')
+			prior = db.execute('SELECT record_json FROM controller_replan_seal WHERE trigger_id=?', (trigger['trigger_id'],)).fetchone()
+			if prior is not None:
+				_require(loads(prior['record_json'])['trigger'] == trigger, 'Replan trigger identity was replayed with different evidence')
+				return loads(prior['record_json'])
+			seal_id = fingerprint('controller-replan-seal', trigger)
+			record = {'schema_version': 1, 'seal_id': seal_id, 'status': 'SEALED', 'trigger': deepcopy(trigger), 'nonterminal': nonterminal, 'sealed_at': now}
+			db.execute('INSERT INTO controller_replan_seal VALUES(?,?,?,?,?,NULL)', (seal_id, trigger['trigger_id'], 'SEALED', canonical(record).decode(), now))
+			return deepcopy(record)
+
+	def replan_context(self):
+		with self.connection() as db:
+			prior = db.execute("SELECT value FROM controller_meta WHERE key='last_inventory_sha256'").fetchone()
+			rows = [dict(row) for row in db.execute("SELECT dispatch_id,ticket,stream_id AS stream,exact_tuple,status FROM controller_dispatch WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN','LAUNCHED') ORDER BY dispatch_id")]
+			return {'prior_inventory_sha256': None if prior is None else prior[0], 'nonterminal': rows}
+
+	@staticmethod
+	def _round_boundary_seal(db, tickets, inventory_sha256):
+		inventory = {item['ticket']: item for item in tickets}
+		nonterminal = list(db.execute("SELECT dispatch_id,ticket,stream_id,exact_tuple,status FROM controller_dispatch WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN','LAUNCHED') ORDER BY dispatch_id"))
+		prior_inventory = db.execute("SELECT value FROM controller_meta WHERE key='last_inventory_sha256'").fetchone()
+		inventory_changed = prior_inventory is not None and inventory_sha256 is not None and prior_inventory[0] != inventory_sha256
+		boundary = [row for row in nonterminal if inventory_changed or row['ticket'] not in inventory or inventory[row['ticket']]['exact_tuple'] != row['exact_tuple'] or inventory[row['ticket']]['disposition'] != 'ELIGIBLE']
+		if not boundary:
+			return (False, None, False)
+		if inventory_sha256 is None:
+			return (True, None, False)
+		current = [{'dispatch_id': row['dispatch_id'], 'ticket': row['ticket'], 'stream': row['stream_id'], 'exact_tuple': row['exact_tuple'], 'status': row['status']} for row in nonterminal]
+		ids = [row['dispatch_id'] for row in current]
+		for row in db.execute("SELECT seal_id,record_json FROM controller_replan_seal WHERE status='SEALED' ORDER BY rowid"):
+			record = loads(row['record_json'])
+			trigger = record['trigger']
+			if trigger['next_inventory_sha256'] == inventory_sha256 and trigger['nonterminal_dispatch_ids'] == ids and record.get('nonterminal') == current:
+				return (True, row['seal_id'], False)
+		for row in db.execute("SELECT seal_id,record_json FROM controller_replan_seal WHERE status='CONSUMED' ORDER BY rowid DESC"):
+			record = loads(row['record_json'])
+			admission = record.get('admission')
+			if not isinstance(admission, dict) or admission.get('inventory_sha256') != inventory_sha256:
+				continue
+			intent_ids = admission.get('successor_dispatch_ids')
+			if not isinstance(intent_ids, list) or intent_ids != sorted(intent_ids) or len(intent_ids) != len(set(intent_ids)):
+				continue
+			observed_ids = [item['dispatch_id'] for item in db.execute("SELECT dispatch_id FROM controller_dispatch WHERE dispatch_id IN (%s) ORDER BY dispatch_id" % ','.join('?' for _ in intent_ids), intent_ids)] if intent_ids else []
+			if observed_ids == intent_ids:
+				return (True, row['seal_id'], True)
+		return (True, None, False)
+
+	def schedule(self, inventory, now, host_capacity, overlap_allowances=(), *, reservations=(), inventory_sha256=None):
 		timestamp(now)
 		_require(type(host_capacity) is int and host_capacity >= 0, 'Observed host capacity must be nonnegative')
 		tickets = [_ticket(item) for item in inventory]
 		_require(len(tickets) == len({item['ticket'] for item in tickets}), 'Scoped inventory has duplicate tickets')
+		validated_reservations = [_reservation_record(item) for item in reservations]
 		with self.transaction() as db:
-			self._schedule(db, tickets, now, host_capacity, overlap_allowances)
+			boundary, seal_id, admitted = self._round_boundary_seal(db, tickets, inventory_sha256)
+			if boundary and seal_id is None:
+				return self._snapshot(db)
+			if admitted:
+				return self._snapshot(db)
+			self._schedule(db, tickets, now, host_capacity, overlap_allowances, validated_reservations)
+			if seal_id is not None:
+				intent_ids = self._create_dispatch_intents(db, now)
+				row = db.execute("SELECT record_json FROM controller_replan_seal WHERE seal_id=? AND status='SEALED'", (seal_id,)).fetchone()
+				_require(row is not None, 'Authenticated replan seal changed during successor admission')
+				record = loads(row['record_json'])
+				record.update(status='CONSUMED', consumed_at=now, admission={'inventory_sha256': inventory_sha256, 'successor_dispatch_ids': intent_ids})
+				db.execute("UPDATE controller_replan_seal SET status='CONSUMED',record_json=?,consumed_at=? WHERE seal_id=? AND status='SEALED'", (canonical(record).decode(), now, seal_id))
+			if inventory_sha256 is not None:
+				_require(re.fullmatch('[0-9a-f]{64}', inventory_sha256) is not None, 'Inventory digest is malformed')
+				db.execute("INSERT OR REPLACE INTO controller_meta VALUES('last_inventory_sha256',?)", (inventory_sha256,))
 			return self._snapshot(db)
 
-	def _schedule(self, db, tickets, now, host_capacity, overlap_allowances=()):
+	def round_boundary_ready(self, inventory, inventory_sha256):
+		tickets = [_ticket(item) for item in inventory]
+		with self.connection() as db:
+			boundary, seal_id, admitted = self._round_boundary_seal(db, tickets, inventory_sha256)
+			return (not boundary) or seal_id is not None or admitted
+
+	def _schedule(self, db, tickets, now, host_capacity, overlap_allowances=(), reservations=()):
 		rows = db.execute('SELECT * FROM stream_status ORDER BY stream_id').fetchall()
 		inventory = {item['ticket']: item for item in tickets}
+		reserved_paths = [(item['kind'] + ':' + item['artifact_id'], item['paths']) for item in reservations]
 		for item in tickets:
 			prior = db.execute('SELECT dispatch_role,lifecycle_stage FROM controller_ticket_authority WHERE ticket=? AND exact_tuple=?', (item['ticket'], item['exact_tuple'])).fetchone()
 			_require(prior is None or (prior['dispatch_role'], prior['lifecycle_stage']) == (item['dispatch_role'], item['lifecycle_stage']), 'Ticket dispatch authority changed without a new exact tuple')
 			db.execute('INSERT OR IGNORE INTO controller_ticket_authority VALUES(?,?,?,?,?)', (item['ticket'], item['exact_tuple'], item['dispatch_role'], item['lifecycle_stage'], now))
 		reserved_dispatches, capacity_intents, unknown_dispatches = ({}, [], {})
-		for intent in db.execute("SELECT dispatch_id,ticket,stream_id,exact_tuple,status FROM controller_dispatch WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN')"):
+		for intent in db.execute("SELECT dispatch_id,ticket,stream_id,exact_tuple,status FROM controller_dispatch WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN','LAUNCHED')"):
 			reserved_dispatches.setdefault(intent['ticket'], set()).add(intent['stream_id'])
-			if intent['status'] in {'IN_FLIGHT', 'UNKNOWN'}:
+			if intent['status'] in {'IN_FLIGHT', 'UNKNOWN', 'LAUNCHED'}:
 				capacity_intents.append((intent['stream_id'], intent['ticket']))
 			if intent['status'] == 'UNKNOWN':
 				unknown_dispatches.setdefault(intent['stream_id'], []).append(intent)
@@ -746,7 +1058,8 @@ class ContinuousControllerStore:
 			prerequisites = item is not None and item['disposition'] == 'ELIGIBLE' and all((item['dependencies_satisfied'], item['budget_available'], item['cap_available'], item['review_independent']))
 			intent_streams = reserved_dispatches.get(item['ticket'], set()) if item else set()
 			intent_matches_stream = not intent_streams or intent_streams == {row['stream_id']}
-			if prerequisites and intent_matches_stream and (len(working) < host_capacity) and (not any((_blocking_overlap(item['ticket'], item['paths'], held_ticket, paths, overlap_allowances) for held_ticket, paths in held_paths))):
+			reservation_blocked = item is not None and any((_overlap(item['paths'], paths) for _source, paths in reserved_paths))
+			if prerequisites and intent_matches_stream and (not reservation_blocked) and (len(working) < host_capacity) and (not any((_blocking_overlap(item['ticket'], item['paths'], held_ticket, paths, overlap_allowances) for held_ticket, paths in held_paths))):
 				working.append(row)
 				held_paths.append((item['ticket'], item['paths']))
 				self._update_stream(db, row['stream_id'], 'WORKING', item, now)
@@ -771,7 +1084,7 @@ class ContinuousControllerStore:
 			selected = None
 			for item in eligible:
 				prerequisites = item['dependencies_satisfied'] and item['budget_available'] and item['cap_available'] and item['review_independent']
-				if prerequisites and slots > 0 and (not any((_blocking_overlap(item['ticket'], item['paths'], held_ticket, paths, overlap_allowances) for held_ticket, paths in held_paths))):
+				if prerequisites and slots > 0 and (not any((_overlap(item['paths'], paths) for _source, paths in reserved_paths))) and (not any((_blocking_overlap(item['ticket'], item['paths'], held_ticket, paths, overlap_allowances) for held_ticket, paths in held_paths))):
 					selected = item
 					break
 			if selected is not None:
@@ -796,6 +1109,8 @@ class ContinuousControllerStore:
 					reason.append('host capacity')
 				if any((_blocking_overlap(item['ticket'], item['paths'], held_ticket, paths, overlap_allowances) for held_ticket, paths in held_paths)):
 					reason.append('path ownership')
+				if any((_overlap(item['paths'], paths) for _source, paths in reserved_paths)):
+					reason.append('authenticated parked or worktree-diff reservation')
 				blocked_item = {**item, 'reason': 'Blocked by ' + ', '.join(reason), 'next_action': 'Re-evaluate eligibility without weakening governance', 'resume_trigger': 'all named prerequisites become current'}
 				self._update_stream(db, row['stream_id'], 'BLOCKED', blocked_item, now)
 			elif paused:
@@ -805,7 +1120,7 @@ class ContinuousControllerStore:
 			else:
 				self._update_stream(db, row['stream_id'], 'COMPLETE', None, now)
 
-	def finish_and_refill(self, stream_id, ticket, inventory, now, host_capacity, overlap_allowances=()):
+	def finish_and_refill(self, stream_id, ticket, inventory, now, host_capacity, overlap_allowances=(), *, reservations=(), inventory_sha256=None):
 		timestamp(now)
 		tickets = [_ticket(item) for item in inventory]
 		repeated = next((item for item in tickets if item['ticket'] == ticket), None)
@@ -814,7 +1129,17 @@ class ContinuousControllerStore:
 			row = db.execute('SELECT * FROM stream_status WHERE stream_id=?', (stream_id,)).fetchone()
 			_require(row is not None and row['state'] == 'WORKING' and (row['ticket'] == ticket), "Completed run does not match the stream's active ticket")
 			self._update_stream(db, stream_id, 'COMPLETE', None, now)
-			self._schedule(db, tickets, now, host_capacity, overlap_allowances)
+			boundary, seal_id, admitted = self._round_boundary_seal(db, tickets, inventory_sha256)
+			_require(not boundary or seal_id is not None, 'Round-boundary refill requires an authenticated durable replan seal')
+			_require(not admitted, 'Round-boundary refill admission was already consumed')
+			self._schedule(db, tickets, now, host_capacity, overlap_allowances, [_reservation_record(item) for item in reservations])
+			if seal_id is not None:
+				intent_ids = self._create_dispatch_intents(db, now)
+				seal = db.execute("SELECT record_json FROM controller_replan_seal WHERE seal_id=? AND status='SEALED'", (seal_id,)).fetchone()
+				_require(seal is not None, 'Authenticated replan seal changed during successor admission')
+				record = loads(seal['record_json'])
+				record.update(status='CONSUMED', consumed_at=now, admission={'inventory_sha256': inventory_sha256, 'successor_dispatch_ids': intent_ids})
+				db.execute("UPDATE controller_replan_seal SET status='CONSUMED',record_json=?,consumed_at=? WHERE seal_id=? AND status='SEALED'", (canonical(record).decode(), now, seal_id))
 			return self._snapshot(db)
 
 	def _snapshot(self, db):
@@ -876,30 +1201,69 @@ class ContinuousControllerStore:
 				db.execute("UPDATE controller_meta SET value=? WHERE key='last_regular_digest'", (row['observed_at'],))
 			return loads(row['payload_json'])
 
+	@staticmethod
+	def _create_dispatch_intents(db, now):
+		from .canonical import fingerprint
+		created = []
+		for row in db.execute("SELECT * FROM stream_status WHERE state='WORKING' ORDER BY stream_id"):
+			prior = db.execute("SELECT * FROM controller_dispatch WHERE stream_id=? AND ticket=? AND exact_tuple=? AND status<>'CANCELLED' ORDER BY rowid DESC LIMIT 1", (row['stream_id'], row['ticket'], row['exact_tuple'])).fetchone()
+			if prior is not None:
+				continue
+			payload = {'dispatch_schema_version': DISPATCH_SCHEMA_VERSION, 'stream': row['stream_id'], 'ticket': row['ticket'], 'exact_tuple': row['exact_tuple'], 'paths': loads(row['paths']), 'actor': row['actor'], 'next_action': row['next_action'], 'dispatch_nonce': str(uuid.uuid4()), 'prepared_at': now, 'lane_start_waivers': []}
+			authority = db.execute('SELECT dispatch_role,lifecycle_stage FROM controller_ticket_authority WHERE ticket=? AND exact_tuple=?', (row['ticket'], row['exact_tuple'])).fetchone()
+			_require(authority is not None, 'Scheduled ticket has no durable authenticated dispatch authority')
+			payload.update(role=authority['dispatch_role'], lifecycle_stage=authority['lifecycle_stage'])
+			if authority['dispatch_role'] == 'critic':
+				sync_evidence = []
+				for gate_row in db.execute("SELECT record_json FROM controller_overlap_sync_gate WHERE status='EXECUTED' ORDER BY rowid"):
+					gate = loads(gate_row['record_json'])
+					if row['ticket'] in gate['tickets']:
+						sync_evidence.append(gate['critic_evidence'])
+				if sync_evidence:
+					payload['overlap_sync_evidence'] = sync_evidence
+			dispatch_id = fingerprint('controller-dispatch', payload)
+			payload['dispatch_id'] = dispatch_id
+			db.execute('INSERT OR IGNORE INTO controller_dispatch VALUES(?,?,?,?,? ,?,NULL,?)', (dispatch_id, row['stream_id'], row['ticket'], row['exact_tuple'], 'PENDING', canonical(payload).decode(), now))
+			created.append(dispatch_id)
+		return sorted(created)
+
 	def prepare_dispatches(self, now):
 		timestamp(now)
-		from .canonical import fingerprint
 		with self.transaction() as db:
-			for row in db.execute("SELECT * FROM stream_status WHERE state='WORKING' ORDER BY stream_id"):
-				prior = db.execute("SELECT * FROM controller_dispatch WHERE stream_id=? AND ticket=? AND exact_tuple=? AND status<>'CANCELLED' ORDER BY rowid DESC LIMIT 1", (row['stream_id'], row['ticket'], row['exact_tuple'])).fetchone()
-				if prior is not None:
-					continue
-				payload = {'stream': row['stream_id'], 'ticket': row['ticket'], 'exact_tuple': row['exact_tuple'], 'paths': loads(row['paths']), 'actor': row['actor'], 'next_action': row['next_action'], 'dispatch_nonce': str(uuid.uuid4()), 'prepared_at': now}
-				authority = db.execute('SELECT dispatch_role,lifecycle_stage FROM controller_ticket_authority WHERE ticket=? AND exact_tuple=?', (row['ticket'], row['exact_tuple'])).fetchone()
-				_require(authority is not None, 'Scheduled ticket has no durable authenticated dispatch authority')
-				payload.update(role=authority['dispatch_role'], lifecycle_stage=authority['lifecycle_stage'])
-				if authority['dispatch_role'] == 'critic':
-					sync_evidence = []
-					for gate_row in db.execute("SELECT record_json FROM controller_overlap_sync_gate WHERE status='EXECUTED' ORDER BY rowid"):
-						gate = loads(gate_row['record_json'])
-						if row['ticket'] in gate['tickets']:
-							sync_evidence.append(gate['critic_evidence'])
-					if sync_evidence:
-						payload['overlap_sync_evidence'] = sync_evidence
-				dispatch_id = fingerprint('controller-dispatch', payload)
-				payload['dispatch_id'] = dispatch_id
-				db.execute('INSERT OR IGNORE INTO controller_dispatch VALUES(?,?,?,?,? ,?,NULL,?)', (dispatch_id, row['stream_id'], row['ticket'], row['exact_tuple'], 'PENDING', canonical(payload).decode(), now))
-			return [dict(row) | {'payload': loads(row['payload_json'])} for row in db.execute("SELECT * FROM controller_dispatch WHERE status IN ('PENDING','UNKNOWN') ORDER BY stream_id,dispatch_id")]
+			self._create_dispatch_intents(db, now)
+			return [dict(row) | {'payload': loads(row['payload_json'])} for row in db.execute("SELECT * FROM controller_dispatch WHERE status IN ('PENDING','UNKNOWN','LAUNCHED') ORDER BY stream_id,dispatch_id")]
+
+	def bind_dispatch_waivers(self, allowance_records, now):
+		from .canonical import fingerprint
+		timestamp(now)
+		_require(isinstance(allowance_records, list), 'Lane-start waiver binding needs validated allowance records')
+		by_ticket = {}
+		for record in allowance_records:
+			_require(isinstance(record, dict) and record.get('schema_version') == 1 and isinstance(record.get('binding'), dict), 'Lane-start waiver source is malformed')
+			for ticket in record['binding'].get('tickets', []):
+				by_ticket.setdefault(ticket, []).append(record)
+		with self.transaction() as db:
+			for row in db.execute("SELECT dispatch_id,payload_json FROM controller_dispatch WHERE status='PENDING' ORDER BY dispatch_id"):
+				payload = loads(row['payload_json'])
+				digests = []
+				for allowance in by_ticket.get(payload['ticket'], []):
+					binding = allowance['binding']
+					if binding['path'] not in payload['paths']:
+						continue
+					waiver_binding = {'dispatch_id': row['dispatch_id'], 'ticket': payload['ticket'], 'stream': payload['stream'], 'exact_tuple': payload['exact_tuple'], 'allowance_id': allowance['allowance_id'], 'path': binding['path'], 'tickets': binding['tickets']}
+					waiver = {'schema_version': 1, 'binding': waiver_binding, 'persisted_at': now, 'observation_sha256': allowance['provider_binding_sha256']}
+					waiver['waiver_sha256'] = fingerprint('controller-dispatch-waiver', waiver)
+					waiver_id = fingerprint('controller-dispatch-waiver-id', waiver_binding)
+					prior = db.execute('SELECT record_json FROM controller_dispatch_waiver WHERE waiver_id=?', (waiver_id,)).fetchone()
+					if prior is not None:
+						retained = loads(prior['record_json'])
+						_require(retained.get('binding') == waiver_binding, 'Dispatch waiver scope changed before launch')
+						waiver = retained
+					else:
+						db.execute('INSERT INTO controller_dispatch_waiver VALUES(?,?,?,?,?)', (waiver_id, row['dispatch_id'], allowance['allowance_id'], canonical(waiver).decode(), now))
+					digests.append(waiver['waiver_sha256'])
+				payload['lane_start_waivers'] = sorted(digests)
+				db.execute('UPDATE controller_dispatch SET payload_json=?,updated_at=? WHERE dispatch_id=?', (canonical(payload).decode(), now, row['dispatch_id']))
 
 	def pending_dispatches(self):
 		with self.connection() as db:
@@ -926,6 +1290,9 @@ class ContinuousControllerStore:
 			row = db.execute('SELECT * FROM controller_dispatch WHERE dispatch_id=?', (dispatch_id,)).fetchone()
 			_require(row is not None and row['status'] == 'PENDING', 'Dispatch is not pending')
 			payload = loads(row['payload_json'])
+			_require(payload.get('dispatch_schema_version') == DISPATCH_SCHEMA_VERSION, 'Dispatch payload schema version is not current')
+			waivers = sorted(loads(item['record_json'])['waiver_sha256'] for item in db.execute('SELECT record_json FROM controller_dispatch_waiver WHERE dispatch_id=? ORDER BY allowance_id', (dispatch_id,)))
+			_require(payload.get('lane_start_waivers') == waivers, 'Dispatch lane-start waiver binding is missing or mismatched')
 			_require('begun_at' not in payload, 'Pending dispatch already has a begin time')
 			payload['begun_at'] = now
 			db.execute("UPDATE controller_dispatch SET status='IN_FLIGHT',payload_json=?,updated_at=? WHERE dispatch_id=?", (canonical(payload).decode(), now, dispatch_id))
@@ -939,9 +1306,15 @@ class ContinuousControllerStore:
 		_require(isinstance(record, dict) and set(record) == required and (record.get('format') == FORMAT) and (record.get('expected_version') == VERSION) and (record.get('status') in {'PASS', 'REFUSED'}) and isinstance(record.get('visible_skills'), list) and isinstance(record.get('problems'), list), 'Codex skill-selection record is malformed')
 		encoded = loads(canonical(record).decode())
 		with self.transaction() as db:
-			row = db.execute('SELECT status,payload_json FROM controller_dispatch WHERE dispatch_id=?', (dispatch_id,)).fetchone()
+			row = db.execute('SELECT * FROM controller_dispatch WHERE dispatch_id=?', (dispatch_id,)).fetchone()
 			_require(row is not None and row['status'] == 'PENDING', 'Codex skill selection must precede dispatch begin')
 			payload = loads(row['payload_json'])
+			if 'dispatch_schema_version' not in payload:
+				compatibility_fields = {'dispatch_id', 'stream', 'ticket', 'exact_tuple', 'dispatch_nonce', 'prepared_at'}
+				_require(set(payload) == compatibility_fields and row['receipt_json'] is None and payload['dispatch_id'] == row['dispatch_id'] and payload['stream'] == row['stream_id'] and payload['ticket'] == row['ticket'] and payload['exact_tuple'] == row['exact_tuple'], 'Pre-versioned dispatch skill-selection payload is ambiguous and was not migrated')
+				payload.update(dispatch_schema_version=DISPATCH_SCHEMA_VERSION, lane_start_waivers=[])
+			else:
+				_require(payload.get('dispatch_schema_version') == DISPATCH_SCHEMA_VERSION, 'Dispatch payload schema version is not current')
 			prior = payload.get('codex_skill_selection')
 			_require(prior is None or prior == encoded, 'Codex skill selection changed for a durable dispatch intent')
 			payload['codex_skill_selection'] = encoded
@@ -950,26 +1323,27 @@ class ContinuousControllerStore:
 
 	def finish_dispatch(self, dispatch_id, receipt, now, *, reconcile=False):
 		timestamp(now)
-		bound = {'dispatch_id', 'stream', 'ticket', 'exact_tuple', 'dispatch_nonce', 'prepared_at', 'begun_at', 'role', 'lifecycle_stage'}
+		bound = {'dispatch_schema_version', 'dispatch_id', 'stream', 'ticket', 'exact_tuple', 'dispatch_nonce', 'prepared_at', 'begun_at', 'role', 'lifecycle_stage', 'lane_start_waivers'}
 		if reconcile:
 			bound |= {'reconcile_nonce', 'reconcile_at'}
-		required = bound | {'status', 'observed_at', 'session_id'}
-		_require(isinstance(receipt, dict) and set(receipt) == required and (receipt['status'] == 'ACCEPTED'), 'Dispatch receipt is not an exact accepted readback')
+		required = bound | {'status', 'dispatch_state', 'terminal', 'observed_at', 'session_id'}
+		_require(isinstance(receipt, dict) and set(receipt) == required and (receipt['status'] == 'ACCEPTED') and receipt['dispatch_state'] in {'LAUNCHED', 'TERMINAL'} and (receipt['terminal'] is (receipt['dispatch_state'] == 'TERMINAL')), 'Dispatch receipt is not an exact versioned readback')
 		_require(isinstance(receipt['session_id'], str) and receipt['session_id'].strip() and (len(receipt['session_id']) <= 512) and (not any((ord(char) < 32 for char in receipt['session_id']))), 'Dispatch receipt has no observed session identity')
 		observed_at = timestamp(receipt['observed_at'])
 		with self.transaction() as db:
 			row = db.execute('SELECT * FROM controller_dispatch WHERE dispatch_id=?', (dispatch_id,)).fetchone()
-			expected = 'UNKNOWN' if reconcile else 'IN_FLIGHT'
-			_require(row is not None and row['status'] == expected, 'Dispatch receipt does not match the durable operation state')
+			expected = {'UNKNOWN', 'LAUNCHED'} if reconcile else {'IN_FLIGHT'}
+			_require(row is not None and row['status'] in expected, 'Dispatch receipt does not match the durable operation state')
 			payload = loads(row['payload_json'])
 			_require(all((receipt[key] == payload[key] for key in bound)), 'Dispatch receipt differs from the durable intent')
 			boundary = timestamp(payload['reconcile_at'] if reconcile else payload['begun_at'])
 			_require(observed_at >= boundary, 'Dispatch receipt is stale relative to the durable intent or reconciliation')
-			for accepted in db.execute("SELECT dispatch_id,receipt_json FROM controller_dispatch WHERE status='ACCEPTED' AND dispatch_id<>?", (dispatch_id,)):
+			for accepted in db.execute("SELECT dispatch_id,receipt_json FROM controller_dispatch WHERE status IN ('LAUNCHED','TERMINAL') AND dispatch_id<>?", (dispatch_id,)):
 				prior = loads(accepted['receipt_json'])
 				_require(prior.get('session_id') != receipt['session_id'], 'Dispatch session identity is not fresh or writer/critic independent')
-			db.execute("UPDATE controller_dispatch SET status='ACCEPTED',receipt_json=?,updated_at=? WHERE dispatch_id=?", (canonical(receipt).decode(), now, dispatch_id))
-			if reconcile:
+			durable_state = receipt['dispatch_state']
+			db.execute('UPDATE controller_dispatch SET status=?,receipt_json=?,updated_at=? WHERE dispatch_id=?', (durable_state, canonical(receipt).decode(), now, dispatch_id))
+			if reconcile and row['status'] == 'UNKNOWN':
 				self._restore_unknown_stream(db, dispatch_id, payload, now)
 				revision = int(self._meta(db, 'revision')) + 1
 				db.execute("UPDATE controller_meta SET value=? WHERE key='revision'", (str(revision),))
@@ -979,10 +1353,11 @@ class ContinuousControllerStore:
 		timestamp(now)
 		with self.transaction() as db:
 			row = db.execute('SELECT status,payload_json FROM controller_dispatch WHERE dispatch_id=?', (dispatch_id,)).fetchone()
-			_require(row is not None and row['status'] in {'IN_FLIGHT', 'UNKNOWN'}, 'Only an in-flight or reconciling dispatch can report an unknown outcome')
+			_require(row is not None and row['status'] in {'IN_FLIGHT', 'UNKNOWN', 'LAUNCHED'}, 'Only an in-flight, launched, or reconciling dispatch can report an unknown outcome')
 			if row['status'] == 'IN_FLIGHT':
 				db.execute("UPDATE controller_dispatch SET status='UNKNOWN',updated_at=? WHERE dispatch_id=?", (now, dispatch_id))
-			self._record_dispatch_unknown(db, dispatch_id, loads(row['payload_json']), now)
+			if row['status'] != 'LAUNCHED':
+				self._record_dispatch_unknown(db, dispatch_id, loads(row['payload_json']), now)
 
 	def _record_dispatch_unknown(self, db, dispatch_id, payload, now):
 		stream = db.execute('SELECT * FROM stream_status WHERE stream_id=?', (payload['stream'],)).fetchone()
@@ -1000,7 +1375,7 @@ class ContinuousControllerStore:
 		timestamp(now)
 		with self.transaction() as db:
 			row = db.execute('SELECT * FROM controller_dispatch WHERE dispatch_id=?', (dispatch_id,)).fetchone()
-			_require(row is not None and row['status'] == 'UNKNOWN', 'Only an unknown dispatch can be reconciled')
+			_require(row is not None and row['status'] in {'UNKNOWN', 'LAUNCHED'}, 'Only an unknown or launched dispatch can be reconciled')
 			payload = loads(row['payload_json'])
 			payload['reconcile_nonce'] = str(uuid.uuid4())
 			payload['reconcile_at'] = now
@@ -1186,7 +1561,7 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
 	return (tickets, repository_binding, observation)
 
-def production_controller_cycle(store, *, now, host_capacity, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, controller_clock=None):
+def production_controller_cycle(store, *, now, host_capacity, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None):
 	_require(isinstance(store, ContinuousControllerStore), 'Production cycle needs a controller store')
 	_require(all((callable(adapter) for adapter in (observe_inventory, dispatch_ticket, observe_dispatch, deliver_status))), 'Production controller adapters must be callable')
 	timestamp(now)
@@ -1201,8 +1576,32 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 	_require(dispatch_role is None or dispatch_role in {'writer', 'critic'}, 'Compatibility dispatch role must be writer or critic')
 	store.recover_dispatches(now)
 	_require(isinstance(inventory_binding, dict) and set(inventory_binding) == {'project_id', 'repository_id', 'scope_sha256'} and all((isinstance(value, str) and value for value in inventory_binding.values())), 'Production inventory needs immutable project, repository, and scope bindings')
+
+	def observe_current_reservations(observed_at, current_inventory_sha256):
+		if callable(observe_reservations):
+			_require(re.fullmatch('[0-9a-f]{64}', current_inventory_sha256 or '') is not None, 'Reservation observation requires the exact current inventory digest')
+			raw = observe_reservations({'repository_id': inventory_binding['repository_id'], 'repository_root': str(Path(repository_root).resolve(strict=True)), 'head_sha': repository_head_sha, 'tree_sha': repository_tree_sha, 'inventory_sha256': current_inventory_sha256, 'observed_at': observed_at})
+			_require(isinstance(raw, dict), 'Reservation observer must return one authenticated complete envelope')
+			return canonical_reservation_sources(raw, repository_root, repository_head_sha, repository_tree_sha, inventory_binding['repository_id'], observed_at, inventory_sha256=current_inventory_sha256)
+		# Contract-only mock stores cannot authenticate provider/Git sources. Real
+		# protected stores always fail closed, and the production CLI always wires
+		# the reviewed reservation observer.
+		_require(type(store) is not ContinuousControllerStore, 'Authenticated parked and worktree-diff reservation observation is required')
+		return []
+
 	tickets, repository_binding, observation = _observe_controller_inventory(observe_inventory, now=now, inventory_binding=inventory_binding, repository_root=repository_root, repository_head_sha=repository_head_sha, repository_tree_sha=repository_tree_sha)
 	store.bind_repository(repository_binding)
+	reservations = observe_current_reservations(now, observation['inventory_sha256'])
+	if replan_request is not None:
+		_require(isinstance(replan_request, dict) and set(replan_request) == {'comment_id'} and type(replan_request['comment_id']) is int and replan_request['comment_id'] > 0, 'Replan request must contain one provider comment locator')
+		_require(callable(observe_replan_trigger), 'Replan requires the reviewed authenticated trigger observer')
+		context = store.replan_context()
+		_require(isinstance(context['prior_inventory_sha256'], str) and context['nonterminal'], 'Replan has no durable prior inventory and non-terminal dispatch set')
+		request = {**replan_request, 'repository_id': inventory_binding['repository_id'], 'prior_inventory_sha256': context['prior_inventory_sha256'], 'next_inventory_sha256': observation['inventory_sha256'], 'nonterminal_dispatch_ids': [item['dispatch_id'] for item in context['nonterminal']]}
+		raw_trigger = observe_replan_trigger(deepcopy(request))
+		trigger_now = post_provider_time()
+		trigger = validate_replan_trigger_observation(publication_config, request, raw_trigger, now=trigger_now)
+		store.seal_round_boundary_replan(trigger, trigger_now)
 	from .publication_readiness import require_publication_readiness
 	publication_reports, errors = ({}, [])
 	allowance_plans, allowance_audit, allowance_blocked_tickets = ([], [], set())
@@ -1294,10 +1693,12 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 			errors.append({'operation': 'overlap_sync_inventory', 'state': 'BLOCKED', 'reason': reason})
 	if newly_synced:
 		try:
+			reservations = None
 			refreshed_tickets, refreshed_binding, refreshed_observation = _observe_controller_inventory(observe_inventory, now=provider_controller_time, inventory_binding=inventory_binding, repository_root=repository_root, repository_head_sha=repository_head_sha, repository_tree_sha=repository_tree_sha)
 			store.bind_repository(refreshed_binding)
 			tickets = refreshed_tickets
 			observation = refreshed_observation
+			reservations = observe_current_reservations(provider_controller_time, observation['inventory_sha256'])
 			for gate in newly_synced:
 				_require(callable(observe_overlap_sync_inventory), 'Post-sync inventory requires a fresh provider PR-head observer')
 				provider_heads = observe_overlap_sync_inventory(deepcopy(gate))
@@ -1312,8 +1713,10 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 	lane_allowance_plans = allowance_plans
 	if allowance_plans:
 		try:
+			reservations = None
 			tickets, lane_binding, observation = _observe_controller_inventory(observe_inventory, now=provider_controller_time, inventory_binding=inventory_binding, repository_root=repository_root, repository_head_sha=repository_head_sha, repository_tree_sha=repository_tree_sha)
 			store.bind_repository(lane_binding)
+			reservations = observe_current_reservations(provider_controller_time, observation['inventory_sha256'])
 		except Exception as exc:
 			lane_allowance_plans = []
 			for _request, planned in allowance_plans:
@@ -1338,7 +1741,7 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 			lane_now = post_provider_time()
 			current = validate_overlap_allowance_observation(publication_config, request, lane_observation, tickets, now=lane_now, expected_repository_id=inventory_binding['repository_id'], expected_cycle_id=cycle_id)
 			store.recheck_overlap_allowance(planned['allowance_id'], current, lane_now)
-			active_allowances.append({'allowance_id': current['allowance_id'], 'path': current['binding']['path'], 'tickets': current['binding']['tickets']})
+			active_allowances.append({'allowance_id': current['allowance_id'], 'path': current['binding']['path'], 'tickets': current['binding']['tickets'], 'record': current})
 			allowance_audit.append({'allowance_id': current['allowance_id'], 'phase': 'LANE_START', 'status': 'ACTIVE'})
 		except Exception as exc:
 			allowance_blocked_tickets.update(planned['binding']['tickets'])
@@ -1349,25 +1752,17 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 		for index, item in enumerate(tickets):
 			if item['ticket'] in allowance_blocked_tickets:
 				tickets[index] = {**item, 'disposition': 'BLOCKED', 'reason': 'Overlap allowance or post-expiry synchronization gate is not current', 'next_action': 'Restore exact provider-bound allowance or complete its durable sync gate', 'resume_trigger': 'a fresh plan and lane-start recheck pass'}
+	_require(isinstance(reservations, list), 'Authenticated reservations were not refreshed for the inventory being scheduled')
 	ticket_by_id = {item['ticket']: item for item in tickets}
-	for operation in store.pending_dispatches():
-		payload = operation['payload']
-		current = ticket_by_id.get(payload['ticket'])
-		if current is not None and current['disposition'] == 'ELIGIBLE' and (payload['ticket'] in publication_reports):
-			continue
-		if current is None:
-			reason = 'Fresh complete inventory no longer contains the pending ticket'
-		elif current['disposition'] != 'ELIGIBLE':
-			reason = f"Fresh preflight disposition is {current['disposition']}: {current['reason']}"
-		else:
-			reason = 'Fresh publication preflight did not admit the pending ticket'
-		try:
-			store.cancel_pending_dispatch(operation['dispatch_id'], now, reason)
-		except Exception as exc:
-			errors.append({'operation': 'dispatch_cancellation', 'dispatch_id': operation['dispatch_id'], 'state': 'PENDING', 'reason': type(exc).__name__})
-	streams = store.schedule(tickets, now, host_capacity, active_allowances)
+	round_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
+	streams = store.schedule(tickets, now, host_capacity, active_allowances, reservations=reservations, inventory_sha256=observation['inventory_sha256'])
 	dispatches = []
-	for operation in store.prepare_dispatches(now):
+	operations = []
+	if round_boundary_ready:
+		store.prepare_dispatches(now)
+		store.bind_dispatch_waivers([item['record'] for item in active_allowances], now)
+		operations = store.prepare_dispatches(now)
+	for operation in operations:
 		payload, dispatch_id = (operation['payload'], operation['dispatch_id'])
 		if operation['status'] == 'PENDING':
 			admitted = payload['ticket'] in publication_reports and any((stream['stream'] == payload['stream'] and stream['state'] == 'WORKING' and (stream['ticket'] == payload['ticket']) and (stream['exact_tuple'] == payload['exact_tuple']) for stream in streams))
@@ -1385,6 +1780,10 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 					store.cancel_pending_dispatch(dispatch_id, now, reason)
 				except Exception as exc:
 					errors.append({'operation': 'dispatch_cancellation', 'dispatch_id': dispatch_id, 'state': 'PENDING', 'reason': type(exc).__name__})
+				continue
+		else:
+			current = ticket_by_id.get(payload['ticket'])
+			if current is None or current['disposition'] == 'COMPLETE' or current['exact_tuple'] != payload['exact_tuple']:
 				continue
 		try:
 			if operation['status'] == 'PENDING':

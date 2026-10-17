@@ -214,9 +214,13 @@ def _ascii_fold_key(value):
     folded = []
     for char in value:
         code = ord(char)
-        if code > 127 and unicodedata.category(char) in {"Zs", "Pd"}:
-            # Reserved provenance keys treat every Unicode space/dash as a
-            # visual separator, without changing the original message bytes.
+        name = unicodedata.name(char, "") if code > 127 else ""
+        if code > 127 and (unicodedata.category(char) in {"Zs", "Pd"}
+                           or any(part in name
+                                  for part in ("DASH", "HYPHEN", "MINUS"))):
+            # Reserved provenance keys treat Unicode spaces and the broader
+            # visual dash/hyphen/minus class as separators, without changing
+            # the original message bytes.
             char = " "
         elif 0xFF01 <= code <= 0xFF5E:
             char = chr(code - 0xFEE0)
@@ -236,10 +240,16 @@ def _colon_like(char):
 
 
 def _fold_reserved_key(value):
-    """Fold spacing, dashes, fullwidth ASCII, and colon confusables."""
+    """Fold spacing, dash/minus, fullwidth ASCII, and colon confusables."""
     ascii_folded = _ascii_fold_key(value)
     return "".join(":" if _colon_like(original) else folded
                    for original, folded in zip(value, ascii_folded))
+
+
+def _trailer_like_line(line):
+    """Return whether a line contains an ASCII or confusable colon."""
+    return ":" in line or any(
+        ord(char) > 127 and _colon_like(char) for char in line)
 
 
 def _writer_like(line):
@@ -415,7 +425,7 @@ def parse_writer_trailer(message):
     lines = _split_git_message_lines(message)
     _require(not any(_writer_key_lookalike(line) for line in lines),
              "WRITER_LOOKALIKE: non-ASCII Writer-key lookalike is ambiguous")
-    _require(sum(1 for line in lines if ":" in line or "\uff1a" in line)
+    _require(sum(1 for line in lines if _trailer_like_line(line))
              <= _TRAILER_LIKE_LIMIT,
              "WRITER_TRAILER_LIMIT: Commit message exceeds 256 trailer-like lines")
     writer_lines = [(index, line) for index, line in enumerate(lines)
