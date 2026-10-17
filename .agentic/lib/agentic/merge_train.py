@@ -1036,6 +1036,7 @@ def _load_publication_journal(path, candidate):
             "batch_id": candidate["batch_id"],
             "generation": candidate["generation"]["generation"],
             "expected_head": candidate["batch_head_sha"],
+            "status": "ACTIVE",
             "operations": [],
         }
         _save_publication_journal(path, value)
@@ -1051,13 +1052,14 @@ def _load_publication_journal(path, candidate):
              and value.get("batch_id") == candidate["batch_id"]
              and value.get("generation") == candidate["generation"]["generation"]
              and value.get("expected_head") == candidate["batch_head_sha"]
+             and value.get("status", "ACTIVE") in {"ACTIVE", "ABANDONED"}
              and isinstance(value.get("operations"), list),
              "publication intent journal belongs to another candidate")
     return value
 
 
 def _require_current_publication(candidate, observer_id, observer_registry, *,
-                                 now, max_age_seconds):
+                                 now, max_age_seconds, intent_path, journal):
     generation = candidate["generation"]
     expected = {
         "generation_id": generation["generation_id"],
@@ -1075,8 +1077,11 @@ def _require_current_publication(candidate, observer_id, observer_registry, *,
     result, _, _ = _registered_observation(
         observer_registry, observer_id, request, now=now,
         max_age_seconds=max_age_seconds)
-    _require(result == expected,
-             "publication generation is abandoned because its freeze drifted")
+    if result != expected:
+        journal["status"] = "ABANDONED"
+        _save_publication_journal(intent_path, journal)
+        raise ValidationError(
+            "publication generation is abandoned because its freeze drifted")
 
 
 def _publication_pr_matches(value, candidate, *, draft, number=None):
@@ -1110,6 +1115,8 @@ def publish_batch(candidate, *, observer_id, observer_registry, publisher_id,
     _validate_publisher(registration,
                         candidate["generation"]["provider_identity"])
     journal = _load_publication_journal(intent_path, candidate)
+    _require(journal.get("status", "ACTIVE") != "ABANDONED",
+             "publication generation is abandoned because its freeze drifted")
 
     operations = ["PUSH_BATCH_REF", "CREATE_DRAFT_PR"]
     if mark_ready:
@@ -1154,7 +1161,8 @@ def publish_batch(candidate, *, observer_id, observer_registry, publisher_id,
 
         _require_current_publication(
             candidate, observer_id, observer_registry, now=now,
-            max_age_seconds=max_age_seconds)
+            max_age_seconds=max_age_seconds, intent_path=intent_path,
+            journal=journal)
         intent = {
             "operation": operation,
             "status": "INTENT",
