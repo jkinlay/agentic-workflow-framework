@@ -4,18 +4,23 @@ All commands are argument arrays, with no shell expansion. No merge command,
 Jira write, API-key provisioning, approval bypass or automatic force-push exists.
 """
 from __future__ import annotations
+from dataclasses import replace
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import threading
 import fnmatch
 import inspect
 import uuid
 from urllib.parse import quote
 
 from ..canonical import candidate_id, loads, sha256
-from ..child_process import child_env, isolated_git_env
+from ..child_process import (CODEX_LOG_RUNNER_POLICY, GIT_RUNNER_POLICY,
+                             HOST_PROVIDER_RUNNER_POLICY,
+                             ChildProcessPolicyError, child_env,
+                             isolated_git_env, render_diagnostic)
 from ..codex_skill import enforce_pinned_awf_skill
 from ..installer import (CONFIG, PROVENANCE, RELEASE_EXCLUDED_PREFIXES,
                          ROUTING, SOURCE_CONFIG_PATHS, SOURCE_CONFIG_PREFIX,
@@ -58,23 +63,14 @@ SOURCE_CONFIGS = _ReleaseSourceConfigs({
 
 def _redacted_stderr_tail(stderr, environment, limit=4096):
     """Return a bounded diagnostic tail with credential material removed."""
-    text = stderr.decode('utf-8', errors='replace')
     credential_values = sorted({
         value for key, value in environment.items()
         if (isinstance(key, str) and isinstance(value, str) and value
             and (review_qualification.is_host_auth_environment_name(key)
                  or review_qualification.CREDENTIAL_ENVIRONMENT_NAME.search(key)))
     }, key=len, reverse=True)
-    if credential_values:
-        text = re.sub('|'.join(re.escape(value) for value in credential_values),
-                      '[REDACTED]', text)
-    text = re.sub(r'(?i)\bAuthorization\s*:\s*[^\r\n]*',
-                  'Authorization: [REDACTED]', text)
-    text = re.sub(r'(?i)\b(?:Bearer|token)\s+[^\s,;]+',
-                  '[REDACTED]', text)
-    text = re.sub(r'(?i)\b(?:gh[opusr]|github_pat)_[A-Za-z0-9_]+',
-                  '[REDACTED]', text)
-    return text.encode('utf-8')[-limit:].decode('utf-8', errors='replace')
+    rendered = render_diagnostic(stderr, credentials=credential_values)
+    return rendered.encode('utf-8')[-limit:].decode('utf-8', errors='replace')
 
 
 def protected(path):
@@ -610,7 +606,7 @@ class HostDriver:
             raise ValidationError('Agent result is not strict bounded JSON') from exc
 
     def run(self, name, args, cwd=None, stdin=None, timeout=None, log=None,
-            binary=False):
+            binary=False, operation_budget=None):
         env = dict(os.environ)
         if name == 'codex' and not getattr(self, '_qualification_probe', False):
             review_qualification.validate_config_qualification(
@@ -650,23 +646,51 @@ class HostDriver:
             env['PYTHONDONTWRITEBYTECODE'] = '1'
         env['GIT_TERMINAL_PROMPT'] = '0'
         command = [str(executable_path), *args]
-        stream_limit = CODEX_LOG_LIMIT if log else 8 * 1024 * 1024
+        policies = {
+            'git': GIT_RUNNER_POLICY,
+            'gh': HOST_PROVIDER_RUNNER_POLICY,
+            'codex': CODEX_LOG_RUNNER_POLICY,
+        }
+        require(name in policies, 'SUBPROCESS_POLICY: command has no closed runner policy')
+        policy = policies[name]
+        configured_timeout = timeout or self.c['command_timeout_seconds']
+        require(configured_timeout <= policy.timeout,
+                'SUBPROCESS_TIMEOUT_POLICY: configured timeout exceeds runner policy')
         watched_results = []
         if name == 'codex' and '--output-last-message' in args:
             output_index = args.index('--output-last-message') + 1
             require(output_index < len(args),
                     'Codex result path argument is missing')
             watched_results.append(args[output_index])
+            policy = replace(policy, watched_file_limit=CODEX_RESULT_LIMIT)
         if subprocess.run is _SUBPROCESS_RUN:
             require(native_executable(executable_path),
                     'Configured command is not a native executable')
-            result = run_bounded(
-                command, cwd=cwd, env=child_env(env), stdin=stdin,
-                timeout=timeout or self.c['command_timeout_seconds'],
-                stdout_limit=stream_limit, stderr_limit=stream_limit,
-                watched_files=watched_results,
-                watched_file_limit=CODEX_RESULT_LIMIT,
-            )
+            cancel_event = None
+            timer = None
+            if configured_timeout < policy.timeout:
+                cancel_event = threading.Event()
+                timer = threading.Timer(configured_timeout, cancel_event.set)
+                timer.daemon = True
+                timer.start()
+            try:
+                try:
+                    result = run_bounded(
+                        command, cwd=cwd, env=child_env(env), stdin=stdin,
+                        watched_files=watched_results, policy=policy,
+                        operation_budget=operation_budget,
+                        cancel_event=cancel_event,
+                    )
+                except ValidationError as exc:
+                    if (name == 'gh'
+                            and str(exc).startswith('SUBPROCESS_STDOUT_LIMIT:')):
+                        raise ValidationError(
+                            'HOST_STDOUT_LIMIT: host provider output exceeded its cap'
+                        ) from exc
+                    raise
+            finally:
+                if timer is not None:
+                    timer.cancel()
         else:
             # Some direct unit fixtures replace this historical dependency.
             # Validated production configurations always retain the original
@@ -684,8 +708,18 @@ class HostDriver:
             raw_stderr = getattr(result, 'stderr', b'')
             stdout = raw_stdout if isinstance(raw_stdout, bytes) else b''
             stderr = raw_stderr if isinstance(raw_stderr, bytes) else b''
-            require(len(stdout) <= stream_limit and len(stderr) <= stream_limit,
+            require(len(stdout) <= policy.stdout_limit
+                    and len(stderr) <= policy.stderr_limit
+                    and len(stdout) + len(stderr) <= policy.aggregate_output_limit,
                     'Non-native test fixture exceeded its output cap')
+            if operation_budget is not None:
+                try:
+                    operation_budget.start_operation()
+                    operation_budget.consume(len(stdout) + len(stderr))
+                except ChildProcessPolicyError as exc:
+                    raise ValidationError(
+                        'SUBPROCESS_OPERATION_BUDGET: shared operation budget exceeded'
+                    ) from exc
             result = subprocess.CompletedProcess(
                 command, result.returncode, stdout, stderr)
         if log:
@@ -694,9 +728,11 @@ class HostDriver:
             Path(log).write_bytes(result.stdout)
             if result.stderr:
                 Path(log).with_suffix(Path(log).suffix + '.stderr').write_bytes(result.stderr)
-            require(result.returncode == 0, f'{name} failed; inspect retained run log')
+            require(result.returncode == 0,
+                    f'HOST_COMMAND_FAILED: {name} failed; inspect retained run log')
             return ''
-        failure_message = f'{name} failed with exit {result.returncode}; reconcile before retry'
+        failure_message = (f'HOST_COMMAND_FAILED: {name} failed with exit '
+                           f'{result.returncode}; reconcile before retry')
         if result.returncode != 0 and result.stderr:
             stderr_tail = _redacted_stderr_tail(result.stderr, child_env(env))
             if stderr_tail:
@@ -707,7 +743,9 @@ class HostDriver:
         try:
             return result.stdout.decode('utf-8', 'strict')
         except UnicodeDecodeError as exc:
-            raise ValidationError('Command output is not strict UTF-8') from exc
+            raise ValidationError(
+                'HOST_STDOUT_INVALID: command output is not strict UTF-8'
+            ) from exc
 
     @staticmethod
     def _codex_thread_id(log):
@@ -849,11 +887,36 @@ class HostDriver:
             '-C',str(checkout),*args], binary=binary, stdin=input_bytes)
         return value.strip() if strip else value
 
-    def api(self, suffix):
+    def api(self, suffix, *, operation_budget=None):
         endpoint = f'repos/{self.c["repository"]}'
         if suffix:
             endpoint += '/' + suffix
-        return loads(self.run('gh', ['api','--hostname','github.com','--method','GET',endpoint]))
+        arguments = ['api','--hostname','github.com','--method','GET',endpoint]
+        parameters = inspect.signature(self.run).parameters.values()
+        accepts_budget = (any(item.name == 'operation_budget' for item in parameters)
+                          or any(item.kind is inspect.Parameter.VAR_KEYWORD
+                                 for item in parameters))
+        if accepts_budget:
+            raw = self.run('gh', arguments, operation_budget=operation_budget)
+        else:
+            # Retained controller fixtures and older recorded drivers predate
+            # the optional keyword. Keep their replay compatible while applying
+            # the same shared response accounting at this call boundary.
+            raw = self.run('gh', arguments)
+            require(isinstance(raw, str),
+                    'Recorded host provider response is not text')
+            encoded = raw.encode('utf-8')
+            require(len(encoded) <= HOST_PROVIDER_RUNNER_POLICY.stdout_limit,
+                    'HOST_STDOUT_LIMIT: host provider output exceeded its cap')
+            if operation_budget is not None:
+                try:
+                    operation_budget.start_operation()
+                    operation_budget.consume(len(encoded))
+                except ChildProcessPolicyError as exc:
+                    raise ValidationError(
+                        'SUBPROCESS_OPERATION_BUDGET: shared operation budget exceeded'
+                    ) from exc
+        return loads(raw)
 
     def api_post(self, suffix, payload):
         endpoint = f'repos/{self.c["repository"]}/{suffix}'
@@ -865,21 +928,24 @@ class HostDriver:
             'gh', ['api', '--hostname', 'github.com', '--method', 'POST',
                    endpoint, '--input', '-'], stdin=raw, binary=False))
 
-    def require_repository_identity(self):
+    def require_repository_identity(self, *, operation_budget=None):
         """Bind the configured slug to its reviewed numeric repository before writes."""
-        value = self.api('')
+        value = self.api('', operation_budget=operation_budget)
         require(isinstance(value, dict)
                 and type(value.get('id')) is int
                 and value['id'] == self.c['repository_id'],
                 'GitHub repository identity mismatch')
 
-    def _paged_provider_rows(self, suffix, *, maximum=1000):
+    def _paged_provider_rows(self, suffix, *, maximum=1000,
+                             operation_budget=None):
         """Collect one GitHub list endpoint with a cap-plus-one proof."""
         rows = []
         seen = set()
         for page in range(1, maximum // 100 + 2):
             separator = '&' if '?' in suffix else '?'
-            value = self.api(f'{suffix}{separator}per_page=100&page={page}')
+            value = self.api(
+                f'{suffix}{separator}per_page=100&page={page}',
+                operation_budget=operation_budget)
             require(isinstance(value, list), 'Provider page is not a JSON array')
             require(len(value) <= 100, 'Provider page exceeds requested size')
             for item in value:
@@ -898,8 +964,11 @@ class HostDriver:
         """Fresh, bounded repository/PR/label/comment authority snapshot."""
         require('provenance' in self.c and 'trusted_owner_ids' in self.c,
                 'Reviewed provenance policy/trusted owner root is not configured')
-        self.require_repository_identity()
-        before = self.api(f'pulls/{self.c["pr"]}')
+        provider_budget = HOST_PROVIDER_RUNNER_POLICY.make_budget(
+            'provider-provenance-observation')
+        self.require_repository_identity(operation_budget=provider_budget)
+        before = self.api(
+            f'pulls/{self.c["pr"]}', operation_budget=provider_budget)
         require(isinstance(before, dict) and before.get('number') == self.c['pr'],
                 'Provider PR identity mismatch')
         body = before.get('body') or ''
@@ -920,7 +989,9 @@ class HostDriver:
         for suffix, kind in ((f'issues/{self.c["pr"]}/comments', 'issue'),
                              (f'pulls/{self.c["pr"]}/reviews', 'review'),
                              (f'pulls/{self.c["pr"]}/comments', 'review_comment')):
-            for item in self._paged_provider_rows(suffix, maximum=1000 - len(comments)):
+            for item in self._paged_provider_rows(
+                    suffix, maximum=1000 - len(comments),
+                    operation_budget=provider_budget):
                 text = item.get('body') or ''
                 actor = (item.get('user') or {}).get('id')
                 url = item.get('html_url')
@@ -939,7 +1010,8 @@ class HostDriver:
                           separators=(',', ':')).encode('utf-8')
         require(len(wire) <= 8 * 1024 * 1024,
                 'Provider observation exceeds 8 MiB')
-        after = self.api(f'pulls/{self.c["pr"]}')
+        after = self.api(
+            f'pulls/{self.c["pr"]}', operation_budget=provider_budget)
         keys = lambda value: (value.get('number'), value.get('updated_at'),
             (value.get('head') or {}).get('sha'), (value.get('head') or {}).get('ref'),
             ((value.get('head') or {}).get('repo') or {}).get('id'),
