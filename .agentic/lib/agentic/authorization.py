@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import re
 import uuid
+from urllib.parse import quote
 
 from . import ValidationError
 from .canonical import (fingerprint, fresh, loads, reject_git_sha_candidate_ids,
@@ -124,6 +125,114 @@ READY_AUTHORIZATION_FORMAT = "awf-pr-ready-authorization-2"
 READY_AUTHORIZATION_REQUEST_FORMAT = "awf-pr-ready-authorization-request-1"
 READY_AUTHORIZATION_ROLES = {"manager", "owner"}
 READY_AUTHORIZATION_ORDER = ["request", "action", "role", "repoid", "pr", "head", "requested", "expires"]
+
+
+def trusted_owner_ids(config):
+    """Return the reviewed numeric owner allowlist or fail closed."""
+    try:
+        owners = config["merge_gate"]["trusted_owner_ids"]
+        automation_actor = config["github"]["expected_actor_id"]
+    except (KeyError, TypeError) as exc:
+        raise ValidationError(
+            "$.merge_gate.trusted_owner_ids and $.github.expected_actor_id: "
+            "reviewed owner and automation actor configuration is required"
+        ) from exc
+    if (not isinstance(owners, list) or not owners
+            or any(isinstance(item, bool) or not isinstance(item, int) or item < 1
+                   for item in owners)
+            or len(owners) != len(set(owners))):
+        raise ValidationError(
+            "$.merge_gate.trusted_owner_ids: configure unique positive numeric owner IDs"
+        )
+    if (isinstance(automation_actor, bool) or not isinstance(automation_actor, int)
+            or automation_actor < 1):
+        raise ValidationError(
+            "$.github.expected_actor_id: configure one positive numeric automation actor ID"
+        )
+    if automation_actor in owners:
+        raise ValidationError(
+            "The configured automation actor must not be a trusted owner"
+        )
+    return tuple(owners)
+
+
+def cap_disposition_record_id(record):
+    """Bind a cap disposition identity to its artifact, verdict, and successor."""
+    try:
+        fields = {
+            "critic_artifact_binding": record["critic_artifact_binding"],
+            "review_verdict_record_id": record["review_verdict_record_id"],
+            "review_verdict_sha256": record["review_verdict_sha256"],
+            "successor_ticket": record["successor_ticket"],
+        }
+    except (KeyError, TypeError) as exc:
+        raise ValidationError(
+            "Review cap disposition is missing its artifact, verdict, or successor binding"
+        ) from exc
+    return fingerprint("review-cap-artifact-binding", fields)
+
+
+def _canonical_uuid(value, field):
+    if not isinstance(value, str):
+        raise ValidationError(f"{field} must be a canonical UUID")
+    try:
+        parsed = str(uuid.UUID(value))
+    except (ValueError, AttributeError) as exc:
+        raise ValidationError(f"{field} must be a canonical UUID") from exc
+    if parsed != value:
+        raise ValidationError(f"{field} must be a canonical UUID")
+    return value
+
+
+def _verify_owner_record_candidate(record, kind, head_sha):
+    if kind in {"finding", "cap"}:
+        if not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            raise ValidationError("Owner disposition candidate head must be a full lowercase Git SHA")
+    elif head_sha != "-":
+        raise ValidationError("Tier and closure dispositions must use head=-")
+    if kind == "finding" and record.get("head_sha") != head_sha:
+        raise ValidationError("Finding disposition head differs from the current candidate head")
+    elif kind == "cap":
+        artifact = record.get("critic_artifact_binding")
+        if not isinstance(artifact, dict) or artifact.get("head_sha") != head_sha:
+            raise ValidationError("Review cap disposition critic artifact head differs from the current candidate head")
+        if record.get("record_id") != cap_disposition_record_id(record):
+            raise ValidationError(
+                "Review cap disposition record ID does not authenticate its critic artifact and verdict binding"
+            )
+
+
+def make_owner_disposition_request(record, schema, config, *, head_sha,
+                                   authorization_request_id=None):
+    """Render non-authoritative fields for later provider verification."""
+    kind = OWNER_KINDS.get(schema)
+    if kind is None:
+        raise ValidationError("Not an owner disposition record type")
+    trusted_owner_ids(config)
+    if not isinstance(record, dict):
+        raise ValidationError("Owner disposition request fields must be an object")
+    if "owner_source" in record:
+        raise ValidationError("A disposition request must precede the owner comment")
+    fields = copy.deepcopy(record)
+    existing = fields.get("authorization_request_id")
+    if existing is not None and authorization_request_id is not None and existing != authorization_request_id:
+        raise ValidationError("Disposition authorization request ID conflicts with the supplied request ID")
+    request_id = existing or authorization_request_id or str(uuid.uuid4())
+    fields["authorization_request_id"] = _canonical_uuid(
+        request_id, "authorization_request_id"
+    )
+    _verify_owner_record_candidate(fields, kind, head_sha)
+    expected_text = render_owner_record(fields, kind, head_sha)
+    return {
+        "format": "awf-owner-disposition-request-1",
+        "record_type": schema,
+        "record_id": fields["record_id"],
+        "authorization_request_id": request_id,
+        "head_sha": head_sha,
+        "expected_text": expected_text,
+        "disposition_fields": fields,
+        "execution_authority": False,
+    }
 
 
 def _ready_request_shape(request):
@@ -318,9 +427,12 @@ def owner_fields(record, kind, head_sha):
         ids = sorted(record["open_finding_ids"])
         if any("+" in item or "/" in item or ":" in item for item in ids):
             raise ValidationError("Finding IDs in a cap disposition cannot contain '+', '/' or ':'")
-        # cycles/extensions are part of the signed text so a cap decision binds the cap it answers.
+        # Bind the cap answered and any RESCOPE successor into the signed text.
         decision = record["decision"]
-        subject = f"{record['cycles']}/{record['cap_extensions']}:" + ("+".join(ids) if ids else "none")
+        successor = (quote(record["successor_ticket"], safe="")
+                     if record["successor_ticket"] is not None else "-")
+        subject = (f"{record['cycles']}/{record['cap_extensions']}:"
+                   + ("+".join(ids) if ids else "none") + f"/{successor}")
         head = head_sha
     elif kind == "tier":
         decision, subject, head = f"{record['from_tier']}-to-{record['to_tier']}", record["contract_id"], head_sha
@@ -352,7 +464,9 @@ def parse_owner_text(raw):
     return values
 
 
-def verify_owner_record(record, schema, config, contracts, now, *, head_sha, binding, runs=None, excluded_contexts=(), excluded_producers=()):
+def verify_owner_record(record, schema, config, contracts, now, *, head_sha, binding,
+                        runs=None, excluded_contexts=(), excluded_producers=(),
+                        allow_historical_finding=False):
     """Authenticate the shape, digest, grammar, trusted actor and producer of an owner record.
 
     Offline verification establishes consistency; the trusted host verifies the live comment.
@@ -361,21 +475,34 @@ def verify_owner_record(record, schema, config, contracts, now, *, head_sha, bin
     if kind is None:
         raise ValidationError("Not an owner record schema")
     contracts.validate(schema, record)
-    if record["binding"] != binding:
+    historical_finding = (allow_historical_finding and kind == "finding"
+                          and record.get("head_sha") != head_sha)
+    historical_binding_matches = (historical_finding
+        and all(record["binding"].get(key) == value
+                for key, value in binding.items() if key != "candidate_id"))
+    if record["binding"] != binding and not historical_binding_matches:
         raise ValidationError(f"{schema} binding differs from the evaluated candidate")
+    signed_head = head_sha
+    if historical_finding:
+        # A head change voids a finding disposition; it does not erase the
+        # authenticated historical record.  Verify the exact head the owner
+        # signed, then let review_policy.effective_dispositions ignore it.
+        signed_head = record.get("head_sha")
+    _verify_owner_record_candidate(record, kind, signed_head)
     source = record["owner_source"]
-    if source["actor_id"] not in config["merge_gate"]["trusted_owner_ids"]:
+    if source["actor_id"] not in trusted_owner_ids(config):
         raise ValidationError(f"{schema}: untrusted numeric owner identity {source['actor_id']}")
     if sha256(source["raw_body"].encode("utf-8")) != source["raw_body_sha256"]:
         raise ValidationError(f"{schema}: raw-body digest mismatch")
     fields = parse_owner_text(source["raw_body"])
-    if fields != owner_fields(record, kind, head_sha):
+    if fields != owner_fields(record, kind, signed_head):
         raise ValidationError(f"{schema}: raw owner text and recorded fields disagree")
     if timestamp(source["created_at"]) > timestamp(record["created_at"]):
         raise ValidationError(f"{schema}: comment postdates its record")
     if source.get("updated_at", source["created_at"]) != source["created_at"]:
         raise ValidationError(f"{schema}: edited owner comments are invalid; record a new comment")
-    fresh(record["created_at"], now, config["validation"]["max_evidence_age_seconds"])
+    if not historical_finding:
+        fresh(record["created_at"], now, config["validation"]["max_evidence_age_seconds"])
     if runs is not None:
         run = runs.get(record["run_id"])
         if run is None or run["role"] != "verifier" or run["producer_id"] != record["producer_id"]:
@@ -393,7 +520,9 @@ def verify_owner_record(record, schema, config, contracts, now, *, head_sha, bin
             if ancestor["context_id"] in excluded_contexts or ancestor["producer_id"] in excluded_producers:
                 raise ValidationError(f"{schema}: verifier descends from an implementation or review run")
             parent = ancestor.get("parent_run_id")
-    return {"kind": kind, "decision": fields["decision"], "record_consistent": True, "live_source_verified": False,
+    return {"kind": kind, "decision": fields["decision"], "expected_text": source["raw_body"],
+            "authorization_request_id": record["authorization_request_id"],
+            "record_consistent": True, "live_source_verified": False,
             "execution_authority": False}
 
 

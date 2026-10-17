@@ -88,6 +88,9 @@ class PostingCollectorTests(Fixture):
         self.rebind()
         bind_review_admission(self.bundle)
         bind_production_posting_fixture(self.config, self.bundle)
+        self._rebuild_host()
+
+    def _rebuild_host(self):
         self.host = TestOnlyReviewHost(self.bundle)
         terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
         fragment = f"review-verdict-{terminal['round']}-{terminal['record_id']}"
@@ -146,6 +149,7 @@ class PostingCollectorTests(Fixture):
             risk_tier=3, tier_justification="Release gate escalation."
         )
         self.rebind()
+        self._rebuild_host()
         verifier = self.verifier_run()
         terminal = self.bundle["review_verdicts"][-1]
         owner = copy.deepcopy(terminal)
