@@ -111,7 +111,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/jira_lifecycle.py` | `2eec1374e5f850ba1bc3a5ff31c6c28f000aff6e5cbbb04767443b05fffad00b` |
 | `.agentic/lib/agentic/launch_surfaces.py` | `441dc8afea45d36ab404a762ebd01959652d44c7b7d3353e4c444cfb1d163c4d` |
 | `.agentic/lib/agentic/lifecycle.py` | `e178cc145d5181cd12f1a829044e1599e3555cec3088626280148e3c82260af7` |
-| `.agentic/lib/agentic/merge_train.py` | `d5aec0c9b3baa0fc854a6c5f5ccbeef5326ef8915d2dd0712c3d77e7f8555e36` |
+| `.agentic/lib/agentic/merge_train.py` | `3496c3ddc6eec4862cb8ed7a4d5bb0108a1f888f814d28d2dc0dac69b651b69d` |
 | `.agentic/lib/agentic/model_routing.py` | `5adb1172fa6da948ac29c75b3d0b12bcf8f81c52b2c7416fe9d947e704113522` |
 | `.agentic/lib/agentic/operating.py` | `ff82da67583903294585ff673bd86093eef32d23f2c0473a3495caf48114299a` |
 | `.agentic/lib/agentic/operating_status.py` | `d10c1289dd3172034adf6b5b52399e0f3dc590f9c601a6ebdfa71d8e703eb17d` |
@@ -228,7 +228,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/scripts/external_resources.py` | `10c20b51ed8bacf667a7f02b88e8b7177fa80feed307f04af5110987c9fcd810` |
 | `.agentic/scripts/five_slot_acceleration.py` | `805bbbdf0947939a0deebffd8b515d2c16c616cdf2789fbced6ebb36c97635d5` |
 | `.agentic/scripts/integration_queue.py` | `66fae5e6bb1edd3636cbfb418e5aa32126558d9118941343c2142a353d4605c3` |
-| `.agentic/scripts/merge_train.py` | `7705724fd2affb077c81af0bb17e24aa5fdf47a42ef6e7ca79a19baa49bf32d8` |
+| `.agentic/scripts/merge_train.py` | `878c4ab6a3dd48d5d034ef28264b4d1770590d9709f109a9b69e0f4696c18210` |
 | `.agentic/scripts/operating.py` | `0ec1e1805a241ef585ae371d9ac32c29a52f53f459c4f0e504e7ae9fcd060a38` |
 | `.agentic/scripts/plan_streams.py` | `b1165b1187dca2d5f9ac3563ac170d15da316ce945fd4bafb2268cc173ba8ab5` |
 | `.agentic/scripts/prepare_routine_pilot.py` | `71e64de5acadd42bd933d444725f8b9d3bf0d0f66b9450d64b272848bc96f8bf` |
@@ -371,7 +371,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_lifecycle_190.py` | `fe656d84e0880848dc27f628ff7c55e9404a08341ae2c21053e07cf6def1ba26` |
 | `.agentic/tests/test_merge_train.py` | `68258d3f10341f4bccb3c74743d0b447186608480f4197b67186c3a220e185eb` |
 | `.agentic/tests/test_merge_train_closeout.py` | `fda35db6acc985d65ad3a304bbb0e1b60e1a4010481b63369b447f8b643503f6` |
-| `.agentic/tests/test_merge_train_publication.py` | `6d59d57297045432cae71d0befb659fe31904a6b061f7adecd64678a34615ce1` |
+| `.agentic/tests/test_merge_train_publication.py` | `d3dda9ab9c6b26eb2cc6b5c9869bad63834610ae7a4b85196e3206733bb56b6c` |
 | `.agentic/tests/test_model_routing.py` | `b6a65f8d07525444d66af2c9490df5420779aa27ffd044ad82ba1a66f659d4e9` |
 | `.agentic/tests/test_model_routing_provenance.py` | `a1367235951a54574aff79d4817350f42f55c387b63f75f602604ab5e0d7538b` |
 | `.agentic/tests/test_module_import_isolation.py` | `75fa93ebd60268e51812989bd900201190589a0c4e895bb44e26d57924f1366d` |

@@ -855,6 +855,24 @@ def _batch_names(release, scheduled_at, pr_numbers):
     return batch_id, "batch/" + batch_id, title
 
 
+def _publication_request(generation, branch, head, tree, title):
+    return {
+        "operation": "BATCH_PUBLICATION_CANDIDATE",
+        "provider_identity": deepcopy(generation["provider_identity"]),
+        "expected_candidate": {
+            "generation_id": generation["generation_id"],
+            "batch_branch": branch,
+            "batch_head_sha": head,
+            "batch_tree_sha": tree,
+            "base_branch": generation["target_branch"],
+            "base_sha": generation["target_sha"],
+            "constituent_pr_numbers": [item["pr_number"]
+                                       for item in generation["sources"]],
+            "draft_pr_title": title,
+        },
+    }
+
+
 def freeze_publication_candidate(generation, batch_head_sha, batch_tree_sha, *,
                                  release, scheduled_at, max_batch_size,
                                  observer_id, observer_registry, now,
@@ -873,21 +891,9 @@ def freeze_publication_candidate(generation, batch_head_sha, batch_tree_sha, *,
         release, scheduled_at, pr_numbers)
     _require(generation["batch_id"] == batch_id,
              "generation batch_id differs from the named publication slot")
-    expected = {
-        "generation_id": generation["generation_id"],
-        "batch_branch": branch,
-        "batch_head_sha": batch_head_sha,
-        "batch_tree_sha": batch_tree_sha,
-        "base_branch": generation["target_branch"],
-        "base_sha": generation["target_sha"],
-        "constituent_pr_numbers": pr_numbers,
-        "draft_pr_title": title,
-    }
-    request = {
-        "operation": "BATCH_PUBLICATION_CANDIDATE",
-        "provider_identity": deepcopy(generation["provider_identity"]),
-        "expected_candidate": deepcopy(expected),
-    }
+    request = _publication_request(
+        generation, branch, batch_head_sha, batch_tree_sha, title)
+    expected = request["expected_candidate"]
     result, attestation, raw_observation = _registered_observation(
         observer_registry, observer_id, request, now=now,
         max_age_seconds=max_age_seconds)
@@ -942,6 +948,8 @@ def _validate_publication_candidate(candidate, observer_registry, *, now,
     batch_id, branch, title = _batch_names(
         release, candidate["scheduled_at"], expected_prs)
     _require(candidate["batch_id"] == batch_id
+             and generation["batch_id"] == batch_id
+             and generation["target_branch"] == "main"
              and candidate["batch_branch"] == branch
              and candidate["draft_pr_title"] == title
              and candidate["base_branch"] == generation["target_branch"]
@@ -959,18 +967,21 @@ def _validate_publication_candidate(candidate, observer_registry, *, now,
     _require(isinstance(provider, dict)
              and set(provider) == {"request", "observation", "attestation"},
              "publication candidate provider evidence is invalid")
+    request = _publication_request(
+        generation, branch, candidate["batch_head_sha"],
+        candidate["batch_tree_sha"], title)
+    _require(provider["request"] == request,
+             "publication candidate request does not bind authenticated exact bytes")
     producer_id = provider["attestation"].get("producer_id")
     registration = (observer_registry.get(producer_id)
                     if isinstance(observer_registry, dict) else None)
     _require(isinstance(registration, dict),
              "publication candidate requires its registered provider observer")
     result, attestation = _validate_registered_observation(
-        registration, producer_id, provider["request"],
+        registration, producer_id, request,
         provider["observation"], now=now, max_age_seconds=max_age_seconds)
     _require(attestation == provider["attestation"]
-             and result == provider["request"].get("expected_candidate")
-             and result["batch_head_sha"] == candidate["batch_head_sha"]
-             and result["batch_tree_sha"] == candidate["batch_tree_sha"],
+             and result == request["expected_candidate"],
              "publication candidate is not bound to authenticated exact bytes")
     return candidate
 
@@ -1068,6 +1079,17 @@ def _require_current_publication(candidate, observer_id, observer_registry, *,
              "publication generation is abandoned because its freeze drifted")
 
 
+def _publication_pr_matches(value, candidate, *, draft, number=None):
+    return (isinstance(value, dict)
+            and type(value.get("number")) is int and value["number"] > 0
+            and (number is None or value["number"] == number)
+            and value.get("branch") == candidate["batch_branch"]
+            and value.get("base_branch") == candidate["base_branch"]
+            and value.get("head_sha") == candidate["batch_head_sha"]
+            and value.get("title") == candidate["draft_pr_title"]
+            and value.get("draft") is draft)
+
+
 def publish_batch(candidate, *, observer_id, observer_registry, publisher_id,
                   publisher_registry, intent_path, now, mark_ready=False,
                   max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
@@ -1093,6 +1115,13 @@ def publish_batch(candidate, *, observer_id, observer_registry, publisher_id,
     if mark_ready:
         operations.append("MARK_DRAFT_PR_READY")
     for operation in operations:
+        created_pr = next((item.get("provider_result")
+                           for item in journal["operations"]
+                           if item.get("operation") == "CREATE_DRAFT_PR"
+                           and item.get("status") in {"DONE", "RECONCILED"}), None)
+        if operation == "MARK_DRAFT_PR_READY":
+            _require(_publication_pr_matches(created_pr, candidate, draft=True),
+                     "created PR does not match the publication candidate")
         existing = next((item for item in journal["operations"]
                          if item.get("operation") == operation), None)
         if existing is not None and existing.get("status") in {
@@ -1111,13 +1140,11 @@ def publish_batch(candidate, *, observer_id, observer_registry, publisher_id,
             else:
                 observed = registration["observe_pull_request"](
                     candidate["batch_branch"])
-                matched = (isinstance(observed, dict)
-                           and observed.get("branch") == candidate["batch_branch"]
-                           and observed.get("base_branch") == candidate["base_branch"]
-                           and observed.get("head_sha") == candidate["batch_head_sha"]
-                           and observed.get("title") == candidate["draft_pr_title"]
-                           and (operation != "MARK_DRAFT_PR_READY"
-                                or observed.get("draft") is False))
+                matched = _publication_pr_matches(
+                    observed, candidate,
+                    draft=operation != "MARK_DRAFT_PR_READY",
+                    number=(created_pr["number"]
+                            if operation == "MARK_DRAFT_PR_READY" else None))
             _require(matched,
                      "publication outcome is unknown; inspect provider state without replay")
             existing["status"] = "RECONCILED"
@@ -1147,25 +1174,17 @@ def publish_batch(candidate, *, observer_id, observer_registry, publisher_id,
                 result = registration["create_draft_pr"](
                     candidate["batch_branch"], candidate["base_branch"],
                     candidate["draft_pr_title"])
-                valid = (isinstance(result, dict)
-                         and type(result.get("number")) is int
-                         and result.get("branch") == candidate["batch_branch"]
-                         and result.get("base_branch") == candidate["base_branch"]
-                         and result.get("head_sha") == candidate["batch_head_sha"]
-                         and result.get("title") == candidate["draft_pr_title"]
-                         and result.get("draft") is True)
+                valid = _publication_pr_matches(result, candidate, draft=True)
             else:
                 pull_request = registration["observe_pull_request"](
                     candidate["batch_branch"])
-                _require(isinstance(pull_request, dict)
-                         and type(pull_request.get("number")) is int,
-                         "draft PR must be observed before marking it ready")
+                _require(_publication_pr_matches(
+                    pull_request, candidate, draft=True, number=created_pr["number"]),
+                    "observed PR differs from the publication candidate")
                 result = registration["mark_draft_pr_ready"](
                     pull_request["number"])
-                valid = (isinstance(result, dict)
-                         and result.get("number") == pull_request["number"]
-                         and result.get("head_sha") == candidate["batch_head_sha"]
-                         and result.get("draft") is False)
+                valid = _publication_pr_matches(
+                    result, candidate, draft=False, number=created_pr["number"])
         except (TimeoutError, ConnectionError, OSError) as exc:
             intent["status"] = "UNKNOWN"
             _save_publication_journal(intent_path, journal)
@@ -1177,6 +1196,11 @@ def publish_batch(candidate, *, observer_id, observer_registry, publisher_id,
         _save_publication_journal(intent_path, journal)
     pull_request = registration["observe_pull_request"](
         candidate["batch_branch"])
+    created_pr = next(item["provider_result"] for item in journal["operations"]
+                      if item["operation"] == "CREATE_DRAFT_PR")
+    _require(_publication_pr_matches(
+        pull_request, candidate, draft=not mark_ready, number=created_pr["number"]),
+        "observed PR differs from the publication candidate")
     return {
         "status": ("PUBLISHED_READY" if mark_ready else "PUBLISHED_DRAFT"),
         "batch_id": candidate["batch_id"],
