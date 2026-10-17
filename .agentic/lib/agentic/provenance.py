@@ -512,15 +512,44 @@ def _override_payload(record):
     return {key: value for key, value in record.items() if key != "override_sha256"}
 
 
+def _reviewed_owner_ids(reviewed_owner_config, *, expected_config_sha256=None):
+    """Return numeric owners from one closed, digest-bound reviewed input."""
+    expected = {"config_sha256", "trusted_owner_ids", "binding_sha256"}
+    _require(isinstance(reviewed_owner_config, dict)
+             and set(reviewed_owner_config) == expected,
+             "OWNER_TRUST_UNBOUND: reviewed owner configuration is missing or open")
+    config_sha256 = reviewed_owner_config["config_sha256"]
+    owners = reviewed_owner_config["trusted_owner_ids"]
+    _require(isinstance(config_sha256, str)
+             and _DIGEST.fullmatch(config_sha256) is not None,
+             "OWNER_TRUST_UNBOUND: reviewed configuration digest is invalid")
+    _require(expected_config_sha256 is None
+             or config_sha256 == expected_config_sha256,
+             "OWNER_TRUST_UNBOUND: reviewed configuration digest mismatch")
+    _require(isinstance(owners, list) and owners
+             and len(owners) <= 100
+             and all(type(value) is int and value > 0 for value in owners)
+             and len(owners) == len(set(owners)),
+             "OWNER_TRUST_UNBOUND: reviewed trusted owner ids must be unique positive numeric ids")
+    payload = {"config_sha256": config_sha256,
+               "trusted_owner_ids": owners}
+    _require(reviewed_owner_config["binding_sha256"]
+             == fingerprint("provenance_owner_config", payload),
+             "OWNER_TRUST_UNBOUND: reviewed owner configuration binding is stale")
+    return tuple(owners)
+
+
 def _verify_override_shape(record):
     version = record.get("schema_version") if isinstance(record, dict) else None
+    _require(type(version) is int and version in {1, 2},
+             "OVERRIDE_VERSION_UNSUPPORTED: provenance override schema_version "
+             f"{version!r} is unsupported; supported versions are 1 and 2")
     expected = {"schema_version", "override_sha256", "who", "when", "why", "pr",
                 "covered_shas"}
     if version == 2:
         expected.add("supersedes")
     _require(isinstance(record, dict) and set(record) == expected,
-             "Provenance override has unsupported or missing fields")
-    _require(version in {1, 2}, "Unsupported provenance override version")
+             "OVERRIDE_FIELD_INVALID: provenance override has unsupported or missing fields")
     _require(isinstance(record["who"], (str, int)) and not isinstance(record["who"], bool)
              and bool(str(record["who"]))
              and str(record["who"]).strip() == str(record["who"])
@@ -540,12 +569,15 @@ def _verify_override_shape(record):
              "Provenance override needs a positive PR number")
     shas = record["covered_shas"]
     _require(isinstance(shas, list) and shas and len(shas) <= 256
+             and all(isinstance(value, str) for value in shas)
              and shas == sorted(set(shas)),
-             "Provenance override needs sorted unique covered commit SHAs within 256")
+             "OVERRIDE_COVERAGE_INVALID: provenance override needs sorted unique "
+             "covered commit SHAs within 256")
     for value in shas:
         _sha(value, "Covered commit SHA")
     _require(len({len(value) for value in shas}) == 1,
-             "Covered commit SHAs must use one repository object format")
+             "OVERRIDE_COVERAGE_INVALID: covered commit SHAs must use one "
+             "repository object format")
     if version == 2:
         _require(isinstance(record["supersedes"], str)
                  and _DIGEST.fullmatch(record["supersedes"]) is not None,
@@ -556,29 +588,37 @@ def _verify_override_shape(record):
     return record
 
 
-def verify_owner_override(record, *, trusted_owner_ids, pr=None, supersedes=None):
+def verify_owner_override(record, *, reviewed_owner_config, pr=None,
+                          supersedes=None):
     """Validate a sealed override against reviewed owner IDs and optional PR."""
     _verify_override_shape(record)
-    _require(isinstance(trusted_owner_ids, (list, tuple, set, frozenset))
-             and record["who"] in trusted_owner_ids,
-             "Provenance override requires the owner or a trusted owner id")
+    owners = _reviewed_owner_ids(reviewed_owner_config)
+    _require(type(record["who"]) is int and record["who"] > 0,
+             "OVERRIDE_VERSION_AUTHORITY_INCOMPATIBLE: provenance override "
+             f"schema version {record['schema_version']} has a non-numeric owner id")
+    _require(record["who"] in owners,
+             "OWNER_TRUST_UNBOUND: provenance override actor is not a reviewed "
+             "trusted owner id")
     if pr is not None:
         _require(type(pr) is int and record["pr"] == pr,
                  "Provenance override is bound to a different PR")
     if supersedes is not None:
         verify_owner_override(
-            supersedes, trusted_owner_ids=trusted_owner_ids, pr=record["pr"]
+            supersedes, reviewed_owner_config=reviewed_owner_config,
+            pr=record["pr"]
         )
         _require(record["schema_version"] == 2
                  and record["supersedes"] == supersedes["override_sha256"],
-                 "Superseding provenance override does not reference the current record")
+                 "OVERRIDE_CHAIN_INVALID: superseding provenance override does "
+                 "not reference the current record")
         _require(set(supersedes["covered_shas"]).issubset(record["covered_shas"]),
-                 "Superseding provenance override must retain all covered commit SHAs")
+                 "OVERRIDE_CHAIN_INVALID: superseding provenance override must "
+                 "retain all covered commit SHAs")
     return record
 
 
 def record_owner_override(state, *, who, when, why, pr, covered_shas,
-                          trusted_owner_ids):
+                          reviewed_owner_config):
     """Seal and durably add one owner-approved fallback record to AWF state."""
     _require(isinstance(state, dict), "AWF state must be an object")
     draft = {
@@ -588,11 +628,15 @@ def record_owner_override(state, *, who, when, why, pr, covered_shas,
         "when": when,
         "why": why,
         "pr": pr,
-        "covered_shas": sorted(covered_shas) if isinstance(covered_shas, list) else covered_shas,
+        "covered_shas": (sorted(covered_shas)
+                         if isinstance(covered_shas, list)
+                         and all(isinstance(value, str) for value in covered_shas)
+                         else covered_shas),
     }
     # Validate all authority and shape before mutating caller-owned state.
     draft["override_sha256"] = fingerprint("provenance_override", _override_payload(draft))
-    verify_owner_override(draft, trusted_owner_ids=trusted_owner_ids, pr=pr)
+    verify_owner_override(draft, reviewed_owner_config=reviewed_owner_config,
+                          pr=pr)
     existing = state.get("provenance_overrides", {})
     _require(isinstance(existing, dict), "AWF provenance override state is malformed")
     key = str(pr)
@@ -604,7 +648,7 @@ def record_owner_override(state, *, who, when, why, pr, covered_shas,
 
 
 def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
-                             supersedes, trusted_owner_ids):
+                             supersedes, reviewed_owner_config):
     """Append a sealed replacement while preserving the original record.
 
     The original v1 record remains at ``provenance_overrides[pr]``.  Later
@@ -618,7 +662,7 @@ def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
     key = str(pr)
     _require(key in originals, "This PR has no provenance override record to supersede")
     current = verify_owner_override(
-        originals[key], trusted_owner_ids=trusted_owner_ids, pr=pr
+        originals[key], reviewed_owner_config=reviewed_owner_config, pr=pr
     )
     histories = state.get("provenance_override_supersessions", {})
     _require(isinstance(histories, dict),
@@ -628,7 +672,7 @@ def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
              "AWF provenance override supersession history is malformed")
     for existing in history:
         verify_owner_override(
-            existing, trusted_owner_ids=trusted_owner_ids, pr=pr,
+            existing, reviewed_owner_config=reviewed_owner_config, pr=pr,
             supersedes=current,
         )
         current = existing
@@ -640,15 +684,18 @@ def supersede_owner_override(state, *, who, when, why, pr, covered_shas,
         "when": when,
         "why": why,
         "pr": pr,
-        "covered_shas": sorted(covered_shas) if isinstance(covered_shas, list)
-        else covered_shas,
+        "covered_shas": (sorted(covered_shas)
+                         if isinstance(covered_shas, list)
+                         and all(isinstance(value, str) for value in covered_shas)
+                         else covered_shas),
         "supersedes": supersedes,
     }
     draft["override_sha256"] = fingerprint(
         "provenance_override", _override_payload(draft)
     )
     verify_owner_override(
-        draft, trusted_owner_ids=trusted_owner_ids, pr=pr, supersedes=current
+        draft, reviewed_owner_config=reviewed_owner_config, pr=pr,
+        supersedes=current
     )
     _require(set(current["covered_shas"]).issubset(set(draft["covered_shas"])),
              "Superseding provenance override must retain all covered commit SHAs")
@@ -670,6 +717,7 @@ def render_owner_override(record):
     return (
         "<!-- awf-provenance-override:start -->\n"
         "## AWF provenance override\n\n"
+        f"- Schema version: {record['schema_version']}\n"
         f"- PR: #{record['pr']}\n"
         f"- Who: {record['who']}\n"
         f"- When: {record['when']}\n"
@@ -682,51 +730,55 @@ def render_owner_override(record):
     )
 
 
-def _verify_override_chain(record, predecessors, *, trusted_owner_ids, pr):
+def _verify_override_chain(record, predecessors, *, reviewed_owner_config, pr):
     """Verify an override and every digest-linked predecessor, oldest first."""
     _require(isinstance(predecessors, (list, tuple)),
-             "Provenance override predecessors must be an ordered list")
+             "OVERRIDE_CHAIN_INVALID: provenance override predecessors must be "
+             "an ordered list")
     _require(len(predecessors) <= 31,
-             "Provenance override chain exceeds 32 records")
+             "OVERRIDE_CHAIN_INVALID: provenance override chain exceeds 32 records")
     _verify_override_shape(record)
     if record["schema_version"] == 1:
         _require(not predecessors,
-                 "An original provenance override cannot have predecessors")
+                 "OVERRIDE_CHAIN_INVALID: an original provenance override cannot "
+                 "have predecessors")
         return verify_owner_override(
-            record, trusted_owner_ids=trusted_owner_ids, pr=pr
+            record, reviewed_owner_config=reviewed_owner_config, pr=pr
         )
     _require(predecessors,
-             "A superseding provenance override requires its predecessor chain")
+             "OVERRIDE_CHAIN_INVALID: a superseding provenance override requires "
+             "its predecessor chain")
     current = None
     prior_time = None
     for predecessor in predecessors:
         if current is None:
             verified = verify_owner_override(
-                predecessor, trusted_owner_ids=trusted_owner_ids, pr=pr
+                predecessor, reviewed_owner_config=reviewed_owner_config, pr=pr
             )
             _require(verified["schema_version"] == 1,
-                     "Provenance override predecessor chain must start with the original record")
+                     "OVERRIDE_CHAIN_INVALID: provenance override predecessor "
+                     "chain must start with the original record")
         else:
             verified = verify_owner_override(
-                predecessor, trusted_owner_ids=trusted_owner_ids, pr=pr,
+                predecessor, reviewed_owner_config=reviewed_owner_config, pr=pr,
                 supersedes=current,
             )
         current = verified
         observed_time = timestamp(verified["when"])
         _require(prior_time is None or observed_time >= prior_time,
-                 "Provenance override chain is not chronological")
+                 "OVERRIDE_CHAIN_INVALID: provenance override chain is not chronological")
         prior_time = observed_time
     result = verify_owner_override(
-        record, trusted_owner_ids=trusted_owner_ids, pr=pr,
+        record, reviewed_owner_config=reviewed_owner_config, pr=pr,
         supersedes=current,
     )
     _require(prior_time is None or timestamp(result["when"]) >= prior_time,
-             "Provenance override chain is not chronological")
+             "OVERRIDE_CHAIN_INVALID: provenance override chain is not chronological")
     return result
 
 
-def verify_provider_owner_override(record, observation, *, repository_id=None,
-                                   config_sha256=None):
+def verify_provider_owner_override(record, observation, *, reviewed_owner_config,
+                                   repository_id=None):
     """Bind an override to reviewed numeric owners and one fresh comment."""
     _require(isinstance(observation, dict) and observation.get("version") == 1,
              "Provider provenance observation is missing")
@@ -736,17 +788,15 @@ def verify_provider_owner_override(record, observation, *, repository_id=None,
                   or observation['repository_id'] == repository_id),
              "Provider override repository identity mismatch")
     _require(isinstance(observation.get('config_sha256'), str)
-             and _DIGEST.fullmatch(observation['config_sha256'])
-             and (config_sha256 is None
-                  or observation['config_sha256'] == config_sha256),
+             and _DIGEST.fullmatch(observation['config_sha256']),
              "Provider override reviewed configuration mismatch")
-    owners = observation.get("trusted_owner_ids")
-    _require(isinstance(owners, list) and all(type(value) is int and value > 0
-                                              for value in owners),
-             "Reviewed trusted owner ids are missing")
+    _reviewed_owner_ids(
+        reviewed_owner_config,
+        expected_config_sha256=observation['config_sha256'],
+    )
     _require(type(record.get("who")) is int,
              "Provider overrides require a numeric GitHub actor id")
-    verify_owner_override(record, trusted_owner_ids=owners,
+    verify_owner_override(record, reviewed_owner_config=reviewed_owner_config,
                           pr=observation.get("pr"))
     rendered = render_owner_override(record)
     matches = [comment for comment in observation.get("comments", [])
@@ -755,7 +805,8 @@ def verify_provider_owner_override(record, observation, *, repository_id=None,
                and comment.get("body_sha256") == sha256(rendered.encode()).hexdigest()]
     _require(len(matches) == 1,
              "Override requires exactly one freshly observed trusted owner comment")
-    return {"record": record, "provider_comment_id": matches[0]["id"],
+    return {"version": 1, "record": record,
+            "provider_comment_id": matches[0]["id"],
             "provider_comment_url": matches[0].get("url"),
             "body_sha256": matches[0]["body_sha256"],
             "config_sha256": observation.get("config_sha256")}
@@ -1517,7 +1568,7 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
                        override=None, trusted_owner_ids=(), pr_number=None,
                        pr_labels=(), override_predecessors=(),
                        reviewed_policy=None, provider_observation=None,
-                       runtime_registry=None):
+                       runtime_registry=None, reviewed_owner_config=None):
     """Check every ``base..head`` commit and report a refusal reason per commit.
 
     Optional run logs fail only when configured as required; an observed mismatch
@@ -1527,6 +1578,9 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
     superseding override must be accompanied by its ordered, oldest-first
     predecessor chain so its digest link cannot be accepted in isolation.
     """
+    # Retained only for 1.9.4 call compatibility.  Caller-supplied owners and
+    # labels are inventory, never authority; overrides use reviewed_owner_config.
+    del trusted_owner_ids, pr_labels
     if reviewed_policy is not None:
         generated_paths = _validate_reviewed_provenance_policy(reviewed_policy)
         _require(isinstance(provider_observation, dict)
@@ -1538,8 +1592,6 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
         require_run_logs = reviewed_policy['require_run_logs']
         origin_main = provider_observation.get('base')
         pr_number = provider_observation.get('pr')
-        pr_labels = provider_observation.get('labels', [])
-        trusted_owner_ids = provider_observation.get('trusted_owner_ids', [])
         registry = runtime_registry if isinstance(runtime_registry, dict) else {}
         run_log_verifier = registry.get('run_log_verifier')
         reproduce_generated = None
@@ -1593,13 +1645,13 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
                  "Provenance override checking requires the bound PR number")
         override_record = _verify_override_chain(
             override, override_predecessors,
-            trusted_owner_ids=trusted_owner_ids, pr=pr_number,
+            reviewed_owner_config=reviewed_owner_config, pr=pr_number,
         )
         if reviewed_policy is not None:
             provider_override_evidence = verify_provider_owner_override(
                 override_record, provider_observation,
                 repository_id=provider_observation.get('repository_id'),
-                config_sha256=provider_observation.get('config_sha256'))
+                reviewed_owner_config=reviewed_owner_config)
         covered = set(override_record["covered_shas"])
         _require(covered.issubset(set(commits)),
                  "Provenance override names commits outside the checked PR range")

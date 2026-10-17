@@ -119,7 +119,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/policy.py` | `a8d7f290569ba71329354ae52c4ddb74287bdbdcbfc7147564c7db89ffe9484c` |
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
-| `.agentic/lib/agentic/provenance.py` | `eb77046b11be4e74c80df6c849d5685026c5de2b2d8f098ccc2f4b3531537734` |
+| `.agentic/lib/agentic/provenance.py` | `f27cc40e51c41ba092b5035c7d3202a0a3a2de38ee01a4e6e6225d9687f48545` |
 | `.agentic/lib/agentic/provider_identity.py` | `d95ae1def1279357ca53b0c51151f4fe483a16ac5e8f8b843800afeb1176289c` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
 | `.agentic/lib/agentic/providers/github.py` | `0228ed2d7c57617052ef97209c6ae357b893d3151dd97df267ab2a86d4e2f12d` |
@@ -131,7 +131,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/release_trust.py` | `a8d468759d1c974b5a06ae3855b7bf17ea2e1a937edf4d0c1c76a7bef8988896` |
 | `.agentic/lib/agentic/repository_rules.py` | `6c04a815378ced7163dc763e3fb9a93889f8adde5461c4a58d5df13c20a27fcc` |
 | `.agentic/lib/agentic/review_completion.py` | `ae635de22e86a8ae505d8cae26983a64deef1385c9033a7702d082a163c40fe9` |
-| `.agentic/lib/agentic/review_first_draft.py` | `bf69dcd9ed8c3e277888c8ce4b87a27c66ed9c97eee399c634491680773817cb` |
+| `.agentic/lib/agentic/review_first_draft.py` | `eab1a8944acaed4e658ebb308c69c4ce7990ca0e591cb24ca8ba109d857e548b` |
 | `.agentic/lib/agentic/review_host.py` | `5bd04cd379021bddee6a76878aa40f91824346f20f985864d7a6df13b888bb1f` |
 | `.agentic/lib/agentic/review_loop.py` | `dcef03ea9945382f6caf4eaf96362526117b9edbe912f0b8eea96a4e2076d0ae` |
 | `.agentic/lib/agentic/review_policy.py` | `6a6e68f82c59eb003dd603334b20b58bcf8a04d87dba0ec60f1882cb6fb23704` |
@@ -376,7 +376,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_planning_graph.py` | `4cf3eb0767f1a29d73a4b6567de439f42d1618e2bed3f0318757e8af13719173` |
 | `.agentic/tests/test_posting_collector_awf60.py` | `96e691b4e29df8fef538fd8dd3ba22ebbdcd818bd07a86a7f13b1fb6c4ca7061` |
 | `.agentic/tests/test_private_deny_binary.py` | `b6da0ffbcce95cedece5c337106bb6f642f127180ae21ba14ec606da37ac6de1` |
-| `.agentic/tests/test_provenance.py` | `e80dade55997d22fa369b09b493310d66d4487a794bd08767b67163a2df42b30` |
+| `.agentic/tests/test_provenance.py` | `3f035a1a1fd928d6e719b6ea92802c8f23329ba87c68445688614b579d421f72` |
 | `.agentic/tests/test_provenance_awf94.py` | `88286473aa73ad8681a8a4cfd552d519b36cd14eb2cf4fab242549c53341059c` |
 | `.agentic/tests/test_provenance_range_bytes.py` | `5ddb7e1b15714b5092f6ff513bfa04a43ed04073bdc6465e7f2dd8744367c65f` |
 | `.agentic/tests/test_provider_identity.py` | `a276d68b89dfb6e65513f62732dd3fddab93419b04f20cc59bbec7c8a0e2fc2b` |
@@ -391,7 +391,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_repository_rules.py` | `c7618e2deb63bff0b9f33d3347d351264eafd6a8968a7eab8a2213b9cbc9df68` |
 | `.agentic/tests/test_retry_authority.py` | `139ac0066214be7dbd8d468ae016f7f116b756621ee295d03d646ef94eaae3bf` |
 | `.agentic/tests/test_review_completion.py` | `a0616eb2af069e793b42664d4055ff09c3ac5234c5b607cdc23ebeac354ecd18` |
-| `.agentic/tests/test_review_first_draft194.py` | `096a2dd5e334762257ee3e0b153f6f1f0d9131c6e09c30b5e4faedee4f9c9242` |
+| `.agentic/tests/test_review_first_draft194.py` | `915adee109a0a4c04e6389c9763fa1f7bf47d01d549df6280737975df14d83e1` |
 | `.agentic/tests/test_review_loop.py` | `d8149f970cfb4c22dec158936d98693004cf3cfb0c3f3dac2c29f92fb3439003` |
 | `.agentic/tests/test_review_policy.py` | `71c92890272ae871e918b3fc76786ebe9d1b532fe4d50e363475a8066b97f109` |
 | `.agentic/tests/test_review_qualification.py` | `5c5e87c06f87fca38e1b86399fcfcda66771620bb0bee9b051a9287e3bf8def7` |

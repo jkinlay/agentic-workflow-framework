@@ -7,6 +7,7 @@ hand the observed PR to ``enroll``.  It contains no merge or Jira operation.
 """
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from hashlib import sha256
 import re
@@ -149,7 +150,7 @@ def validate_worker_receipt(receipt, *, allowed_paths):
     _validate_receipt_path_inventories(paths, ignored)
     require(all(path in allowed_paths for path in paths),
             "First-draft worker changed a path outside its exact scope")
-    return receipt
+    return copy.deepcopy(receipt)
 
 
 def _validate_receipt_path_inventories(*inventories):
@@ -195,10 +196,13 @@ def _decode_git_path_inventories(*values):
 
 def excluded_worktree_inventory(git, changes):
     """Return every untracked or Git-ignored path excluded from the tested tree."""
+    declared_additions = {
+        change["path"] for change in copy.deepcopy(changes)
+        if change["action"] == "added"
+    }
     paths = _decode_git_path_inventories(
         git.run("ls-files", "--others", "--exclude-standard", "-z"),
         git.run("ls-files", "--others", "--ignored", "--exclude-standard", "-z"))
-    declared_additions = {change["path"] for change in changes if change["action"] == "added"}
     return sorted(paths - declared_additions)
 
 
