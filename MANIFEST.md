@@ -321,7 +321,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/fixtures/routing/valid.yaml` | `912e0bb2adc7d2800d2a674f229e109009a9bd7aec06ee9eda55349c206b50e2` |
 | `.agentic/tests/review_admission_fixture.py` | `4ece32c0f91c1f1c7b4a6ec6f5789c046121ae59dc720075477925acea22389f` |
 | `.agentic/tests/source_only.py` | `93b4366ac2d7250b28f608cff82d655e6840b20a6a871229c4d8e282c3b41bb9` |
-| `.agentic/tests/test_adoption_status.py` | `0365d1d303b06b0810ae0fa71c87e38c3af2cff3df0437f0de0afd6c38d76a6c` |
+| `.agentic/tests/test_adoption_status.py` | `cba3cff5fbaeaceb153169fd2775b2448af5b6cc8bf1ed121ed964eb5a913953` |
 | `.agentic/tests/test_adoption_validation.py` | `40ec9ae752eaa17a42aac78b10e83ccc89f1adb1ccedcca97a8f29855279f4cb` |
 | `.agentic/tests/test_approved_models_awf82.py` | `4dba0411fc8a1fd7d4196dc1b37051aae39ae177301f083bca4d781c61fa3d67` |
 | `.agentic/tests/test_authorization_awf73.py` | `a40a73c244805c86bdf5d9a8e3e7a4fcff21cd0f65b2074ba4f761a94c037375` |
@@ -418,7 +418,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_safeio_process.py` | `7c6e9e0cce111aa6e1d8a774ed5100a771cbd43d76697c4c09287bc1aa15585f` |
 | `.agentic/tests/test_safeio_unlink.py` | `86d91b38a4e930fc1af316caf359b04cf8748dc53958465a141aeab200c1457f` |
 | `.agentic/tests/test_source_only.py` | `ff834d09650472ae5522aeaf6cad4dad7caf205e80ee73e03e7bcb3ac17208e3` |
-| `.agentic/tests/test_status_report.py` | `92c0e9b246b32321a4406380cdffae7a10297e52990ef0ea53e57218464c83fa` |
+| `.agentic/tests/test_status_report.py` | `c826174bd6aadeca21c8c3e4686b3f241a5855bf936db4ce081492cc95bf8641` |
 | `.agentic/tests/test_store_regressions.py` | `340df570120f78d77ef33c3e9c8f315ec72b0a3e49bd7e053a5a5ef24679111f` |
 | `.agentic/tests/test_streams.py` | `12f28b018c24b63d362e441bae318aff47a6bb576967758c654b16d0034eedb1` |
 | `.agentic/tests/test_upgrade_194.py` | `9a830eb7bb65ef835c9de24c205d656db78d3edcf902c4463c31c73a2216ef53` |
@@ -551,6 +551,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_ci_windows_final_candidate.py` | `b24641b80b683d0f7909ba93c26c0e49128f6e3aceaa56c04c71eef6b2895c91` |
 | `scripts/tests/test_cli_failure_paths.py` | `0a0cef4139b488d1f8a048401ff6e7ef1582171a245c6d320113acf0e4c30dd1` |
 | `scripts/tests/test_fresh_bootstrap.py` | `ccc1c4fa1b125a93309f25af4d1abbbaaf4a930e80ea23197ec0794fca32ce6a` |
+| `scripts/tests/test_generate_contracts_status_report.py` | `0514b9f70dc6b9a59503d4f6c447ce1d819c912f3b8ec8e976d99e98b0f96d6f` |
 | `scripts/tests/test_generate_contracts_ticket_plan.py` | `c4d69975cee99bd6ee64a835c94c30c70b44292e93c29a411ce7b064062066f2` |
 | `scripts/tests/test_generate_examples_schema_refs.py` | `acd329623a932ba4b7485fe1b544dc6729631ad5a5a20f73901e093571f84b17` |
 | `scripts/tests/test_generate_examples_ticket_plan.py` | `6ff2760308b8e661365f119416b15f7868e3429e57ba132bad328545e4fe01c2` |

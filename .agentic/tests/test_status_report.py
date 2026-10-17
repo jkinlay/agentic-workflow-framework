@@ -257,5 +257,134 @@ class StatusReportTests(unittest.TestCase):
         # are host work; these assertions themselves are identical on both OSes.
 
 
+class StatusReportRoundTwoTests(unittest.TestCase):
+    """Doc 46 additions; existing round-one tests remain unchanged."""
+
+    def test_lanes_owner_override_fixed_count_and_max_cap_records_who_when_and_binding_constraint(self):
+        build = report_builder()
+        # Stay below the safe recommendation: presentation above it is Q6.
+        for mode in ('fixed_count', 'max_cap'):
+            with self.subTest(mode=mode):
+                inputs = snapshot()
+                decision = {
+                    'mode': mode, 'value': 1, 'actor': 'fixture-owner',
+                    'decided_at': '2026-10-01T12:00:00Z',
+                    'source': 'decisions/lanes.json',
+                }
+                inputs['plan']['owner_override'] = decision
+                self.assertEqual(build(inputs)['lanes'], {
+                    'status': 'KNOWN', 'recommendation': 2,
+                    'owner_override': decision, 'effective': 1,
+                    'binding_constraint': 'owner_override',
+                    'source': 'planning/plan.json',
+                })
+        # A cap is a ceiling, not a request to increase the recommendation.
+        inputs = snapshot()
+        inputs['plan']['owner_override'] = {**decision, 'value': 3}
+        lanes = build(inputs)['lanes']
+        self.assertEqual(lanes['recommendation'], 2)
+        self.assertEqual(lanes['owner_override'], inputs['plan']['owner_override'])
+        self.assertEqual(lanes['effective'], 2)
+        self.assertEqual(lanes['binding_constraint'], 'dependency_width')
+
+    def test_merge_train_on_with_cadence(self):
+        build = report_builder()
+        # Q5 leaves the default cadence open; reproduce an explicit decision.
+        for minutes in (15, 30):
+            with self.subTest(minutes=minutes):
+                inputs = snapshot()
+                inputs['merge_train'] = {
+                    'status': 'VERIFIED', 'source': 'decisions/merge-train.json',
+                    'enabled': True, 'cadence_minutes': minutes,
+                    'source_owner_review': 'normal_tier_final_gate',
+                }
+                self.assertEqual(build(inputs)['merge_train'], {
+                    'status': 'KNOWN', 'source': 'decisions/merge-train.json',
+                    'enabled': True, 'cadence_minutes': minutes,
+                    'source_owner_review': 'normal_tier_final_gate',
+                })
+
+    def test_merge_train_off(self):
+        build = report_builder()
+        # AWF-54 Q2=B and Q4=B are settled; no cadence default is invented.
+        for repository_kind, enabled in (('awf', False), ('adopter', True)):
+            with self.subTest(repository_kind=repository_kind):
+                inputs = snapshot()
+                inputs['merge_train'] = {
+                    'status': 'VERIFIED', 'source': 'policy/merge-train.json',
+                    'repository_kind': repository_kind, 'owner_override': None,
+                    'cadence_minutes': None,
+                }
+                self.assertEqual(build(inputs)['merge_train'], {
+                    'status': 'KNOWN', 'source': 'policy/merge-train.json',
+                    'enabled': enabled, 'cadence_minutes': None,
+                    'source_owner_review': 'normal_tier_final_gate',
+                })
+
+    def test_report_json_validates_against_schema(self):
+        module = importlib.import_module('agentic.status_report')
+        from agentic import ValidationError
+        from agentic.contracts import Contracts
+
+        inputs = snapshot()
+        inputs['merge_train'] = {
+            'status': 'VERIFIED', 'source': 'decisions/merge-train.json',
+            'enabled': True, 'cadence_minutes': 15,
+            'source_owner_review': 'normal_tier_final_gate',
+        }
+        report = module.build_report(inputs)
+        contracts = Contracts(ROOT / '.agentic/schemas')
+        self.assertIn('status-report', contracts.schemas, 'Missing status-report schema')
+        contracts.validate('status-report', report)
+        decoded = json.loads(module.render_json(report))
+        self.assertEqual(decoded, report)
+        contracts.validate('status-report', decoded)
+        # Proposed in-process text seam: one labelled JSON value per metric.
+        # CLI spelling and route meaning (T5) await owner rulings.
+        text = module.render_text(report)
+        for key in ('outstanding', 'priority', 'lanes', 'merge_train', 'eta',
+                    'inputs_sha256'):
+            lines = [line for line in text.splitlines() if line.startswith(key + ': ')]
+            self.assertEqual(len(lines), 1, key)
+            self.assertEqual(json.loads(lines[0].split(': ', 1)[1]), decoded[key])
+        for key in (None, 'lanes', 'merge_train', 'eta'):
+            with self.subTest(closed_object=key):
+                invalid = copy.deepcopy(decoded)
+                target = invalid if key is None else invalid[key]
+                target['unexpected_status_report_member'] = True
+                with self.assertRaises(ValidationError):
+                    contracts.validate('status-report', invalid)
+
+    def test_on_demand_matches_activation_format(self):
+        module = importlib.import_module('agentic.status_report')
+        # Proposed hooks only; activation/alias CLI spelling remains Q1.
+        inputs = snapshot()
+        before = copy.deepcopy(inputs)
+        activation = module.activation_report(
+            copy.deepcopy(inputs), observed_at='2026-10-01T12:00:00Z')
+        on_demand = module.on_demand_report(
+            copy.deepcopy(inputs), observed_at='2026-10-01T12:01:00Z')
+        self.assertEqual(activation['trigger'], 'activation')
+        self.assertEqual(on_demand['trigger'], 'on_demand')
+        self.assertEqual(activation['observed_at'], '2026-10-01T12:00:00Z')
+        self.assertEqual(on_demand['observed_at'], '2026-10-01T12:01:00Z')
+        stable = lambda report: {key: value for key, value in report.items()
+                                 if key not in ('trigger', 'observed_at')}
+        self.assertEqual(stable(activation), stable(on_demand))
+        self.assertEqual(activation['inputs_sha256'], normalized_hash(inputs))
+        self.assertEqual(activation['outstanding']['count'], 3)
+        self.assertEqual(activation['lanes']['effective'], 2)
+        self.assertEqual(inputs, before)
+        from agentic.contracts import Contracts
+        contracts = Contracts(ROOT / '.agentic/schemas')
+        for report in (activation, on_demand):
+            contracts.validate('status-report', report)
+            self.assertEqual(json.loads(module.render_json(report)), report)
+        # Identical metadata isolates rendering parity from the trigger/time.
+        normalized = {**on_demand, 'trigger': activation['trigger'],
+                      'observed_at': activation['observed_at']}
+        self.assertEqual(module.render_text(activation), module.render_text(normalized))
+
+
 if __name__ == '__main__':
     unittest.main()
