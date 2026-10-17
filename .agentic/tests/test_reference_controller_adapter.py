@@ -15,7 +15,7 @@ from agentic import ValidationError
 from source_only import skip_unless_source_repo
 from agentic.canonical import canonical, fingerprint, sha256
 from agentic.contracts import Contracts
-from agentic.continuous_controller import ContinuousControllerStore, overlap_allowance_command, production_controller_cycle, production_jira_lifecycle, production_merge_observed
+from agentic.continuous_controller import ContinuousControllerStore, overlap_allowance_command, production_controller_cycle, production_jira_lifecycle, production_merge_observed, validate_replan_trigger_observation
 from agentic.lifecycle import definition
 from agentic.policy import policy_hash
 NOW = '2026-10-09T08:00:00Z'
@@ -28,7 +28,7 @@ def _issue(value=None, *, number=32, stage='implementation', body=None):
 	return {'id': 10000 + number, 'number': number, 'node_id': 'issue-node-' + str(number), 'state': 'open', 'labels': [{'name': 'awf-controller'}, {'name': 'awf-stage:' + stage}], 'body': json.dumps(value) if body is None else body}
 
 def _dispatch_payload(name='isolation', role='writer'):
-	return {'dispatch_id': name, 'stream': 'A', 'ticket': 'AWF-51', 'exact_tuple': 'tuple', 'dispatch_nonce': name + '-nonce', 'prepared_at': NOW, 'begun_at': NOW, 'paths': ['fixture.txt'], 'actor': role, 'next_action': 'verify isolation', 'role': role, 'lifecycle_stage': 'implementation' if role == 'writer' else 'independent_review'}
+	return {'dispatch_schema_version': 2, 'dispatch_id': name, 'stream': 'A', 'ticket': 'AWF-51', 'exact_tuple': 'tuple', 'dispatch_nonce': name + '-nonce', 'prepared_at': NOW, 'begun_at': NOW, 'paths': ['fixture.txt'], 'actor': role, 'next_action': 'verify isolation', 'role': role, 'lifecycle_stage': 'implementation' if role == 'writer' else 'independent_review', 'lane_start_waivers': []}
 
 class FakeClock:
 
@@ -66,6 +66,9 @@ class FakeRunner:
 
 	def run(self, argv, *, cwd, env, timeout, max_bytes):
 		self.calls.append((list(argv), Path(cwd), dict(env)))
+		if argv and argv[0] == 'git':
+			result = subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout, check=True)
+			return result.stdout
 		if self.error:
 			raise RuntimeError(self.error)
 		if self.exit_code:
@@ -275,11 +278,71 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 	def tearDown(self):
 		self.temp.cleanup()
 
+	def test_legacy_adapter_payload_is_refused_before_runner_launch(self):
+		runner = FakeRunner()
+		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters']({**self.config, '_runner': runner, '_clock': FakeClock()})
+		legacy = dict(_dispatch_payload('legacy-call'))
+		legacy.pop('dispatch_schema_version')
+		legacy.pop('lane_start_waivers')
+		with self.assertRaisesRegex(ValidationError, 'legacy|version'):
+			adapters['dispatch_ticket'](legacy)
+		with self.assertRaisesRegex(ValidationError, 'legacy|version'):
+			adapters['observe_dispatch']({**legacy, 'reconcile_nonce': 'r', 'reconcile_at': NOW})
+		self.assertEqual(runner.launches, [])
+
+	def test_launched_state_survives_restart_as_nonterminal(self):
+		class RunningRunner(FakeRunner):
+			def observe_startup(self, record, *, timeout):
+				return {'status': 'RUNNING', 'terminal': False, 'pid': record['pid'], 'launch_nonce': record['launch_nonce'], 'session_id': 'session-' + record['dispatch_id']}
+		runner = RunningRunner()
+		payload = _dispatch_payload('durable-launched')
+		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters']({**self.config, '_runner': runner, '_clock': FakeClock()})
+		receipt = adapters['dispatch_ticket'](payload)
+		self.assertEqual((receipt['dispatch_state'], receipt['terminal']), ('LAUNCHED', False))
+		restarted = __import__('runpy').run_path(str(self.adapter))['build_adapters']({**self.config, '_runner': RunningRunner(), '_clock': FakeClock()})
+		observed = restarted['observe_dispatch'](payload)
+		self.assertEqual((observed['dispatch_state'], observed['terminal']), ('LAUNCHED', False))
+
+	def test_replan_trigger_requires_trusted_immutable_provider_artifact(self):
+		prior='1'*64
+		nonterminal=['dispatch-1']
+
+		class TriggerRunner(FakeRunner):
+			def __init__(self,*,actor_id=7001,updated_at='2026-10-09T07:59:00Z',comment_body=''):
+				super().__init__()
+				self.actor_id=actor_id;self.updated_at=updated_at;self.comment_body=comment_body;self.comment_reads=0
+			def run(self,argv,*,cwd,env,timeout,max_bytes):
+				path=argv[-1]
+				if '/issues/comments/9002' in path:
+					self.comment_reads+=1
+					return {'headers':{'ETag':'"replan"','Date':'Fri, 09 Oct 2026 08:00:00 GMT'},'body':{'id':9002,'node_id':'comment-node-9002','user':{'id':self.actor_id,'login':'owner'},'author_association':'OWNER','created_at':'2026-10-09T07:59:00Z','updated_at':self.updated_at,'body':self.comment_body}}
+				return super().run(argv,cwd=cwd,env=env,timeout=timeout,max_bytes=max_bytes)
+
+		config={**self.config,'merge_gate':{'trusted_owner_ids':[7001]}}
+		runner=TriggerRunner()
+		adapters=__import__('runpy').run_path(str(self.adapter))['build_adapters']({**config,'_runner':runner,'_clock':FakeClock()})
+		next_inventory=adapters['observe_inventory']()['inventory_sha256']
+		event={'repository_id':'101','round_id':'round-2','prior_inventory_sha256':prior,'next_inventory_sha256':next_inventory,'nonterminal_dispatch_ids':nonterminal}
+		body='AWF-ROUND-REPLAN 1\n'+canonical(event).decode('utf-8')+'\n'
+		runner.comment_body=body
+		request={'comment_id':9002,'repository_id':'101','prior_inventory_sha256':prior,'next_inventory_sha256':next_inventory,'nonterminal_dispatch_ids':nonterminal}
+		raw=adapters['observe_replan_trigger'](request)
+		trigger=validate_replan_trigger_observation(config,request,raw,now=NOW)
+		self.assertEqual((trigger['source'],trigger['round_id'],trigger['provider_artifact']['comment_id']),('github.com','round-2',9002))
+		self.assertEqual(runner.comment_reads,1)
+		wrong_context='AWF-ROUND-REPLAN 1\n'+canonical({**event,'next_inventory_sha256':'3'*64}).decode('utf-8')+'\n'
+		for bad_runner in (TriggerRunner(actor_id=7999,comment_body=body),TriggerRunner(updated_at=NOW,comment_body=body),TriggerRunner(comment_body=wrong_context)):
+			with self.subTest(actor_id=bad_runner.actor_id,updated_at=bad_runner.updated_at,body=bad_runner.comment_body),self.assertRaises(ValidationError):
+				bad=__import__('runpy').run_path(str(self.adapter))['build_adapters']({**config,'_runner':bad_runner,'_clock':FakeClock()})
+				bad['observe_inventory']()
+				raw=bad['observe_replan_trigger'](request)
+				validate_replan_trigger_observation(config,request,raw,now=NOW)
+
 	def test_loader_executes_real_module_and_wrong_pin_refuses(self):
 		config_path = self.root / 'config.json'
 		config_path.write_text(json.dumps(self.config), encoding='utf-8')
 		adapters, loader = _load_real(self.adapter, config_path)
-		self.assertEqual(set(adapters), {'observe_inventory', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync'})
+		self.assertEqual(set(adapters), {'observe_inventory', 'observe_reservations', 'observe_replan_trigger', 'dispatch_ticket', 'observe_dispatch', 'observe_dispatch_quiescence', 'deliver_status', 'observe_publication', 'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition', 'reconcile_merged_ticket', 'fetch_scope_page', 'observe_accepted_project_config', 'observe_closeout_record', 'observe_jira_reconciliation', 'observe_overlap_allowance', 'observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync'})
 		with self.assertRaisesRegex(ValidationError, 'SHA-256 pin'):
 			loader._load_reviewed_adapters(self.adapter, '0' * 64, config_path)
 
@@ -454,7 +517,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 	def test_cycle_runs_end_to_end_through_real_adapter_and_strips_credentials(self):
 		repository = self.root / 'repository'
 		repository.mkdir()
-		(repository / 'tracked.txt').write_text('fixture\n', encoding='utf-8')
+		(repository / 'tracked.txt').write_bytes(b'fixture\n')
 		subprocess.run(['git', 'init', '-q', str(repository)], check=True)
 		subprocess.run(['git', '-C', str(repository), 'config', 'user.email', 'fixture@example.invalid'], check=True)
 		subprocess.run(['git', '-C', str(repository), 'config', 'user.name', 'Fixture'], check=True)
@@ -469,7 +532,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		tree = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 		state = ContinuousControllerStore(self.root / 'state.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'GH_TOKEN': 'secret-gh', 'GITHUB_TOKEN': 'secret-github', 'AWF_JIRA_TOKEN': 'secret-jira', 'ATLASSIAN_API_TOKEN': 'secret-atlassian', 'JIRA_API_KEY': 'secret-jira-key', 'EXAMPLE_CLIENT_SECRET': 'secret-generic'}, clear=False):
-			result = production_controller_cycle(state, now=NOW, host_capacity=1, inventory_binding=inventory_binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=cfg, **{name: adapters[name] for name in ('observe_inventory', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
+			result = production_controller_cycle(state, now=NOW, host_capacity=1, inventory_binding=inventory_binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=cfg, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
 		self.assertEqual(result['status_delivery']['status'], 'DELIVERED')
 		self.assertEqual(len(result['dispatch_receipts']), 1, result)
 		self.assertTrue(runner.launches)
@@ -497,7 +560,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		repository = self.root / 'repository'
 		repository.mkdir()
 		for name in ('first.txt', 'second.txt'):
-			(repository / name).write_text('fixture\n', encoding='utf-8')
+			(repository / name).write_bytes(b'fixture\n')
 		subprocess.run(['git', 'init', '-q', str(repository)], check=True)
 		subprocess.run(['git', '-C', str(repository), 'config', 'user.email', 'fixture@example.invalid'], check=True)
 		subprocess.run(['git', '-C', str(repository), 'config', 'user.name', 'Fixture'], check=True)
@@ -511,7 +574,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		head = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD'], text=True).strip()
 		tree = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 		state = ContinuousControllerStore(self.root / 'state.sqlite3', ['A', 'B'], worktree_roots=[self.root / 'worktree'])
-		result = production_controller_cycle(state, now=NOW, host_capacity=2, inventory_binding=binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=self.config, **{name: adapters[name] for name in ('observe_inventory', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
+		result = production_controller_cycle(state, now=NOW, host_capacity=2, inventory_binding=binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=self.config, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
 		self.assertEqual(len(result['dispatch_receipts']), 2, result)
 		self.assertEqual(len(runner.launches), 2)
 		self.assertEqual(len(runner.observations), 2)
@@ -574,7 +637,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		adapters = __import__('runpy').run_path(str(self.adapter))['build_adapters']({**self.config, '_runner': runner, '_clock': AdvancingClock()})
 		observation = adapters['observe_inventory'](NOW)
 		self.assertEqual(observation['observed_at'], NOW)
-		payload = {'dispatch_id': 'critic-1', 'stream': 'A', 'ticket': 'AWF-32', 'exact_tuple': 'tuple', 'dispatch_nonce': 'critic-nonce', 'prepared_at': NOW, 'begun_at': NOW, 'paths': ['a.py'], 'actor': 'critic', 'next_action': 'review', 'role': 'critic', 'lifecycle_stage': 'independent_review', 'overlap_sync_evidence': [{'gate_id': 'gate-1', 'post_sync_heads': ['3' * 40, '2' * 40], 'diff': 'diff --git a/a.py b/a.py\n+resolved\n', 'diff_sha256': hashlib.sha256(b'diff --git a/a.py b/a.py\n+resolved\n').hexdigest()}]}
+		payload = {'dispatch_schema_version': 2, 'dispatch_id': 'critic-1', 'stream': 'A', 'ticket': 'AWF-32', 'exact_tuple': 'tuple', 'dispatch_nonce': 'critic-nonce', 'prepared_at': NOW, 'begun_at': NOW, 'paths': ['a.py'], 'actor': 'critic', 'next_action': 'review', 'role': 'critic', 'lifecycle_stage': 'independent_review', 'lane_start_waivers': [], 'overlap_sync_evidence': [{'gate_id': 'gate-1', 'post_sync_heads': ['3' * 40, '2' * 40], 'diff': 'diff --git a/a.py b/a.py\n+resolved\n', 'diff_sha256': hashlib.sha256(b'diff --git a/a.py b/a.py\n+resolved\n').hexdigest()}]}
 		receipt = adapters['dispatch_ticket'](payload)
 		self.assertEqual((receipt['role'], receipt['lifecycle_stage'], receipt['session_id']), ('critic', 'independent_review', 'session-critic-1'))
 		argv = runner.launches[-1][0]

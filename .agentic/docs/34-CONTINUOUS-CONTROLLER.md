@@ -11,6 +11,52 @@ python .agentic/scripts/workflow.py controller --state ABSOLUTE_PROTECTED_DB --s
 State stays outside worktrees; pin intent and never reissue unresolved
 mutations.
 
+## Dispatch state and round boundaries
+
+Dispatch payloads and receipts use closed schema version 2. Opening protected
+state atomically creates any new schema and migrates unambiguous 1.9.4
+`PENDING`, `IN_FLIGHT`, and `UNKNOWN` rows only when protected state already
+contains their durable prior-inventory digest. A legacy non-terminal set without
+that boundary binding is explicitly refused before any schema or row change.
+An unsupported state, receipt, field, mixed ambiguous payload, or later
+initialization refusal rolls back the schema and data transaction and preserves
+the complete 1.9.4 before-image. The reference adapter refuses legacy calls and
+records before preparing or launching a runner.
+
+`PENDING`, `IN_FLIGHT`, `UNKNOWN`, and adapter `LAUNCHED` are non-terminal.
+A successor inventory cannot refill a round while any of those operations
+crosses the boundary. Refill requires one fresh authenticated host trigger
+bound to the prior and next inventory digests and the complete durable
+dispatch/stream/ticket/tuple/state set. The controller persists that seal before
+refill and atomically consumes it with creation of the successor dispatch
+intent. A restart at that boundary resumes only those persisted successor
+intents; it neither loses the refill nor recreates a seal from replay. Use
+`--replan-request REQUEST.json` containing only a positive GitHub `comment_id`.
+The reviewed adapter fetches the immutable comment with provider Date/ETag;
+the controller requires a fresh, unedited comment by a configured trusted owner
+whose body is exactly `AWF-ROUND-REPLAN 1`, a newline, and canonical JSON
+binding repository, round, prior/next inventory digests, and the complete
+non-terminal dispatch set. Caller-authored trigger or round identities are not
+accepted.
+
+Provider reads never occur inside a controller write transaction. For an
+overlap allowance, the `LANE_START` provider observation is validated first;
+then a dispatch-bound waiver record is persisted before `begun_at` and before
+the adapter call. Its digest binds the dispatch, ticket, stream, exact tuple,
+allowance, shared path, observation, and persistence time. Restart observation
+must carry the same digest and never relaunch the session.
+
+Authenticated parked and worktree-diff sources are independent reservations,
+not overlap allowances. Every production cycle asks the reviewed adapter for
+the complete provider-bound paused inventory and the complete Git diff at the
+pinned repository head/tree, and repeats that complete observation immediately
+after every inventory replacement before scheduling. A failed refresh
+invalidates the earlier reservation set and blocks scheduling. The controller
+rejects foreign, stale, partial,
+non-NFC, case/separator/traversal, symlink, and non-canonical Git paths. A valid
+reservation blocks every overlapping start even when an exact owner allowance
+exists; unrelated paths continue when capacity permits.
+
 ## Exact overlap allowances
 
 Only a trusted owner's canonical `AWF-OVERLAP-ALLOWANCE 1` permits an exact
