@@ -12,6 +12,7 @@ import source_only
 from agentic import ValidationError
 from agentic.canonical import MAX_DOCUMENT_BYTES, fingerprint, sha256, timestamp
 import agentic.installer as installer
+from agentic import planning
 from agentic.continuous_controller import ContinuousControllerStore, overlap_allowance_command, production_controller_cycle, validate_overlap_allowance_observation
 from test_publication_readiness import publication_config, publication_observation
 NOW = '2026-10-15T08:00:00Z'
@@ -140,6 +141,58 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 		dispatch = dispatch or (lambda payload: calls.append(dict(payload)) or receipt(payload))
 		result = production_controller_cycle(self.store, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **REPOSITORY, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
 		return (calls, result)
+
+	def test_plan_record_round_trips_immutably_through_awf91_state_store(self):
+		def sealed(plan_id='plan-1', lane_count=1):
+			record = {'schema_version': 1, 'plan_id': plan_id, 'created_at': NOW,
+					  'trigger': 'project_start', 'lane_count': lane_count}
+			record['plan_sha256'] = fingerprint('planning_audit_record', record)
+			self.assertTrue(planning.verify_plan_record(record))
+			return record
+
+		record = sealed()
+		self.store.append_plan_record(record)
+		persisted = self.store.planning_history()
+		self.assertEqual([record], persisted)
+		persisted[0]['lane_count'] = 99
+		self.assertEqual([record], self.store.planning_history(),
+						 'callers must not be able to mutate durable planning history')
+
+		reopened = ContinuousControllerStore(self.store.path, ['A', 'B'])
+		self.assertEqual([record], reopened.planning_history())
+		with self.assertRaisesRegex(ValidationError, 'immutable|already exists|replay'):
+			reopened.append_plan_record(record)
+		replacement = sealed(lane_count=2)
+		with self.assertRaisesRegex(ValidationError, 'immutable|already exists|identity'):
+			reopened.append_plan_record(replacement)
+
+		legacy = {'schema_version': 1, 'planning_history': [sealed('legacy-plan')],
+				  'current_plan': sealed('legacy-plan')}
+		migration_path = self.store.path.with_name('planning-migration.sqlite3')
+		migrated = ContinuousControllerStore(migration_path, ['A', 'B'])
+		migrated.migrate_planning_history(legacy)
+		self.assertEqual(legacy['planning_history'], migrated.planning_history())
+		self.assertEqual(legacy['planning_history'], migrated.migrate_planning_history(legacy),
+						 'an exact migration retry must be idempotent')
+		with self.assertRaisesRegex(ValidationError, 'version|schema'):
+			migrated.migrate_planning_history({**legacy, 'schema_version': 2})
+		mismatched = deepcopy(legacy)
+		mismatched['planning_history'][0] = sealed('legacy-plan', lane_count=2)
+		mismatched['current_plan'] = deepcopy(mismatched['planning_history'][0])
+		with self.assertRaisesRegex(ValidationError, 'mismatch|immutable|migration'):
+			migrated.migrate_planning_history(mismatched)
+
+		self.store.schedule([ticket('AWF-PLAN', 1)], NOW, 1,
+							inventory_sha256='f' * 64)
+		with self.store.transaction() as db:
+			tampered = deepcopy(record)
+			tampered['lane_count'] = 7
+			db.execute('UPDATE controller_planning_history SET record_json=? WHERE plan_id=?',
+					   (json.dumps(tampered, sort_keys=True, separators=(',', ':')), record['plan_id']))
+		with self.assertRaisesRegex(ValidationError, 'digest|tamper|stale'):
+			self.store.planning_history()
+		with self.assertRaisesRegex(ValidationError, 'digest|tamper|stale'):
+			self.store.prepare_dispatches(NOW)
 
 	def test_production_cycle_dispatches_mixed_writer_and_critic_per_ticket(self):
 		calls, result = self.cycle([ticket('AWF-101', 1, role='writer', stage='implementation'), ticket('AWF-102', 2, role='critic', stage='independent_review')])
