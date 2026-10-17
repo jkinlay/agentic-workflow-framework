@@ -412,6 +412,7 @@
     ".agentic/tests/test_safeio_process.py": "7c6e9e0cce111aa6e1d8a774ed5100a771cbd43d76697c4c09287bc1aa15585f",
     ".agentic/tests/test_safeio_unlink.py": "86d91b38a4e930fc1af316caf359b04cf8748dc53958465a141aeab200c1457f",
     ".agentic/tests/test_source_only.py": "ff834d09650472ae5522aeaf6cad4dad7caf205e80ee73e03e7bcb3ac17208e3",
+    ".agentic/tests/test_status_report.py": "92c0e9b246b32321a4406380cdffae7a10297e52990ef0ea53e57218464c83fa",
     ".agentic/tests/test_store_regressions.py": "340df570120f78d77ef33c3e9c8f315ec72b0a3e49bd7e053a5a5ef24679111f",
     ".agentic/tests/test_streams.py": "12f28b018c24b63d362e441bae318aff47a6bb576967758c654b16d0034eedb1",
     ".agentic/tests/test_upgrade_194.py": "9a830eb7bb65ef835c9de24c205d656db78d3edcf902c4463c31c73a2216ef53",
