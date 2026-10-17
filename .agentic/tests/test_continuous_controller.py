@@ -284,6 +284,33 @@ class ContinuousControllerTests(unittest.TestCase):
 				with store.connection() as db:
 					self.assertEqual(db.execute("SELECT COUNT(*) FROM controller_replan_seal WHERE status='SEALED'").fetchone()[0],0)
 
+	def test_retained_old_ticket_and_new_successor_require_replan_in_all_nonterminal_states(self):
+		for status in ('PENDING', 'IN_FLIGHT', 'UNKNOWN', 'LAUNCHED'):
+			with self.subTest(status=status), tempfile.TemporaryDirectory(prefix='awf91-replan-retained-') as scratch:
+				path = Path(scratch) / 'controller.sqlite3'
+				store = ContinuousControllerStore(path, ['A', 'B'])
+				old_ticket = ticket('AWF-OLD', 1)
+				prior_sha = fingerprint('controller-inventory', {'binding': INVENTORY_BINDING, 'tickets': [old_ticket]})
+				store.schedule([old_ticket], NOW, 2, inventory_sha256=prior_sha)
+				operation = store.prepare_dispatches(NOW)[0]
+				if status != 'PENDING':
+					payload = store.begin_dispatch(operation['dispatch_id'], NOW)
+					if status == 'UNKNOWN':
+						store.mark_dispatch_unknown(operation['dispatch_id'], NOW)
+					elif status == 'LAUNCHED':
+						launched = dispatch_receipt(payload, NOW) | {'dispatch_state': 'LAUNCHED', 'terminal': False}
+						store.finish_dispatch(operation['dispatch_id'], launched, NOW)
+				retained_inventory = [old_ticket, ticket('AWF-NEW', 2)]
+				next_sha = fingerprint('controller-inventory', {'binding': INVENTORY_BINDING, 'tickets': retained_inventory})
+				store.schedule(retained_inventory, NOW, 2, inventory_sha256=next_sha)
+				before_seal = store.prepare_dispatches(NOW)
+				self.assertFalse(any(item['payload']['ticket'] == 'AWF-NEW' for item in before_seal), before_seal)
+				valid = replan_trigger('retained-' + status, prior_sha, next_sha, [operation['dispatch_id']], NOW)
+				store.seal_round_boundary_replan(valid, NOW)
+				store.schedule(retained_inventory, NOW, 2, inventory_sha256=next_sha)
+				after_seal = store.prepare_dispatches(NOW)
+				self.assertTrue(any(item['payload']['ticket'] == 'AWF-NEW' for item in after_seal), after_seal)
+
 	def test_terminal_quiescence_updates_versioned_receipt_before_reopen(self):
 		with tempfile.TemporaryDirectory(prefix='awf91-terminal-reopen-') as scratch:
 			path = Path(scratch) / 'controller.sqlite3'
