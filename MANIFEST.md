@@ -123,7 +123,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/policy.py` | `0d3516af5ff5045e50f9d260758243289d0de21d3f1868355dde36d77e38d5f5` |
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
-| `.agentic/lib/agentic/provenance.py` | `4d659c8abdb77d4d5185bd32c286d446f6f2ef8d8e543ff63a8d872422ea9ed0` |
+| `.agentic/lib/agentic/provenance.py` | `db105551b0c18a96e801dc67a8ab0cf196d0401ffc28ac1138f207529e673df4` |
 | `.agentic/lib/agentic/provider_identity.py` | `50a39b751fa3f6783decc50be28f6630938f897c9df6a8333d97edb745764b5e` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
 | `.agentic/lib/agentic/providers/github.py` | `0228ed2d7c57617052ef97209c6ae357b893d3151dd97df267ab2a86d4e2f12d` |
@@ -385,7 +385,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_planning_graph.py` | `4cf3eb0767f1a29d73a4b6567de439f42d1618e2bed3f0318757e8af13719173` |
 | `.agentic/tests/test_posting_collector_awf60.py` | `37eed05d8dd49d66e7b44e685fb7f1e26e90891eaef249c812ce6fecaa234eae` |
 | `.agentic/tests/test_private_deny_binary.py` | `b6da0ffbcce95cedece5c337106bb6f642f127180ae21ba14ec606da37ac6de1` |
-| `.agentic/tests/test_provenance.py` | `4a65305aec0cfff1ea98be5568a1b3a851228696bd50ed14cf5b449d7e161868` |
+| `.agentic/tests/test_provenance.py` | `3de078d00f66e221c285858aaac4a47cda3b3d19f4cfc5f4c7b10286e1aa00e6` |
 | `.agentic/tests/test_provenance_awf94.py` | `88286473aa73ad8681a8a4cfd552d519b36cd14eb2cf4fab242549c53341059c` |
 | `.agentic/tests/test_provenance_range_bytes.py` | `5ddb7e1b15714b5092f6ff513bfa04a43ed04073bdc6465e7f2dd8744367c65f` |
 | `.agentic/tests/test_provider_identity.py` | `92b46c77a9a7bfd04cb774e216f63966b25f9986ce0a314bb3a285e086cd8bf2` |

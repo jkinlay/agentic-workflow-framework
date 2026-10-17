@@ -823,17 +823,9 @@ def _verify_override_chain(record, predecessors, *, reviewed_owner_config, pr):
     return result
 
 
-def verify_provider_owner_override(record, observation, *,
-                                   reviewed_owner_config=None,
-                                   repository_id=None, config_sha256=None):
-    """Bind an override to reviewed numeric owners and one fresh comment."""
-    _require(isinstance(observation, dict) and observation.get("version") == 1,
-             "Provider provenance observation is missing")
-    _require(type(observation.get('repository_id')) is int
-             and observation['repository_id'] > 0
-             and (repository_id is None
-                  or observation['repository_id'] == repository_id),
-             "Provider override repository identity mismatch")
+def _provider_owner_config(observation, reviewed_owner_config=None, *,
+                           config_sha256=None):
+    """Bind the 1.9.4 reviewed-host snapshot or explicit reviewed input."""
     observed_config_sha256 = observation.get('config_sha256')
     _require(isinstance(observed_config_sha256, str)
              and _DIGEST.fullmatch(observed_config_sha256),
@@ -858,15 +850,37 @@ def verify_provider_owner_override(record, observation, *,
         reviewed_owner_config,
         expected_config_sha256=observed_config_sha256,
     )
+    return reviewed_owner_config
+
+
+def verify_provider_owner_override(record, observation, *,
+                                   reviewed_owner_config=None,
+                                   repository_id=None, config_sha256=None):
+    """Bind an override to reviewed numeric owners and one fresh comment."""
+    _require(isinstance(observation, dict) and observation.get("version") == 1,
+             "Provider provenance observation is missing")
+    _require(type(observation.get('repository_id')) is int
+             and observation['repository_id'] > 0
+             and (repository_id is None
+                  or observation['repository_id'] == repository_id),
+             "Provider override repository identity mismatch")
+    reviewed_owner_config = _provider_owner_config(
+        observation, reviewed_owner_config, config_sha256=config_sha256,
+    )
     _require(type(record.get("who")) is int,
              "Provider overrides require a numeric GitHub actor id")
     verify_owner_override(record, reviewed_owner_config=reviewed_owner_config,
                           pr=observation.get("pr"))
     rendered = render_owner_override(record)
+    bodies = [rendered]
+    if record["schema_version"] == 1:
+        # 1.9.4 v1 comments predate the explicit schema line.  Accept only
+        # these two exact renderings; never normalize observed comment bytes.
+        bodies.append(rendered.replace("- Schema version: 1\n", "", 1))
+    rendered_bodies = [(body, sha256(body.encode()).hexdigest()) for body in bodies]
     matches = [comment for comment in observation.get("comments", [])
                if comment.get("actor_id") == record["who"]
-               and comment.get("body") == rendered
-               and comment.get("body_sha256") == sha256(rendered.encode()).hexdigest()]
+               and (comment.get("body"), comment.get("body_sha256")) in rendered_bodies]
     _require(len(matches) == 1,
              "Override requires exactly one freshly observed trusted owner comment")
     return {"version": 1, "record": record,
@@ -1707,6 +1721,10 @@ def check_commit_range(root, base, head, *, origin_main="origin/main",
     if override is not None:
         _require(type(pr_number) is int and pr_number > 0,
                  "Provenance override checking requires the bound PR number")
+        if reviewed_policy is not None and reviewed_owner_config is None:
+            # Preserve the 1.9.4 host API through the same reviewed-snapshot
+            # adapter used by direct provider verification, before chain checks.
+            reviewed_owner_config = _provider_owner_config(provider_observation)
         override_record = _verify_override_chain(
             override, override_predecessors,
             reviewed_owner_config=reviewed_owner_config, pr=pr_number,
