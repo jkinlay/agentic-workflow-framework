@@ -142,6 +142,20 @@ class PublicationScanTests(unittest.TestCase):
 
         self.assertIs(runner.call_args.kwargs["policy"], GIT_RUNNER_POLICY)
 
+    def test_git_object_evidence_accepts_exact_32_mib_payload_boundary(self):
+        payload = b"x" * publication.MAX_REWRITE_PROOF_OBJECT_BYTES
+        oid = git(self.repo.path, "hash-object", "-w", "--stdin",
+                  input_bytes=payload)
+        object_format = git(self.repo.path, "rev-parse", "--show-object-format")
+
+        evidence = publication._git_object_evidence(
+            self.repo.path, oid, object_format)
+
+        self.assertEqual(publication.MAX_REWRITE_PROOF_OBJECT_BYTES,
+                         evidence["size"])
+        self.assertEqual(hashlib.sha256(payload).hexdigest(),
+                         evidence["content_sha256"])
+
     def test_large_blob_hash_streams_inside_owned_bounded_process_tree(self):
         expected_digest = "a" * 64
         size = subprocess.CompletedProcess(

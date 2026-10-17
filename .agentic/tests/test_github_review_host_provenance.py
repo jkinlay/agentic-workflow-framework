@@ -38,6 +38,27 @@ class ProviderProvenanceTests(unittest.TestCase):
                         'generated_paths': [], 'generators': {}}}
         return driver
 
+    def configured_command_driver(self, directory, name):
+        driver = self.driver()
+        config = Path(directory) / 'host-config.json'
+        config.write_text('{}\n', encoding='utf-8')
+        executable = Path(sys.executable).resolve()
+        driver.root = ROOT
+        driver.state = Path(directory) / 'state'
+        driver.state.mkdir()
+        driver.c.update({
+            '_config_path': str(config),
+            'config_hash': __import__('hashlib').sha256(
+                config.read_bytes()).hexdigest(),
+            'executables': {name: {
+                'path': str(executable),
+                'sha256': __import__('hashlib').sha256(
+                    executable.read_bytes()).hexdigest(),
+            }},
+            'command_timeout_seconds': 10,
+        })
+        return driver
+
     def test_provenance_collector_binds_repository_pr_base_head_and_refs(self):
         driver = self.driver()
         pr = {'number': 7, 'updated_at': '2026-10-13T20:00:00Z', 'body': 'body',
@@ -110,6 +131,30 @@ class ProviderProvenanceTests(unittest.TestCase):
                       child_process.HOST_PROVIDER_RUNNER_POLICY)
         self.assertNotIn('stdout_limit', runner.call_args.kwargs)
         self.assertNotIn('stderr_limit', runner.call_args.kwargs)
+
+    def test_host_provider_stdout_overflow_has_frozen_reason_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = self.configured_command_driver(directory, 'gh')
+            program = 'import sys; sys.stdout.buffer.write(b"x" * (9 * 1024 * 1024))'
+
+            with self.assertRaisesRegex(ValidationError,
+                                        r'^HOST_STDOUT_LIMIT:'):
+                driver.run('gh', ['-c', program])
+
+    def test_legacy_recorded_driver_accounts_shared_provider_budget(self):
+        class RecordedDriver(HostDriver):
+            def run(self, name, args, cwd=None, stdin=None, timeout=None,
+                    log=None, binary=False):
+                return '{}'
+
+        driver = RecordedDriver.__new__(RecordedDriver)
+        driver.c = {'repository': 'fixture/project'}
+        budget = child_process.HOST_PROVIDER_RUNNER_POLICY.make_budget(
+            'legacy-recorded-driver')
+
+        self.assertEqual({}, driver.api('', operation_budget=budget))
+        self.assertEqual(1, budget.operations)
+        self.assertEqual(2, budget.consumed_bytes)
 
     def test_provider_labels_comments_pagination_caps_and_ambiguity(self):
         driver = self.driver()
@@ -294,6 +339,24 @@ class ProviderProvenanceTests(unittest.TestCase):
             finally:
                 sentinel.terminate()
                 sentinel.wait(timeout=10)
+
+    def test_host_driver_stops_oversized_codex_result_during_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = self.configured_command_driver(directory, 'codex')
+            driver._qualification_probe = True
+            result = Path(directory) / 'result.json'
+            program = ('from pathlib import Path; import sys,time; '
+                       'Path(sys.argv[-1]).write_bytes(b"x" * (1024 * 1024 + 1)); '
+                       'time.sleep(3)')
+            started = time.monotonic()
+
+            with patch.object(github_review_host, 'enforce_pinned_awf_skill'), \
+                    self.assertRaisesRegex(ValidationError,
+                                            'RESULT_FILE_LIMIT'):
+                driver.run('codex', ['-c', program,
+                                     '--output-last-message', str(result)])
+
+            self.assertLess(time.monotonic() - started, 2)
 
 
 class CodexIdentityTests(unittest.TestCase):
