@@ -228,6 +228,37 @@ class R13MessageAndPathAcceptanceTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValidationError):
                 provenance.parse_critic_run_carrier(value)
 
+    def test_awf132_writer_emitter_rejects_dash_and_minus_separators(self):
+        separators = ("\u2212", "\u2043", "\u02d7", "\u2053", "\u2796")
+        for separator in separators:
+            for line in (
+                    f"prefix{separator}Writer: codex/{RUN_A}",
+                    f"Writer{separator}: codex/{RUN_A}"):
+                with self.subTest(separator=ascii(separator), line=line), \
+                        self.assertRaisesRegex(
+                            ValidationError, r"^EMITTER_WRITER_AMBIGUOUS:"):
+                    writer_commit_message(
+                        f"subject\n\n{line}", codex_run_id=RUN_A)
+
+    def test_awf132_critic_parser_rejects_dash_and_minus_separators(self):
+        separators = ("\u2212", "\u2043", "\u02d7", "\u2053", "\u2796")
+        for separator in separators:
+            line = f"Critic{separator}run: {RUN_A}"
+            with self.subTest(separator=ascii(separator)), self.assertRaisesRegex(
+                    ValidationError, r"^CRITIC_LINE_INVALID:"):
+                provenance.parse_critic_run_carrier(
+                    f"{line}\nCritic run: {RUN_A}")
+
+    def test_awf132_trailer_cap_counts_colon_lookalikes(self):
+        for colon in ("\ua789", "\u2236", "\ufe13", "\ufe55"):
+            with self.subTest(colon=ascii(colon)), self.assertRaisesRegex(
+                    ValidationError, r"^WRITER_TRAILER_LIMIT:"):
+                parse_writer_trailer(
+                    "subject\n\n" + "\n".join(
+                        f"Key{index}{colon} value" for index in range(257)
+                    )
+                )
+
     def test_awf49a_r12_056_002_undecodable_path_is_sanitized(self):
         with self.assertRaisesRegex(ValidationError, r"PATH_UTF8.*ordinal=2.*sha256=") as caught:
             provenance.decode_git_paths(b"ok\0bad\xff\0", failure="commit")
