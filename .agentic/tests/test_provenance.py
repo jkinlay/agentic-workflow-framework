@@ -28,6 +28,7 @@ from agentic.provenance import (
     supersede_owner_override,
     validate_critic_run_binding,
     verify_owner_override,
+    verify_provider_owner_override,
 )
 from agentic.review_first_draft import publish_codex_tested_tree
 
@@ -474,6 +475,38 @@ class OwnerOverrideSliceAAcceptanceTests(unittest.TestCase):
             )
         self.assertEqual(before, state)
         self.assertEqual(original, state["provenance_overrides"]["49"])
+
+    def test_b22_194_keywords_defer_authority_to_reviewed_provider_config(self):
+        record = record_owner_override(
+            {}, who=101, when=NOW, why="1.9.4 keyword compatibility", pr=49,
+            covered_shas=["a" * 40], trusted_owner_ids=[202],
+        )
+        with self.assertRaisesRegex(
+                ValidationError, r"^OVERRIDE_VERSION_AUTHORITY_UNBOUND:"):
+            verify_owner_override(record, trusted_owner_ids=[101], pr=49)
+        rendered = render_owner_override(record)
+        observation = {
+            "version": 1,
+            "repository_id": 12,
+            "pr": 49,
+            "trusted_owner_ids": [101],
+            "config_sha256": "f" * 64,
+            "comments": [{
+                "kind": "issue",
+                "id": 91,
+                "actor_id": 101,
+                "url": "https://example.invalid/pull/49#issuecomment-91",
+                "body": rendered,
+                "body_sha256": sha256(rendered.encode()).hexdigest(),
+            }],
+        }
+
+        verified = verify_provider_owner_override(
+            record, observation, repository_id=12, config_sha256="f" * 64,
+        )
+
+        self.assertEqual(1, verified["version"])
+        self.assertEqual(91, verified["provider_comment_id"])
 
 
 class OwnerOverrideTests(unittest.TestCase):

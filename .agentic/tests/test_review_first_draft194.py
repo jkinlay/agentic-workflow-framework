@@ -553,6 +553,54 @@ class FirstDraftTests(unittest.TestCase):
             self.assertEqual(state['agent_runs'], 1)
             store.close()
 
+    def test_in35_first_draft_forwards_frozen_receipt_on_fresh_and_retry_paths(self):
+        receipt = {'outcome': 'CHANGED',
+                   'changes': [{'path': 'src/a.py', 'action': 'added'}],
+                   'tested_tree': 'a' * 40, 'ignored_untracked': [],
+                   'summary': 'worker-owned'}
+        config = {'key': '12:0', 'repository_id': 12, 'pr': 0,
+                  'repository': 'fixture/project', 'config_hash': 'x',
+                  'initial_findings': [], 'max_agent_runs': 10,
+                  'allowed_paths': ['src/a.py']}
+
+        with tempfile.TemporaryDirectory() as name:
+            store = LoopStore(Path(name))
+            try:
+                with patch('agentic.review_first_draft.validate_worker_receipt',
+                           side_effect=lambda value, **_:
+                           {**deepcopy(value), 'summary': 'frozen-fresh'}):
+                    with self.assertRaisesRegex(RuntimeError, 'pause after receipt'):
+                        run_first_draft(
+                            store, config, worker=lambda _run_id: receipt,
+                            publisher=lambda value:
+                            (_ for _ in ()).throw(RuntimeError(
+                                'pause after receipt'
+                                if value['summary'] == 'frozen-fresh'
+                                else 'unfrozen fresh receipt')),
+                            observe_pr=lambda _publication: None,
+                        )
+
+                paused = store.get('12:0')
+                self.assertEqual('frozen-fresh',
+                                 paused['first_draft_worker_receipt']['summary'])
+                resume_first_draft(store, config, paused['inflight']['id'])
+                seen = []
+                with patch('agentic.review_first_draft.validate_worker_receipt',
+                           side_effect=lambda value, **_:
+                           {**deepcopy(value), 'summary': 'frozen-retry'}):
+                    with self.assertRaisesRegex(RuntimeError, 'pause after retry'):
+                        run_first_draft(
+                            store, config,
+                            worker=lambda _run_id: (_ for _ in ()).throw(
+                                AssertionError('worker replayed')),
+                            publisher=lambda value: seen.append(value['summary']) or
+                            (_ for _ in ()).throw(RuntimeError('pause after retry')),
+                            observe_pr=lambda _publication: None,
+                        )
+                self.assertEqual(['frozen-retry'], seen)
+            finally:
+                store.close()
+
     def test_failed_first_draft_is_paused_with_reserved_run(self):
         with tempfile.TemporaryDirectory() as name:
             store = LoopStore(Path(name))
