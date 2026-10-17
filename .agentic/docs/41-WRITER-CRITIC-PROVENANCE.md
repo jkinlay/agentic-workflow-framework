@@ -1,7 +1,7 @@
 # Writer and critic provenance
 
-Provenance identifies commits and reviews, not scope or merge. Policy is
-digest-bound; evidence uses immutable bytes or fresh provider reads.
+Provenance identifies commits/reviews, not scope/merge. Digest-bound policy uses
+immutable bytes or fresh provider reads.
 
 ## Commit contract
 
@@ -65,11 +65,11 @@ Path, raw-diff, and tree-entry codes:
 
 ## Mechanical and run evidence
 
-Reviewed policy maps script IDs to paths and reproducer digests; runtime
-registration must match. Unknown IDs, caller callbacks, expanded paths, or
-missing registration refuse. Outputs cap at 32 MiB each/512 MiB total; key,
-mode, type, and bytes must match. Mechanical merges also reproduce against the
-fresh default second parent.
+Reviewed policy maps script IDs to paths/reproducer digests; runtime
+registration must match. Unknown IDs, caller callbacks, expanded paths, and
+missing registration refuse. Output caps are 32 MiB each/512 MiB total; key,
+mode, type, and bytes match. Mechanical merges reproduce against the fresh
+default second parent.
 
 Named path/registry/callback/bytes/cap/entry/merge failures:
 `GENERATED_PATH_INVALID`,`GENERATED_PATH_DUPLICATE`,`GENERATED_PATH_COUNT`,`GENERATED_PATH_SCOPE`,`GENERATOR_PATH_UNAUTHORIZED`,`GENERATOR_UNREGISTERED`,`GENERATOR_REGISTRY_INVALID`,`GENERATOR_ERROR`,`GENERATOR_OUTPUT_INVALID`,`GENERATOR_BYTES_MISMATCH`,`GENERATOR_BLOB_SIZE`,`GENERATOR_TOTAL_SIZE`,`GENERATED_ENTRY_MISSING`,`GENERATED_ENTRY_INVALID`,`MERGE_TREE_SIZE`,`MERGE_TREE_FRAMING`,`MERGE_TREE_OID`,`MERGE_TREE_PATH`,`MERGE_TREE_COMMAND`,`MERGE_TREE_CONFLICT_SCOPE`,`MERGE_TREE_RESOLUTION_SCOPE`.
@@ -110,23 +110,25 @@ overrides remain readable. V2 retains predecessor bytes/digest, PR, coverage,
 and time. Caps are 32 records, 256 sorted same-format refusing OIDs, 255-byte
 owner, and 4 KiB reason. Rendering reparses; unbound overrides refuse.
 
+Fallback authority is label-independent: it requires a sealed override, and
+provider labels remain compatibility inventory only.
+
 ## Publication and compatibility
 
-First draft validates its 4 KiB title with the shared grammar. Before
-reservation it validates trusted contract Markdown and untrusted model, effort,
-and branch scalars; scalars are escaped. The tree is validated when rendering
-the 1 MiB LF body. Receipt/tree/paths precede Git mutation. Local proof precedes
-push/create and immediate readback; uncertain publication is recovered, not
-replayed, and pre-PR overrides do not exist. Amendment proves before push.
+First draft validates its shared-grammar 4 KiB title. Before reservation it
+validates trusted contract Markdown and untrusted model/effort/branch scalars,
+then escapes the scalars. Rendering validates the tree and 1 MiB LF body.
+Receipt/tree/paths precede Git mutation; local proof precedes push/create and
+immediate readback. Uncertain publication is recovered, not replayed; pre-PR
+overrides do not exist. Amendments prove before push.
 
-Rewrite pinned-reads a 1 MiB canonical message before `commit-tree`. Count is
-integer one, not Boolean; branch/base use safe refs before repository reads.
-Exact-ref remote readback caps at 32 MiB; invalid readback is
-`REMOTE_READBACK_INVALID`. Message file or grammar failures are
-`REWRITE_MESSAGE_INVALID`. Reachability, exact-tree, quarantine, CAS, rollback,
-and recovery protections remain.
+Before `commit-tree`, rewrite pinned-reads a ≤1 MiB canonical message and
+requires integer-one count (not Boolean). Safe branch/base refs precede
+repository reads. Exact-ref remote readback caps at 32 MiB. Invalid readback
+yields `REMOTE_READBACK_INVALID`; message-file/grammar failure yields
+`REWRITE_MESSAGE_INVALID`. Reachability/exact-tree/quarantine/CAS/rollback/
+recovery protections remain.
 
-V2 retains 1.9.4 `changed_files` and adds ordered `changed_entries`. Refusals
-start with stable ASCII codes. Fake-provider/Git/subprocess tests are offline;
-live network qualification is host evidence. CI covers supported Python on
-Windows/Linux.
+V2 retains 1.9.4 `changed_files`, adds ordered `changed_entries`, and uses stable
+ASCII refusal codes. Fake-provider/Git/subprocess tests are offline; live-network
+qualification is host evidence. CI covers supported Windows/Linux Python.
