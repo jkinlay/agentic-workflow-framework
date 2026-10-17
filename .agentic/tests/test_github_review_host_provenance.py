@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / '.agentic/lib'))
 
 from agentic import ValidationError
+from agentic import child_process
+from agentic.providers import github_review_host
 from agentic.providers.github_review_host import (HostDriver,
     manifest_reproducer_sha256)
 from agentic.provenance import (check_commit_range, record_owner_override,
@@ -42,7 +44,7 @@ class ProviderProvenanceTests(unittest.TestCase):
               'labels': [{'name': 'fallback: bot-written'}],
               'head': {'sha': 'a' * 40, 'ref': 'codex/test', 'repo': {'id': 12}},
               'base': {'sha': 'b' * 40, 'ref': 'main', 'repo': {'id': 12}}}
-        def api(suffix):
+        def api(suffix, *, operation_budget=None):
             if suffix == '':
                 return {'id': 12}
             if suffix == 'pulls/7':
@@ -57,13 +59,65 @@ class ProviderProvenanceTests(unittest.TestCase):
                           observed['head_ref'], observed['base_ref']))
         self.assertEqual([101], observed['trusted_owner_ids'])
 
+    def test_provenance_collection_shares_one_provider_response_budget(self):
+        driver = self.driver()
+        budgets = []
+        pr = {'number': 7, 'updated_at': 'same', 'body': '', 'labels': [],
+              'head': {'sha': 'a' * 40, 'ref': 'codex/test', 'repo': {'id': 12}},
+              'base': {'sha': 'b' * 40, 'ref': 'main', 'repo': {'id': 12}}}
+
+        def api(suffix, operation_budget=None):
+            budgets.append(operation_budget)
+            if suffix == '':
+                return {'id': 12}
+            if suffix == 'pulls/7':
+                return dict(pr)
+            return []
+
+        driver.api = api
+        driver.collect_provenance_observation()
+
+        self.assertGreaterEqual(len(budgets), 6)
+        self.assertTrue(all(item is budgets[0] for item in budgets))
+        self.assertIsInstance(budgets[0], child_process.OperationBudget)
+        self.assertEqual(child_process.HOST_PROVIDER_RUNNER_POLICY.operation_budget,
+                         budgets[0].byte_limit)
+
+    def test_host_provider_command_selects_closed_channel_policy(self):
+        driver = self.driver()
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'host-config.json'
+            config.write_text('{}\n', encoding='utf-8')
+            executable = Path(sys.executable).resolve()
+            driver.c.update({
+                '_config_path': str(config),
+                'config_hash': __import__('hashlib').sha256(
+                    config.read_bytes()).hexdigest(),
+                'executables': {'gh': {
+                    'path': str(executable),
+                    'sha256': __import__('hashlib').sha256(
+                        executable.read_bytes()).hexdigest(),
+                }},
+                'command_timeout_seconds': 120,
+            })
+            completed = subprocess.CompletedProcess(
+                [str(executable)], 0, b'{}', b'')
+            with patch.object(github_review_host, 'run_bounded',
+                              return_value=completed) as runner:
+                self.assertEqual('{}', driver.run('gh', ['-c', 'pass']))
+
+        self.assertIs(runner.call_args.kwargs['policy'],
+                      child_process.HOST_PROVIDER_RUNNER_POLICY)
+        self.assertNotIn('stdout_limit', runner.call_args.kwargs)
+        self.assertNotIn('stderr_limit', runner.call_args.kwargs)
+
     def test_provider_labels_comments_pagination_caps_and_ambiguity(self):
         driver = self.driver()
         rows = [{'id': index + 1, 'body': 'comment',
                  'user': {'id': 101},
                  'html_url': f'https://github.com/fixture/project/issues/7#{index + 1}'}
                 for index in range(100)]
-        def api(suffix):
+        def api(suffix, *, operation_budget=None):
             if suffix == '':
                 return {'id': 12}
             if suffix == 'pulls/7':
