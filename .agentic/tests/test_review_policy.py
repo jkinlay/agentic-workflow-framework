@@ -319,6 +319,29 @@ class Fixture(unittest.TestCase):
             copy.deepcopy(self.config0), self
         )
 
+    def test_shipped_example_config_and_evidence_bundle_share_policy_binding(self):
+        """The generated bundle must directly bind the generated reviewed config."""
+        from agentic.policy import policy_hash
+
+        expected = policy_hash(self.config0, definition())
+        self.assertEqual(expected, self.bundle0["contract"]["policy_hash"])
+        for name in ("dispatch", "worker", "critic", "ci", "pr"):
+            with self.subTest(record=name):
+                self.assertEqual(expected, self.bundle0[name]["binding"]["policy_hash"])
+        for collection in ("runs", "review_verdicts"):
+            for index, record in enumerate(self.bundle0[collection]):
+                with self.subTest(collection=collection, index=index):
+                    self.assertEqual(expected, record["binding"]["policy_hash"])
+
+    def test_validate_config_rejects_automation_actor_trusted_as_owner(self):
+        """AWF148-R3-049-001: policy admission must enforce bot/owner separation."""
+        from agentic.policy import validate_config
+
+        self.config["github"]["expected_actor_id"] = 1001
+        with self.assertRaisesRegex(
+                ValidationError, "automation actor must not be a trusted owner"):
+            validate_config(self.config, definition(), self.contracts)
+
     def gate(self):
         bind_review_admission(self.bundle)
         registry = bind_production_posting_fixture(self.config, self.bundle)
@@ -398,6 +421,11 @@ class Fixture(unittest.TestCase):
             verdict["binding"] = copy.deepcopy(binding)
             verdict["tier"] = classification["tier"]
         self.sync_critic_artifact()
+        bind_review_admission(self.bundle)
+        terminal = max(self.bundle["review_verdicts"], key=lambda item: item["round"])
+        bind_review_round_receipt(
+            self.bundle, terminal, self.bundle["critic"],
+            self.bundle["review_submission"]["completion_snapshot"])
         return binding
 
     def sync_critic_artifact(self):

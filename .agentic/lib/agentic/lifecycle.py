@@ -353,15 +353,66 @@ def review_round_transition(tier, round_number, *, verdict="PENDING", open_findi
             raise ValidationError("Lifecycle does not trust caller-supplied cap verification")
         if owner_cap_context is None:
             raise ValidationError("Lifecycle requires an authenticated owner cap-disposition context")
+        try:
+            cap_config = owner_cap_context["config"]
+            cap_candidate = owner_cap_context["candidate"]
+            context_binding = owner_cap_context["binding"]
+            assignment_record = owner_cap_context["assignment_record"]
+            if (cap_candidate["head_sha"] != owner_cap_context["head_sha"]
+                    or cap_candidate["repository_id"]
+                    != cap_config["github"]["repository_id"]):
+                raise ValidationError(
+                    "Lifecycle cap-disposition candidate differs from trusted current context"
+                )
+        except (KeyError, TypeError) as exc:
+            raise ValidationError(
+                "Lifecycle requires trusted current configuration, candidate, "
+                "binding, and assignment context"
+            ) from exc
+        from .canonical import candidate_id
+        from .policy import policy_hash
+        try:
+            trusted_binding = copy.deepcopy(context_binding)
+            trusted_binding.update({
+                "project_id": cap_config["project"]["id"],
+                "repository_id": cap_config["github"]["repository_id"],
+                "policy_hash": policy_hash(cap_config, definition()),
+                "candidate_id": candidate_id(cap_candidate),
+            })
+        except (AttributeError, KeyError, TypeError) as exc:
+            raise ValidationError(
+                "Lifecycle trusted current cap-disposition context is incomplete"
+            ) from exc
+        if context_binding != trusted_binding:
+            raise ValidationError(
+                "Lifecycle cap-disposition policy or candidate binding differs "
+                "from trusted current context"
+            )
         from .authorization import verify_owner_record
+        from .gates import verify_disposition_review_binding
         verify_owner_record(owner_cap_disposition, "review-cap-disposition",
-                            owner_cap_context["config"], owner_cap_context["contracts"],
+                            cap_config, owner_cap_context["contracts"],
                             owner_cap_context["now"],
                             head_sha=owner_cap_context["head_sha"],
-                            binding=owner_cap_context["binding"],
+                            binding=trusted_binding,
                             runs=owner_cap_context.get("runs"),
                             excluded_contexts=owner_cap_context.get("excluded_contexts", ()),
                             excluded_producers=owner_cap_context.get("excluded_producers", ()))
+        try:
+            review_verdict = owner_cap_context["review_verdict"]
+        except (KeyError, TypeError) as exc:
+            raise ValidationError(
+                "Lifecycle requires the exact AWF review-verdict for a cap disposition"
+            ) from exc
+        verify_disposition_review_binding(
+            owner_cap_disposition, "review-cap-disposition", review_verdict,
+            owner_cap_context["contracts"], owner_cap_context["head_sha"],
+            expected_binding=trusted_binding,
+            config=cap_config,
+            assignment_record=assignment_record,
+            expected_policy_hash=trusted_binding["policy_hash"],
+            expected_ticket_key=assignment_record["ticket_key"],
+            candidate=cap_candidate)
     if overcap_approvals or trusted_owner_ids or round_started_at is not None:
         raise ValidationError(
             "Lifecycle does not trust caller-supplied over-cap approval fields; "

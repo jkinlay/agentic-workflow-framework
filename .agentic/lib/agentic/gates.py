@@ -190,14 +190,16 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
     """Validate owner dispositions before any of them can change a gate."""
     from .authorization import verify_owner_record
     head = bundle["candidate"]["head_sha"]
-    dispositions, comments = [], set()
+    dispositions, comments, request_ids, review_records = [], set(), set(), []
     records = [("finding-disposition", r) for r in bundle.get("finding_dispositions", [])]
     cap = bundle.get("cap_disposition")
     if cap is not None:
         records.append(("review-cap-disposition", cap))
     for schema, record in records:
         verify_owner_record(record, schema, config, contracts, now, head_sha=head, binding=binding,
-                            runs=runs, excluded_contexts=excluded_contexts, excluded_producers=excluded_producers)
+                            runs=runs, excluded_contexts=excluded_contexts,
+                            excluded_producers=excluded_producers,
+                            allow_historical_finding=True)
         if schema == "review-cap-disposition" and record["record_id"] != cap_disposition_record_id(record):
             raise ValidationError(
                 "Review cap disposition record ID does not authenticate its critic artifact and verdict binding")
@@ -205,6 +207,13 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
         if comment in comments:
             raise ValidationError(f"{schema}: owner comment {comment} already signs another record")
         comments.add(comment)
+        request_id = record["authorization_request_id"]
+        if request_id in request_ids:
+            raise ValidationError(
+                f"{schema}: authorization request {request_id} already signs another record"
+            )
+        request_ids.add(request_id)
+        review_records.append((schema, record))
         if schema == "finding-disposition":
             dispositions.append(record)
     if cap is not None:
@@ -218,6 +227,49 @@ def verified_owner_records(config, contracts, bundle, binding, runs, excluded_co
             raise ValidationError(f"Cap disposition at cycles {cap['cycles']} precedes the cap ({limit}); present REVIEW_CAP_REACHED first")
         if cap["cap_extensions"] > config["execution"].get("max_cap_extensions", 2):
             raise ValidationError("Cap disposition records more extensions than $.execution.max_cap_extensions allows")
+    verdicts = bundle.get("review_verdicts", [])
+    for schema, record in review_records:
+        if schema == "finding-disposition" and record.get("decision") in {
+                "ACCEPT_RISK", "NOT_A_DEFECT"}:
+            finding = next((item for item in bundle["critic"]["findings"]
+                            if item["id"] == record.get("finding_id")), None)
+            if finding is not None and is_boundary(finding):
+                raise ValidationError(
+                    f"Finding {finding['id']} is a mandatory boundary and cannot be dispositioned"
+                )
+        if schema == "finding-disposition" and record.get("head_sha") != head:
+            # Historical finding dispositions are verified above, then voided by
+            # HEAD_CHANGED semantics; they are not consumed for this candidate.
+            continue
+        if schema == "review-cap-disposition":
+            matching_verdicts = [
+                verdict for verdict in verdicts
+                if verdict.get("record_id") == record.get("review_verdict_record_id")
+            ]
+        else:
+            matching_verdicts = [
+                verdict for verdict in verdicts
+                if verdict.get("binding") == record.get("binding")
+                and verdict.get("head_sha") == record.get("head_sha")
+            ]
+            if matching_verdicts:
+                terminal_round = max(verdict.get("round", 0) for verdict in matching_verdicts)
+                matching_verdicts = [
+                    verdict for verdict in matching_verdicts
+                    if verdict.get("round") == terminal_round
+                ]
+        if len(matching_verdicts) != 1:
+            raise ValidationError(
+                f"{schema}: disposition must select exactly one retained AWF review-verdict"
+            )
+        verify_disposition_review_binding(
+            record, schema, matching_verdicts[0], contracts, record.get("head_sha", head),
+            expected_binding=binding, config=config,
+            assignment_record=assignment_record,
+            expected_policy_hash=binding["policy_hash"],
+            expected_ticket_key=bundle["contract"]["ticket"],
+            candidate=bundle["candidate"],
+        )
     return dispositions, cap
 
 
@@ -259,6 +311,111 @@ def review_verdict_json(verdict):
     """Canonical retained verdict bytes; provider observation is separate."""
     return canonical({key: value for key, value in verdict.items()
                       if key != "posting_observation"}).decode("utf-8")
+
+
+def verify_disposition_review_binding(
+        record, schema, verdict, contracts, head_sha, *, expected_binding=None,
+        config=None, assignment_record=None, expected_policy_hash=None,
+        expected_ticket_key=None, candidate=None):
+    """Bind a critic-driven owner disposition to one native review verdict."""
+    if schema not in {"finding-disposition", "review-cap-disposition"}:
+        raise ValidationError("This owner disposition type is not driven by a critic verdict")
+    contracts.validate("review-verdict", verdict)
+    if (not isinstance(expected_binding, dict)
+            or not isinstance(config, dict)
+            or not isinstance(assignment_record, dict)
+            or not isinstance(expected_policy_hash, str)
+            or not isinstance(expected_ticket_key, str)
+            or not isinstance(candidate, dict)):
+        raise ValidationError(
+            "Disposition review verification requires trusted candidate context, "
+            "configuration, assignment, and policy"
+        )
+    binding = verdict.get("binding")
+    if record.get("binding") != binding or binding != expected_binding:
+        raise ValidationError(
+            "Disposition and review verdict must bind the same candidate context"
+        )
+    try:
+        from .canonical import candidate_id
+        trusted_identity = {
+            "project_id": config["project"]["id"],
+            "repository_id": config["github"]["repository_id"],
+            "issue_id": expected_binding["issue_id"],
+            "policy_hash": expected_policy_hash,
+            "candidate_id": candidate_id(candidate),
+        }
+        trusted_candidate_binding = {
+            "repository_id": config["github"]["repository_id"],
+            "pr_number": candidate["pr_number"],
+            "base_sha": candidate["target_base_sha"],
+            "head_sha": candidate["head_sha"],
+        }
+    except (KeyError, TypeError) as exc:
+        raise ValidationError(
+            "Disposition trusted configuration or assignment identity is incomplete"
+        ) from exc
+    if (assignment_record.get("ticket_key") != expected_ticket_key
+            or expected_binding.get("candidate_id") != trusted_identity["candidate_id"]
+            or candidate.get("repository_id") != trusted_identity["repository_id"]
+            or any(binding.get(field) != value
+                   for field, value in trusted_identity.items())):
+        raise ValidationError(
+            "Disposition review verdict project, ticket, repository, policy, or "
+            "candidate identity differs from the trusted selected context"
+        )
+    artifact = verdict.get("critic_artifact_binding")
+    candidate_binding = verdict.get("candidate_binding")
+    critic_review = verdict.get("critic_review")
+    if (any(field not in verdict
+            for field in ("owner_review", "head_sha", "run_id", "round", "verdict"))
+            or not isinstance(artifact, dict)
+            or not isinstance(candidate_binding, dict)
+            or not isinstance(critic_review, dict)
+            or any(field not in artifact
+                   for field in ("critic_run_id", "result_sha256", "head_sha", "round"))
+            or any(field not in candidate_binding
+                   for field in ("repository_id", "pr_number", "base_sha", "head_sha"))
+            or any(field not in critic_review
+                   for field in ("record_id", "run_id", "round", "head_sha",
+                                 "verdict", "findings_sha256"))):
+        raise ValidationError(
+            "Disposition review-verdict is missing candidate_binding or critic_review fields"
+        )
+    review_tuple_consistent = not (
+            verdict["owner_review"] is not False
+            or verdict["head_sha"] != head_sha
+            or artifact["critic_run_id"] != verdict["run_id"]
+            or artifact["head_sha"] != verdict["head_sha"]
+            or artifact["round"] != verdict["round"]
+            or candidate_binding != trusted_candidate_binding
+            or verdict["head_sha"] != trusted_candidate_binding["head_sha"]
+            or critic_review["run_id"] != verdict["run_id"]
+            or critic_review["head_sha"] != verdict["head_sha"]
+            or critic_review["round"] != verdict["round"])
+    if not review_tuple_consistent:
+        raise ValidationError(
+            "Disposition requires the exact AWF review-verdict for the exact candidate "
+            "head; candidate_binding and critic_review must match the top-level "
+            "verdict/artifact head, run, and round"
+        )
+    if schema == "review-cap-disposition":
+        from .authorization import cap_disposition_record_id
+        expected_sha256 = sha256(review_verdict_json(verdict).encode("utf-8"))
+        if (record.get("critic_artifact_binding") != artifact
+                or record.get("review_verdict_record_id") != verdict["record_id"]
+                or record.get("review_verdict_sha256") != expected_sha256
+                or record.get("record_id") != cap_disposition_record_id(record)):
+            raise ValidationError(
+                "Review cap disposition does not bind the exact AWF review-verdict and critic artifact"
+            )
+    return {
+        "review_verdict_record_id": verdict["record_id"],
+        "review_verdict_sha256": sha256(review_verdict_json(verdict).encode("utf-8")),
+        "critic_artifact_binding": artifact,
+        "head_sha": head_sha,
+        "execution_authority": False,
+    }
 
 
 def posting_collector_receipt_sha256(observation, observation_binding_sha256, registration):
@@ -385,11 +542,8 @@ def review_round_receipt_sha256(receipt):
 
 def cap_disposition_record_id(record):
     """Content-address cap binding fields through the signed owner record ID."""
-    return fingerprint("review-cap-artifact-binding", {
-        "critic_artifact_binding": record["critic_artifact_binding"],
-        "review_verdict_record_id": record["review_verdict_record_id"],
-        "review_verdict_sha256": record["review_verdict_sha256"],
-    })
+    from .authorization import cap_disposition_record_id as authorization_record_id
+    return authorization_record_id(record)
 
 
 def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_registry=None,
@@ -442,9 +596,16 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
     for record in records:
         historical_review_record = (record.get("run_id") in historical_review_run_ids
                                     and record in bundle.get("runs", []))
-        if not historical_review_record and record["binding"] != binding:
+        historical_finding_record = (
+            record in bundle.get("finding_dispositions", [])
+            and record.get("head_sha") != candidate["head_sha"]
+            and all(record["binding"].get(key) == value
+                    for key, value in binding.items() if key != "candidate_id")
+        )
+        if (not historical_review_record and not historical_finding_record
+                and record["binding"] != binding):
             raise ValidationError(f"Cross-record binding mismatch: {record['record_id']}")
-        if not historical_review_record:
+        if not historical_review_record and not historical_finding_record:
             fresh(record["created_at"], now, config["validation"]["max_evidence_age_seconds"])
     unique(bundle["runs"], "run_id", "run ID")
     runs = {run["run_id"]: run for run in bundle["runs"]}
@@ -839,6 +1000,13 @@ def evaluate(config, workflow, bundle, contracts, now, *, posting_collector_regi
         critic_run_ids.add(verdict["run_id"])
         if not verdict["evidence"] or not set(verdict["evidence"]).issubset(evidence_ids):
             raise ValidationError("Review verdict evidence must resolve through the evidence registry")
+    lane_critic_run_id = critic["run_id"]
+    if lane_critic_run_id not in critic_run_ids:
+        raise ValidationError(
+            "Every lane critic run must emit one AWF-native review-verdict "
+            "with a critic_artifact_binding; missing verdicts for "
+            f"{[lane_critic_run_id]}"
+        )
     if critic["coverage"]["file_manifest_sha256"] != fingerprint("file-manifest", pr["file_manifest"]):
         raise ValidationError("Critic file manifest does not match PR")
     required_domains = tier1_specialist_domains(config, tier, specialist_domains(config, contract, file_paths,
