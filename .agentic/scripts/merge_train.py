@@ -21,13 +21,14 @@ sys.path.insert(0, str(ROOT / "lib"))
 
 from agentic import ValidationError
 from agentic import merge_train
+from agentic.child_process import child_env
 
 
 def _run_gh(gh, arguments):
     try:
         result = subprocess.run(
             [gh, *arguments], stdin=subprocess.DEVNULL, capture_output=True,
-            text=True, timeout=120, check=False)
+            text=True, timeout=120, check=False, env=child_env())
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError("gh publication outcome is unknown") from exc
     if result.returncode:

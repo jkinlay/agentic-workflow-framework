@@ -228,7 +228,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/scripts/external_resources.py` | `10c20b51ed8bacf667a7f02b88e8b7177fa80feed307f04af5110987c9fcd810` |
 | `.agentic/scripts/five_slot_acceleration.py` | `805bbbdf0947939a0deebffd8b515d2c16c616cdf2789fbced6ebb36c97635d5` |
 | `.agentic/scripts/integration_queue.py` | `66fae5e6bb1edd3636cbfb418e5aa32126558d9118941343c2142a353d4605c3` |
-| `.agentic/scripts/merge_train.py` | `878c4ab6a3dd48d5d034ef28264b4d1770590d9709f109a9b69e0f4696c18210` |
+| `.agentic/scripts/merge_train.py` | `1359c657dc388be198ce52d95e9c9f5477e1afb013f07af2fa20c07c30893852` |
 | `.agentic/scripts/operating.py` | `0ec1e1805a241ef585ae371d9ac32c29a52f53f459c4f0e504e7ae9fcd060a38` |
 | `.agentic/scripts/plan_streams.py` | `b1165b1187dca2d5f9ac3563ac170d15da316ce945fd4bafb2268cc173ba8ab5` |
 | `.agentic/scripts/prepare_routine_pilot.py` | `71e64de5acadd42bd933d444725f8b9d3bf0d0f66b9450d64b272848bc96f8bf` |
