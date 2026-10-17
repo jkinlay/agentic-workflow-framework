@@ -449,6 +449,57 @@ class MergeTrainPublicationTests(unittest.TestCase):
                 self.assertEqual(expected_calls,
                                  [call[0] for call in self.provider_calls])
 
+    def test_freeze_drift_durably_abandons_generation_after_restart(self):
+        # C195-R2-016-001: restored observations cannot revive a rejected freeze.
+        for drift_after in range(3):
+            for drift_field in ("target", "source", "evidence"):
+                with self.subTest(drift_after=drift_after, drift_field=drift_field):
+                    self.provider_calls.clear()
+                    self.provider_state = self._expected_state()
+                    self._register_observer()
+                    self._register_publisher()
+                    candidate = self._candidate()
+                    journal = f"abandoned-{drift_after}-{drift_field}.json"
+                    original = self.observer_registry["fixture-observer"]["observer"]
+                    observations = 0
+
+                    def drifting(request):
+                        nonlocal observations
+                        if request["operation"] == "BATCH_PUBLICATION_STATE":
+                            if observations >= drift_after:
+                                if drift_field == "target":
+                                    self.provider_state["target_sha"] = "f" * 40
+                                elif drift_field == "source":
+                                    self.provider_state["sources"][0]["head_sha"] = "f" * 40
+                                else:
+                                    self.provider_state["sources"][0][
+                                        "admission_evidence_sha256"] = "f" * 64
+                            observations += 1
+                        return original(request)
+
+                    self.observer_registry["fixture-observer"]["observer"] = drifting
+                    with self.assertRaisesRegex(ValidationError, "abandoned"):
+                        self._publish(candidate, journal=journal, mark_ready=True)
+                    calls_at_rejection = copy.deepcopy(self.provider_calls)
+                    self.assertEqual(drift_after, len(calls_at_rejection))
+                    rejected_bytes = (self.root / journal).read_bytes()
+                    self.assertEqual("ABANDONED", json.loads(rejected_bytes).get("status"))
+                    self.provider_state = self._expected_state()
+                    self.observer_registry["fixture-observer"]["observer"] = original
+                    for restarted in (False, True):
+                        if restarted:
+                            importlib.reload(merge_train())
+                            receipts = copy.deepcopy(
+                                self.observer_registry["fixture-observer"]["receipts"])
+                            self._register_observer()
+                            self.observer_registry["fixture-observer"]["receipts"].update(receipts)
+                            self._register_publisher()
+                            candidate = json.loads(json.dumps(candidate))
+                        with self.assertRaisesRegex(ValidationError, "abandoned"):
+                            self._publish(candidate, journal=journal, mark_ready=True)
+                        self.assertEqual(calls_at_rejection, self.provider_calls)
+                        self.assertEqual(rejected_bytes, (self.root / journal).read_bytes())
+
     def test_push_pr_creation_orphan_race_is_recovered_without_replay(self):
         candidate = self._candidate()
         self.publisher_registry.clear()
