@@ -1,11 +1,13 @@
 import copy
 import hashlib
 import importlib
+import importlib.util
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -222,6 +224,201 @@ class MergeTrainPublicationTests(unittest.TestCase):
                 scheduled_at="2026-10-17T10:00:00Z", max_batch_size=1,
                 observer_id="fixture-observer",
                 observer_registry=self.observer_registry, now=NOW)
+
+    def test_authenticated_request_must_bind_every_publication_field(self):
+        original = self._candidate()
+        requests = []
+        partial = copy.deepcopy(original["provider_candidate"]["request"])
+        partial["expected_candidate"] = {
+            "batch_head_sha": self.head, "batch_tree_sha": self.tree}
+        requests.append(partial)
+        for field in original["provider_candidate"]["request"]["expected_candidate"]:
+            request = copy.deepcopy(original["provider_candidate"]["request"])
+            del request["expected_candidate"][field]
+            requests.append(request)
+        for index, request in enumerate(requests):
+            with self.subTest(request=request):
+                candidate = copy.deepcopy(original)
+                registration = self.observer_registry["fixture-observer"]
+                observation = registration["observer"](request)
+                _, attestation = merge_train()._validate_registered_observation(
+                    registration, "fixture-observer", request, observation,
+                    now=NOW, max_age_seconds=1800)
+                candidate["provider_candidate"] = {
+                    "request": request, "observation": observation,
+                    "attestation": attestation}
+                candidate["publication_candidate_id"] = fingerprint(
+                    "merge_train_publication_candidate",
+                    {key: value for key, value in candidate.items()
+                     if key != "publication_candidate_id"})
+                with self.assertRaisesRegex(ValidationError, "exact"):
+                    self._publish(candidate, journal=f"partial-{index}.json")
+                self.assertEqual([], self.provider_calls)
+
+    def test_mark_ready_requires_complete_original_pr_identity(self):
+        candidate = self._candidate()
+        changes = {"number": 999, "branch": "batch/other",
+                   "base_branch": "release", "head_sha": "f" * 40,
+                   "title": "unrelated", "draft": False}
+        for field, value in changes.items():
+            with self.subTest(field=field):
+                self.provider_calls.clear()
+                self._register_publisher()
+                journal = f"ready-{field}.json"
+                self._publish(candidate, journal=journal)
+                self.remote["pr"][field] = value
+                with self.assertRaisesRegex(ValidationError, "PR.*candidate"):
+                    self._publish(candidate, journal=journal, mark_ready=True)
+                self.assertNotIn("mark_draft_pr_ready",
+                                 [call[0] for call in self.provider_calls])
+
+    def test_ready_response_must_retain_complete_pr_identity(self):
+        candidate = self._candidate()
+        for field, value in {"number": 999, "branch": "batch/other",
+                             "base_branch": "release", "title": "other"}.items():
+            with self.subTest(field=field):
+                self._register_publisher()
+                registration = self.publisher_registry["fixture-publisher"]
+                original = registration["mark_draft_pr_ready"]
+
+                def changed(number):
+                    result = original(number)
+                    result[field] = value
+                    return result
+
+                registration["mark_draft_pr_ready"] = changed
+                with self.assertRaisesRegex(ValidationError, "different batch"):
+                    self._publish(candidate, journal=f"response-{field}.json",
+                                  mark_ready=True)
+
+    def _gh_adapter(self):
+        spec = importlib.util.spec_from_file_location(
+            "merge_train_gh", ROOT / ".agentic/scripts/merge_train.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_gh_registered_adapter_publishes_and_recovers_without_replay(self):
+        adapter = self._gh_adapter()
+        candidate = self._candidate()
+        branch = candidate["batch_branch"]
+        commands = []
+        state = {"ref": None, "pr": None, "lose_response": True}
+
+        def gh_run(command, **kwargs):
+            commands.append(command)
+            self.assertEqual("gh-fixture", command[0])
+            if command[1:3] == ["pr", "ready"]:
+                state["pr"]["draft"] = False
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            self.assertEqual("api", command[1])
+            self.assertIn("example.invalid", command)
+            endpoint = command[2]
+            if endpoint.endswith("/git/refs"):
+                self.assertEqual(["-f", "ref=refs/heads/" + branch,
+                                  "-f", "sha=" + self.head], command[5:])
+                state["ref"] = {"ref": "refs/heads/" + branch,
+                                "object": {"sha": self.head}}
+                output = state["ref"]
+            elif "/git/matching-refs/" in endpoint:
+                output = [state["ref"]] if state["ref"] else []
+            elif endpoint.endswith("/pulls"):
+                self.assertEqual(["-f", "head=" + branch, "-f", "base=main",
+                                  "-f", "title=" + candidate["draft_pr_title"],
+                                  "-F", "draft=true"], command[5:])
+                state["pr"] = {
+                    "number": 211, "head": {"ref": branch, "sha": self.head},
+                    "base": {"ref": "main"},
+                    "title": candidate["draft_pr_title"], "draft": True}
+                if state["lose_response"]:
+                    state["lose_response"] = False
+                    raise TimeoutError("lost gh response")
+                output = state["pr"]
+            elif "/pulls?" in endpoint:
+                output = [state["pr"]] if state["pr"] else []
+            elif endpoint.endswith("/pulls/211"):
+                output = state["pr"]
+            else:
+                self.assertEqual("repos/owner/repository", endpoint)
+                output = {"id": 42, "full_name": "owner/repository"}
+            return mock.Mock(returncode=0, stdout=json.dumps(output), stderr="")
+
+        with mock.patch.object(adapter.subprocess, "run", side_effect=gh_run):
+            registration = adapter.register_publisher(
+                gh="gh-fixture", provider_identity=self.provider,
+                implementation_sha256="d" * 64, release_sha256="e" * 64)
+            self.publisher_registry["fixture-publisher"] = registration
+            with self.assertRaisesRegex(ValidationError, "outcome is unknown"):
+                self._publish(candidate)
+            # A new process reconstructs the adapter; recovery observes gh state.
+            self.publisher_registry["fixture-publisher"] = adapter.register_publisher(
+                gh="gh-fixture", provider_identity=self.provider,
+                implementation_sha256="d" * 64, release_sha256="e" * 64)
+            result = self._publish(candidate, mark_ready=True)
+            self.assertEqual("PUBLISHED_READY", result["status"])
+            self.assertEqual(211, result["pull_request"]["number"])
+            self.assertFalse(result["pull_request"]["draft"])
+            self.assertEqual(1, sum(command[2].endswith("/git/refs")
+                                    for command in commands))
+            self.assertEqual(1, sum(command[2].endswith("/pulls")
+                                    for command in commands))
+            self.assertEqual(1, sum(command[1:3] == ["pr", "ready"]
+                                    for command in commands))
+            with self.assertRaisesRegex(ValidationError, "batch ref"):
+                registration["push_batch_ref"]("main", self.head)
+            with self.assertRaisesRegex(ValidationError, "batch ref"):
+                registration["create_draft_pr"]("main", "main", "other")
+
+    def test_gh_registration_refuses_wrong_repository_and_command_failure(self):
+        adapter = self._gh_adapter()
+        for response in (mock.Mock(returncode=0, stdout=json.dumps(
+                {"id": 99, "full_name": "owner/repository"}), stderr=""),
+                         mock.Mock(returncode=1, stdout="", stderr="failure")):
+            with self.subTest(response=response):
+                with mock.patch.object(adapter.subprocess, "run", return_value=response):
+                    with self.assertRaises(ValidationError):
+                        adapter.register_publisher(
+                            gh="gh-fixture", provider_identity=self.provider,
+                            implementation_sha256="d" * 64,
+                            release_sha256="e" * 64)
+
+    def test_gh_adapter_normalizes_successful_creation_and_observations(self):
+        adapter = self._gh_adapter()
+        branch = self._candidate()["batch_branch"]
+        raw_pr = {"number": 211, "head": {"ref": branch, "sha": self.head},
+                  "base": {"ref": "main"}, "title": "batch title", "draft": True}
+        expected_pr = {"number": 211, "branch": branch, "head_sha": self.head,
+                       "base_branch": "main", "title": "batch title", "draft": True}
+        with mock.patch.object(adapter.subprocess, "run", return_value=mock.Mock(
+                returncode=0, stdout=json.dumps(raw_pr), stderr="")):
+            self.assertEqual(expected_pr, adapter.create_draft_pr(
+                "gh-fixture", "owner/repository", branch, "main", "batch title"))
+        for values, expected in (([], None), ([raw_pr], expected_pr)):
+            with self.subTest(values=values):
+                with mock.patch.object(adapter.subprocess, "run", return_value=mock.Mock(
+                        returncode=0, stdout=json.dumps(values), stderr="")):
+                    self.assertEqual(expected, adapter.observe_pull_request(
+                        "gh-fixture", "owner/repository", branch))
+        raw_ref = {"ref": "refs/heads/" + branch, "object": {"sha": self.head}}
+        with mock.patch.object(adapter.subprocess, "run", return_value=mock.Mock(
+                returncode=0, stdout=json.dumps([raw_ref]), stderr="")):
+            self.assertEqual({"branch": branch, "head_sha": self.head},
+                             adapter.observe_batch_ref(
+                                 "gh-fixture", "owner/repository", branch))
+        for values in ([raw_pr, raw_pr], {}):
+            with self.subTest(values=values):
+                with mock.patch.object(adapter.subprocess, "run", return_value=mock.Mock(
+                        returncode=0, stdout=json.dumps(values), stderr="")):
+                    with self.assertRaises(ValidationError):
+                        adapter.observe_pull_request("gh-fixture", "owner/repository", branch)
+
+    def test_gh_process_timeout_becomes_unknown_publication_outcome(self):
+        adapter = self._gh_adapter()
+        with mock.patch.object(adapter.subprocess, "run", side_effect=
+                adapter.subprocess.TimeoutExpired(["gh-fixture"], 120)):
+            with self.assertRaises(TimeoutError):
+                adapter.push_batch_ref("gh-fixture", "owner/repository",
+                                       self._candidate()["batch_branch"], self.head)
 
     def test_freeze_is_rechecked_before_every_provider_mutation(self):
         for drift_after, expected_calls in [(0, []), (1, ["push_batch_ref"]),
