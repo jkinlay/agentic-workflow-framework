@@ -346,7 +346,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_continuation.py` | `39c20ac2265ec9f01306b0dc45a46e63fb306515046c87c725191d8ee359217e` |
 | `.agentic/tests/test_continuous_controller.py` | `a6808e3e55a6c4c4e064b14fb2151e3414bfe91e92281f47799b500e71a4b78e` |
 | `.agentic/tests/test_continuous_controller_planning.py` | `96e0f21d61abdced6d11b6099cb13ae3b8d772c2d1755568c1dedbcd21ab32e0` |
-| `.agentic/tests/test_controller_switches_195.py` | `9ad50c25eaaf368a52c07cc9d8fd775f7b5956be523af7e810b1ea8d8261cca5` |
+| `.agentic/tests/test_controller_switches_195.py` | `4c1646628f6b754c516eb2e947de151610f959c071681ae92a68ed51a7f9c877` |
 | `.agentic/tests/test_external_resources.py` | `fd70b11e804bb3a07c4f8adab48e0a9674bea5ac83718925ff6181530c8f371e` |
 | `.agentic/tests/test_external_resources_cli.py` | `71a8c08a47ca96cd8c8ade49aa5e866a84d44e5e034f285e70efe1728c4370ff` |
 | `.agentic/tests/test_five_slot_acceleration.py` | `35b3f99410481c16f91e5be438d44ccb6e61e429e1b869fd18ac184a238bbb98` |
