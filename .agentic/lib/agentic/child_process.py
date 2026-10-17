@@ -169,16 +169,21 @@ _SENSITIVE_NAME = (
     r"refresh[_-]?token|private[_-]?token|client[_-]?secret|password|passwd|"
     r"secret|token)(?:[_-][a-z0-9]+)*"
 )
+_QUOTED_CREDENTIAL_VALUE = (
+    r'"(?:\\[^\r\n]|[^"\\\r\n])*"'
+    r"|'(?:\\[^\r\n]|[^'\\\r\n])*'"
+)
 _CREDENTIAL_PATTERNS = (
     re.compile(
         r'''(?i)(\bauthorization\s*:\s*(?:bearer|token|basic)\s+)'''
-        r'''(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)'''),
+        r'''(?:''' + _QUOTED_CREDENTIAL_VALUE + r'''|[^\s,;]+)'''),
     re.compile(
         r"(?i)((?<![a-z0-9_])[\"']?" + _SENSITIVE_NAME +
-        r'''["']?\s*[=:]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&"']+)'''),
+        r'''["']?\s*[=:]\s*)(?:''' + _QUOTED_CREDENTIAL_VALUE +
+        r'''|[^\s,;&"']+)'''),
     re.compile(
         r"(?i)((?<![a-z0-9_])--" + _SENSITIVE_NAME + r'''(?:=|\s+))'''
-        r'''(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&"']+)'''),
+        r'''(?:''' + _QUOTED_CREDENTIAL_VALUE + r'''|[^\s,;&"']+)'''),
     re.compile(r"(?i)(https?://)[^/@\s]+@"),
     re.compile(r"(?i)\b(?:github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]+"),
 )
