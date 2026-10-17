@@ -218,6 +218,77 @@ class SafeWriteAndDiagnosticTests(unittest.TestCase):
         self.assertEqual(rendered.count("<redacted-credential>"), 2)
         self.assertEqual(rendered.count("<redacted-path>"), 1)
 
+    def test_diagnostic_redacts_general_prefixed_secret_names_and_spaced_unc_paths(self):
+        backslash = chr(92)
+        assignments = (
+            ("STRIPE" + "_SECRET_KEY", "stripe" + "-sensitive-value"),
+            ("DJANGO" + "_SECRET_KEY", "django" + "-sensitive-value"),
+            ("SERVICE" + "_SECRET_VALUE", "service" + "-sensitive-value"),
+            ("Build" + "_Access_TOKEN_Value", "token" + "-sensitive-value"),
+            ("database" + "_PASSWORD_FILE", "password" + "-sensitive-value"),
+            ("Partner" + "_API_KEY_Backup", "api-key" + "-sensitive-value"),
+        )
+        network_paths = (
+            (backslash * 2) + backslash.join(
+                ("server", "Shared Folder", "secret (1).txt")
+            ),
+            (backslash * 2) + backslash.join(
+                ("server", "Project Phoenix (Confidential)", "secret.txt")
+            ),
+        )
+        payload = "\n".join(
+            [name + "=" + value for name, value in assignments]
+            + ["failed at " + path for path in network_paths]
+        )
+
+        rendered = child_process.render_diagnostic(payload)
+
+        for _name, value in assignments:
+            self.assertNotIn(value, rendered)
+        for path in network_paths:
+            self.assertNotIn(path, rendered)
+        self.assertNotIn(" (1).txt", rendered)
+        self.assertNotIn(" (Confidential)" + backslash + "secret.txt", rendered)
+        self.assertEqual(rendered.count("<redacted-credential>"), len(assignments))
+        self.assertEqual(rendered.count("<redacted-path>"), len(network_paths))
+
+    def test_log_redacts_general_prefixed_secret_names_and_spaced_unc_paths(self):
+        backslash = chr(92)
+        assignments = (
+            ("STRIPE" + "_SECRET_KEY", "stripe" + "-sensitive-value"),
+            ("DJANGO" + "_SECRET_KEY", "django" + "-sensitive-value"),
+            ("SERVICE" + "_SECRET_VALUE", "service" + "-sensitive-value"),
+            ("Build" + "_Access_TOKEN_Value", "token" + "-sensitive-value"),
+            ("database" + "_PASSWORD_FILE", "password" + "-sensitive-value"),
+            ("Partner" + "_API_KEY_Backup", "api-key" + "-sensitive-value"),
+        )
+        network_paths = (
+            (backslash * 2) + backslash.join(
+                ("server", "Shared Folder", "secret (1).txt")
+            ),
+            (backslash * 2) + backslash.join(
+                ("server", "Project Phoenix (Confidential)", "secret.txt")
+            ),
+        )
+        payload = "\n".join(
+            [name + "=" + value for name, value in assignments]
+            + ["failed at " + path for path in network_paths]
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            with safeio.Tree(directory) as tree:
+                safeio.write_log(tree, "result.log", payload, maximum=2048)
+                rendered = tree.read("result.log").decode("utf-8")
+
+        for _name, value in assignments:
+            self.assertNotIn(value, rendered)
+        for path in network_paths:
+            self.assertNotIn(path, rendered)
+        self.assertNotIn(" (1).txt", rendered)
+        self.assertNotIn(" (Confidential)" + backslash + "secret.txt", rendered)
+        self.assertEqual(rendered.count("<redacted-credential>"), len(assignments))
+        self.assertEqual(rendered.count("<redacted-path>"), len(network_paths))
+
     def test_diagnostic_digest_binds_raw_bytes_not_redacted_text(self):
         slash = chr(47)
         left = "token=first " + slash.join(("", "home", "alice", "file"))
