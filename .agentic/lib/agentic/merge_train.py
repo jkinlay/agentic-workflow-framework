@@ -49,6 +49,18 @@ def _positive(value, field):
     return value
 
 
+def _is_owner_identity(value):
+    return ((isinstance(value, str) and bool(value))
+            or (type(value) is int and value > 0))
+
+
+def _trusted_owner_identity_set(values):
+    _require(isinstance(values, (list, tuple, set, frozenset))
+             and all(_is_owner_identity(value) for value in values),
+             "trusted_owner_ids must be an identity collection")
+    return set(values)
+
+
 def _portable_paths(values, field):
     _require(isinstance(values, (list, tuple, set, frozenset)),
              f"{field} must be a path collection")
@@ -370,7 +382,9 @@ def _validate_admission_evidence(source, evidence, trusted_owner_ids,
                  "source owner review is bound to another PR")
         _require(owner_review["head_sha"] == source["head_sha"],
                  "source owner review is bound to the wrong head")
-        _require(owner_review["reviewer_id"] in set(trusted_owner_ids),
+        _require(_is_owner_identity(owner_review["reviewer_id"]),
+                 "source owner review actor identity is invalid")
+        _require(owner_review["reviewer_id"] in trusted_owner_ids,
                  "source owner review actor is not trusted")
         _identifier(owner_review["provider_artifact_id"],
                     "owner review provider_artifact_id")
@@ -395,9 +409,7 @@ def admit_source(source, target_branch, expected_provider_identity, observer_id,
                  max_age_seconds=MAX_EVIDENCE_AGE_SECONDS):
     """Admit one exact source; its evidence never authorizes the batch."""
     source = _validate_source(source)
-    _require(isinstance(trusted_owner_ids, (list, tuple, set, frozenset))
-             and all(isinstance(value, str) and value for value in trusted_owner_ids),
-             "trusted_owner_ids must be an identity collection")
+    trusted_owner_ids = _trusted_owner_identity_set(trusted_owner_ids)
     _require(type(max_age_seconds) is int and max_age_seconds >= 0,
              "max_age_seconds must be a nonnegative integer")
     request = source_admission_request(
@@ -456,10 +468,7 @@ def _validate_admitted_source(source, expected_provider_identity,
              and source.get("authorization_scope") == "SOURCE_ADMISSION_ONLY"
              and source.get("batch_merge_authorized") is False,
              "ordered source is not a source-only admission contract")
-    _require(isinstance(trusted_owner_ids, (list, tuple, set, frozenset))
-             and all(isinstance(value, str) and value
-                     for value in trusted_owner_ids),
-             "trusted_owner_ids must be an identity collection")
+    trusted_owner_ids = _trusted_owner_identity_set(trusted_owner_ids)
     _require(type(max_age_seconds) is int and max_age_seconds >= 0,
              "max_age_seconds must be a nonnegative integer")
     normalized_source = _validate_source({
