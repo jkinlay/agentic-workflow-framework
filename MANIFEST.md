@@ -85,7 +85,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
 | `.agentic/lib/agentic/configuration.py` | `74bc00b5120f8cfced44ea39e4e9109ed6a4521a9a8aa4cd6901c9d757b49f0c` |
 | `.agentic/lib/agentic/continuation.py` | `4a723d42d4a83d9d9c2784b6196dad0c79c68ddf638893daed6da543d0c8e3db` |
-| `.agentic/lib/agentic/continuous_controller.py` | `532851035923ae6bf56bceaed42bb862065854717915920a528c4b8c12593097` |
+| `.agentic/lib/agentic/continuous_controller.py` | `4a2e186101508e1ce20cc923c3b51ecf2cf85c4eddcf0ce1bcfe3998fb6e38b5` |
 | `.agentic/lib/agentic/contracts.py` | `608011b68fd03da49340fe96cef754a22440363717490c613cef6c9280da356b` |
 | `.agentic/lib/agentic/controller_state.py` | `08f533e320c4a6bb4563a040fa9b6df06c7efddadb0ddb9af8155512f07047ff` |
 | `.agentic/lib/agentic/digest.py` | `b05243f50be52e441e9f6f9583f9ac6e682fba83f0d8fa4010909356686c7494` |
@@ -335,7 +335,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_codex_skill.py` | `4dcf304e00236c2540e41841e8230d54b511a04f19df77b59bfa1761191f392e` |
 | `.agentic/tests/test_config_diagnostics.py` | `226162fb7438b47069a5ceb0760c7c49559ac25c4eb20f295c65c3fe21a4309b` |
 | `.agentic/tests/test_continuation.py` | `39c20ac2265ec9f01306b0dc45a46e63fb306515046c87c725191d8ee359217e` |
-| `.agentic/tests/test_continuous_controller.py` | `3bc25caa2b880c2e60507e4b314b8a85dff0c4f12b5b7401d0ed252d9f0ed3bf` |
+| `.agentic/tests/test_continuous_controller.py` | `b1a50c27b9d9a41adff8d7e1eef5ec13c26ec16c25cfc2e99da6cfd12a4e24e7` |
 | `.agentic/tests/test_continuous_controller_planning.py` | `60a2f89c1c1f733212965913f9cfb5bafc0c2a8956c35fb7d250767d6281a18c` |
 | `.agentic/tests/test_external_resources.py` | `fd70b11e804bb3a07c4f8adab48e0a9674bea5ac83718925ff6181530c8f371e` |
 | `.agentic/tests/test_external_resources_cli.py` | `71a8c08a47ca96cd8c8ade49aa5e866a84d44e5e034f285e70efe1728c4370ff` |

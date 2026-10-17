@@ -978,7 +978,9 @@ class ContinuousControllerStore:
 	def _round_boundary_seal(db, tickets, inventory_sha256):
 		inventory = {item['ticket']: item for item in tickets}
 		nonterminal = list(db.execute("SELECT dispatch_id,ticket,stream_id,exact_tuple,status FROM controller_dispatch WHERE status IN ('PENDING','IN_FLIGHT','UNKNOWN','LAUNCHED') ORDER BY dispatch_id"))
-		boundary = [row for row in nonterminal if row['ticket'] not in inventory or inventory[row['ticket']]['exact_tuple'] != row['exact_tuple'] or inventory[row['ticket']]['disposition'] != 'ELIGIBLE']
+		prior_inventory = db.execute("SELECT value FROM controller_meta WHERE key='last_inventory_sha256'").fetchone()
+		inventory_changed = prior_inventory is not None and inventory_sha256 is not None and prior_inventory[0] != inventory_sha256
+		boundary = [row for row in nonterminal if inventory_changed or row['ticket'] not in inventory or inventory[row['ticket']]['exact_tuple'] != row['exact_tuple'] or inventory[row['ticket']]['disposition'] != 'ELIGIBLE']
 		if not boundary:
 			return (False, None, False)
 		if inventory_sha256 is None:
