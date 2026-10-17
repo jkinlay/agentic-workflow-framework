@@ -27,6 +27,12 @@ HEARTBEAT_SECONDS = 15.0
 SOURCE_REPOSITORY = is_awf_source_repository(filesystem_reader(ROOT))
 PHASES = ('discovery', 'syntax', 'documentation', 'release_hygiene', 'test_suite')
 NONDETERMINISTIC_REPORT_FIELDS = ('created_at', 'elapsed_seconds', 'phase_timings_seconds')
+NON_FORM_SCHEMA_NAMES = frozenset({'candidate', 'project-config', 'evidence-bundle', 'ticket-plan'})
+
+
+def unfilled_form_schema_names(schema_names, operating_schema_names):
+    """Return schemas that require checked-in unfilled evidence forms."""
+    return set(schema_names) - NON_FORM_SCHEMA_NAMES - set(operating_schema_names)
 
 
 class SelfTestProgress:
@@ -333,9 +339,9 @@ def main(argv=None):
                 pass
             else:
                 raise ValueError('Unfilled wrapper accepted as runtime evidence')
-        # Operating records are emitted by their commands; they are not
-        # unfilled evidence-form wrappers.
-        if covered != set(contracts.schemas) - {'candidate','project-config','evidence-bundle'} - operating_schemas:
+        # Operating records are emitted by their commands, and ticket-plan is
+        # emitted by the planner; none are unfilled evidence-form wrappers.
+        if covered != unfilled_form_schema_names(contracts.schemas, operating_schemas):
             raise ValueError('Incomplete form catalog')
         report['checks']['complete_unfilled_forms'] = len(forms)
         suite = unittest.defaultTestLoader.discover(str(ROOT / '.agentic/tests'))
