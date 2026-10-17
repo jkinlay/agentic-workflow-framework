@@ -96,5 +96,99 @@ class IndependentPathSwitchTests(ControllerAutomationTests):
                             self.cycle(store, ticket('AWF-366'), controller_config(**{key: value}))
 
 
+class AmendmentBoundaryTests(ControllerAutomationTests):
+    def run_inventory(self, store, items, policy, now, **operations):
+        from agentic.continuous_controller import production_controller_cycle
+        from test_awf36_controller_automation import BINDING, REPOSITORY, inventory_observation, dispatch_receipt
+        from test_publication_readiness import publication_config, publication_observation
+        arguments = dict(
+            controller_config=policy, now=now, host_capacity=1,
+            inventory_binding=BINDING, **REPOSITORY,
+            observe_inventory=lambda: inventory_observation(now, items),
+            observe_reservations=lambda request: {},
+            dispatch_ticket=lambda payload: dispatch_receipt(payload, now),
+            observe_dispatch=lambda payload: self.fail('unexpected reconciliation'),
+            deliver_status=lambda digest: dict(delivery_id=digest['delivery_id'], status='DELIVERED', observed_at=now),
+            publication_config=publication_config(),
+            observe_publication=lambda item: publication_observation(item['ticket'], now),
+            controller_clock=lambda: now,
+        )
+        arguments.update(operations)
+        return production_controller_cycle(store, **arguments)
+
+    def expired_overlap(self):
+        from test_continuous_controller_planning import (
+            NOW, OWNER_CONFIG, allowance_request, allowance_observation,
+            allowance_inventory, validate_overlap_allowance_observation,
+        )
+        store = self.store('overlap')
+        record = validate_overlap_allowance_observation(
+            OWNER_CONFIG, allowance_request(), allowance_observation(),
+            allowance_inventory(), now=NOW, expected_repository_id='101', expected_cycle_id='cycle-17')
+        store.register_overlap_allowance(record, NOW)
+        later = '2026-10-16T08:00:00Z'
+        gate = store.expire_overlap_allowance(record['allowance_id'], later)
+        return store, gate, later, allowance_inventory()
+
+    def test_overlap_sync_writer_requires_master_and_auto_dispatch(self):
+        from unittest.mock import Mock
+        from test_continuous_controller_planning import conflict_observation, sync_receipt
+        for disabled in ('dispatch_enabled', 'auto_dispatch', None):
+            with self.subTest(disabled=disabled):
+                store, gate, now, items = self.expired_overlap()
+                writer = Mock(side_effect=lambda payload: sync_receipt(payload, now))
+                result = self.run_inventory(
+                    store, items, controller_config(**({disabled: False} if disabled else {})), now,
+                    observe_overlap_conflict=lambda gate: conflict_observation(gate, now), sync_writer=writer)
+                if disabled:
+                    writer.assert_not_called()
+                    self.assertEqual('PENDING', store.unresolved_overlap_sync_gates()[0]['status'])
+                    refusal = next(error for error in result['errors'] if error['operation'] == 'overlap_sync')
+                    self.assertIn('CONTROLLER_AUTOMATION_DISABLED: controller.' + disabled, refusal['reason'])
+                    self.assertEqual('REFUSED', next(audit for audit in result['overlap_allowances'] if audit['phase'] == 'SYNC_DECISION')['status'])
+                else:
+                    writer.assert_called_once()
+                    self.assertEqual('SYNCED', store.unresolved_overlap_sync_gates()[0]['status'])
+
+    def test_disabled_overlap_sync_still_reconciles_unknown_receipt_only(self):
+        from unittest.mock import Mock
+        from test_continuous_controller_planning import conflict_observation, sync_receipt
+        for disabled in ('dispatch_enabled', 'auto_dispatch'):
+            with self.subTest(disabled=disabled):
+                store, gate, now, items = self.expired_overlap()
+                payloads = []
+                def uncertain(payload):
+                    payloads.append(payload)
+                    raise RuntimeError('unknown provider outcome')
+                with self.assertRaises(RuntimeError):
+                    store.execute_overlap_sync_gate(gate['gate_id'], conflict_observation(gate, now), uncertain, now)
+                writer = Mock(side_effect=AssertionError('must not relaunch'))
+                reader = Mock(side_effect=lambda payload: sync_receipt(payload, now))
+                result = self.run_inventory(store, items, controller_config(**{disabled: False}), now,
+                                           sync_writer=writer, reconcile_overlap_sync=reader)
+                writer.assert_not_called()
+                reader.assert_called_once_with(payloads[0])
+                self.assertTrue(any(audit['phase'] == 'SYNC_RECEIPT_RECONCILIATION' and audit['status'] == 'SYNCED'
+                                    for audit in result['overlap_allowances']))
+
+    def test_disabled_pending_intent_cannot_authorize_successor_refill_on_restart(self):
+        from test_awf36_controller_automation import NOW, inventory_observation
+        from agentic.continuous_controller import ContinuousControllerStore
+        store = self.store('boundary')
+        prior = ticket('AWF-101')
+        old = inventory_observation(NOW, [prior])
+        store.schedule([prior], NOW, 1, inventory_sha256=old['inventory_sha256'])
+        intent = store.prepare_dispatches(NOW)[0]
+        items = [prior, ticket('AWF-102', role='critic', stage='independent_review')]
+        next_sha = inventory_observation(NOW, items)['inventory_sha256']
+        for iteration in range(2):
+            self.assertFalse(store.round_boundary_ready(items, next_sha))
+            result = self.run_inventory(store, items, controller_config(auto_dispatch=False), NOW)
+            self.assertEqual([], result['dispatch_receipts'])
+            self.assertEqual([intent['dispatch_id']], [row['dispatch_id'] for row in store.pending_dispatches()])
+            self.assertFalse(store.round_boundary_ready(items, next_sha))
+            store = ContinuousControllerStore(store.path, ['A'])
+
+
 if __name__ == '__main__':
     unittest.main()
