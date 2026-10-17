@@ -813,6 +813,12 @@ def verify_plan_record(record):
     capacity = inputs.get("capacity") if isinstance(inputs, dict) else None
     if not isinstance(capacity, dict):
         raise ValidationError("Planning record lacks its sealed capacity binding")
+    schema_version = record.get("schema_version")
+    if schema_version == 1 and "capacity_binding_sha256" not in capacity:
+        timestamp(record.get("created_at"))
+        return True
+    if schema_version not in {1, 2}:
+        raise ValidationError("Planning record schema version is unsupported")
     capacity_digest = capacity.get("capacity_binding_sha256")
     expected_capacity_digest = fingerprint(
         "planning_capacity_binding",
@@ -882,7 +888,7 @@ def recompute_plan(tickets, config, state, *, now, trigger,
         resources=resources, verify_host_observation=verify_host_observation,
         controller_state=state,
         verify_owner_source=verify_owner_source)
-    body = {"schema_version": 1, "created_at": now, "trigger": trigger,
+    body = {"schema_version": 2, "created_at": now, "trigger": trigger,
             "inputs": {"jira_snapshot_sha256": fingerprint("planning_ticket_snapshot", tickets),
                        "tickets": copy.deepcopy(graph["tickets"]),
                        "dependencies": copy.deepcopy(graph["dependencies"]),
