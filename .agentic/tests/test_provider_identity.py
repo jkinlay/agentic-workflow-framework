@@ -73,6 +73,44 @@ class ProviderIdentityTests(unittest.TestCase):
             github_identity_preflight(value, github_observation(actor_id=1001))
         self.assertEqual(raised.exception.code, "IDENTITY_UNBOUND")
 
+    def test_profile_only_github_identity_refuses_observed_trusted_owner(self):
+        """AWF148-R4-055-001: a profile must not select a trusted owner."""
+        value = config()
+        value["github"]["expected_actor_id"] = None
+        value["github"]["auth_profile"] = "fixture"
+        value["merge_gate"]["trusted_owner_ids"] = [1001]
+        with self.assertRaisesRegex(
+                ProviderIdentityError, "automation actor must not be a trusted owner") as raised:
+            github_identity_preflight(value, github_observation(actor_id=1001))
+        self.assertEqual(raised.exception.code, "IDENTITY_UNBOUND")
+        self.assertIsNone(value["github"]["expected_actor_id"])
+
+    def test_github_identity_refuses_unreadable_or_invalid_trusted_owners(self):
+        absent = object()
+        compatible_gates = [absent, None, [], {}, {"trusted_owner_ids": []}]
+        invalid_gates = [
+            {"trusted_owner_ids": owners} for owners in
+            (None, "1001", [True], [0], ["1001"], [1001, 1001], [[1001]])]
+        for expected_actor in (None, 1002):
+            for gate in compatible_gates:
+                with self.subTest(expected_actor=expected_actor, merge_gate=gate):
+                    value = config()
+                    value["github"]["expected_actor_id"] = expected_actor
+                    if gate is absent:
+                        del value["merge_gate"]
+                    else:
+                        value["merge_gate"] = gate
+                    self.assertEqual(
+                        github_identity_preflight(value, github_observation())["status"], "PASS")
+            for gate in invalid_gates:
+                with self.subTest(expected_actor=expected_actor, merge_gate=gate):
+                    value = config()
+                    value["github"]["expected_actor_id"] = expected_actor
+                    value["merge_gate"] = gate
+                    with self.assertRaises(ProviderIdentityError) as raised:
+                        github_identity_preflight(value, github_observation())
+                    self.assertEqual(raised.exception.code, "IDENTITY_UNBOUND")
+
     def test_wrong_github_actor_or_repository_fails_by_immutable_id(self):
         for changes, field in (({"actor_id": 2002}, "actor_id"),
                                ({"repository_id": 202}, "repository_id"),
