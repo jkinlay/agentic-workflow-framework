@@ -318,9 +318,20 @@ class Fixture(unittest.TestCase):
         self.config = RuntimeAssignedGateConfig(
             copy.deepcopy(self.config0), self
         )
-        # The shared evidence bundle is illustrative data, so derive its
-        # policy/candidate bindings from the current reviewed example config.
-        self.rebind()
+
+    def test_shipped_example_config_and_evidence_bundle_share_policy_binding(self):
+        """The generated bundle must directly bind the generated reviewed config."""
+        from agentic.policy import policy_hash
+
+        expected = policy_hash(self.config0, definition())
+        self.assertEqual(expected, self.bundle0["contract"]["policy_hash"])
+        for name in ("dispatch", "worker", "critic", "ci", "pr"):
+            with self.subTest(record=name):
+                self.assertEqual(expected, self.bundle0[name]["binding"]["policy_hash"])
+        for collection in ("runs", "review_verdicts"):
+            for index, record in enumerate(self.bundle0[collection]):
+                with self.subTest(collection=collection, index=index):
+                    self.assertEqual(expected, record["binding"]["policy_hash"])
 
     def gate(self):
         bind_review_admission(self.bundle)
