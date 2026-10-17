@@ -141,6 +141,32 @@ class ProviderProvenanceTests(unittest.TestCase):
                                         r'^HOST_STDOUT_LIMIT:'):
                 driver.run('gh', ['-c', program])
 
+    def test_failed_host_command_redacts_standalone_and_arbitrary_auth(self):
+        for diagnostic in ('Bearer fixture-credential-value',
+                           'token fixture-credential-value',
+                           'Authorization: Negotiate fixture-credential-value',
+                           'aUtHoRiZaTiOn: Custom fixture-credential-value'):
+            with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
+                driver = self.configured_command_driver(directory, 'gh')
+                program = ('import sys; sys.stderr.write(' + repr(diagnostic)
+                           + '); sys.exit(1)')
+                with self.assertRaisesRegex(ValidationError, '^HOST_COMMAND_FAILED:') as caught:
+                    driver.run('gh', ['-c', program])
+                self.assertNotIn('fixture-credential-value', str(caught.exception))
+
+    def test_failed_host_command_reason_fits_4_kib_including_framing(self):
+        for character in ('x', '\u20ac', '\U0001f642'):
+            with self.subTest(character=character), tempfile.TemporaryDirectory() as directory:
+                driver = self.configured_command_driver(directory, 'gh')
+                program = ('import sys; sys.stderr.buffer.write(('
+                           + ascii(character) + ' * 5000).encode("utf-8")); sys.exit(1)')
+                with self.assertRaisesRegex(ValidationError, '^HOST_COMMAND_FAILED:') as caught:
+                    driver.run('gh', ['-c', program])
+                reason = str(caught.exception)
+                self.assertLessEqual(len(reason.encode('utf-8')), 4096)
+                self.assertNotIn('\ufffd', reason)
+                self.assertTrue(reason.endswith(character * 10))
+
     def test_legacy_recorded_driver_accounts_shared_provider_budget(self):
         class RecordedDriver(HostDriver):
             def run(self, name, args, cwd=None, stdin=None, timeout=None,
