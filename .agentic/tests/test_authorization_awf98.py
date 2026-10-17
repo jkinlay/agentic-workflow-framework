@@ -119,6 +119,21 @@ class OwnerDispositionTests(unittest.TestCase):
             record, SCHEMA, self.config, CONTRACTS, NOW,
             head_sha=HEAD, binding=self.binding)
 
+    def _verify_with_registered_verifier(self, record):
+        runs = {
+            record["run_id"]: {
+                "role": "verifier",
+                "producer_id": record["producer_id"],
+                "context_id": "owner-disposition-verifier-context",
+                "parent_run_id": None,
+            }
+        }
+        return verify_owner_record(
+            record, SCHEMA, self.config, CONTRACTS, NOW,
+            head_sha=HEAD, binding=self.binding, runs=runs,
+            excluded_contexts={"worker-context", "critic-context"},
+            excluded_producers={"worker-producer", "critic-producer"})
+
     def _verify_verdict(self, verdict):
         return verify_disposition_review_binding(
             self.record, SCHEMA, verdict, CONTRACTS, HEAD,
@@ -185,6 +200,19 @@ class OwnerDispositionTests(unittest.TestCase):
         with self.subTest(operation="verify"), \
                 self.assertRaisesRegex(ValidationError, "automation actor|owner"):
             self._verify(self._signed_record())
+
+    def test_registered_verifier_cannot_make_automation_owner_overlap_actionable(self):
+        self.config["github"]["expected_actor_id"] = 1001
+
+        with self.assertRaisesRegex(ValidationError, "automation actor|owner"):
+            self._verify_with_registered_verifier(self._signed_record())
+
+    def test_cap_disposition_documentation_matches_signed_subject_grammar(self):
+        documentation = (
+            ROOT / ".agentic/docs/30-REVIEW-TIERS-AND-CLOSEOUT.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("`cycles/extensions:ids/successor`", documentation)
 
     def test_verification_rejects_cap_artifact_for_another_head(self):
         record = self._signed_record()
