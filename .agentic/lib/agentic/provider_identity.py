@@ -74,6 +74,14 @@ def _github_expected(config):
 def github_identity_preflight(config, observation):
     """Require the intended actor/profile and numeric repository before change."""
     expected = _github_expected(config)
+    owners = config.get("merge_gate", {}).get("trusted_owner_ids", [])
+    if expected["actor_id"] is not None and owners:
+        from .authorization import trusted_owner_ids
+        try:
+            trusted_owner_ids(config)
+        except ValidationError as exc:
+            raise ProviderIdentityError("IDENTITY_UNBOUND", str(exc),
+                                        expected=expected, observed=None) from exc
     if not isinstance(observation, dict) or set(observation) != GITHUB_FIELDS:
         raise ProviderIdentityError("INVALID_OBSERVATION", "GitHub identity observation has an invalid shape",
                                     expected=expected, observed=None)

@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from agentic.cli import main as workflow_main
 from agentic.intake_assignment import assign_intake, change_assignment
+from agentic.lifecycle import definition
+from agentic.policy import policy_hash
 from agentic.review_tiers import runtime_assignment
 from source_only import skip_unless_source_repo
 from test_intake_assignment import NOW, owner_source, verify_owner_source
@@ -37,6 +39,7 @@ class CliIntakeAssignmentTests(unittest.TestCase):
         config_path = base / "project-config.json"
         config_path.write_text(json.dumps(config), encoding="utf-8")
         bundle = json.loads((ROOT / ".agentic/examples/evidence-bundle.json").read_text(encoding="utf-8"))
+        bundle["contract"]["policy_hash"] = policy_hash(config, definition())
         bundle_path = base / "bundle.json"
         bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
         state = {}
@@ -71,24 +74,37 @@ class CliIntakeAssignmentTests(unittest.TestCase):
             ])
         return code, json.loads(stdout.getvalue()), selected
 
-    def _cap_plan(self, runtime, config_path, state_path, cycles):
+    def _cap_plan(self, runtime, config_path, state_path, cycles, *, extensions=0,
+                  signed_cycles=None, signed_extensions=None):
+        signed_cycles = cycles if signed_cycles is None else signed_cycles
+        signed_extensions = extensions if signed_extensions is None else signed_extensions
         base = state_path.parent
         disposition_path = base / f"disposition-{cycles}.json"
+        verdict_path = base / f"review-verdict-{cycles}.json"
         findings_path = base / f"findings-{cycles}.json"
         disposition_path.write_text(json.dumps({
             "binding": {}, "decision": "PARK", "open_finding_ids": [],
             "successor_ticket": None,
+            "cycles": signed_cycles, "cap_extensions": signed_extensions,
         }), encoding="utf-8")
+        verdict_path.write_text(json.dumps({"binding": {}}), encoding="utf-8")
         findings_path.write_text("[]\n", encoding="utf-8")
+        bundle_path = base / "bundle.json"
+        candidate_head = json.loads(
+            bundle_path.read_text(encoding="utf-8"))["candidate"]["head_sha"]
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch("agentic.authorization.verify_owner_record", return_value={"status": "VERIFIED"}), \
+                mock.patch("agentic.gates.verify_disposition_review_binding", return_value={"status": "VERIFIED"}), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             code = workflow_main([
                 "--root", str(runtime), "cap-plan",
                 "--disposition", str(disposition_path),
                 "--findings", str(findings_path),
                 "--cycles", str(cycles),
-                "--head", "a" * 40,
+                "--extensions", str(extensions),
+                "--head", candidate_head,
+                "--review-verdict", str(verdict_path),
+                "--bundle", str(bundle_path),
                 "--config", str(config_path),
                 "--assignment-state", str(state_path),
                 "--ticket", "EX-1",
@@ -185,6 +201,16 @@ class CliIntakeAssignmentTests(unittest.TestCase):
             code, output = self._cap_plan(runtime, config_path, state_path, cycles=1)
         self.assertEqual(0, code)
         self.assertEqual("CAP_PARK", output["event"])
+
+    def test_cap_plan_rejects_runtime_counters_different_from_signed_disposition(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime, config_path, _, state_path, _, _, _ = self._fixture(folder)
+            code, output = self._cap_plan(
+                runtime, config_path, state_path, cycles=4, extensions=1,
+                signed_cycles=3, signed_extensions=0,
+            )
+        self.assertEqual(2, code)
+        self.assertIn("signed disposition counters", output["reason"])
 
     def test_owner_change_is_selected_on_next_cli_invocation(self):
         with tempfile.TemporaryDirectory() as folder:
