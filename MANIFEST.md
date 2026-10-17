@@ -328,6 +328,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_authorization_awf98.py` | `5ea3afdd03cd7625a14d7cc38fe8df6c52d10542659a0772404b95d8bdc004ae` |
 | `.agentic/tests/test_awf107_routing_config.py` | `031ddf873c365b7524b8987f2586c1b14e74f7ce6a64096ba4bf3017cd791051` |
 | `.agentic/tests/test_awf110_collector_overcap.py` | `2b71626e00c6ddadb15b8bd437b6b992fb7567d10bf601008cb060c55e8acbfd` |
+| `.agentic/tests/test_awf117_provenance_gate.py` | `8b943c32a6355d6f2054bb81e92d8f1cc42658f2bf1c9228f1f565bae5db351f` |
 | `.agentic/tests/test_awf134_installer_journal.py` | `67f8f62b752df22890b0f791bf092e436aa183e8862f0105c559ed5f3c72244d` |
 | `.agentic/tests/test_awf134_pending_updates.py` | `b511ea8aaa14320efb5e68040f719e9c40af1747df8f66981331a76900cc5a6d` |
 | `.agentic/tests/test_awf134_recovery_lifecycle.py` | `5b340f47e0cbab82abe7ec505c9ecc0287d65d2eb204ae09417f3c0cb2b0338a` |
@@ -545,6 +546,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `scripts/tests/test_ac42_e2e.py` | `ea8b2909cf3c928e8c21f49afcb85000bb7d9f78269069f877926965784e4548` |
 | `scripts/tests/test_adoptable_source.py` | `4ba79d96bc872dee670a4c11fc01c0ef460c37d34974e0b0ddcf57ea5277d745` |
 | `scripts/tests/test_autocrlf_scope.py` | `d2f82a1fc0e913bc36f7074fda2d43517e6eb81a37cf1cf53b2b471c767bfee3` |
+| `scripts/tests/test_awf117_generated_provenance.py` | `8585516dc094b4b9c2ec6ad7b64e89c786af353062a8c218d80e4a1489482037` |
 | `scripts/tests/test_build_release_adoptable_source.py` | `378f4e8844ef552be777e92503be4c20ed44678747353798636c643bf4f1b9be` |
 | `scripts/tests/test_ci_suite_coverage.py` | `46d04a5bced736858e27ece727fe9a8b339b826f6ba322237ccfc44ba2e7fba2` |
 | `scripts/tests/test_ci_windows_final_candidate.py` | `b24641b80b683d0f7909ba93c26c0e49128f6e3aceaa56c04c71eef6b2895c91` |
