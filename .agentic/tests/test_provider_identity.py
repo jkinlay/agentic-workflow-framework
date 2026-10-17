@@ -111,6 +111,19 @@ class ProviderIdentityTests(unittest.TestCase):
                         github_identity_preflight(value, github_observation())
                     self.assertEqual(raised.exception.code, "IDENTITY_UNBOUND")
 
+    def test_github_identity_refuses_malformed_merge_gate_shapes(self):
+        """AWF148B-C195-R1-017-001: supplied malformed policy must refuse."""
+        for expected_actor in (None, 1002):
+            for gate in ("malformed", [1001], False, 42, {"enabled": True},
+                         "", True, 0, 0.0, (), {"enabled": False}):
+                with self.subTest(expected_actor=expected_actor, merge_gate=gate):
+                    value = config()
+                    value["github"]["expected_actor_id"] = expected_actor
+                    value["merge_gate"] = gate
+                    with self.assertRaises(ProviderIdentityError) as raised:
+                        github_identity_preflight(value, github_observation())
+                    self.assertEqual(raised.exception.code, "IDENTITY_UNBOUND")
+
     def test_wrong_github_actor_or_repository_fails_by_immutable_id(self):
         for changes, field in (({"actor_id": 2002}, "actor_id"),
                                ({"repository_id": 202}, "repository_id"),
