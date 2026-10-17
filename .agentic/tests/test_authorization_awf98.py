@@ -14,7 +14,7 @@ from agentic.authorization import (  # noqa: E402
     render_owner_record,
     verify_owner_record,
 )
-from agentic.canonical import candidate_id, sha256  # noqa: E402
+from agentic.canonical import candidate_id, fingerprint, sha256  # noqa: E402
 from agentic.gates import (  # noqa: E402
     cap_disposition_record_id,
     review_verdict_json,
@@ -47,10 +47,19 @@ class OwnerDispositionTests(unittest.TestCase):
             "repository_id": 123, "pr_number": 157,
             "target_base_sha": "a" * 40, "head_sha": HEAD,
         }
+        self.snapshot = {
+            "issue_id": "AWF-98",
+            "acceptance_criteria": [],
+        }
+        self.contract = {
+            "ticket": "AWF-98",
+            "policy_hash": policy_hash(self.config, definition()),
+        }
         self.binding = {
             "project_id": "00000000-0000-0000-0000-000000000001",
             "repository_id": 123, "issue_id": "AWF-98",
-            "requirements_hash": "1" * 64, "contract_hash": "2" * 64,
+            "requirements_hash": fingerprint("requirements", self.snapshot),
+            "contract_hash": fingerprint("contract", self.contract),
             "policy_hash": policy_hash(self.config, definition()),
             "candidate_id": candidate_id(self.candidate),
         }
@@ -142,6 +151,7 @@ class OwnerDispositionTests(unittest.TestCase):
             assignment_record={"ticket_key": "AWF-98"},
             expected_policy_hash=self.binding["policy_hash"],
             expected_ticket_key="AWF-98",
+            candidate=self.candidate,
         )
 
     def _assert_verify_rejected(self, record, pattern):
@@ -164,6 +174,13 @@ class OwnerDispositionTests(unittest.TestCase):
             "candidate": self.candidate,
             "review_verdict": verdict,
             "assignment_record": {"ticket_key": "AWF-98"},
+        }
+
+    def trusted_bundle(self):
+        return {
+            "snapshot": copy.deepcopy(self.snapshot),
+            "contract": copy.deepcopy(self.contract),
+            "candidate": copy.deepcopy(self.candidate),
         }
 
     def test_request_assigns_id_and_renders_exact_dispose_line(self):
