@@ -543,6 +543,106 @@ class MergeTrainPublicationTests(unittest.TestCase):
         journal = json.loads((self.root / "journal.json").read_text("utf-8"))
         self.assertEqual("RECONCILED", journal["operations"][1]["status"])
 
+    def _expired_publish(self, candidate, *, mark_ready=False):
+        return merge_train().publish_batch(
+            candidate, observer_id="fixture-observer",
+            observer_registry=self.observer_registry,
+            publisher_id="fixture-publisher",
+            publisher_registry=self.publisher_registry,
+            intent_path=self.root / "journal.json",
+            now="2026-10-17T10:36:00Z", mark_ready=mark_ready)
+
+    def _orphaned_pr(self):
+        candidate = self._candidate()
+        self._register_publisher(lose_pr_response=True)
+        with self.assertRaisesRegex(ValidationError, "outcome is unknown"):
+            self._publish(candidate)
+        self._register_publisher()
+        return candidate
+
+    def test_expired_candidate_recovers_orphan_without_mutation_or_new_identity(self):
+        candidate = self._orphaned_pr()
+        original = copy.deepcopy(candidate)
+        calls = copy.deepcopy(self.provider_calls)
+        importlib.reload(merge_train())
+        candidate = json.loads(json.dumps(candidate))
+        registration = self.publisher_registry["fixture-publisher"]
+        with mock.patch.dict(registration, {
+                "observe_pull_request": mock.Mock(
+                    wraps=registration["observe_pull_request"])}):
+            result = self._expired_publish(candidate)
+            registration["observe_pull_request"].assert_called_with(
+                candidate["batch_branch"])
+        self.assertEqual("PUBLISHED_DRAFT", result["status"])
+        self.assertEqual("RECONCILED", result["journal"]["operations"][1]["status"])
+        self.assertEqual(original["publication_candidate_id"],
+                         result["journal"]["publication_candidate_id"])
+        self.assertEqual(original, candidate)
+        self.assertEqual(calls, self.provider_calls)
+
+    def test_expired_recovery_cannot_start_ready_mutation(self):
+        candidate = self._orphaned_pr()
+        calls = copy.deepcopy(self.provider_calls)
+        with self.assertRaisesRegex(ValidationError, "fresh"):
+            self._expired_publish(candidate, mark_ready=True)
+        journal = json.loads((self.root / "journal.json").read_text("utf-8"))
+        self.assertEqual("RECONCILED", journal["operations"][1]["status"])
+        self.assertEqual(2, len(journal["operations"]))
+        self.assertEqual(calls, self.provider_calls)
+
+    def test_expired_push_recovery_cannot_create_pr(self):
+        candidate = self._candidate()
+        registration = self.publisher_registry["fixture-publisher"]
+        original = registration["push_batch_ref"]
+
+        def lost_push(branch, head):
+            original(branch, head)
+            raise TimeoutError("push response lost")
+
+        registration["push_batch_ref"] = lost_push
+        with self.assertRaisesRegex(ValidationError, "outcome is unknown"):
+            self._publish(candidate)
+        with self.assertRaisesRegex(ValidationError, "fresh"):
+            self._expired_publish(candidate)
+        journal = json.loads((self.root / "journal.json").read_text("utf-8"))
+        self.assertEqual("RECONCILED", journal["operations"][0]["status"])
+        self.assertEqual(1, len(journal["operations"]))
+        self.assertEqual(["push_batch_ref"], [call[0] for call in self.provider_calls])
+
+    def test_expired_recovery_rejects_untrusted_or_mismatched_evidence(self):
+        candidate = self._orphaned_pr()
+        path = self.root / "journal.json"
+        original = path.read_bytes()
+        calls = copy.deepcopy(self.provider_calls)
+        registration = self.publisher_registry["fixture-publisher"]
+        observe = registration["observe_pull_request"]
+        invalid = copy.deepcopy(self.remote["pr"])
+        invalid["head_sha"] = "f" * 40
+        cases = [
+            (registration, "observe_pull_request", lambda branch: None, "unknown"),
+            (registration, "observe_pull_request", lambda branch: invalid, "unknown"),
+            (registration, "provider_identity", dict(self.provider, repository_id=99),
+             "provider identity"),
+            (self.observer_registry["fixture-observer"], "receipts", {}, "receipt"),
+        ]
+        for target, key, value, message in cases:
+            with self.subTest(key=key, message=message):
+                with mock.patch.dict(target, {key: value}):
+                    with self.assertRaisesRegex(ValidationError, message):
+                        self._expired_publish(candidate)
+                self.assertEqual(original, path.read_bytes())
+                self.assertEqual(calls, self.provider_calls)
+        # Recovery remains available once authenticated matching evidence returns.
+        with mock.patch.dict(registration, {"observe_pull_request": observe}):
+            self.assertEqual("PUBLISHED_DRAFT", self._expired_publish(candidate)["status"])
+
+    def test_expired_candidate_cannot_start_push_or_create_journal(self):
+        candidate = self._candidate()
+        with self.assertRaisesRegex(ValidationError, "fresh"):
+            self._expired_publish(candidate)
+        self.assertFalse((self.root / "journal.json").exists())
+        self.assertEqual([], self.provider_calls)
+
     def test_merge_train_exposes_no_merge_or_target_push_api(self):
         module = merge_train()
         forbidden = {"merge", "merge_batch", "push_target", "push_target_ref"}

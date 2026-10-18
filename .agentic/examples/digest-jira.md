@@ -14,7 +14,7 @@ AWF EX-1 | state MERGED | PR 7 | head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb |
 | merge_compatibility | PASS |
 | ticket_snapshot_current | PASS |
 | review_coverage | PASS |
-| provenance | PASS |
+| provenance | FAIL |
 | local_ci_parity | PASS |
 | publication_safety | PASS |
 | conclusion | NOT_READY |
