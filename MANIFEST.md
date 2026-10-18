@@ -228,7 +228,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/scripts/external_resources.py` | `10c20b51ed8bacf667a7f02b88e8b7177fa80feed307f04af5110987c9fcd810` |
 | `.agentic/scripts/five_slot_acceleration.py` | `805bbbdf0947939a0deebffd8b515d2c16c616cdf2789fbced6ebb36c97635d5` |
 | `.agentic/scripts/integration_queue.py` | `66fae5e6bb1edd3636cbfb418e5aa32126558d9118941343c2142a353d4605c3` |
-| `.agentic/scripts/merge_train.py` | `d8e1cfb17db840d89cfcc815ed67557aa5943716f3d81e6c24be2b06f06e384f` |
+| `.agentic/scripts/merge_train.py` | `5fb079e3dbb24af29408daad3027fdbd3687d0c22cdce38c4aa94075ad4dad52` |
 | `.agentic/scripts/operating.py` | `0ec1e1805a241ef585ae371d9ac32c29a52f53f459c4f0e504e7ae9fcd060a38` |
 | `.agentic/scripts/plan_streams.py` | `b1165b1187dca2d5f9ac3563ac170d15da316ce945fd4bafb2268cc173ba8ab5` |
 | `.agentic/scripts/prepare_routine_pilot.py` | `71e64de5acadd42bd933d444725f8b9d3bf0d0f66b9450d64b272848bc96f8bf` |
@@ -375,7 +375,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_merge_train.py` | `0457d5b10b53a69f42c0d674f36a1d07776dad947784db422b8118b0b61da6f2` |
 | `.agentic/tests/test_merge_train_batch_gate.py` | `e4080f96fd54e99a19bd0b2588ec4827dd8cde7f90283c5d02d5d47be5ec0f3a` |
 | `.agentic/tests/test_merge_train_closeout.py` | `fda35db6acc985d65ad3a304bbb0e1b60e1a4010481b63369b447f8b643503f6` |
-| `.agentic/tests/test_merge_train_publication.py` | `97d5558c938ea544512d7a04514132f5f39fd25b87d9c2b0c0573f77d0b877af` |
+| `.agentic/tests/test_merge_train_publication.py` | `98c9c4f59c0610bf69a7f22fc712d0275157e5c16207c08dd788449ed8dbf16a` |
 | `.agentic/tests/test_model_routing.py` | `b6a65f8d07525444d66af2c9490df5420779aa27ffd044ad82ba1a66f659d4e9` |
 | `.agentic/tests/test_model_routing_provenance.py` | `a1367235951a54574aff79d4817350f42f55c387b63f75f602604ab5e0d7538b` |
 | `.agentic/tests/test_module_import_isolation.py` | `75fa93ebd60268e51812989bd900201190589a0c4e895bb44e26d57924f1366d` |

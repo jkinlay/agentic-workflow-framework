@@ -11,19 +11,24 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
+import tempfile
 from urllib.parse import quote, urlencode, urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
-from agentic import ValidationError
+from agentic import ValidationError, VERSION
 from agentic import merge_train
-from agentic.child_process import child_env
+from agentic.child_process import child_env, isolated_git_env, GIT_RUNNER_POLICY
+from agentic.installer import verify_release
+from agentic.safeio import Tree, relative_parts, run_bounded
 
 
 def _run_gh(gh, arguments):
@@ -74,12 +79,144 @@ def _pull_request(value):
     return result
 
 
-def push_batch_ref(gh, repository, branch, head_sha, *, hostname="github.com"):
+def _git(git, root, arguments, *, stdin=None, mutation=False):
+    """Bounded, noninteractive Git; never retain child diagnostics or credentials."""
+    try:
+        done = run_bounded(
+            [git, "--no-replace-objects", "-c", "core.hooksPath=" + os.devnull,
+             "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+             "-c", "protocol.https.allow=always", "-c", "http.followRedirects=false",
+             "-C", str(root), *arguments],
+            stdin=stdin, cwd=str(root), env=isolated_git_env(), policy=GIT_RUNNER_POLICY)
+    except (ValidationError, OSError, subprocess.SubprocessError):
+        if mutation:
+            raise TimeoutError("batch transfer outcome is unknown") from None
+        raise ValidationError("batch Git operation unavailable or exceeded its bound") from None
+    if done.returncode:
+        if mutation:
+            # Even an error response can follow a successful remote mutation.
+            raise TimeoutError("batch transfer outcome is unknown") from None
+        raise ValidationError("batch Git operation failed")
+    return done.stdout
+
+
+def _local_binding(local_repository, git):
+    source, executable = Path(local_repository), Path(git)
+    if (not source.is_absolute() or not source.is_dir()
+            or not executable.is_absolute() or not executable.is_file()
+            or executable.suffix.lower() in {".bat", ".cmd", ".ps1"}):
+        raise ValidationError("publisher needs explicit local repository and native Git bindings")
+    source, executable = source.resolve(), str(executable.resolve())
+    database = _git(executable, source, ["rev-parse", "--absolute-git-dir"]).decode().strip()
+    if not Path(database).is_absolute() or not Path(database).is_dir():
+        raise ValidationError("publisher local repository is unavailable")
+    return Path(database).resolve(), executable
+
+
+def _materialize(git, database, head, destination):
+    # Read raw blobs rather than archive/checkout: committed export-ignore,
+    # export-subst, filters and line-ending attributes cannot alter gate bytes.
+    entries = _git(git, database, ["ls-tree", "-r", "-z", "--full-tree", head])
+    members = []
+    for entry in entries.split(b"\0"):
+        if not entry:
+            continue
+        metadata, name = entry.split(b"\t", 1)
+        mode, kind, sha = metadata.split()
+        if mode not in {b"100644", b"100755"} or kind != b"blob":
+            raise ValidationError("batch release contains unsupported file types")
+        name = name.decode("utf-8")
+        relative_parts(name)
+        if any(part.casefold() == ".git" for part in name.split("/")):
+            raise ValidationError("batch release contains Git metadata")
+        members.append((name, sha))
+    raw = _git(git, database, ["cat-file", "--batch"],
+               stdin=b"".join(sha + b"\n" for _, sha in members))
+    offset = 0
+    with Tree(destination) as tree:
+        for name, expected in members:
+            end = raw.find(b"\n", offset)
+            sha, kind, size = raw[offset:end].split()
+            size = int(size)
+            offset = end + 1
+            if sha != expected or kind != b"blob" or size < 0 or offset + size >= len(raw):
+                raise ValidationError("batch object materialization is incomplete")
+            tree.write(name, raw[offset:offset + size])
+            offset += size + 1
+        if offset != len(raw):
+            raise ValidationError("batch object materialization has trailing bytes")
+        verify_release(tree)
+
+
+def _upgrade_gate(destination):
+    # The driver enforces discovery and execution counts, independently of the
+    # command's exit status. Artifacts and bytecode stay outside the source repo.
+    # This is the release-specific upgrade acceptance test (e.g. upgrade_194),
+    # not the source-only upgrade infrastructure/installed-runtime suites.
+    driver = (
+        "import sys, unittest; from pathlib import Path; "
+        "root=Path.cwd(); sys.path.insert(0,str(root/'.agentic/lib')); "
+        "suite=unittest.TestLoader().discover(str(root/'.agentic/tests'),"
+        f"pattern={'test_upgrade_' + VERSION.replace('.', '') + '.py'!r}); "
+        "result=unittest.TextTestRunner().run(suite); "
+        "sys.exit(0 if result.wasSuccessful() and "
+        "result.testsRun > 0 and not result.skipped else 1)"
+    )
+    try:
+        done = run_bounded([sys.executable, "-B", "-I", "-c", driver],
+                           cwd=str(destination), env=isolated_git_env(), timeout=1800)
+    except (ValidationError, OSError, subprocess.SubprocessError):
+        raise ValidationError("batch upgrade gate unavailable or exceeded its bound") from None
+    if done.returncode:
+        raise ValidationError("batch upgrade gate failed or executed zero tests")
+
+
+def _transfer(git, database, destination, branch, head, gh):
+    ref = "refs/heads/" + branch
+    existing = _git(git, database, ["-c", "credential.helper=", "-c",
+        f"credential.{destination}.helper=!{shlex.quote(str(gh))} auth git-credential",
+        "ls-remote", "--refs", destination, ref])
+    if existing.strip():
+        raise ValidationError("batch destination already exists")
+    output = _git(git, database, ["-c", "credential.helper=", "-c",
+        f"credential.{destination}.helper=!{shlex.quote(str(gh))} auth git-credential",
+        "-c", "credential.interactive=false", "-c", "push.followTags=false",
+        "push", "--porcelain", "--no-verify", "--recurse-submodules=no",
+        "--force-with-lease=" + ref + ":", destination, head + ":" + ref], mutation=True)
+    if not any(line.split(b"\t")[:2] == [b"*", (head + ":" + ref).encode()]
+               for line in output.splitlines()):
+        # An identical concurrent creation can be reported as up-to-date. It
+        # must not be accepted as this operation's create-only publication.
+        raise TimeoutError("batch transfer outcome is unknown")
+
+
+def push_batch_ref(gh, repository, branch, head_sha, *, hostname="github.com",
+                   local_repository, git):
     _batch_branch(branch)
     merge_train._sha(head_sha, "batch head")
-    value = _api(gh, hostname, f"repos/{repository}/git/refs",
-                 "-f", f"ref=refs/heads/{branch}", "-f", f"sha={head_sha}")
-    return _batch_ref(value)
+    if (not re.fullmatch(r"[A-Za-z0-9.-]+", hostname)
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)):
+        raise ValidationError("publisher destination is invalid")
+    source, git = _local_binding(local_repository, git)
+    with tempfile.TemporaryDirectory(prefix="awf-batch-transport-") as temporary:
+        root = Path(temporary)
+        database, release = root / "objects.git", root / "release"
+        # Minimal bare object store: no config file, credentials, hooks or remote.
+        (database / "objects").mkdir(parents=True)
+        (database / "refs").mkdir()
+        (database / "HEAD").write_text("ref: refs/heads/unused\n", encoding="ascii")
+        release.mkdir()
+        _git(git, database, ["fetch", "--no-tags", "--no-write-fetch-head",
+                             str(source), head_sha])
+        if _git(git, database, ["cat-file", "-t", head_sha]).strip() != b"commit":
+            raise ValidationError("batch head must name a local commit")
+        _materialize(git, database, head_sha, release)
+        _upgrade_gate(release)
+        _transfer(git, database, f"https://{hostname}/{repository}.git", branch, head_sha, gh)
+    observed = observe_batch_ref(gh, repository, branch, hostname=hostname)
+    if observed != {"branch": branch, "head_sha": head_sha}:
+        raise ValidationError("batch remote observation differs from the exact candidate")
+    return observed
 
 
 def _batch_ref(value):
@@ -138,7 +275,8 @@ def mark_draft_pr_ready(gh, repository, pr_number, *, hostname="github.com"):
     return _pull_request(_api(gh, hostname, endpoint))
 
 
-def register_publisher(*, gh, provider_identity, implementation_sha256, release_sha256):
+def register_publisher(*, gh, provider_identity, implementation_sha256, release_sha256,
+                       local_repository, git):
     """Build a closed publisher registration after observing its repository.
 
     The host supplies its accepted implementation/release pins. Registration
@@ -152,6 +290,7 @@ def register_publisher(*, gh, provider_identity, implementation_sha256, release_
         raise ValidationError("publisher provider identity has an invalid host or repository")
     repository = identity["repository"]
     hostname = host.hostname
+    local_repository, git = _local_binding(local_repository, git)
     registration = {
         "producer_kind": "merge_train_publisher", "adapter_kind": "gh",
         "implementation_sha256": implementation_sha256,
@@ -160,7 +299,8 @@ def register_publisher(*, gh, provider_identity, implementation_sha256, release_
         "provider_identity": deepcopy(identity),
         "receipt_namespace": merge_train.PUBLISHER_NAMESPACE,
         "push_batch_ref": lambda branch, head: push_batch_ref(
-            gh, repository, branch, head, hostname=hostname),
+            gh, repository, branch, head, hostname=hostname,
+            local_repository=local_repository, git=git),
         "create_draft_pr": lambda branch, base, title: create_draft_pr(
             gh, repository, branch, base, title, hostname=hostname),
         "mark_draft_pr_ready": lambda number: mark_draft_pr_ready(
