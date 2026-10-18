@@ -340,7 +340,7 @@
     ".agentic/tests/test_config_diagnostics.py": "226162fb7438b47069a5ceb0760c7c49559ac25c4eb20f295c65c3fe21a4309b",
     ".agentic/tests/test_continuation.py": "39c20ac2265ec9f01306b0dc45a46e63fb306515046c87c725191d8ee359217e",
     ".agentic/tests/test_continuous_controller.py": "a6808e3e55a6c4c4e064b14fb2151e3414bfe91e92281f47799b500e71a4b78e",
-    ".agentic/tests/test_continuous_controller_planning.py": "96e0f21d61abdced6d11b6099cb13ae3b8d772c2d1755568c1dedbcd21ab32e0",
+    ".agentic/tests/test_continuous_controller_planning.py": "c7adf744c310f9e75e5ffc5d22bb1a2f6c0c30e3d8d64c905f3fffc5ef0467da",
     ".agentic/tests/test_controller_switches_195.py": "25e855f9d165230fd1b967ce945ff831ec5b2c75d9128363be8392950f0be399",
     ".agentic/tests/test_external_resources.py": "fd70b11e804bb3a07c4f8adab48e0a9674bea5ac83718925ff6181530c8f371e",
     ".agentic/tests/test_external_resources_cli.py": "71a8c08a47ca96cd8c8ade49aa5e866a84d44e5e034f285e70efe1728c4370ff",

@@ -155,6 +155,13 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 		self.assertEqual([(item['ticket'], item['role']) for item in calls], [('AWF-104', 'writer')])
 		self.assertEqual(len(result['dispatch_receipts']), 1)
 
+	def test_operator_capacity_without_authenticated_resource_observation_is_refused(self):
+		# This legacy helper supplies only an operator-authored host_capacity.
+		# Production must refuse it before invoking the dispatch adapter.
+		with self.assertRaisesRegex(ValidationError, 'authenticated.*resource|resource.*authenticated'):
+			self.cycle([ticket('AWF-88', 1)], capacity=1,
+				dispatch=lambda payload: self.fail('unauthenticated capacity dispatched work'))
+
 class OverlapAllowanceBoundaryTests(unittest.TestCase):
 	def test_lane_start_provider_observation_occurs_outside_write_transaction(self):
 		calls = []
