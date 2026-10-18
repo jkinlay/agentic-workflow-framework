@@ -128,5 +128,133 @@ class PublicationRecordTests(unittest.TestCase):
                 self.assertEqual(snapshot(root), committed)
 
 
+class PublicationRecordRecoveryTests(unittest.TestCase):
+    def test_partial_commit_seal_is_not_repaired(self):
+        from agentic import publication
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = publication.PublicationRecordStore(root)
+            key = "publication/partial-seal"
+            payload = canonical({"operation": "publish"})
+            store.write(key, payload)
+            artifacts = [p for p in root.rglob("*")
+                         if p.is_file() and p != store.path_for(key)]
+            self.assertTrue(artifacts, "commit evidence must be durable")
+            for artifact in artifacts:
+                artifact.write_bytes(artifact.read_bytes()[:1])
+            broken = snapshot(root)
+            restarted = publication.PublicationRecordStore(root)
+            for operation in (restarted.read, restarted.recover):
+                with self.assertRaises(ValidationError):
+                    operation(key)
+            with self.assertRaises(ValidationError):
+                restarted.write(key, payload)
+            self.assertEqual(snapshot(root), broken)
+
+    def test_missing_record_recovery_does_not_create_artifacts(self):
+        from agentic import publication
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = publication.PublicationRecordStore(root)
+            for operation in (store.read, store.recover):
+                with self.assertRaises(ValidationError):
+                    operation("publication/missing")
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_intact_pending_record_recovers_once(self):
+        from agentic import publication
+
+        class Crash(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = publication.PublicationRecordStore(Path(directory))
+            payload = canonical({"operation": "publish"})
+
+            def crash(pending):
+                raise Crash()
+
+            with self.assertRaises(Crash):
+                store.write("publication/intact", payload, before_commit=crash)
+            with self.assertRaises(ValidationError):
+                store.read("publication/intact")
+            restarted = publication.PublicationRecordStore(Path(directory))
+            recovered = restarted.recover("publication/intact")
+            self.assertEqual(recovered["canonical_bytes"], payload)
+            committed = snapshot(Path(directory))
+            self.assertEqual(restarted.recover("publication/intact"), recovered)
+            self.assertEqual(snapshot(Path(directory)), committed)
+
+    def test_record_for_another_key_is_refused(self):
+        from agentic import publication
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = publication.PublicationRecordStore(Path(directory))
+            payload = canonical({"operation": "publish"})
+            store.write("publication/one", payload)
+            store.write("publication/two", payload)
+            store.path_for("publication/two").write_bytes(
+                store.path_for("publication/one").read_bytes())
+            for operation in (store.read, store.recover):
+                with self.assertRaises(ValidationError):
+                    operation("publication/two")
+
+    def test_noncanonical_payload_and_unsafe_keys_leave_no_artifacts(self):
+        from agentic import publication
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = publication.PublicationRecordStore(root)
+            for payload in (b'{ "x": 1}', b'{"x":1,"x":2}', b'{', b'1.2', "text"):
+                with self.assertRaises(ValidationError):
+                    store.write("publication/invalid", payload)
+            for key in ("../escape", "/absolute", "a//b", "a/./b", "a\\b", ""):
+                with self.assertRaises(ValidationError):
+                    store.write(key, canonical({"x": 1}))
+            self.assertEqual(snapshot(root), {})
+
+    def test_hook_corruption_cannot_commit_or_be_overwritten(self):
+        from agentic import publication
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = publication.PublicationRecordStore(root)
+            payload = canonical({"operation": "publish"})
+
+            def corrupt(pending):
+                pending.write_bytes(b'{}')
+
+            with self.assertRaises(ValidationError):
+                store.write("publication/corrupt", payload, before_commit=corrupt)
+            broken = snapshot(root)
+            for operation in (store.read, store.recover):
+                with self.assertRaises(ValidationError):
+                    operation("publication/corrupt")
+            with self.assertRaises(ValidationError):
+                store.write("publication/corrupt", payload)
+            self.assertEqual(snapshot(root), broken)
+
+    def test_second_writer_cannot_replace_pending_record(self):
+        from agentic import publication
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = publication.PublicationRecordStore(root)
+            payload = canonical({"sequence": 1})
+
+            def competing_write(pending):
+                other = publication.PublicationRecordStore(root)
+                before = snapshot(root)
+                with self.assertRaises(ValidationError):
+                    other.write("publication/race", canonical({"sequence": 2}))
+                self.assertEqual(snapshot(root), before)
+
+            result = store.write("publication/race", payload,
+                                 before_commit=competing_write)
+            self.assertEqual(store.read("publication/race"), result)
+
+
 if __name__ == "__main__":
     unittest.main()
