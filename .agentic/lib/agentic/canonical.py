@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from . import ValidationError
+from .safeio import snapshot_file
 
 MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
 
@@ -64,9 +65,7 @@ def loads(text: str):
 
 
 def load(path: Path):
-    data = path.read_bytes()
-    if len(data) > MAX_DOCUMENT_BYTES:
-        raise ValidationError("Document exceeds 8 MiB")
+    data = snapshot_file(path, maximum=MAX_DOCUMENT_BYTES).data
     if path.suffix.lower() == ".json":
         return loads(data.decode("utf-8"))
     return load_yaml(data)
