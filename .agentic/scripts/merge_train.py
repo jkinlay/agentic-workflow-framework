@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Gh-backed merge-train publisher adapter.
 
-This surface can create/update only ``refs/heads/batch/*`` and draft pull
-requests.  It intentionally has no target-ref push or merge command.
+Register this adapter with the host and publish through
+``agentic.merge_train.publish_batch``. That entry point requires an authenticated
+candidate, registered observer and publisher, freeze rechecks and durable intent.
+Direct mutation commands are unavailable.
 """
 from __future__ import annotations
 
@@ -180,28 +182,8 @@ def register_publisher(*, gh, provider_identity, implementation_sha256, release_
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--gh", default="gh")
-    parser.add_argument("--repository", required=True)
-    actions = parser.add_subparsers(dest="action", required=True)
-    push = actions.add_parser("push-batch-ref")
-    push.add_argument("--branch", required=True)
-    push.add_argument("--head", required=True)
-    create = actions.add_parser("create-draft-pr")
-    create.add_argument("--branch", required=True)
-    create.add_argument("--base", required=True)
-    create.add_argument("--title", required=True)
-    ready = actions.add_parser("mark-draft-pr-ready")
-    ready.add_argument("--pr", required=True, type=int)
-    args = parser.parse_args(argv)
-    if args.action == "push-batch-ref":
-        result = push_batch_ref(args.gh, args.repository, args.branch, args.head)
-    elif args.action == "create-draft-pr":
-        result = create_draft_pr(args.gh, args.repository, args.branch,
-                                 args.base, args.title)
-    else:
-        result = mark_draft_pr_ready(args.gh, args.repository, args.pr)
-    print(json.dumps(result, sort_keys=True))
-    return 0
+    parser.parse_args(argv)
+    parser.error("publication requires the host's registered publish_batch path")
 
 
 if __name__ == "__main__":
