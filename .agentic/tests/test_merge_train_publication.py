@@ -5,7 +5,10 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -339,13 +342,7 @@ class MergeTrainPublicationTests(unittest.TestCase):
             self.assertEqual("api", command[1])
             self.assertIn("example.invalid", command)
             endpoint = command[2]
-            if endpoint.endswith("/git/refs"):
-                self.assertEqual(["-f", "ref=refs/heads/" + branch,
-                                  "-f", "sha=" + self.head], command[5:])
-                state["ref"] = {"ref": "refs/heads/" + branch,
-                                "object": {"sha": self.head}}
-                output = state["ref"]
-            elif "/git/matching-refs/" in endpoint:
+            if "/git/matching-refs/" in endpoint:
                 output = [state["ref"]] if state["ref"] else []
             elif endpoint.endswith("/pulls"):
                 self.assertEqual(["-f", "head=" + branch, "-f", "base=main",
@@ -368,9 +365,20 @@ class MergeTrainPublicationTests(unittest.TestCase):
                 output = {"id": 42, "full_name": "owner/repository"}
             return mock.Mock(returncode=0, stdout=json.dumps(output), stderr="")
 
-        with mock.patch.object(adapter.subprocess, "run", side_effect=gh_run):
+        def transfer(git, database, destination, ref, head, gh):
+            self.assertEqual("https://example.invalid/owner/repository.git", destination)
+            self.assertEqual((branch, self.head), (ref, head))
+            state["ref"] = {"ref": "refs/heads/" + ref, "object": {"sha": head}}
+
+        with mock.patch.object(adapter.subprocess, "run", side_effect=gh_run), \
+                mock.patch.object(adapter, "_local_binding", return_value=(self.root, "git-fixture")), \
+                mock.patch.object(adapter, "_git", return_value=b"commit\n"), \
+                mock.patch.object(adapter, "_materialize"), \
+                mock.patch.object(adapter, "_upgrade_gate"), \
+                mock.patch.object(adapter, "_transfer", side_effect=transfer) as pushed:
             registration = adapter.register_publisher(
                 gh="gh-fixture", provider_identity=self.provider,
+                local_repository=self.root, git="git-fixture",
                 implementation_sha256="d" * 64, release_sha256="e" * 64)
             self.publisher_registry["fixture-publisher"] = registration
             with self.assertRaisesRegex(ValidationError, "outcome is unknown"):
@@ -378,13 +386,13 @@ class MergeTrainPublicationTests(unittest.TestCase):
             # A new process reconstructs the adapter; recovery observes gh state.
             self.publisher_registry["fixture-publisher"] = adapter.register_publisher(
                 gh="gh-fixture", provider_identity=self.provider,
+                local_repository=self.root, git="git-fixture",
                 implementation_sha256="d" * 64, release_sha256="e" * 64)
             result = self._publish(candidate, mark_ready=True)
             self.assertEqual("PUBLISHED_READY", result["status"])
             self.assertEqual(211, result["pull_request"]["number"])
             self.assertFalse(result["pull_request"]["draft"])
-            self.assertEqual(1, sum(command[2].endswith("/git/refs")
-                                    for command in commands))
+            self.assertEqual(1, pushed.call_count)
             self.assertEqual(1, sum(command[2].endswith("/pulls")
                                     for command in commands))
             self.assertEqual(1, sum(command[1:3] == ["pr", "ready"]
@@ -400,10 +408,12 @@ class MergeTrainPublicationTests(unittest.TestCase):
                 {"id": 99, "full_name": "owner/repository"}), stderr=""),
                          mock.Mock(returncode=1, stdout="", stderr="failure")):
             with self.subTest(response=response):
-                with mock.patch.object(adapter.subprocess, "run", return_value=response):
+                with mock.patch.object(adapter.subprocess, "run", return_value=response), \
+                        mock.patch.object(adapter, "_local_binding", return_value=(self.root, "git-fixture")):
                     with self.assertRaises(ValidationError):
                         adapter.register_publisher(
                             gh="gh-fixture", provider_identity=self.provider,
+                            local_repository=self.root, git="git-fixture",
                             implementation_sha256="d" * 64,
                             release_sha256="e" * 64)
 
@@ -439,11 +449,14 @@ class MergeTrainPublicationTests(unittest.TestCase):
 
     def test_gh_process_timeout_becomes_unknown_publication_outcome(self):
         adapter = self._gh_adapter()
+        with mock.patch.object(adapter, "run_bounded", side_effect=
+                adapter.subprocess.TimeoutExpired(["git-fixture"], 120)):
+            with self.assertRaises(TimeoutError):
+                adapter._git("git-fixture", self.root, ["push"], mutation=True)
         with mock.patch.object(adapter.subprocess, "run", side_effect=
                 adapter.subprocess.TimeoutExpired(["gh-fixture"], 120)):
             with self.assertRaises(TimeoutError):
-                adapter.push_batch_ref("gh-fixture", "owner/repository",
-                                       self._candidate()["batch_branch"], self.head)
+                adapter._run_gh("gh-fixture", ["api", "fixture"])
 
     def test_freeze_is_rechecked_before_every_provider_mutation(self):
         for drift_after, expected_calls in [(0, []), (1, ["push_batch_ref"]),
@@ -668,6 +681,253 @@ class MergeTrainPublicationTests(unittest.TestCase):
         script = (ROOT / ".agentic/scripts/merge_train.py").read_text("utf-8")
         self.assertNotIn("push-target", script)
         self.assertNotIn("merge-batch", script)
+
+
+class BatchObjectTransportTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="awf-object-push-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.source = self.root / "source.git"
+        self.remote = self.root / "remote.git"
+        self.git = str(Path(shutil.which("git")).resolve())
+        for repository in (self.source, self.remote):
+            self.command(repository.parent, "init", "--bare", str(repository))
+        self.adapter = MergeTrainPublicationTests._gh_adapter(self)
+        self.head = self.commit()
+        self.branch = "batch/object-transfer"
+        self.destination = "https://example.invalid/owner/repository.git"
+
+    def command(self, root, *args, data=None):
+        environment = os.environ.copy()
+        environment.update(GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                           GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+        done = subprocess.run([self.git, "-C", str(root), *args], input=data,
+                              capture_output=True, env=environment, timeout=30)
+        self.assertEqual(0, done.returncode, done.stderr)
+        return done.stdout.strip().decode()
+
+    def commit(self, *, test="import unittest\nclass Upgrade(unittest.TestCase):\n def test_ok(self): pass\n",
+               valid=True, parent=None):
+        files = {".agentic/tests/test_upgrade_194.py": test.encode(),
+                 ".gitattributes": b".agentic/tests/* export-ignore\n",
+                 "payload.txt": b"new object bytes\n"}
+        manifest = {"format": "awf-manifest-1", "template_version": "1.9.4",
+                    "files": {name: hashlib.sha256(value).hexdigest()
+                              for name, value in files.items()}}
+        if not valid:
+            manifest["files"]["payload.txt"] = "0" * 64
+        files["MANIFEST.json"] = json.dumps(manifest).encode()
+        # A temporary index creates nested trees without a working checkout.
+        index = self.root / "fixture-index"
+        environment = os.environ.copy()
+        environment["GIT_INDEX_FILE"] = str(index)
+        for name, value in files.items():
+            blob = self.command(self.source, "hash-object", "-w", "--stdin", data=value)
+            done = subprocess.run([self.git, "-C", str(self.source), "update-index", "--add",
+                                   "--cacheinfo", "100644", blob, name], env=environment,
+                                  capture_output=True, timeout=30)
+            self.assertEqual(0, done.returncode, done.stderr)
+        done = subprocess.run([self.git, "-C", str(self.source), "write-tree"],
+                              env=environment, capture_output=True, timeout=30)
+        self.assertEqual(0, done.returncode, done.stderr)
+        tree = done.stdout.strip().decode()
+        return self.command(self.source, "commit-tree", tree,
+                            *(["-p", parent] if parent else []), data=b"fixture\n")
+
+    def push(self, *, head=None, observation=True):
+        def observe(*args, **kwargs):
+            if observation is not True:
+                return observation
+            sha = self.command(self.remote, "rev-parse", "refs/heads/" + self.branch)
+            return {"branch": self.branch, "head_sha": sha}
+
+        original = self.adapter._git
+        self.transfers = []
+
+        def local_git(git, root, arguments, **kwargs):
+            if Path(root).resolve() != self.source.resolve():
+                self.assertFalse((Path(root) / "config").exists())
+                self.assertFalse((Path(root) / "credentials").exists())
+            if "push" in arguments:
+                self.transfers.append(list(arguments))
+            arguments = [str(self.remote) if item == self.destination else item
+                         for item in arguments]
+            return original(git, root, arguments, **kwargs)
+
+        with mock.patch.object(self.adapter, "_git", side_effect=local_git), \
+                mock.patch.object(self.adapter, "observe_batch_ref", side_effect=observe):
+            return self.adapter.push_batch_ref(
+                "gh-fixture", "owner/repository", self.branch, head or self.head,
+                hostname="example.invalid", local_repository=self.source, git=self.git)
+
+    def test_batch_push_accepts_noncanonical_source_path(self):
+        alias = self.root / "path-alias"
+        alias.mkdir()
+        self.source = alias / ".." / "source.git"
+        self.assertNotEqual(self.source, self.source.resolve())
+        config = (self.source / "config").read_bytes()
+        self.assertEqual({"branch": self.branch, "head_sha": self.head}, self.push())
+        self.assertEqual(config, (self.source / "config").read_bytes())
+
+    def test_batch_push_transfers_local_objects_to_empty_remote(self):
+        parent = self.head
+        self.head = self.commit(parent=parent)
+        config = (self.source / "config").read_bytes()
+        result = self.push()
+        self.assertEqual({"branch": self.branch, "head_sha": self.head}, result)
+        self.assertEqual(parent, self.command(self.remote, "rev-parse", self.head + "^"))
+        self.assertEqual("new object bytes", self.command(
+            self.remote, "show", self.head + ":payload.txt"))
+        self.assertEqual(config, (self.source / "config").read_bytes())
+        self.assertEqual(["refs/heads/" + self.branch], self.command(
+            self.remote, "for-each-ref", "--format=%(refname)").splitlines())
+
+    def test_batch_push_preserves_existing_main_and_unrelated_refs(self):
+        original = self.head
+        self.command(self.remote, "fetch", str(self.source), original)
+        for branch in ("main", "unrelated"):
+            self.command(self.remote, "update-ref", "refs/heads/" + branch, original)
+        self.head = self.commit(parent=original)
+        self.push()
+        for branch in ("main", "unrelated"):
+            self.assertEqual(original, self.command(self.remote, "rev-parse", "refs/heads/" + branch))
+
+    def test_batch_push_is_exact_ref_create_only(self):
+        self.push()
+        transferred = self.transfers[0]
+        for head in (self.head, self.commit(parent=self.head)):
+            with self.assertRaises(ValidationError):
+                self.push(head=head)
+        self.assertEqual(self.head, self.command(self.remote, "rev-parse", "refs/heads/" + self.branch))
+        self.assertIn("--force-with-lease=refs/heads/" + self.branch + ":", transferred)
+        self.assertEqual(self.head + ":refs/heads/" + self.branch, transferred[-1])
+
+    def test_batch_push_concurrent_creation_cannot_be_overwritten(self):
+        original = self.adapter._git
+        self.command(self.remote, "fetch", str(self.source), self.head)
+        for index, rival in enumerate((self.head, self.commit(parent=self.head))):
+            self.branch = "batch/race-" + str(index)
+            self.command(self.remote, "fetch", str(self.source), rival)
+
+            def race(git, root, arguments, **kwargs):
+                if "push" in arguments:
+                    self.command(self.remote, "update-ref", "refs/heads/" + self.branch, rival)
+                return original(git, root, arguments, **kwargs)
+
+            with mock.patch.object(self.adapter, "_git", side_effect=race):
+                with self.assertRaises(TimeoutError):
+                    self.push()
+            self.assertEqual(rival, self.command(self.remote, "rev-parse", "refs/heads/" + self.branch))
+
+    def test_registered_push_binds_local_repository_and_provider_destination(self):
+        provider = {"host": "https://example.invalid", "repository": "owner/repository", "repository_id": 42}
+        with mock.patch.object(self.adapter, "_api", return_value={"id": 42, "full_name": "owner/repository"}):
+            registration = self.adapter.register_publisher(
+                gh="gh-fixture", provider_identity=provider, local_repository=self.source,
+                git=self.git, implementation_sha256="d" * 64, release_sha256="e" * 64)
+        provider["repository"] = "other/target"
+        with mock.patch.object(self.adapter, "push_batch_ref", return_value={}) as pushed:
+            registration["push_batch_ref"](self.branch, self.head)
+        self.assertEqual("owner/repository", pushed.call_args.args[1])
+        self.assertEqual(self.source.resolve(), pushed.call_args.kwargs["local_repository"])
+        self.assertEqual(self.git, pushed.call_args.kwargs["git"])
+        with self.assertRaises(ValidationError):
+            self.adapter._local_binding(self.root / "missing", self.git)
+        with self.assertRaises(ValidationError):
+            self.adapter._local_binding(Path("relative"), self.git)
+
+    def test_batch_push_lost_response_recovers_without_retransmission(self):
+        harness = MergeTrainPublicationTests()
+        harness.setUp()
+        self.addCleanup(harness.tearDown)
+        harness.head = self.head
+        harness.tree = self.command(self.source, "rev-parse", self.head + "^{tree}")
+        candidate = harness._candidate()
+        self.branch = candidate["batch_branch"]
+        original_git = self.adapter._git
+        transfers = []
+
+        def local_git(git, root, arguments, **kwargs):
+            arguments = [str(self.remote) if item == self.destination else item for item in arguments]
+            result = original_git(git, root, arguments, **kwargs)
+            if "push" in arguments:
+                transfers.append(arguments)
+                raise TimeoutError("response lost")
+            return result
+
+        def observe(*args, **kwargs):
+            done = subprocess.run([self.git, "-C", str(self.remote), "rev-parse", "--verify",
+                                   "refs/heads/" + self.branch], capture_output=True, timeout=30)
+            return ({"branch": self.branch, "head_sha": done.stdout.strip().decode()}
+                    if not done.returncode else None)
+
+        original_registration = harness.publisher_registry["fixture-publisher"]
+        with mock.patch.object(self.adapter, "_git", side_effect=local_git), \
+                mock.patch.object(self.adapter, "_api", return_value={"id": 42, "full_name": "owner/repository"}), \
+                mock.patch.object(self.adapter, "observe_batch_ref", side_effect=observe), \
+                mock.patch.object(self.adapter, "create_draft_pr", side_effect=lambda gh, repo, branch, base, title, **kw:
+                                  original_registration["create_draft_pr"](branch, base, title)), \
+                mock.patch.object(self.adapter, "observe_pull_request", side_effect=lambda gh, repo, branch, **kw:
+                                  original_registration["observe_pull_request"](branch)):
+            def register():
+                return self.adapter.register_publisher(
+                    gh="gh-fixture", provider_identity=harness.provider,
+                    local_repository=self.source, git=self.git,
+                    implementation_sha256="d" * 64, release_sha256="e" * 64)
+
+            harness.publisher_registry["fixture-publisher"] = register()
+            with self.assertRaisesRegex(ValidationError, "outcome is unknown"):
+                harness._publish(candidate)
+            self.assertIsNone(harness.remote["pr"])
+            harness.publisher_registry["fixture-publisher"] = register()
+            result = harness._publish(candidate)
+        self.assertEqual("PUBLISHED_DRAFT", result["status"])
+        self.assertEqual(1, len(transfers))
+        self.assertEqual(candidate["publication_candidate_id"], result["journal"]["publication_candidate_id"])
+
+    def test_batch_push_uses_isolated_noninteractive_bounded_transport(self):
+        secret = "ghp_fixture_secret_never_diagnosed"
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_COUNT": "9", "GIT_ASKPASS": "untrusted"}), \
+                mock.patch.object(self.adapter, "run_bounded", return_value=subprocess.CompletedProcess(
+                    [], 1, secret.encode(), secret.encode())) as run:
+            with self.assertRaises(TimeoutError) as refused:
+                self.adapter._git(self.git, self.source, ["push"], mutation=True)
+        self.assertNotIn(secret, str(refused.exception))
+        self.assertIsNone(refused.exception.__cause__)
+        self.assertNotIn("GIT_ASKPASS", run.call_args.kwargs["env"])
+        self.assertNotIn("GIT_CONFIG_COUNT", run.call_args.kwargs["env"])
+        self.assertEqual("0", run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"])
+        self.assertEqual(self.adapter.GIT_RUNNER_POLICY, run.call_args.kwargs["policy"])
+        with mock.patch.object(self.adapter, "_git", side_effect=[b"", b"*\t" +
+                (self.head + ":refs/heads/" + self.branch).encode() + b"\t[new branch]\n"]) as git:
+            self.adapter._transfer(self.git, self.source, self.destination, self.branch, self.head, "gh-fixture")
+        for call in git.call_args_list:
+            arguments = call.args[2]
+            self.assertIn("credential.helper=", arguments)
+            self.assertIn("credential." + self.destination + ".helper=!gh-fixture auth git-credential", arguments)
+            self.assertNotIn(secret, str(arguments))
+        # Missing credentials fail on the preflight; a push is never attempted.
+        with mock.patch.object(self.adapter, "_git", side_effect=ValidationError("credentials unavailable")) as git:
+            with self.assertRaises(ValidationError):
+                self.adapter._transfer(self.git, self.source, self.destination, self.branch, self.head, "gh-fixture")
+            self.assertEqual(1, git.call_count)
+        self.assertNotIn("credential", (self.source / "config").read_text())
+
+    def test_batch_push_gate_checks_exact_commit_and_rejects_empty_upgrade_run(self):
+        for head in (self.commit(valid=False), self.commit(test=""),
+                     self.commit(test="import unittest\nclass Upgrade(unittest.TestCase):\n def test_bad(self): self.fail()\n"),
+                     self.commit(test="import unittest\n@unittest.skip('unevaluable')\nclass Upgrade(unittest.TestCase):\n def test_skip(self): pass\n"),
+                     "f" * 40):
+            with self.subTest(head=head), self.assertRaises(ValidationError):
+                self.push(head=head)
+            self.assertEqual([], self.transfers)
+
+    def test_batch_push_observes_exact_remote_head_before_pr_creation(self):
+        for index, observation in enumerate((None, {}, {"branch": self.branch, "head_sha": "f" * 40})):
+            self.branch = "batch/observation-" + str(index)
+            with self.subTest(observation=observation), self.assertRaises(ValidationError):
+                self.push(observation=observation)
 
 
 if __name__ == "__main__":
