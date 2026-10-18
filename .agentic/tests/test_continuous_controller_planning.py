@@ -138,7 +138,7 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 	def cycle(self, items, *, capacity=2, dispatch=None):
 		calls = []
 		dispatch = dispatch or (lambda payload: calls.append(dict(payload)) or receipt(payload))
-		result = production_controller_cycle(self.store, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **REPOSITORY, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
+		result = production_controller_cycle(self.store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **REPOSITORY, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
 		return (calls, result)
 
 	def test_production_cycle_dispatches_mixed_writer_and_critic_per_ticket(self):
@@ -247,7 +247,7 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			'controller_clock': controller_clock or (lambda: now),
 		}
 		arguments.update(operations)
-		return production_controller_cycle(store, now=now, host_capacity=capacity,
+		return production_controller_cycle(store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=now, host_capacity=capacity,
 			inventory_binding=BINDING, **REPOSITORY, **arguments)
 
 	def validate(self, request=None, observation=None, **kwargs):

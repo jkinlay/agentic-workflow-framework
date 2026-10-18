@@ -26,7 +26,7 @@
     "lane_cap": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 9007199254740991
+      "maximum": 1000
     },
     "start_gap_minutes": {
       "type": "integer",

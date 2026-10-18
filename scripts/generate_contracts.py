@@ -30,6 +30,13 @@ def integer(minimum=0, **extra):
     return {"type": "integer", "minimum": minimum, "maximum": 9007199254740991, **extra}
 
 
+def capacity(minimum=0):
+    # Match planning's authenticated host/resource observation limit. This is
+    # a serialization safety ceiling, not evidence of available host capacity.
+    # Native operating streams retain their stricter six-stream bound.
+    return integer(minimum, maximum=1000)
+
+
 def enum(*values):
     return {"enum": list(values)}
 
@@ -234,7 +241,7 @@ def catalog(*, include_ticket_plan=True):
         schemas["ticket-plan"] = obj({
             "format": const("awf-ticket-plan-1"),
             "schema_version": const(3),
-            "lane_cap": integer(1),
+            "lane_cap": capacity(1),
             "start_gap_minutes": integer(),
             "tier3_round_cap": integer(1, maximum=3),
             "generator_order": arr(ticket_key, uniqueItems=True),
@@ -603,7 +610,7 @@ def catalog(*, include_ticket_plan=True):
         "model": text(), "runtime_version": text(), "instruction_hash": DIGEST, "permission_profile_hash": DIGEST,
         "capabilities": STRINGS, "status": enum("COMPLETE", "FAILED", "CANCELLED"),
         "attestation_evidence": EVIDENCE,
-        "resources_held": arr(obj({"name": text(pattern="^[a-z][a-z0-9_]*$"), "slots": integer(1), "from": TIME, "until": TIME}))})
+        "resources_held": arr(obj({"name": text(pattern="^[a-z][a-z0-9_]*$"), "slots": capacity(1), "from": TIME, "until": TIME}))})
     change = obj({"path": text(), "action": enum("added", "modified", "deleted")})
     schemas["worker-result"] = bound({"status": enum("COMPLETE", "BLOCKED", "FAILED"), "commit_route": enum("WORKER", "PUBLISHER"), "dispatch_id": UUID,
         "files_changed": STRINGS, "tested_tree": OBJECT_ID, "changes": arr(change, 1, uniqueItems=True),
@@ -803,9 +810,9 @@ def catalog(*, include_ticket_plan=True):
             when("event_type", "lifecycle_transition", {"properties": {"ticket": text(), "state": enum(*STATES)}})])
     schemas["host-lease"] = obj({"schema_version": const(3), "lease_id": UUID, "project_id": UUID, "task_id": UUID,
         "fencing_token": integer(1), "control_generation": integer(1), "resource_class": enum("standard", "heavy", "gpu"),
-        "worker_slots": integer(1), "heavy_slots": integer(), "gpu_slots": integer(), "issued_at": TIME,
+        "worker_slots": capacity(1), "heavy_slots": capacity(), "gpu_slots": capacity(), "issued_at": TIME,
         "expires_at": TIME, "status": enum("ACTIVE", "EXPIRED", "RELEASED", "REVOKED"), "evidence": EVIDENCE,
-        "resources_held": arr(obj({"name": text(pattern="^[a-z][a-z0-9_]*$"), "slots": integer(1), "from": TIME, "until": TIME}))})
+        "resources_held": arr(obj({"name": text(pattern="^[a-z][a-z0-9_]*$"), "slots": capacity(1), "from": TIME, "until": TIME}))})
     schemas["reconciliation"] = obj({"schema_version": const(3), "record_id": UUID, "created_at": TIME, "project_id": UUID,
         "state_revision": integer(), "complete": BOOL, "sources": arr(obj({"source": text(), "complete": BOOL, "observed_at": TIME, "evidence": EVIDENCE}), 1),
         "unknown_operation_ids": STRINGS, "orphan_run_ids": STRINGS, "required_actions": STRINGS})
@@ -868,10 +875,10 @@ def catalog(*, include_ticket_plan=True):
            "auth_profile": nullable(text()),
            "base_branch": text(), "branch_pattern": text(), "merge_method": enum("merge", "squash", "rebase"),
            "draft_pr_first": TRUE, "one_repository_per_controller": TRUE}),
-        "execution": obj({"profile": const("manual_reference"), "max_parallel_tickets": integer(1),
+        "execution": obj({"profile": const("manual_reference"), "max_parallel_tickets": capacity(1),
            "child_env_strip_extra": arr(text(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), 0, uniqueItems=True),
            "native_streams": obj({"enabled": BOOL, "dispatch_policy": const("ready_independent")}),
-           "max_parallel_tickets_per_stream": integer(1), "max_agent_runs_per_ticket": integer(1),
+           "max_parallel_tickets_per_stream": capacity(1), "max_agent_runs_per_ticket": integer(1),
            "max_spawn_depth": integer(0, maximum=1), "max_amendment_cycles": integer(1),
            "max_cap_extensions": integer(0, maximum=3),
            "risk_tiers": obj({"tier1_eligible_paths": STRINGS, "tier1_excluded_paths": STRINGS,
@@ -885,9 +892,9 @@ def catalog(*, include_ticket_plan=True):
            "one_writer_per_ticket": TRUE, "roles": obj({r: role_policy for r in ["controller", "worker", "critic", "specialist"]}),
            "route_capabilities": obj({"observation_path": text(), "max_age_days": integer(1)}),
            "host_broker": obj({"enabled": BOOL, "broker_id": text(0), "lease_before_dispatch": TRUE,
-                              "max_workers": integer(1), "max_heavy_jobs": integer(), "max_gpu_jobs": integer(),
+                              "max_workers": capacity(1), "max_heavy_jobs": capacity(), "max_gpu_jobs": capacity(),
                               "resources": {"type": "object", "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
-                                            "additionalProperties": integer(1)}})}),
+                                            "additionalProperties": capacity(1)}})}),
         "validation": obj({"commands": arr(text(), 1, uniqueItems=True), "ci_candidate_policy": const("synthetic_merge_required"),
           "require_candidate_bound_ci_evidence": TRUE, "required_ci_checks": arr(obj({"name": text(), "app_id": integer(1),
             "workflow_path": text(), "workflow_sha": SHA, "workflow_blob_sha": SHA,
@@ -908,7 +915,7 @@ def catalog(*, include_ticket_plan=True):
           "authorization_ttl_seconds": integer(1, maximum=86400), "trusted_owner_ids": arr(integer(1), 0, uniqueItems=True),
           "production_posting_collector_ids": arr(text(), 0, uniqueItems=True),
           "high_risk_owner_quorum": integer(1)}),
-        "controller": obj({**{k: FALSE for k in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments"]},
+        "controller": obj({**{k: BOOL for k in ["dispatch_enabled", "auto_dispatch", "auto_request_critic", "auto_resume_amendments"]},
                            "auto_transition_jira": BOOL, "status_cadence_seconds": integer(1)}),
         "audit": obj({"store_must_be_outside_worktrees": TRUE, "retention_days": integer(1), "redact_secrets": TRUE}),
         "portfolio": obj({"read_only": TRUE, "cross_project_dispatch": FALSE})})
@@ -947,7 +954,7 @@ def catalog(*, include_ticket_plan=True):
     # A retained explicit legacy count remains binding and must agree; chat
     # operating changes never rewrite this protected governance field.
     schemas["project-config"]["properties"]["execution"]["properties"]["independent_reviewers"] = obj({
-        "count": integer(0), "allocation": enum("one_per_stream", "shared_critic")}, required=["allocation"])
+        "count": capacity(), "allocation": enum("one_per_stream", "shared_critic")}, required=["allocation"])
     # Optional for upgraded configurations; absence means the documented
     # 10-minute / 600-second controller status cadence.
     schemas["project-config"]["properties"]["controller"]["required"].remove("status_cadence_seconds")
