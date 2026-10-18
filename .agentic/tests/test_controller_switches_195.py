@@ -114,6 +114,8 @@ class AmendmentBoundaryTests(ControllerAutomationTests):
             observe_publication=lambda item: publication_observation(item['ticket'], now),
             controller_clock=lambda: now,
         )
+        from test_continuous_controller_planning import planning_resource_inputs
+        arguments.update(planning_resource_inputs(1))
         arguments.update(operations)
         return production_controller_cycle(store, **arguments)
 

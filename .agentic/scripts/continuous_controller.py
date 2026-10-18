@@ -128,7 +128,7 @@ def main(argv=None, default_root=ROOT):
 	cycle.add_argument('--repository-head-sha', required=True)
 	cycle.add_argument('--repository-tree-sha', required=True)
 	cycle.add_argument('--now', required=True)
-	cycle.add_argument('--host-capacity', type=int, required=True)
+	cycle.add_argument('--host-capacity', type=int, help='optional consistency check against authenticated host capacity')
 	cycle.add_argument('--cycle-id', help='immutable controller cycle bound by overlap approvals')
 	cycle.add_argument('--overlap-allowances', type=Path, help='JSON list of exact provider-comment allowance requests')
 	cycle.add_argument('--replan-request', type=Path, help='JSON object containing the GitHub comment_id locator for an immutable trusted-owner AWF-ROUND-REPLAN event')
@@ -182,7 +182,7 @@ def main(argv=None, default_root=ROOT):
 	elif args.command == 'owner-publication-status':
 		output = store.snapshot(args.batch, config)
 	elif args.command == 'cycle':
-		names = {'observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication'}
+		names = {'observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication', 'observe_host_resources', 'verify_host_observation'}
 		overlap_requests = None
 		if args.overlap_allowances is not None:
 			overlap_requests = load(args.overlap_allowances)
@@ -193,7 +193,9 @@ def main(argv=None, default_root=ROOT):
 		for name in ('observe_overlap_conflict', 'observe_overlap_sync_inventory', 'sync_writer', 'reconcile_overlap_sync', 'observe_dispatch_quiescence'):
 			if callable(adapters.get(name)):
 				calls[name] = adapters[name]
-		output = production_controller_cycle(store, controller_config=config['controller'], now=args.now, host_capacity=args.host_capacity, inventory_binding=load(args.inventory_binding), repository_root=args.repository_root, repository_head_sha=args.repository_head_sha, repository_tree_sha=args.repository_tree_sha, publication_config=config, cycle_id=args.cycle_id, overlap_allowance_requests=overlap_requests, replan_request=load(args.replan_request) if args.replan_request is not None else None, **calls)
+		from agentic.operating import read_operating
+		operating = read_operating(args.repository_root, config)
+		output = production_controller_cycle(store, planning_resource_producer_sha256=args.adapter_sha256, project_config_sha256=fingerprint('accepted-project-config', config), operating_config_sha256=operating.operating_hash, controller_config=config['controller'], now=args.now, host_capacity=args.host_capacity, inventory_binding=load(args.inventory_binding), repository_root=args.repository_root, repository_head_sha=args.repository_head_sha, repository_tree_sha=args.repository_tree_sha, publication_config=config, cycle_id=args.cycle_id, overlap_allowance_requests=overlap_requests, replan_request=load(args.replan_request) if args.replan_request is not None else None, **calls)
 	elif args.command == 'jira-lifecycle':
 		calls = _require_adapters(adapters, {'observe_provider_identity', 'read_current_status', 'write_transition', 'read_transition'})
 		output = production_jira_lifecycle(store, config=config, contract=load(args.contract), event=args.event, facts=load(args.facts), binding=load(args.binding), issue_type=args.issue_type, state=args.lifecycle_state, producer_id=args.producer_id, run_id=args.run_id, now=args.now, evidence=args.evidence, transition_id=args.transition_id, merge_result_id=args.merge_result_id, **calls)

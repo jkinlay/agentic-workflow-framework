@@ -43,6 +43,9 @@ def dispatch_receipt(payload, observed_at):
 
 @wraps(_production_cycle)
 def production_cycle(*args, **kwargs):
+    from test_continuous_controller_planning import planning_resource_inputs
+    for name, value in planning_resource_inputs(kwargs["host_capacity"]).items():
+        kwargs.setdefault(name, value)
     kwargs.setdefault("observe_reservations", lambda request: {})
     return _production_cycle(*args, **kwargs)
 
