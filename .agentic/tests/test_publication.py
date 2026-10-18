@@ -19,6 +19,7 @@ import source_only  # noqa: E402,F401
 from agentic import ValidationError
 from agentic import publication
 from agentic.canonical import load
+from agentic.child_process import GIT_RUNNER_POLICY
 from agentic.contracts import Contracts
 from agentic.gates import evaluate
 from agentic.interaction import writer_commit_message
@@ -114,6 +115,62 @@ class PublicationScanTests(unittest.TestCase):
                               path=".agentic/lib/agentic/publication.py", source="current_file",
                               detectors=detectors, allows=allows)
         self.assertEqual([], [item for item in findings if item["detector_id"].startswith("builtin.")])
+
+    def test_git_child_uses_closed_policy_and_coded_redacted_failure(self):
+        local_root = self.repo.path.resolve()
+        sensitive = "token=fixture-sensitive " + local_root.as_posix()
+        failed = subprocess.CompletedProcess(
+            ["git", "status"], 7, b"", sensitive.encode("utf-8"))
+
+        with mock.patch.object(publication, "run_bounded", return_value=failed) as runner:
+            with self.assertRaisesRegex(ValidationError, r"^GIT_COMMAND_FAILED:") as caught:
+                publication._git(self.repo.path, "status")
+
+        self.assertNotIn("fixture-sensitive", str(caught.exception))
+        self.assertNotIn(local_root.as_posix(), str(caught.exception))
+        self.assertIs(runner.call_args.kwargs["policy"], GIT_RUNNER_POLICY)
+        self.assertNotIn("timeout", runner.call_args.kwargs)
+
+    def test_bounded_git_proof_uses_closed_runner_before_caller_limit(self):
+        completed = subprocess.CompletedProcess(
+            ["git", "cat-file"], 0, b"12345", b"")
+
+        with mock.patch.object(publication, "run_bounded", return_value=completed) as runner:
+            with self.assertRaisesRegex(ValidationError, r"^GIT_PROOF_STDOUT_LIMIT:"):
+                publication._git_bounded_stdout(
+                    self.repo.path, "cat-file", "blob", "a" * 40, limit=4)
+
+        self.assertIs(runner.call_args.kwargs["policy"], GIT_RUNNER_POLICY)
+
+    def test_git_object_evidence_accepts_exact_32_mib_payload_boundary(self):
+        payload = b"x" * publication.MAX_REWRITE_PROOF_OBJECT_BYTES
+        oid = git(self.repo.path, "hash-object", "-w", "--stdin",
+                  input_bytes=payload)
+        object_format = git(self.repo.path, "rev-parse", "--show-object-format")
+
+        evidence = publication._git_object_evidence(
+            self.repo.path, oid, object_format)
+
+        self.assertEqual(publication.MAX_REWRITE_PROOF_OBJECT_BYTES,
+                         evidence["size"])
+        self.assertEqual(hashlib.sha256(payload).hexdigest(),
+                         evidence["content_sha256"])
+
+    def test_large_blob_hash_streams_inside_owned_bounded_process_tree(self):
+        expected_digest = "a" * 64
+        size = subprocess.CompletedProcess(
+            ["git", "cat-file", "-s"], 0, b"80\n", b"")
+        hashed = subprocess.CompletedProcess(
+            [sys.executable], 0, (expected_digest + "\n").encode("ascii"), b"")
+
+        with mock.patch.object(publication, "_git", return_value=size), \
+                mock.patch.object(publication, "run_bounded", return_value=hashed) as runner:
+            observed = publication._blob_sha256(self.repo.path, "a" * 40)
+
+        self.assertEqual(expected_digest, observed)
+        self.assertEqual(Path(sys.executable).resolve(),
+                         Path(runner.call_args.args[0][0]).resolve())
+        self.assertIs(runner.call_args.kwargs["policy"], GIT_RUNNER_POLICY)
 
     def test_historical_self_reference_identities_are_exact_and_path_scoped(self):
         detectors, allows = _detectors({}, {})

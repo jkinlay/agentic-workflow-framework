@@ -4,7 +4,7 @@ At CONFIGURED, run `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\script
 
 ## Two configuration layers
 
-Protected `.agentic/PROJECT_CONFIG.yaml` holds ceilings, budgets, model allowlists, floors, escalation and one shared critic route; legacy per-stream reviewer routes remain accepted. Governance changes require a reviewed PR.
+Protected `.agentic/PROJECT_CONFIG.yaml` holds ceilings, budgets, model allowlists, floors, escalation and one shared critic route; legacy per-stream reviewer routes remain accepted. Governance changes require review; [controller configuration](34-CONTINUOUS-CONTROLLER.md#controller-automation-switches).
 
 Show JSON/text, status and newly prepared `operating.state` share `effective_ceiling`: the minimum of six, `execution.max_parallel_tickets`, and enabled `execution.host_broker.max_workers`. `host_broker.*` limits bind only when `host_broker.enabled` is true. Disabled values cannot lower the ceiling; heavy/GPU limits are not stream counts. Configured capacity never proves observed host slots or reviewer availability.
 
