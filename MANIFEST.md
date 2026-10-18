@@ -84,7 +84,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/authorization.py` | `722f081ea4ff1df882519594ecb43d407f884456d8c8e6831615cbf6b113282b` |
 | `.agentic/lib/agentic/canonical.py` | `9126c06fc38813318238c85b88877ad857cb097a84f914e2da46c8b10eeefcea` |
 | `.agentic/lib/agentic/child_process.py` | `f6049b4aa5cd05022805b14f1a8ded497464f265dd9207afc2cf5c89fb0c32a2` |
-| `.agentic/lib/agentic/cli.py` | `741bb37103e7f8ed6f0a1850623b456e5a555358654cdc15e8c53fb0c738729a` |
+| `.agentic/lib/agentic/cli.py` | `e6cfa45080cd437c3709827ac7ad666b4bf044af16f1e11eecdd87712b3738a0` |
 | `.agentic/lib/agentic/closeout.py` | `6df1134a87628d0644e19da2d3298b8471d27dd26b6da3797c78219c04e883de` |
 | `.agentic/lib/agentic/codex_skill.py` | `e48178498d561215482d0c11b5da26d1b7d39912dd40eae96478d4e34a6d3ec9` |
 | `.agentic/lib/agentic/configuration.py` | `74bc00b5120f8cfced44ea39e4e9109ed6a4521a9a8aa4cd6901c9d757b49f0c` |
@@ -237,7 +237,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/scripts/register_review_loop.ps1` | `c08b8995df5d7118dd909a3868655f456eb665264fb1de45f1b7a918dc5a8cf2` |
 | `.agentic/scripts/repository_rules.py` | `0b811077b3b212bff68fd46a02dcf86f1f1a7505d17d2dbd6fd7fb2c809f45fb` |
 | `.agentic/scripts/review_completion.py` | `6d3908c6dcde8655b7e426587b8247c079891cbfb2b1d846e960ba1af8f10272` |
-| `.agentic/scripts/review_loop.py` | `a6c49391833a5ff75ac4c60e76e8c0d1975d907a9874fa1de6dfac99e4111e2d` |
+| `.agentic/scripts/review_loop.py` | `e335ae0badfa1231844a07ed219ee7e5a2b6d2f1bbf112aacc2feda3f7aeceb1` |
 | `.agentic/scripts/route_model.py` | `47ca96f971320a4dea80b57006651801bd8c135470a5b09a5afe049406bb2feb` |
 | `.agentic/scripts/routine_decisions.py` | `5ac6dd00edd1c489f3553db917081eb5630c527ac2a07295c84991171db34750` |
 | `.agentic/scripts/rules_activation.py` | `4c0d2f6fec46caac39ff5f97a3c47cbf898122ba6e4f2901a90348d488dc7495` |
@@ -424,6 +424,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_routing_integration.py` | `b56f30216318e0c925eb660f1bbc7839bc9d0b317389804e4cecf047d59c844e` |
 | `.agentic/tests/test_rules_activation.py` | `a80728328f2f8ec76369c1431e31270ecaf7c82055288496d65d8da0e03aeb85` |
 | `.agentic/tests/test_safeio_channels.py` | `fed7d7c9222ca803570e39697e6bbd83399720cfc06f02b97139a6857b2e17bb` |
+| `.agentic/tests/test_safeio_cli_inputs.py` | `fe5b452b8ab636080581b798abc84320b8c3b3650d5d8bab88f50639044b7986` |
 | `.agentic/tests/test_safeio_process.py` | `7c6e9e0cce111aa6e1d8a774ed5100a771cbd43d76697c4c09287bc1aa15585f` |
 | `.agentic/tests/test_safeio_unlink.py` | `86d91b38a4e930fc1af316caf359b04cf8748dc53958465a141aeab200c1457f` |
 | `.agentic/tests/test_source_only.py` | `ff834d09650472ae5522aeaf6cad4dad7caf205e80ee73e03e7bcb3ac17208e3` |
