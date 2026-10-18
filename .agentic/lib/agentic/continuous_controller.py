@@ -25,6 +25,11 @@ DISPATCH_SCHEMA_VERSION = 2
 REPLAN_TRIGGER_SCHEMA_VERSION = 2
 DDL = '\nCREATE TABLE IF NOT EXISTS controller_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS stream_status(\n stream_id TEXT PRIMARY KEY,state TEXT NOT NULL,ticket TEXT,actor TEXT NOT NULL,\n reason TEXT NOT NULL,next_action TEXT NOT NULL,resume_trigger TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,activity TEXT NOT NULL,verification_gate TEXT NOT NULL,\n reviewer_completion TEXT NOT NULL,open_findings INTEGER NOT NULL,\n jira_status TEXT NOT NULL,paths TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_outbox(\n delivery_id TEXT PRIMARY KEY,kind TEXT NOT NULL,revision INTEGER NOT NULL,\n observed_at TEXT NOT NULL,payload_json TEXT NOT NULL,acknowledged_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_dispatch(\n dispatch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,ticket TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,\n receipt_json TEXT,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_dispatch_waiver(\n waiver_id TEXT PRIMARY KEY,dispatch_id TEXT NOT NULL,allowance_id TEXT NOT NULL,\n record_json TEXT NOT NULL,created_at TEXT NOT NULL,\n UNIQUE(dispatch_id,allowance_id));\nCREATE TABLE IF NOT EXISTS controller_replan_seal(\n seal_id TEXT PRIMARY KEY,trigger_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,\n record_json TEXT NOT NULL,created_at TEXT NOT NULL,consumed_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_ticket_authority(\n ticket TEXT NOT NULL,exact_tuple TEXT NOT NULL,dispatch_role TEXT NOT NULL,\n lifecycle_stage TEXT NOT NULL,observed_at TEXT NOT NULL,\n PRIMARY KEY(ticket,exact_tuple));\nCREATE TABLE IF NOT EXISTS controller_overlap_allowance(\n allowance_id TEXT PRIMARY KEY,source_id TEXT NOT NULL UNIQUE,repository_id TEXT NOT NULL,\n cycle_id TEXT NOT NULL,path TEXT NOT NULL,tickets_json TEXT NOT NULL,\n pull_requests_json TEXT NOT NULL,heads_json TEXT NOT NULL,expires_at TEXT NOT NULL,\n status TEXT NOT NULL,record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_overlap_sync_gate(\n gate_id TEXT PRIMARY KEY,allowance_id TEXT NOT NULL,status TEXT NOT NULL,\n record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_overlap_gate_allowance\n ON controller_overlap_sync_gate(allowance_id,status);\nCREATE TABLE IF NOT EXISTS controller_jira_operation(\n operation_id TEXT PRIMARY KEY,issue_id TEXT NOT NULL,event TEXT NOT NULL,\n intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,\n operation_json TEXT,readback_json TEXT,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_jira_issue ON controller_jira_operation(issue_id,status);\n'
 
+BATCH_JIRA_DDL = '''CREATE TABLE IF NOT EXISTS controller_batch_jira_operation(
+ operation_id TEXT PRIMARY KEY,issue_id TEXT NOT NULL,event TEXT NOT NULL,
+ intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,
+ operation_json TEXT,readback_json TEXT,updated_at TEXT NOT NULL)'''
+
 # Complete statements: trigger bodies must never enter the semicolon-split DDL.
 BATCH_AUDIT_DDL = (
 	'''CREATE TABLE IF NOT EXISTS controller_batch_audit(
@@ -1568,6 +1573,15 @@ class ContinuousControllerStore:
 			db.execute('UPDATE controller_jira_operation SET status=?,operation_json=?,readback_json=?,updated_at=? WHERE operation_id=?', (status, canonical(operation).decode() if operation is not None else row['operation_json'], canonical(observation).decode() if observation is not None else None, now, operation_id))
 			return loads(row['record_json'])
 
+	def finish_batch_jira_operation(self, operation_id, status, observation, now, operation=None):
+		timestamp(now)
+		_require(status in {'SUCCEEDED', 'FAILED', 'UNKNOWN'}, 'Invalid batch Jira operation result')
+		with self.transaction() as db:
+			row = db.execute('SELECT * FROM controller_batch_jira_operation WHERE operation_id=?', (operation_id,)).fetchone()
+			_require(row is not None and row['status'] in {'IN_FLIGHT', 'UNKNOWN'}, 'Batch Jira result does not match durable state')
+			db.execute('UPDATE controller_batch_jira_operation SET status=?,operation_json=?,readback_json=?,updated_at=? WHERE operation_id=?', (status, canonical(operation).decode() if operation is not None else row['operation_json'], canonical(observation).decode() if observation is not None else None, now, operation_id))
+
+
 def _batch_jira_inputs(config, batch, observed_merge, policy_context, now):
 	"""Validate the complete fixture envelope before persisting or calling out."""
 	def text(value):
@@ -1618,12 +1632,58 @@ def _batch_jira_inputs(config, batch, observed_merge, policy_context, now):
 	return {'config': config, 'batch': batch, 'observed_merge': observed_merge, 'policy_context': policy_context}
 
 
+@contextmanager
+def _batch_jira_ownership(store):
+	"""Nonblocking, process-owned lock on protected controller storage.
+
+	Never unlink the lock file: contenders must always lock the same inode.
+	OS closure releases ownership even if a callback terminates the process.
+	"""
+	import errno
+	path = store.path.with_name(store.path.name + '.t11.lock')
+	_require(not path.is_symlink(), 'Batch Jira ownership path must not be a symlink')
+	descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+	locked = False
+	try:
+		if os.fstat(descriptor).st_size == 0:
+			os.write(descriptor, b'\0')
+		os.lseek(descriptor, 0, os.SEEK_SET)
+		try:
+			if os.name == 'nt':
+				import msvcrt
+				msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+			else:
+				import fcntl
+				fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+			locked = True
+		except OSError as exc:
+			if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+				raise
+		yield locked
+	finally:
+		# Closing the descriptor also releases the lock on both platforms.
+		os.close(descriptor)
+
+
 def production_batch_jira_reconciliation(store, *, config, role, batch, observed_merge, now,
 		read_current_status, write_transition, read_transition, policy_context=None):
+	"""Unwired fixture seam; serialize invocations without a provider transaction."""
+	arguments = dict(config=config, role=role, batch=batch, observed_merge=observed_merge,
+		now=now, read_current_status=read_current_status, write_transition=write_transition,
+		read_transition=read_transition, policy_context=policy_context)
+	if config.get('jira', {}).get('enabled') is False or role != 'controller':
+		return _production_batch_jira_reconciliation(store, **arguments)
+	_require(isinstance(store, ContinuousControllerStore), 'Batch Jira needs protected controller storage')
+	with _batch_jira_ownership(store) as ownership:
+		return _production_batch_jira_reconciliation(store, **arguments, ownership=ownership)
+
+
+def _production_batch_jira_reconciliation(store, *, config, role, batch, observed_merge, now,
+		read_current_status, write_transition, read_transition, policy_context=None, ownership=False):
 	"""Bounded T11 callback seam; deliberately unwired to CLI/live adapters.
 
 	Role strings and supplied merge dictionaries are fixture inputs, not authenticated
-	provider authority. Progress uses existing controller-private storage, separate
+	provider authority. Progress uses dedicated controller-private storage, separate
 	from T8's closed immutable audit envelope. No global operation recovery occurs.
 	"""
 	base = {'execution_authority': False, 'count_allowed': False, 'complete': False,
@@ -1652,15 +1712,18 @@ def production_batch_jira_reconciliation(store, *, config, role, batch, observed
 	# Pin all ordered inputs and prepare every intent in one immediate transaction.
 	# No new constructor/schema migration is needed for this controller-only seam.
 	with store.transaction() as db:
+		db.execute(BATCH_JIRA_DDL)
 		prior = db.execute('SELECT value FROM controller_meta WHERE key=?', (pin,)).fetchone()
 		_require(prior is None or prior['value'] == encoded, 'Batch reconciliation input substitution refused')
+		if not ownership and prior is None:
+			return {**base, 'remaining': [member['binding']['issue_id'] for member in batch['constituents']], 'reason': 'Batch Jira invocation is active'}
 		if prior is None:
 			db.execute('INSERT INTO controller_meta VALUES(?,?)', (pin, encoded))
 		for record in records:
 			intent = fingerprint('controller-jira-operation', {key: value for key, value in record.items() if key != 'created_at'})
-			row = db.execute('SELECT * FROM controller_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
+			row = db.execute('SELECT * FROM controller_batch_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
 			if row is None:
-				db.execute('INSERT INTO controller_jira_operation VALUES(?,?,?,?,?,?,NULL,NULL,?)',
+				db.execute('INSERT INTO controller_batch_jira_operation VALUES(?,?,?,?,?,?,NULL,NULL,?)',
 					(record['operation_id'], record['binding']['issue_id'], 'JIRA_RECONCILED', intent, 'PENDING', canonical(record).decode(), now))
 			else:
 				_require(row['intent_sha256'] == intent and row['issue_id'] == record['binding']['issue_id'] and
@@ -1688,27 +1751,28 @@ def production_batch_jira_reconciliation(store, *, config, role, batch, observed
 			_require(isinstance(value.get('actor'), str) and value['actor'], 'Batch Jira readback actor is missing')
 		return status, timestamp(value['observed_at'])
 
-	# Claiming covers the pre-read as well as the mutation. A crash anywhere after
-	# claim leaves IN_FLIGHT permanently stopped; a concurrent caller never recovers
-	# or steals that claim. Successful/failed terminal records need no callbacks.
-	for record in records:
+	# Only the exclusive OS-lock holder can abandon a prior invocation claim.
+	# The lock outlives callbacks but is released on return, exception or process
+	# death; no elapsed-time guess can steal an active provider call.
+	for record in records if ownership else ():
 		issue, operation_id = record['binding']['issue_id'], record['operation_id']
 		with store.transaction() as db:
-			row = db.execute('SELECT * FROM controller_jira_operation WHERE operation_id=?', (operation_id,)).fetchone()
+			row = db.execute('SELECT * FROM controller_batch_jira_operation WHERE operation_id=?', (operation_id,)).fetchone()
 			status = row['status']
+			if status == 'IN_FLIGHT':
+				db.execute("UPDATE controller_batch_jira_operation SET status='UNKNOWN',updated_at=? WHERE operation_id=? AND status='IN_FLIGHT'", (now, operation_id))
+				status = 'UNKNOWN'
 			if status == 'PENDING':
-				prior_stop = db.execute("SELECT * FROM controller_jira_operation WHERE issue_id=? AND operation_id<>? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') LIMIT 1", (issue, operation_id)).fetchone()
+				prior_stop = db.execute("SELECT readback_json FROM controller_batch_jira_operation WHERE issue_id=? AND operation_id<>? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') UNION ALL SELECT readback_json FROM controller_jira_operation WHERE issue_id=? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') LIMIT 1", (issue, operation_id, issue)).fetchone()
 				if prior_stop is not None:
 					observation = loads(prior_stop['readback_json']) if prior_stop['readback_json'] else None
-					db.execute("UPDATE controller_jira_operation SET status='FAILED',readback_json=?,updated_at=? WHERE operation_id=?", (canonical(observation).decode(), now, operation_id))
+					db.execute("UPDATE controller_batch_jira_operation SET status='FAILED',readback_json=?,updated_at=? WHERE operation_id=?", (canonical(observation).decode(), now, operation_id))
 					status = 'FAILED'
 				else:
-					db.execute("UPDATE controller_jira_operation SET status='IN_FLIGHT',updated_at=? WHERE operation_id=? AND status='PENDING'", (now, operation_id))
+					db.execute("UPDATE controller_batch_jira_operation SET status='IN_FLIGHT',updated_at=? WHERE operation_id=? AND status='PENDING'", (now, operation_id))
 		if status != 'PENDING':
 			if status == 'SUCCEEDED':
 				continue
-			if status == 'IN_FLIGHT':
-				break
 			_require(status in {'FAILED', 'UNKNOWN', 'HELD'}, 'Invalid durable batch Jira status')
 			continue
 		observation, operation = None, None
@@ -1724,32 +1788,32 @@ def production_batch_jira_reconciliation(store, *, config, role, batch, observed
 					{'merge_confirmed': True, 'closeout_valid': True})
 			if key is None:
 				with store.transaction() as db:
-					db.execute("UPDATE controller_jira_operation SET status='HELD',readback_json=?,updated_at=? WHERE operation_id=? AND status='IN_FLIGHT'", (canonical({'reason': reason}).decode(), now, operation_id))
+					db.execute("UPDATE controller_batch_jira_operation SET status='HELD',readback_json=?,updated_at=? WHERE operation_id=? AND status='IN_FLIGHT'", (canonical({'reason': reason}).decode(), now, operation_id))
 				continue
 			observation = read_current_status(deepcopy(record['binding']))
 			current, current_time = receipt(observation, issue, timestamp(now), 'before')
 			if current == record['to_status_id']:
-				store.finish_jira_operation(operation_id, 'SUCCEEDED', observation, now)
+				store.finish_batch_jira_operation(operation_id, 'SUCCEEDED', observation, now)
 				continue
 			operation = write_transition(deepcopy(record))
 			_, operation_time = receipt(operation, issue, current_time, 'write')
 			observation = read_transition(deepcopy(record), deepcopy(operation))
 			observed, _ = receipt(observation, issue, operation_time, 'after')
 			status = 'SUCCEEDED' if observed == record['to_status_id'] and observation['actor'] == config['jira']['controller_actor_id'] else 'FAILED'
-			store.finish_jira_operation(operation_id, status, observation, now, operation)
+			store.finish_batch_jira_operation(operation_id, status, observation, now, operation)
 			if status == 'FAILED':
 				break
 		except Exception:
 			# Persistence failure also leaves a durable claim. Do not retry any call.
 			try:
-				store.finish_jira_operation(operation_id, 'UNKNOWN', observation, now, operation)
+				store.finish_batch_jira_operation(operation_id, 'UNKNOWN', observation, now, operation)
 			except Exception:
 				pass
 			break
 	result = deepcopy(base)
 	with store.connection() as db:
 		for record in records:
-			row = db.execute('SELECT * FROM controller_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
+			row = db.execute('SELECT * FROM controller_batch_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
 			issue, status = record['binding']['issue_id'], row['status']
 			if status == 'SUCCEEDED':
 				result['reconciled'].append(issue)
