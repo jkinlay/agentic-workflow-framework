@@ -78,6 +78,27 @@ class DiagnosticCliTests(unittest.TestCase):
                 self.assertTrue(value['reason'].startswith('DIAGNOSTIC_INVALID: '))
                 self.safe(value['reason'])
 
+    def test_review_loop_markdown_autolinks_are_inert_before_byte_bound(self):
+        # C195-R0-017-001: GFM autolinks need no explicit link delimiters.
+        for address, escaped in (
+                ('https://example.invalid/approve', 'https&#58;//example.invalid/approve'),
+                ('http://example.invalid', 'http&#58;//example.invalid'),
+                ('www.example.com', 'www&#46;example.com'),
+                ('WWW.example.com', 'WWW&#46;example.com'),
+                ('reviewer@example.invalid', 'reviewer&#64;example.invalid')):
+            for suffix in ('', ' ' + 'www.example.com ' * 400):
+                with self.subTest(address=address, oversized=bool(suffix)):
+                    self.hostile = 'failure ' + address + suffix
+                    text = self.review('markdown')
+                    reason = text.splitlines()[1]
+                    action = next(line for line in text.splitlines() if line.startswith('Next: '))
+                    for scalar in (reason, action):
+                        self.safe(scalar)
+                        self.assertNotIn(address, scalar)
+                        self.assertIn('failure ' + escaped, scalar)
+                        if suffix:
+                            self.assertIn('truncated', scalar)
+
     def test_review_loop_markdown_escapes_inline_tildes_before_byte_bound(self):
         for detail in ('failure ~~approval required~~',
                        'failure ~~approval required~~ ' + '~' * 4000):
@@ -92,6 +113,20 @@ class DiagnosticCliTests(unittest.TestCase):
                     self.assertIn('failure &#126;&#126;approval required&#126;&#126;', scalar)
                     if len(detail) > 4000:
                         self.assertIn('truncated', scalar)
+
+    def test_markdown_preserves_already_inert_s3_url_reason(self):
+        reason = _pause_diagnostic('WORKER_FAILURE', 'failure https://example.invalid')
+        record = {'phase': 'PAUSED', 'reason': reason}
+        before = deepcopy(record)
+        text = render_markdown(dict(record, next_step=loop_next_step(record)))
+        self.assertEqual(text.splitlines()[1], reason)
+        self.assertIn('https://example&#46;invalid', reason)
+        self.assertEqual(record, before)
+        # A literal domain before an entity can still form an autolink.
+        partial = 'failure https://sub.example&#46;invalid'
+        text = render_markdown({'status': 'REJECTED', 'reason': partial,
+                                'next_step': rejected_next_step(partial)})
+        self.assertIn('https&#58;//sub.example&#46;invalid', text.splitlines()[1])
 
     def workflow(self, error):
         out, err = io.StringIO(), io.StringIO()
