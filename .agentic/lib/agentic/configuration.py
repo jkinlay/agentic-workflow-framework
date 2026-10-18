@@ -144,6 +144,26 @@ def load_project_launch_surfaces(root):
     return value["scripts"]
 
 
+def validate_publication_project_config(config, contracts):
+    """Validate the optional publication surface, including exact baseline pins."""
+    if not isinstance(config, dict):
+        raise ValidationError("Project configuration must be an object")
+    if "publication" not in config:
+        return
+    publication = config["publication"]
+    schema = contracts.schemas['project-config']['properties']['publication']
+    validator = Draft202012Validator(schema, registry=contracts.registry,
+                                     format_checker=contracts.formats)
+    errors = list(validator.iter_errors(publication))
+    if errors:
+        raise ValidationError("Project publication declarations: " + errors[0].message)
+    # Runtime validation also enforces unique paths and canonical metadata.
+    from .publication import _validate_large_file_allowances, _validate_safe_regex
+    _validate_large_file_allowances(publication.get("large_file_allowances", []))
+    for item in publication.get("deny_regexes", []):
+        _validate_safe_regex(item["pattern"], "Project publication declarations")
+
+
 def inspect_config(config, workflow, contracts, project_instructions=None):
     from .policy import PROTECTED_PATHS, policy_hash, safe_path
     problems, warnings = [], []
@@ -179,6 +199,10 @@ def inspect_config(config, workflow, contracts, project_instructions=None):
                          'message': 'Adoption may proceed; configure pinned CI before live enablement or gate readiness.'})
     # Schema errors are complete; semantic checks require the closed, typed shape.
     if not schema_errors and isinstance(config, dict):
+        try:
+            validate_publication_project_config(config, contracts)
+        except ValidationError as exc:
+            problems.append(issue('$.publication', str(exc)))
         def require(condition, path, reason):
             if not condition:
                 problems.append(issue(path, reason))

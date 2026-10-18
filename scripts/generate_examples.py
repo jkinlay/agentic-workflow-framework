@@ -188,6 +188,9 @@ def config(example=True, routing_policy=None):
         result["execution"]["roles"][name].update(
             model=model, reasoning_effort=effort,
             approved_model_ids=routing["role_allowed_models"][name])
+    if example:
+        result["publication"] = {"deny_literals": [], "deny_regexes": [], "internal_hostnames": [],
+                                 "large_file_allowances": []}
     return result
 
 
@@ -396,7 +399,10 @@ def sample(schema, schemas, document=None):
     if kind == "object":
         # Draft forms expose optional evidence bindings as well as required
         # fields; nullable bindings remain explicitly unobserved until filled.
-        return {key: sample(child, schemas, document) for key, child in schema.get("properties", {}).items()}
+        # Supplemental config has no fixture input: omit its optional digest
+        # instead of inventing evidence for a file that was never supplied.
+        return {key: sample(child, schemas, document) for key, child in schema.get("properties", {}).items()
+                if key != "supplemental_project_config_sha256"}
     if kind == "array":
         return [sample(schema["items"], schemas, document) for _ in range(schema.get("minItems", 0))]
     if kind == "boolean":
@@ -444,6 +450,10 @@ def generate(output_root, source_root=ROOT):
         "installation": {"install_id": None, "last_operation": None, "operation_at": None, "source_manifest_sha256": None, "profile": "manual_reference"}})
     cfg = config(True, generation_policy)
     reviewed_example_config = copy.deepcopy(cfg)
+    # Preserve the shared reference fixture's policy binding for independent
+    # generators. Optional publication settings live in the content-binding
+    # example, which is generated from the complete configured form.
+    reviewed_example_config.pop("publication", None)
     reviewed_example_config["github"]["expected_actor_id"] = 1002
     write(output_root / ".agentic/examples/PROJECT_CONFIG.yaml",
           reviewed_example_config)
