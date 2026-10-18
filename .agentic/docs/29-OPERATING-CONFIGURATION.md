@@ -37,7 +37,7 @@ New governance uses `independent_reviewers.allocation: shared_critic` with one r
 
 ## Apply the user's choices
 
-Translate, echo and execute direct instructions without reconfirmation:
+Translate, echo and execute instructions without reconfirmation:
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "4 streams, each Sol/high" --set streams.count=4 --set streams.A.worker=gpt-5.6-sol/high --set streams.B.worker=gpt-5.6-sol/high --set streams.C.worker=gpt-5.6-sol/high --set streams.D.worker=gpt-5.6-sol/high
@@ -47,9 +47,9 @@ Show results. User routes pin optional escalation; mandatory risk/review floors 
 
 Refusals exit 2, naming the path, binding governance value and remedy. Never clamp or partially apply mixed valid/invalid changes.
 
-Above-cap upgrades refuse; use `operating set --instruction "Use three streams" --set streams.count=3` through the interpreter/CLI above to repair four streams under broker cap three; surplus streams drain.
+Above-cap upgrades refuse; use `& '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Use three streams" --set streams.count=3` to repair four streams under broker cap three; surplus streams drain.
 
-For Epic-scoped instructions, bind and echo the observed Epic ID:
+For Epic-scoped instructions, bind and echo the observed ID:
 
 ```text
 & '.agentic\.venv\Scripts\python.exe' -B -I '.agentic\scripts\workflow.py' --root '.' operating set --instruction "Stream B's worker on Sol/high for this Epic" --epic PROJ-123 --set streams.B.worker=gpt-5.6-sol/high
