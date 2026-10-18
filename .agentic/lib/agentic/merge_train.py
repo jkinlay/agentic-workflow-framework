@@ -925,7 +925,7 @@ def freeze_publication_candidate(generation, batch_head_sha, batch_tree_sha, *,
 
 
 def _validate_publication_candidate(candidate, observer_registry, *, now,
-                                    max_age_seconds):
+                                    max_age_seconds, allow_expired=False):
     fields = {
         "format", "generation", "batch_id", "batch_branch",
         "batch_head_sha", "batch_tree_sha", "base_branch", "base_sha",
@@ -977,9 +977,16 @@ def _validate_publication_candidate(candidate, observer_registry, *, now,
                     if isinstance(observer_registry, dict) else None)
     _require(isinstance(registration, dict),
              "publication candidate requires its registered provider observer")
+    # Historical evidence authenticates identity only during journal recovery.
+    # Preserve the future-date check; only elapsed age may be ignored here.
+    authentication_age = max_age_seconds
+    if allow_expired:
+        age = (timestamp(now) - timestamp(
+            provider["observation"]["observed_at"])).total_seconds()
+        authentication_age = max(max_age_seconds, age)
     result, attestation = _validate_registered_observation(
         registration, producer_id, request,
-        provider["observation"], now=now, max_age_seconds=max_age_seconds)
+        provider["observation"], now=now, max_age_seconds=authentication_age)
     _require(attestation == provider["attestation"]
              and result == request["expected_candidate"],
              "publication candidate is not bound to authenticated exact bytes")
@@ -1101,11 +1108,14 @@ def publish_batch(candidate, *, observer_id, observer_registry, publisher_id,
     """Push only the batch ref and create/optionally ready its draft PR.
 
     A durable intent is written before each mutation.  Unknown operations are
-    only reconciled by branch/head observation and are never replayed.
+    only reconciled by branch/head observation and are never replayed. Existing
+    journals may be reconciled after candidate evidence expires; this grants no
+    authority for any new mutation, which still needs fresh candidate evidence.
     """
     _validate_publication_candidate(
         candidate, observer_registry, now=now,
-        max_age_seconds=max_age_seconds)
+        max_age_seconds=max_age_seconds,
+        allow_expired=Path(intent_path).exists())
     _require(type(mark_ready) is bool, "mark_ready must be Boolean")
     _identifier(publisher_id, "publisher_id")
     registration = (publisher_registry.get(publisher_id)
@@ -1159,6 +1169,9 @@ def publish_batch(candidate, *, observer_id, observer_registry, publisher_id,
             _save_publication_journal(intent_path, journal)
             continue
 
+        _validate_publication_candidate(
+            candidate, observer_registry, now=now,
+            max_age_seconds=max_age_seconds)
         _require_current_publication(
             candidate, observer_id, observer_registry, now=now,
             max_age_seconds=max_age_seconds, intent_path=intent_path,
