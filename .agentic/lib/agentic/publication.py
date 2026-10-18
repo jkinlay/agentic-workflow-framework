@@ -33,13 +33,167 @@ except ImportError:  # pragma: no cover - exercised on older Python runtimes
     _re_parser = None
 
 from . import ValidationError
+from .canonical import MAX_DOCUMENT_BYTES, canonical, loads
 from .child_process import (GIT_RUNNER_POLICY, child_env,
                             render_diagnostic)
 from .gittree import verify_publisher_tree
 from .interaction import writer_commit_message
 from .provenance import (parse_writer_trailer, validate_commit_message,
                          validate_ref_locator)
-from .safeio import run_bounded
+from .safeio import Tree, relative_parts, run_bounded
+
+
+class PublicationRecordStore:
+    """Local append-only publication artifacts, without execution authority.
+
+    A directory reserved with exclusive mkdir owns each key. The record is
+    fsynced before a separate, exclusively created commit seal. Interrupted
+    reservations are retained: only explicit recovery may seal an intact
+    pending record. Missing, partial or mismatched bytes are never repaired.
+    Digests detect corruption; this store does not authenticate a producer.
+    """
+
+    def __init__(self, root):
+        self.root = Path(os.path.abspath(root))
+        try:
+            with Tree(self.root, create=True):
+                pass
+        except OSError as exc:
+            raise ValidationError("Publication record root is unavailable") from exc
+
+    @staticmethod
+    def _slot(key):
+        relative_parts(key)
+        try:
+            return hashlib.sha256(key.encode("utf-8", "strict")).hexdigest()
+        except UnicodeError as exc:
+            raise ValidationError("Publication record key is not UTF-8") from exc
+
+    def path_for(self, key):
+        return self.root / self._slot(key) / "record.json"
+
+    @staticmethod
+    def _document(raw):
+        if not isinstance(raw, bytes) or len(raw) > MAX_DOCUMENT_BYTES:
+            raise ValidationError("Publication record requires bounded canonical bytes")
+        try:
+            value = loads(raw.decode("utf-8", "strict"))
+            if canonical(value) != raw:
+                raise ValidationError("Publication record bytes are not canonical")
+            return value
+        except UnicodeError as exc:
+            raise ValidationError("Publication record is not UTF-8") from exc
+
+    def _record(self, tree, key, slot):
+        raw = tree.read(slot + "/record.json", maximum=MAX_DOCUMENT_BYTES)
+        record = self._document(raw)
+        if (not isinstance(record, dict)
+                or set(record) != {"version", "key", "payload", "sha256"}
+                or type(record["version"]) is not int or record["version"] != 1
+                or record["key"] != key or not isinstance(record["payload"], str)):
+            raise ValidationError("Publication record schema or key mismatch")
+        payload = record["payload"].encode("utf-8", "strict")
+        self._document(payload)
+        digest = hashlib.sha256(payload).hexdigest()
+        if record["sha256"] != digest:
+            raise ValidationError("Publication record payload digest mismatch")
+        return raw, {"canonical_bytes": payload, "sha256": digest}
+
+    @staticmethod
+    def _seal_bytes(raw):
+        return canonical({"record_sha256": hashlib.sha256(raw).hexdigest(),
+                          "version": 1})
+
+    def _check_seal(self, tree, slot, raw):
+        seal = tree.read(slot + "/commit.json", maximum=1024)
+        if seal != self._seal_bytes(raw):
+            raise ValidationError("Publication record commit seal mismatch")
+
+    def _seal(self, tree, slot, raw):
+        relative = slot + "/commit.json"
+        parent, handle, name = tree.parent(relative)
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            fd = (os.open(parent / name, flags, 0o600) if os.name == "nt"
+                  else os.open(name, flags, 0o600, dir_fd=handle))
+        except FileExistsError:
+            self._check_seal(tree, slot, raw)
+            return
+        # A crash during seal creation leaves a refused partial seal. Never
+        # delete it or retry an ambiguous operation by overwriting its bytes.
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(self._seal_bytes(raw))
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.name != "nt":
+            os.fsync(handle)
+        self._check_seal(tree, slot, raw)
+
+    def read(self, key):
+        slot = self._slot(key)
+        try:
+            with Tree(self.root) as tree:
+                raw, result = self._record(tree, key, slot)
+                self._check_seal(tree, slot, raw)
+                return result
+        except OSError as exc:
+            raise ValidationError("Publication record is missing or unreadable") from exc
+
+    def write(self, key, payload, *, before_commit=None):
+        slot = self._slot(key)
+        self._document(payload)
+        if before_commit is not None and not callable(before_commit):
+            raise ValidationError("Publication record before_commit must be callable")
+        raw = canonical({"version": 1, "key": key,
+                         "payload": payload.decode("utf-8"),
+                         "sha256": hashlib.sha256(payload).hexdigest()})
+        self._document(raw)
+        try:
+            with Tree(self.root) as tree:
+                parent, handle, name = tree.parent(slot)
+                try:
+                    if os.name == "nt":
+                        (parent / name).mkdir(mode=0o700)
+                    else:
+                        os.mkdir(name, mode=0o700, dir_fd=handle)
+                        os.fsync(handle)
+                except FileExistsError:
+                    # Even identical retries need a complete, validated record.
+                    # An interrupted reservation requires explicit recovery.
+                    existing_raw, result = self._record(tree, key, slot)
+                    self._check_seal(tree, slot, existing_raw)
+                    if existing_raw != raw:
+                        raise ValidationError("Publication record is append-only")
+                    return result
+                relative = slot + "/record.json"
+                tree.write(relative, raw)
+                if before_commit is not None:
+                    before_commit(self.path_for(key))
+                observed, result = self._record(tree, key, slot)
+                if observed != raw:
+                    raise ValidationError("Publication record changed before commit")
+                self._seal(tree, slot, raw)
+                return result
+        except OSError as exc:
+            raise ValidationError("Publication record write could not be completed") from exc
+
+    def recover(self, key):
+        """Seal a validated pending record, or verify an already committed one."""
+        slot = self._slot(key)
+        try:
+            with Tree(self.root) as tree:
+                raw, result = self._record(tree, key, slot)
+                self._seal(tree, slot, raw)
+                return result
+        except OSError as exc:
+            raise ValidationError("Publication record recovery refused") from exc
+
+    def rewrite(self, key, payload):
+        raise ValidationError("Publication records cannot be rewritten")
+
+    def delete(self, key):
+        raise ValidationError("Publication records cannot be deleted")
 
 
 DEFAULT_MAPPING = Path(".agentic-state/publication-deny.json")
