@@ -10,13 +10,28 @@ import uuid
 from . import ValidationError
 from .canonical import now_text, timestamp, sha256
 from .interaction import loop_next_step, render_markdown
-from .safeio import Tree
+from .safeio import Tree, render_diagnostic
 
 BOUNDARY_CODES = ('PROTECTED_PATH', 'SCOPE_ESCAPE', 'CREDENTIAL_EXPOSURE', 'UNSAFE_PATH', 'UNREGISTERED_PRODUCER', 'CI_BINDING', 'INDEPENDENCE')
 CAP_REASON = 'REVIEW_CAP_REACHED'
 PARKED_REASON = 'REVIEW_CAP_PARKED'
 CAP_DECISIONS = ('MERGE_WITH_NOTES', 'PARK', 'RESCOPE', 'EXTEND_ONE_CYCLE')
 HARD_MAX_CAP_EXTENSIONS = 3
+
+
+def _pause_diagnostic(code, detail):
+    """Normalize only diagnostic text; retained review evidence stays exact.
+
+    Codes are caller-owned constants. Budget the complete persisted scalar,
+    including framing, after redaction and presentation escaping.
+    """
+    safe = render_diagnostic(detail)
+    # Status Markdown includes the reason as prose. Entities prevent untrusted
+    # links, HTML, emphasis or control escapes from becoming active markup.
+    safe = ''.join(f'&#{ord(c)};' if c in '\\`*_{}[]()#+.!|><&' else c
+                   for c in safe)
+    framed = f'{code}: {safe}'.encode('utf-8', errors='replace')
+    return framed[:4096].decode('utf-8', errors='ignore')
 
 
 def cap_limit(config, state):
@@ -627,7 +642,8 @@ def tick(store, config, driver):
                     'report': report, 'critic_binding': deepcopy(critic_binding),
                     'completed_at': now_text()}
                 if report['verdict'] == 'BLOCKED':
-                    state.update(phase='PAUSED', reason='Critic blocked: '+report['summary'][:4000])
+                    state.update(phase='PAUSED', reason=_pause_diagnostic(
+                        'REVIEW_LOOP_CRITIC_BLOCKED', 'Critic blocked: ' + report['summary']))
                 elif report['verdict'] == 'CHANGES_REQUESTED':
                     state.update(phase='AMEND', reason='Critic requested changes')
                 else:
@@ -647,6 +663,7 @@ def tick(store, config, driver):
             store.save(state)
         except Exception as exc:
             # Retain intent on any uncertain operation; an operator must reconcile.
-            state.update(phase='PAUSED', reason=f'{type(exc).__name__}: {exc}')
+            state.update(phase='PAUSED', reason=_pause_diagnostic(
+                'REVIEW_LOOP_DRIVER_FAILURE', f'{type(exc).__name__}: {exc}'))
             store.save(state)
         return state
