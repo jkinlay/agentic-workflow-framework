@@ -1561,7 +1561,7 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
 	return (tickets, repository_binding, observation)
 
-def production_controller_cycle(store, *, controller_config, now, host_capacity, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None):
+def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None):
 	# Validate before durable recovery or any provider observation. Only bools grant authority.
 	_require(isinstance(controller_config, dict), 'controller must be a mapping')
 	for key in ('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'):
@@ -1579,8 +1579,25 @@ def production_controller_cycle(store, *, controller_config, now, host_capacity,
 		return provider_controller_time
 
 	_require(dispatch_role is None or dispatch_role in {'writer', 'critic'}, 'Compatibility dispatch role must be writer or critic')
-	store.recover_dispatches(now)
 	_require(isinstance(inventory_binding, dict) and set(inventory_binding) == {'project_id', 'repository_id', 'scope_sha256'} and all((isinstance(value, str) and value for value in inventory_binding.values())), 'Production inventory needs immutable project, repository, and scope bindings')
+
+	# The reviewed host adapter supplies evidence, never an operator capacity map.
+	# Reuse the single planning producer and its independent evidence verifier.
+	_require(callable(observe_host_resources) and callable(verify_host_observation),
+		'Production requires an authenticated planning resource observation')
+	from .planning import produce_planning_resource_observation
+	resource_binding = {**inventory_binding, 'repository_head_sha': repository_head_sha,
+		'repository_tree_sha': repository_tree_sha, 'project_config_sha256': project_config_sha256,
+		'operating_config_sha256': operating_config_sha256}
+	resources = produce_planning_resource_observation(
+		binding=resource_binding, observed_at=now,
+		producer_implementation_sha256=planning_resource_producer_sha256,
+		observe_host_resources=observe_host_resources,
+		verify_host_observation=verify_host_observation)
+	_require(host_capacity is None or (type(host_capacity) is int and host_capacity == resources['host_capacity']),
+		'Operator capacity differs from authenticated host capacity')
+	host_capacity = min(resources['host_capacity'], *(item['capacity'] for item in resources['resources']))
+	store.recover_dispatches(now)
 
 	def observe_current_reservations(observed_at, current_inventory_sha256):
 		if callable(observe_reservations):
