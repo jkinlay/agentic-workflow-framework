@@ -238,6 +238,40 @@ def render_diagnostic(value, *, credentials=(), paths=()):
     return "".join(rendered)
 
 
+def render_bounded_diagnostic(value, *, code, credentials=(), paths=()):
+    """Render a framed diagnostic within 4,096 UTF-8 bytes, inclusively.
+
+    Trusted codes are 1-64 ASCII uppercase letters, digits or underscores,
+    beginning with a letter. Invalid codes raise ValueError. Detail follows
+    render_diagnostic's redaction/escaping semantics; malformed UTF-8 bytes
+    and each surrogate code point become U+FFFD. Only oversized output gains
+    <truncated>; truncation retains complete characters and \\xHH escapes.
+    This bounds output, not the memory or time needed to redact the input.
+    """
+    if not isinstance(code, str) or re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code) is None:
+        raise ValueError("DIAGNOSTIC_CODE: expected 1-64 uppercase ASCII code characters")
+    frame = code + ": "
+    detail = render_diagnostic(value, credentials=credentials, paths=paths)
+    detail = re.sub(r"[\ud800-\udfff]", "\ufffd", detail)
+    maximum = 4096
+    if len(frame) + len(detail.encode("utf-8")) <= maximum:
+        return frame + detail
+    marker = "<truncated>"
+    remaining = maximum - len(frame) - len(marker)
+    retained = []
+    # The renderer emits controls as four ASCII characters. Treat literal
+    # escape-looking text atomically too, so no ambiguous partial escape ends
+    # the retained detail. Other tokens are single Unicode scalar values.
+    for match in re.finditer(r"\\x[0-9a-f]{2}|[\s\S]", detail):
+        token = match.group()
+        size = len(token.encode("utf-8"))
+        if size > remaining:
+            break
+        retained.append(token)
+        remaining -= size
+    return frame + "".join(retained) + marker
+
+
 def diagnostic_digest(value):
     """Return a digest of raw diagnostic bytes without retaining those bytes."""
     raw = (value if isinstance(value, bytes)

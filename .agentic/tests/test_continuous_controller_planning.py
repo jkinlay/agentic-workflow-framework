@@ -67,7 +67,112 @@ def inventory_at_heads(heads, tree='after'):
 		item['exact_tuple'] = f'base:a/head:{head}/tree:{tree}'
 	return items
 
+def planning_resource_inputs(capacity, *, resource_capacity=None, operator_capacity=None,
+							 stale=False, mismatch=False):
+	evidence = {}
+	def observe(request):
+		claims = {'observed_at': request['observed_at'], 'host_capacity': capacity,
+			'resources': [{'name': 'cpu', 'capacity': capacity if resource_capacity is None else resource_capacity}]}
+		auth = {'producer_id': 'fixture-host', 'evidence_id': 'fixture-evidence',
+			'evidence_sha256': fingerprint('fixture-resource-evidence', claims),
+			'request_sha256': fingerprint('planning_resource_request', request)}
+		evidence.update({'status': 'VERIFIED', **deepcopy(auth), **deepcopy(claims)})
+		result = {'status': 'OBSERVED', **auth, **claims}
+		if operator_capacity is not None:
+			result['host_capacity'] = operator_capacity
+		if stale:
+			result['observed_at'] = '2026-01-01T00:00:00Z'
+		if mismatch:
+			result['request_sha256'] = '0' * 64
+		return result
+	def verify(authentication, request):
+		if authentication['request_sha256'] != fingerprint('planning_resource_request', request):
+			return {}
+		return deepcopy(evidence)
+	return {'observe_host_resources': observe, 'verify_host_observation': verify,
+		'planning_resource_producer_sha256': 'c' * 64,
+		'project_config_sha256': 'd' * 64, 'operating_config_sha256': 'e' * 64}
+
 class ContinuousControllerPlanningTests(unittest.TestCase):
+
+	def test_controller_persists_before_return_and_rejects_replay_after_restart(self):
+		from agentic.store import Store
+		from test_planning import NOW as plan_now, config, capacity_kwargs
+		cfg = config()
+		with tempfile.TemporaryDirectory(prefix='awf50c-controller-') as scratch:
+			path = Path(scratch)
+			controller = ContinuousControllerStore(path / 'controller.sqlite3', ['A'])
+			state_store = Store(path / 'state.sqlite3', '00000000-0000-0000-0000-000000000050')
+			result = controller.recompute_durable_plan(state_store, [], cfg, now=plan_now,
+				trigger='project_start', **capacity_kwargs(cfg))
+			self.assertEqual([result['record']], state_store.planning_history())
+			restarted = ContinuousControllerStore(path / 'controller.sqlite3', ['A'])
+			with self.assertRaises(ValidationError):
+				restarted.recompute_durable_plan(state_store, [], cfg, now=plan_now,
+					trigger='project_start', **capacity_kwargs(cfg))
+			self.assertEqual([result['record']], state_store.planning_history())
+			with self.assertRaises(ValidationError):
+				restarted.recompute_durable_plan(state_store, [], cfg, now=plan_now,
+					trigger='files_changed', legacy_state={}, migration_version=2,
+					**capacity_kwargs(cfg))
+			self.assertEqual([result['record']], state_store.planning_history())
+
+	def test_plan_record_round_trips_immutably_through_awf91_state_store(self):
+		from agentic import planning
+		from agentic.store import Store
+		from test_planning import NOW as plan_now, config, capacity_kwargs
+
+		cfg = config()
+		record = planning.recompute_plan([], cfg, {}, now=plan_now,
+			trigger='project_start', **capacity_kwargs(cfg))['record']
+		self.assertTrue(planning.verify_plan_record(record))
+		with tempfile.TemporaryDirectory(prefix='awf50c-plan-history-') as scratch:
+			path = Path(scratch) / 'state.sqlite3'
+			project = '00000000-0000-0000-0000-000000000050'
+			store = Store(path, project)
+			# Exercise the existing planning API, rather than introducing a
+			# controller-private namespace or bypassing it with direct SQL.
+			self.assertEqual(record, planning.append_plan_record(store, record))
+			restarted = Store(path, project)
+			with self.assertRaises(ValidationError):
+				planning.append_plan_record(restarted, record)
+			replacement = deepcopy(record)
+			replacement['trigger'] = 'files_changed'
+			replacement['plan_sha256'] = fingerprint('planning_audit_record',
+				{key: value for key, value in replacement.items() if key != 'plan_sha256'})
+			with self.assertRaises(ValidationError):
+				planning.append_plan_record(restarted, replacement)
+
+	def test_controller_migrates_history_once_and_refuses_tampering_before_planning(self):
+		from agentic import planning
+		from agentic.store import Store
+		from test_planning import NOW as plan_now, config, capacity_kwargs
+		cfg = config()
+		record = planning.recompute_plan([], cfg, {}, now=plan_now,
+			trigger='project_start', **capacity_kwargs(cfg))['record']
+		legacy = {'planning_history': [record], 'current_plan': record}
+		with tempfile.TemporaryDirectory(prefix='awf50c-migrate-') as scratch:
+			path = Path(scratch)
+			controller = ContinuousControllerStore(path / 'controller.sqlite3', ['A'])
+			state_store = Store(path / 'state.sqlite3', '00000000-0000-0000-0000-000000000050')
+			result = controller.recompute_durable_plan(state_store, [], cfg, legacy_state=legacy,
+				migration_version=1, now=plan_now, trigger='files_changed', **capacity_kwargs(cfg))
+			self.assertEqual([record, result['record']], state_store.planning_history())
+			self.assertEqual([record], legacy['planning_history'])
+			state_store.migrate_planning_history(legacy, version=1)
+			with patch('agentic.planning.recompute_plan') as recompute:
+				with self.assertRaises(ValidationError):
+					controller.recompute_durable_plan(state_store, [], cfg, legacy_state={},
+						now=plan_now, trigger='ticket_added', **capacity_kwargs(cfg))
+				recompute.assert_not_called()
+			with state_store.connection() as db:
+				db.execute('DROP TRIGGER planning_history_no_update')
+				db.execute("UPDATE planning_history SET record_json='{}'")
+			with patch('agentic.planning.recompute_plan') as recompute:
+				with self.assertRaises(ValidationError):
+					controller.recompute_durable_plan(state_store, [], cfg,
+						now=plan_now, trigger='ticket_added', **capacity_kwargs(cfg))
+				recompute.assert_not_called()
 
 	def test_managed_source_payload_preserves_install_journal_headroom(self):
 		root = Path(__file__).resolve().parents[2]
@@ -135,25 +240,72 @@ class ContinuousControllerPlanningTests(unittest.TestCase):
 		self.skill_patch.start()
 		self.addCleanup(self.skill_patch.stop)
 
-	def cycle(self, items, *, capacity=2, dispatch=None):
+	def cycle(self, items, *, capacity=2, dispatch=None, **resources):
 		calls = []
 		dispatch = dispatch or (lambda payload: calls.append(dict(payload)) or receipt(payload))
-		result = production_controller_cycle(self.store, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **REPOSITORY, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
+		result = production_controller_cycle(self.store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=capacity, inventory_binding=BINDING, **REPOSITORY, **resources, observe_inventory=lambda: observation(items), observe_reservations=lambda request: {}, dispatch_ticket=dispatch, observe_dispatch=lambda payload: self.fail('unexpected reconciliation'), deliver_status=lambda digest: {'delivery_id': digest['delivery_id'], 'status': 'DELIVERED', 'observed_at': NOW}, publication_config=publication_config(), observe_publication=lambda item: publication_observation(item['ticket'], NOW))
 		return (calls, result)
 
 	def test_production_cycle_dispatches_mixed_writer_and_critic_per_ticket(self):
-		calls, result = self.cycle([ticket('AWF-101', 1, role='writer', stage='implementation'), ticket('AWF-102', 2, role='critic', stage='independent_review')])
+		calls, result = self.cycle([ticket('AWF-101', 1, role='writer', stage='implementation'), ticket('AWF-102', 2, role='critic', stage='independent_review')], **planning_resource_inputs(2))
 		self.assertEqual([(item['ticket'], item['role'], item['lifecycle_stage']) for item in calls], [('AWF-101', 'writer', 'implementation'), ('AWF-102', 'critic', 'independent_review')])
 		self.assertEqual(len(result['dispatch_receipts']), 2)
 
 	def test_role_authority_mismatch_fails_closed_independent_of_capacity(self):
 		with self.assertRaisesRegex(ValidationError, 'role|lifecycle'):
-			self.cycle([ticket('AWF-103', 1, role='critic', stage='implementation')], capacity=2, dispatch=lambda payload: self.fail('mismatched role dispatched'))
+			self.cycle([ticket('AWF-103', 1, role='critic', stage='implementation')], capacity=2, dispatch=lambda payload: self.fail('mismatched role dispatched'), **planning_resource_inputs(2))
 
 	def test_host_capacity_limits_homogeneous_roles_independent_of_role_authority(self):
-		calls, result = self.cycle([ticket('AWF-104', 1), ticket('AWF-105', 2)], capacity=1)
+		calls, result = self.cycle([ticket('AWF-104', 1), ticket('AWF-105', 2)], capacity=1, **planning_resource_inputs(1))
 		self.assertEqual([(item['ticket'], item['role']) for item in calls], [('AWF-104', 'writer')])
 		self.assertEqual(len(result['dispatch_receipts']), 1)
+
+	def test_operator_capacity_without_authenticated_resource_observation_is_refused(self):
+		# This legacy helper supplies only an operator-authored host_capacity.
+		# Production must refuse it before invoking the dispatch adapter.
+		with self.assertRaisesRegex(ValidationError, 'authenticated.*resource|resource.*authenticated'):
+			self.cycle([ticket('AWF-88', 1)], capacity=1,
+				dispatch=lambda payload: self.fail('unauthenticated capacity dispatched work'))
+
+	def test_authenticated_resource_limit_bounds_dispatch(self):
+		calls, result = self.cycle([ticket('AWF-104', 1), ticket('AWF-105', 2)],
+			capacity=2, **planning_resource_inputs(2, resource_capacity=1))
+		self.assertEqual(len(calls), 1)
+		self.assertEqual(len(result['dispatch_receipts']), 1)
+
+	def test_operator_capacity_must_match_authenticated_host_capacity(self):
+		with self.assertRaisesRegex(ValidationError, 'authenticated host capacity'):
+			self.cycle([ticket('AWF-88', 1)], capacity=2, **self.resource_inputs())
+
+	def resource_inputs(self, **options):
+		return planning_resource_inputs(1, **options)
+
+	def test_missing_host_observation_is_refused(self):
+		inputs = self.resource_inputs()
+		inputs['observe_host_resources'] = None
+		with self.assertRaisesRegex(ValidationError, 'authenticated.*resource|resource.*authenticated'):
+			self.cycle([ticket('AWF-88', 1)], capacity=1, **inputs)
+
+	def test_operator_authored_capacity_is_refused(self):
+		inputs = self.resource_inputs(operator_capacity=2)
+		with self.assertRaisesRegex(ValidationError, 'authenticated host evidence'):
+			self.cycle([ticket('AWF-88', 1)], capacity=1, **inputs)
+
+	def test_unauthenticated_capacity_is_refused(self):
+		inputs = self.resource_inputs()
+		inputs['verify_host_observation'] = None
+		with self.assertRaisesRegex(ValidationError, 'authenticated.*resource|resource.*authenticated'):
+			self.cycle([ticket('AWF-88', 1)], capacity=1, **inputs)
+
+	def test_stale_resource_observation_is_refused(self):
+		with self.assertRaisesRegex(ValidationError, 'exact request'):
+			self.cycle([ticket('AWF-88', 1)], capacity=1,
+				**self.resource_inputs(stale=True))
+
+	def test_mismatched_resource_request_is_refused(self):
+		with self.assertRaisesRegex(ValidationError, 'exact request'):
+			self.cycle([ticket('AWF-88', 1)], capacity=1,
+				**self.resource_inputs(mismatch=True))
 
 class OverlapAllowanceBoundaryTests(unittest.TestCase):
 	def test_lane_start_provider_observation_occurs_outside_write_transaction(self):
@@ -246,8 +398,9 @@ class OverlapAllowanceBoundaryTests(unittest.TestCase):
 			'observe_publication': lambda item: publication_observation(item['ticket'], now),
 			'controller_clock': controller_clock or (lambda: now),
 		}
+		arguments.update(planning_resource_inputs(capacity))
 		arguments.update(operations)
-		return production_controller_cycle(store, now=now, host_capacity=capacity,
+		return production_controller_cycle(store, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=now, host_capacity=capacity,
 			inventory_binding=BINDING, **REPOSITORY, **arguments)
 
 	def validate(self, request=None, observation=None, **kwargs):

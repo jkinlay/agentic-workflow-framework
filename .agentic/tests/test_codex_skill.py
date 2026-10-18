@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import source_only  # noqa: E402,F401
 
+from test_continuous_controller_planning import planning_resource_inputs
 from agentic import ValidationError
 from agentic.canonical import fingerprint
 from agentic.codex_skill import enforce_pinned_awf_skill, observe_codex_awf_skills
@@ -262,7 +263,7 @@ class CodexSkillTests(unittest.TestCase):
         binding = {
             "project_id": "project",
             "repository_id": "repository",
-            "scope_sha256": "scope",
+            "scope_sha256": "a" * 64,
         }
         ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE"}
         observation = {
@@ -341,8 +342,10 @@ class CodexSkillTests(unittest.TestCase):
                 ):
                     production_controller_cycle(
                         store,
+                        controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True},
                         now=now,
                         host_capacity=1,
+                        **planning_resource_inputs(1),
                         inventory_binding=binding,
                         repository_root=self.project,
                         repository_head_sha="a" * 40,
@@ -369,7 +372,7 @@ class CodexSkillTests(unittest.TestCase):
         binding = {
             "project_id": "project",
             "repository_id": "repository",
-            "scope_sha256": "scope",
+            "scope_sha256": "a" * 64,
         }
         ticket = {"ticket": "AWF-33", "disposition": "ELIGIBLE"}
         observation = {
@@ -421,8 +424,10 @@ class CodexSkillTests(unittest.TestCase):
         ):
             result = production_controller_cycle(
                 store,
+                controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True},
                 now=now,
                 host_capacity=1,
+                **planning_resource_inputs(1),
                 inventory_binding=binding,
                 repository_root=self.project,
                 repository_head_sha="a" * 40,

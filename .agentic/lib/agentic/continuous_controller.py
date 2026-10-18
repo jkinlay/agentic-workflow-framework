@@ -18,7 +18,7 @@ from .canonical import canonical, loads, now_text, timestamp
 from .controller_state import STATE_SCHEMA_VERSION, configure_database, protected_state_path, restrict_state_permissions
 STREAM_STATES = {'WORKING', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
 TICKET_STATES = {'ELIGIBLE', 'PAUSED_INPUT', 'BLOCKED', 'COMPLETE'}
-LIFECYCLE_ROLES = {'implementation': 'writer', 'independent_review': 'critic'}
+LIFECYCLE_ROLES = {'implementation': 'writer', 'independent_review': 'critic', 'amendment': 'writer'}
 DEFAULT_STATUS_CADENCE_SECONDS = 10 * 60
 STATE_APPLICATION_ID = 1096238641
 DISPATCH_SCHEMA_VERSION = 2
@@ -498,6 +498,29 @@ def _validated_overlap_sync_receipt(gate, payload, receipt, not_before):
 	return deepcopy(receipt)
 
 class ContinuousControllerStore:
+	def recompute_durable_plan(self, state_store, tickets, config, *, legacy_state=None,
+			migration_version=1, **planning_inputs):
+		"""Seal through planning.py, then durably append before returning a plan.
+
+		The AWF-91 store owns plan history; controller-private tables never hold
+		copies. Explicit legacy input is migrated once, even when it is empty.
+		A restart without legacy input reads the durable history directly.
+		"""
+		from .store import Store
+		from .planning import recompute_plan, append_plan_record
+		_require(isinstance(state_store, Store), 'Durable planning requires the AWF-91 state store')
+		if legacy_state is not None:
+			state_store.migrate_planning_history(legacy_state, version=migration_version)
+		else:
+			_require(type(migration_version) is int and migration_version == 1,
+				'Planning history migration version mismatch')
+		state = deepcopy(legacy_state) if legacy_state is not None else {}
+		state['planning_history'] = state_store.planning_history()
+		state['current_plan'] = state_store.current_plan()
+		result = recompute_plan(tickets, config, state, **planning_inputs)
+		if result['status'] == 'PLANNED':
+			append_plan_record(state_store, result['record'])
+		return result
 
 	def __init__(self, path, stream_ids, cadence_seconds=DEFAULT_STATUS_CADENCE_SECONDS, worktree_roots=(), periodic_status_enabled=True, migrate_cadence=False):
 		self.worktree_roots = tuple((Path(root).resolve(strict=False) for root in worktree_roots))
@@ -1561,7 +1584,12 @@ def _observe_controller_inventory(observe_inventory, *, now, inventory_binding, 
 	tickets, repository_binding = canonical_repository_paths(observation['tickets'], repository_root, repository_head_sha, repository_tree_sha)
 	return (tickets, repository_binding, observation)
 
-def production_controller_cycle(store, *, now, host_capacity, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None):
+def production_controller_cycle(store, *, controller_config, now, host_capacity=None, inventory_binding, repository_root, repository_head_sha, repository_tree_sha, observe_inventory, dispatch_ticket, observe_dispatch, deliver_status, publication_config=None, observe_publication=None, dispatch_role=None, cycle_id=None, overlap_allowance_requests=None, observe_overlap_allowance=None, observe_overlap_conflict=None, sync_writer=None, reconcile_overlap_sync=None, observe_dispatch_quiescence=None, observe_overlap_sync_inventory=None, observe_reservations=None, replan_request=None, observe_replan_trigger=None, controller_clock=None, observe_host_resources=None, verify_host_observation=None, planning_resource_producer_sha256=None, project_config_sha256=None, operating_config_sha256=None):
+	# Validate before durable recovery or any provider observation. Only bools grant authority.
+	_require(isinstance(controller_config, dict), 'controller must be a mapping')
+	for key in ('dispatch_enabled', 'auto_dispatch', 'auto_request_critic', 'auto_resume_amendments'):
+		_require(type(controller_config.get(key)) is bool, 'controller.' + key + ' must be a boolean')
+	controller_config = dict(controller_config)
 	_require(isinstance(store, ContinuousControllerStore), 'Production cycle needs a controller store')
 	_require(all((callable(adapter) for adapter in (observe_inventory, dispatch_ticket, observe_dispatch, deliver_status))), 'Production controller adapters must be callable')
 	timestamp(now)
@@ -1574,8 +1602,25 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 		return provider_controller_time
 
 	_require(dispatch_role is None or dispatch_role in {'writer', 'critic'}, 'Compatibility dispatch role must be writer or critic')
-	store.recover_dispatches(now)
 	_require(isinstance(inventory_binding, dict) and set(inventory_binding) == {'project_id', 'repository_id', 'scope_sha256'} and all((isinstance(value, str) and value for value in inventory_binding.values())), 'Production inventory needs immutable project, repository, and scope bindings')
+
+	# The reviewed host adapter supplies evidence, never an operator capacity map.
+	# Reuse the single planning producer and its independent evidence verifier.
+	_require(callable(observe_host_resources) and callable(verify_host_observation),
+		'Production requires an authenticated planning resource observation')
+	from .planning import produce_planning_resource_observation
+	resource_binding = {**inventory_binding, 'repository_head_sha': repository_head_sha,
+		'repository_tree_sha': repository_tree_sha, 'project_config_sha256': project_config_sha256,
+		'operating_config_sha256': operating_config_sha256}
+	resources = produce_planning_resource_observation(
+		binding=resource_binding, observed_at=now,
+		producer_implementation_sha256=planning_resource_producer_sha256,
+		observe_host_resources=observe_host_resources,
+		verify_host_observation=verify_host_observation)
+	_require(host_capacity is None or (type(host_capacity) is int and host_capacity == resources['host_capacity']),
+		'Operator capacity differs from authenticated host capacity')
+	host_capacity = min(resources['host_capacity'], *(item['capacity'] for item in resources['resources']))
+	store.recover_dispatches(now)
 
 	def observe_current_reservations(observed_at, current_inventory_sha256):
 		if callable(observe_reservations):
@@ -1658,6 +1703,13 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 			allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'SYNC_DECISION', 'status': gate['status'], 'gate_id': gate['gate_id'], 'reason': reason})
 			errors.append({'operation': 'overlap_sync', 'state': 'BLOCKED', 'reason': reason})
 			continue
+		disabled = next((key for key in ('dispatch_enabled', 'auto_dispatch') if controller_config[key] is not True), None)
+		if disabled is not None:
+			allowance_blocked_tickets.update(gate['tickets'])
+			reason = 'CONTROLLER_AUTOMATION_DISABLED: controller.' + disabled + ' is false'
+			allowance_audit.append({'allowance_id': gate['allowance_id'], 'phase': 'SYNC_DECISION', 'status': 'REFUSED', 'gate_id': gate['gate_id'], 'reason': reason})
+			errors.append({'operation': 'overlap_sync', 'state': 'REFUSED', 'switch': 'controller.' + disabled, 'reason': reason})
+			continue
 		try:
 			quiescence = store.overlap_sync_quiescence(gate['gate_id'])
 			for pending in quiescence['observations']:
@@ -1723,8 +1775,20 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 				allowance_blocked_tickets.update(planned['binding']['tickets'])
 			reason = str(exc) if isinstance(exc, ValidationError) else type(exc).__name__
 			errors.append({'operation': 'overlap_allowance_inventory', 'state': 'BLOCKED', 'reason': reason})
+	# Preserve the boundary presented by the fresh inventory before policy refusals.
+	cancellation_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
 	for index, item in enumerate(tickets):
 		if item['disposition'] != 'ELIGIBLE':
+			continue
+		# Canonical production tickets always carry a validated stage. The existing
+		# cycle-wide role remains usable by contract-only mock stores.
+		stage = item.get('lifecycle_stage', 'independent_review' if dispatch_role == 'critic' else 'implementation')
+		path_switch = {'implementation': 'auto_dispatch', 'independent_review': 'auto_request_critic', 'amendment': 'auto_resume_amendments'}[stage]
+		disabled = next((key for key in ('dispatch_enabled', path_switch) if controller_config[key] is not True), None)
+		if disabled is not None:
+			reason = 'CONTROLLER_AUTOMATION_DISABLED: controller.' + disabled + ' is false'
+			tickets[index] = {**item, 'disposition': 'BLOCKED', 'reason': reason, 'next_action': 'Enable the reviewed controller switch after installation', 'resume_trigger': 'controller.' + disabled + ' is true'}
+			errors.append({'operation': 'dispatch_gate', 'ticket': item['ticket'], 'state': 'REFUSED', 'switch': 'controller.' + disabled, 'reason': reason})
 			continue
 		try:
 			_require(callable(observe_publication) and isinstance(publication_config, dict), 'PUBLICATION_UNOBSERVED: a reviewed publication observer and accepted configuration are required')
@@ -1756,12 +1820,23 @@ def production_controller_cycle(store, *, now, host_capacity, inventory_binding,
 	ticket_by_id = {item['ticket']: item for item in tickets}
 	round_boundary_ready = store.round_boundary_ready(tickets, observation['inventory_sha256'])
 	streams = store.schedule(tickets, now, host_capacity, active_allowances, reservations=reservations, inventory_sha256=observation['inventory_sha256'])
+	# Evaluate and consume any authenticated boundary seal before cancellation.
+	# A closed boundary retains pending intents across restarts.
+	if cancellation_boundary_ready:
+		for operation in store.pending_dispatches():
+			current = next((item for item in tickets if item['ticket'] == operation['ticket']), None)
+			if current is not None and current['reason'].startswith('CONTROLLER_AUTOMATION_DISABLED:'):
+				store.cancel_pending_dispatch(operation['dispatch_id'], now, current['reason'])
 	dispatches = []
 	operations = []
 	if round_boundary_ready:
 		store.prepare_dispatches(now)
 		store.bind_dispatch_waivers([item['record'] for item in active_allowances], now)
 		operations = store.prepare_dispatches(now)
+	else:
+		# A closed round boundary still permits read-only observation of uncertain launches.
+		with store.connection() as db:
+			operations = [dict(row) | {'payload': loads(row['payload_json'])} for row in db.execute("SELECT * FROM controller_dispatch WHERE status IN ('UNKNOWN','LAUNCHED') ORDER BY stream_id,dispatch_id")]
 	for operation in operations:
 		payload, dispatch_id = (operation['payload'], operation['dispatch_id'])
 		if operation['status'] == 'PENDING':

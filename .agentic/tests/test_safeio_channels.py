@@ -104,6 +104,70 @@ class StrictJsonTests(unittest.TestCase):
 
 
 class SafeWriteAndDiagnosticTests(unittest.TestCase):
+    def test_bounded_diagnostic_caps_utf8_after_redaction_and_framing(self):
+        code = "AWF_DIAGNOSTIC"
+        frame = code + ": "
+        marker = "<truncated>"
+        credential = "tiny" + "-value"
+        local_path = chr(47) + "p"
+        payload = "harmless " + credential + " " + local_path + "\n"
+        expected = "harmless <redacted-credential> <redacted-path>\\x0a"
+        for suffix in ("", "\u00e9", "\U0001f642", "\x00"):
+            # Redaction and control escaping expand this initially short input.
+            padding = 4096 - len((frame + expected).encode("utf-8"))
+            detail = payload + "a" * padding + suffix
+            with self.subTest(suffix=repr(suffix)):
+                rendered = child_process.render_bounded_diagnostic(
+                    detail, code=code, credentials=(credential,), paths=(local_path,))
+                raw = rendered.encode("utf-8", errors="strict")
+                self.assertEqual(raw.decode("utf-8", errors="strict"), rendered)
+                self.assertLessEqual(len(raw), 4096)
+                self.assertTrue(rendered.startswith(frame + expected))
+                self.assertNotIn(credential, rendered)
+                self.assertNotIn(local_path, rendered)
+                if suffix:
+                    self.assertTrue(rendered.endswith(marker))
+                else:
+                    self.assertEqual(rendered, frame + expected + "a" * padding)
+                    self.assertEqual(len(raw), 4096)
+                    self.assertNotIn(marker, rendered)
+        for detail, expected_detail in ((b"harmless\xff", "harmless\ufffd"),
+                                        ("harmless\ud800\udfff", "harmless\ufffd\ufffd")):
+            with self.subTest(detail=repr(detail)):
+                rendered = child_process.render_bounded_diagnostic(detail, code=code)
+                self.assertEqual(rendered, frame + expected_detail)
+                self.assertEqual(rendered.encode("utf-8").decode("utf-8"), rendered)
+        multibyte = child_process.render_bounded_diagnostic(
+            "harmless " + "\U0001f642" * 2000, code=code)
+        self.assertTrue(multibyte.startswith(frame + "harmless \U0001f642"))
+        self.assertTrue(multibyte.endswith(marker))
+        self.assertLessEqual(len(multibyte.encode("utf-8")), 4096)
+
+    def test_bounded_diagnostic_preserves_code_and_escapes_controls(self):
+        code = "AWF_DIAGNOSTIC"
+        frame = code + ": "
+        marker = "<truncated>"
+        controls = "\x00\n\x1b\x85\x7f"
+        escaped = r"\x00\x0a\x1b\x85\x7f"
+        rendered = child_process.render_bounded_diagnostic(
+            "harmless " + controls, code=code)
+        self.assertEqual(rendered, frame + "harmless " + escaped)
+        # Move each four-byte escape across the cutoff, including partial fits.
+        for offset in range(4):
+            padding = 4096 - len(frame + marker + "harmless ") - 8 - offset
+            with self.subTest(offset=offset):
+                rendered = child_process.render_bounded_diagnostic(
+                    "harmless " + "a" * padding + controls * 1000, code=code)
+                self.assertTrue(rendered.startswith(frame + "harmless "))
+                self.assertTrue(rendered.endswith(marker))
+                self.assertEqual(rendered[:-len(marker)],
+                                 frame + "harmless " + "a" * padding + r"\x00\x0a")
+                self.assertLessEqual(len(rendered.encode("utf-8")), 4096)
+                self.assertFalse(any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in rendered))
+        for invalid in ("", "lower", "BAD: CODE", "BAD\nCODE", "\u00c9", "A" * 65, None):
+            with self.subTest(code=invalid), self.assertRaises(ValueError):
+                child_process.render_bounded_diagnostic("harmless", code=invalid)
+
     def test_atomic_json_write_is_strict_bounded_and_private(self):
         with tempfile.TemporaryDirectory() as directory:
             with safeio.Tree(directory) as tree:

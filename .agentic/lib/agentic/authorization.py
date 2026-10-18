@@ -127,6 +127,145 @@ READY_AUTHORIZATION_ROLES = {"manager", "owner"}
 READY_AUTHORIZATION_ORDER = ["request", "action", "role", "repoid", "pr", "head", "requested", "expires"]
 
 
+def make_batch_authorization_request(generation, candidate, config, *, action,
+                                     request_id, requested_at, expires_at,
+                                     gate=None, contracts=None, observer_registry=None):
+    """Prepare batch-only owner text; this does not authorize any mutation."""
+    from .gates import validate_batch_candidate, validate_batch_final_gate
+    from .merge_train import _require, _identifier
+    validate_batch_candidate(generation, candidate, config)
+    trusted_owner_ids(config)
+    _require(action in {"MARK_READY", "HUMAN_MERGE_HANDOFF"},
+             "Unsupported batch authorization action")
+    _identifier(request_id, "batch authorization request_id")
+    issued, expires = timestamp(requested_at), timestamp(expires_at)
+    ttl = config["merge_gate"]["authorization_ttl_seconds"]
+    _require(type(ttl) is int and ttl > 0 and issued < expires
+             and (expires - issued).total_seconds() <= ttl,
+             "Batch authorization has an invalid request window")
+    gate_id = None
+    if action == "HUMAN_MERGE_HANDOFF":
+        _require(gate is not None and contracts is not None
+                 and isinstance(observer_registry, dict),
+                 "Batch merge handoff requires an exact-head final gate")
+        gate_id = validate_batch_final_gate(
+            gate, generation, candidate, config, contracts, observer_registry, now=requested_at)
+    else:
+        _require(gate is None, "Ready authorization cannot be used as batch merge authorization")
+    return {
+        "format": "awf-batch-authorization-request-1", "action": action,
+        "request_id": request_id, "requested_at": requested_at, "expires_at": expires_at,
+        "generation_id": generation["generation_id"], "candidate": copy.deepcopy(candidate),
+        "configuration_sha256": fingerprint("batch_configuration", config), "batch_gate_id": gate_id,
+    }
+
+
+def render_batch_authorization(request):
+    """Sign every batch request field in a separate, non-source grammar."""
+    if (not isinstance(request, dict)
+            or request.get("format") != "awf-batch-authorization-request-1"
+            or request.get("action") not in {"MARK_READY", "HUMAN_MERGE_HANDOFF"}):
+        raise ValidationError("Not a batch authorization request")
+    return ("AWF1.2 AUTHORIZE_BATCH action=" + request["action"]
+            + " digest=" + fingerprint("batch_authorization_request", request))
+
+
+def verify_batch_authorization(request, source_id, generation, candidate, config, *,
+                               observer_id, observer_registry, now,
+                               gate=None, contracts=None):
+    """Observe fresh immutable batch approval without consuming or merging it.
+
+    The runtime registry is the trust boundary. Source IDs are locators, never
+    approval payloads. Neither a source review nor a ready request can stand in
+    for the separately signed final-gate-bound human merge handoff.
+    """
+    from .merge_train import _require, _identifier, _registered_observation
+    fields = {"format", "action", "request_id", "requested_at", "expires_at",
+              "generation_id", "candidate", "configuration_sha256", "batch_gate_id"}
+    _require(isinstance(request, dict) and set(request) == fields,
+             "Batch authorization request has invalid fields")
+    expected = make_batch_authorization_request(
+        generation, candidate, config, action=request["action"], request_id=request["request_id"],
+        requested_at=request["requested_at"], expires_at=request["expires_at"],
+        gate=gate, contracts=contracts, observer_registry=observer_registry)
+    _require(request == expected, "Batch authorization request binding differs")
+    _identifier(source_id, "batch authorization source_id")
+    _require(timestamp(request["requested_at"]) <= timestamp(now) < timestamp(request["expires_at"]),
+             "Batch authorization request is expired or from the future")
+    if gate is not None:
+        from .gates import validate_batch_final_gate
+        validate_batch_final_gate(gate, generation, candidate, config, contracts,
+                                  observer_registry, now=now)
+    observation_request = {
+        "operation": "BATCH_AUTHORIZATION", "provider_identity": generation["provider_identity"],
+        "generation_id": generation["generation_id"], "candidate": copy.deepcopy(candidate),
+        "request": copy.deepcopy(request), "source_id": source_id,
+    }
+    result, receipt, _ = _registered_observation(
+        observer_registry, observer_id, observation_request, now=now,
+        max_age_seconds=config["validation"]["max_evidence_age_seconds"])
+    result_fields = {"source_id", "actor_id", "created_at", "updated_at", "raw_body",
+                     "configuration_sha256", "configuration_status", "candidate", "generation_id"}
+    _require(isinstance(result, dict) and set(result) == result_fields,
+             "Batch approval observation has invalid fields")
+    _require(type(result["actor_id"]) is int and result["actor_id"] in trusted_owner_ids(config),
+             "Batch approval actor is not a trusted human owner")
+    _require(result["source_id"] == source_id and result["candidate"] == candidate
+             and result["generation_id"] == generation["generation_id"]
+             and result["configuration_status"] == "ACCEPTED"
+             and result["configuration_sha256"] == request["configuration_sha256"]
+             and result["raw_body"] == render_batch_authorization(request),
+             "Batch approval is not authenticated for the exact request and candidate")
+    created = timestamp(result["created_at"])
+    _require(result["created_at"] == result["updated_at"]
+             and timestamp(request["requested_at"]) <= created <= timestamp(receipt["observed_at"])
+             <= timestamp(now), "Batch approval is edited or outside its request window")
+    return {
+        "format": "awf-batch-authorization-1", "decision": "AUTHORIZED",
+        "action": request["action"], "request": copy.deepcopy(request),
+        "actor_id": result["actor_id"], "source_id": source_id,
+        "provider_observation": receipt, "execution_authority": False, "may_merge": False,
+    }
+
+
+def batch_mark_ready(request, source_id, generation, candidate, config, *,
+                     observer_id, observer_registry, now, log_record, mark_ready):
+    """Log observed approval before a host's conditional exact-head ready call.
+
+    The host must durably log the record and enforce the supplied candidate as
+    mutation preconditions. An uncertain mutation/observation raises; it is
+    never retried here. This function has no merge or target-ref push operation.
+    """
+    from .merge_train import _require, _registered_observation
+    _require(callable(log_record) and callable(mark_ready),
+             "Batch ready requires host logging and conditional mutation adapters")
+    try:
+        _require(isinstance(request, dict) and request.get("action") == "MARK_READY",
+                 "Batch ready requires a separate MARK_READY approval")
+        record = verify_batch_authorization(
+            request, source_id, generation, candidate, config, observer_id=observer_id,
+            observer_registry=observer_registry, now=now)
+    except ValidationError as exc:
+        record = {"format": "awf-batch-ready-refusal-1", "decision": "REFUSED",
+                  "reason": str(exc), "draft": True, "execution_authority": False}
+        log_record(copy.deepcopy(record))
+        return record
+    log_record(copy.deepcopy(record))
+    preconditions = {
+        "candidate": copy.deepcopy(candidate), "generation_id": generation["generation_id"],
+        "authorization_sha256": fingerprint("batch_authorization", record),
+    }
+    mark_ready(copy.deepcopy(preconditions))
+    state_request = dict(preconditions, operation="BATCH_READY_STATE",
+                         provider_identity=copy.deepcopy(generation["provider_identity"]))
+    result, receipt, _ = _registered_observation(
+        observer_registry, observer_id, state_request, now=now,
+        max_age_seconds=config["validation"]["max_evidence_age_seconds"])
+    _require(result == {"candidate": candidate, "draft": False},
+             "Batch mark-ready outcome is unknown or differs from the exact candidate; reconcile without replay")
+    return dict(record, status="READY_FOR_CRITIC", draft=False, ready_observation=receipt)
+
+
 def trusted_owner_ids(config):
     """Return the reviewed numeric owner allowlist or fail closed."""
     try:

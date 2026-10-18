@@ -69,6 +69,10 @@ def setUpModule():
 
 def production_controller_cycle(*args,**kwargs):
 	"""Existing controller cases use explicit synthetic passing publication facts."""
+	from test_continuous_controller_planning import planning_resource_inputs
+	for name,value in planning_resource_inputs(kwargs["host_capacity"]).items():
+		kwargs.setdefault(name,value)
+	kwargs.setdefault('controller_config', {'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True})
 	kwargs.setdefault('publication_config',publication_config())
 	kwargs.setdefault('observe_publication',lambda item:publication_observation(item['ticket'],kwargs['now']))
 	kwargs.setdefault('observe_reservations',reservation_observation)
@@ -1160,7 +1164,16 @@ class JiraProgressTests(unittest.TestCase):
 		bundle=json.loads((ROOT/'.agentic/examples/evidence-bundle.json').read_text())
 		project_config_path=ROOT/'.agentic/examples/PROJECT_CONFIG.yaml'
 		project_config=json.loads(project_config_path.read_text())
+		project_config['controller'].update(dispatch_enabled=True,auto_dispatch=True,auto_request_critic=True,auto_resume_amendments=True)
+		project_config_path=root/'project-config.json'
+		project_config_path.write_text(json.dumps(project_config),encoding='utf-8')
 		project_config_bytes=project_config_path.read_bytes()
+		(worktree/'.agentic/PROJECT_CONFIG.yaml').write_bytes(project_config_bytes)
+		from agentic.operating import default_operating
+		from agentic.model_routing import policy_from_config
+		(worktree/'OPERATING_CONFIG.yaml').write_text(json.dumps(default_operating(policy_from_config(project_config))),encoding='utf-8')
+		subprocess.run(['git','-C',str(worktree),'add','.agentic/PROJECT_CONFIG.yaml','OPERATING_CONFIG.yaml'],check=True)
+		subprocess.run(['git','-C',str(worktree),'commit','-q','-m','fixture governance'],check=True)
 		publication=publication_observation('EX-42',NOW)
 		publication['identity']['actor_id']=project_config['github']['expected_actor_id']
 
@@ -1180,6 +1193,7 @@ class JiraProgressTests(unittest.TestCase):
 		reservation_envelope['observation_sha256']=fingerprint('controller-reservation-observation',reservation_envelope)
 		adapter_config={'reservations':reservation_envelope,'inventory':inventory_observation(NOW,inventory),'publication':publication,'jira_now':NOW,'jira_before':'Ready','jira_after':'In Progress','reconcile_receipt':{'ticket':'QA-CLI','issue_id':'10001',**jira_binding,'status':'RECONCILED','operation_id':str(uuid.UUID(int=9)),'before_status_id':'3','after_status_id':'10002','observed_at':NOW},'jira_page':{'items':[{'id':'10001','issue_type':'TASK','status_category':'TERMINAL'}],'next_cursor':None,'complete':True,'snapshot_id':'snapshot-cli','scope_sha256':scope_sha256,'observed_at':NOW},'project_config_observation':{'raw_bytes_base64':base64.b64encode(project_config_bytes).decode('ascii'),'config_sha256':sha256(project_config_bytes),'policy_sha256':policy_hash(project_config,definition()),'path':'.agentic/PROJECT_CONFIG.yaml','repository':project_config['github']['repository'],'repository_id':project_config['github']['repository_id'],'ref':'refs/heads/'+project_config['github']['base_branch'],'blob_sha':'e'*40,'acceptance':{'status':'ACCEPTED','receipt_id':'cli-acceptance','workflow_version':project_config['template']['expected_workflow_version']}},'closeout_observation':{'record':closeout,'merge_result_id':merge_result_id,'merge_observed_at':NOW},'jira_reconciliation_observation':{'record':transition}}
 		adapter_source='def build_adapters(config):\n    now = config["jira_now"]\n    def observe_inventory():\n        return config["inventory"]\n    def observe_reservations(request):\n        return config["reservations"]\n    def observe_publication(item):\n        return config["publication"]\n    def dispatch_ticket(payload):\n        keys = ["dispatch_schema_version", "dispatch_id", "stream", "ticket", "exact_tuple", "dispatch_nonce", "prepared_at", "begun_at", "role", "lifecycle_stage", "lane_start_waivers"]\n        if "reconcile_nonce" in payload:\n            keys += ["reconcile_nonce", "reconcile_at"]\n        return {key: payload[key] for key in keys} | {"status": "ACCEPTED", "dispatch_state": "TERMINAL", "terminal": True, "observed_at": now, "session_id": "session-" + payload["dispatch_id"]}\n    def observe_dispatch(payload):\n        return dispatch_ticket(payload)\n    def deliver_status(digest):\n        return {"delivery_id": digest["delivery_id"], "status": "DELIVERED", "observed_at": now}\n    def observe_provider_identity():\n        return {"cloud_id": "fixture-cloud", "site": "https://jira.example.invalid",\n                "project_id": "fixture-project", "project_key": "EX",\n                "controller_actor_id": "fixture-controller"}\n    def read_current_status(binding):\n        return {"issue_id": binding["issue_id"], "status_id": config["jira_before"], "observed_at": now, "jira_provider": binding["jira_provider"]}\n    def write_transition(record):\n        return {"operation_id": record["operation_id"], "issue_id": record["binding"]["issue_id"], "status": "ATTEMPTED", "observed_at": now, "jira_provider": record["jira_provider"]}\n    def read_transition(record, operation):\n        return {"issue_id": record["binding"]["issue_id"], "status": config["jira_after"], "actor": record["producer_id"], "observed_at": now, "jira_provider": record["jira_provider"]}\n    def reconcile_merged_ticket(ticket):\n        value = dict(config["reconcile_receipt"])\n        value["ticket"] = ticket\n        return value\n    def fetch_scope_page(scope, cursor):\n        return config["jira_page"]\n    def observe_accepted_project_config(request):\n        return {"observed_at": now, "result": config["project_config_observation"]}\n    def observe_closeout_record(request):\n        return {"observed_at": now, "result": config["closeout_observation"]}\n    def observe_jira_reconciliation(request):\n        return {"observed_at": now, "result": config["jira_reconciliation_observation"]}\n    return {name: value for name, value in locals().items() if callable(value) and name != "build_adapters"}\n'
+		adapter_source=adapter_source.replace('    def observe_inventory():','    resource_evidence = {}\n    def observe_host_resources(request):\n        from agentic.canonical import fingerprint\n        claims = {"observed_at": request["observed_at"], "host_capacity": 1, "resources": [{"name": "cpu", "capacity": 1}]}\n        auth = {"producer_id": "fixture-host", "evidence_id": "fixture-evidence", "evidence_sha256": fingerprint("fixture-resource-evidence", claims), "request_sha256": fingerprint("planning_resource_request", request)}\n        resource_evidence.update({"status": "VERIFIED", **auth, **claims})\n        return {"status": "OBSERVED", **auth, **claims}\n    def verify_host_observation(authentication, request):\n        from agentic.canonical import fingerprint\n        if authentication["request_sha256"] != fingerprint("planning_resource_request", request):\n            return {}\n        return dict(resource_evidence)\n'+'    def observe_inventory():')
 		adapter_path=root/'reviewed_adapter.py'
 		adapter_path.write_text(adapter_source,encoding='utf-8',newline='\n')
 		adapter_config_path=root/'adapter.json'
@@ -1187,7 +1201,7 @@ class JiraProgressTests(unittest.TestCase):
 		binding_path=root/'inventory-binding.json'
 		binding_path.write_text(json.dumps(INVENTORY_BINDING),encoding='utf-8')
 		pin=sha256(adapter_path.read_bytes())
-		common=[sys.executable,'-B',str(ROOT/'.agentic/scripts/workflow.py'),'--root',str(ROOT),'controller','--state',str(state_path),'--stream','A','--stream','B','--stream','C','--worktree-root',str(worktree),'--project-config',str(ROOT/'.agentic/examples/PROJECT_CONFIG.yaml'),'--adapter-module',str(adapter_path),'--adapter-sha256',pin,'--adapter-config',str(adapter_config_path)]
+		common=[sys.executable,'-B',str(ROOT/'.agentic/scripts/workflow.py'),'--root',str(ROOT),'controller','--state',str(state_path),'--stream','A','--stream','B','--stream','C','--worktree-root',str(worktree),'--project-config',str(project_config_path),'--adapter-module',str(adapter_path),'--adapter-sha256',pin,'--adapter-config',str(adapter_config_path)]
 		cycle=subprocess.run([*common,'cycle','--inventory-binding',str(binding_path),'--repository-root',str(worktree),'--repository-head-sha',merged_head,'--repository-tree-sha',merged_tree,'--now',NOW,'--host-capacity','1'],cwd=ROOT,text=True,capture_output=True,timeout=30)
 		self.assertEqual(cycle.returncode,0,cycle.stderr)
 		cycle_output=json.loads(cycle.stdout)
