@@ -11,6 +11,7 @@ scrub_process_env()
 import argparse
 import json
 from agentic.installer import verify_installed
+from agentic.safeio import read_bounded_json
 from agentic.review_loop import (LoopStore, complete_first_draft,
     confirm_first_draft_publication, enroll, pause, record_first_draft_publication,
     record_first_draft_publication_plan, require_first_draft_config_binding,
@@ -22,6 +23,8 @@ from agentic.review_first_draft import (publish_codex_tested_tree,
 from agentic.review_qualification import collect_qualification
 from agentic.providers.github_review_host import HostDriver, load_config
 from agentic.interaction import loop_next_step, next_step, render_markdown, rejected_next_step
+
+DISPOSITION_INPUT_MAXIMUM = 65_536
 
 
 def main(argv=None):
@@ -217,7 +220,9 @@ def main(argv=None):
             else:
                 candidate = driver.snapshot()
                 driver.preflight(candidate)
-                disposition = json.loads(args.disposition.read_text(encoding='utf-8')) if args.disposition else None
+                disposition = read_bounded_json(
+                    args.disposition, maximum=DISPOSITION_INPUT_MAXIMUM,
+                    expected_type=dict) if args.disposition else None
                 value = resume(store,config,candidate,args.reconciled_run,disposition)
         if 'phase' in value:
             value['next_step']=loop_next_step(value)
