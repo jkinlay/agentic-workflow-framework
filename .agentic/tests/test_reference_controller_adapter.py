@@ -532,7 +532,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		tree = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 		state = ContinuousControllerStore(self.root / 'state.sqlite3', ['A'], worktree_roots=[self.root / 'worktree'])
 		with patch.dict(os.environ, {'GH_TOKEN': 'secret-gh', 'GITHUB_TOKEN': 'secret-github', 'AWF_JIRA_TOKEN': 'secret-jira', 'ATLASSIAN_API_TOKEN': 'secret-atlassian', 'JIRA_API_KEY': 'secret-jira-key', 'EXAMPLE_CLIENT_SECRET': 'secret-generic'}, clear=False):
-			result = production_controller_cycle(state, now=NOW, host_capacity=1, inventory_binding=inventory_binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=cfg, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
+			result = production_controller_cycle(state, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=1, inventory_binding=inventory_binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=cfg, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
 		self.assertEqual(result['status_delivery']['status'], 'DELIVERED')
 		self.assertEqual(len(result['dispatch_receipts']), 1, result)
 		self.assertTrue(runner.launches)
@@ -574,7 +574,7 @@ class ReferenceControllerAdapterTests(unittest.TestCase):
 		head = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD'], text=True).strip()
 		tree = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 		state = ContinuousControllerStore(self.root / 'state.sqlite3', ['A', 'B'], worktree_roots=[self.root / 'worktree'])
-		result = production_controller_cycle(state, now=NOW, host_capacity=2, inventory_binding=binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=self.config, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
+		result = production_controller_cycle(state, controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True}, now=NOW, host_capacity=2, inventory_binding=binding, repository_root=repository, repository_head_sha=head, repository_tree_sha=tree, publication_config=self.config, **{name: adapters[name] for name in ('observe_inventory', 'observe_reservations', 'dispatch_ticket', 'observe_dispatch', 'deliver_status', 'observe_publication')})
 		self.assertEqual(len(result['dispatch_receipts']), 2, result)
 		self.assertEqual(len(runner.launches), 2)
 		self.assertEqual(len(runner.observations), 2)
