@@ -25,6 +25,30 @@ DISPATCH_SCHEMA_VERSION = 2
 REPLAN_TRIGGER_SCHEMA_VERSION = 2
 DDL = '\nCREATE TABLE IF NOT EXISTS controller_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS stream_status(\n stream_id TEXT PRIMARY KEY,state TEXT NOT NULL,ticket TEXT,actor TEXT NOT NULL,\n reason TEXT NOT NULL,next_action TEXT NOT NULL,resume_trigger TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,activity TEXT NOT NULL,verification_gate TEXT NOT NULL,\n reviewer_completion TEXT NOT NULL,open_findings INTEGER NOT NULL,\n jira_status TEXT NOT NULL,paths TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_outbox(\n delivery_id TEXT PRIMARY KEY,kind TEXT NOT NULL,revision INTEGER NOT NULL,\n observed_at TEXT NOT NULL,payload_json TEXT NOT NULL,acknowledged_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_dispatch(\n dispatch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,ticket TEXT NOT NULL,\n exact_tuple TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,\n receipt_json TEXT,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_dispatch_waiver(\n waiver_id TEXT PRIMARY KEY,dispatch_id TEXT NOT NULL,allowance_id TEXT NOT NULL,\n record_json TEXT NOT NULL,created_at TEXT NOT NULL,\n UNIQUE(dispatch_id,allowance_id));\nCREATE TABLE IF NOT EXISTS controller_replan_seal(\n seal_id TEXT PRIMARY KEY,trigger_id TEXT NOT NULL UNIQUE,status TEXT NOT NULL,\n record_json TEXT NOT NULL,created_at TEXT NOT NULL,consumed_at TEXT);\nCREATE TABLE IF NOT EXISTS controller_ticket_authority(\n ticket TEXT NOT NULL,exact_tuple TEXT NOT NULL,dispatch_role TEXT NOT NULL,\n lifecycle_stage TEXT NOT NULL,observed_at TEXT NOT NULL,\n PRIMARY KEY(ticket,exact_tuple));\nCREATE TABLE IF NOT EXISTS controller_overlap_allowance(\n allowance_id TEXT PRIMARY KEY,source_id TEXT NOT NULL UNIQUE,repository_id TEXT NOT NULL,\n cycle_id TEXT NOT NULL,path TEXT NOT NULL,tickets_json TEXT NOT NULL,\n pull_requests_json TEXT NOT NULL,heads_json TEXT NOT NULL,expires_at TEXT NOT NULL,\n status TEXT NOT NULL,record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE TABLE IF NOT EXISTS controller_overlap_sync_gate(\n gate_id TEXT PRIMARY KEY,allowance_id TEXT NOT NULL,status TEXT NOT NULL,\n record_json TEXT NOT NULL,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_overlap_gate_allowance\n ON controller_overlap_sync_gate(allowance_id,status);\nCREATE TABLE IF NOT EXISTS controller_jira_operation(\n operation_id TEXT PRIMARY KEY,issue_id TEXT NOT NULL,event TEXT NOT NULL,\n intent_sha256 TEXT NOT NULL,status TEXT NOT NULL,record_json TEXT NOT NULL,\n operation_json TEXT,readback_json TEXT,updated_at TEXT NOT NULL);\nCREATE INDEX IF NOT EXISTS controller_jira_issue ON controller_jira_operation(issue_id,status);\n'
 
+# Complete statements: trigger bodies must never enter the semicolon-split DDL.
+BATCH_AUDIT_DDL = (
+	'''CREATE TABLE IF NOT EXISTS controller_batch_audit(
+	 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	 repository_id INTEGER NOT NULL, batch_id TEXT NOT NULL,
+	 record_sha256 TEXT NOT NULL, record_json TEXT NOT NULL,
+	 UNIQUE(repository_id,batch_id))''',
+	'''CREATE TRIGGER IF NOT EXISTS controller_batch_audit_no_update
+	 BEFORE UPDATE ON controller_batch_audit BEGIN
+	 SELECT RAISE(ABORT, 'Batch audit records are immutable'); END''',
+	'''CREATE TRIGGER IF NOT EXISTS controller_batch_audit_no_delete
+	 BEFORE DELETE ON controller_batch_audit BEGIN
+	 SELECT RAISE(ABORT, 'Batch audit records are immutable'); END''',
+	# REPLACE deletes do not reliably fire delete triggers without recursive_triggers.
+	# Guard both uniqueness surfaces before SQLite can perform that deletion.
+	'''CREATE TRIGGER IF NOT EXISTS controller_batch_audit_no_replace
+	 BEFORE INSERT ON controller_batch_audit
+	 WHEN EXISTS(SELECT 1 FROM controller_batch_audit
+	 WHERE (repository_id=NEW.repository_id AND batch_id=NEW.batch_id)
+	 OR sequence=NEW.sequence) BEGIN
+	 SELECT RAISE(ABORT, 'Batch audit identity already exists'); END''',
+)
+
+
 def _require(condition, message):
 	if not condition:
 		raise ValidationError(message)
@@ -498,6 +522,85 @@ def _validated_overlap_sync_receipt(gate, payload, receipt, not_before):
 	return deepcopy(receipt)
 
 class ContinuousControllerStore:
+	@staticmethod
+	def _validated_batch_audit(record):
+		"""Validate the closed T8 envelope; its digest is consistency, not authority."""
+		_require(isinstance(record, dict) and set(record) == {'candidate', 'record_sha256'},
+			'Batch audit envelope is malformed')
+		# Detach before inspecting or retaining any caller-owned nested containers.
+		record = loads(canonical(record).decode())
+		candidate = record['candidate']
+		_require(isinstance(candidate, dict) and set(candidate) == {
+			'repository_id', 'batch_id', 'base_sha', 'head_sha', 'tree_sha', 'sources'},
+			'Batch audit candidate is malformed')
+		_require(type(candidate['repository_id']) is int and candidate['repository_id'] > 0,
+			'Batch audit repository identity must be a positive integer')
+		batch_id = candidate['batch_id']
+		_require(isinstance(batch_id, str) and batch_id and batch_id.strip() == batch_id
+			and len(batch_id) <= 256 and not any(ord(char) < 32 or ord(char) == 127 for char in batch_id),
+			'Batch audit batch identity is invalid')
+		def git_sha(value):
+			return isinstance(value, str) and re.fullmatch('[0-9a-f]{40}', value) is not None
+		_require(all(git_sha(candidate[key]) for key in ('base_sha', 'head_sha', 'tree_sha')),
+			'Batch audit candidate Git identity is invalid')
+		sources = candidate['sources']
+		_require(isinstance(sources, list) and sources, 'Batch audit requires source pull requests')
+		seen = set()
+		for source in sources:
+			_require(isinstance(source, dict) and set(source) == {'pr_number', 'head_sha'},
+				'Batch audit source is malformed')
+			pr_number = source['pr_number']
+			_require(type(pr_number) is int and pr_number > 0 and pr_number not in seen
+				and git_sha(source['head_sha']), 'Batch audit source identity is invalid or duplicated')
+			seen.add(pr_number)
+		digest = record['record_sha256']
+		_require(isinstance(digest, str) and re.fullmatch('[0-9a-f]{64}', digest) is not None
+			and digest == hashlib.sha256(canonical(candidate)).hexdigest(),
+			'Batch audit candidate digest mismatch')
+		return record
+
+	@classmethod
+	def _batch_audit_from_row(cls, row):
+		_require(isinstance(row['record_json'], str), 'Stored batch audit bytes are invalid')
+		record = cls._validated_batch_audit(loads(row['record_json']))
+		_require(canonical(record).decode() == row['record_json']
+			and type(row['repository_id']) is int
+			and row['repository_id'] == record['candidate']['repository_id']
+			and row['batch_id'] == record['candidate']['batch_id']
+			and row['record_sha256'] == record['record_sha256'],
+			'Stored batch audit identity or canonical bytes mismatch')
+		return record
+
+	def append_batch_audit(self, record):
+		"""Retain one immutable controller-local record per repository/batch.
+
+		This bounded ledger neither proves AWF-91 placement nor creates records
+		for operational batches automatically. No retention purge is provided.
+		"""
+		record = self._validated_batch_audit(record)
+		candidate = record['candidate']
+		encoded = canonical(record).decode()
+		with self.transaction() as db:
+			# A damaged identity column must not make a retained record disappear
+			# from the retry lookup and permit a second logical copy.
+			for stored in db.execute('SELECT * FROM controller_batch_audit ORDER BY sequence'):
+				self._batch_audit_from_row(stored)
+			row = db.execute('SELECT * FROM controller_batch_audit WHERE repository_id=? AND batch_id=?',
+				(candidate['repository_id'], candidate['batch_id'])).fetchone()
+			if row is not None:
+				prior = self._batch_audit_from_row(row)
+				_require(row['record_json'] == encoded, 'Batch audit identity cannot be rewritten')
+				return prior
+			db.execute('INSERT INTO controller_batch_audit(repository_id,batch_id,record_sha256,record_json) VALUES(?,?,?,?)',
+				(candidate['repository_id'], candidate['batch_id'], record['record_sha256'], encoded))
+		return record
+
+	def batch_audit_records(self):
+		"""Read detached, validated records in their durable append order."""
+		with self.connection() as db:
+			return [self._batch_audit_from_row(row) for row in
+				db.execute('SELECT * FROM controller_batch_audit ORDER BY sequence')]
+
 	def recompute_durable_plan(self, state_store, tickets, config, *, legacy_state=None,
 			migration_version=1, **planning_inputs):
 		"""Seal through planning.py, then durably append before returning a plan.
@@ -540,6 +643,8 @@ class ContinuousControllerStore:
 				for statement in DDL.split(';'):
 					if statement.strip():
 						db.execute(statement)
+				for statement in BATCH_AUDIT_DDL:
+					db.execute(statement)
 				self._migrate_dispatch_rows(db)
 				configured = canonical(sorted(stream_ids)).decode()
 				old = db.execute("SELECT value FROM controller_meta WHERE key='streams'").fetchone()
