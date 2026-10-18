@@ -1,11 +1,16 @@
+from contextlib import redirect_stderr, redirect_stdout
 import copy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib
+import io
+import json
+import runpy
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -575,6 +580,74 @@ class MergeTrainTests(unittest.TestCase):
                 conflict_paths=[], generated_paths=[], reproduced=False,
                 unexpected_generated_bytes=False, repair_attempts=0,
                 failure_kind="REMOTE_ONLY_CI_FAILURE"))
+
+    def test_failed_source_is_ejected_and_generation_rebuilt_from_frozen_target(self):
+        module = merge_train()
+        second_head = hashlib.sha1(b"second-source").hexdigest()
+        third_head = hashlib.sha1(b"third-source").hexdigest()
+        sources = [
+            {"pr_number": 11, "head_sha": self.head1, "depends_on": [],
+             "admission_evidence_sha256": "a" * 64},
+            {"pr_number": 12, "head_sha": second_head, "depends_on": []},
+            {"pr_number": 13, "head_sha": third_head, "depends_on": [12]},
+        ]
+        built = []
+
+        def build_prefix(target_sha, included):
+            built.append((target_sha, [item["pr_number"] for item in included]))
+            return hashlib.sha1(
+                (target_sha + ":" + ",".join(str(item["pr_number"])
+                                               for item in included)).encode("ascii")
+            ).hexdigest()
+
+        result = module.rebuild_after_failed_source(
+            frozen_target_sha=self.target, ordered_sources=sources,
+            failed_pr_number=12, build_prefix=build_prefix)
+        self.assertEqual([12, 13], result["ejected_pr_numbers"])
+        self.assertEqual([11], result["retained_pr_numbers"])
+        self.assertEqual([(self.target, [11])], built)
+        self.assertTrue(all(item["started_from_sha"] == self.target
+                            for item in result["rebuilt_prefixes"]))
+
+    def test_merge_train_fixtures_are_portable_on_windows_and_linux(self):
+        module = merge_train()
+        self.assertEqual(("src/app.py", "tests/test_app.py"),
+                         module._portable_paths(
+                             ["tests/test_app.py", "src/app.py"], "fixture"))
+        separator = chr(92)
+        drive_path = "C" + ":" + separator + separator.join(
+            ("fixture", "member.py"))
+        unc_path = separator * 2 + separator.join(
+            ("server", "share", "member.py"))
+        for path in (drive_path, unc_path,
+                     "/absolute/member.py"):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(ValidationError, "non-portable"):
+                    module._portable_paths([path], "fixture")
+
+        # T14 also exercises the shipped 54B publication boundary with portable
+        # batch identities; path normalization alone is not a red regression.
+        adapter = runpy.run_path(str(ROOT / ".agentic/scripts/merge_train.py"))
+        branch = "batch/portable-fixture"
+        raw = {"ref": "refs/heads/" + branch,
+               "object": {"sha": self.head1}, "number": 211,
+               "head": {"ref": branch, "sha": self.head1},
+               "base": {"ref": "main"}, "title": "portable fixture", "draft": True}
+        commands = [
+            ["push-batch-ref", "--branch", branch, "--head", self.head1],
+            ["create-draft-pr", "--branch", branch, "--base", "main",
+             "--title", "portable fixture"],
+            ["mark-draft-pr-ready", "--pr", "211"],
+        ]
+        for command in commands:
+            with self.subTest(command=command[0]):
+                with mock.patch.object(subprocess, "run", return_value=mock.Mock(
+                        returncode=0, stdout=json.dumps(raw), stderr="")) as run:
+                    with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+                        with self.assertRaises(SystemExit) as refused:
+                            adapter["main"](["--repository", "owner/repository", *command])
+                    self.assertEqual(2, refused.exception.code)
+                    run.assert_not_called()
 
     def test_strict_registered_batch_parent_provenance(self):
         module = merge_train()
