@@ -1,5 +1,8 @@
 """Synthetic end-to-end cycles and adversarial host adapter checks; no live agents."""
 from copy import deepcopy
+from contextlib import redirect_stdout
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -162,6 +165,125 @@ class CycleTests(unittest.TestCase):
 
     def step(self):
         return tick(self.store,self.config,self.driver)
+
+    def hostile_diagnostic(self):
+        credential = 'gh' + 'p_' + 'syntheticSensitiveMarker'
+        path = '/fixture/private folder/diagnostic-marker.txt'
+        text = (f'{credential} "{path}" ' + chr(27) + '[31m' + chr(13)
+                + '[click](https://example.invalid) <b>bold</b> `code` | *text* '
+                + chr(0x1f642) * 6000)
+        return text, (credential, path, 'diagnostic-marker')
+
+    def assert_safe_pause_reason(self, state, code, markers):
+        reason = state['reason']
+        self.assertTrue(reason.startswith(code + ': '))
+        self.assertLessEqual(len(reason.encode('utf-8')), 4096)
+        self.assertEqual(reason.encode('utf-8').decode('utf-8'), reason)
+        for marker in markers:
+            self.assertNotIn(marker, reason)
+        self.assertFalse(any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in reason))
+        for markup in ('[click]', '<b>', '`code`', '*text*', ' | '):
+            self.assertNotIn(markup, reason)
+
+        records = [self.store.get(self.config['key'])]
+        for table in ('prs', 'events'):
+            raw = self.store.db.execute(
+                f'SELECT state FROM {table} WHERE key=? ORDER BY rowid DESC LIMIT 1',
+                (self.config['key'],)).fetchone()[0]
+            records.append(json.loads(raw))
+        reopened = LoopStore(self.temp.name)
+        try:
+            records.append(reopened.get(self.config['key']))
+        finally:
+            reopened.close()
+        for record in records:
+            self.assertEqual(record['reason'], reason)
+        markdown = Path(state['status_report_path']).read_text(encoding='utf-8')
+        self.assertIn(reason, markdown)
+
+        # Exercise actual status JSON/Markdown rendering with synthetic host seams.
+        spec = importlib.util.spec_from_file_location(
+            'review_loop_status_fixture', ROOT / '.agentic/scripts/review_loop.py')
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        config = {**self.config, 'repository_id': 12, 'state_dir': self.temp.name,
+                  'runtime_manifest_sha256': 'fixture-digest'}
+        with patch.object(cli, 'verify_installed', return_value='fixture-digest'), \
+                patch.object(cli, 'load_config', return_value=config), \
+                patch.object(cli, 'HostDriver'):
+            for format_ in ('json', 'markdown'):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    exit_code = cli.main(['--config', 'fixture.json', '--format', format_, 'status'])
+                self.assertEqual(exit_code, 2)
+                rendered = output.getvalue()
+                if format_ == 'json':
+                    self.assertEqual(json.loads(rendered)['reason'], reason)
+                else:
+                    self.assertIn(reason, rendered)
+                    for marker in markers:
+                        self.assertNotIn(marker, rendered)
+
+    def test_driver_exception_persists_coded_redacted_bounded_reason(self):
+        for phase in ('REVIEW', 'AMEND'):
+            with self.subTest(phase=phase):
+                before = self.store.get(self.config['key'])
+                before.update(phase=phase, inflight=None)
+                self.store.save(before)
+                hostile, markers = self.hostile_diagnostic()
+                intents = []
+
+                def fail(*args):
+                    intents.append(deepcopy(self.store.get(self.config['key'])['inflight']))
+                    raise RuntimeError(hostile)
+
+                method = 'review' if phase == 'REVIEW' else 'amend'
+                with patch.object(self.driver, method, side_effect=fail) as driver_call:
+                    state = self.step()
+                    self.assertEqual(state['phase'], 'PAUSED')
+                    self.assertEqual(state['candidate'], before['candidate'])
+                    self.assertEqual(state['inflight'], intents[0])
+                    self.assertEqual(state['inflight']['phase'], phase)
+                    self.assertEqual(state['inflight']['candidate'], before['candidate'])
+                    self.assertEqual(state['agent_runs'], before['agent_runs'] + 1)
+                    self.assertEqual(state['cycles'], before['cycles'] + (phase == 'AMEND'))
+                    self.assertEqual(state['history'], before['history'])
+                    self.assertEqual(self.step()['reason'], state['reason'])
+                    self.assertEqual(driver_call.call_count, 1)
+                self.assert_safe_pause_reason(state, 'REVIEW_LOOP_DRIVER_FAILURE', markers)
+
+    def test_blocked_critic_summary_persists_safe_bounded_reason(self):
+        hostile, markers = self.hostile_diagnostic()
+        report = {'candidate': deepcopy(CANDIDATE), 'verdict': 'BLOCKED',
+                  'reviewed_files': ['src/a.py'], 'findings': [], 'summary': hostile}
+        bindings = []
+
+        def blocked(candidate, findings, run_id, files):
+            binding = {'controller_run_id': run_id, 'critic_run_id': CODEX_THREAD_ID,
+                       'head_sha': candidate['head'],
+                       'result_sha256': sha256(json.dumps(report, sort_keys=True).encode()),
+                       'critic_run_carrier': 'Critic run: ' + CODEX_THREAD_ID}
+            self.driver.last_critic_binding = binding
+            bindings.append(deepcopy(binding))
+            return deepcopy(report)
+
+        with patch.object(self.driver, 'review', side_effect=blocked) as driver_call:
+            state = self.step()
+            self.assertEqual(state['phase'], 'PAUSED')
+            self.assertEqual(state['agent_runs'], 1)
+            self.assertEqual(state['cycles'], 0)
+            self.assertEqual(state['candidate'], CANDIDATE)
+            self.assertIsNone(state['inflight'])
+            self.assertEqual(len(state['history']), 1)
+            self.assertEqual(state['history'][0]['id'], bindings[0]['controller_run_id'])
+            self.assertEqual(state['last_review']['report'], report)
+            self.assertEqual(state['last_review']['critic_binding'], bindings[0])
+            retained = self.store.get(self.config['key'])['last_review']
+            self.assertEqual(retained['report'], report)
+            self.assertEqual(retained['critic_binding'], bindings[0])
+            self.assertEqual(self.step()['reason'], state['reason'])
+            self.assertEqual(driver_call.call_count, 1)
+        self.assert_safe_pause_reason(state, 'REVIEW_LOOP_CRITIC_BLOCKED', markers)
 
     def test_full_automatic_review_change_rereview_ci_cycle(self):
         self.assertEqual([self.step()['phase'] for _ in range(4)], ['AMEND','REVIEW','WAIT_CI','READY_FOR_FINAL_GATE'])
