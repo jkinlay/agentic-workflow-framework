@@ -687,7 +687,7 @@ class BatchObjectTransportTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="awf-object-push-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.source = self.root / "source.git"
         self.remote = self.root / "remote.git"
         self.git = str(Path(shutil.which("git")).resolve())
@@ -746,7 +746,7 @@ class BatchObjectTransportTests(unittest.TestCase):
         self.transfers = []
 
         def local_git(git, root, arguments, **kwargs):
-            if Path(root) != self.source:
+            if Path(root).resolve() != self.source.resolve():
                 self.assertFalse((Path(root) / "config").exists())
                 self.assertFalse((Path(root) / "credentials").exists())
             if "push" in arguments:
@@ -760,6 +760,15 @@ class BatchObjectTransportTests(unittest.TestCase):
             return self.adapter.push_batch_ref(
                 "gh-fixture", "owner/repository", self.branch, head or self.head,
                 hostname="example.invalid", local_repository=self.source, git=self.git)
+
+    def test_batch_push_accepts_noncanonical_source_path(self):
+        alias = self.root / "path-alias"
+        alias.mkdir()
+        self.source = alias / ".." / "source.git"
+        self.assertNotEqual(self.source, self.source.resolve())
+        config = (self.source / "config").read_bytes()
+        self.assertEqual({"branch": self.branch, "head_sha": self.head}, self.push())
+        self.assertEqual(config, (self.source / "config").read_bytes())
 
     def test_batch_push_transfers_local_objects_to_empty_remote(self):
         parent = self.head
