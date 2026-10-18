@@ -376,6 +376,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_merge_train.py` | `0457d5b10b53a69f42c0d674f36a1d07776dad947784db422b8118b0b61da6f2` |
 | `.agentic/tests/test_merge_train_batch_gate.py` | `e4080f96fd54e99a19bd0b2588ec4827dd8cde7f90283c5d02d5d47be5ec0f3a` |
 | `.agentic/tests/test_merge_train_closeout.py` | `fda35db6acc985d65ad3a304bbb0e1b60e1a4010481b63369b447f8b643503f6` |
+| `.agentic/tests/test_merge_train_lifecycle.py` | `09f34f0e64e28a70168070a8690867147fa0c4700dce87ad4ea589c10699aadc` |
 | `.agentic/tests/test_merge_train_publication.py` | `97d5558c938ea544512d7a04514132f5f39fd25b87d9c2b0c0573f77d0b877af` |
 | `.agentic/tests/test_model_routing.py` | `b6a65f8d07525444d66af2c9490df5420779aa27ffd044ad82ba1a66f659d4e9` |
 | `.agentic/tests/test_model_routing_provenance.py` | `a1367235951a54574aff79d4817350f42f55c387b63f75f602604ab5e0d7538b` |
