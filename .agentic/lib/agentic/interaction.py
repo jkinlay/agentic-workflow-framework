@@ -30,11 +30,11 @@ def _markdown_diagnostic(value):
         # them also preserves diagnostic codes and evidence identifiers.
         intraword = (token == '_' and match.start() > 0 and match.end() < len(text)
                      and text[match.start()-1].isalnum() and text[match.end()].isalnum())
-        structural = ((token in '-=~' and not text[:match.start()].strip())
+        structural = ((token in '-=' and not text[:match.start()].strip())
                       or (token == '.' and text[:match.start()].strip().isdigit()
                           and text[match.end():match.end()+1].isspace())
                       or (token == ' ' and match.start() == 0))
-        if len(token) == 1 and (structural or token in '\\`_*{}[]()#+!|><&') and not intraword:
+        if len(token) == 1 and (structural or token in '\\`_*{}[]()#+!|><&~') and not intraword:
             token = f'&#{ord(token)};'
         tokens.append(token)
     if sum(len(token.encode('utf-8')) for token in tokens) <= 4096:
