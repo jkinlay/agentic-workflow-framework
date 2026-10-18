@@ -1,11 +1,16 @@
+from contextlib import redirect_stderr, redirect_stdout
 import copy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib
+import io
+import json
+import runpy
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -619,6 +624,30 @@ class MergeTrainTests(unittest.TestCase):
             with self.subTest(path=path):
                 with self.assertRaisesRegex(ValidationError, "non-portable"):
                     module._portable_paths([path], "fixture")
+
+        # T14 also exercises the shipped 54B publication boundary with portable
+        # batch identities; path normalization alone is not a red regression.
+        adapter = runpy.run_path(str(ROOT / ".agentic/scripts/merge_train.py"))
+        branch = "batch/portable-fixture"
+        raw = {"ref": "refs/heads/" + branch,
+               "object": {"sha": self.head1}, "number": 211,
+               "head": {"ref": branch, "sha": self.head1},
+               "base": {"ref": "main"}, "title": "portable fixture", "draft": True}
+        commands = [
+            ["push-batch-ref", "--branch", branch, "--head", self.head1],
+            ["create-draft-pr", "--branch", branch, "--base", "main",
+             "--title", "portable fixture"],
+            ["mark-draft-pr-ready", "--pr", "211"],
+        ]
+        for command in commands:
+            with self.subTest(command=command[0]):
+                with mock.patch.object(subprocess, "run", return_value=mock.Mock(
+                        returncode=0, stdout=json.dumps(raw), stderr="")) as run:
+                    with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+                        with self.assertRaises(SystemExit) as refused:
+                            adapter["main"](["--repository", "owner/repository", *command])
+                    self.assertEqual(2, refused.exception.code)
+                    run.assert_not_called()
 
     def test_strict_registered_batch_parent_provenance(self):
         module = merge_train()

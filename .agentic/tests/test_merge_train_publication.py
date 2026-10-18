@@ -1,4 +1,6 @@
+from contextlib import redirect_stderr, redirect_stdout
 import copy
+import io
 import hashlib
 import importlib
 import importlib.util
@@ -197,6 +199,29 @@ class MergeTrainPublicationTests(unittest.TestCase):
         self.assertEqual("PUBLISHED_DRAFT", result["status"])
         self.assertEqual(["push_batch_ref", "create_draft_pr"],
                          [call[0] for call in self.provider_calls])
+
+    def test_cli_refuses_ungated_mutations_without_provider_execution(self):
+        adapter = self._gh_adapter()
+        branch = "batch/unfrozen"
+        raw = {"ref": "refs/heads/" + branch,
+               "object": {"sha": self.head}, "number": 211,
+               "head": {"ref": branch, "sha": self.head},
+               "base": {"ref": "main"}, "title": "unfrozen", "draft": True}
+        commands = [
+            ["push-batch-ref", "--branch", branch, "--head", self.head],
+            ["create-draft-pr", "--branch", branch, "--base", "main",
+             "--title", "unfrozen"],
+            ["mark-draft-pr-ready", "--pr", "211"],
+        ]
+        for command in commands:
+            with self.subTest(command=command[0]):
+                with mock.patch.object(adapter.subprocess, "run", return_value=
+                        mock.Mock(returncode=0, stdout=json.dumps(raw), stderr="")) as run:
+                    with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+                        with self.assertRaises(SystemExit) as refused:
+                            adapter.main(["--repository", "owner/repository", *command])
+                    self.assertEqual(2, refused.exception.code)
+                    run.assert_not_called()
 
     def test_batch_branch_title_cadence_and_maximum_size(self):
         candidate = self._candidate(max_batch_size=1)
