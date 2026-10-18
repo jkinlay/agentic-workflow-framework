@@ -123,6 +123,42 @@ class SafeDirectoryTests(unittest.TestCase):
         self.hostile_config()
         self.assertEqual(self.read(["archive", "--format=tar", "HEAD"]), baseline)
 
+    def test_missing_promisor_blob_never_executes_other_owner_remote_helper(self):
+        marker = self.hostile_config()
+        script = self.base / "hostile.py"
+        # remote-ext splits arguments itself (not shell quoting); percent-space
+        # and percent-percent preserve portable paths as literal arguments.
+        helper = "ext::" + " ".join(
+            path.as_posix().replace("%", "%%").replace(" ", "% ")
+            for path in (Path(sys.executable), script, marker))
+        self.git_run(self.root, "config", "extensions.partialClone", "origin")
+        self.git_run(self.root, "config", "remote.origin.promisor", "true")
+        self.git_run(self.root, "config", "remote.origin.url", helper)
+        self.git_run(self.root, "config", "protocol.ext.allow", "always")
+        missing = "1234567890123456789012345678901234567890"
+        # The protocol barrier must still prevent execution on Git versions
+        # that do not implement GIT_NO_LAZY_FETCH. Remove it in the test only.
+        for legacy_git in (False, True):
+            marker.unlink(missing_ok=True)
+            def child(command, **kwargs):
+                if legacy_git:
+                    kwargs["env"] = dict(kwargs["env"])
+                    kwargs["env"].pop("GIT_NO_LAZY_FETCH", None)
+                return self.other_owner_child(command, **kwargs)
+
+            with self.subTest(legacy_git=legacy_git), mock.patch.object(
+                    isolation.subprocess, "run", side_effect=child):
+                with self.assertRaises(ValidationError):
+                    self.read(["cat-file", "blob", missing])
+                self.assertFalse(marker.exists(), "promisor remote helper executed")
+
+    def test_remote_execution_controls_are_fixed_not_inherited(self):
+        with mock.patch.dict(os.environ, {"GIT_NO_LAZY_FETCH": "0",
+                                          "GIT_ALLOW_PROTOCOL": "ext:file:https"}):
+            environment = isolation.isolated_git_environment()
+        self.assertEqual(environment.get("GIT_NO_LAZY_FETCH"), "1")
+        self.assertEqual(environment.get("GIT_ALLOW_PROTOCOL"), "")
+
     def test_conversion_pins_are_command_scoped(self):
         self.hostile_config()
         for key, expected in (("tar.umask", b"0002\n"), ("core.autocrlf", b"false\n"),
