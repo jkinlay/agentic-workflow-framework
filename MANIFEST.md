@@ -329,7 +329,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_authorization_awf98.py` | `5ea3afdd03cd7625a14d7cc38fe8df6c52d10542659a0772404b95d8bdc004ae` |
 | `.agentic/tests/test_awf107_routing_config.py` | `031ddf873c365b7524b8987f2586c1b14e74f7ce6a64096ba4bf3017cd791051` |
 | `.agentic/tests/test_awf110_collector_overcap.py` | `2b71626e00c6ddadb15b8bd437b6b992fb7567d10bf601008cb060c55e8acbfd` |
-| `.agentic/tests/test_awf117_provenance_gate.py` | `f9b1d5558e6d198f46a3a87013b6c29ff40e979b4457f535df5b52469365003a` |
+| `.agentic/tests/test_awf117_provenance_gate.py` | `81420d45a5663891552bd19d19d665af7a4746e8761e4a3105246003525b6275` |
 | `.agentic/tests/test_awf134_installer_journal.py` | `67f8f62b752df22890b0f791bf092e436aa183e8862f0105c559ed5f3c72244d` |
 | `.agentic/tests/test_awf134_pending_updates.py` | `b511ea8aaa14320efb5e68040f719e9c40af1747df8f66981331a76900cc5a6d` |
 | `.agentic/tests/test_awf134_recovery_lifecycle.py` | `5b340f47e0cbab82abe7ec505c9ecc0287d65d2eb204ae09417f3c0cb2b0338a` |
