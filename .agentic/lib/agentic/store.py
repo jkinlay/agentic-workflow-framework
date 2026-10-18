@@ -39,6 +39,31 @@ CREATE TABLE IF NOT EXISTS reservations(run_id TEXT PRIMARY KEY,ticket TEXT NOT 
  tokens INTEGER NOT NULL,cost INTEGER NOT NULL,status TEXT NOT NULL,actual_tokens INTEGER,actual_cost INTEGER);
 """
 
+PLANNING_HISTORY_VERSION = 1
+PLANNING_DDL = """
+CREATE TABLE IF NOT EXISTS planning_history_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS planning_history(
+ sequence INTEGER PRIMARY KEY,plan_id TEXT UNIQUE NOT NULL,
+ plan_sha256 TEXT NOT NULL,record_json TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS planning_history_no_update BEFORE UPDATE ON planning_history
+ BEGIN SELECT RAISE(ABORT,'immutable planning history'); END;
+CREATE TRIGGER IF NOT EXISTS planning_history_no_delete BEFORE DELETE ON planning_history
+ BEGIN SELECT RAISE(ABORT,'immutable planning history'); END;
+"""
+
+
+class _PlanningHistory:
+    """Only the iteration/append protocol used by planning.append_plan_record."""
+
+    def __init__(self, store):
+        self.store = store
+
+    def __iter__(self):
+        return iter(self.store.planning_history())
+
+    def append(self, record):
+        self.store.append_planning_record(record)
+
 
 class Store:
     def __init__(self, path: Path, project_id: str, worktree_roots=()):
@@ -72,6 +97,124 @@ class Store:
             except BaseException:
                 db.execute("ROLLBACK")
                 raise
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                existing = {row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name IN ('planning_history','planning_history_meta')")}
+                if existing:
+                    if len(existing) != 2:
+                        raise ValidationError('Incomplete planning history namespace')
+                    self._planning_history(db)
+                # Trigger bodies contain semicolons; executescript would
+                # implicitly commit. Execute only complete SQL statements.
+                statement = ''
+                for line in PLANNING_DDL.splitlines(keepends=True):
+                    statement += line
+                    if sqlite3.complete_statement(statement):
+                        db.execute(statement)
+                        statement = ''
+                if not existing:
+                    db.execute("INSERT INTO planning_history_meta VALUES('version',?)",
+                               (str(PLANNING_HISTORY_VERSION),))
+                db.execute('COMMIT')
+            except BaseException:
+                db.execute('ROLLBACK')
+                raise
+
+    @staticmethod
+    def _planning_record(record):
+        from .planning import verify_plan_record
+        # Canonical serialization detaches caller-owned objects before validation.
+        record = loads(canonical(record).decode())
+        verify_plan_record(record)
+        if not isinstance(record.get('plan_id'), str):
+            raise ValidationError('Planning record identity is missing')
+        try:
+            if str(uuid.UUID(record['plan_id'])) != record['plan_id']:
+                raise ValueError('noncanonical identity')
+        except ValueError as exc:
+            raise ValidationError('Planning record identity is invalid') from exc
+        return record
+
+    def _planning_history(self, db):
+        version = db.execute("SELECT value FROM planning_history_meta WHERE key='version'").fetchone()
+        if version is None or version[0] != str(PLANNING_HISTORY_VERSION):
+            raise ValidationError('Planning history namespace version mismatch')
+        result = []
+        for row in db.execute('SELECT sequence,plan_id,plan_sha256,record_json FROM planning_history ORDER BY sequence'):
+            record = self._planning_record(loads(row['record_json']))
+            if (row['sequence'] != len(result) + 1 or record['plan_id'] != row['plan_id']
+                    or record['plan_sha256'] != row['plan_sha256']
+                    or canonical(record).decode() != row['record_json']):
+                raise ValidationError('Planning history identity or bytes mismatch')
+            result.append(record)
+        return result
+
+    def planning_history(self):
+        """Read detached, digest-verified records in append order."""
+        with self.connection() as db:
+            return self._planning_history(db)
+
+    def current_plan(self):
+        history = self.planning_history()
+        return history[-1] if history else None
+
+    def append_planning_record(self, record):
+        """Atomically refuse replay/replacement and persist a verified plan."""
+        record = self._planning_record(record)
+        with self.transaction() as db:
+            history = self._planning_history(db)
+            if any(old['plan_id'] == record['plan_id'] for old in history):
+                raise ValidationError('Planning records are immutable and plan_id already exists')
+            db.execute('INSERT INTO planning_history VALUES(?,?,?,?)',
+                       (len(history) + 1, record['plan_id'], record['plan_sha256'], canonical(record).decode()))
+        return record
+
+    def migrate_planning_history(self, state, *, version):
+        """Import the legacy planning.py namespace once, including empty history.
+
+        Retrying requires the exact original version and content. Later durable
+        appends do not change that migration identity or permit replacement.
+        """
+        if type(version) is not int or version != PLANNING_HISTORY_VERSION:
+            raise ValidationError('Planning history migration version mismatch')
+        if not isinstance(state, dict) or not isinstance(state.get('planning_history', []), list):
+            raise ValidationError('Planning history migration requires an object and history list')
+        history = [self._planning_record(record) for record in state.get('planning_history', [])]
+        if len({record['plan_id'] for record in history}) != len(history):
+            raise ValidationError('Planning history migration has duplicate identity')
+        current = history[-1] if history else None
+        if state.get('current_plan', current) != current:
+            raise ValidationError('Planning history migration current plan content mismatch')
+        migration = canonical({'version': version, 'planning_history': history,
+                               'current_plan': current}).decode()
+        with self.transaction() as db:
+            durable = self._planning_history(db)
+            old = db.execute("SELECT value FROM planning_history_meta WHERE key='migration'").fetchone()
+            if old is not None:
+                if old[0] != migration or durable[:len(history)] != history:
+                    raise ValidationError('Planning history migration content mismatch')
+                return
+            if durable:
+                raise ValidationError('Planning history migration cannot replace existing durable history')
+            for index, record in enumerate(history, 1):
+                db.execute('INSERT INTO planning_history VALUES(?,?,?,?)',
+                           (index, record['plan_id'], record['plan_sha256'], canonical(record).decode()))
+            db.execute("INSERT INTO planning_history_meta VALUES('migration',?)", (migration,))
+
+    def setdefault(self, key, default):
+        """Narrow compatibility with the unchanged planning.append_plan_record API."""
+        if key != 'planning_history' or default != []:
+            raise ValidationError('Only the planning_history append namespace is supported')
+        self.planning_history()
+        return _PlanningHistory(self)
+
+    def __setitem__(self, key, value):
+        # append_plan_record assigns current_plan after append. It is derived
+        # from durable append order, so this assignment can never replace it.
+        if key != 'current_plan' or self._planning_record(value) != self.current_plan():
+            raise ValidationError('The durable current plan cannot be replaced')
 
     @contextmanager
     def connection(self):

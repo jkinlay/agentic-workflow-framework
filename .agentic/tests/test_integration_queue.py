@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+import test_review_policy as provenance_fixtures
 import uuid
 from pathlib import Path
 import sys
@@ -436,6 +437,14 @@ def trusted_readiness():
                "intake_assignments": {ticket: assignment}}
 
     config = ReviewedConfigWithRuntime(config, runtime)
+    provenance_fixture = provenance_fixtures.Fixture()
+    provenance_fixture.bundle, provenance_fixture.config = bundle, config
+    provenance_fixtures.bind_commit_provenance_fixture(provenance_fixture)
+    provenance_runtime = provenance_fixture.config.get("_awf_runtime")
+    runtime.update(commit_provenance=provenance_runtime["commit_provenance"],
+                   repository=provenance_runtime["repository"])
+    # The config retains the fixture so its temporary Git objects outlive evaluation.
+    config.provenance_fixture = provenance_fixture
     bundle["ci"]["checks"][0]["name"] = "awf-integration"
     from agentic.gates import expected_binding
     bundle["contract"]["policy_hash"] = policy_hash(config, definition())

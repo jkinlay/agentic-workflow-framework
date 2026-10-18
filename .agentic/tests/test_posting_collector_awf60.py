@@ -856,6 +856,14 @@ class PostingCollectorTests(Fixture):
 
     def test_cli_supplies_only_runtime_collector_registry_to_gate(self):
         _registrations, registry = self._install_runtime_observations()
+        provenance_runtime = self.config.get("_awf_runtime")
+
+        def evaluate_with_provenance(config, *args, **kwargs):
+            config.get("_awf_runtime").update(
+                commit_provenance=provenance_runtime["commit_provenance"])
+            kwargs["repository"] = provenance_runtime["repository"]
+            return evaluate(config, *args, **kwargs)
+
         with tempfile.TemporaryDirectory() as folder:
             runtime = sealed_runtime(folder)
             bundle_path = Path(folder) / "bundle.json"
@@ -886,7 +894,9 @@ class PostingCollectorTests(Fixture):
             with mock.patch(
                 "agentic.posting_collector.registry_from_host_config",
                 return_value=registry,
-            ) as collector, redirect_stdout(stdout):
+            ) as collector, mock.patch(
+                "agentic.cli.evaluate", side_effect=evaluate_with_provenance,
+            ), redirect_stdout(stdout):
                 exit_code = workflow_main([
                     "--root", str(runtime), "evaluate", str(bundle_path),
                     "--config", str(config_path),

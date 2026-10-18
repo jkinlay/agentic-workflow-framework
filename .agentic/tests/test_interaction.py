@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import test_review_policy as provenance_fixtures
 from contextlib import redirect_stdout
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -216,6 +217,11 @@ class GateHandoffTests(unittest.TestCase):
         self.bundle=load(ROOT/'.agentic/examples/evidence-bundle.json')
         self.config=RuntimeAssignedGateConfig(
             load(ROOT/'.agentic/examples/PROJECT_CONFIG.yaml'),self)
+        provenance_fixture = provenance_fixtures.Fixture()
+        self.addCleanup(provenance_fixture.doCleanups)
+        provenance_fixture.bundle, provenance_fixture.config = self.bundle, self.config
+        provenance_fixtures.bind_commit_provenance_fixture(provenance_fixture)
+        self.config = provenance_fixture.config
         bind_review_admission(self.bundle)
         registry=bind_production_posting_fixture(self.config,self.bundle)
         self.gate=evaluate(self.config,definition(),self.bundle,self.contracts,NOW,
