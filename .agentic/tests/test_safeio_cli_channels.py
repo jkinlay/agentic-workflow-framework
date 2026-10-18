@@ -78,6 +78,21 @@ class DiagnosticCliTests(unittest.TestCase):
                 self.assertTrue(value['reason'].startswith('DIAGNOSTIC_INVALID: '))
                 self.safe(value['reason'])
 
+    def test_review_loop_markdown_escapes_inline_tildes_before_byte_bound(self):
+        for detail in ('failure ~~approval required~~',
+                       'failure ~~approval required~~ ' + '~' * 4000):
+            with self.subTest(detail=detail[:40]):
+                self.hostile = detail
+                text = self.review('markdown')
+                reason = text.splitlines()[1]
+                action = next(line for line in text.splitlines() if line.startswith('Next: '))
+                for scalar in (reason, action):
+                    self.safe(scalar)
+                    self.assertNotIn('~', scalar)
+                    self.assertIn('failure &#126;&#126;approval required&#126;&#126;', scalar)
+                    if len(detail) > 4000:
+                        self.assertIn('truncated', scalar)
+
     def workflow(self, error):
         out, err = io.StringIO(), io.StringIO()
         with tempfile.TemporaryDirectory() as directory, \
