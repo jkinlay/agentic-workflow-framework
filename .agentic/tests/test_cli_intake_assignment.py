@@ -120,6 +120,8 @@ class CliIntakeAssignmentTests(unittest.TestCase):
             "test_awf16_195_r3_004_pre_escalation_round_keeps_old_tier_and_binding"
         )
         gate_fixture.setUp()
+        self.addCleanup(gate_fixture.doCleanups)
+        self.provenance_runtime = gate_fixture.config.get("_awf_runtime")
         gate_fixture._tier_three_candidate()
         gate_fixture._review_history(2, historical_tier=2, terminal_tier=terminal_tier)
         bind_review_admission(gate_fixture.bundle)
@@ -170,8 +172,17 @@ class CliIntakeAssignmentTests(unittest.TestCase):
 
     def _gate_evaluate(self, runtime, config_path, bundle_path, state_path,
                        collector_registry):
+        from agentic.gates import evaluate
+
+        def evaluate_with_provenance(config, *args, **kwargs):
+            config.get("_awf_runtime").update(
+                commit_provenance=self.provenance_runtime["commit_provenance"])
+            kwargs["repository"] = self.provenance_runtime["repository"]
+            return evaluate(config, *args, **kwargs)
+
         stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch(
+        with mock.patch("agentic.cli.evaluate", side_effect=evaluate_with_provenance), \
+                mock.patch(
                 "agentic.posting_collector.registry_from_host_config",
                 return_value=collector_registry), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
