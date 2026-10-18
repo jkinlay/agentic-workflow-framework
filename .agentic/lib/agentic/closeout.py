@@ -7,6 +7,7 @@ through Git plumbing; an absent object fails closed and is named.
 from __future__ import annotations
 from copy import deepcopy
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -233,6 +234,195 @@ def render_markdown(record):
     return "\n".join(lines) + "\n"
 
 
+def ordinary_closeout_guard(record, *, before_jira=None):
+    """Refuse batch constituents before an ordinary closeout can touch Jira."""
+    if (isinstance(record, dict)
+            and record.get("closeout_kind") == "merged-via-batch"):
+        raise ValidationError(
+            "ordinary closeout refuses a merged-via-batch batch constituent")
+    if before_jira is not None:
+        if not callable(before_jira):
+            raise ValidationError("ordinary closeout Jira hook must be callable")
+        before_jira()
+    return record
+
+
+def _validate_batch_closeout(record):
+    fields = {"format", "batch_id", "generation", "batch_branch",
+              "target_branch", "batch_commit_sha", "controller_actor_id",
+              "constituents"}
+    if (not isinstance(record, dict) or set(record) != fields
+            or record.get("format") != "awf-merge-train-closeout-1"):
+        raise ValidationError("batch closeout contract has a non-closed shape")
+    if (not isinstance(record["batch_id"], str) or not record["batch_id"].strip()
+            or type(record["generation"]) is not int
+            or record["generation"] <= 0
+            or record["batch_branch"] != "batch/" + record["batch_id"]
+            or record["target_branch"] != "main"
+            or not isinstance(record["controller_actor_id"], str)
+            or not record["controller_actor_id"].strip()
+            or not SHA.fullmatch(record["batch_commit_sha"])):
+        raise ValidationError("batch closeout identity is invalid")
+    if not isinstance(record["constituents"], list) or not record["constituents"]:
+        raise ValidationError("batch closeout has no constituents")
+    seen = set()
+    for item in record["constituents"]:
+        if (not isinstance(item, dict)
+                or set(item) != {"ticket", "pr_number", "head_sha"}
+                or not isinstance(item["ticket"], str)
+                or not item["ticket"].strip()
+                or type(item["pr_number"]) is not int
+                or item["pr_number"] <= 0
+                or not SHA.fullmatch(item["head_sha"])
+                or item["ticket"] in seen):
+            raise ValidationError("batch closeout constituent is invalid")
+        seen.add(item["ticket"])
+    return record
+
+
+def _save_batch_progress(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def close_batch_constituents(record, *, observe_target, jira, progress_path):
+    """Close constituents in batch order after observing the batch on main.
+
+    The supplied Jira interface is deliberately controller-only and performs
+    read/write/read for one ticket at a time.  Progress is durable; a mismatch
+    stops before the next ticket and a later call resumes idempotently.
+    """
+    _validate_batch_closeout(record)
+    if not callable(observe_target):
+        raise ValidationError("batch target observer must be callable")
+    observation = observe_target()
+    if (not isinstance(observation, dict)
+            or set(observation) != {"target_branch", "commit_sha"}
+            or observation["target_branch"] != "main"
+            or observation["commit_sha"] != record["batch_commit_sha"]):
+        raise ValidationError(
+            "batch closeout waits for the exact batch commit observed on main")
+    if (not isinstance(jira, dict)
+            or set(jira) != {"actor_id", "read", "write"}
+            or jira["actor_id"] != record["controller_actor_id"]
+            or not callable(jira["read"]) or not callable(jira["write"])):
+        raise ValidationError(
+            "batch constituent Jira writes require the configured controller")
+
+    progress_path = Path(progress_path)
+    record_sha = fingerprint("merge_train_batch_closeout", record)
+    if progress_path.exists():
+        try:
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValidationError("batch closeout progress is unreadable") from exc
+        if (not isinstance(progress, dict)
+                or progress.get("format") != "awf-merge-train-closeout-progress-1"
+                or progress.get("record_sha256") != record_sha
+                or not isinstance(progress.get("completed_tickets"), list)):
+            raise ValidationError("batch closeout progress belongs to another batch")
+    else:
+        progress = {
+            "format": "awf-merge-train-closeout-progress-1",
+            "record_sha256": record_sha,
+            "batch_id": record["batch_id"],
+            "generation": record["generation"],
+            "completed_tickets": [],
+            "mismatched_tickets": [],
+            "inflight_ticket": None,
+            "last_mismatch": None,
+        }
+        _save_batch_progress(progress_path, progress)
+
+    completed = set(progress["completed_tickets"])
+    closed = []
+    for constituent in record["constituents"]:
+        ticket = constituent["ticket"]
+        closeout = {
+            "ticket": ticket,
+            "pr_number": constituent["pr_number"],
+            "head_sha": constituent["head_sha"],
+            "closeout_kind": "merged-via-batch",
+            "batch_id": record["batch_id"],
+            "generation": record["generation"],
+            "batch_branch": record["batch_branch"],
+            "batch_commit_sha": record["batch_commit_sha"],
+            "target_branch": "main",
+        }
+        closed.append(closeout)
+        if ticket in completed:
+            continue
+        before = jira["read"](ticket)
+        exact_done = (isinstance(before, dict)
+                      and before.get("ticket") == ticket
+                      and before.get("status") == "Done"
+                      and before.get("batch_id") == record["batch_id"]
+                      and before.get("merge_commit_sha") ==
+                      record["batch_commit_sha"])
+        previously_uncertain = (
+            ticket == progress.get("inflight_ticket")
+            or ticket in progress.get("mismatched_tickets", []))
+        if not exact_done and not previously_uncertain:
+            transition = {
+                "lifecycle_event": "JIRA_RECONCILED",
+                "to_status": "Done",
+                "closeout_kind": "merged-via-batch",
+                "batch_id": record["batch_id"],
+                "generation": record["generation"],
+                "batch_commit_sha": record["batch_commit_sha"],
+                "constituent_pr_number": constituent["pr_number"],
+                "constituent_head_sha": constituent["head_sha"],
+            }
+            progress["inflight_ticket"] = ticket
+            _save_batch_progress(progress_path, progress)
+            try:
+                jira["write"](ticket, transition)
+            except (TimeoutError, ConnectionError, OSError):
+                progress["last_mismatch"] = ticket
+                _save_batch_progress(progress_path, progress)
+                return {
+                    "status": "STOPPED_UNKNOWN",
+                    "ticket": ticket,
+                    "closed": [item for item in closed[:-1]
+                               if item["ticket"] in completed],
+                    "batch_id": record["batch_id"],
+                }
+            after = jira["read"](ticket)
+            exact_done = (isinstance(after, dict)
+                          and after.get("ticket") == ticket
+                          and after.get("status") == "Done"
+                          and after.get("batch_id") == record["batch_id"]
+                          and after.get("merge_commit_sha") ==
+                          record["batch_commit_sha"])
+        if not exact_done:
+            progress["last_mismatch"] = ticket
+            if ticket not in progress.get("mismatched_tickets", []):
+                progress.setdefault("mismatched_tickets", []).append(ticket)
+            _save_batch_progress(progress_path, progress)
+            return {
+                "status": "STOPPED_MISMATCH",
+                "ticket": ticket,
+                "closed": [item for item in closed[:-1]
+                           if item["ticket"] in completed],
+                "batch_id": record["batch_id"],
+            }
+        progress["completed_tickets"].append(ticket)
+        progress["last_mismatch"] = None
+        progress["inflight_ticket"] = None
+        completed.add(ticket)
+        _save_batch_progress(progress_path, progress)
+    return {"status": "COMPLETE", "batch_id": record["batch_id"],
+            "batch_commit_sha": record["batch_commit_sha"],
+            "closed": closed, "closeout_kind": "merged-via-batch"}
+
+
 def require_jira_reconciliation_before_counts(
         closeout_record, *, repository, project_config, contracts,
         project_config_selector=None, project_config_observer_registry=None,
@@ -246,6 +436,7 @@ def require_jira_reconciliation_before_counts(
     re-observed through a registered producer for the exact closeout binding;
     disabled Jira needs no synthetic transition record.
     """
+    ordinary_closeout_guard(closeout_record)
     if contracts is None:
         raise ValidationError("post-merge counting requires the framework contract registry")
     from .integration_queue import (
