@@ -23,6 +23,14 @@ def _markdown_diagnostic(value):
     the cap, so truncation cannot create active Markdown syntax.
     """
     text = re.sub(r'[\ud800-\udfff]', '\ufffd', render_diagnostic(str(value)))
+    # GFM also links bare scheme URLs, www addresses and email addresses.
+    # Break their lexical triggers with entities before tokenizing/bounding;
+    # entities display the original punctuation without becoming autolinks.
+    # S3 already encodes every domain dot. An entity after the first domain
+    # segment prevents GFM's required literal period, so preserve that inert
+    # spelling. A literal dot before an entity still needs scheme escaping.
+    text = re.sub(r':(?=//)(?!//[a-z0-9_-]+&#46;)|(?<=www)\.|@',
+                  lambda match: f'&#{ord(match.group())};', text, flags=re.I)
     tokens = []
     for match in re.finditer(r'&#[0-9]+;|\\x[0-9a-f]{2}|[\s\S]', text):
         token = match.group()
