@@ -113,6 +113,131 @@ def _dependency_edges(ticket):
     return edges
 
 
+BACKLOG_BINDING_KEYS = {
+    "project_id", "repository_id", "scope_sha256", "repository_head_sha",
+    "project_config_sha256", "cycle_id",
+}
+BACKLOG_PROVIDER_KEYS = {
+    "provider_id", "implementation_sha256", "verifier_implementation_sha256",
+}
+BACKLOG_TICKET_KEYS = {
+    "key", "status", "dependencies", "declared_dependencies", "depends_on",
+    "jira_links", "blocks", "blocked_by", "generated_outputs", "generates",
+    "expected_rounds", "round_time_minutes", "risk_tier", "risk_flags",
+    "summary", "description", "change_kind",
+}
+
+
+def tickets_from_provider_snapshot(
+        snapshot, config, *, expected_binding, expected_provider, now,
+        verify_provider_snapshot=None):
+    """Return attributed tickets only after exact-cycle authentication.
+
+    The trusted host supplies reviewed provider/verifier pins, controller-known
+    bindings, current cycle time, and the verifier callable loaded from that
+    pinned implementation. None may come from ticket or snapshot content.
+    The verifier authenticates an immutable provider observation (including
+    PR/diff-to-ticket attribution) and returns its complete independent body,
+    not an echoed request, boolean or caller-computed digest. Empty components
+    explicitly attest no files; omitted components are incomplete evidence.
+    Call build_backlog_graph only after this reader succeeds. No live I/O or
+    adapter registration occurs here.
+    """
+    snapshot = copy.deepcopy(snapshot)
+    expected_binding = copy.deepcopy(expected_binding)
+    expected_provider = copy.deepcopy(expected_provider)
+    _closed(snapshot, {"format", "complete", "provider", "binding", "observed_at",
+                       "tickets", "authentication"}, "backlog snapshot")
+    _closed(expected_binding, BACKLOG_BINDING_KEYS, "expected backlog binding")
+    _closed(expected_provider, BACKLOG_PROVIDER_KEYS, "expected backlog provider")
+    repository_id = config.get("github", {}).get("repository_id")
+    valid_repository_id = ((isinstance(repository_id, str) and bool(repository_id))
+                           or (type(repository_id) is int and repository_id > 0))
+    if (not valid_repository_id
+            or not all(isinstance(value, str) and value for value in expected_binding.values())
+            or not LOWER_SHA256.fullmatch(expected_binding["scope_sha256"])
+            or not GIT_SHA.fullmatch(expected_binding["repository_head_sha"])
+            or expected_binding["project_config_sha256"]
+            != fingerprint("accepted-project-config", config)
+            or expected_binding["project_id"] != config.get("project", {}).get("id")
+            or expected_binding["repository_id"]
+            != str(repository_id)):
+        raise ValidationError("Backlog binding differs from accepted project/repository/configuration")
+    if (not isinstance(expected_provider["provider_id"], str)
+            or not RESOURCE_NAME.fullmatch(expected_provider["provider_id"])
+            or not all(isinstance(expected_provider[key], str)
+                       and LOWER_SHA256.fullmatch(expected_provider[key])
+                       for key in ("implementation_sha256", "verifier_implementation_sha256"))):
+        raise ValidationError("Backlog provider/verifier must have reviewed implementation pins")
+    timestamp(now)
+    if (snapshot["format"] != "awf-backlog-provider-snapshot-1"
+            or snapshot["complete"] is not True
+            or snapshot["provider"] != expected_provider
+            or snapshot["binding"] != expected_binding
+            or snapshot["observed_at"] != now):
+        raise ValidationError("Backlog snapshot is incomplete, unpinned, foreign or stale")
+    authentication = snapshot["authentication"]
+    _closed(authentication, {"evidence_id"}, "backlog authentication")
+    if (not isinstance(authentication["evidence_id"], str)
+            or not 1 <= len(authentication["evidence_id"]) <= 128
+            or not callable(verify_provider_snapshot)):
+        raise ValidationError("Backlog snapshot requires independent provider authentication")
+    request = {"provider": expected_provider, "binding": expected_binding,
+               "observed_at": now}
+    try:
+        verified = verify_provider_snapshot(copy.deepcopy(authentication), copy.deepcopy(request))
+    except Exception as exc:
+        raise ValidationError("Backlog provider authentication failed") from exc
+    _closed(verified, {"status", "evidence_id", "snapshot"}, "authenticated backlog evidence")
+    body = {key: value for key, value in snapshot.items() if key != "authentication"}
+    if (verified["status"] != "VERIFIED"
+            or verified["evidence_id"] != authentication["evidence_id"]
+            or verified["snapshot"] != body):
+        raise ValidationError("Backlog snapshot differs from independent authenticated provider evidence")
+
+    if not isinstance(snapshot["tickets"], list):
+        raise ValidationError("Backlog snapshot tickets must be a complete list")
+    tickets, seen = [], set()
+    for item in snapshot["tickets"]:
+        _closed(item, {"ticket", "components"}, "backlog ticket envelope")
+        ticket = item["ticket"]
+        if not isinstance(ticket, dict) or set(ticket) - BACKLOG_TICKET_KEYS:
+            raise ValidationError("Backlog ticket metadata cannot supply PR/diff file attribution")
+        key = ticket.get("key")
+        if not isinstance(key, str) or not key or key in seen:
+            raise ValidationError("Backlog ticket keys must be non-empty and unique")
+        seen.add(key)
+        components = item["components"]
+        if not isinstance(components, list) or len(components) != 3:
+            raise ValidationError("Backlog ticket needs complete brief, PR and diff observations")
+        collected = copy.deepcopy(ticket)
+        kinds = set()
+        for component in components:
+            _closed(component, {"kind", "ticket_key", "binding", "observed_at", "files"},
+                    "backlog path component")
+            kind = component["kind"]
+            if (not isinstance(kind, str) or kind not in {"brief", "open_pr", "worktree_diff"}
+                    or kind in kinds or component["ticket_key"] != key
+                    or component["binding"] != expected_binding
+                    or component["observed_at"] != now
+                    or not isinstance(component["files"], list)):
+                raise ValidationError("Backlog component is partial, foreign, stale or wrongly attributed")
+            kinds.add(kind)
+            field = {"brief": "write_paths", "open_pr": "open_pr_files",
+                     "worktree_diff": "worktree_diff"}[kind]
+            collected[field] = copy.deepcopy(component["files"])
+        # Reuse the graph's exact path validation and source collection. Keep
+        # separate lists so build_backlog_graph retains each observed source.
+        paths = _ticket_paths(collected)
+        if not paths:
+            raise ValidationError(f"Backlog ticket {key} has no observed exact write files")
+        for field in ("write_paths", "open_pr_files", "worktree_diff"):
+            collected[field] = sorted({_path(raw) for raw in collected[field]
+                                       if _path_identity(_path(raw)) not in MANIFEST_OUTPUT_IDENTITIES})
+        tickets.append(collected)
+    return tickets
+
+
 def build_backlog_graph(tickets, config):
     """Build a source-attributed dependency and exact-file overlap graph."""
     if not isinstance(tickets, list):
