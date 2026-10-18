@@ -14,6 +14,8 @@ sys.path.insert(0, str(ROOT / ".agentic/lib"))
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from source_only import skip_unless_source_repo
+
 
 class ProvenanceGateTests(unittest.TestCase):
     def exercise_refusal(self, trailer, reason):
@@ -161,9 +163,11 @@ class ProvenanceGateTests(unittest.TestCase):
                             or any(address in retained for address in addresses),
                             "Provenance evidence must bind the offending commit/refusal")
 
+    @skip_unless_source_repo("AC2/AC3 build the example bundle with the source-only generator", "scripts/generate_examples.py")
     def test_ac2_merge_gate_refuses_untagged_code_commit(self):
         self.exercise_refusal(None, "missing Writer trailer")
 
+    @skip_unless_source_repo("AC2/AC3 build the example bundle with the source-only generator", "scripts/generate_examples.py")
     def test_ac3_merge_gate_refuses_nonmechanical_script_commit(self):
         self.exercise_refusal("Writer: script/manifest-regen",
                               "not reproducibly mechanical")
