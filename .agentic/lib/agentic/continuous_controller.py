@@ -1568,6 +1568,202 @@ class ContinuousControllerStore:
 			db.execute('UPDATE controller_jira_operation SET status=?,operation_json=?,readback_json=?,updated_at=? WHERE operation_id=?', (status, canonical(operation).decode() if operation is not None else row['operation_json'], canonical(observation).decode() if observation is not None else None, now, operation_id))
 			return loads(row['record_json'])
 
+def _batch_jira_inputs(config, batch, observed_merge, policy_context, now):
+	"""Validate the complete fixture envelope before persisting or calling out."""
+	def text(value):
+		return isinstance(value, str) and value and value.strip() == value and len(value) <= 256 and not any(ord(c) < 32 for c in value)
+	def sha(value):
+		return isinstance(value, str) and re.fullmatch('[0-9a-f]{40}', value) is not None
+	_require(isinstance(config, dict) and isinstance(config.get('jira'), dict), 'Batch Jira configuration is missing')
+	jira = config['jira']
+	_require(jira.get('enabled') is True and all(text(jira.get(key)) for key in
+		('cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id')), 'Batch Jira provider identity is incomplete')
+	_require(isinstance(config.get('github'), dict) and text(config['github'].get('base_branch')), 'Batch target branch is missing')
+	_require(isinstance(jira.get('status_map'), dict) and text(jira['status_map'].get('done')), 'Batch Jira Done mapping is missing')
+	_require(isinstance(jira.get('lifecycle_writes', {}), dict) and
+		all(type(value) is bool for value in jira.get('lifecycle_writes', {}).values()), 'Batch lifecycle switches must be boolean')
+	start = timestamp(now)
+	_require(isinstance(batch, dict) and set(batch) == {'batch_id', 'pr_number', 'merge_commit_sha', 'constituents'}, 'Malformed batch reconciliation input')
+	_require(text(batch['batch_id']) and type(batch['pr_number']) is int and batch['pr_number'] > 0 and sha(batch['merge_commit_sha']), 'Invalid batch identity')
+	_require(isinstance(observed_merge, dict) and set(observed_merge) == {'batch_id', 'target_branch', 'merge_commit_sha', 'observed_at'}, 'Malformed batch merge observation')
+	_require(observed_merge['batch_id'] == batch['batch_id'] and observed_merge['merge_commit_sha'] == batch['merge_commit_sha'] and
+		observed_merge['target_branch'] == config['github']['base_branch'], 'Batch commit has not been observed on its configured target')
+	_require(timestamp(observed_merge['observed_at']) <= start, 'Batch merge observation is in the future')
+	members = batch['constituents']
+	_require(isinstance(members, list) and 0 < len(members) <= 1000, 'Batch needs a bounded nonempty ordered constituent list')
+	issues, prs = set(), set()
+	for member in members:
+		_require(isinstance(member, dict) and set(member) == {'binding', 'pr_number', 'reviewed_head_sha', 'paths', 'closeout_kind', 'batch_id', 'merge_commit_sha'}, 'Malformed batch constituent')
+		binding = member['binding']
+		_require(isinstance(binding, dict) and set(binding) == {'issue_id'} and text(binding['issue_id']), 'Invalid constituent issue binding')
+		_require(binding['issue_id'] not in issues and type(member['pr_number']) is int and member['pr_number'] > 0 and
+			member['pr_number'] != batch['pr_number'] and member['pr_number'] not in prs, 'Duplicate or invalid constituent identity')
+		issues.add(binding['issue_id'])
+		prs.add(member['pr_number'])
+		_require(sha(member['reviewed_head_sha']) and member['batch_id'] == batch['batch_id'] and
+			member['merge_commit_sha'] == batch['merge_commit_sha'] and member['closeout_kind'] == 'merged-via-batch', 'Constituent differs from the observed batch')
+		paths = member['paths']
+		_require(isinstance(paths, list) and paths and all(isinstance(path, str) for path in paths) and
+			len(paths) == len(set(paths)), 'Constituent paths must be unique')
+		for path in paths:
+			_require(_owned_path(path) == path and not path.endswith(('/*', '/**')), 'Constituent path is not canonical')
+	_require(isinstance(policy_context, dict) and set(policy_context) <= issues, 'Batch policy context names a foreign issue')
+	for facts in policy_context.values():
+		_require(isinstance(facts, dict) and set(facts) <= {'issue_type', 'owner_closure_required', 'snapshot'}, 'Malformed constituent policy context')
+		_require(facts.get('issue_type', 'LEAF') in {'LEAF', 'EPIC'} and type(facts.get('owner_closure_required', False)) is bool, 'Invalid constituent policy facts')
+		if 'snapshot' in facts:
+			snapshot = facts['snapshot']
+			_require(isinstance(snapshot, dict) and set(snapshot) <= {'summary', 'labels'} and isinstance(snapshot.get('summary'), str) and
+				isinstance(snapshot.get('labels', []), list) and all(isinstance(label, str) for label in snapshot.get('labels', [])), 'Invalid owner-closure snapshot')
+	return {'config': config, 'batch': batch, 'observed_merge': observed_merge, 'policy_context': policy_context}
+
+
+def production_batch_jira_reconciliation(store, *, config, role, batch, observed_merge, now,
+		read_current_status, write_transition, read_transition, policy_context=None):
+	"""Bounded T11 callback seam; deliberately unwired to CLI/live adapters.
+
+	Role strings and supplied merge dictionaries are fixture inputs, not authenticated
+	provider authority. Progress uses existing controller-private storage, separate
+	from T8's closed immutable audit envelope. No global operation recovery occurs.
+	"""
+	base = {'execution_authority': False, 'count_allowed': False, 'complete': False,
+		'reconciled': [], 'remaining': [], 'conflict': None, 'held': []}
+	if config.get('jira', {}).get('enabled') is False or role != 'controller':
+		return {**base, 'reason': 'Disabled Jira or non-controller role; no callbacks'}
+	_require(isinstance(store, ContinuousControllerStore), 'Batch Jira needs protected controller storage')
+	_require(all(callable(callback) for callback in (read_current_status, write_transition, read_transition)), 'Batch Jira callbacks are missing')
+	# Isolate both caller-owned inputs and every callback argument from durable intent.
+	inputs = _batch_jira_inputs(deepcopy(config), deepcopy(batch), deepcopy(observed_merge),
+		deepcopy(policy_context) if policy_context is not None else {}, now)
+	config, batch, policy_context = inputs['config'], inputs['batch'], inputs['policy_context']
+	from .canonical import fingerprint
+	from .jira_lifecycle import owner_closure_required, planned_write
+	encoded = canonical(inputs).decode()
+	pin = 't11-batch:' + batch['batch_id']
+	records = []
+	for member in batch['constituents']:
+		issue = member['binding']['issue_id']
+		operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, pin + ':' + issue))
+		records.append({**member, 'operation_id': operation_id, 'created_at': now,
+			'lifecycle_event': 'JIRA_RECONCILED', 'to_status_id': config['jira']['status_map']['done'],
+			'jira_provider': {key: config['jira'][key] for key in ('cloud_id', 'site', 'provider_project_id', 'project_key', 'controller_actor_id')},
+			'closing_comment': f"Done: PR #{member['pr_number']}, reviewed head {member['reviewed_head_sha']}, merge commit {member['merge_commit_sha']}.",
+			'batch_input_sha256': hashlib.sha256(encoded.encode()).hexdigest()})
+	# Pin all ordered inputs and prepare every intent in one immediate transaction.
+	# No new constructor/schema migration is needed for this controller-only seam.
+	with store.transaction() as db:
+		prior = db.execute('SELECT value FROM controller_meta WHERE key=?', (pin,)).fetchone()
+		_require(prior is None or prior['value'] == encoded, 'Batch reconciliation input substitution refused')
+		if prior is None:
+			db.execute('INSERT INTO controller_meta VALUES(?,?)', (pin, encoded))
+		for record in records:
+			intent = fingerprint('controller-jira-operation', {key: value for key, value in record.items() if key != 'created_at'})
+			row = db.execute('SELECT * FROM controller_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
+			if row is None:
+				db.execute('INSERT INTO controller_jira_operation VALUES(?,?,?,?,?,?,NULL,NULL,?)',
+					(record['operation_id'], record['binding']['issue_id'], 'JIRA_RECONCILED', intent, 'PENDING', canonical(record).decode(), now))
+			else:
+				_require(row['intent_sha256'] == intent and row['issue_id'] == record['binding']['issue_id'] and
+					row['event'] == 'JIRA_RECONCILED', 'Batch Jira intent collision')
+				stored = loads(row['record_json'])
+				_require(isinstance(stored, dict) and fingerprint('controller-jira-operation',
+					{key: value for key, value in stored.items() if key != 'created_at'}) == intent and
+					canonical(stored).decode() == row['record_json'], 'Batch Jira stored intent is corrupt')
+				record.clear()
+				record.update(stored)
+
+	def conflict(issue, observation=None, reason='Suspected external automation conflict; never reissue'):
+		observation = observation if isinstance(observation, dict) else {}
+		return {'issue_id': issue, 'observed_status': observation.get('status', observation.get('status_id')),
+			'observed_actor': observation.get('actor'), 'observed_at': observation.get('observed_at'), 'reason': reason}
+
+	def receipt(value, issue, time_floor, kind):
+		_require(isinstance(value, dict) and value.get('issue_id') == issue, 'Batch Jira receipt names a foreign issue')
+		status = value.get('status_id' if kind == 'before' else 'status')
+		_require(isinstance(status, str) and status.strip(), 'Batch Jira receipt status is missing')
+		_require(timestamp(value.get('observed_at')) >= time_floor, 'Batch Jira receipt is stale')
+		if kind == 'write':
+			_require(status == 'ATTEMPTED', 'Batch Jira write outcome is unknown')
+		if kind == 'after':
+			_require(isinstance(value.get('actor'), str) and value['actor'], 'Batch Jira readback actor is missing')
+		return status, timestamp(value['observed_at'])
+
+	# Claiming covers the pre-read as well as the mutation. A crash anywhere after
+	# claim leaves IN_FLIGHT permanently stopped; a concurrent caller never recovers
+	# or steals that claim. Successful/failed terminal records need no callbacks.
+	for record in records:
+		issue, operation_id = record['binding']['issue_id'], record['operation_id']
+		with store.transaction() as db:
+			row = db.execute('SELECT * FROM controller_jira_operation WHERE operation_id=?', (operation_id,)).fetchone()
+			status = row['status']
+			if status == 'PENDING':
+				prior_stop = db.execute("SELECT * FROM controller_jira_operation WHERE issue_id=? AND operation_id<>? AND status IN ('IN_FLIGHT','UNKNOWN','FAILED') LIMIT 1", (issue, operation_id)).fetchone()
+				if prior_stop is not None:
+					observation = loads(prior_stop['readback_json']) if prior_stop['readback_json'] else None
+					db.execute("UPDATE controller_jira_operation SET status='FAILED',readback_json=?,updated_at=? WHERE operation_id=?", (canonical(observation).decode(), now, operation_id))
+					status = 'FAILED'
+				else:
+					db.execute("UPDATE controller_jira_operation SET status='IN_FLIGHT',updated_at=? WHERE operation_id=? AND status='PENDING'", (now, operation_id))
+		if status != 'PENDING':
+			if status == 'SUCCEEDED':
+				continue
+			if status == 'IN_FLIGHT':
+				break
+			_require(status in {'FAILED', 'UNKNOWN', 'HELD'}, 'Invalid durable batch Jira status')
+			continue
+		observation, operation = None, None
+		try:
+			facts = policy_context.get(issue, {})
+			owner_hold = facts.get('owner_closure_required', False)
+			if 'snapshot' in facts:
+				owner_hold = owner_hold or owner_closure_required(config, facts['snapshot'])
+			if facts.get('issue_type') == 'EPIC':
+				key, reason = None, 'Epics are never transitioned'
+			else:
+				key, reason = planned_write(config, {'owner_closure_required': owner_hold}, 'JIRA_RECONCILED',
+					{'merge_confirmed': True, 'closeout_valid': True})
+			if key is None:
+				with store.transaction() as db:
+					db.execute("UPDATE controller_jira_operation SET status='HELD',readback_json=?,updated_at=? WHERE operation_id=? AND status='IN_FLIGHT'", (canonical({'reason': reason}).decode(), now, operation_id))
+				continue
+			observation = read_current_status(deepcopy(record['binding']))
+			current, current_time = receipt(observation, issue, timestamp(now), 'before')
+			if current == record['to_status_id']:
+				store.finish_jira_operation(operation_id, 'SUCCEEDED', observation, now)
+				continue
+			operation = write_transition(deepcopy(record))
+			_, operation_time = receipt(operation, issue, current_time, 'write')
+			observation = read_transition(deepcopy(record), deepcopy(operation))
+			observed, _ = receipt(observation, issue, operation_time, 'after')
+			status = 'SUCCEEDED' if observed == record['to_status_id'] and observation['actor'] == config['jira']['controller_actor_id'] else 'FAILED'
+			store.finish_jira_operation(operation_id, status, observation, now, operation)
+			if status == 'FAILED':
+				break
+		except Exception:
+			# Persistence failure also leaves a durable claim. Do not retry any call.
+			try:
+				store.finish_jira_operation(operation_id, 'UNKNOWN', observation, now, operation)
+			except Exception:
+				pass
+			break
+	result = deepcopy(base)
+	with store.connection() as db:
+		for record in records:
+			row = db.execute('SELECT * FROM controller_jira_operation WHERE operation_id=?', (record['operation_id'],)).fetchone()
+			issue, status = record['binding']['issue_id'], row['status']
+			if status == 'SUCCEEDED':
+				result['reconciled'].append(issue)
+			elif status == 'PENDING':
+				result['remaining'].append(issue)
+			elif status == 'HELD':
+				result['held'].append(issue)
+			elif result['conflict'] is None:
+				observation = loads(row['readback_json']) if row['readback_json'] else None
+				result['conflict'] = conflict(issue, observation)
+	result['complete'] = len(result['reconciled']) == len(records)
+	return result
+
+
 def _zero_counts():
 	return {'required': 0, 'completed': 0, 'acceptable': 0, 'failed': 0, 'stale': 0, 'outstanding': 0}
 
