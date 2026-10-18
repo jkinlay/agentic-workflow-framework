@@ -19,6 +19,12 @@ def isolated_git_environment() -> dict[str, str]:
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_LITERAL_PATHSPECS": "1",
+        # Missing promisor objects must fail locally, never trigger lazy fetch.
+        "GIT_NO_LAZY_FETCH": "1",
+        # Deny every transport, including repo-selected remote helpers with
+        # protocol.<name>.allow=always. This fixed empty allowlist also protects
+        # older Git versions that do not implement GIT_NO_LAZY_FETCH.
+        "GIT_ALLOW_PROTOCOL": "",
         "GIT_NO_REPLACE_OBJECTS": "1",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_TERMINAL_PROMPT": "0",

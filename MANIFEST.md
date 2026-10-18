@@ -96,7 +96,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/external_resources.py` | `f3fdfa2b1933d34a321a84668de93fe2b999168c0486063a797cc54287bc7747` |
 | `.agentic/lib/agentic/five_slot_acceleration.py` | `7fed880d1828ece267592e357313cc08fbb15279310479da8e60c5139acebbee` |
 | `.agentic/lib/agentic/gates.py` | `981e93628c0f755bc1981a27563f62706d614cb54668443d0a5a65b32a7f1e1e` |
-| `.agentic/lib/agentic/git_isolation.py` | `efa7eb95ca906ffa1ef1831032eefaa4bfa6cd06376b5737f7fc5c5cc3a2caf0` |
+| `.agentic/lib/agentic/git_isolation.py` | `d90fcaf8d7d086772a923a177c889a4ded50fd6b490e7c67e5171a208af18c19` |
 | `.agentic/lib/agentic/gittree.py` | `f1df153bf9f3e87cd95552aaf102fd0c6b0cd6f3a49bf51b6ef29c923340ff67` |
 | `.agentic/lib/agentic/handoff.py` | `8cc194abe6e6dbcdb857fa3dce8cde679c06f2651b310dd907ccf06943ca9904` |
 | `.agentic/lib/agentic/heavy_validation.py` | `2218cbce295c73a7682d8a0760067ffcaff48712a1f06fce273d655ca07f7efe` |
@@ -356,7 +356,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_gates_awf98.py` | `39db012967a59e3f19941084eef325d84fb5cb6d2724bcc9cf90512ec8d5d2fd` |
 | `.agentic/tests/test_gates_owner_review.py` | `b9d1e54e25e7281ba7c2e745b1b594d5a9593e12a02247b83307ce3cd3a11096` |
 | `.agentic/tests/test_gates_workflow_sha.py` | `1d82cfe03fec326046d4992168ce3c30cc4ad0e72bc491efcf5ea4dd949ce363` |
-| `.agentic/tests/test_git_isolation_safe_directory.py` | `08d92c2b9da3b974b5633fbe26d5dd06e70489c9c3abc2c5d3324c2799ce6389` |
+| `.agentic/tests/test_git_isolation_safe_directory.py` | `7b1a788c23c2c3442be1596a7d0c749fb290ce8f2bf8b6cafdb40d08405eb21b` |
 | `.agentic/tests/test_github_review_host_provenance.py` | `ff88b8bdd761297aa825280655d1c9b2b4b9a2788bc4b6a80b6137066e635b9a` |
 | `.agentic/tests/test_gittree.py` | `0e0ad6e18da3cc1638f66df688c87f8be729f041ad51d6f59824be1990e3da95` |
 | `.agentic/tests/test_handoff.py` | `c76eb1c485e516ab771764cff82ffddeac13e1342752442f5dcbad2932fea157` |
