@@ -117,3 +117,25 @@ Move-Item -LiteralPath $temporaryStop -Destination $STOP_FILE
 
 Adapter: 1 MiB stderr cap, credentials stripped, fail-closed, and
 `execution_authority: false`.
+
+## Controller automation switches
+
+The reviewed project configuration's `controller` mapping supplies four boolean
+switches. Shipped configuration and examples set all four to `false`.
+`dispatch_enabled` is the master gate; `auto_dispatch` permits implementation
+writers, `auto_request_critic` permits independent critic requests, and
+`auto_resume_amendments` permits amendment writers. Each path requires both the
+master and its own switch. Disabled paths record
+`CONTROLLER_AUTOMATION_DISABLED` before publication observation or dispatch.
+Missing or non-boolean values refuse the cycle before recovery or provider
+calls. The CLI passes the exact reviewed `controller` mapping to the cycle.
+Disabling automation cancels never-started pending work; uncertain prior launches
+still reconcile by observation without relaunching.
+
+Install and upgrade still require all five automation switches, including
+`auto_transition_jira`, to be false. Operators enable the four dispatch switches
+only afterwards, under their own governance. Upgrades preserve existing values;
+no controller-switch migration is needed. `auto_transition_jira` is unchanged.
+The switches grant no publication, review, merge or adapter qualification.
+Until AWF-36 and AWF-32 both ship, no project runs the continuous controller with
+its own adapter (Jonathan, 8 October).

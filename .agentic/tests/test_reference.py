@@ -148,7 +148,7 @@ class ConfigTests(Fixture):
             lambda c: c["critic"].update(require_re_review_after_any_target_base_change=False),
             lambda c: c["merge_gate"].update(require_specialist_reviews_current_tuple=False),
             lambda c: c["template"].update(expected_workflow_version="99.0.0"),
-            lambda c: c["controller"].update(dispatch_enabled=True),
+            lambda c: c["controller"].update(dispatch_enabled="true"),
             lambda c: c["jira"]["scope"].update(additional_jql="project = EX"),
             lambda c: c["merge_gate"].update(trusted_owner_ids=[None]),
             lambda c: c["scope"].update(protected_paths=[]),

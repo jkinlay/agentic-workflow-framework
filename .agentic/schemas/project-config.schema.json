@@ -1316,16 +1316,16 @@
       ],
       "properties": {
         "dispatch_enabled": {
-          "const": false
+          "type": "boolean"
         },
         "auto_dispatch": {
-          "const": false
+          "type": "boolean"
         },
         "auto_request_critic": {
-          "const": false
+          "type": "boolean"
         },
         "auto_resume_amendments": {
-          "const": false
+          "type": "boolean"
         },
         "auto_transition_jira": {
           "type": "boolean"
