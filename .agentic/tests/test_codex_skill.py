@@ -341,6 +341,7 @@ class CodexSkillTests(unittest.TestCase):
                 ):
                     production_controller_cycle(
                         store,
+                        controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True},
                         now=now,
                         host_capacity=1,
                         inventory_binding=binding,
@@ -421,6 +422,7 @@ class CodexSkillTests(unittest.TestCase):
         ):
             result = production_controller_cycle(
                 store,
+                controller_config={'dispatch_enabled': True, 'auto_dispatch': True, 'auto_request_critic': True, 'auto_resume_amendments': True},
                 now=now,
                 host_capacity=1,
                 inventory_binding=binding,
