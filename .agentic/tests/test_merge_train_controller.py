@@ -203,6 +203,113 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         inputs.update(overrides)
         return self.controller.production_batch_jira_reconciliation(self.store, **inputs)
 
+    def test_ordinary_lifecycle_after_successful_batch_uses_full_binding(self):
+        import uuid
+        provider = {"cloud_id": "cloud-1", "site": "https://jira.example.invalid",
+                    "project_id": "project-1", "project_key": "AWF",
+                    "controller_actor_id": "controller-1"}
+        binding = {"issue_id": "AWF-1", "project_id": "local-project",
+                   "repository_id": "101", "requirements_hash": "a" * 64}
+        writes = []
+        def lifecycle(run_id):
+            def write(record):
+                writes.append(record)
+                return {"operation_id": record["operation_id"], "issue_id": "AWF-1",
+                        "status": "ATTEMPTED", "observed_at": NOW, "jira_provider": provider}
+            return self.controller.production_jira_lifecycle(self.store,
+                config=self.config, contract={}, event="WORKER_STARTED",
+                facts={"run_registered": True, "worktree_verified": True}, binding=binding,
+                issue_type="LEAF", state="DISPATCHED", producer_id="controller-1",
+                run_id=str(uuid.UUID(int=run_id)), now=NOW, evidence=["urn:fixture:test"],
+                transition_id="31", observe_provider_identity=lambda: provider,
+                read_current_status=lambda b: {"issue_id": "AWF-1", "status_id": "Ready",
+                    "observed_at": NOW, "jira_provider": provider}, write_transition=write,
+                read_transition=lambda r, o: {"issue_id": "AWF-1", "status": "In Progress",
+                    "actor": "controller-1", "observed_at": NOW, "jira_provider": provider})
+        self.assertEqual("SUCCEEDED", lifecycle(1)["record"]["status"])
+        self.assertTrue(self.run_batch()["complete"])
+        self.assertEqual("SUCCEEDED", lifecycle(2)["record"]["status"])
+        self.assertEqual(2, len(writes))
+        replay = JiraSpy()
+        self.assertTrue(self.run_batch(replay)["complete"])
+        self.assertEqual([], replay.calls)
+
+    def start_batch_process(self, mode):
+        import subprocess
+        fixture = Path(self.temporary.name) / "process-input.json"
+        fixture.write_text(json.dumps({"config": self.config, "batch": self.batch,
+            "observed_merge": self.merge, "now": NOW}), encoding="utf-8")
+        source = """
+import json, os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from agentic.continuous_controller import ContinuousControllerStore, production_batch_jira_reconciliation
+inputs = json.loads(Path(sys.argv[3]).read_text('utf-8'))
+store = ContinuousControllerStore(Path(sys.argv[2]), ['B'])
+def before(binding):
+    return {'issue_id': binding['issue_id'], 'status_id': 'In Review', 'observed_at': inputs['now']}
+def write(record):
+    if sys.argv[4] == 'crash':
+        os._exit(19)
+    if record['binding']['issue_id'] == 'AWF-1':
+        print('CLAIMED', flush=True)
+        sys.stdin.readline()
+    return {'issue_id': record['binding']['issue_id'], 'status': 'ATTEMPTED', 'observed_at': inputs['now']}
+def after(record, operation):
+    return {'issue_id': record['binding']['issue_id'], 'status': 'Done',
+            'actor': 'controller-1', 'observed_at': inputs['now']}
+result = production_batch_jira_reconciliation(store, role='controller', **inputs,
+    read_current_status=before, write_transition=write, read_transition=after)
+print(json.dumps(result), flush=True)
+"""
+        process = subprocess.Popen([sys.executable, "-B", "-c", source,
+            str(ROOT / ".agentic/lib"), str(self.path), str(fixture), mode],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        def finish():
+            if process.poll() is None:
+                process.communicate("resume\n", timeout=20)
+        self.addCleanup(finish)
+        return process
+
+    def test_process_death_releases_ownership_and_recovers_remaining_only(self):
+        process = self.start_batch_process("crash")
+        output, errors = process.communicate(timeout=20)
+        self.assertEqual(19, process.returncode, (output, errors))
+        self.store = self.controller.ContinuousControllerStore(self.path, ["B"])
+        replay = JiraSpy()
+        result = self.run_batch(replay)
+        self.assertEqual([("read", "AWF-2"), ("write", "AWF-2"), ("read_back", "AWF-2")], replay.calls)
+        self.assertEqual([], result["remaining"])
+        self.assertEqual("AWF-1", result["conflict"]["issue_id"])
+        self.assertFalse(result["complete"])
+        final = JiraSpy()
+        self.assertEqual(result["conflict"], self.run_batch(final)["conflict"])
+        self.assertEqual([], final.calls)
+
+    def test_live_process_claim_cannot_be_stolen_by_restart_or_global_recovery(self):
+        import concurrent.futures
+        process = self.start_batch_process("active")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            line = pool.submit(process.stdout.readline)
+            try:
+                self.assertEqual("CLAIMED", line.result(timeout=20).strip())
+                self.store = self.controller.ContinuousControllerStore(self.path, ["B"])
+                self.store.recover_jira_operations(NOW)
+                spy = JiraSpy()
+                result = self.run_batch(spy, now="2026-10-18T16:00:00Z")
+                self.assertEqual([], spy.calls)
+                self.assertEqual(["AWF-2"], result["remaining"])
+                with self.store.connection() as db:
+                    self.assertEqual("IN_FLIGHT", db.execute(
+                        "SELECT status FROM controller_batch_jira_operation WHERE issue_id='AWF-1'").fetchone()[0])
+            finally:
+                output, errors = process.communicate("resume\n", timeout=20)
+        self.assertEqual(0, process.returncode, errors)
+        self.assertTrue(json.loads(output)["complete"])
+        spy = JiraSpy()
+        self.assertTrue(self.run_batch(spy)["complete"])
+        self.assertEqual([], spy.calls)
+
     def test_whole_input_rejected_before_callbacks(self):
         from agentic import ValidationError
         original = deepcopy(self.batch)
@@ -293,7 +400,8 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         self.store = self.controller.ContinuousControllerStore(self.path, ["B"])
         spy = JiraSpy()
         result = self.run_batch(spy)
-        self.assertEqual([], spy.calls)
+        self.assertEqual([("read", "AWF-2"), ("write", "AWF-2"), ("read_back", "AWF-2")], spy.calls)
+        self.assertEqual([], result["remaining"])
         self.assertIsNotNone(result["conflict"])
         self.assertFalse(result["complete"])
 
@@ -368,14 +476,19 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
     def test_persistence_failure_after_mutation_leaves_claim(self):
         from unittest.mock import patch
         spy = JiraSpy()
-        with patch.object(self.store, "finish_jira_operation", side_effect=OSError("disk unavailable")):
+        with patch.object(self.store, "finish_batch_jira_operation", side_effect=OSError("disk unavailable")):
             result = self.run_batch(spy)
         self.assertEqual([("read", "AWF-1"), ("write", "AWF-1"), ("read_back", "AWF-1")], spy.calls)
         self.assertIsNotNone(result["conflict"])
         self.store = self.controller.ContinuousControllerStore(self.path, ["B"])
         replay = JiraSpy()
-        self.run_batch(replay)
-        self.assertEqual([], replay.calls)
+        result = self.run_batch(replay)
+        self.assertEqual([("read", "AWF-2"), ("write", "AWF-2"), ("read_back", "AWF-2")], replay.calls)
+        self.assertEqual([], result["remaining"])
+        self.assertFalse(result["complete"])
+        final = JiraSpy()
+        self.run_batch(final)
+        self.assertEqual([], final.calls)
 
     def test_unknown_stops_one_ticket_and_resumes_remaining_only(self):
         def fail(record):
@@ -449,7 +562,8 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         import sqlite3
         from agentic import ValidationError
         with self.store.transaction() as db:
-            db.execute("""CREATE TRIGGER test_refuse_claim BEFORE UPDATE ON controller_jira_operation
+            db.execute(self.controller.BATCH_JIRA_DDL)
+            db.execute("""CREATE TRIGGER test_refuse_claim BEFORE UPDATE ON controller_batch_jira_operation
                 BEGIN SELECT RAISE(ABORT, 'claim unavailable'); END""")
         spy = JiraSpy()
         with self.assertRaises((sqlite3.DatabaseError, ValidationError)):
@@ -460,14 +574,15 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
         import sqlite3
         from agentic import ValidationError
         with self.store.transaction() as db:
-            db.execute("""CREATE TRIGGER test_refuse_second BEFORE INSERT ON controller_jira_operation
+            db.execute(self.controller.BATCH_JIRA_DDL)
+            db.execute("""CREATE TRIGGER test_refuse_second BEFORE INSERT ON controller_batch_jira_operation
                 WHEN NEW.issue_id='AWF-2' BEGIN SELECT RAISE(ABORT, 'intent unavailable'); END""")
         spy = JiraSpy()
         with self.assertRaises((sqlite3.DatabaseError, ValidationError)):
             self.run_batch(spy)
         self.assertEqual([], spy.calls)
         with self.store.connection() as db:
-            self.assertEqual(0, db.execute("SELECT count(*) FROM controller_jira_operation").fetchone()[0])
+            self.assertEqual(0, db.execute("SELECT count(*) FROM controller_batch_jira_operation").fetchone()[0])
             self.assertEqual(0, db.execute("SELECT count(*) FROM controller_meta WHERE key LIKE 't11-batch:%'").fetchone()[0])
 
     def test_crash_after_mutation_before_receipt_never_reissues(self):
@@ -481,17 +596,22 @@ class BatchReconciliationSafetyTests(unittest.TestCase):
             self.run_batch(spy, write_transition=mutate_then_crash)
         self.assertEqual([("read", "AWF-1"), ("write", "AWF-1")], spy.calls)
         replay = JiraSpy()
-        self.run_batch(replay)
-        self.assertEqual([], replay.calls)
+        result = self.run_batch(replay)
+        self.assertEqual([("read", "AWF-2"), ("write", "AWF-2"), ("read_back", "AWF-2")], replay.calls)
+        self.assertEqual([], result["remaining"])
+        self.assertFalse(result["complete"])
+        final = JiraSpy()
+        self.run_batch(final)
+        self.assertEqual([], final.calls)
 
     def test_corrupt_durable_intent_is_rejected_without_callbacks(self):
         from agentic import ValidationError
         self.run_batch()
         with self.store.transaction() as db:
-            row = db.execute("SELECT operation_id,record_json FROM controller_jira_operation LIMIT 1").fetchone()
+            row = db.execute("SELECT operation_id,record_json FROM controller_batch_jira_operation LIMIT 1").fetchone()
             corrupt = json.loads(row["record_json"])
             corrupt["to_status_id"] = "Other"
-            db.execute("UPDATE controller_jira_operation SET record_json=? WHERE operation_id=?",
+            db.execute("UPDATE controller_batch_jira_operation SET record_json=? WHERE operation_id=?",
                        (json.dumps(corrupt), row["operation_id"]))
         spy = JiraSpy()
         with self.assertRaises(ValidationError):
