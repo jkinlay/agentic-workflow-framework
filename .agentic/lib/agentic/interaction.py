@@ -8,6 +8,47 @@ import re
 from string import Formatter
 from . import ValidationError
 from .canonical import fingerprint, reject_git_sha_candidate_ids, timestamp, now_text
+from .child_process import render_bounded_diagnostic, render_diagnostic
+
+
+def _diagnostic_action(action):
+    return render_bounded_diagnostic(action, code='DIAGNOSTIC_INVALID')
+
+
+def _markdown_diagnostic(value):
+    """Escape prose before its final byte bound, without changing retained data.
+
+    S3 persisted reasons already contain inert numeric entities. Preserve those
+    tokens rather than escaping them twice. Entity/control tokens stay whole at
+    the cap, so truncation cannot create active Markdown syntax.
+    """
+    text = re.sub(r'[\ud800-\udfff]', '\ufffd', render_diagnostic(str(value)))
+    tokens = []
+    for match in re.finditer(r'&#[0-9]+;|\\x[0-9a-f]{2}|[\s\S]', text):
+        token = match.group()
+        # Intraword underscores cannot delimit CommonMark emphasis. Keeping
+        # them also preserves diagnostic codes and evidence identifiers.
+        intraword = (token == '_' and match.start() > 0 and match.end() < len(text)
+                     and text[match.start()-1].isalnum() and text[match.end()].isalnum())
+        structural = ((token in '-=~' and not text[:match.start()].strip())
+                      or (token == '.' and text[:match.start()].strip().isdigit()
+                          and text[match.end():match.end()+1].isspace())
+                      or (token == ' ' and match.start() == 0))
+        if len(token) == 1 and (structural or token in '\\`_*{}[]()#+!|><&') and not intraword:
+            token = f'&#{ord(token)};'
+        tokens.append(token)
+    if sum(len(token.encode('utf-8')) for token in tokens) <= 4096:
+        return ''.join(tokens)
+    marker = '&#60;truncated&#62;'
+    remaining = 4096 - len(marker)
+    retained = []
+    for token in tokens:
+        size = len(token.encode('utf-8'))
+        if size > remaining:
+            break
+        retained.append(token)
+        remaining -= size
+    return ''.join(retained) + marker
 
 
 ROUTINE = frozenset({'inspect','plan','edit','test','fix','review','rereview','delegate',
@@ -229,7 +270,8 @@ def loop_next_step(state):
         action,owner,trigger=mapping[phase]
         return next_step(action,owner,trigger)
     if phase=='PAUSED':
-        reason=text_field(str(state.get('reason') or 'Unspecified pause; inspect retained evidence')[:4000],'Pause reason')
+        # Routing uses the complete semantic reason, never a truncated rendering.
+        reason=str(state.get('reason') or 'Unspecified pause; inspect retained evidence')
         intent=state.get('inflight')
         if intent:
             run=text_field(intent.get('id'),'Inflight run ID')
@@ -244,13 +286,12 @@ def loop_next_step(state):
             action='Review consumed attempts and remaining work. Prepare a bounded recovery or revised budget proposal with its exact scope and applicable policy before requesting any new spending authority; do not reset counters.'
         else:
             action=f'Resolve the recorded blocker ({reason}). Reconcile the current candidate and ownership, then resume a clean enrollment with --reconciled-run none. Ordinary repair and resumption within existing authority need no new consent.'
-        return next_step(action,trigger='after technical reconciliation; continue independent ready work now')
+        return next_step(_diagnostic_action(action),trigger='after technical reconciliation; continue independent ready work now')
     return next_step('Inspect the recorded state and applicable recovery procedure; establish the next valid action before executing anything.',trigger='now; state is unknown')
 
 
 def rejected_next_step(reason):
-    detail=str(reason)[:4000]
-    return next_step(f'Inspect and fix the reported prerequisite or configuration error: {detail}. Retry the same command only after the failure is understood. If a native approval is the actual blocker, identify its action and platform control explicitly.')
+    return next_step(_diagnostic_action(f'Inspect and fix the reported prerequisite or configuration error: {reason}. Retry the same command only after the failure is understood. If a native approval is the actual blocker, identify its action and platform control explicitly.'))
 
 
 def status_report(state, summary, action, owner='controller', trigger='now', authorization=None, **extra):
@@ -307,7 +348,7 @@ def render_markdown(value):
         continue_independent_work=step['continue_independent_work'])
     summary=value.get('summary') or value.get('reason') or value.get('status') or value.get('phase') or 'Progress recorded'
     state=value.get('status') or value.get('phase') or value.get('decision') or 'RECORDED'
-    lines=[f'State: {state}',str(summary),'',f'Next: {step["action"]}',f'Owner: {step["owner"]}.',f'Trigger: {step["trigger"]}.']
+    lines=[f'State: {state}',_markdown_diagnostic(summary),'',_markdown_diagnostic(f'Next: {step["action"]}'),f'Owner: {step["owner"]}.',f'Trigger: {step["trigger"]}.']
     auth=step['authorization']
     if auth['required']:
         lines += ['',f'Authorization required: {auth["reason"]}',f'Required by: {auth["source"]}']

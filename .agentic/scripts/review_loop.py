@@ -5,7 +5,7 @@ import sys
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT / '.agentic/lib'))
-from agentic.child_process import scrub_process_env
+from agentic.child_process import scrub_process_env, render_bounded_diagnostic
 scrub_process_env()
 
 import argparse
@@ -230,7 +230,7 @@ def main(argv=None):
         return 2 if (value.get('phase') == 'PAUSED'
                      or value.get('result') == 'FAIL') else 0
     except Exception as exc:
-        reason=f'{type(exc).__name__}: {exc}'
+        reason=render_bounded_diagnostic(f'{type(exc).__name__}: {exc}', code='DIAGNOSTIC_INVALID')
         value={'status':'REJECTED','reason':reason,'merge_authorized':False,'next_step':rejected_next_step(reason)}
         print(json.dumps(value,indent=2) if args.format=='json' else render_markdown(value),file=sys.stderr)
         return 2
