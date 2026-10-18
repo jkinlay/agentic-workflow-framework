@@ -36,6 +36,10 @@ class ReviewTiers195GateTests(Fixture):
     def _runtime_config(self, assignments, *, active_ticket="EX-1"):
         runtime = {"active_ticket_key": active_ticket,
                    "intake_assignments": assignments}
+        provenance_runtime = self.config.get("_awf_runtime", {})
+        if "commit_provenance" in provenance_runtime:
+            runtime.update(commit_provenance=provenance_runtime["commit_provenance"],
+                           repository=provenance_runtime["repository"])
 
         class ReviewedConfigWithRuntime(dict):
             def get(self, key, default=None):
