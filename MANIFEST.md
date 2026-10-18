@@ -124,7 +124,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/lib/agentic/posting_collector.py` | `f4bef514206003345a7b4e32c3309d2bc00b0d88eadf5912a0f84bc8c31a457b` |
 | `.agentic/lib/agentic/private_deny_receipt.py` | `ee8d5bb4d904430d4dba3bd27aeca7967fbc68f7796f9827a923dd8e6911a4c3` |
 | `.agentic/lib/agentic/provenance.py` | `db105551b0c18a96e801dc67a8ab0cf196d0401ffc28ac1138f207529e673df4` |
-| `.agentic/lib/agentic/provider_identity.py` | `50a39b751fa3f6783decc50be28f6630938f897c9df6a8333d97edb745764b5e` |
+| `.agentic/lib/agentic/provider_identity.py` | `5a9e3e4b9a525edfcca125fcd902152d22639e4e43e39ac51943a772a4ca1271` |
 | `.agentic/lib/agentic/providers/__init__.py` | `5734fc333fbc07016e01b8f7c1ecc8e1159f27a9a69f8736e4b9479506c58012` |
 | `.agentic/lib/agentic/providers/github.py` | `0228ed2d7c57617052ef97209c6ae357b893d3151dd97df267ab2a86d4e2f12d` |
 | `.agentic/lib/agentic/providers/github_review_host.py` | `65d909cf029db1d305b8c5d8998ce484ea8869b437fbed24e0d7ff1a49224022` |
@@ -393,7 +393,7 @@ The machine manifest excludes itself and this human-readable file to avoid recur
 | `.agentic/tests/test_provenance.py` | `3de078d00f66e221c285858aaac4a47cda3b3d19f4cfc5f4c7b10286e1aa00e6` |
 | `.agentic/tests/test_provenance_awf94.py` | `88286473aa73ad8681a8a4cfd552d519b36cd14eb2cf4fab242549c53341059c` |
 | `.agentic/tests/test_provenance_range_bytes.py` | `5ddb7e1b15714b5092f6ff513bfa04a43ed04073bdc6465e7f2dd8744367c65f` |
-| `.agentic/tests/test_provider_identity.py` | `92b46c77a9a7bfd04cb774e216f63966b25f9986ce0a314bb3a285e086cd8bf2` |
+| `.agentic/tests/test_provider_identity.py` | `3bac4cf9c00e55f708eec0167147ef38411a2476de79fc4d1e4f225dfe1b8e5b` |
 | `.agentic/tests/test_publication.py` | `07b37b74a2f9f838e7e5cfd82126bce1a4dddb25d5a9a0e10d06f44757de1349` |
 | `.agentic/tests/test_publication_readiness.py` | `4c2e48395f0a3a26c86625cf49e62b2b71353ff9bb33cb9c2bedcb7c40431354` |
 | `.agentic/tests/test_publication_sync_merge.py` | `b522354cc6b31b50da5f6cf916d5204d14d4a52bbe9b872b0ba77160baed48af` |
