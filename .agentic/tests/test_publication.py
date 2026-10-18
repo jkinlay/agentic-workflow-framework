@@ -2551,5 +2551,54 @@ class PublicationGateTests(unittest.TestCase):
 
 
 
+import json
+import sys
+import unittest
+import test_awf154_large_file_allowances as fixtures
+
+sys.path.insert(0, str(fixtures.ROOT / 'scripts'))
+
+
+class ConfigAllowanceAuthorityTests(unittest.TestCase):
+    setUp = fixtures.LargeFileAllowanceTests.setUp
+    write = fixtures.LargeFileAllowanceTests.write
+    commit = fixtures.LargeFileAllowanceTests.commit
+    write_config = fixtures.LargeFileAllowanceTests.write_config
+    establish = fixtures.LargeFileAllowanceTests.establish
+    scan = fixtures.LargeFileAllowanceTests.scan
+
+    def test_worktree_allowance_cannot_replace_head_authority(self):
+        self.establish([], {fixtures.ARTIFACT: fixtures.LARGE_CONTENT})
+        self.write_config([fixtures.allowance()])
+        self.assertEqual('BLOCKED', self.scan()['status'])
+
+    def test_supplemental_allowance_cannot_replace_head_authority(self):
+        self.establish([], {fixtures.ARTIFACT: fixtures.LARGE_CONTENT})
+        supplemental = self.external / 'supplemental.json'
+        supplemental.write_text(json.dumps(fixtures.project_config([fixtures.allowance()])), encoding='utf-8')
+        self.assertEqual('BLOCKED', self.scan(config_path=supplemental)['status'])
+
+    def test_glob_and_drive_paths_are_rejected(self):
+        from agentic import configuration, ValidationError
+        from agentic.contracts import Contracts
+        contracts = Contracts(fixtures.ROOT / '.agentic/schemas')
+        for path in ('artifacts/?.dat', 'artifacts/[abc].dat', 'scheme:artifact'):
+            with self.subTest(path=path), self.assertRaises(ValidationError):
+                configuration.validate_publication_project_config(
+                    fixtures.project_config([fixtures.allowance(path)]), contracts)
+
+    def test_receipt_schema_accepts_only_digest_for_optional_supplemental_binding(self):
+        from generate_contracts import catalog
+        schema = catalog()['publication-scan']
+        self.assertEqual({'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
+                         schema['properties']['supplemental_project_config_sha256'])
+        self.assertNotIn('supplemental_project_config_sha256', schema['required'])
+        self.assertFalse(schema['additionalProperties'])
+
+    def test_generated_example_exposes_allowances(self):
+        from generate_examples import config
+        self.assertIn('large_file_allowances', config(True)['publication'])
+
+
 if __name__ == "__main__":
     unittest.main()
